@@ -1,0 +1,17 @@
+{
+  "protocolVersion": "0.3.0",
+  "schema": "turn",
+  "data": {
+    "id": "0190f4c8-0003-7abc-8def-000000000003",
+    "workspaceId": "0190f4c8-0001-7abc-8def-000000000001",
+    "threadId": "0190f4c8-0002-7abc-8def-000000000002",
+    "items": [],
+    "status": "running",
+    "humanGate": null,
+    "error": null,
+    "configVersion": null,
+    "startedAt": "2026-05-15T10:02:00Z",
+    "completedAt": null,
+    "durationMs": null
+  }
+}

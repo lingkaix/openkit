@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "agentId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workspaceId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "threadId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "created",
+        "initializing",
+        "ready",
+        "busy",
+        "idle",
+        "degraded",
+        "suspended",
+        "interrupted",
+        "failed",
+        "closed"
+      ]
+    },
+    "message": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sandboxSummary": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "access": {
+              "type": "string",
+              "enum": [
+                "none",
+                "read-only",
+                "read-write"
+              ]
+            },
+            "workspaceRootRefs": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "summary": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "access",
+            "workspaceRootRefs",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "createdAt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "updatedAt": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "id",
+    "agentId",
+    "workspaceId",
+    "threadId",
+    "status",
+    "message",
+    "sandboxSummary",
+    "createdAt",
+    "updatedAt"
+  ],
+  "additionalProperties": false
+}

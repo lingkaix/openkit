@@ -1,0 +1,11 @@
+// Custom OpenAI-compatible provider template.
+// Replace the placeholder baseUrl and create the matching vault reference before using this provider.
+// The starter model keeps this template compatible with ProviderProfileSchema until US-008 vendors catalog metadata.
+{
+  "id": "openai-compatible-custom",
+  "displayName": "Custom OpenAI-Compatible",
+  "kind": "custom",
+  "baseUrl": "https://example.invalid/v1",
+  "models": ["custom-model"],
+  "secretRef": "vault://provider_openai_compatible_custom"
+}

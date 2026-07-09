@@ -1,0 +1,26 @@
+:{$CADDY_HTTP_PORT:8080} {
+	@compressed {
+		not path /api/workspaces/*/threads/*/events
+	}
+	encode @compressed gzip
+
+	handle /api/workspaces/*/threads/*/events {
+		reverse_proxy 127.0.0.1:{$OPENKIT_HTTP_PORT:4317} {
+			flush_interval -1
+		}
+	}
+
+	handle /api/* {
+		reverse_proxy 127.0.0.1:{$OPENKIT_HTTP_PORT:4317}
+	}
+
+	handle /internal/* {
+		reverse_proxy 127.0.0.1:{$OPENKIT_HTTP_PORT:4317}
+	}
+
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+}

@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "code",
+        "content",
+        "personal-ops",
+        "research",
+        "operations",
+        "general"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "archived"
+      ]
+    },
+    "defaults": {
+      "type": "object",
+      "properties": {
+        "defaultModelId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "defaultAgentId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "defaultSkillIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "defaultModelId",
+        "defaultAgentId",
+        "defaultSkillIds"
+      ],
+      "additionalProperties": false
+    },
+    "counts": {
+      "type": "object",
+      "properties": {
+        "threadCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "artifactCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "knowledgeEntryCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "threadCount",
+        "artifactCount",
+        "knowledgeEntryCount"
+      ],
+      "additionalProperties": false
+    },
+    "importedFrom": {
+      "type": "object",
+      "properties": {
+        "sourceDeploymentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceWorkspaceId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exportCreatedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manifestDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "sourceDeploymentId",
+        "sourceWorkspaceId",
+        "exportCreatedAt",
+        "manifestDigest"
+      ],
+      "additionalProperties": false
+    },
+    "createdAt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "updatedAt": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "kind",
+    "status",
+    "counts",
+    "createdAt",
+    "updatedAt"
+  ],
+  "additionalProperties": false
+}

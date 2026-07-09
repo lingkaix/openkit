@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "eventFamilies": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "workspace.updated",
+          "thread.created",
+          "thread.updated",
+          "turn.started",
+          "turn.updated",
+          "item.created",
+          "item.delta",
+          "item.completed",
+          "approval.requested",
+          "approval.resolved",
+          "agent.session.updated",
+          "artifact.created",
+          "artifact.updated",
+          "turn.completed",
+          "error"
+        ]
+      }
+    },
+    "itemTypes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "itemDeltaKinds": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "capabilities",
+    "eventFamilies"
+  ],
+  "additionalProperties": false
+}

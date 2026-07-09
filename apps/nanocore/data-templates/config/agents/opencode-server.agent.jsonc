@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "id": "agent_opencode_server",
+  "displayName": "OpenCode Server Agent",
+  "mode": "local",
+  "runtime": {
+    "kind": "opencode",
+    "adapter": "opencode-server",
+    "version": "0.0.2"
+  },
+  "deployment": {
+    "local": {
+      "command": "opencode",
+      "args": ["serve"],
+      "cwdPolicy": "workspace"
+    }
+  },
+  "provider": {
+    "ref": "openrouter",
+    "model": "openai/gpt-5.1"
+  },
+  "profiles": [
+    {
+      "id": "default",
+      "instructionsRef": "opencode",
+      "skills": []
+    }
+  ],
+  "defaultProfileId": "default",
+  "skills": [],
+  "workspace": {
+    "root": "."
+  },
+  "readiness": {
+    "status": "unknown",
+    "message": "OpenCode server availability has not been probed yet."
+  },
+  "extensions": {}
+}

@@ -1,0 +1,35 @@
+{
+  "sourceUrl": "https://models.dev/api.json",
+  "sourceProject": "https://github.com/anomalyco/models.dev",
+  "version": "2026-05-18",
+  "refreshedAt": "2026-05-18",
+  "checksumSha256": "cbcd32171e574e4ff1ff7c7720b708da25539b9ee664459bdc15617ea7375e00",
+  "maintenanceNote": "Vendored for OpenKit v0.0.3 provider-template traceability. Refresh only through explicit maintenance work and review the snapshot diff before updating templates.",
+  "providerMappings": {
+    "openai": {
+      "templateFile": "apps/nanocore/data-templates/config/providers/openai-default.provider.jsonc",
+      "templateProviderId": "openai",
+      "modelsDevProviderId": "openai"
+    },
+    "openrouter": {
+      "templateFile": "apps/nanocore/data-templates/config/providers/openrouter-default.provider.jsonc",
+      "templateProviderId": "openrouter",
+      "modelsDevProviderId": "openrouter"
+    },
+    "xai": {
+      "templateFile": "apps/nanocore/data-templates/config/providers/xai-grok-default.provider.jsonc",
+      "templateProviderId": "xai",
+      "modelsDevProviderId": "xai"
+    },
+    "google": {
+      "templateFile": "apps/nanocore/data-templates/config/providers/google-gemini-default.provider.jsonc",
+      "templateProviderId": "google",
+      "modelsDevProviderId": "google"
+    },
+    "openai-compatible-custom": {
+      "templateFile": "apps/nanocore/data-templates/config/providers/openai-compatible-custom.provider.jsonc",
+      "templateProviderId": "openai-compatible-custom",
+      "modelsDevProviderId": null
+    }
+  }
+}

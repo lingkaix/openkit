@@ -1,0 +1,177 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { BootConfigError } from '../config/mode.js';
+import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
+import { schemaMigrations } from './schema/index.js';
+
+/**
+ * One committed SQL migration file.
+ */
+interface MigrationFile {
+  /** Stable migration id stored after success. */
+  id: string;
+  /** SQL file name under the drizzle directory. */
+  fileName: string;
+}
+
+const migrations: MigrationFile[] = [
+  { id: 'core_0000_baseline', fileName: '0000_core_baseline.sql' },
+];
+
+const workspaceMigrations: MigrationFile[] = [
+  { id: '0000_baseline', fileName: '0000_workspace_baseline.sql' },
+];
+
+const userMigrations: MigrationFile[] = [
+  { id: '0000_baseline', fileName: '0000_user_baseline.sql' },
+];
+
+/**
+ * Database handle that can read migration metadata.
+ */
+interface MigrationReadableDb {
+  /** Raw SQLite connection. */
+  sqlite: CoreDb['sqlite'];
+}
+
+type ScopedDb = UserDb | WorkspaceDb;
+
+/**
+ * Applies every pending committed migration to a Core database.
+ *
+ * @param coreDb Open Core database handles.
+ * @throws BootConfigError when a migration file is missing or fails to apply.
+ */
+export function applyMigrations(coreDb: CoreDb): void {
+  const appliedIds = readAppliedMigrationIds(coreDb);
+
+  for (const migration of migrations) {
+    if (appliedIds.has(migration.id)) {
+      continue;
+    }
+
+    try {
+      coreDb.sqlite.exec(readMigrationSql(migration));
+      coreDb.db
+        .insert(schemaMigrations)
+        .values({ id: migration.id, appliedAt: new Date().toISOString() })
+        .onConflictDoNothing()
+        .run();
+      appliedIds.add(migration.id);
+    } catch (error) {
+      throw new BootConfigError(
+        'migration_failed',
+        `Failed to apply migration ${migration.id}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+}
+
+/**
+ * Applies pending migrations for one non-server scoped database.
+ *
+ * @param scopedDb Open user- or workspace-scope database handle.
+ * @throws BootConfigError when a scoped migration file is missing or fails to apply.
+ */
+export function applyScopedMigrations(scopedDb: ScopedDb): void {
+  const appliedIds = readAppliedMigrationIds(scopedDb);
+
+  for (const migration of scopedMigrationsFor(scopedDb)) {
+    const migrationId = `${scopedDb.scope}_${migration.id}`;
+
+    if (appliedIds.has(migrationId)) {
+      continue;
+    }
+
+    try {
+      scopedDb.sqlite.exec(readMigrationSql(migration));
+      scopedDb.sqlite
+        .prepare('INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES (?, ?)')
+        .run(migrationId, new Date().toISOString());
+      appliedIds.add(migrationId);
+    } catch (error) {
+      throw new BootConfigError(
+        'migration_failed',
+        `Failed to apply migration ${migrationId}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+}
+
+/**
+ * Lists applied migration ids in stable order.
+ *
+ * @param coreDb Open Core database handles.
+ * @returns Applied migration ids.
+ */
+export function listAppliedMigrationIds(coreDb: CoreDb): string[] {
+  return [...readAppliedMigrationIds(coreDb)].sort();
+}
+
+/**
+ * Reads the set of migration ids already applied to the database.
+ *
+ * @param coreDb Open Core database handles.
+ * @returns Applied migration ids.
+ */
+function readAppliedMigrationIds(coreDb: MigrationReadableDb): Set<string> {
+  const table = coreDb.sqlite
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get('schema_migrations');
+
+  if (!table) {
+    return new Set();
+  }
+
+  const rows = coreDb.sqlite.prepare('SELECT id FROM schema_migrations').all() as Array<{
+    id: string;
+  }>;
+
+  return new Set(rows.map((row) => row.id));
+}
+
+/**
+ * Returns the ordered migration list for one scoped database.
+ *
+ * @param scopedDb Open scoped database handle.
+ * @returns Scope-specific migrations.
+ */
+function scopedMigrationsFor(scopedDb: ScopedDb): readonly MigrationFile[] {
+  return scopedDb.scope === 'workspace' ? workspaceMigrations : userMigrations;
+}
+
+/**
+ * Reads one committed migration SQL file.
+ *
+ * @param migration Migration metadata.
+ * @returns SQL text with Drizzle breakpoints removed.
+ * @throws BootConfigError when the migration file cannot be found.
+ */
+function readMigrationSql(migration: MigrationFile): string {
+  const path = findMigrationPath(migration.fileName);
+
+  if (!path) {
+    throw new BootConfigError('migration_missing', `Missing migration file ${migration.fileName}.`);
+  }
+
+  return readFileSync(path, 'utf8').replaceAll('--> statement-breakpoint', '');
+}
+
+/**
+ * Finds a migration file from source, app, or built runtime paths.
+ *
+ * @param fileName Migration file name.
+ * @returns Absolute path when found, otherwise undefined.
+ */
+function findMigrationPath(fileName: string): string | undefined {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    join(process.cwd(), 'apps', 'nanocore', 'drizzle', fileName),
+    join(process.cwd(), 'drizzle', fileName),
+    join(here, '..', '..', 'drizzle', fileName),
+    join(here, '..', 'drizzle', fileName),
+  ];
+
+  return candidates.find((path) => existsSync(path));
+}

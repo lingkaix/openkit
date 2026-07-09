@@ -1,0 +1,51 @@
+{
+  "name": "@openkit/web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "e2e": "playwright test",
+    "e2e:staging": "playwright test --config playwright.staging.config.ts",
+    "e2e:stories": "pnpm --filter @openkit/nanocore build && playwright test --config playwright.stories.config.ts",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "@codemirror/autocomplete": "^6.20.2",
+    "@codemirror/lang-json": "^6.0.2",
+    "@codemirror/lint": "^6.9.6",
+    "@codemirror/search": "^6.7.0",
+    "@codemirror/state": "^6.6.0",
+    "@codemirror/view": "^6.43.0",
+    "@iconify-json/ri": "^1.2.10",
+    "@openkit/core-client": "workspace:*",
+    "@openkit/protocol": "workspace:*",
+    "codemirror": "^6.0.2",
+    "iconify-icon": "^3.0.2",
+    "solid-js": "^1.9.12",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@solidjs/testing-library": "^0.8.10",
+    "@tailwindcss/vite": "^4.2.2",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^24.12.2",
+    "@vitest/coverage-v8": "^4.1.4",
+    "daisyui": "^5.5.19",
+    "jsdom": "^27.0.1",
+    "tailwindcss": "^4.1.12",
+    "typescript": "~6.0.2",
+    "vite": "^8.0.4",
+    "vite-plugin-solid": "^2.11.12",
+    "vitest": "^4.1.4"
+  }
+}

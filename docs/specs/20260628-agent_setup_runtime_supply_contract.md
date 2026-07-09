@@ -1,0 +1,126 @@
+# Agent Setup And Runtime Supply Contract
+
+Status: Accepted
+Implementation: Implemented
+
+## Summary
+
+This spec consolidates the agent setup, profile, manifest loading, and runtime supply model.
+
+This spec is the high-level setup and runtime supply entry point. Exact authored manifest fields, AEP snapshot identity, runtime scheduling, worker capability routes, and backend-specific materialization are owned by the specialized specs linked below.
+
+Runtime placement details are refined by `docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260703-runtime_scheduling_scale.md`, and `docs/specs/20260627-remote_openshell_gateway.md`. Host-local staging and harness behavior are implementation projections; real Worker Agent product paths use container placements.
+
+The current contract is NanoCore-first. NanoCore owns agent identity, selected profile, runtime placement, resolved worker environment, policy intent, workspace inputs, review outputs, and product-visible readiness. Worker backends such as local OpenShell containers and remote OpenShell containers materialize that contract without becoming product state.
+
+Older setup and profile specs remain useful implementation references, but this document is the active entry point for the setup/runtime supply model.
+
+Detailed authored manifest to AEP resolution is owned by `docs/specs/20260703-agent_manifest_aep_resolution.md`.
+
+## Owns
+
+- The high-level consolidated entry point for agent setup, profile, manifest loading, and runtime supply.
+- The rule that manifests and profiles are inputs to NanoCore resolution, not final launch contracts.
+- The relationship between agent setup, AEP snapshots, worker runtime communication, workspace synchronization, and product-visible readiness.
+- Replacement routing for historical agent setup and profile specs.
+
+## Does Not Own
+
+- Detailed authored manifest fields, resolution precedence, AEP snapshot identity, or readiness diagnostics.
+- Exact AEP schema fields, snapshot hashing, backend materialization files, or runtime-native launch payloads.
+- Agent catalog product semantics already owned by `docs/core/agent-supply.md`.
+- Agent session lifecycle and runtime continuity.
+- Worker capability gateway routes, metering, audit, or `capability.local`/`inference.local` details.
+- Runtime scheduling, queueing, warm pools, capacity, or placement decisions.
+- Vault secret storage, permission policy semantics, workspace synchronization record schemas, or backend-native config formats.
+
+## Core References
+
+- `docs/core/agent-supply.md`
+- `docs/core/agent-session.md`
+- `docs/core/agent-capability.md`
+- `docs/core/runtime-model.md`
+- `docs/core/sandbox.md`
+- `docs/core/vault.md`
+
+## Goals
+
+- Keep setup and runtime supply aligned with `docs/specs/20260616-agent_environment_package.md`.
+- Treat agent manifests and profiles as inputs to a resolved NanoCore package, not as the final product contract.
+- Support the current container runtime placements: local container and remote container.
+- Keep worker capabilities, skills, MCP servers, tools, provider attachments, workspace roots, generated files, and output paths explicit.
+- Preserve review-gated workspace synchronization as the default write-back path.
+- Make setup diagnostics product-visible without leaking backend-private paths, credentials, process ids, or OpenShell internals.
+
+## Non-goals
+
+- Do not preserve historical setup file shapes as supported current behavior.
+- Do not make old manifest/profile specs active guidance.
+- Do not let worker-side MCP supply be confused with the user-facing `@openkit/mcp` channel.
+- Do not reintroduce host execution as a real Worker Agent runtime.
+
+## Current Contract
+
+NanoCore resolves setup inputs into an `AgentEnvironmentPackage` snapshot for each worker session. This section names the required supply categories; detailed authored-field resolution and snapshot identity rules belong to `docs/specs/20260703-agent_manifest_aep_resolution.md` and AEP schema ownership belongs to `docs/specs/20260616-agent_environment_package.md`.
+
+The snapshot should include:
+
+- workspace, thread, turn, agent session, and package lineage
+- selected agent and profile
+- runtime placement and backend capability requirements
+- worker command, image, tool, skill, and binary supply
+- workspace materialization inputs and writable path policy
+- provider attachments, vault references, and credential visibility policy
+- MCP and other tool supply intended for the worker runtime
+- control endpoint metadata when live worker control is available
+- transcript, artifact, workspace change, and audit output paths
+
+Backends materialize the snapshot. Product surfaces read NanoCore records and redacted backend evidence, not backend-native manifests.
+
+## Current Implementation Projection
+
+The high-level setup and runtime supply contract owned by this spec is implemented:
+
+- `packages/config-schema/src/agent.ts` defines the current authored agent config schema.
+- `apps/nanocore/src/config/agents-loader.ts` loads `.agent.jsonc` files and maps them into runtime-facing agent manifests.
+- `apps/nanocore/src/agents/setup-resolver.ts` resolves active deployment, provider references, runtime summary, transport, and origin metadata.
+- `apps/nanocore/src/runtime/agent-environment.ts` resolves OpenShell-backed AEP snapshots from selected agent, turn, workspace roots, and backend input.
+- Current AEP resolution includes static worker Skill and MCP catalog fixtures, `control.local`, `capability.local`, `inference.local`, transcript paths, workspace roots, provider attachments, vault references, policy blocks, and observability blocks.
+- Current worker capability supply exposes `knowledge.*` route families through the AEP capability projection.
+- The full durable server, workspace, user, request, vault, permission, scheduler, and backend capability layer stack remains owned and tracked by `docs/specs/20260703-agent_manifest_aep_resolution.md` rather than by this high-level entry point.
+
+## Runtime Placement Mapping
+
+The current implementation selector projection is:
+
+```text
+OPENKIT_WORKER_RUNTIME=container
+OPENKIT_CONTAINER_PLACEMENT=local|remote
+OPENKIT_CONTAINER_BACKEND=openshell
+```
+
+Local container placement is currently implemented through the OpenShell backend family.
+
+Remote container placement is currently implemented through a remote OpenShell gateway target.
+
+## Reference Specs
+
+The detailed historical specs have been moved under `docs/specs/retired/agent-setup-runtime-supply/`.
+
+They remain useful for field-level background, but new work should start from:
+
+- `docs/specs/20260616-agent_environment_package.md`
+- `docs/specs/20260703-workspace_synchronization.md`
+- this spec
+
+## Links
+
+- [Agent Environment Package And Worker Governance Backends](./20260616-agent_environment_package.md)
+- [Agent Manifest And AEP Resolution](./20260703-agent_manifest_aep_resolution.md)
+- [Worker Runtime Communication Model](./20260629-worker_runtime_communication_model.md)
+- [Worker Agent Capability](./20260703-worker_agent_capability.md)
+- [Workspace Synchronization](./20260703-workspace_synchronization.md)
+- [Remote OpenShell Gateway](./20260627-remote_openshell_gateway.md)
+- [Runtime Scheduling And Scale](./20260703-runtime_scheduling_scale.md)
+- [Runtime Model](../core/runtime-model.md)
+- [Agent Supply](../core/agent-supply.md)

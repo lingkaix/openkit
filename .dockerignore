@@ -1,0 +1,13 @@
+node_modules
+**/node_modules
+.turbo
+**/.turbo
+dist
+**/dist
+.git
+temp
+data
+**/data
+**/.DS_Store
+**/.cache
+**/coverage

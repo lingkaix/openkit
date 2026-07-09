@@ -1,0 +1,130 @@
+{
+  "schemaVersion": "policy-kernel-ngac-subset-conformance-v1",
+  "sourceReferences": [
+    "temp/NGAC/incits-565-2020-next-generation-access-control-standard.md",
+    "temp/NGAC/nist-ir-7987r1-2015-policy-machine-features-architecture-specification.md"
+  ],
+  "description": "Conformance fixtures for the NGAC subset currently implemented by @openkit/policy-kernel.",
+  "cases": [
+    {
+      "name": "assignment-association-access-right-allow",
+      "policy": {
+        "elements": [
+          { "id": "user:alice", "kind": "user" },
+          { "id": "ua:workspace-member", "kind": "userAttribute" },
+          { "id": "object:report", "kind": "object" },
+          { "id": "oa:workspace-artifacts", "kind": "objectAttribute" },
+          { "id": "pc:workspace", "kind": "policyClass" }
+        ],
+        "assignments": [
+          { "child": "user:alice", "parent": "ua:workspace-member" },
+          { "child": "object:report", "parent": "oa:workspace-artifacts" },
+          { "child": "ua:workspace-member", "parent": "pc:workspace" },
+          { "child": "oa:workspace-artifacts", "parent": "pc:workspace" }
+        ],
+        "operations": [{ "id": "artifact.read", "accessRights": ["read"] }],
+        "associations": [
+          {
+            "id": "assoc:artifact-read",
+            "userAttribute": "ua:workspace-member",
+            "accessRights": ["read"],
+            "targetAttribute": "oa:workspace-artifacts"
+          }
+        ]
+      },
+      "request": { "user": "user:alice", "operation": "artifact.read", "target": "object:report" },
+      "expected": {
+        "effect": "allow",
+        "reasonCode": "association-grant",
+        "matchedAssociations": ["assoc:artifact-read"],
+        "matchedProhibitions": []
+      }
+    },
+    {
+      "name": "multi-policy-class-missing-privilege-deny",
+      "policy": {
+        "elements": [
+          { "id": "user:alice", "kind": "user" },
+          { "id": "ua:workspace-member", "kind": "userAttribute" },
+          { "id": "object:report", "kind": "object" },
+          { "id": "oa:workspace-artifacts", "kind": "objectAttribute" },
+          { "id": "oa:regulated-artifacts", "kind": "objectAttribute" },
+          { "id": "pc:workspace", "kind": "policyClass" },
+          { "id": "pc:regulated", "kind": "policyClass" }
+        ],
+        "assignments": [
+          { "child": "user:alice", "parent": "ua:workspace-member" },
+          { "child": "object:report", "parent": "oa:workspace-artifacts" },
+          { "child": "object:report", "parent": "oa:regulated-artifacts" },
+          { "child": "ua:workspace-member", "parent": "pc:workspace" },
+          { "child": "oa:workspace-artifacts", "parent": "pc:workspace" },
+          { "child": "oa:regulated-artifacts", "parent": "pc:regulated" }
+        ],
+        "operations": [{ "id": "artifact.read", "accessRights": ["read"] }],
+        "associations": [
+          {
+            "id": "assoc:workspace-read",
+            "userAttribute": "ua:workspace-member",
+            "accessRights": ["read"],
+            "targetAttribute": "oa:workspace-artifacts"
+          }
+        ]
+      },
+      "request": { "user": "user:alice", "operation": "artifact.read", "target": "object:report" },
+      "expected": {
+        "effect": "deny",
+        "reasonCode": "missing-privilege",
+        "matchedAssociations": [],
+        "matchedProhibitions": []
+      }
+    },
+    {
+      "name": "process-user-prohibition-range-deny",
+      "policy": {
+        "elements": [
+          { "id": "user:alice", "kind": "user" },
+          { "id": "ua:workspace-member", "kind": "userAttribute" },
+          { "id": "object:report", "kind": "object" },
+          { "id": "oa:workspace-artifacts", "kind": "objectAttribute" },
+          { "id": "pc:workspace", "kind": "policyClass" }
+        ],
+        "assignments": [
+          { "child": "user:alice", "parent": "ua:workspace-member" },
+          { "child": "object:report", "parent": "oa:workspace-artifacts" },
+          { "child": "ua:workspace-member", "parent": "pc:workspace" },
+          { "child": "oa:workspace-artifacts", "parent": "pc:workspace" }
+        ],
+        "operations": [{ "id": "artifact.read", "accessRights": ["read"] }],
+        "processUsers": [{ "process": "process:agent-turn", "user": "user:alice" }],
+        "associations": [
+          {
+            "id": "assoc:artifact-read",
+            "userAttribute": "ua:workspace-member",
+            "accessRights": ["read"],
+            "targetAttribute": "oa:workspace-artifacts"
+          }
+        ],
+        "prohibitions": [
+          {
+            "id": "deny:agent-report-read",
+            "kind": "process",
+            "subject": "process:agent-turn",
+            "accessRights": ["read"],
+            "range": { "type": "disjunctive", "include": ["oa:workspace-artifacts"] }
+          }
+        ]
+      },
+      "request": {
+        "process": "process:agent-turn",
+        "operation": "artifact.read",
+        "target": "object:report"
+      },
+      "expected": {
+        "effect": "deny",
+        "reasonCode": "restriction",
+        "matchedAssociations": ["assoc:artifact-read"],
+        "matchedProhibitions": ["deny:agent-report-read"]
+      }
+    }
+  ]
+}

@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workspaceId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "threadId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "turnId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "itemId": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "capabilityCallId": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "requestId": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "agentId": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "agentSessionId": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sourceIds": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "category": {
+      "default": "runtime",
+      "type": "string",
+      "enum": [
+        "llm",
+        "tool",
+        "runtime",
+        "storage",
+        "network"
+      ]
+    },
+    "unit": {
+      "type": "string",
+      "enum": [
+        "tokens",
+        "requests",
+        "seconds",
+        "bytes",
+        "files",
+        "artifacts",
+        "tool_calls",
+        "capability_calls",
+        "sandbox_sessions"
+      ]
+    },
+    "quantity": {
+      "type": "number",
+      "minimum": 0
+    },
+    "modelId": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "providerRef": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "recordedAt": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "id",
+    "workspaceId",
+    "threadId",
+    "turnId",
+    "itemId",
+    "capabilityCallId",
+    "requestId",
+    "agentId",
+    "agentSessionId",
+    "sourceIds",
+    "category",
+    "unit",
+    "quantity",
+    "modelId",
+    "providerRef",
+    "source",
+    "recordedAt"
+  ],
+  "additionalProperties": false
+}

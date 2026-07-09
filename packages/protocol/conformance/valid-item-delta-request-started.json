@@ -1,0 +1,12 @@
+{
+  "protocolVersion": "0.3.0",
+  "schema": "item-delta",
+  "data": {
+    "type": "item-delta",
+    "itemId": "0190f4c8-0016-7abc-8def-000000000016",
+    "itemType": "tool-call",
+    "deltaKind": "request-started",
+    "requestRefId": "tool_request_1",
+    "label": "Run focused tests"
+  }
+}

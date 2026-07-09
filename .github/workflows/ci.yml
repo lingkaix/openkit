@@ -1,0 +1,460 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    tags:
+      - "v*.*.*"
+      - "V*.*.*"
+  workflow_dispatch:
+    inputs:
+      gate:
+        description: Test gate to run
+        required: true
+        default: pr-check
+        type: choice
+        options:
+          - pr-check
+          - l0-l2
+          - nano-core-e2e
+          - web-e2e
+          - smoke
+          - deterministic-stories
+          - release-gate
+          - full
+
+permissions:
+  contents: read
+
+jobs:
+  pr-check:
+    name: PR lightweight repo check
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.gate == 'pr-check')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run lightweight repository check
+        run: pnpm -w check:repo
+
+  release-preflight:
+    name: Release preflight
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch main ref
+        run: git fetch --no-tags origin main:refs/remotes/origin/main
+
+      - name: Validate release tag, versions, and images
+        run: |
+          node scripts/release-preflight.mjs \
+            --tag "${GITHUB_REF_NAME}" \
+            --repo-root . \
+            --sha "${GITHUB_SHA}" \
+            --main-ref origin/main \
+            --require-main \
+            --require-release-worker-digests
+
+  l0-l2:
+    name: L0-L2 static, unit, contract
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["l0-l2","release-gate","full"]'), inputs.gate))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run L0-L2 verification
+        run: pnpm -w verify:l0-l2
+
+  nano-core-e2e:
+    name: L3 NanoCore e2e
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["nano-core-e2e","release-gate","full"]'), inputs.gate))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run NanoCore black-box e2e
+        run: pnpm -w test:e2e:nano
+
+  web-e2e:
+    name: L4 Web e2e
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["web-e2e","full"]'), inputs.gate)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browser
+        run: pnpm --filter web exec playwright install --with-deps chromium
+
+      - name: Run Web browser e2e
+        run: pnpm -w test:e2e:web
+
+      - name: Upload Web Playwright artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-e2e-playwright-artifacts
+          path: |
+            apps/web/playwright-report/
+            apps/web/test-results/
+          if-no-files-found: ignore
+
+  smoke:
+    name: L5 smoke
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","release-gate","full"]'), inputs.gate))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run built-artifact smoke tests
+        run: pnpm -w test:smoke
+
+  deterministic-stories:
+    name: L6 deterministic stories
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["deterministic-stories","full"]'), inputs.gate)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browser
+        run: pnpm --filter web exec playwright install --with-deps chromium
+
+      - name: Run deterministic story acceptance tests
+        run: pnpm -w test:stories
+
+      - name: Upload deterministic story Playwright artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deterministic-stories-playwright-artifacts
+          path: |
+            apps/web/playwright-report/
+            apps/web/test-results/
+          if-no-files-found: ignore
+
+  container-image-matrix:
+    name: Container image release matrix
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs:
+      - release-preflight
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read release image manifest
+        id: matrix
+        run: |
+          node <<'NODE' >> "${GITHUB_OUTPUT}"
+          const fs = require('node:fs');
+          const manifest = JSON.parse(fs.readFileSync('containers/images.json', 'utf8'));
+          const images = manifest.images
+            .filter((image) => image.release === true)
+            .map((image) => ({
+              id: image.id,
+              repository: image.repository,
+              dockerfile: image.dockerfile,
+              context: image.context,
+              kind: image.kind,
+              platforms: image.platforms.join(','),
+              runtime: image.runtime || '',
+              workerContract: image.workerContract || '',
+              smokeCommand: image.smokeCommand,
+            }));
+
+          if (images.length === 0) {
+            throw new Error('containers/images.json does not declare release images.');
+          }
+
+          process.stdout.write(`matrix=${JSON.stringify({ include: images })}\n`);
+          NODE
+
+  publish-container-images:
+    name: Publish ${{ matrix.id }} image
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs:
+      - release-preflight
+      - l0-l2
+      - nano-core-e2e
+      - smoke
+      - container-image-matrix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.container-image-matrix.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: image
+        env:
+          IMAGE_ID: ${{ matrix.id }}
+          IMAGE_KIND: ${{ matrix.kind }}
+          IMAGE_REPOSITORY: ${{ matrix.repository }}
+          WORKER_CONTRACT: ${{ matrix.workerContract }}
+          WORKER_RUNTIME: ${{ matrix.runtime }}
+        run: |
+          node <<'NODE' >> "${GITHUB_OUTPUT}"
+          const owner = process.env.GITHUB_REPOSITORY_OWNER.toLowerCase();
+          const repository = process.env.IMAGE_REPOSITORY;
+          const refName = process.env.GITHUB_REF_NAME;
+          const version = refName.replace(/^v/i, '');
+          const versionTag = `v${version}`;
+          const image = `ghcr.io/${owner}/${repository}`;
+          const shortSha = process.env.GITHUB_SHA.slice(0, 12);
+          const tags = [`${image}:${versionTag}`, `${image}:${version}`, `${image}:sha-${shortSha}`];
+          const labels = [
+            `org.opencontainers.image.title=${repository}`,
+            `org.opencontainers.image.description=OpenKit ${process.env.IMAGE_ID} release image`,
+            `org.opencontainers.image.source=${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}`,
+            `org.opencontainers.image.revision=${process.env.GITHUB_SHA}`,
+            `org.opencontainers.image.version=${version}`,
+            `org.opencontainers.image.created=${new Date().toISOString()}`,
+            'org.opencontainers.image.licenses=NOASSERTION',
+            `org.openkit.image.id=${process.env.IMAGE_ID}`,
+            `org.openkit.image.kind=${process.env.IMAGE_KIND}`,
+          ];
+
+          if (!version.includes('-')) {
+            tags.push(`${image}:latest`);
+          }
+          if (process.env.WORKER_RUNTIME) {
+            labels.push(`org.openkit.worker.runtime=${process.env.WORKER_RUNTIME}`);
+          }
+          if (process.env.WORKER_CONTRACT) {
+            labels.push(`org.openkit.worker.contract=${process.env.WORKER_CONTRACT}`);
+          }
+
+          process.stdout.write(`image=${image}\n`);
+          process.stdout.write('tags<<EOF\n');
+          process.stdout.write(`${tags.join('\n')}\n`);
+          process.stdout.write('EOF\n');
+          process.stdout.write('labels<<EOF\n');
+          process.stdout.write(`${labels.join('\n')}\n`);
+          process.stdout.write('EOF\n');
+          NODE
+
+      - name: Build smoke image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          load: true
+          labels: ${{ steps.image.outputs.labels }}
+          tags: ${{ steps.image.outputs.image }}:ci-smoke-${{ github.run_id }}-${{ matrix.id }}
+
+      - name: Smoke image
+        env:
+          SMOKE_TAG: ${{ steps.image.outputs.image }}:ci-smoke-${{ github.run_id }}-${{ matrix.id }}
+          SMOKE_COMMAND: ${{ matrix.smokeCommand }}
+        run: docker run --rm "${SMOKE_TAG}" "${SMOKE_COMMAND}"
+
+      - name: Publish image
+        id: publish
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platforms }}
+          push: true
+          labels: ${{ steps.image.outputs.labels }}
+          tags: ${{ steps.image.outputs.tags }}
+
+      - name: Summarize image digest
+        run: |
+          {
+            echo "### ${{ matrix.id }}"
+            echo ""
+            echo "- Image: \`${{ steps.image.outputs.image }}\`"
+            echo "- Digest: \`${{ steps.publish.outputs.digest }}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Write image release notes
+        env:
+          IMAGE_TAGS: ${{ steps.image.outputs.tags }}
+        run: |
+          mkdir -p release-notes
+          {
+            echo "### ${{ matrix.id }}"
+            echo ""
+            echo "- Image: \`${{ steps.image.outputs.image }}\`"
+            echo "- Digest: \`${{ steps.publish.outputs.digest }}\`"
+            echo "- Tags:"
+            while IFS= read -r tag; do
+              echo "  - \`${tag}\`"
+            done <<< "${IMAGE_TAGS}"
+          } > "release-notes/${{ matrix.id }}.md"
+
+      - name: Upload image release notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-image-${{ matrix.id }}
+          path: release-notes/${{ matrix.id }}.md
+          if-no-files-found: error
+
+  github-release:
+    name: GitHub Release notes
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs:
+      - publish-container-images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download image release notes
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-image-*
+          path: release-notes
+          merge-multiple: true
+
+      - name: Create release notes
+        run: |
+          {
+            echo "# OpenKit ${GITHUB_REF_NAME}"
+            echo ""
+            echo "- Source commit: \`${GITHUB_SHA}\`"
+            echo "- Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo ""
+            echo "## Images"
+            echo ""
+            cat release-notes/*.md
+            echo ""
+            echo "## Release Gate"
+            echo ""
+            echo "- L0-L2 static, unit, and contract verification passed."
+            echo "- L3 NanoCore e2e passed."
+            echo "- L5 smoke passed."
+            echo "- Release image build, smoke, and GHCR publish passed."
+            echo ""
+            echo "## Manual Gates"
+            echo ""
+            echo "- L4 Web e2e and L6 story acceptance remain manual confidence gates for this release policy."
+          } > release-notes.md
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes-file release-notes.md
+          else
+            gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --verify-tag --title "${GITHUB_REF_NAME}" --notes-file release-notes.md
+          fi

@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "mode": "local",
+  "auth": {
+    "enabled": false,
+    "provider": "better-auth",
+    "localModeUserId": "user_local"
+  },
+  "data": {
+    "layoutVersion": 1
+  },
+  "defaults": {
+    // If unset, NanoCore has no default provider; this is not an error.
+    // Core and gateway defaults may intentionally point to different provider instances.
+    // "coreProviderId": "openrouter",
+    // "coreModel": "openai/gpt-5.1",
+    // "gatewayProviderId": "openrouter",
+    // "gatewayModel": "openai/gpt-5.1",
+    "agentId": "agent_codex_host"
+  },
+  "gateway": {
+    "openaiCompatible": {
+      "enabled": true,
+      "route": "/v1"
+    }
+  },
+  "diagnostics": {
+    "redactSecrets": true,
+    "emitConfigOrigins": true
+  },
+  "extensions": {}
+}

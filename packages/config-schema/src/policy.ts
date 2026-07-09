@@ -1,0 +1,97 @@
+/**
+ * Config kinds represented by schema and policy catalogs.
+ */
+export type ConfigCatalogKind =
+  | 'server'
+  | 'provider'
+  | 'agent'
+  | 'workspace'
+  | 'data-source'
+  | 'user'
+  | 'effective';
+
+/**
+ * Config policy catalog entry served to tools and UI.
+ */
+export interface ConfigPolicyCatalogEntry {
+  /** Config kind that owns this path. */
+  kind: ConfigCatalogKind;
+  /** JSON path for the governed field. */
+  path: string;
+  /** Config layer that owns the field. */
+  owner: 'server' | 'workspace' | 'user' | 'request';
+  /** Merge policy used by the effective-config resolver. */
+  merge: 'replace' | 'deep-merge' | 'append' | 'intersection' | 'deny-wins' | 'min-privilege';
+  /** Workspace override rule. */
+  workspaceOverride: 'allowed' | 'restrict-only' | 'forbidden';
+  /** Future user override rule. */
+  userOverride: 'allowed' | 'within-workspace-policy' | 'restrict-only' | 'forbidden';
+  /** Request override rule. */
+  requestOverride: 'allowed' | 'within-effective-policy' | 'forbidden';
+  /** Runtime reload class. */
+  reloadClass: 'hot-swappable' | 'session-scoped' | 'restart-required';
+  /** Secret handling policy. */
+  secretPolicy: 'no-secret' | 'secret-ref-only';
+  /** Human-readable entry summary. */
+  summary: string;
+}
+
+const POLICY_CATALOG: ConfigPolicyCatalogEntry[] = [
+  {
+    kind: 'server',
+    path: '$.server',
+    owner: 'server',
+    merge: 'replace',
+    workspaceOverride: 'forbidden',
+    userOverride: 'forbidden',
+    requestOverride: 'forbidden',
+    reloadClass: 'restart-required',
+    secretPolicy: 'no-secret',
+    summary: 'Server networking and process configuration is server-owned.',
+  },
+  {
+    kind: 'server',
+    path: '$.providers',
+    owner: 'server',
+    merge: 'replace',
+    workspaceOverride: 'forbidden',
+    userOverride: 'forbidden',
+    requestOverride: 'forbidden',
+    reloadClass: 'hot-swappable',
+    secretPolicy: 'secret-ref-only',
+    summary: 'Provider supply is server-owned and can be selected by lower layers only by policy.',
+  },
+  {
+    kind: 'workspace',
+    path: '$.workspace.roots',
+    owner: 'workspace',
+    merge: 'replace',
+    workspaceOverride: 'allowed',
+    userOverride: 'forbidden',
+    requestOverride: 'forbidden',
+    reloadClass: 'session-scoped',
+    secretPolicy: 'no-secret',
+    summary: 'Workspace roots define host-local directories for new worker sessions.',
+  },
+  {
+    kind: 'data-source',
+    path: '$.sources',
+    owner: 'workspace',
+    merge: 'replace',
+    workspaceOverride: 'allowed',
+    userOverride: 'forbidden',
+    requestOverride: 'forbidden',
+    reloadClass: 'session-scoped',
+    secretPolicy: 'secret-ref-only',
+    summary: 'Workspace data sources declare non-secret locators and vault grant references.',
+  },
+];
+
+/**
+ * Returns the config policy catalog.
+ *
+ * @returns Immutable policy catalog entries.
+ */
+export function getConfigPolicyCatalog(): readonly ConfigPolicyCatalogEntry[] {
+  return POLICY_CATALOG;
+}

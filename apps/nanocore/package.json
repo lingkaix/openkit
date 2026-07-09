@@ -1,0 +1,51 @@
+{
+  "name": "@openkit/nanocore",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "data-root:restore": "tsx scripts/restore-data-root.ts",
+    "openapi:generate": "tsx scripts/generate-openapi.ts",
+    "openapi:validate": "tsx scripts/validate-openapi.ts",
+    "openapi:check": "pnpm run openapi:generate && pnpm run openapi:validate && git diff --exit-code -- openapi/app-api.openapi.json",
+    "test:e2e": "pnpm run build && vitest run --config vitest.e2e.config.ts",
+    "test:e2e:smoke": "pnpm run build && vitest run --config vitest.e2e.smoke.config.ts",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome check --write ."
+  },
+  "dependencies": {
+    "@better-auth/drizzle-adapter": "^1.6.11",
+    "@earendil-works/pi-ai": "0.80.3",
+    "@hono/node-server": "^1.19.14",
+    "@opencode-ai/sdk": "^1.15.4",
+    "@openkit/app-api-schemas": "workspace:*",
+    "@openkit/config-schema": "workspace:*",
+    "@openkit/openshell-schema-snapshot": "workspace:*",
+    "@openkit/policy-kernel": "workspace:*",
+    "@openkit/protocol": "workspace:*",
+    "@openkit/worker-protocol": "workspace:*",
+    "ajv": "^8.20.0",
+    "better-auth": "^1.6.11",
+    "better-sqlite3": "^12.10.0",
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.12.14",
+    "jsonc-parser": "^3.3.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@hyperjump/json-schema": "^1.17.6",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20.11.17",
+    "@vitest/coverage-v8": "4.1.4",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.7.1",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.4"
+  }
+}

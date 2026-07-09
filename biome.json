@@ -1,0 +1,73 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "style": {
+        "useImportType": "error",
+        "noNonNullAssertion": "off"
+      },
+      "suspicious": {
+        "noExplicitAny": "warn"
+      }
+    }
+  },
+  "formatter": {
+    "enabled": true,
+    "formatWithErrors": false,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100,
+    "lineEnding": "lf"
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "jsxQuoteStyle": "double",
+      "trailingCommas": "es5",
+      "semicolons": "always"
+    }
+  },
+  "json": {
+    "formatter": {
+      "enabled": true,
+      "indentWidth": 2
+    }
+  },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    }
+  },
+  "files": {
+    "includes": [
+      "**",
+      "!**/node_modules",
+      "!**/dist",
+      "!**/build",
+      "!**/.next",
+      "!**/out",
+      "!**/.turbo",
+      "!**/coverage",
+      "!**/test-results",
+      "!**/playwright-report",
+      "!apps/nanocore/data",
+      "!**/temp",
+      "!apps/nanocore/openapi/app-api.openapi.json",
+      "!apps/nanocore/openapi/oas-3.1-schema-2022-10-07.json",
+      "!packages/models-dev-catalog/snapshots/**/api.json",
+      "!**/packages/protocol/generated",
+      "!**/packages/codex-app-server-schema/generated-schema",
+      "!**/*.min.js",
+      "!**/*.bundle.js"
+    ]
+  }
+}

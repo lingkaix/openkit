@@ -1,0 +1,55 @@
+{
+  "sourceUrl": "https://models.dev/api.json",
+  "sourceProject": "https://github.com/anomalyco/models.dev",
+  "version": "2026-05-29",
+  "refreshedAt": "2026-05-29",
+  "checksumSha256": "eae88010b2a0c33a1c011cfef29f90c2017c5e382851f8be18447b7018a2981f",
+  "maintenanceNote": "Vendored for OpenKit provider-template traceability. Refresh only through explicit maintenance work and review the snapshot diff before updating templates.",
+  "piAiReconciliation": {
+    "piAiVersion": "0.80.3",
+    "priceToleranceRatio": 0.05,
+    "providers": [
+      {
+        "modelsDevProviderId": "anthropic",
+        "piAiProviderId": "anthropic"
+      },
+      {
+        "modelsDevProviderId": "google",
+        "piAiProviderId": "google",
+        "modelIds": ["gemini-2.5-pro"]
+      },
+      {
+        "modelsDevProviderId": "openrouter",
+        "piAiProviderId": "openrouter",
+        "modelIds": ["openai/gpt-5.1"]
+      }
+    ]
+  },
+  "providerMappings": {
+    "openai": {
+      "templateFile": "apps/nanocore/data-templates/config/providers/openai-default.provider.jsonc",
+      "templateProviderId": "openai",
+      "modelsDevProviderId": "openai"
+    },
+    "openrouter": {
+      "templateFile": "apps/nanocore/data-templates/config/providers/openrouter-default.provider.jsonc",
+      "templateProviderId": "openrouter",
+      "modelsDevProviderId": "openrouter"
+    },
+    "xai": {
+      "templateFile": "apps/nanocore/data-templates/config/providers/xai-grok-default.provider.jsonc",
+      "templateProviderId": "xai",
+      "modelsDevProviderId": "xai"
+    },
+    "google": {
+      "templateFile": "apps/nanocore/data-templates/config/providers/google-gemini-default.provider.jsonc",
+      "templateProviderId": "google",
+      "modelsDevProviderId": "google"
+    },
+    "openai-compatible-custom": {
+      "templateFile": "apps/nanocore/data-templates/config/providers/openai-compatible-custom.provider.jsonc",
+      "templateProviderId": "openai-compatible-custom",
+      "modelsDevProviderId": null
+    }
+  }
+}

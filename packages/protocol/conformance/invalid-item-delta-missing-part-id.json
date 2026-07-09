@@ -1,0 +1,11 @@
+{
+  "protocolVersion": "0.3.0",
+  "schema": "item-delta",
+  "data": {
+    "type": "item-delta",
+    "itemId": "0190f4c8-0017-7abc-8def-000000000017",
+    "itemType": "reasoning",
+    "deltaKind": "indexed-text-delta",
+    "delta": "Missing part id."
+  }
+}

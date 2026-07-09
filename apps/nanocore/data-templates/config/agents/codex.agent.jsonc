@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "id": "agent_codex_host",
+  "displayName": "Codex Agent",
+  "mode": "local",
+  "runtime": {
+    "kind": "codex",
+    "adapter": "codex-app-server",
+    "version": "0.0.2"
+  },
+  "deployment": {
+    "local": {
+      "command": "codex",
+      "args": ["app-server", "--listen", "stdio://"],
+      "cwdPolicy": "workspace"
+    }
+  },
+  "provider": {
+    "ref": "openai",
+    "model": "gpt-5.1"
+  },
+  "profiles": [
+    {
+      "id": "default",
+      "instructionsRef": "codex",
+      "skills": []
+    }
+  ],
+  "defaultProfileId": "default",
+  "skills": [],
+  "workspace": {
+    "root": "."
+  },
+  "readiness": {
+    "status": "unknown",
+    "message": "Codex binary and login state are checked at runtime."
+  },
+  "extensions": {}
+}

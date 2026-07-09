@@ -1,0 +1,167 @@
+# Worker Sandbox Freedom Policy
+
+Status: Accepted
+Implementation: Implemented
+
+## Summary
+
+OpenKit worker agents run in a sandbox so they can use a rich development environment while Core keeps filesystem, network, credential, audit, and review boundaries under control.
+
+The target rule is: process execution is broadly available inside the sandbox, filesystem and network access are constrained, credentials are explicit user-supplied injections, and future capability presets are convenience templates over these lower-level controls rather than the only way to grant access.
+
+## Owns
+
+- Worker sandbox freedom principles for process execution, filesystem access, network access, and user-provided secret injection.
+- The relationship between raw sandbox policy controls, Agent Environment Package policy intent, OpenShell policy materialization, and future capability presets.
+- The first product rule for user-configurable filesystem and network allowlists in worker sandbox creation.
+
+## Does Not Own
+
+- The full Capability Catalog implementation.
+- Organization role management, workspace admin workflows, or enterprise policy delegation.
+- Complete network gateway metering, HTTP method filtering, and payload inspection.
+- Provider-specific API semantics beyond credential and endpoint attachment.
+- Replacement of the governed MCP, knowledge, artifact, diagnostic, and inference capability planes.
+
+## Core References
+
+- `docs/core/sandbox.md`
+- `docs/core/agent-capability.md`
+- `docs/core/agent-supply.md`
+- `docs/core/permissions.md`
+- `docs/core/vault.md`
+- `docs/specs/20260703-worker_agent_capability.md`
+- `docs/specs/20260704-worker_mcp_tool_supply.md`
+- `docs/specs/20260616-agent_environment_package.md`
+- OpenShell Community base sandbox policy: `https://github.com/NVIDIA/OpenShell-Community/blob/main/sandboxes/base/policy.yaml`
+
+## Principles
+
+- The sandbox exists to give the worker agent a useful environment with real tools, not to reduce it to a narrow remote procedure executor.
+- Process execution is not the primary security boundary for ordinary developer tools; filesystem, network, credentials, resource limits, and review gates carry the main containment responsibility.
+- Network egress remains deny-by-default and must be allowlisted by host, port, protocol, access level, and where the backend supports it, binary path.
+- Filesystem access remains bounded by declared read-only and read-write roots, with the worker's own sandbox workspace and temporary directories available by default.
+- User-provided secrets may be injected into worker sessions, but secret values must not be persisted into AEP snapshots, prompts, item payloads, context packages, audit rows, normal workspace files, or sandbox snapshots.
+- Capability presets should make common grants easy and reviewable, but they should not be the only long-term mechanism for expressing sandbox access.
+- Backend-native policy files are materialization outputs and evidence; NanoCore-owned records remain the product source of truth.
+
+## Decision
+
+OpenKit should move worker sandbox execution toward a permissive process model and constrained data/egress model.
+
+For process execution, the worker should be able to use the normal tools installed inside the selected sandbox image, including shell, language runtimes, package tools, Git tools, GitHub CLI, search tools, build tools, and test runners, unless a specific class is blocked by backend policy or image composition.
+
+For filesystem access, the worker may read the image-provided runtime directories that are safe to expose, may write to sandbox workspace and temporary directories, and may access user-declared workspace roots according to explicit read-only or read-write grants.
+
+For network access, the worker may only connect to declared allowlisted endpoints and Core-projected local endpoints such as worker control, capability, and inference routes.
+
+For credentials, users may provide arbitrary secrets for a worker session through explicit injection declarations, but the injection must carry a target path or environment key, visibility class, intended consumer, scope, lifetime, and redaction policy.
+
+## OpenShell Baseline
+
+OpenShell Community base `policy.yaml` is the closest baseline for the first implementation shape.
+
+The upstream base policy uses filesystem sections for read-only and read-write paths, configures the process user and group as `sandbox`, and expresses network access through named `network_policies` that map allowed binaries to allowed endpoints.
+
+That baseline supports the OpenKit direction because it does not require a narrow global process allowlist for every executable; instead it constrains filesystem reach and network egress while allowing named endpoint policies for tools such as Git, GitHub CLI, package managers, and agent runtimes.
+
+OpenKit should not copy the upstream policy verbatim as a product contract, but it should use the same practical shape: a useful base image, broad local tool use, default-deny network, explicit endpoint grants, and constrained filesystem access.
+
+## Process Model
+
+Process execution inside the sandbox should default to available.
+
+The worker image owns which binaries exist.
+
+OpenKit policy may block or omit dangerous classes such as privilege escalation tools, daemon control tools, host mount tools, host device access, kernel or container control, and backend management commands.
+
+OpenKit should avoid a user-authored per-binary allowlist as the default product model because it makes normal development workflows brittle and shifts attention away from the stronger filesystem, network, secret, and review controls.
+
+When OpenShell network policy requires binary-to-endpoint binding, OpenKit should still provide binary lists for network policy entries, but those lists should constrain egress rather than define every local command the worker may execute.
+
+## Filesystem Model
+
+Filesystem policy is default bounded, not globally open.
+
+The first baseline should include image/runtime directories as read-only, sandbox workspace and temporary directories as read-write, and user-declared workspace roots with explicit access mode.
+
+Users may add filesystem allowlist entries at worker creation time.
+
+A filesystem allowlist entry should declare id, target path or workspace root reference, access mode, purpose label, and whether the grant is session-scoped or reusable.
+
+Host paths must not be exposed directly in product records.
+
+Writable grants to Core-managed config, server data roots, vault storage, or backend control directories remain blocked unless a future trusted maintenance-agent mode explicitly owns that risk.
+
+## Network Model
+
+Network policy is default-deny.
+
+Users may add network allowlist entries at worker creation time.
+
+A network allowlist entry should declare id, host, port, protocol, access mode, purpose label, and optional binary paths when the backend requires binary-scoped network policy.
+
+Wildcard hosts, unrestricted ports, and private network ranges should be rejected in the first user-facing implementation unless an operator-only escape hatch explicitly enables them.
+
+The first implementation should support HTTPS REST endpoints well and can defer method-level and path-level filtering unless the backend already provides it cheaply.
+
+## Secret Injection Model
+
+Users may inject arbitrary secrets into a worker session because real developer workflows often require service tokens, package registry credentials, deploy keys, API keys, or test credentials that OpenKit cannot pre-model.
+
+Secret injection must be explicit and scoped.
+
+Each secret injection should declare a stable secret id, delivery kind, target environment key or file path, consumer summary, lifetime, redaction behavior, and whether the value is session-only or saved as a reusable vault reference.
+
+The initial implementation may support simple environment variable and runtime file injection before it supports provider profiles or capability presets for every secret class.
+
+Secret values must only pass through backend-private materialization paths and must not appear in durable package snapshots.
+
+## Capability Presets
+
+Capability presets are named templates over sandbox access, provider attachment, gateway routing, approval defaults, and worker instructions.
+
+Examples include `github-read`, `github-gh-rest`, `npm-install`, `python-package-install`, `docs-fetch`, and `browser-test`.
+
+Presets should be useful defaults, not the only access model.
+
+Users should be able to start with direct network, filesystem, and secret declarations, and later replace common combinations with presets when the system has enough real usage evidence.
+
+The full Capability Catalog remains the long-term structure for discoverability, audit summaries, policy defaults, marketplace-style capability reuse, and admin governance.
+
+## User-Facing Creation Shape
+
+The worker creation shape should expose three direct controls before the full catalog exists.
+
+- Filesystem grants: a list of read-only or read-write workspace roots or sandbox paths.
+- Network grants: a list of allowed endpoint declarations.
+- Secret injections: a list of environment-variable or runtime-file secret injections.
+
+The UI or API may also offer presets, but those presets should expand into the same underlying grants.
+
+## Relationship To AEP
+
+AEP should carry the resolved effective sandbox policy intent, not raw user input.
+
+NanoCore should validate user input, normalize it, redact sensitive details, resolve workspace-relative paths, attach vault references, and then write the effective policy intent into the package snapshot.
+
+OpenShell YAML remains backend materialization output derived from the AEP and deployment backend capabilities.
+
+If a backend cannot enforce a declared filesystem, network, or secret-injection requirement, launch should fail before worker execution.
+
+## Invariants
+
+- Worker process execution SHOULD be broad inside the sandbox, subject to image composition and explicit dangerous-class restrictions.
+- Worker network access MUST remain default-deny and allowlist-based.
+- Worker filesystem access MUST remain bounded by declared read-only and read-write grants.
+- User-provided secrets MUST use explicit injection declarations and MUST NOT appear in AEP snapshots, prompts, item payloads, context packages, audit records, usage records, normal workspace files, or sandbox snapshots.
+- Capability presets MUST expand to explicit sandbox, provider, gateway, approval, and instruction effects rather than bypassing them.
+- Backend-native OpenShell policy files MUST remain derived materialization output, not canonical product state.
+
+## Deferred Work
+
+- Full Capability Catalog with reusable presets, admin policy, workspace inheritance, and approval defaults.
+- Method-level and path-level network filtering for arbitrary user-declared endpoints.
+- Organization role policy for who can approve reusable network, filesystem, and secret grants.
+- Dynamic network or filesystem policy updates for already-running worker sessions.
+- Rich secret classes such as provider profiles, refreshable credentials, and scoped credential brokers for every external service.

@@ -1,0 +1,17 @@
+{
+  "name": "@openkit/models-dev-catalog",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./snapshots/*": "./snapshots/*"
+  },
+  "scripts": {
+    "test": "node scripts/validate.mjs",
+    "lint": "biome check .",
+    "format": "biome check --write ."
+  },
+  "dependencies": {
+    "jsonc-parser": "^3.3.1"
+  }
+}

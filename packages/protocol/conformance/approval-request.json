@@ -1,0 +1,16 @@
+{
+  "protocolVersion": "0.3.0",
+  "schema": "approval-request",
+  "data": {
+    "id": "0190f4c8-0006-7abc-8def-000000000006",
+    "workspaceId": "0190f4c8-0001-7abc-8def-000000000001",
+    "threadId": "0190f4c8-0002-7abc-8def-000000000002",
+    "turnId": "0190f4c8-0003-7abc-8def-000000000003",
+    "kind": "permission",
+    "status": "pending",
+    "title": "Run protocol tests",
+    "description": "Allow the agent to run the protocol conformance suite.",
+    "createdAt": "2026-05-15T10:04:00Z",
+    "resolvedAt": null
+  }
+}

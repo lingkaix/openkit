@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "registry": "ghcr.io",
+  "images": [
+    {
+      "id": "app",
+      "repository": "openkit-app",
+      "dockerfile": "containers/app/Dockerfile",
+      "context": ".",
+      "kind": "app",
+      "release": true,
+      "platforms": ["linux/amd64", "linux/arm64"],
+      "smoke": "containers/app/smoke.sh",
+      "smokeCommand": "openkit-app-smoke",
+      "localTag": "openkit/app:dev"
+    },
+    {
+      "id": "worker-codex",
+      "repository": "openkit-worker-codex",
+      "dockerfile": "containers/worker-codex/Dockerfile",
+      "context": ".",
+      "kind": "worker",
+      "runtime": "codex",
+      "release": true,
+      "workerContract": "openkit-worker-v1",
+      "baseImage": "node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5",
+      "platforms": ["linux/amd64", "linux/arm64"],
+      "smoke": "containers/worker-codex/smoke.sh",
+      "smokeCommand": "openkit-worker-codex-smoke",
+      "localTag": "openkit/worker-codex:dev"
+    },
+    {
+      "id": "dev-e2e",
+      "repository": "openkit-dev-e2e",
+      "dockerfile": "containers/dev-e2e/Dockerfile",
+      "context": ".",
+      "kind": "dev",
+      "release": false,
+      "platforms": ["linux/amd64"],
+      "smoke": "containers/dev-e2e/smoke.sh",
+      "smokeCommand": "openkit-dev-e2e-smoke",
+      "localTag": "openkit/dev-e2e:dev"
+    }
+  ]
+}

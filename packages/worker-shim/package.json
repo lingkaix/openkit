@@ -1,0 +1,32 @@
+{
+  "name": "@openkit/worker-shim",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "openkit-codex-shim": "./dist/bin/openkit-codex-shim.js",
+    "openkit-worker-sidecar": "./dist/bin/openkit-worker-sidecar.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check .",
+    "format": "biome check --write ."
+  },
+  "dependencies": {
+    "@openkit/worker-protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@vitest/coverage-v8": "4.1.4",
+    "vitest": "^4.1.4"
+  }
+}

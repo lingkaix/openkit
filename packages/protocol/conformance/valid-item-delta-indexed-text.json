@@ -1,0 +1,12 @@
+{
+  "protocolVersion": "0.3.0",
+  "schema": "item-delta",
+  "data": {
+    "type": "item-delta",
+    "itemId": "0190f4c8-0015-7abc-8def-000000000015",
+    "itemType": "reasoning",
+    "deltaKind": "indexed-text-delta",
+    "partId": "summary",
+    "delta": "Reasoning summary text."
+  }
+}

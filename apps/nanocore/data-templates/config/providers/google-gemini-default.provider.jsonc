@@ -1,0 +1,11 @@
+// Google Gemini provider template.
+// Create the matching vault reference before using this provider.
+// The provider id and starter model are traceable to the vendored models.dev snapshot.
+{
+  "id": "google",
+  "displayName": "Google Gemini",
+  "kind": "direct",
+  "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+  "models": ["gemini-2.5-pro"],
+  "secretRef": "vault://provider_google"
+}

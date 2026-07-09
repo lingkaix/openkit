@@ -1,0 +1,11 @@
+// OpenAI provider template.
+// Create the matching vault reference before using this provider.
+// The provider id and starter model are traceable to the vendored models.dev snapshot.
+{
+  "id": "openai",
+  "displayName": "OpenAI",
+  "kind": "direct",
+  "baseUrl": "https://api.openai.com/v1",
+  "models": ["gpt-5.1"],
+  "secretRef": "vault://provider_openai"
+}

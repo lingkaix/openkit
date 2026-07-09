@@ -1,0 +1,16 @@
+{
+  "name": "@openkit/codex-app-server-schema",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./metadata": "./metadata.json",
+    "./generated-schema/*": "./generated-schema/*"
+  },
+  "scripts": {
+    "generate:schema": "codex app-server generate-json-schema --out generated-schema",
+    "test": "node scripts/validate.mjs",
+    "lint": "biome check .",
+    "format": "biome check --write ."
+  }
+}

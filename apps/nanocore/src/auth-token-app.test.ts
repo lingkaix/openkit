@@ -1,0 +1,516 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { createApp } from './app.js';
+import { listServerAuditEvents } from './audit-events.js';
+import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import { ensureServerBootstrapToken } from './auth/bootstrap-token.js';
+import { type CoreDb, openCoreDb } from './storage/db.js';
+import { applyMigrations } from './storage/migrate.js';
+
+/**
+ * Inserts the canonical owner user used by direct access-token fixtures.
+ *
+ * @param coreDb Core database handles.
+ */
+function insertTokenOwnerUser(coreDb: CoreDb): void {
+  const now = Date.now();
+  coreDb.sqlite
+    .prepare(
+      `INSERT OR IGNORE INTO users (
+        id,
+        display_name,
+        email,
+        email_verified,
+        image,
+        created_at,
+        updated_at,
+        kind,
+        last_seen_at
+      )
+       VALUES ('user_owner', 'Owner', 'owner@example.com', false, NULL, ?, ?, 'human', NULL)`
+    )
+    .run(now, now);
+}
+
+describe('server-mode access-token auth', () => {
+  it('consumes a bootstrap token through the public App API', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-bootstrap-app-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      const bootstrap = ensureServerBootstrapToken(coreDb)!;
+      const app = createApp({
+        auth: {
+          api: { getSession: async () => null },
+          handler: async () => new Response(null, { status: 404 }),
+        },
+        coreDb,
+        dataRoot,
+        mode: 'server',
+      });
+
+      const consumed = await app.request('/api/app/auth/bootstrap/consume', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          displayName: 'Owner',
+          ownerUserId: 'user_owner',
+          token: bootstrap.token,
+          tokenExpiresAt: '2999-01-01T00:00:00.000Z',
+        }),
+      });
+      const consumedBody = (await consumed.json()) as {
+        record: { ownerUserId: string; scope: string };
+        token: string;
+      };
+      const listed = await app.request('/api/app/auth/tokens', {
+        headers: { authorization: `Bearer ${consumedBody.token}` },
+      });
+      const secondConsume = await app.request('/api/app/auth/bootstrap/consume', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          displayName: 'Owner',
+          ownerUserId: 'user_owner',
+          token: bootstrap.token,
+          tokenExpiresAt: '2999-01-01T00:00:00.000Z',
+        }),
+      });
+
+      expect(consumed.status).toBe(201);
+      expect(consumedBody.record).toMatchObject({
+        ownerUserId: 'user_owner',
+        scope: 'server-admin',
+      });
+      expect(consumedBody.token).toMatch(/^okt_/);
+      expect(listed.status).toBe(200);
+      expect(secondConsume.status).toBe(409);
+      expect(JSON.stringify(consumedBody)).not.toContain(bootstrap.token);
+      const auditEvents = listServerAuditEvents(coreDb);
+      expect(auditEvents.map((event) => event.action)).toContain('auth.bootstrap.consume');
+      expect(JSON.stringify(auditEvents)).not.toContain(bootstrap.token);
+      expect(JSON.stringify(auditEvents)).not.toContain(consumedBody.token);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('authenticates protected App API routes with durable OpenKit bearer tokens', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-app-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      insertTokenOwnerUser(coreDb);
+      const issued = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerUserId: 'user_owner',
+        scope: 'server-admin',
+        workspaceIds: [],
+      });
+      const app = createApp({
+        auth: {
+          api: { getSession: async () => null },
+          handler: async () => new Response(null, { status: 404 }),
+        },
+        coreDb,
+        dataRoot,
+        mode: 'server',
+      });
+
+      const denied = await app.request('/api/workspaces');
+      const allowed = await app.request('/api/workspaces', {
+        headers: { authorization: `Bearer ${issued.secret}` },
+      });
+      const listed = await app.request('/api/app/auth/tokens', {
+        headers: {
+          authorization: `Bearer ${issued.secret}`,
+          'x-openkit-client-channel': 'mcp',
+          'x-openkit-client-source': 'desktop-agent',
+        },
+      });
+      const listedBody = (await listed.json()) as {
+        items: Array<{
+          lastUsedAt: string | null;
+          lastUsedChannel: string | null;
+          lastUsedSource: string | null;
+        }>;
+      };
+
+      expect(denied.status).toBe(401);
+      expect(allowed.status).toBe(200);
+      expect(listedBody.items[0]?.lastUsedAt).toEqual(expect.any(String));
+      expect(listedBody.items[0]?.lastUsedChannel).toBe('mcp');
+      expect(listedBody.items[0]?.lastUsedSource).toBe('desktop-agent');
+      expect(await denied.text()).not.toContain(issued.secret);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('allows workspace tokens for seeded workspaces owned by the token owner', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-seeded-workspace-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      insertTokenOwnerUser(coreDb);
+      const admin = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerUserId: 'user_owner',
+        scope: 'server-admin',
+        workspaceIds: [],
+      });
+      const app = createApp({
+        auth: {
+          api: { getSession: async () => null },
+          handler: async () => new Response(null, { status: 404 }),
+        },
+        coreDb,
+        dataRoot,
+        mode: 'server',
+      });
+
+      const listed = await app.request('/api/workspaces', {
+        headers: { authorization: `Bearer ${admin.secret}` },
+      });
+      const listedBody = (await listed.json()) as {
+        items: Array<{ id: string; kind: string }>;
+      };
+      const created = await app.request('/api/app/auth/tokens', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${admin.secret}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          scope: 'workspace-readonly',
+          workspaceIds: [listedBody.items[0]?.id],
+          expiresAt: '2999-01-01T00:00:00.000Z',
+        }),
+      });
+
+      expect(listed.status).toBe(200);
+      expect(listedBody.items[0]).toMatchObject({ kind: 'quick-chat' });
+      expect(created.status).toBe(201);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('issues, lists, and revokes access tokens through server-admin App API routes', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-admin-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      insertTokenOwnerUser(coreDb);
+      const admin = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerUserId: 'user_owner',
+        scope: 'server-admin',
+        workspaceIds: [],
+      });
+      const app = createApp({
+        auth: {
+          api: { getSession: async () => null },
+          handler: async () => new Response(null, { status: 404 }),
+        },
+        coreDb,
+        dataRoot,
+        mode: 'server',
+      });
+      const workspace = (await (
+        await app.request('/api/workspaces', {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${admin.secret}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: 'Rotated token workspace',
+            requestId: '33333333-3333-4333-8333-333333333333',
+          }),
+        })
+      ).json()) as { id: string };
+      const workspaceToken = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerUserId: 'user_owner',
+        scope: 'workspace',
+        workspaceIds: [workspace.id],
+      });
+
+      const created = await app.request('/api/app/auth/tokens', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${admin.secret}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          scope: 'workspace-readonly',
+          workspaceIds: [workspace.id],
+          expiresAt: '2999-01-01T00:00:00.000Z',
+        }),
+      });
+      const createdBody = (await created.json()) as {
+        record: { tokenId: string; scope: string };
+        token: string;
+      };
+      const unowned = await app.request('/api/app/auth/tokens', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${admin.secret}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          scope: 'workspace',
+          workspaceIds: ['ws_missing'],
+          expiresAt: '2999-01-01T00:00:00.000Z',
+        }),
+      });
+      const denied = await app.request('/api/app/auth/tokens', {
+        headers: { authorization: `Bearer ${workspaceToken.secret}` },
+      });
+      const listed = await app.request('/api/app/auth/tokens', {
+        headers: { authorization: `Bearer ${admin.secret}` },
+      });
+      const revoked = await app.request(
+        `/api/app/auth/tokens/${createdBody.record.tokenId}/revoke`,
+        {
+          method: 'POST',
+          headers: { authorization: `Bearer ${admin.secret}` },
+        }
+      );
+
+      expect(created.status).toBe(201);
+      expect(createdBody.token).toMatch(/^okt_/);
+      expect(createdBody.record.scope).toBe('workspace-readonly');
+      expect(unowned.status).toBe(403);
+      expect(denied.status).toBe(403);
+      expect(JSON.stringify(await listed.json())).not.toContain(createdBody.token);
+      await expect(revoked.json()).resolves.toMatchObject({
+        record: { status: 'revoked', tokenId: createdBody.record.tokenId },
+      });
+      const auditEvents = listServerAuditEvents(coreDb);
+      expect(auditEvents.map((event) => event.action)).toEqual(
+        expect.arrayContaining(['auth.token.issue', 'auth.token.revoke'])
+      );
+      expect(JSON.stringify(auditEvents)).not.toContain(admin.secret);
+      expect(JSON.stringify(auditEvents)).not.toContain(createdBody.token);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rotates access tokens through server-admin App API routes', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-rotate-app-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      insertTokenOwnerUser(coreDb);
+      const admin = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerUserId: 'user_owner',
+        scope: 'server-admin',
+        workspaceIds: [],
+      });
+      const app = createApp({
+        auth: {
+          api: { getSession: async () => null },
+          handler: async () => new Response(null, { status: 404 }),
+        },
+        coreDb,
+        dataRoot,
+        mode: 'server',
+      });
+      const workspace = (await (
+        await app.request('/api/workspaces', {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${admin.secret}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: 'Rotated token workspace',
+            requestId: '33333333-3333-4333-8333-333333333333',
+          }),
+        })
+      ).json()) as { id: string };
+      const workspaceToken = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerUserId: 'user_owner',
+        scope: 'workspace',
+        workspaceIds: [workspace.id],
+      });
+
+      const rotated = await app.request(`/api/app/auth/tokens/${workspaceToken.tokenId}/rotate`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${admin.secret}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ graceSeconds: 60 }),
+      });
+      const rotatedBody = (await rotated.json()) as {
+        record: { predecessorTokenId: string; tokenId: string };
+        rotatedRecord: { status: string; tokenId: string };
+        token: string;
+      };
+      const oldStillWorks = await app.request(`/api/workspaces/${workspace.id}`, {
+        headers: { authorization: `Bearer ${workspaceToken.secret}` },
+      });
+      const newWorks = await app.request(`/api/workspaces/${workspace.id}`, {
+        headers: { authorization: `Bearer ${rotatedBody.token}` },
+      });
+
+      expect(rotated.status).toBe(200);
+      expect(rotatedBody.token).toMatch(/^okt_/);
+      expect(rotatedBody.token).not.toBe(workspaceToken.secret);
+      expect(rotatedBody.record.predecessorTokenId).toBe(workspaceToken.tokenId);
+      expect(rotatedBody.rotatedRecord).toMatchObject({
+        status: 'rotated',
+        tokenId: workspaceToken.tokenId,
+      });
+      expect(oldStillWorks.status).toBe(200);
+      expect(newWorks.status).toBe(200);
+      expect(JSON.stringify(rotatedBody)).not.toContain(workspaceToken.secret);
+      const auditEvents = listServerAuditEvents(coreDb);
+      expect(auditEvents.map((event) => event.action)).toContain('auth.token.rotate');
+      expect(JSON.stringify(auditEvents)).not.toContain(admin.secret);
+      expect(JSON.stringify(auditEvents)).not.toContain(workspaceToken.secret);
+      expect(JSON.stringify(auditEvents)).not.toContain(rotatedBody.token);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('enforces workspace-scoped token route gates in the App API path', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-scope-app-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      insertTokenOwnerUser(coreDb);
+      const workspaceToken = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerUserId: 'user_owner',
+        scope: 'workspace',
+        workspaceIds: ['ws_allowed'],
+      });
+      const readonlyToken = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerUserId: 'user_owner',
+        scope: 'workspace-readonly',
+        workspaceIds: ['ws_allowed'],
+      });
+      const app = createApp({
+        auth: {
+          api: { getSession: async () => null },
+          handler: async () => new Response(null, { status: 404 }),
+        },
+        coreDb,
+        dataRoot,
+        mode: 'server',
+      });
+
+      const unbound = await app.request('/api/app/workspaces/ws_denied/dashboard', {
+        headers: { authorization: `Bearer ${workspaceToken.secret}` },
+      });
+      const readonlyWrite = await app.request('/api/workspaces/ws_allowed/threads', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${readonlyToken.secret}` },
+        body: JSON.stringify({ name: 'Blocked thread', requestId: 'req_blocked_thread' }),
+      });
+
+      expect(unbound.status).toBe(403);
+      expect(readonlyWrite.status).toBe(403);
+      expect(await unbound.text()).not.toContain('ws_denied');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('filters workspace collection reads for workspace-scoped tokens', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-workspace-list-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      insertTokenOwnerUser(coreDb);
+      const admin = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerUserId: 'user_owner',
+        scope: 'server-admin',
+        workspaceIds: [],
+      });
+      const app = createApp({
+        auth: {
+          api: { getSession: async () => null },
+          handler: async () => new Response(null, { status: 404 }),
+        },
+        coreDb,
+        dataRoot,
+        mode: 'server',
+      });
+
+      const allowedWorkspace = (await (
+        await app.request('/api/workspaces', {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${admin.secret}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: 'Allowed',
+            requestId: '11111111-1111-4111-8111-111111111111',
+          }),
+        })
+      ).json()) as { id: string };
+      const deniedWorkspace = (await (
+        await app.request('/api/workspaces', {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${admin.secret}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: 'Denied',
+            requestId: '22222222-2222-4222-8222-222222222222',
+          }),
+        })
+      ).json()) as { id: string };
+      const workspaceToken = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerUserId: 'user_owner',
+        scope: 'workspace',
+        workspaceIds: [allowedWorkspace.id],
+      });
+
+      const listed = await app.request('/api/workspaces', {
+        headers: { authorization: `Bearer ${workspaceToken.secret}` },
+      });
+      const listedBody = (await listed.json()) as { items: Array<{ id: string }> };
+      coreDb.sqlite
+        .prepare('DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+        .run(allowedWorkspace.id, 'user_owner');
+      const listedAfterMembershipRemoval = await app.request('/api/workspaces', {
+        headers: { authorization: `Bearer ${workspaceToken.secret}` },
+      });
+      const listedAfterMembershipRemovalBody = (await listedAfterMembershipRemoval.json()) as {
+        items: Array<{ id: string }>;
+      };
+
+      expect(listed.status).toBe(200);
+      expect(listedBody.items.map((workspace) => workspace.id)).toEqual([allowedWorkspace.id]);
+      expect(JSON.stringify(listedBody)).not.toContain(deniedWorkspace.id);
+      expect(listedAfterMembershipRemoval.status).toBe(200);
+      expect(listedAfterMembershipRemovalBody.items).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+});

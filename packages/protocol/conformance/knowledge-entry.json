@@ -1,0 +1,12 @@
+{
+  "protocolVersion": "0.3.0",
+  "schema": "knowledge-entry",
+  "data": {
+    "id": "0190f4c8-0009-7abc-8def-000000000009",
+    "kind": "project-context",
+    "title": "Protocol conformance",
+    "content": "Adapter implementations must round-trip golden protocol fixtures without loss.",
+    "createdAt": "2026-05-15T10:06:00Z",
+    "updatedAt": "2026-05-15T10:06:00Z"
+  }
+}

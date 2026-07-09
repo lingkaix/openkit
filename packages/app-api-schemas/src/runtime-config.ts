@@ -1,0 +1,295 @@
+import {
+  AgentSandboxSummarySchema,
+  AgentSessionStatusSchema,
+  TimestampSchema,
+} from '@openkit/protocol';
+import { z } from 'zod';
+import { addRawSecretIssues } from './raw-secrets.js';
+
+/** Runtime config reload mode selected by the caller. */
+export const RuntimeConfigReloadModeSchema = z.enum(['safe', 'strict']);
+
+/** Runtime config file kind exposed to the admin UI. */
+export const RuntimeConfigFileKindSchema = z.enum([
+  'server',
+  'provider',
+  'agent',
+  'workspace',
+  'data-source',
+]);
+
+/** Materialized workspace root projection captured for worker sessions. */
+export const MaterializedWorkspaceRootSchema = z.object({
+  id: z.string().min(1),
+  sourceKind: z.enum(['host-dir', 'materialized-dir']),
+  sourcePath: z.string().min(1),
+  workerPath: z.string().min(1),
+  access: z.enum(['read-only', 'read-write']),
+});
+
+/** Runtime config change category assigned by NanoCore diffing. */
+export const RuntimeConfigChangeCategorySchema = z.enum([
+  'hot-swappable',
+  'session-scoped',
+  'restart-required',
+  'rejected',
+]);
+
+/** Runtime config change action selected by the reload planner. */
+export const RuntimeConfigChangeActionSchema = z.enum([
+  'applied',
+  'deferred',
+  'requires-restart',
+  'rejected',
+]);
+
+/** Redacted runtime config change summary. */
+export const RuntimeConfigChangeSchema = z.object({
+  path: z.string().min(1),
+  category: RuntimeConfigChangeCategorySchema,
+  action: RuntimeConfigChangeActionSchema,
+  summary: z.string().min(1),
+});
+
+/** One-based source range used for editor diagnostics. */
+export const RuntimeConfigFileDiagnosticRangeSchema = z.object({
+  startLine: z.number().int().positive(),
+  startColumn: z.number().int().positive(),
+  endLine: z.number().int().positive(),
+  endColumn: z.number().int().positive(),
+});
+
+/** Runtime config file diagnostic returned by NanoCore validation. */
+export const RuntimeConfigFileDiagnosticSchema = z.object({
+  fileId: z.string().min(1),
+  severity: z.enum(['error', 'warning', 'info']),
+  code: z.string().min(1),
+  message: z.string().min(1),
+  source: z.string().min(1),
+  jsonPath: z.string().min(1).nullable().default(null),
+  range: RuntimeConfigFileDiagnosticRangeSchema.nullable().default(null),
+});
+
+/** Runtime config file summary returned for the Settings file tree. */
+export const RuntimeConfigFileSummarySchema = z.object({
+  id: z.string().min(1),
+  kind: RuntimeConfigFileKindSchema,
+  path: z.string().min(1),
+  exists: z.boolean(),
+  revision: z.string().min(1).nullable(),
+  updatedAt: TimestampSchema.nullable(),
+});
+
+/** Runtime config file content returned for source editing. */
+export const RuntimeConfigFileSchema = z.object({
+  file: RuntimeConfigFileSummarySchema,
+  content: z.string(),
+});
+
+/** Runtime config file list response payload. */
+export const RuntimeConfigFileListResponseSchema = z.object({
+  files: z.array(RuntimeConfigFileSummarySchema),
+});
+
+/** Runtime config file read response payload. */
+export const RuntimeConfigFileReadResponseSchema = RuntimeConfigFileSchema;
+
+/** Runtime config file write request payload. */
+export const RuntimeConfigFileWriteRequestSchema = z.object({
+  id: z.string().min(1),
+  kind: RuntimeConfigFileKindSchema,
+  content: z.string().optional(),
+  expectedRevision: z.string().min(1).nullable().optional(),
+});
+
+/** Runtime config file write response payload. */
+export const RuntimeConfigFileWriteResponseSchema = z.object({
+  file: RuntimeConfigFileSummarySchema,
+  diagnostics: z.array(RuntimeConfigFileDiagnosticSchema),
+});
+
+/** Redacted runtime config reload warning. */
+export const RuntimeConfigReloadWarningSchema = z.object({
+  code: z.string().min(1),
+  message: z.string().min(1),
+});
+
+/** Runtime config reload plan returned by NanoCore. */
+export const RuntimeConfigReloadPlanSchema = z.object({
+  previousVersion: z.number().int().positive(),
+  nextVersion: z.number().int().positive(),
+  applied: z.array(RuntimeConfigChangeSchema),
+  deferred: z.array(RuntimeConfigChangeSchema),
+  requiresRestart: z.array(RuntimeConfigChangeSchema),
+  rejected: z.array(RuntimeConfigChangeSchema),
+  warnings: z.array(RuntimeConfigReloadWarningSchema),
+});
+
+/** Runtime config reload request payload. */
+export const RuntimeConfigReloadRequestSchema = z.object({
+  dryRun: z.boolean().default(false),
+  mode: RuntimeConfigReloadModeSchema.default('safe'),
+});
+
+/** Runtime config validation draft file payload. */
+export const RuntimeConfigValidationFileSchema = z.object({
+  id: z.string().min(1),
+  content: z.string(),
+});
+
+/** Runtime config validation request payload. */
+export const RuntimeConfigValidationRequestSchema = z.object({
+  files: z.array(RuntimeConfigValidationFileSchema).default([]),
+  mode: RuntimeConfigReloadModeSchema.default('safe'),
+});
+
+/** Summary of the latest successful or failed runtime config reload. */
+export const RuntimeConfigReloadSummarySchema = z.object({
+  at: TimestampSchema,
+  mode: RuntimeConfigReloadModeSchema,
+  dryRun: z.boolean(),
+  previousVersion: z.number().int().positive(),
+  currentVersion: z.number().int().positive(),
+  status: z.enum(['applied', 'dry-run', 'rejected', 'failed']),
+  message: z.string().min(1).nullable().default(null),
+});
+
+/** Recovery choice exposed for active stale runtime config sessions. */
+export const RuntimeConfigStaleSessionRecoveryChoiceSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('inspect'),
+    label: z.string().min(1),
+    recommended: z.literal(true),
+  }),
+  z.object({
+    kind: z.literal('restart_session'),
+    label: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal('request_human'),
+    label: z.string().min(1),
+  }),
+]);
+
+/** Active session running with an older runtime config snapshot. */
+export const RuntimeConfigStaleSessionSchema = z.object({
+  sessionId: z.string().min(1),
+  threadId: z.string().min(1),
+  agentId: z.string().min(1),
+  capturedVersion: z.number().int().positive().nullable(),
+  currentVersion: z.number().int().positive(),
+  reasons: z.array(z.string().min(1)),
+  choices: z.array(RuntimeConfigStaleSessionRecoveryChoiceSchema).min(1).max(10),
+});
+
+/** Redacted runtime config status for diagnostics and reload responses. */
+export const RuntimeConfigStatusSchema = z.object({
+  currentVersion: z.number().int().positive(),
+  loadedAt: TimestampSchema,
+  lastReload: RuntimeConfigReloadSummarySchema.nullable(),
+  lastFailedReload: RuntimeConfigReloadSummarySchema.nullable(),
+  pendingRestart: z.array(RuntimeConfigChangeSchema),
+  staleSessions: z.array(RuntimeConfigStaleSessionSchema),
+});
+
+/** Response payload returned after retiring one stale runtime config session. */
+export const RestartRuntimeConfigStaleSessionResponseSchema = z.object({
+  restarted: z.boolean(),
+  session: z
+    .object({
+      id: z.string().min(1),
+      status: AgentSessionStatusSchema,
+      message: z.string().min(1).nullable(),
+      configVersion: z.number().int().positive().nullable(),
+      workspaceRoots: z.array(MaterializedWorkspaceRootSchema),
+      stale: z.boolean(),
+      sandboxSummary: AgentSandboxSummarySchema.nullable(),
+    })
+    .nullable(),
+});
+
+/** Runtime config reload response payload. */
+export const RuntimeConfigReloadResponseSchema = z
+  .object({
+    status: z.enum(['applied', 'dry-run', 'rejected', 'failed']),
+    runtimeConfig: RuntimeConfigStatusSchema,
+    plan: RuntimeConfigReloadPlanSchema,
+  })
+  .superRefine((value, ctx) => {
+    addRawSecretIssues(value, ctx, []);
+  });
+
+/** Runtime config validation response payload. */
+export const RuntimeConfigValidationResponseSchema = z
+  .object({
+    valid: z.boolean(),
+    diagnostics: z.array(RuntimeConfigFileDiagnosticSchema),
+    plan: RuntimeConfigReloadPlanSchema,
+    runtimeConfig: RuntimeConfigStatusSchema,
+  })
+  .superRefine((value, ctx) => {
+    addRawSecretIssues(value, ctx, []);
+  });
+
+/** Runtime config schema catalog entry exposed to source editors. */
+export const RuntimeConfigSchemaCatalogEntrySchema = z.object({
+  kind: RuntimeConfigFileKindSchema,
+  title: z.string().min(1),
+  schema: z.record(z.string(), z.unknown()),
+});
+
+/** Runtime config schema catalog response payload. */
+export const RuntimeConfigSchemaCatalogResponseSchema = z.object({
+  schemas: z.array(RuntimeConfigSchemaCatalogEntrySchema),
+});
+
+/** Runtime config reload mode selected by the caller. */
+export type RuntimeConfigReloadMode = z.infer<typeof RuntimeConfigReloadModeSchema>;
+/** Runtime config file kind exposed to the admin UI. */
+export type RuntimeConfigFileKind = z.infer<typeof RuntimeConfigFileKindSchema>;
+/** Materialized workspace root projection captured for worker sessions. */
+export type MaterializedWorkspaceRoot = z.infer<typeof MaterializedWorkspaceRootSchema>;
+/** Runtime config change summary. */
+export type RuntimeConfigChange = z.infer<typeof RuntimeConfigChangeSchema>;
+/** Runtime config file diagnostic. */
+export type RuntimeConfigFileDiagnostic = z.infer<typeof RuntimeConfigFileDiagnosticSchema>;
+/** Runtime config file summary. */
+export type RuntimeConfigFileSummary = z.infer<typeof RuntimeConfigFileSummarySchema>;
+/** Runtime config file read model. */
+export type RuntimeConfigFile = z.infer<typeof RuntimeConfigFileSchema>;
+/** Runtime config file list response. */
+export type RuntimeConfigFileListResponse = z.infer<typeof RuntimeConfigFileListResponseSchema>;
+/** Runtime config file read response. */
+export type RuntimeConfigFileReadResponse = z.infer<typeof RuntimeConfigFileReadResponseSchema>;
+/** Runtime config file write request. */
+export type RuntimeConfigFileWriteRequest = z.infer<typeof RuntimeConfigFileWriteRequestSchema>;
+/** Runtime config file write response. */
+export type RuntimeConfigFileWriteResponse = z.infer<typeof RuntimeConfigFileWriteResponseSchema>;
+/** Runtime config reload plan. */
+export type RuntimeConfigReloadPlan = z.infer<typeof RuntimeConfigReloadPlanSchema>;
+/** Runtime config reload request. */
+export type RuntimeConfigReloadRequest = z.infer<typeof RuntimeConfigReloadRequestSchema>;
+/** Runtime config reload summary. */
+export type RuntimeConfigReloadSummary = z.infer<typeof RuntimeConfigReloadSummarySchema>;
+/** Runtime config stale session recovery choice. */
+export type RuntimeConfigStaleSessionRecoveryChoice = z.infer<
+  typeof RuntimeConfigStaleSessionRecoveryChoiceSchema
+>;
+/** Runtime config stale session. */
+export type RuntimeConfigStaleSession = z.infer<typeof RuntimeConfigStaleSessionSchema>;
+/** Runtime config status. */
+export type RuntimeConfigStatus = z.infer<typeof RuntimeConfigStatusSchema>;
+/** Runtime config stale-session restart response. */
+export type RestartRuntimeConfigStaleSessionResponse = z.infer<
+  typeof RestartRuntimeConfigStaleSessionResponseSchema
+>;
+/** Runtime config reload response. */
+export type RuntimeConfigReloadResponse = z.infer<typeof RuntimeConfigReloadResponseSchema>;
+/** Runtime config validation request. */
+export type RuntimeConfigValidationRequest = z.infer<typeof RuntimeConfigValidationRequestSchema>;
+/** Runtime config validation response. */
+export type RuntimeConfigValidationResponse = z.infer<typeof RuntimeConfigValidationResponseSchema>;
+/** Runtime config schema catalog response. */
+export type RuntimeConfigSchemaCatalogResponse = z.infer<
+  typeof RuntimeConfigSchemaCatalogResponseSchema
+>;

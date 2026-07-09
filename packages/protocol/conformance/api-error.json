@@ -1,0 +1,11 @@
+{
+  "protocolVersion": "0.3.0",
+  "schema": "api-error",
+  "data": {
+    "protocolVersion": "0.3.0",
+    "code": "protocol.invalid_fixture",
+    "message": "The submitted conformance fixture is invalid.",
+    "path": ["workspaceId"],
+    "requestId": "0190f4c8-0010-7abc-8def-000000000010"
+  }
+}

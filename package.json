@@ -1,0 +1,57 @@
+{
+  "name": "openkit-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@10.33.3",
+  "description": "OpenKit monorepo root package",
+  "engines": {
+    "node": ">=24 <25",
+    "pnpm": ">=10"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "fmt": "turbo run format",
+    "format:check": "biome check --formatter-enabled=true --linter-enabled=false .",
+    "lint": "turbo run lint",
+    "check:repo": "biome check . && pnpm --filter @openkit/models-dev-catalog test",
+    "lint:staged": "lint-staged",
+    "hooks:install": "lefthook install",
+    "commitmsg:check": "bash scripts/check-commit-msg.sh",
+    "test:unit": "turbo run test && node --test tests/story-runner/*.test.mjs tests/release-preflight.test.mjs",
+    "test:coverage": "pnpm -r --if-present test:coverage",
+    "test:e2e:nano": "pnpm --filter @openkit/nanocore run test:e2e",
+    "test:e2e:web": "pnpm --filter @openkit/web e2e",
+    "test:smoke": "pnpm --filter @openkit/nanocore build && node tests/smoke/nanocore-health-smoke.mjs && pnpm --filter @openkit/web build && node tests/smoke/web-preview-smoke.mjs",
+    "test:stories": "pnpm run test:stories:deterministic",
+    "test:stories:deterministic": "node --test tests/story-runner/*.test.mjs && pnpm run test:stories:mcp && pnpm --filter @openkit/web e2e:stories",
+    "test:stories:mcp": "pnpm --filter @openkit/app-api-schemas build && pnpm --filter @openkit/core-client build && pnpm --filter @openkit/mcp build && pnpm --filter @openkit/nanocore build && node tests/story-runner/goal-mode-mcp-smoke-runner.mjs && node tests/story-runner/task-mode-mcp-smoke-runner.mjs && node tests/story-runner/chat-mode-mcp-smoke-runner.mjs && node tests/story-runner/workspace-portability-mcp-runner.mjs && node tests/story-runner/recovery-mcp-smoke-runner.mjs",
+    "test:stories:real-codex": "node tests/story-runner/real-codex-goal-mode-runner.mjs",
+    "test:stories:real-provider": "node tests/story-runner/pi-ai-real-provider-runner.mjs",
+    "test:stories:real-task-mode": "node tests/story-runner/task-mode-real-worker-runner.mjs",
+    "verify:l0-l2": "pnpm run check:repo && pnpm lint && pnpm typecheck && pnpm run test:unit && pnpm run test:coverage && pnpm build",
+    "verify": "pnpm run verify:l0-l2",
+    "verify:release": "pnpm run verify:l0-l2 && pnpm run test:e2e:nano && pnpm run test:smoke",
+    "verify:full": "pnpm run verify:l0-l2 && pnpm run test:e2e:nano && pnpm run test:e2e:web && pnpm run test:smoke && pnpm run test:stories",
+    "dev": "turbo run dev",
+    "app:run": "bash scripts/docker/run-app.sh",
+    "init": "bash scripts/repo-init.sh",
+    "clean": "turbo run clean && rm -rf node_modules .turbo"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.1",
+    "lefthook": "^2.1.5",
+    "lint-staged": "^16.4.0",
+    "turbo": "^2.3.3",
+    "typescript": "^5.9.3"
+  },
+  "keywords": [
+    "monorepo",
+    "template",
+    "typescript"
+  ],
+  "lint-staged": {
+    "*.{js,jsx,ts,tsx,mjs,cjs,json,jsonc,md,yml,yaml}": "biome check --no-errors-on-unmatched"
+  }
+}

@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workspaceId": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "protocolVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "threadId": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "turnId": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "itemId": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "capabilityCallId": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "permissionDecisionId": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "vaultGrantId": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "requestId": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "agentId": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "agentSessionId": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "category": {
+      "default": "system",
+      "type": "string",
+      "enum": [
+        "command",
+        "approval",
+        "capability",
+        "knowledge",
+        "artifact",
+        "system"
+      ]
+    },
+    "action": {
+      "type": "string",
+      "minLength": 1
+    },
+    "resource": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "succeeded",
+        "failed",
+        "denied",
+        "cancelled"
+      ]
+    },
+    "severity": {
+      "default": "info",
+      "type": "string",
+      "enum": [
+        "info",
+        "warning",
+        "error"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "errorCode": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "createdAt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "occurredAt": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "id",
+    "workspaceId",
+    "threadId",
+    "turnId",
+    "itemId",
+    "capabilityCallId",
+    "permissionDecisionId",
+    "vaultGrantId",
+    "requestId",
+    "agentId",
+    "agentSessionId",
+    "category",
+    "action",
+    "resource",
+    "outcome",
+    "severity",
+    "summary",
+    "errorCode"
+  ],
+  "additionalProperties": false
+}
