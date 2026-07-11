@@ -4,7 +4,8 @@ Use this index to find the repository's reusable setup and operational guides be
 
 ## Available Cookbooks
 
-- [Solid SPA setup](./spa-solid-vite.md): scaffold a browser-only app in `apps/` with Vite, SolidJS, Tailwind CSS, daisyUI, Zod, and Vitest
+- [Claude Design + Claude Code Web UI loop](./claude-design-web-ui-loop.md): the agent-first workflow for turning a design request into finalized Claude Design frames and then implemented Web UI. This is the current guide for Web UI work; see [`docs/specs/20260710-web_ui_rebuild_stack.md`](../specs/20260710-web_ui_rebuild_stack.md) for the target stack (React, Tailwind + Adobe Spectrum tokens, React Aria, A2UI).
+- [Solid SPA setup](./spa-solid-vite.md): **Deprecated for the Web UI default.** Historical scaffold guide for a browser-only Vite + SolidJS + Tailwind + daisyUI app; superseded by the React + Spectrum stack above.
 - [Release](./release.md): cut a semantic version tag from `main`, run the release gate, publish GHCR images, and verify GitHub Release notes
 - [Docker app image](./docker-app.md): build and run the single-container app image with Caddy, NanoCore, and web assets
 - [Docker dev/e2e image](./docker-dev-e2e.md): build and run the debug-only image for NanoCore and web e2e validation

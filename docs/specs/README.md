@@ -75,6 +75,7 @@ Kernel, protocol, and product surfaces:
 - [`20260704-remote_auth_credential_bootstrap.md`](./20260704-remote_auth_credential_bootstrap.md)
 - [`20260704-app_api_openapi_projection.md`](./20260704-app_api_openapi_projection.md)
 - [`20260628-web_product_surface_projection.md`](./20260628-web_product_surface_projection.md)
+- [`20260710-web_ui_rebuild_stack.md`](./20260710-web_ui_rebuild_stack.md)
 - [`20260617-openkit_ai_interface.md`](./20260617-openkit_ai_interface.md)
 
 Workflow, human attention, and verification:

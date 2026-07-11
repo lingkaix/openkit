@@ -70,7 +70,7 @@ The app should maximize useful screen area. Avoid large gutters, nested cards, d
 
 Cards are appropriate for repeated items, modals, compact tool surfaces, and meaningful grouped controls. Do not style every page section as a floating card, and do not put cards inside cards.
 
-Use an 8px maximum radius for cards, panels, theme previews, rows, and buttons unless a daisyUI primitive requires a different radius.
+Use Adobe Spectrum's corner-radius scale as the source for cards, panels, theme previews, rows, and buttons, expressed as token-bridge radius tokens. Keep radii compact and consistent; do not introduce ad-hoc radius literals outside the bridge tokens.
 
 Avoid decorative gradients, blurred ornamental backgrounds, bokeh, floating orbs, and marketing-style hero compositions. The product should feel clear, calm, and operational.
 
@@ -80,15 +80,15 @@ Do not scale font size with viewport width. Letter spacing should stay at `0` un
 
 ## Theme System
 
-OpenKit uses daisyUI semantic theme tokens instead of hard-coded palette classes. The root app applies the selected theme with `data-theme`.
+OpenKit uses semantic theme tokens derived from the Adobe Spectrum design system instead of hard-coded palette classes. Spectrum tokens are the source of visual truth and are projected into a Tailwind theme through the single token-bridge source file described in [`docs/specs/20260710-web_ui_rebuild_stack.md`](docs/specs/20260710-web_ui_rebuild_stack.md). The root app applies the selected theme variant by swapping the active token set (via a root data attribute or class).
 
-All 35 built-in daisyUI themes should be enabled through the CSS plugin configuration with `themes: all`. The Settings page should expose all built-in themes through compact visual preview cards.
+Theme options are the Spectrum-defined variants (light and dark, plus any brand variant), not a large catalog of unrelated themes. The Settings page should expose the available variants through compact visual preview cards.
 
-Theme preview cards should show base surface tone plus primary, secondary, accent, and neutral samples. Each theme option must have an accessible button label.
+Theme preview cards should show base surface tone plus primary, accent, and neutral samples. Each theme option must have an accessible button label.
 
 The selected theme should persist locally and restore on reload. Theme switching belongs in Settings, not in the global workbench header.
 
-Avoid hard-coded color families such as fixed stone or slate text classes in app markup. Use daisyUI semantic tokens such as `base-100`, `base-200`, `base-300`, `base-content`, `primary`, `secondary`, `accent`, `neutral`, `info`, `success`, `warning`, and `error`.
+Avoid hard-coded color families such as fixed stone or slate text classes in app markup. Use only the semantic theme tokens produced by the token bridge, such as the surface/background steps, foreground/text steps, `primary`, `accent`, `neutral`, `info`, `success`, `warning`, and `error`. Raw Spectrum global tokens and hard-coded color, spacing, or radius literals must not appear in component markup.
 
 ## Interaction Patterns
 
@@ -124,7 +124,7 @@ Icon-only controls must include accessible labels. Navigation regions should hav
 
 Collapsible workspace thread controls should use stable generic labels such as Collapse workspace threads and Expand workspace threads so workspace row names remain unambiguous for assistive technology and tests.
 
-Interactive controls should be native buttons, inputs, selects, checkboxes, and textareas where possible. Do not replace standard controls with decorative divs.
+Interactive controls should be native buttons, inputs, selects, checkboxes, and textareas, or the React Aria Components primitives that provide equivalent accessible semantics. Do not replace standard controls with decorative divs.
 
 State indicators should use text plus semantic color, not color alone. Examples include turn status, approval status, agent health, artifact status, and connection state.
 
@@ -134,7 +134,7 @@ Design changes in `apps/web` should be test-first. Tests should cover layout str
 
 Run web lint, typecheck, tests, build, and full repository verification before handoff. Browser checks should cover desktop and mobile overflow, Settings navigation placement, theme preview count, and primary workflow visibility.
 
-Use the repository's existing Solid, daisyUI, Iconify, and Remix Icon patterns. Do not introduce a new design system or icon stack without a specific architectural reason.
+Build on the rebuilt Web UI stack: React with React Aria Components for accessible behavior, Adobe Spectrum tokens projected into Tailwind for styling, and A2UI for generative surfaces, as defined in [`docs/specs/20260710-web_ui_rebuild_stack.md`](docs/specs/20260710-web_ui_rebuild_stack.md). Keep the existing Iconify with Remix Icon pattern for icons. Do not introduce a different design system, component framework, or icon stack without a specific architectural reason recorded in that spec.
 
 ## Current Decisions
 
@@ -148,7 +148,7 @@ Settings uses the primary left sidebar for categories. The main Settings content
 
 The left sidebar has two modes: app workspace navigation and Settings navigation. Do not mix workspace/thread lists with Settings categories in the same sidebar state.
 
-Settings category buttons now switch the main panel between focused sections. General is the default section, Appearance owns the daisyUI theme selector, Configuration owns protocol and debug mode state, Memory owns the memory editor, and Diagnostics owns health counters.
+Settings category buttons now switch the main panel between focused sections. General is the default section, Appearance owns the theme selector (Spectrum light, dark, and any brand variant), Configuration owns protocol and debug mode state, Memory owns the memory editor, and Diagnostics owns health counters.
 
 Diagnostics now owns the protocol snapshot and event timeline. Stale mock workbench pages for agents, artifact previews, approval policy samples, and inspector views are removed until nanocore exposes real product behavior for those surfaces.
 
@@ -161,4 +161,7 @@ Chat replaces the old Home label. It opens a centered Codex-like starter where t
 ## References
 
 - Stitch DESIGN.md overview: https://stitch.withgoogle.com/docs/design-md/overview
-- daisyUI themes documentation: https://daisyui.com/docs/themes/
+- Web UI rebuild stack spec: [`docs/specs/20260710-web_ui_rebuild_stack.md`](docs/specs/20260710-web_ui_rebuild_stack.md)
+- Adobe Spectrum design system: https://spectrum.adobe.com/
+- React Aria Components: https://react-spectrum.adobe.com/react-aria/
+- A2UI generative UI standard: https://a2ui.org/

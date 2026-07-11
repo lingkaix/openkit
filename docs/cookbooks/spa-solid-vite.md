@@ -1,5 +1,7 @@
 # Solid SPA Setup Cookbook
 
+> **Deprecated for the OpenKit Web UI default.** The Web UI is being rebuilt on React + Tailwind with Adobe Spectrum tokens, React Aria Components, and A2UI, with daisyUI removed. See [`docs/specs/20260710-web_ui_rebuild_stack.md`](../specs/20260710-web_ui_rebuild_stack.md) for the target stack and [`claude-design-web-ui-loop.md`](./claude-design-web-ui-loop.md) for the workflow. Do not use this cookbook to scaffold or rebuild `apps/web`. It is retained only as a historical reference and for any unrelated Solid experiment.
+
 Use this cookbook when a repository based on this template needs to add a client-side SPA in `apps/` using Vite, SolidJS with TSX, Tailwind CSS, daisyUI, and Zod.
 
 ## Policy
