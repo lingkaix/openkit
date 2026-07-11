@@ -597,8 +597,11 @@ type HumanAttentionKind =
   | 'pending_input'
   | 'agent_readiness'
   | 'knowledge_review'
-  | 'external_side_effect';
+  | 'external_side_effect'
+  | 'improvement_proposal';
 ```
+
+`improvement_proposal` rows carry full-tier review for `ImprovementProposal` records in `awaiting-review` state under `docs/specs/20260710-self_improvement_evaluation_loop.md`. Requirements for this kind: a row MUST reference the proposal id and its Harness-produced evidence bundle, and a proposal without an attached evidence bundle MUST NOT be projected as reviewable; row actions are approve (promote) and reject, plus one-step rollback surfaced on previously promoted proposals per that spec's post-promotion rules; suite-curation and behavior-change proposals MUST NOT be combined into one row or one decision, preserving that spec's batch-separation invariant. This row kind ships with the self-improvement Phase 2 slice; it is specified here and not yet implemented.
 
 Candidate row fields:
 
@@ -813,3 +816,4 @@ Mitigation: make caps configurable per mode and provide a bounded continue optio
 - [NanoCore Lightweight Agents](./retired/agent-workflow/20260526-nano_core_lightweight_agents.md)
 - [Sustained Mode](./retired/agent-workflow/20260525-sustained_mode_long_running_agent.md)
 - [Worker Turn Reliability Envelope](./20260531-worker_turn_reliability_envelope.md)
+- [Self-Improvement Evaluation Loop](./20260710-self_improvement_evaluation_loop.md)

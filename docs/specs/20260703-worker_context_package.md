@@ -1,7 +1,9 @@
 # Worker Context Package
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
+
+Implementation note: the accepted V1 projection slices are implemented; the Replay Reconstruction contract below is accepted but not yet implemented beyond digest-checked materialization readback.
 
 ## Summary
 
@@ -67,7 +69,7 @@ The current implementation is the accepted V1 context package projection:
 - The current projection policy classifies durable items as user, assistant, artifact, approval, diagnostic, review, goal, tool, knowledge, handoff, or file-change categories. The `knowledge` category covers knowledge-derived context projection items.
 - Current exclusion reasons are item-projection reasons only: `policy_excluded`, `ui_only`, `diagnostic_noise`, `artifact_pointer`, `approval_gate`, `goal_state_not_needed`, `review_context_not_needed`, `empty_content`, `sensitive_content`, and `unsupported_item_type`.
 
-The OpenShell worker backend can upload pre-materialized read-only `materialized-dir` workspace inputs to the declared context slot, so a materialized context package can be mounted into `/openkit/context` through the same session workspace materialization path as other read-only inputs. Automatic root or artifact selection, binary root-file conversion, complete audit-only package traces beyond the readable Knowledge Manager response snapshot, full sensitivity-filter detail beyond raw-secret-shaped material redaction and manifest labels, model-specific budget accounting, citation projection into worker outputs, and full replay reconstruction beyond digest-checked materialization readback remain deferred future work.
+The OpenShell worker backend can upload pre-materialized read-only `materialized-dir` workspace inputs to the declared context slot, so a materialized context package can be mounted into `/openkit/context` through the same session workspace materialization path as other read-only inputs. Automatic root or artifact selection, binary root-file conversion, complete audit-only package traces beyond the readable Knowledge Manager response snapshot, full sensitivity-filter detail beyond raw-secret-shaped material redaction and manifest labels, model-specific budget accounting, and citation projection into worker outputs remain deferred future work. The Replay Reconstruction contract is implemented only up to digest-checked materialization readback; per-entry reconstruction from source references is not started.
 
 ## Context Package Role
 
@@ -334,6 +336,19 @@ The turn-level record is the durable explanation. The runtime-level copy is the 
 
 File-system-first records should remain the durable explanation. SQLite or read-model indexing may accelerate lookup, attachment, search, and debugging, but it must not become the only source of truth for context package meaning.
 
+## Replay Reconstruction
+
+A context package is the replay unit for after-the-fact evaluation: `docs/specs/20260710-self_improvement_evaluation_loop.md` freezes the worker context package, not the workspace, as the faithful reproduction of what the Coordinator assembled. This section makes reconstruction a contract.
+
+Requirements:
+
+- Given a context package id, NanoCore MUST be able to rebuild the worker-visible materialized package and verify it byte-identically against the recorded package digest and per-file manifest digests.
+- Reconstruction resolves in priority order: first the stored materialized snapshot (the existing digest-checked readback path); then, when the snapshot is absent or incomplete, per-entry reconstruction from the manifest's source references — source id, revision or capture record, and content digest — for registered sources, knowledge entries, artifacts, and workspace file refs.
+- Reconstruction MUST be frozen: an entry is rebuilt only from the recorded revision with a matching content digest. Substituting current or newer content for a recorded entry is prohibited, even when the current content is available and the recorded revision is not.
+- Failures are typed per entry (`source_unavailable`, `digest_mismatch`, `revision_unavailable`), and a reconstruction result MUST report entry-level outcomes so consumers can distinguish a fully reproducible package from a drifted one. Partial reconstruction is a reported state, not a silent fallback.
+- Redaction decisions recorded at assembly time (`sensitive_content`, raw-secret-shaped redaction) apply identically at reconstruction; replay MUST NOT expose material the original materialization redacted.
+- Consumers that need long-lived replay (for example harvested `EvalTask` records) SHOULD retain the materialized snapshot rather than rely on live source records; entry-level digest mismatch on reconstruction is the intended drift-detection signal such consumers use to retire stale replay material.
+
 ## Resolved Decisions
 
 - The active context taxonomy belongs inside this package spec; the earlier standalone taxonomy draft is superseded.
@@ -352,7 +367,6 @@ File-system-first records should remain the durable explanation. SQLite or read-
 - Extend explicit workspace-root file materialization into automatic root-file selection.
 - Extend captured text source snippets into derived representations and policy-filtered full package assembly.
 - Extend the first persisted Knowledge Manager trace ledger into complete audit-only package traces with selected and excluded candidates, rationale, full sensitivity decisions beyond first raw-secret redaction, freshness decisions, budgets, and digests.
-- Add replay reconstruction from package ids, source ids, revisions, and digests.
 - Define item-visible versus audit-only projections for context package traces.
 - Define citation projection from context package entries into worker outputs and artifact reviews.
 - Extend first byte/file/token-estimate package budget accounting into model-specific tokenizer, time, and cost accounting.
@@ -381,3 +395,4 @@ File-system-first records should remain the durable explanation. SQLite or read-
 - `docs/specs/20260702-knowledge_store_governance_rules.md`
 - `docs/specs/20260703-worker_agent_capability.md`
 - `docs/specs/20260703-storage_layout_record_ownership.md`
+- `docs/specs/20260710-self_improvement_evaluation_loop.md`

@@ -84,6 +84,11 @@ An export MUST include all workspace-owned file-backed source-of-truth records p
 - workspace metadata and workspace config
 - workspace synchronization records that are file-backed
 
+Two additional workspace-owned record families join export scope the moment their owning specs are implemented; each MUST be added to the exporter and to the export coverage guard in the same change that creates its records:
+
+- the workspace evaluation area — `EvalTask` records, suite snapshots, and their context/fixture material — per `docs/specs/20260710-self_improvement_evaluation_loop.md`
+- workspace-scope Skill Catalog entries, version records, pin records, and referenced version content per `docs/specs/20260711-skill_catalog_versioning_pinning.md` (server-scope catalog entries are deployment configuration and MUST NOT export with a workspace)
+
 Derived SQLite indexes MUST be excluded by default; they are rebuildable from the exported records per `docs/core/storage.md`.
 
 SQLite source-of-truth rows with workspace scope (per the storage layout spec's source-of-truth rules, e.g. workspace-homed audit events, usage records, capability calls, permission decisions, vault reference metadata) MUST be exported as line-oriented record dumps inside the export tree, following the split-envelope rules for line-oriented families. An export MUST NOT contain a SQLite database file, so consuming an export never requires a binary DB dependency.
@@ -233,4 +238,6 @@ Previously open questions are resolved by accepted V1 defaults: the canonical ta
 - `docs/specs/20260704-vault_backend_implementation.md`
 - `docs/specs/20260704-nanocore_bootstrap_readiness.md`
 - `docs/specs/20260529-test_strategy.md`
+- `docs/specs/20260710-self_improvement_evaluation_loop.md`
+- `docs/specs/20260711-skill_catalog_versioning_pinning.md`
 - `docs/nanocore-data-root-config.en.md`

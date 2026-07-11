@@ -1,7 +1,9 @@
 # Knowledge Store Governance Rules
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
+
+Implementation note: the accepted V1 governance slice is implemented; the Provisional Auto-Promotion contract below is not yet implemented.
 
 ## Summary
 
@@ -192,7 +194,7 @@ First-slice field behavior:
 - `status` must distinguish draft, active, archived, superseded, invalid, and deleted states.
 - `scope` must identify workspace scope and any narrower project, personal, thread-derived, or source-derived scope.
 - `source_refs` must exist even when empty; empty source references are allowed only for direct user-authored notes, indexes, or policy-approved seed pages.
-- `review_state` must distinguish unreviewed, user-authored, accepted, rejected, deferred, and needs-review states.
+- `review_state` must distinguish unreviewed, user-authored, accepted, rejected, deferred, needs-review, and provisional states. Provisional is reserved for auto-promoted records under the Provisional Auto-Promotion rules.
 - `sensitivity` must be present even when the value is public or internal.
 - `freshness` must record whether the record is evergreen, time-bound, stale, expired, or unknown.
 - `created_at` and `updated_at` must be machine-readable timestamps.
@@ -457,6 +459,37 @@ Proposals may request:
 
 Each proposal should identify sources, rationale, affected pages, confidence, freshness, and whether user review is required.
 
+## Provisional Auto-Promotion
+
+Some proposal producers — most importantly the Reflector's rubric and lesson distillation under `docs/specs/20260710-self_improvement_evaluation_loop.md` — generate a steady stream of small additive proposals. Requiring human review for every one of them makes the lightweight tier heavier than the mechanism it feeds. This section defines the only path by which a proposal may become active knowledge without a human decision.
+
+Auto-promotion is disabled by default and enabled per workspace by explicit policy. When enabled:
+
+**Eligibility.** A proposal is eligible for auto-promotion only when all of the following hold:
+
+- The diff is strictly additive: it creates new records (or appends new self-contained entries to designated append-target pages) and does not modify, remove, reorder, supersede, or archive any existing record or entry.
+- The proposed records are limited to workspace-schema-designated auto-promotable types. The default eligible set is `Lesson` and rubric-typed records; workspace schemas MAY narrow this set and MUST NOT widen it beyond additive-safe types (`Decision`, `Procedure`, and schema changes are never eligible).
+- Knowledge Manager conflict detection finds no conflict between the proposed content and any existing active record, user-authored record, or user-stated preference.
+- The proposal passes normal save-time validation at `Workspace-schema-valid`.
+
+Any proposal that fails any condition escalates to the normal review path unchanged. Escalation is silent success, not an error.
+
+**Provisional state.** An auto-promoted record enters active retrieval with `review_state: provisional` and MUST carry:
+
+- a TTL expiry timestamp (workspace-configurable; default 30 days)
+- a citation counter target (workspace-configurable; default 3) and current count
+- the producing proposal reference and its evidence links
+
+Provisional records participate in retrieval, worker knowledge capabilities, and context package selection like accepted records, but context package traces MUST label them as provisional so downstream consumers (including the Judge rubric snapshot) can weigh them.
+
+**Confirmation and expiry.** A provisional record becomes `accepted` when a human confirms it through any review surface, or when it has been cited by at least the configured number of distinct subsequent task runs (citation means appearing as a used entry in a context package trace whose turn completed without a redo or rejection outcome). A provisional record that reaches its TTL without confirmation is archived with an `expired-provisional` reason and leaves active retrieval. Expiry is recorded; it is signal for the producing loop, not silent deletion.
+
+**Visibility and rollback.** Every auto-promotion MUST be visible in proposal history and produce an audit event. A one-step rollback (archive the record, reopen the proposal as needs-review) MUST be available to the user for any provisional or provisionally-confirmed record.
+
+**Invariant.** The worst-case outcome of auto-promotion is a temporarily useless provisional suggestion that expires; it can never durably corrupt the workspace preference profile, mutate existing knowledge, or bypass conflict detection.
+
+TTL expiry sweeps and citation-count evaluation run as scheduled Knowledge Manager maintenance; the recurring-schedule mechanism in `docs/specs/20260711-scheduler_recurring_event_triggers.md` is the intended substrate.
+
 ## Knowledge Manager Actions
 
 Knowledge Manager actions fall into three groups.
@@ -656,6 +689,7 @@ Users should be able to inspect and edit the notebook without understanding ever
 - Knowledge Manager may auto-apply only non-semantic low-risk repairs. Meaning-changing or retrieval-affecting repairs require proposals or review.
 - Default worker knowledge search, read, and context package selection require active `Workspace-schema-valid` records unless explicit policy permits lower-conformance source snippets.
 - Minimal context package trace visibility is split into item-visible package and citation summaries, audit-only selected or excluded detail, and restricted evidence for sensitive trace material.
+- Auto-promotion without review exists only through the Provisional Auto-Promotion path: strictly additive diffs of designated types, no conflict-detection hits, provisional review state with TTL and citation-based confirmation, per-workspace opt-in, visible history, and one-step rollback.
 
 ## Deferred / Future Work
 
@@ -674,4 +708,6 @@ Users should be able to inspect and edit the notebook without understanding ever
 - `docs/core/storage.md`
 - `docs/core/agent-capability.md`
 - `docs/specs/20260703-worker_agent_capability.md`
+- `docs/specs/20260710-self_improvement_evaluation_loop.md`
+- `docs/specs/20260711-scheduler_recurring_event_triggers.md`
 - `docs/specs/retired/agent-workflow/20260526-nano_core_lightweight_agents.md`
