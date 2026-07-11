@@ -1,6 +1,6 @@
 name = "builder"
 description = "Implementation-focused project builder for making scoped code, test, documentation, and verification changes in this repository."
-model = "gpt-5.5"
+model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
 
 developer_instructions = """
