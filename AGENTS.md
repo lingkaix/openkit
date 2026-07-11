@@ -93,6 +93,9 @@ Allowed types:
 
 ### 6. Preserve code quality
 
+- Apply high cohesion, low coupling, DRY, KISS, and YAGNI throughout design, implementation, and review; complete the required behavior first, then choose the smallest clear design that preserves correctness, security, and maintainability.
+- Do not add an entity without a present need. Every new type, interface, function, class, module, package, configuration option, or dependency must remove demonstrated complexity, establish a real ownership boundary, or enable required reuse.
+- Do not create abstractions for predicted variants or deduplicate code that only looks similar. Extract shared concepts only when the same knowledge or behavior is already repeated and one owner can represent it clearly.
 - Keep files focused and cohesive.
 - Minimize coupling between modules.
 - Optimize for maintainability and discoverability over file-size targets; do not treat line count as a quality metric.
@@ -102,6 +105,7 @@ Allowed types:
 - Prefer direct, readable flow over unnecessary intermediate states, wrapper functions, and pass-through abstractions.
 - Reuse existing patterns before creating parallel implementations for similar scenarios.
 - Prefer small, reviewable changes.
+- During large feature work, review each completed slice for dead code, duplicate ownership, pass-through layers, speculative flexibility, and fragmented feature paths; simplify before adding the next slice.
 - Refactor when needed to keep boundaries clear, but stay scoped to the task.
 
 ### 7. Keep repository text in English
@@ -116,6 +120,8 @@ Before finishing work, verify:
 - tests were added first for behavior changes
 - maintainability and discoverability were considered before test design
 - post-TDD code-quality review was completed when behavior changed
+- every new entity has a present, concrete justification
+- no dead code, speculative abstraction, duplicate ownership, or unnecessary pass-through layer remains
 - new code is documented
 - specs are updated for non-trivial changes
 - change records are updated
