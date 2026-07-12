@@ -379,7 +379,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     await executor.startTurn(store, turn.id, 'Run in OpenShell', {
-      requestId: 'req_governance_1',
+      requestId: '00000000-0000-4000-8000-000000000201',
       workspaceCwd: '/Users/m5pro/Documents/AI/openkit',
       workspaceRoots: [
         {
@@ -417,11 +417,14 @@ describe('WorkerGovernanceTurnExecutor', () => {
       status: 'completed',
       completedAt,
     });
-    expect(store.getAgentSession('as_governance_1')).toMatchObject({
+    const storedSession = store.getAgentSession('as_governance_1');
+    expect(storedSession).toMatchObject({
+      environmentPackageSnapshotId: `aepsnap_${turn.id}_as_governance_1`,
       policySnapshotId: 'worker_turn_launch_policy',
       sessionCompatibilityKey: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
       status: 'idle',
     });
+    expect(storedSession).not.toHaveProperty('environmentPackageSnapshot');
     expect(
       store
         .listThreadItems('ws_demo', 'th_demo')
@@ -544,7 +547,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         fixture.store,
         fixture.environmentPackage.scope.turnId,
         'Review Git changes without durable workspace storage',
-        { requestId: 'req_git_without_core_db_1', workspaceRoots: [] }
+        { requestId: '00000000-0000-4000-8000-000000000202', workspaceRoots: [] }
       );
 
       expect(fixture.store.getArtifact(fixture.workspaceId, fixture.artifactId)).toMatchObject({
@@ -634,7 +637,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       try {
         await executor.startTurn(store, turn.id, 'Persist actor-scoped review records', {
-          requestId: 'req_actor_scope_1',
+          requestId: '00000000-0000-4000-8000-000000000203',
           workspaceCwd: fixture.repositoryPath,
           workspaceRoots: [
             {
@@ -1040,7 +1043,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     await executor.startTurn(store, turn.id, 'Run with sandbox access', {
-      requestId: 'req_sandbox_access_1',
+      requestId: '00000000-0000-4000-8000-000000000204',
       sandboxAccess: {
         filesystem: [
           {
@@ -1105,7 +1108,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     await expect(
       executor.startTurn(store, turn.id, 'Run in OpenShell', {
-        requestId: 'req_teardown_fail_1',
+        requestId: '00000000-0000-4000-8000-000000000205',
         workspaceRoots: [
           {
             access: 'read-write',
@@ -1152,7 +1155,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     await expect(
       executor.startTurn(store, turn.id, 'Retry OpenShell teardown', {
-        requestId: 'req_teardown_retry_1',
+        requestId: '00000000-0000-4000-8000-000000000206',
         workspaceRoots: [
           {
             access: 'read-write',
@@ -1219,7 +1222,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       await expect(
         executor.startTurn(store, turn.id, 'Fail cleanup status persistence', {
-          requestId: 'req_cleanup_status_1',
+          requestId: '00000000-0000-4000-8000-000000000207',
           workspaceRoots: [
             {
               access: 'read-write',
@@ -1273,7 +1276,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       await expect(
         executor.startTurn(store, turn.id, 'Fail workspace storage open', {
-          requestId: 'req_workspace_open_fail_1',
+          requestId: '00000000-0000-4000-8000-000000000208',
           workspaceRoots: [],
         })
       ).rejects.toThrow();
@@ -1320,7 +1323,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       await expect(
         executor.startTurn(store, turn.id, 'Fail workspace storage migration', {
-          requestId: 'req_workspace_migrate_fail_1',
+          requestId: '00000000-0000-4000-8000-000000000209',
           workspaceRoots: [],
         })
       ).rejects.toThrow('Failed to apply migration workspace_0000_baseline');
@@ -1367,7 +1370,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       await expect(
         executor.startTurn(store, turn.id, 'Fail workspace storage close', {
-          requestId: 'req_workspace_close_fail_1',
+          requestId: '00000000-0000-4000-8000-000000000210',
           workspaceRoots: [],
         })
       ).rejects.toThrow('workspace storage close failed');
@@ -1409,7 +1412,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       await expect(
         executor.startTurn(store, turn.id, 'Fail completed turn persistence', {
-          requestId: 'req_completed_turn_persistence_fail_1',
+          requestId: '00000000-0000-4000-8000-000000000211',
           workspaceRoots: [],
         })
       ).rejects.toThrow('completed turn persistence failed');
@@ -1677,7 +1680,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     await executor.startTurn(store, turn.id, 'Run with source catalog', {
-      requestId: 'req_source_ref_1',
+      requestId: '00000000-0000-4000-8000-000000000212',
       workspaceDataSourceCatalog: {
         schemaVersion: 1,
         sources: [
@@ -1778,7 +1781,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     await executor.startTurn(store, turn.id, 'Run in remote OpenShell', {
-      requestId: 'req_remote_governance_1',
+      requestId: '00000000-0000-4000-8000-000000000213',
       workspaceCwd: '/Users/m5pro/Documents/AI/openkit',
       workspaceRoots: [
         {
@@ -1849,7 +1852,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     await executor.startTurn(store, turn.id, 'Run with scheduler binding', {
       agentSessionId: 'as_governance_binding_1',
-      requestId: 'req_governance_binding_1',
+      requestId: '00000000-0000-4000-8000-000000000214',
       sandboxBindingRef: 'lease-binding:executor_1',
       workspaceRoots: [],
     });
@@ -1928,7 +1931,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await executor.startTurn(store, turn.id, 'Run GitHub MCP in OpenShell', {
-        requestId: 'req_governance_vault_1',
+        requestId: '00000000-0000-4000-8000-000000000215',
         workspaceRoots: [],
       });
 
@@ -2016,7 +2019,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await executor.startTurn(store, turn.id, 'Run Codex auth runtime file', {
-        requestId: 'req_governance_runtime_file_1',
+        requestId: '00000000-0000-4000-8000-000000000216',
         workspaceRoots: [],
       });
 

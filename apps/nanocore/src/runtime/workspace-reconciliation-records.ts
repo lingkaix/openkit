@@ -11,9 +11,6 @@ interface WorkspaceReconciliationRecordRow {
   readonly payload_json: string;
 }
 
-/** Exportable workspace reconciliation record. */
-export interface ExportedWorkspaceReconciliationRecord extends WorkspaceReconciliationRecord {}
-
 interface ResumeWorkspaceRecoveryCollectionInput {
   /** Durable worker output manifests currently available for the workspace. */
   readonly workerOutputManifests?: readonly WorkerOutputManifest[];
@@ -254,7 +251,7 @@ function recoveryDecisionState(
 export function listExportableWorkspaceReconciliationRecords(
   workspaceDb: WorkspaceDb,
   workspaceId: string
-): ExportedWorkspaceReconciliationRecord[] {
+): WorkspaceReconciliationRecord[] {
   return [...listWorkspaceReconciliationRecords(workspaceDb, workspaceId)].reverse();
 }
 
@@ -266,7 +263,7 @@ export function listExportableWorkspaceReconciliationRecords(
  */
 export function importWorkspaceReconciliationRecords(
   workspaceDb: WorkspaceDb,
-  records: readonly ExportedWorkspaceReconciliationRecord[]
+  records: readonly WorkspaceReconciliationRecord[]
 ): void {
   for (const record of records) {
     recordWorkspaceReconciliationRecord(

@@ -851,7 +851,7 @@ function workspaceExportResponse() {
       sourceDeploymentId: 'dep_local',
       workspaceId: 'ws_demo',
       exportCreatedAt: timestamp,
-      exportFormatVersion: 1,
+      exportFormatVersion: 2,
       contentInventory: [
         {
           path: 'records/workspace.json',

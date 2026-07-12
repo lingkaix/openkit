@@ -73,7 +73,7 @@ export function getThreadAgentSession(
   const workspaceRoots = storedSession?.workspaceRoots ?? session.workspaceRoots ?? [];
   const controlSnapshot = resolveWorkerControlSnapshot(
     workerControlGateway,
-    storedSession?.environmentPackageSnapshot?.snapshotId ?? null,
+    storedSession?.environmentPackageSnapshotId ?? null,
     session.id,
     workspaceId,
     threadId

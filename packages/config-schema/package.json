@@ -7,6 +7,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./workspace-export": {
+      "types": "./dist/workspace-export.d.ts",
+      "default": "./dist/workspace-export.js"
     }
   },
   "scripts": {

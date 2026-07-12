@@ -103,7 +103,7 @@ Real subscription inference smoke tests must be opt-in because they can consume 
 OPENKIT_E2E_REAL_CODEX_SUBSCRIPTION=1 pnpm --filter @openkit/nanocore run test:e2e
 ```
 
-Set `OPENKIT_DATA_ROOT` to persist state under `temp/nanocore-data/users/user_local/workspaces/<workspaceId>/store.json` from the repository root.
+Set `OPENKIT_DATA_ROOT` to persist canonical workspace records under `temp/nanocore-data/users/user_local/workspaces/<workspaceId>/` from the repository root.
 
 ## Repository Resources And Goal Mode
 

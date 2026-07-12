@@ -149,7 +149,7 @@ export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPl
     }
 
     const planItem = input.store.createItem({
-      id: `it_goal_plan_${goal.goalId}`,
+      id: `it_goal_plan_${turn.id}`,
       workspaceId: input.workspaceId,
       threadId: input.threadId,
       turnId: turn.id,

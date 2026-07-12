@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import type {
+  KnowledgeClaim,
+  KnowledgeConflict,
   KnowledgeManagerAnswerResponse,
   KnowledgeManagerCallerSchema,
   KnowledgeManagerDraftProposalResponse,
@@ -10,12 +12,7 @@ import type {
 import type { ArtifactSchema } from '@openkit/protocol';
 import type { z } from 'zod';
 import { searchKnowledgeEntries, type WorkspaceKnowledgeEntry } from './knowledge-search.js';
-import type {
-  KnowledgeClaimRecord,
-  KnowledgeConflictRecord,
-  KnowledgeProposalRecord,
-  KnowledgeSourceRecord,
-} from './lib/store.js';
+import type { KnowledgeProposalRecord, KnowledgeSourceRecord } from './lib/store.js';
 
 const KNOWLEDGE_CONTEXT_POLICY_VERSION = 'knowledge-context-v1';
 
@@ -77,9 +74,9 @@ export interface PrepareKnowledgeContextInput {
   /** Candidate knowledge entries from the workspace store. */
   entries: readonly WorkspaceKnowledgeEntry[];
   /** Workspace claim ledger rows available for governed context selection. */
-  claims?: readonly KnowledgeClaimRecord[] | undefined;
+  claims?: readonly KnowledgeClaim[] | undefined;
   /** Workspace conflict ledger rows available for governed context selection. */
-  conflicts?: readonly KnowledgeConflictRecord[] | undefined;
+  conflicts?: readonly KnowledgeConflict[] | undefined;
   /** Explicit artifact records selected by the caller for worker context. */
   artifacts?: readonly Artifact[] | undefined;
   /** Explicit workspace file summaries selected by the caller for worker context. */
@@ -440,6 +437,60 @@ function excerpt(content: string): string {
 }
 
 /**
+ * Computes the stable digest owned by one prepared Knowledge Manager context package.
+ *
+ * @param context Prepared context fields that contribute to the digest.
+ * @returns Stable context package digest.
+ */
+export function createKnowledgeContextPackageDigest(
+  context: Pick<
+    KnowledgeManagerPrepareContextResponse,
+    'workspaceId' | 'caller' | 'query' | 'policy'
+  > & {
+    materials: readonly KnowledgeManagerContextMaterial[];
+    artifacts: readonly Artifact[];
+    workspaceFiles: readonly KnowledgeManagerWorkspaceFile[];
+    workspaceRootFiles: readonly KnowledgeManagerWorkspaceRootFile[];
+    exclusions: readonly KnowledgeManagerContextExclusion[];
+    packageTrace: Pick<
+      KnowledgeManagerContextPackageTrace,
+      | 'selectedKnowledgeEntryIds'
+      | 'selectedArtifactIds'
+      | 'selectedWorkspaceFilePaths'
+      | 'selectedWorkspaceRootFiles'
+      | 'selectedClaimIds'
+      | 'selectedConflictIds'
+      | 'policyVersion'
+      | 'budget'
+    >;
+  }
+): string {
+  return `ctxpkg_sha256_${createHash('sha256')
+    .update(
+      stableStringify({
+        policyVersion: context.packageTrace.policyVersion,
+        policy: context.policy,
+        workspaceId: context.workspaceId,
+        caller: context.caller,
+        query: context.query,
+        selectedKnowledgeEntryIds: context.packageTrace.selectedKnowledgeEntryIds,
+        selectedArtifactIds: context.packageTrace.selectedArtifactIds,
+        selectedWorkspaceFilePaths: context.packageTrace.selectedWorkspaceFilePaths,
+        selectedWorkspaceRootFiles: context.packageTrace.selectedWorkspaceRootFiles,
+        selectedClaimIds: context.packageTrace.selectedClaimIds,
+        selectedConflictIds: context.packageTrace.selectedConflictIds,
+        materials: context.materials,
+        artifacts: context.artifacts,
+        workspaceFiles: context.workspaceFiles,
+        workspaceRootFiles: context.workspaceRootFiles,
+        exclusions: context.exclusions,
+        budget: context.packageTrace.budget,
+      })
+    )
+    .digest('hex')}`;
+}
+
+/**
  * Builds a deterministic package-level trace for prepared knowledge context material.
  *
  * @param traceInput Selected material and original request data.
@@ -467,35 +518,35 @@ function buildKnowledgeContextPackageTrace(
       isSelectedConflict(conflict, traceInput.materials, new Set(selectedClaimIds))
     )
     .map((conflict) => conflict.id);
-  const digestInput = {
-    policyVersion: KNOWLEDGE_CONTEXT_POLICY_VERSION,
-    policy: KNOWLEDGE_CONTEXT_POLICY,
-    workspaceId: traceInput.input.workspaceId,
-    caller: traceInput.input.caller,
-    query: traceInput.input.query,
-    selectedKnowledgeEntryIds,
-    selectedArtifactIds,
-    selectedWorkspaceFilePaths,
-    selectedWorkspaceRootFiles,
-    selectedClaimIds,
-    selectedConflictIds,
-    materials: traceInput.materials,
-    artifacts: traceInput.input.artifacts ?? [],
-    workspaceFiles: traceInput.input.workspaceFiles ?? [],
-    workspaceRootFiles: traceInput.input.workspaceRootFiles ?? [],
-    exclusions: traceInput.exclusions,
-    budget: {
-      requestedLimit: traceInput.requestedLimit,
-      selectedCount: traceInput.materials.length,
-      excludedCount: traceInput.exclusions.length,
-    },
+  const budget = {
+    requestedLimit: traceInput.requestedLimit,
+    selectedCount: traceInput.materials.length,
+    excludedCount: traceInput.exclusions.length,
   };
 
   return {
     contextPackageId: `ctxpkg_${traceInput.input.operationId}`,
-    contextPackageDigest: `ctxpkg_sha256_${createHash('sha256')
-      .update(stableStringify(digestInput))
-      .digest('hex')}`,
+    contextPackageDigest: createKnowledgeContextPackageDigest({
+      workspaceId: traceInput.input.workspaceId,
+      caller: traceInput.input.caller,
+      query: traceInput.input.query,
+      materials: traceInput.materials,
+      artifacts: traceInput.input.artifacts ?? [],
+      workspaceFiles: traceInput.input.workspaceFiles ?? [],
+      workspaceRootFiles: traceInput.input.workspaceRootFiles ?? [],
+      exclusions: traceInput.exclusions,
+      policy: KNOWLEDGE_CONTEXT_POLICY,
+      packageTrace: {
+        selectedKnowledgeEntryIds,
+        selectedArtifactIds,
+        selectedWorkspaceFilePaths,
+        selectedWorkspaceRootFiles,
+        selectedClaimIds,
+        selectedConflictIds,
+        policyVersion: KNOWLEDGE_CONTEXT_POLICY_VERSION,
+        budget,
+      },
+    }),
     policyVersion: KNOWLEDGE_CONTEXT_POLICY_VERSION,
     selectedKnowledgeEntryIds,
     selectedArtifactIds,
@@ -504,11 +555,7 @@ function buildKnowledgeContextPackageTrace(
     selectedClaimIds,
     selectedConflictIds,
     excludedCandidateCount: traceInput.exclusions.length,
-    budget: {
-      requestedLimit: traceInput.requestedLimit,
-      selectedCount: traceInput.materials.length,
-      excludedCount: traceInput.exclusions.length,
-    },
+    budget,
   };
 }
 
@@ -519,10 +566,10 @@ function buildKnowledgeContextPackageTrace(
  * @returns Claims safe to include in a first-slice context package.
  */
 function selectContextClaims(input: {
-  claims: readonly KnowledgeClaimRecord[];
+  claims: readonly KnowledgeClaim[];
   materials: readonly KnowledgeManagerContextMaterial[];
   query: string;
-}): KnowledgeClaimRecord[] {
+}): KnowledgeClaim[] {
   return input.claims.filter((claim) => isSelectedClaim(claim, input.materials, input.query));
 }
 
@@ -535,7 +582,7 @@ function selectContextClaims(input: {
  * @returns True when the claim is accepted and related to selected context.
  */
 function isSelectedClaim(
-  claim: KnowledgeClaimRecord,
+  claim: KnowledgeClaim,
   materials: readonly KnowledgeManagerContextMaterial[],
   query: string
 ): boolean {
@@ -568,10 +615,10 @@ function isSelectedClaim(
  * @returns Unresolved conflicts relevant to the first-slice context package.
  */
 function selectContextConflicts(input: {
-  conflicts: readonly KnowledgeConflictRecord[];
+  conflicts: readonly KnowledgeConflict[];
   materials: readonly KnowledgeManagerContextMaterial[];
-  claims: readonly KnowledgeClaimRecord[];
-}): KnowledgeConflictRecord[] {
+  claims: readonly KnowledgeClaim[];
+}): KnowledgeConflict[] {
   const selectedClaimIds = new Set(input.claims.map((claim) => claim.id));
 
   return input.conflicts.filter((conflict) =>
@@ -588,7 +635,7 @@ function selectContextConflicts(input: {
  * @returns True when the conflict should be carried for worker-visible caution.
  */
 function isSelectedConflict(
-  conflict: KnowledgeConflictRecord,
+  conflict: KnowledgeConflict,
   materials: readonly KnowledgeManagerContextMaterial[],
   selectedClaimIds: ReadonlySet<string>
 ): boolean {

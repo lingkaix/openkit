@@ -210,6 +210,18 @@ describe('ensureLayout', () => {
     expect(() => ensureLayout(root)).toThrow(/legacy workspace memory directory/);
   });
 
+  it('fails closed when a legacy workspace store snapshot exists', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
+    const storePath = join(root, 'users', 'user_1', 'workspaces', 'ws_1', 'store.json');
+    const legacySnapshot = '{"legacy":true}\n';
+
+    mkdirSync(join(root, 'users', 'user_1', 'workspaces', 'ws_1'), { recursive: true });
+    writeFileSync(storePath, legacySnapshot);
+
+    expect(() => ensureLayout(root)).toThrow(/Unsupported legacy workspace store snapshot/);
+    expect(readFileSync(storePath, 'utf8')).toBe(legacySnapshot);
+  });
+
   it('fails closed when canonical database filenames appear under the wrong owner', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
 

@@ -69,9 +69,6 @@ export interface ExportableWorkspaceSyncRecords {
   readonly stagedReviews: readonly ExportedStagedWorkspaceReview[];
 }
 
-/** Workspace sync row-family bundle to replay during import. */
-export interface ImportWorkspaceSyncRecordsInput extends ExportableWorkspaceSyncRecords {}
-
 interface WorkspaceChangeSetRow {
   readonly change_set_id: string;
   readonly workspace_id: string;
@@ -537,7 +534,7 @@ export function listExportableWorkspaceSyncRecords(
  */
 export function importWorkspaceSyncRecords(
   workspaceDb: WorkspaceDb,
-  input: ImportWorkspaceSyncRecordsInput
+  input: ExportableWorkspaceSyncRecords
 ): void {
   const changeSets = input.changeSets.map((changeSet) => WorkspaceChangeSetSchema.parse(changeSet));
   const stagedReviews = input.stagedReviews.map((stagedReview) => {

@@ -183,6 +183,17 @@ describe('turn event routes', () => {
     const workspaceId = 'ws_demo';
     const thread = store.createThread(workspaceId, 'Replay race thread');
     const turn = store.createTurn(workspaceId, thread.id, 'Preserve replay ordering');
+    const assistantItem = store.createItem({
+      id: `it_assistant_${turn.id}`,
+      workspaceId,
+      threadId: thread.id,
+      turnId: turn.id,
+      type: 'assistant-message',
+      status: 'in_progress',
+      text: '',
+      createdAt: turn.startedAt ?? new Date().toISOString(),
+      completedAt: null,
+    });
 
     store.emitTurnEvent(turn.id, {
       event: 'turn.started',
@@ -198,7 +209,7 @@ describe('turn event routes', () => {
       turnId: turn.id,
       data: {
         type: 'item-delta',
-        itemId: `it_assistant_${turn.id}`,
+        itemId: assistantItem.id,
         itemType: 'assistant-message',
         deltaKind: 'text-delta',
         delta: 'Retained replay delta.',
@@ -218,7 +229,7 @@ describe('turn event routes', () => {
       turnId: turn.id,
       data: {
         type: 'item-delta',
-        itemId: `it_assistant_${turn.id}`,
+        itemId: assistantItem.id,
         itemType: 'assistant-message',
         deltaKind: 'text-delta',
         delta: 'Gap replay delta.',

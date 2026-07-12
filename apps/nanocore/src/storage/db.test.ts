@@ -33,8 +33,11 @@ describe('scoped storage databases', () => {
       const tables = listTables(userDb.sqlite);
 
       expect(statSync(userDbPath(dataRoot, 'user_1')).isFile()).toBe(true);
-      expect(tables).toEqual(['schema_migrations']);
-      expect(listMigrationIds(userDb.sqlite)).toEqual(['user_0000_baseline']);
+      expect(tables).toEqual(['idempotency_requests', 'schema_migrations']);
+      expect(listMigrationIds(userDb.sqlite)).toEqual([
+        'user_0000_baseline',
+        'user_0001_idempotency_requests',
+      ]);
     } finally {
       userDb.sqlite.close();
     }
@@ -52,7 +55,6 @@ describe('scoped storage databases', () => {
 
       expect(statSync(workspaceDbPath(dataRoot, 'user_1', 'ws_1')).isFile()).toBe(true);
       expect(tables).toEqual([
-        'agent_environment_package_snapshots',
         'audit_events',
         'backend_workspace_handles',
         'capability_calls',
@@ -62,6 +64,7 @@ describe('scoped storage databases', () => {
         'goal_review_records',
         'goal_tasks',
         'goal_verification_records',
+        'idempotency_requests',
         'mcp_tool_schema_snapshots',
         'pending_user_turns',
         'permission_decisions',
@@ -87,6 +90,7 @@ describe('scoped storage databases', () => {
       expect(listMigrationIds(workspaceDb.sqlite)).toEqual([
         'workspace_0000_baseline',
         'workspace_0001_goal_review_resolution_snapshot',
+        'workspace_0002_idempotency_requests',
       ]);
     } finally {
       workspaceDb.sqlite.close();
@@ -151,7 +155,10 @@ describe('scoped storage databases', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'user_1', 'ws_1');
 
     try {
-      expect(listMigrationIds(userDb.sqlite)).toEqual(['user_0000_baseline']);
+      expect(listMigrationIds(userDb.sqlite)).toEqual([
+        'user_0000_baseline',
+        'user_0001_idempotency_requests',
+      ]);
       expect(listMigrationIds(workspaceDb.sqlite)).toContain('workspace_0000_baseline');
     } finally {
       userDb.sqlite.close();
@@ -172,7 +179,10 @@ describe('scoped storage databases', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'user_1', 'ws_1');
 
     try {
-      expect(listMigrationIds(userDb.sqlite)).toEqual(['user_0000_baseline']);
+      expect(listMigrationIds(userDb.sqlite)).toEqual([
+        'user_0000_baseline',
+        'user_0001_idempotency_requests',
+      ]);
       expect(listMigrationIds(workspaceDb.sqlite)).toContain('workspace_0000_baseline');
     } finally {
       userDb.sqlite.close();

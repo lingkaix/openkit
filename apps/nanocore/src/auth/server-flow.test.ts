@@ -77,11 +77,12 @@ class DelayedServerTurnExecutor implements TurnExecutor {
     context: TurnStartRuntimeContext = { requestId: null, workspaceRoots: [] }
   ): Promise<void> {
     this.startedTurnIds.push(turnId);
+    const turn = store.getTurnById(turnId);
     store.emitTurnEvent(turnId, {
       event: 'turn.started',
       requestId: context.requestId,
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: turn.workspaceId,
+      threadId: turn.threadId,
       turnId,
       data: { type: 'turn-started', turnId, status: 'running' },
     });
@@ -93,8 +94,8 @@ class DelayedServerTurnExecutor implements TurnExecutor {
     store.emitTurnEvent(turnId, {
       event: 'turn.completed',
       requestId: context.requestId,
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: turn.workspaceId,
+      threadId: turn.threadId,
       turnId,
       data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
     });

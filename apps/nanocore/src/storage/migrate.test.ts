@@ -42,7 +42,6 @@ const CORE_TABLES = [
 ];
 
 const WORKSPACE_TABLES = [
-  'agent_environment_package_snapshots',
   'audit_events',
   'backend_workspace_handles',
   'capability_calls',
@@ -52,6 +51,7 @@ const WORKSPACE_TABLES = [
   'goal_review_records',
   'goal_tasks',
   'goal_verification_records',
+  'idempotency_requests',
   'mcp_tool_schema_snapshots',
   'pending_user_turns',
   'permission_decisions',
@@ -225,13 +225,32 @@ describe('storage migrations', () => {
       applyScopedMigrations(workspaceDb);
       applyScopedMigrations(workspaceDb);
 
-      expect(listMigrationIds(userDb)).toEqual(['user_0000_baseline']);
-      expect(listTableNames(userDb)).toEqual(['schema_migrations']);
+      expect(listMigrationIds(userDb)).toEqual([
+        'user_0000_baseline',
+        'user_0001_idempotency_requests',
+      ]);
+      expect(listTableNames(userDb)).toEqual(['idempotency_requests', 'schema_migrations']);
       expect(listMigrationIds(workspaceDb)).toEqual([
         'workspace_0000_baseline',
         'workspace_0001_goal_review_resolution_snapshot',
+        'workspace_0002_idempotency_requests',
       ]);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
+      const idempotencyRequestColumns = [
+        'request_key',
+        'command_name',
+        'request_id',
+        'scope_json',
+        'input_hash',
+        'response_kind',
+        'response_id',
+        'created_at',
+        'expires_at',
+      ];
+      expect(listColumnNames(userDb, 'idempotency_requests')).toEqual(idempotencyRequestColumns);
+      expect(listColumnNames(workspaceDb, 'idempotency_requests')).toEqual(
+        idempotencyRequestColumns
+      );
       expect(listColumnNames(workspaceDb, 'goal_review_records')).toEqual([
         'review_id',
         'workspace_id',

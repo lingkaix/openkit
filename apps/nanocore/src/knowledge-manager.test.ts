@@ -30,6 +30,7 @@ import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
 } from './config/runtime-config.js';
+import { createKnowledgeContextPackageDigest } from './knowledge-manager.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createDemoStore } from './test-support/demo-store.js';
@@ -1181,6 +1182,7 @@ describe('Knowledge Manager answer operation', () => {
         excludedCount: 0,
       },
     });
+    expect(createKnowledgeContextPackageDigest(body)).toBe(body.packageTrace.contextPackageDigest);
 
     const repeatRes = await app.request('/api/app/workspaces/ws_demo/knowledge/manager/context', {
       method: 'POST',

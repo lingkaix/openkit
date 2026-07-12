@@ -117,7 +117,7 @@ All mutating Core projection routes require `requestId`.
 
 `@openkit/core-client` may generate a missing client-side `requestId`, but NanoCore still validates that the final request body includes one.
 
-NanoCore persists an app-local idempotency ledger with the workspace snapshot.
+NanoCore persists command idempotency in the SQLite database that owns the command scope: workspace-scoped commands use that workspace's `workspace.sqlite`, while commands without a workspace scope such as `workspace.create` use the actor's `user.sqlite`.
 
 The target ledger covers `workspace.create`, `workspace.update`, `knowledge.create`, `knowledge.update`, `knowledge.delete`, `thread.create`, `thread.update`, `thread.archive`, `turn.start`, `turn.input.submit`, `turn.interrupt`, `git_push.approval.request`, `approval.respond`, `artifact.metadata.update`, `artifact.review.decide`, and `goal.review.decide`.
 

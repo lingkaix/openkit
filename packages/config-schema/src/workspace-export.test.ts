@@ -31,7 +31,7 @@ function manifest() {
     sourceDeploymentId: 'dep_source',
     workspaceId: 'ws_demo',
     exportCreatedAt: timestamp,
-    exportFormatVersion: 1,
+    exportFormatVersion: 2,
     contentInventory: [
       {
         path: 'records/workspace.json',
@@ -43,7 +43,7 @@ function manifest() {
 }
 
 describe('workspace export manifest schema', () => {
-  it('parses the accepted first-slice workspace-export manifest shape', () => {
+  it('parses the current workspace-export manifest shape', () => {
     expect(WorkspaceExportManifestSchema.parse(manifest()).recordType).toBe('workspace-export');
     expect(parseWorkspaceExportManifest(manifest()).contentInventory[0]?.path).toBe(
       'records/workspace.json'

@@ -335,18 +335,6 @@ describe('action center app API', () => {
         createdAt: timestamp,
         updatedAt: timestamp,
       });
-      store.recordArtifactReviewDecision({
-        artifactId: 'artifact_deferred',
-        workspaceId: 'ws_demo',
-        threadId: thread.id,
-        turnId: turn.id,
-        status: 'deferred',
-        requestId: 'artifact-deferred-review',
-        message: 'Review later.',
-        decidedAt: timestamp,
-        followUpTurnId: null,
-        lifecycle: 'completed',
-      });
       store.createArtifact({
         id: 'artifact_deferred',
         workspaceId: 'ws_demo',
@@ -360,6 +348,18 @@ describe('action center app API', () => {
         content: { format: 'markdown', body: '# Deferred' },
         createdAt: timestamp,
         updatedAt: timestamp,
+      });
+      store.recordArtifactReviewDecision({
+        artifactId: 'artifact_deferred',
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        turnId: turn.id,
+        status: 'deferred',
+        requestId: 'artifact-deferred-review',
+        message: 'Review later.',
+        decidedAt: timestamp,
+        followUpTurnId: null,
+        lifecycle: 'completed',
       });
       store.createKnowledgeProposal({
         id: 'knowledge_proposal_demo',
@@ -734,7 +734,16 @@ describe('action center app API', () => {
       status: 'in_progress',
       userInputRequestId: 'ui_question_route',
       prompt: 'Choose the next action.',
-      questions: [],
+      questions: [
+        {
+          id: 'next_action',
+          header: 'Action',
+          question: 'Which action should run next?',
+          options: null,
+          isOther: true,
+          isSecret: false,
+        },
+      ],
       createdAt: timestamp,
       completedAt: null,
     });

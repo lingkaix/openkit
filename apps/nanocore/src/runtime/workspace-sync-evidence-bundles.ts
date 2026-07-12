@@ -8,9 +8,6 @@ interface WorkspaceSyncEvidenceBundleRow {
   readonly payload_json: string;
 }
 
-/** Exportable workspace synchronization evidence bundle. */
-export interface ExportedWorkspaceSyncEvidenceBundle extends WorkspaceSyncEvidenceBundle {}
-
 /**
  * Persists one durable workspace synchronization evidence bundle.
  *
@@ -75,7 +72,7 @@ export function listWorkspaceSyncEvidenceBundles(
 export function listExportableWorkspaceSyncEvidenceBundles(
   workspaceDb: WorkspaceDb,
   workspaceId: string
-): ExportedWorkspaceSyncEvidenceBundle[] {
+): WorkspaceSyncEvidenceBundle[] {
   return [...listWorkspaceSyncEvidenceBundles(workspaceDb, workspaceId)].reverse();
 }
 
@@ -87,7 +84,7 @@ export function listExportableWorkspaceSyncEvidenceBundles(
  */
 export function importWorkspaceSyncEvidenceBundles(
   workspaceDb: WorkspaceDb,
-  records: readonly ExportedWorkspaceSyncEvidenceBundle[]
+  records: readonly WorkspaceSyncEvidenceBundle[]
 ): void {
   for (const record of records) {
     recordWorkspaceSyncEvidenceBundle(workspaceDb, WorkspaceSyncEvidenceBundleSchema.parse(record));

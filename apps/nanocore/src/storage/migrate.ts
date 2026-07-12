@@ -25,10 +25,18 @@ const workspaceMigrations: MigrationFile[] = [
     id: '0001_goal_review_resolution_snapshot',
     fileName: '0001_workspace_goal_review_resolution_snapshot.sql',
   },
+  {
+    id: '0002_idempotency_requests',
+    fileName: '0001_user_0002_workspace_idempotency_requests.sql',
+  },
 ];
 
 const userMigrations: MigrationFile[] = [
   { id: '0000_baseline', fileName: '0000_user_baseline.sql' },
+  {
+    id: '0001_idempotency_requests',
+    fileName: '0001_user_0002_workspace_idempotency_requests.sql',
+  },
 ];
 
 /**

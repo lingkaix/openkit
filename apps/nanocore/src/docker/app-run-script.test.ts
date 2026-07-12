@@ -1,8 +1,8 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -32,6 +32,22 @@ function runSeedOnly(
       OPENKIT_APP_SEED_ONLY: '1',
     },
   });
+}
+
+/**
+ * Lists data-root files containing one resolved fake secret value.
+ *
+ * @param dataRoot Mounted data root to inspect.
+ * @param secret Fake secret value that must not be copied into persisted state.
+ * @returns Sorted data-root-relative paths containing the value.
+ */
+function findSecretCopies(dataRoot: string, secret: string): string[] {
+  return readdirSync(dataRoot, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => join(entry.parentPath, entry.name))
+    .filter((path) => readFileSync(path).includes(secret))
+    .map((path) => relative(dataRoot, path))
+    .sort();
 }
 
 describe('app run script', () => {
@@ -75,9 +91,11 @@ describe('app run script', () => {
     expect(serverConfig).toContain('"defaultModel": "z-ai/glm-4.5-air:free"');
   });
 
-  it('patches persisted agent environments from the agent provider secretRef env value', async () => {
+  it('does not copy a process-env provider secret into workspace-owned state', async () => {
     const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-app-data-'));
     const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo');
+    const storePath = join(workspaceRoot, 'store.json');
+    const secret = 'fake-provider-secret-from-process-env';
     mkdirSync(join(dataRoot, 'config'), { recursive: true });
     mkdirSync(workspaceRoot, { recursive: true });
     writeFileSync(
@@ -100,53 +118,45 @@ describe('app run script', () => {
         2
       )
     );
-    writeFileSync(
-      join(workspaceRoot, 'store.json'),
-      `${JSON.stringify(
-        {
-          workspaceResources: [
-            [
-              'ws_demo',
-              {
-                agents: [
-                  {
-                    id: 'agent_codex_host',
-                    config: { adapterType: 'codex', environment: {} },
-                  },
-                  {
-                    id: 'agent_opencode_server',
-                    config: { adapterType: 'opencode', environment: {} },
-                  },
-                ],
-              },
-            ],
+    const persistedStore = `${JSON.stringify(
+      {
+        workspaceResources: [
+          [
+            'ws_demo',
+            {
+              agents: [
+                {
+                  id: 'agent_codex_host',
+                  config: { adapterType: 'codex', environment: {} },
+                },
+                {
+                  id: 'agent_opencode_server',
+                  config: { adapterType: 'opencode', environment: {} },
+                },
+              ],
+            },
           ],
-        },
-        null,
-        2
-      )}\n`
-    );
+        ],
+      },
+      null,
+      2
+    )}\n`;
+    writeFileSync(storePath, persistedStore);
 
-    const result = runSeedOnly(dataRoot, [], { OPENROUTER_API_KEY: 'sk-agent-test' });
+    const result = runSeedOnly(dataRoot, [], { OPENROUTER_API_KEY: secret });
 
     expect(result.status).toBe(0);
-    const store = JSON.parse(readFileSync(join(workspaceRoot, 'store.json'), 'utf8'));
-    const agents = store.workspaceResources[0][1].agents;
-    expect(agents[0].config.environment).toMatchObject({
-      CODEX_HOME: '/data/openkit/config/agents/codex-home',
-      OPENROUTER_API_KEY: 'sk-agent-test',
-    });
-    expect(agents[1].config.environment).toMatchObject({
-      OPENAI_API_KEY: 'sk-agent-test',
-      OPENAI_BASE_URL: 'https://openrouter.ai/api/v1',
-      OPENAI_MODEL: 'z-ai/glm-4.5-air:free',
-      OPENROUTER_API_KEY: 'sk-agent-test',
-    });
+    expect(readFileSync(storePath, 'utf8')).toBe(persistedStore);
+    expect(findSecretCopies(dataRoot, secret)).toEqual([]);
   });
 
-  it('loads provider secrets from the data-root secrets env file', async () => {
+  it('does not copy a secrets-file provider secret into workspace-owned state', async () => {
     const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-app-data-'));
     const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo');
+    const secretsPath = join(dataRoot, 'secrets', 'openkit.env');
+    const storePath = join(workspaceRoot, 'store.json');
+    const secret = 'fake-provider-secret-from-env-file';
+    const persistedSecrets = `OPENROUTER_API_KEY='${secret}'\n`;
     mkdirSync(join(dataRoot, 'config'), { recursive: true });
     mkdirSync(join(dataRoot, 'secrets'), { recursive: true });
     mkdirSync(workspaceRoot, { recursive: true });
@@ -169,38 +179,34 @@ describe('app run script', () => {
         2
       )
     );
-    writeFileSync(join(dataRoot, 'secrets', 'openkit.env'), "OPENROUTER_API_KEY='sk-env-file'\n");
-    writeFileSync(
-      join(workspaceRoot, 'store.json'),
-      `${JSON.stringify(
-        {
-          workspaceResources: [
-            [
-              'ws_demo',
-              {
-                agents: [
-                  {
-                    id: 'agent_codex_host',
-                    config: { adapterType: 'codex', environment: {} },
-                  },
-                ],
-              },
-            ],
+    writeFileSync(secretsPath, persistedSecrets);
+    const persistedStore = `${JSON.stringify(
+      {
+        workspaceResources: [
+          [
+            'ws_demo',
+            {
+              agents: [
+                {
+                  id: 'agent_codex_host',
+                  config: { adapterType: 'codex', environment: {} },
+                },
+              ],
+            },
           ],
-        },
-        null,
-        2
-      )}\n`
-    );
+        ],
+      },
+      null,
+      2
+    )}\n`;
+    writeFileSync(storePath, persistedStore);
 
     const result = runSeedOnly(dataRoot, [], { OPENROUTER_API_KEY: '' });
 
     expect(result.status).toBe(0);
-    const store = JSON.parse(readFileSync(join(workspaceRoot, 'store.json'), 'utf8'));
-    expect(store.workspaceResources[0][1].agents[0].config.environment).toMatchObject({
-      CODEX_HOME: '/data/openkit/config/agents/codex-home',
-      OPENROUTER_API_KEY: 'sk-env-file',
-    });
+    expect(readFileSync(storePath, 'utf8')).toBe(persistedStore);
+    expect(readFileSync(secretsPath, 'utf8')).toBe(persistedSecrets);
+    expect(findSecretCopies(dataRoot, secret)).toEqual(['secrets/openkit.env']);
   });
 
   it('rejects existing app provider config that still contains inline api keys', async () => {

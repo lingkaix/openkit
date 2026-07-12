@@ -1675,7 +1675,7 @@ export function registerGoalRoutes({
               goalId: goal.goalId,
               taskId: task.taskId,
               prepared: createDeterministicPreparedGoalTask(task),
-              startWorker: () => ({ workerSessionId: 'deterministic-worker' }),
+              startWorker: () => ({ workerSessionId: null }),
             });
             const timestamp = worker.turn.startedAt ?? new Date().toISOString();
             const evidenceItem = store.createItem({

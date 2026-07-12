@@ -1,9 +1,5 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const nanoCoreRoot = join(repoRoot, 'apps', 'nanocore');
+import { join } from 'node:path';
 
 /**
  * Writes the explicit Demo Workspace fixture used by black-box tests.
@@ -15,9 +11,15 @@ const nanoCoreRoot = join(repoRoot, 'apps', 'nanocore');
 export function seedDemoWorkspaceDataRoot(dataRoot, options = {}) {
   const userId = options.userId ?? 'user_local';
   const workspaceRoot = join(dataRoot, 'users', userId, 'workspaces', 'ws_demo');
+  const quickChatRoot = join(dataRoot, 'users', userId, 'workspaces', 'ws_quick_chat');
+  const workspacePath = join(workspaceRoot, 'workspace.json');
+  const quickChatPath = join(quickChatRoot, 'workspace.json');
 
-  if (existsSync(join(workspaceRoot, 'store.json'))) {
+  if (existsSync(workspacePath) && existsSync(quickChatPath)) {
     return;
+  }
+  if (existsSync(workspacePath) || existsSync(quickChatPath)) {
+    throw new Error('Demo workspace fixture is partially initialized.');
   }
 
   const timestamp = new Date().toISOString();
@@ -76,106 +78,47 @@ export function seedDemoWorkspaceDataRoot(dataRoot, options = {}) {
       updatedAt: timestamp,
     },
   ];
-  const agents = [
-    {
-      id: 'agent_codex_host',
-      name: 'Codex Host Agent',
-      kind: 'coder',
-      status: 'enabled',
-      modelId: 'model_codex',
-      skillIds: [],
-      profiles: [
-        {
-          id: 'default',
-          displayName: 'Default Coding Profile',
-          instructionsRef: null,
-          modelId: null,
-          skillIds: [],
-          capabilityIds: [],
-        },
-      ],
-      defaultProfileId: 'default',
-      config: {
-        adapterType: 'codex',
-        command: 'codex app-server --listen stdio://',
-        baseUrl: null,
-        workspaceRoot: nanoCoreRoot,
-        environment: {},
-        capabilities: ['turns', 'streaming', 'interrupts'],
-      },
-      health: {
-        status: 'unknown',
-        message: 'Health is checked when a turn starts.',
-        checkedAt: null,
-      },
-    },
-    {
-      id: 'agent_opencode_host',
-      name: 'OpenCode Host Agent',
-      kind: 'coder',
-      status: 'enabled',
-      modelId: 'model_opencode',
-      skillIds: [],
-      profiles: [
-        {
-          id: 'default',
-          displayName: 'Default Coding Profile',
-          instructionsRef: null,
-          modelId: null,
-          skillIds: [],
-          capabilityIds: [],
-        },
-      ],
-      defaultProfileId: 'default',
-      config: {
-        adapterType: 'opencode',
-        command: 'opencode run --format default',
-        baseUrl: 'http://localhost:4096',
-        workspaceRoot: nanoCoreRoot,
-        environment: {},
-        capabilities: ['turns', 'streaming', 'interrupts'],
-      },
-      health: {
-        status: 'unknown',
-        message: 'Health is checked when a turn starts.',
-        checkedAt: null,
-      },
-    },
-  ];
-  const snapshot = {
-    workspaces: [workspace, quickChatWorkspace],
-    workspaceResources: [
-      [
-        'ws_demo',
-        {
-          knowledge,
-          skills: [],
-          agents,
-          models: [
-            { id: 'model_codex', name: 'Codex', enabled: true, isDefault: true },
-            { id: 'model_opencode', name: 'OpenCode', enabled: true, isDefault: false },
-          ],
-        },
-      ],
-      ['ws_quick_chat', { knowledge: [], skills: [], agents: [], models: [] }],
-    ],
-    threads: [thread],
-    turns: [],
-    items: [],
-    approvals: [],
-    agentSessions: [],
-    artifacts: [],
-    artifactReviews: [],
-    knowledgeProposals: [],
-    knowledgeProposalReviews: [],
-    knowledgeSources: [],
-    commandRequests: [],
-    streamEvents: [],
-  };
   const threadRoot = join(workspaceRoot, 'threads', 'th_demo');
+  const knowledgePage = [
+    '---',
+    'type: "KnowledgePage"',
+    `title: ${JSON.stringify(knowledge[0].title)}`,
+    'schema_version: "openkit-workspace-knowledge-schema-v1"',
+    'status: "active"',
+    'scope: "workspace"',
+    'source_refs: []',
+    'review_state: "accepted"',
+    'sensitivity: "normal"',
+    'freshness: "current"',
+    `openkit_entry_kind: ${JSON.stringify(knowledge[0].kind)}`,
+    `created_at: ${JSON.stringify(knowledge[0].createdAt)}`,
+    `updated_at: ${JSON.stringify(knowledge[0].updatedAt)}`,
+    `openkit_entry_id: ${JSON.stringify(knowledge[0].id)}`,
+    '---',
+    knowledge[0].content,
+    '',
+  ].join('\n');
 
-  mkdirSync(threadRoot, { recursive: true });
-  writeFileSync(join(workspaceRoot, 'store.json'), `${JSON.stringify(snapshot, null, 2)}\n`);
-  writeFileSync(join(workspaceRoot, 'workspace.json'), `${JSON.stringify(workspace, null, 2)}\n`);
+  for (const root of [workspaceRoot, quickChatRoot]) {
+    for (const relativePath of [
+      'artifacts',
+      'knowledge/pages',
+      'knowledge/proposals',
+      'knowledge/reviews',
+      'reviews/artifacts',
+      'runtime/agent-sessions',
+      'sources/derived',
+      'sources/materials',
+      'sources/registry',
+      'threads',
+    ]) {
+      mkdirSync(join(root, relativePath), { recursive: true });
+    }
+  }
+
+  mkdirSync(join(threadRoot, 'turns'), { recursive: true });
+  writeFileSync(workspacePath, `${JSON.stringify(workspace, null, 2)}\n`);
+  writeFileSync(quickChatPath, `${JSON.stringify(quickChatWorkspace, null, 2)}\n`);
   writeFileSync(join(threadRoot, 'thread.json'), `${JSON.stringify(thread, null, 2)}\n`);
+  writeFileSync(join(workspaceRoot, 'knowledge', 'pages', 'mem_project.md'), knowledgePage);
 }

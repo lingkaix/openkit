@@ -1,14 +1,7 @@
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
-import { dirname, join, posix, relative, sep } from 'node:path';
+import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join, posix, relative, sep } from 'node:path';
+
+import { ArtifactSchema } from '@openkit/protocol';
 
 import {
   DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA,
@@ -23,6 +16,13 @@ import {
   type WorkspaceKnowledgeSchema,
 } from '../knowledge/okf.js';
 import { resolveDataRootPath } from './fs-layout.js';
+import {
+  artifactContentFileName,
+  assertCanonicalDirectory,
+  readCanonicalJsonLines,
+  readCanonicalTextFile,
+} from './workspace-file-records.js';
+import { appendWorkspaceKnowledgeRetrievalTrace } from './workspace-portable-file-state.js';
 
 type SearchIndexKind = 'workspace' | 'thread' | 'knowledge' | 'artifact' | 'item';
 
@@ -327,7 +327,6 @@ export function rebuildWorkspaceDerivedIndexes(
   }
 
   const indexesRoot = join(workspaceRoot, 'indexes');
-  const removedEntries = clearIndexDirectory(indexesRoot);
   const indexPath = join(indexesRoot, 'search.json');
   const rebuiltAt = input.now?.() ?? new Date().toISOString();
   const index: WorkspaceSearchIndex = {
@@ -361,6 +360,7 @@ export function rebuildWorkspaceDerivedIndexes(
     tokenizer: 'unicode-simple-v1',
     terms: buildKnowledgeFullTextTerms(workspaceRoot, input.workspaceId),
   };
+  const removedEntries = clearIndexDirectory(indexesRoot);
 
   writeFileSync(indexPath, `${JSON.stringify(index, null, 2)}\n`);
   writeFileSync(
@@ -552,7 +552,10 @@ export function retrieveWorkspaceKnowledge(
       })),
   };
 
-  appendKnowledgeRetrievalTrace(input, createdAt, trace);
+  appendWorkspaceKnowledgeRetrievalTrace(
+    resolveDataRootPath(input.dataRoot, 'users', input.userId, 'workspaces', input.workspaceId),
+    trace
+  );
 
   return trace;
 }
@@ -572,47 +575,6 @@ function compareKnowledgeRetrievalCandidates(
     right.score - left.score ||
     left.title.localeCompare(right.title) ||
     left.conceptId.localeCompare(right.conceptId)
-  );
-}
-
-/**
- * Appends one retrieval trace to the monthly workspace trace ledger.
- *
- * @param input Retrieval target.
- * @param createdAt Trace timestamp.
- * @param trace Trace payload to persist.
- */
-function appendKnowledgeRetrievalTrace(
-  input: ReadWorkspaceKnowledgeDerivedIndexesInput,
-  createdAt: string,
-  trace: WorkspaceKnowledgeRetrievalTrace
-): void {
-  const tracePath = knowledgeRetrievalTraceLedgerPath(input, createdAt);
-
-  mkdirSync(dirname(tracePath), { recursive: true });
-  appendFileSync(tracePath, `${JSON.stringify(trace)}\n`);
-}
-
-/**
- * Returns the monthly trace ledger path for Knowledge Store retrieval.
- *
- * @param input Retrieval target.
- * @param createdAt Trace timestamp.
- * @returns Absolute trace ledger path.
- */
-function knowledgeRetrievalTraceLedgerPath(
-  input: ReadWorkspaceKnowledgeDerivedIndexesInput,
-  createdAt: string
-): string {
-  return resolveDataRootPath(
-    input.dataRoot,
-    'users',
-    input.userId,
-    'workspaces',
-    input.workspaceId,
-    'knowledge',
-    'traces',
-    `${createdAt.slice(0, 7).replace('-', '')}.jsonl`
   );
 }
 
@@ -662,56 +624,39 @@ function readArtifactEntries(
 
   for (const artifactId of listDirectories(artifactsRoot)) {
     const artifactRoot = join(artifactsRoot, artifactId);
-    const artifact = readJsonRecord(join(artifactRoot, 'artifact.json')) as Record<string, unknown>;
+    const metadata = readJsonRecord(join(artifactRoot, 'artifact.json')) as Record<string, unknown>;
+    const metadataContent = metadata.content;
 
-    if (stringField(artifact, 'workspaceId') !== workspaceId) {
-      continue;
+    if (!metadataContent || typeof metadataContent !== 'object' || Array.isArray(metadataContent)) {
+      throw new Error(`Artifact ${artifactId} has invalid content metadata.`);
     }
+    if (Object.hasOwn(metadataContent, 'body')) {
+      throw new Error(`Artifact ${artifactId} metadata must not embed its content body.`);
+    }
+    const format = (metadataContent as Record<string, unknown>).format;
+    if (format !== 'markdown' && format !== 'text' && format !== 'json') {
+      throw new Error(`Artifact ${artifactId} has an invalid content format.`);
+    }
+    const body = readCanonicalTextFile(
+      join(artifactRoot, 'files', artifactContentFileName(format))
+    );
+    const artifact = ArtifactSchema.parse({ ...metadata, content: { format, body } });
 
-    const id = stringField(artifact, 'id');
-    const title = stringField(artifact, 'title');
-    const summary = nullableStringField(artifact, 'summary') ?? '';
-    const threadId = nullableStringField(artifact, 'threadId');
-    const body = readArtifactContentBody(artifactRoot, artifact);
+    if (artifact.id !== artifactId || artifact.workspaceId !== workspaceId) {
+      throw new Error(`Artifact ${artifactId} has invalid workspace or directory lineage.`);
+    }
 
     entries.push({
       kind: 'artifact',
-      id,
-      title,
+      id: artifact.id,
+      title: artifact.title,
       workspaceId,
-      ...(threadId ? { threadId } : {}),
-      searchText: `${title}\n${summary}\n${body}`,
+      ...(artifact.threadId ? { threadId: artifact.threadId } : {}),
+      searchText: `${artifact.title}\n${artifact.summary ?? ''}\n${body}`,
     });
   }
 
   return entries;
-}
-
-/**
- * Reads artifact content from projected files, falling back to the metadata snapshot body.
- *
- * @param artifactRoot Artifact root path.
- * @param artifact Artifact metadata record.
- * @returns Artifact body text for search indexing.
- */
-function readArtifactContentBody(artifactRoot: string, artifact: Record<string, unknown>): string {
-  const filesRoot = join(artifactRoot, 'files');
-
-  for (const fileName of ['content.md', 'content.txt', 'content.json']) {
-    const path = join(filesRoot, fileName);
-
-    if (existsSync(path)) {
-      return readFileSync(path, 'utf8');
-    }
-  }
-
-  const content = artifact.content;
-
-  if (content && typeof content === 'object' && !Array.isArray(content)) {
-    return nullableStringField(content as Record<string, unknown>, 'body') ?? '';
-  }
-
-  return '';
 }
 
 /**
@@ -741,7 +686,7 @@ function readKnowledgePageEntries(
     }
 
     const path = join(pagesRoot, fileName);
-    const content = readFileSync(path, 'utf8');
+    const content = readCanonicalTextFile(path);
     const parsed = parseOkfDocument({ path, content });
 
     if (
@@ -785,7 +730,7 @@ function readKnowledgePageIds(pagesRoot: string): Set<string> {
     }
 
     const path = join(pagesRoot, fileName);
-    const parsed = parseOkfDocument({ path, content: readFileSync(path, 'utf8') });
+    const parsed = parseOkfDocument({ path, content: readCanonicalTextFile(path) });
 
     if (parsed.ok) {
       ids.add(
@@ -864,7 +809,7 @@ function buildKnowledgeValidationRecords(
 
     const path = join(pagesRoot, fileName);
     const workspacePath = `knowledge/pages/${fileName}`;
-    const parsed = parseOkfDocument({ path, content: readFileSync(path, 'utf8') });
+    const parsed = parseOkfDocument({ path, content: readCanonicalTextFile(path) });
 
     if (!parsed.document) {
       records.push({
@@ -953,7 +898,7 @@ function buildKnowledgeSourceReferences(
     }
 
     const path = join(pagesRoot, fileName);
-    const parsed = parseOkfDocument({ path, content: readFileSync(path, 'utf8') });
+    const parsed = parseOkfDocument({ path, content: readCanonicalTextFile(path) });
     const document = parsed.document;
     const sourceRefs = document?.frontmatter.source_refs;
 
@@ -1074,7 +1019,7 @@ function buildKnowledgeFullTextTerms(
     }
 
     const path = join(pagesRoot, fileName);
-    const parsed = parseOkfDocument({ path, content: readFileSync(path, 'utf8') });
+    const parsed = parseOkfDocument({ path, content: readCanonicalTextFile(path) });
 
     if (
       !parsed.ok ||
@@ -1250,7 +1195,7 @@ function buildKnowledgeLinkEdges(
     }
 
     const path = join(pagesRoot, fileName);
-    const parsed = parseOkfDocument({ path, content: readFileSync(path, 'utf8') });
+    const parsed = parseOkfDocument({ path, content: readCanonicalTextFile(path) });
 
     if (
       !parsed.ok ||
@@ -1298,7 +1243,7 @@ function readKnowledgePageConceptIds(pagesRoot: string): Set<string> {
     }
 
     const path = join(pagesRoot, fileName);
-    const parsed = parseOkfDocument({ path, content: readFileSync(path, 'utf8') });
+    const parsed = parseOkfDocument({ path, content: readCanonicalTextFile(path) });
 
     if (parsed.ok) {
       ids.add(parsed.document.conceptId ?? fileName.slice(0, -'.md'.length));
@@ -1376,7 +1321,7 @@ function readWorkspaceKnowledgeSchema(workspaceRoot: string): WorkspaceKnowledge
     return DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA;
   }
 
-  const parsed = parseWorkspaceKnowledgeSchema(readFileSync(schemaPath, 'utf8'));
+  const parsed = parseWorkspaceKnowledgeSchema(readCanonicalTextFile(schemaPath));
 
   return parsed.ok ? parsed.schema : null;
 }
@@ -1425,8 +1370,14 @@ function readThreadEntries(
         searchText: turn.input ?? turn.id,
       });
 
-      for (const item of readJsonl(join(turnRoot, 'items.jsonl'))) {
-        const id = stringField(item, 'id');
+      const latestItemsById = new Map<string, Record<string, unknown>>();
+      for (const item of readCanonicalJsonLines(join(turnRoot, 'items.jsonl'), true) as Array<
+        Record<string, unknown>
+      >) {
+        latestItemsById.set(stringField(item, 'id'), item);
+      }
+
+      for (const [id, item] of latestItemsById) {
         const title = nullableStringField(item, 'text') ?? nullableStringField(item, 'title') ?? id;
 
         entries.push({
@@ -1457,8 +1408,21 @@ function readThreadEntries(
  * @returns Removed direct child names.
  */
 function clearIndexDirectory(indexesRoot: string): string[] {
-  mkdirSync(indexesRoot, { recursive: true });
-  const removedEntries = readdirSync(indexesRoot).sort();
+  if (!lstatSync(indexesRoot, { throwIfNoEntry: false })) {
+    mkdirSync(indexesRoot);
+  }
+  assertCanonicalDirectory(indexesRoot);
+
+  const entries = readdirSync(indexesRoot, { withFileTypes: true });
+  const linkedEntry = entries.find((entry) => entry.isSymbolicLink());
+
+  if (linkedEntry) {
+    throw new Error(
+      `Canonical directory must not contain a symbolic link: ${join(indexesRoot, linkedEntry.name)}.`
+    );
+  }
+
+  const removedEntries = entries.map((entry) => entry.name).sort();
 
   for (const entry of removedEntries) {
     rmSync(join(indexesRoot, entry), { recursive: true, force: true });
@@ -1474,24 +1438,7 @@ function clearIndexDirectory(indexesRoot: string): string[] {
  * @returns Parsed JSON value.
  */
 function readJsonRecord(path: string): unknown {
-  return JSON.parse(readFileSync(path, 'utf8'));
-}
-
-/**
- * Reads newline-delimited JSON records.
- *
- * @param path JSONL file path.
- * @returns Parsed JSON object records.
- */
-function readJsonl(path: string): Array<Record<string, unknown>> {
-  if (!existsSync(path)) {
-    return [];
-  }
-
-  return readFileSync(path, 'utf8')
-    .split('\n')
-    .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  return JSON.parse(readCanonicalTextFile(path));
 }
 
 /**
@@ -1501,12 +1448,23 @@ function readJsonl(path: string): Array<Record<string, unknown>> {
  * @returns Directory names.
  */
 function listDirectories(path: string): string[] {
-  if (!existsSync(path)) {
+  if (!lstatSync(path, { throwIfNoEntry: false })) {
     return [];
   }
+  assertCanonicalDirectory(path);
 
-  return readdirSync(path)
-    .filter((name) => statSync(join(path, name)).isDirectory())
+  const entries = readdirSync(path, { withFileTypes: true });
+  const linkedEntry = entries.find((entry) => entry.isSymbolicLink());
+
+  if (linkedEntry) {
+    throw new Error(
+      `Canonical directory must not contain a symbolic link: ${join(path, linkedEntry.name)}.`
+    );
+  }
+
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
     .sort();
 }
 
@@ -1517,12 +1475,23 @@ function listDirectories(path: string): string[] {
  * @returns File names.
  */
 function listFiles(path: string): string[] {
-  if (!existsSync(path)) {
+  if (!lstatSync(path, { throwIfNoEntry: false })) {
     return [];
   }
+  assertCanonicalDirectory(path);
 
-  return readdirSync(path)
-    .filter((name) => statSync(join(path, name)).isFile())
+  const entries = readdirSync(path, { withFileTypes: true });
+  const linkedEntry = entries.find((entry) => entry.isSymbolicLink());
+
+  if (linkedEntry) {
+    throw new Error(
+      `Canonical directory must not contain a symbolic link: ${join(path, linkedEntry.name)}.`
+    );
+  }
+
+  return entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
     .sort();
 }
 

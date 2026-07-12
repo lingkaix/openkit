@@ -103969,7 +103969,7 @@
               },
               "exportFormatVersion": {
                 "type": "number",
-                "const": 1
+                "const": 2
               },
               "contentInventory": {
                 "type": "array",
@@ -104181,7 +104181,7 @@
               },
               "exportFormatVersion": {
                 "type": "number",
-                "const": 1
+                "const": 2
               },
               "contentInventory": {
                 "type": "array",
@@ -104469,7 +104469,7 @@
               },
               "exportFormatVersion": {
                 "type": "number",
-                "const": 1
+                "const": 2
               },
               "contentInventory": {
                 "type": "array",
@@ -105429,5 +105429,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:826e87967c62fdd7e18a2f80214328ee65c2f7a85af5b4bf43f2eace56314926"
+  "x-openkit-source-digest": "sha256:84f9bd9cfd6789404245882a3e44f3a39c1141eb6e351a301588961712a21aa4"
 }

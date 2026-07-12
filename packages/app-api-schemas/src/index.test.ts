@@ -194,7 +194,11 @@ const rawSecretShapes = [
   'okt_openkit_secret',
 ] as const;
 const schemaSourceRoot = new URL('.', import.meta.url);
-const allowedRuntimeNeutralImports = new Set(['@openkit/protocol', 'zod']);
+const allowedRuntimeNeutralImports = new Set([
+  '@openkit/config-schema/workspace-export',
+  '@openkit/protocol',
+  'zod',
+]);
 
 /** Lists package source files that define runtime App API schemas. */
 function listSchemaSourceFiles(root: string): string[] {
@@ -1381,7 +1385,7 @@ describe('app api schemas', () => {
         sourceDeploymentId: 'dep_local',
         workspaceId: 'ws_demo',
         exportCreatedAt: timestamp,
-        exportFormatVersion: 1,
+        exportFormatVersion: 2,
         contentInventory: [
           {
             path: 'records/workspace.json',
@@ -1501,7 +1505,7 @@ describe('app api schemas', () => {
           sourceDeploymentId: 'dep_local',
           workspaceId: 'ws_demo',
           exportCreatedAt: timestamp,
-          exportFormatVersion: 1,
+          exportFormatVersion: 2,
           contentInventory: [],
         },
         verification: { fileCount: 0, totalBytes: 0, checkedFiles: [] },
@@ -1547,7 +1551,7 @@ describe('app api schemas', () => {
           sourceDeploymentId: 'dep_local',
           workspaceId: 'ws_demo',
           exportCreatedAt: timestamp,
-          exportFormatVersion: 1,
+          exportFormatVersion: 2,
           contentInventory: [],
         },
         workspace: {

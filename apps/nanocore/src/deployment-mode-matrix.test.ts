@@ -111,7 +111,7 @@ describe('NanoCore deployment mode matrix', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            requestId: `req_loop_${coreMode}_${runtimePlacement}`,
+            requestId: '00000000-0000-4000-8000-000000000301',
           }),
         }
       );

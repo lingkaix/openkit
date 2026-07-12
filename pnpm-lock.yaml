@@ -218,6 +218,9 @@ importers:
 
   packages/app-api-schemas:
     dependencies:
+      '@openkit/config-schema':
+        specifier: workspace:*
+        version: link:../config-schema
       '@openkit/protocol':
         specifier: workspace:*
         version: link:../protocol
@@ -4340,7 +4343,7 @@ snapshots:
       obug: 2.1.1
       std-env: 4.1.0
       tinyrainbow: 3.1.0
-      vitest: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@20.19.39)(@vitest/coverage-v8@4.1.4)(jsdom@27.4.0(@noble/hashes@2.2.0))(vite@8.0.8(@types/node@20.19.39)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.8.3))
+      vitest: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(@vitest/coverage-v8@4.1.4)(jsdom@27.4.0(@noble/hashes@2.2.0))(vite@8.0.8(@types/node@25.6.0)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.8.3))
 
   '@vitest/expect@4.1.4':
     dependencies:

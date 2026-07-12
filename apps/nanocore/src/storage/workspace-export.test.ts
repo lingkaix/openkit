@@ -1,22 +1,39 @@
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
+import { createApp } from '../app.js';
+import { createDemoWorkspaceForUser, FsStore } from '../lib/store.js';
 import { openWorkspaceDb } from './db.js';
 import { LOCAL_USER_ID } from './fs-layout.js';
 import { applyScopedMigrations } from './migrate.js';
 import {
   dryRunWorkspaceImport,
-  readWorkspaceImportSnapshot,
   verifyWorkspaceExportTree,
   WORKSPACE_EXPORT_MANIFEST_FILE,
   WORKSPACE_EXPORT_NON_PORTABLE_WORKSPACE_SQLITE_TABLES,
   WORKSPACE_EXPORT_PORTABLE_WORKSPACE_SQLITE_TABLES,
   writeWorkspaceExportTree,
 } from './workspace-export.js';
+import { readWorkspaceImportSnapshot } from './workspace-import.js';
 
 const timestamp = '2026-07-05T00:00:00.000Z';
+
+/** Returns one absent export root beneath a unique temporary parent. */
+function freshExportRoot(prefix: string): string {
+  return join(mkdtempSync(join(tmpdir(), prefix)), 'export');
+}
+
+/** Reads one export through the verified import boundary. */
+function readImportSnapshot(exportRoot: string, targetWorkspaceId: string) {
+  return readWorkspaceImportSnapshot({
+    verified: verifyWorkspaceExportTree({ exportRoot }),
+    targetWorkspaceId,
+  });
+}
 
 /**
  * Writes a minimal export tree fixture.
@@ -26,6 +43,13 @@ const timestamp = '2026-07-05T00:00:00.000Z';
 function writeExportTree(): string {
   const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-export-'));
   const recordsDir = join(root, 'records');
+  const contentInventory = [
+    {
+      path: 'records/workspace.json',
+      digest: 'sha256:ab4a13e5a040b76a82521f52dabddd42e7e4d4244c47e16ee8c6e1aa16233f3f',
+      bytes: 16,
+    },
+  ];
 
   mkdirSync(recordsDir);
   writeFileSync(join(recordsDir, 'workspace.json'), '{"id":"ws_demo"}');
@@ -39,7 +63,9 @@ function writeExportTree(): string {
       lineage: { workspaceId: 'ws_demo' },
       createdAt: timestamp,
       updatedAt: timestamp,
-      contentDigest: 'sha256:manifest',
+      contentDigest: `sha256:${createHash('sha256')
+        .update(JSON.stringify(contentInventory))
+        .digest('hex')}`,
       redactionLevel: 'metadata',
       sensitivity: 'internal',
       requiredFeatures: [],
@@ -47,14 +73,8 @@ function writeExportTree(): string {
       sourceDeploymentId: 'dep_source',
       workspaceId: 'ws_demo',
       exportCreatedAt: timestamp,
-      exportFormatVersion: 1,
-      contentInventory: [
-        {
-          path: 'records/workspace.json',
-          digest: 'sha256:ab4a13e5a040b76a82521f52dabddd42e7e4d4244c47e16ee8c6e1aa16233f3f',
-          bytes: 16,
-        },
-      ],
+      exportFormatVersion: 2,
+      contentInventory,
     })
   );
 
@@ -86,7 +106,7 @@ describe('workspace export verifier', () => {
   });
 
   it('writes a verifiable workspace export tree', () => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-export-write-'));
+    const root = freshExportRoot('openkit-workspace-export-write-');
     const exported = writeWorkspaceExportTree({
       exportRoot: root,
       exportId: 'wsexp_demo',
@@ -116,16 +136,19 @@ describe('workspace export verifier', () => {
       knowledge: [
         {
           id: 'kn_demo',
-          workspaceId: 'ws_demo',
+          kind: 'project-context',
           title: 'Release cadence',
-          body: 'Review releases every Friday.',
-          tags: [],
-          sourceRefs: [],
+          content: 'Review releases every Friday.',
           createdAt: timestamp,
           updatedAt: timestamp,
         },
       ],
-      threadItems: [],
+      turns: [],
+      itemRevisions: [],
+      artifacts: [],
+      artifactReviews: [],
+      agentSessions: [],
+      turnEvents: [],
       workspaceQuarantineRecords: [
         {
           id: 'wqr_1',
@@ -165,9 +188,18 @@ describe('workspace export verifier', () => {
 
     expect(existsSync(join(root, WORKSPACE_EXPORT_MANIFEST_FILE))).toBe(true);
     expect(exported.checkedFiles).toEqual([
+      'records/agent-sessions.jsonl',
+      'records/artifact-reviews.jsonl',
+      'records/item-revisions.jsonl',
+      'records/knowledge-claims.jsonl',
+      'records/knowledge-conflicts.jsonl',
+      'records/knowledge-context-package-traces.jsonl',
+      'records/knowledge-observations.jsonl',
+      'records/knowledge-retrieval-traces.jsonl',
       'records/knowledge.jsonl',
-      'records/thread-items.jsonl',
       'records/threads.jsonl',
+      'records/turn-events.jsonl',
+      'records/turns.jsonl',
       'records/workspace-quarantine-records.jsonl',
       'records/workspace-sync-evidence-bundles.jsonl',
       'records/workspace.json',
@@ -190,8 +222,533 @@ describe('workspace export verifier', () => {
     expect(verifyWorkspaceExportTree({ exportRoot: root }).manifest.workspaceId).toBe('ws_demo');
   });
 
+  it('round-trips a knowledge proposal source claim', () => {
+    const root = freshExportRoot('openkit-workspace-proposal-export-');
+    const fixture = createDemoWorkspaceForUser(LOCAL_USER_ID);
+
+    writeWorkspaceExportTree({
+      exportRoot: root,
+      exportId: 'wsexp_proposal',
+      sourceDeploymentId: 'dep_local',
+      createdAt: timestamp,
+      workspace: fixture.workspace,
+      threads: [fixture.thread],
+      turns: [],
+      knowledge: [],
+      itemRevisions: [],
+      artifacts: [],
+      artifactReviews: [],
+      agentSessions: [],
+      turnEvents: [],
+      portableFileState: {
+        observations: new Map(),
+        claims: new Map([
+          [
+            '202607',
+            [
+              {
+                id: 'cl_demo',
+                workspaceId: fixture.workspace.id,
+                statement: 'Portable source claim.',
+                sourceReferences: [],
+                scope: 'workspace',
+                producer: 'test',
+                confidence: 1,
+                freshness: 'current',
+                reviewState: 'accepted',
+                conflictStatus: 'none',
+                createdAt: timestamp,
+                updatedAt: timestamp,
+              },
+            ],
+          ],
+        ]),
+        conflicts: new Map(),
+        contextPackageTraces: new Map(),
+        retrievalTraces: new Map(),
+        workspaceConfig: null,
+        workspaceSchema: null,
+        nativeKnowledgePages: new Map(),
+        contextMaterializations: new Map(),
+      },
+      knowledgeProposals: [
+        {
+          id: 'kp_demo',
+          workspaceId: fixture.workspace.id,
+          title: 'Source-backed proposal',
+          summary: 'Preserve the source claim through workspace transfer.',
+          sourceClaimId: 'cl_demo',
+          status: 'pending',
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+      ],
+    });
+
+    expect(readImportSnapshot(root, 'ws_imported_proposal').knowledgeProposals).toEqual([
+      expect.objectContaining({
+        workspaceId: 'ws_imported_proposal',
+        sourceClaimId: 'cl_demo',
+      }),
+    ]);
+  });
+
+  it('round-trips canonical workspace history with deterministic reminted lineage', () => {
+    const root = freshExportRoot('openkit-workspace-history-export-');
+    const targetWorkspaceId = 'ws_imported_history';
+    const workspace = {
+      id: 'ws_source',
+      name: 'History workspace',
+      kind: 'general',
+      status: 'active',
+      defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
+      counts: { threadCount: 1, artifactCount: 1, knowledgeEntryCount: 0 },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const thread = {
+      id: 'th_source',
+      workspaceId: workspace.id,
+      name: 'History thread',
+      preview: 'Canonical history',
+      status: 'active',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const firstItemRevision = {
+      id: 'it_source',
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: 'tu_source',
+      type: 'assistant-message',
+      status: 'in_progress',
+      text: 'First answer revision.',
+      createdAt: timestamp,
+      completedAt: null,
+    };
+    const currentItem = {
+      ...firstItemRevision,
+      status: 'completed',
+      text: 'Current answer revision.',
+      completedAt: timestamp,
+    };
+    const agentSession = {
+      id: 'as_source',
+      agentId: 'agent_codex_host',
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      status: 'idle',
+      message: null,
+      sandboxSummary: null,
+      configVersion: 1,
+      environmentPackageSnapshotId: null,
+      policySnapshotId: null,
+      sessionCompatibilityKey: null,
+      stale: false,
+      workspaceRoots: [
+        {
+          id: 'root_source',
+          sourceKind: 'host-dir',
+          sourcePath: '/private/source/workspace',
+          workerPath: '/workspace/source',
+          access: 'read-write',
+        },
+      ],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const artifact = {
+      id: 'ar_source',
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: firstItemRevision.turnId,
+      kind: 'summary',
+      title: 'Canonical artifact',
+      status: 'ready',
+      summary: 'Portable artifact metadata.',
+      version: 1,
+      content: {
+        format: 'markdown',
+        body: '# Portable artifact\n\nThe body has one file owner.',
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const artifactItem = {
+      id: 'it_artifact_source',
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: firstItemRevision.turnId,
+      type: 'artifact-reference',
+      status: 'completed',
+      parentItemId: firstItemRevision.id,
+      artifactId: artifact.id,
+      title: artifact.title,
+      summary: artifact.summary,
+      createdAt: timestamp,
+      completedAt: timestamp,
+    };
+    const approvalItem = {
+      id: 'it_approval_source',
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: firstItemRevision.turnId,
+      type: 'approval-request',
+      status: 'in_progress',
+      approvalRequestId: 'apr_source',
+      title: 'Approve portable history',
+      description: 'Confirm the imported history.',
+      kind: 'permission',
+      createdAt: timestamp,
+      completedAt: null,
+    };
+    const turn = {
+      id: firstItemRevision.turnId,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      items: [currentItem, artifactItem, approvalItem],
+      status: 'awaiting_human',
+      humanGate: {
+        kind: 'approval',
+        approvalRequestId: approvalItem.approvalRequestId,
+        itemId: approvalItem.id,
+      },
+      agentSessionId: agentSession.id,
+      error: null,
+      configVersion: null,
+      startedAt: timestamp,
+      completedAt: null,
+      durationMs: null,
+    };
+    const artifactReview = {
+      artifactId: artifact.id,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      status: 'needs_refinement',
+      requestId: 'artifact-review-export',
+      message: 'Refine this artifact in a deterministic future turn.',
+      decidedAt: timestamp,
+      followUpTurnId: 'tu_future_refinement',
+      lifecycle: 'pending',
+    };
+    const agentSessionEvent = {
+      protocolVersion: PROTOCOL_VERSION,
+      event: 'agent.session.updated',
+      sequence: 1,
+      requestId: null,
+      timestamp,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      data: { type: 'agent-session-updated', agentSession },
+    };
+    const artifactDeltaEvent = {
+      protocolVersion: PROTOCOL_VERSION,
+      event: 'item.delta',
+      sequence: 2,
+      requestId: null,
+      timestamp,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      data: {
+        type: 'item-delta',
+        itemId: artifactItem.id,
+        itemType: artifactItem.type,
+        deltaKind: 'artifact-updated',
+        artifactId: artifact.id,
+      },
+    };
+    const approvalEvent = {
+      protocolVersion: PROTOCOL_VERSION,
+      event: 'approval.requested',
+      sequence: 3,
+      requestId: null,
+      timestamp,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      data: {
+        type: 'approval-requested',
+        approval: {
+          id: approvalItem.approvalRequestId,
+          workspaceId: workspace.id,
+          threadId: thread.id,
+          turnId: turn.id,
+          kind: approvalItem.kind,
+          status: 'pending',
+          title: approvalItem.title,
+          description: approvalItem.description,
+          createdAt: timestamp,
+          resolvedAt: null,
+        },
+      },
+    };
+    const exportInput = {
+      exportRoot: root,
+      exportId: 'wsexp_history',
+      sourceDeploymentId: 'dep_source',
+      createdAt: timestamp,
+      workspace,
+      threads: [thread],
+      turns: [turn],
+      knowledge: [],
+      itemRevisions: [firstItemRevision, artifactItem, approvalItem, currentItem],
+      artifacts: [artifact],
+      artifactReviews: [artifactReview],
+      agentSessions: [agentSession],
+      turnEvents: [[turn.id, [agentSessionEvent, artifactDeltaEvent, approvalEvent]]],
+    };
+
+    const exported = writeWorkspaceExportTree(exportInput);
+    const artifactMetadataPath = join(root, 'artifacts', artifact.id, 'artifact.json');
+    const artifactBodyPath = join(root, 'artifacts', artifact.id, 'files', 'content.md');
+    const artifactMetadata = JSON.parse(readFileSync(artifactMetadataPath, 'utf8'));
+
+    expect.soft(exported.checkedFiles).toContain('artifacts/ar_source/artifact.json');
+    expect.soft(exported.checkedFiles).toContain('artifacts/ar_source/files/content.md');
+    expect.soft(artifactMetadata).toEqual({
+      ...artifact,
+      content: { format: artifact.content.format },
+    });
+    expect.soft(JSON.stringify(artifactMetadata)).not.toContain(artifact.content.body);
+    expect.soft(readFileSync(artifactBodyPath, 'utf8')).toBe(artifact.content.body);
+    expect.soft(verifyWorkspaceExportTree({ exportRoot: root })).toEqual(exported);
+
+    const snapshot = readImportSnapshot(root, targetWorkspaceId);
+    const imported = snapshot as unknown as {
+      threads: Array<typeof thread>;
+      turns: Array<typeof turn>;
+      itemRevisions: Array<typeof currentItem | typeof artifactItem | typeof approvalItem>;
+      artifacts: Array<typeof artifact>;
+      artifactReviews: Array<typeof artifactReview>;
+      agentSessions: Array<typeof agentSession>;
+      turnEvents: Array<
+        [string, Array<typeof agentSessionEvent | typeof artifactDeltaEvent | typeof approvalEvent>]
+      >;
+    };
+
+    expect.soft(imported.turns).toHaveLength(1);
+    expect.soft(imported.itemRevisions).toHaveLength(4);
+    expect.soft(imported.artifacts).toHaveLength(1);
+    expect.soft(imported.artifactReviews).toHaveLength(1);
+    expect.soft(imported.agentSessions).toHaveLength(1);
+    expect.soft(imported.turnEvents).toHaveLength(1);
+
+    const importedThread = imported.threads[0];
+    const importedTurn = imported.turns?.[0];
+    const importedRevisions = imported.itemRevisions ?? [];
+    const importedArtifact = imported.artifacts?.[0];
+    const importedReview = imported.artifactReviews?.[0];
+    const importedSession = imported.agentSessions?.[0];
+    const importedEventEntry = imported.turnEvents?.[0];
+
+    if (
+      importedThread &&
+      importedTurn &&
+      importedRevisions.length === 4 &&
+      importedArtifact &&
+      importedReview &&
+      importedSession &&
+      importedEventEntry
+    ) {
+      const [importedTurnId, [importedSessionEvent, importedArtifactEvent, importedApprovalEvent]] =
+        importedEventEntry;
+      const importedFirstRevision = importedRevisions[0]!;
+      const importedArtifactItem = importedRevisions[1]!;
+      const importedApprovalItem = importedRevisions[2]!;
+      const importedCurrentItem = importedRevisions[3]!;
+
+      expect.soft(importedThread.id).not.toBe(thread.id);
+      expect.soft(importedTurn.id).not.toBe(turn.id);
+      expect.soft(importedFirstRevision.id).not.toBe(firstItemRevision.id);
+      expect.soft(importedArtifact.id).not.toBe(artifact.id);
+      expect.soft(importedSession.id).not.toBe(agentSession.id);
+      expect.soft(importedTurn).toMatchObject({
+        workspaceId: targetWorkspaceId,
+        threadId: importedThread.id,
+        agentSessionId: importedSession.id,
+        humanGate: { itemId: importedApprovalItem.id },
+        items: [importedCurrentItem, importedArtifactItem, importedApprovalItem],
+      });
+      expect
+        .soft(
+          importedRevisions.map((item) =>
+            item.type === 'assistant-message' ? `${item.type}:${item.text}` : item.type
+          )
+        )
+        .toEqual([
+          `assistant-message:${firstItemRevision.text}`,
+          'artifact-reference',
+          'approval-request',
+          `assistant-message:${currentItem.text}`,
+        ]);
+      expect.soft(importedCurrentItem.id).toBe(importedFirstRevision.id);
+      expect.soft(importedArtifactItem).toMatchObject({
+        parentItemId: importedCurrentItem.id,
+        artifactId: importedArtifact.id,
+      });
+      expect.soft(importedRevisions).toEqual(
+        importedRevisions.map((item) => ({
+          ...item,
+          workspaceId: targetWorkspaceId,
+          threadId: importedThread.id,
+          turnId: importedTurn.id,
+        }))
+      );
+      expect.soft(importedArtifact).toMatchObject({
+        workspaceId: targetWorkspaceId,
+        threadId: importedThread.id,
+        turnId: importedTurn.id,
+        content: artifact.content,
+      });
+      expect.soft(importedReview).toMatchObject({
+        artifactId: importedArtifact.id,
+        workspaceId: targetWorkspaceId,
+        threadId: importedThread.id,
+        turnId: importedTurn.id,
+        status: 'needs_refinement',
+        lifecycle: 'pending',
+      });
+      expect.soft(importedReview.followUpTurnId).not.toBe(artifactReview.followUpTurnId);
+      expect.soft(importedSession).toMatchObject({
+        workspaceId: targetWorkspaceId,
+        threadId: importedThread.id,
+      });
+      expect.soft(importedTurnId).toBe(importedTurn.id);
+      expect.soft(importedSessionEvent).toMatchObject({
+        workspaceId: targetWorkspaceId,
+        threadId: importedThread.id,
+        turnId: importedTurn.id,
+        data: {
+          type: 'agent-session-updated',
+          agentSession: {
+            id: importedSession.id,
+            workspaceId: targetWorkspaceId,
+            threadId: importedThread.id,
+          },
+        },
+      });
+      expect
+        .soft(importedSessionEvent.data.agentSession)
+        .not.toHaveProperty('environmentPackageSnapshotId');
+      expect.soft(importedSessionEvent.data.agentSession).not.toHaveProperty('workspaceRoots');
+      expect.soft(JSON.stringify(importedSessionEvent)).not.toContain('/private/source/workspace');
+      expect.soft(importedArtifactEvent).toMatchObject({
+        workspaceId: targetWorkspaceId,
+        threadId: importedThread.id,
+        turnId: importedTurn.id,
+        data: {
+          itemId: importedArtifactItem.id,
+          artifactId: importedArtifact.id,
+        },
+      });
+      expect.soft(importedApprovalEvent).toMatchObject({
+        workspaceId: targetWorkspaceId,
+        threadId: importedThread.id,
+        turnId: importedTurn.id,
+        data: {
+          approval: {
+            workspaceId: targetWorkspaceId,
+            threadId: importedThread.id,
+            turnId: importedTurn.id,
+          },
+        },
+      });
+
+      const repeated = readImportSnapshot(root, targetWorkspaceId);
+      expect.soft(repeated).toMatchObject({
+        threads: [{ id: importedThread.id }],
+        turns: [{ id: importedTurn.id }],
+        itemRevisions: importedRevisions.map((item) => ({ id: item.id })),
+        artifacts: [{ id: importedArtifact.id }],
+        artifactReviews: [{ followUpTurnId: importedReview.followUpTurnId }],
+        agentSessions: [{ id: importedSession.id }],
+      });
+    }
+
+    const invalidRoot = freshExportRoot('openkit-workspace-history-invalid-');
+    expect(() => {
+      writeWorkspaceExportTree({
+        ...exportInput,
+        exportRoot: invalidRoot,
+        exportId: 'wsexp_history_invalid',
+        artifacts: [{ ...artifact, turnId: 'tu_stale' }],
+      });
+      readImportSnapshot(invalidRoot, targetWorkspaceId);
+    }).toThrow(/Artifact .* (missing exported turn|invalid lineage)/);
+
+    const staleItemRoot = freshExportRoot('openkit-workspace-history-stale-item-');
+    expect(() =>
+      writeWorkspaceExportTree({
+        ...exportInput,
+        exportRoot: staleItemRoot,
+        exportId: 'wsexp_history_stale_item',
+        turns: [{ ...turn, items: [firstItemRevision, artifactItem, approvalItem] }],
+      })
+    ).toThrow('Turn items must equal the latest canonical item revisions.');
+
+    const reorderedItemsRoot = freshExportRoot('openkit-workspace-history-reordered-items-');
+    expect(() =>
+      writeWorkspaceExportTree({
+        ...exportInput,
+        exportRoot: reorderedItemsRoot,
+        exportId: 'wsexp_history_reordered_items',
+        turns: [{ ...turn, items: [artifactItem, currentItem, approvalItem] }],
+      })
+    ).toThrow(/Turn items/);
+  });
+
+  it('exports full turn event history after the in-memory replay window rolls over', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-event-history-export-'));
+    const fixture = createDemoWorkspaceForUser(LOCAL_USER_ID);
+    const store = new FsStore({ dataRoot });
+    store.importWorkspaceSnapshot({
+      workspace: fixture.workspace,
+      threads: [fixture.thread],
+      turns: [],
+      knowledge: fixture.knowledge,
+      itemRevisions: [],
+      artifacts: [],
+      artifactReviews: [],
+      agentSessions: [],
+      turnEvents: [],
+    });
+    const turn = store.createTurn(fixture.workspace.id, fixture.thread.id, 'Retain full history');
+    for (let index = 0; index < 101; index += 1) {
+      store.emitTurnEvent(turn.id, {
+        event: 'turn.started',
+        workspaceId: fixture.workspace.id,
+        threadId: fixture.thread.id,
+        turnId: turn.id,
+        data: { type: 'turn-started', turnId: turn.id, status: 'running' },
+      });
+    }
+    expect(store.getTurnEvents(turn.id).map((event) => event.sequence)).toEqual(
+      Array.from({ length: 100 }, (_, index) => index + 2)
+    );
+
+    const response = await createApp({ dataRoot, store }).request(
+      `/api/app/workspaces/${fixture.workspace.id}/export`,
+      { method: 'POST' }
+    );
+    expect.soft(response.status).toBe(200);
+    const responseText = await response.text();
+    if (response.status === 200) {
+      const body = JSON.parse(responseText) as { exportId: string };
+      const imported = readImportSnapshot(
+        join(dataRoot, 'server', 'exports', 'workspaces', fixture.workspace.id, body.exportId),
+        'ws_imported_event_history'
+      );
+      expect(imported.turnEvents[0]?.[1].map((event) => event.sequence)).toEqual(
+        Array.from({ length: 101 }, (_, index) => index + 1)
+      );
+    }
+  });
+
   it('dry-runs workspace import verification and collision preview without mutating', () => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-dry-run-'));
+    const root = freshExportRoot('openkit-workspace-import-dry-run-');
     writeWorkspaceExportTree({
       exportRoot: root,
       exportId: 'wsexp_demo',
@@ -209,12 +766,17 @@ describe('workspace export verifier', () => {
       },
       threads: [],
       knowledge: [],
-      threadItems: [],
+      turns: [],
+      itemRevisions: [],
+      artifacts: [],
+      artifactReviews: [],
+      agentSessions: [],
+      turnEvents: [],
     });
 
     expect(
       dryRunWorkspaceImport({
-        exportRoot: root,
+        verified: verifyWorkspaceExportTree({ exportRoot: root }),
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
       })
     ).toMatchObject({
@@ -227,11 +789,20 @@ describe('workspace export verifier', () => {
         suggestedWorkspaceId: 'ws_imported_ws_demo',
       },
       verification: {
-        fileCount: 4,
+        fileCount: 13,
         checkedFiles: [
+          'records/agent-sessions.jsonl',
+          'records/artifact-reviews.jsonl',
+          'records/item-revisions.jsonl',
+          'records/knowledge-claims.jsonl',
+          'records/knowledge-conflicts.jsonl',
+          'records/knowledge-context-package-traces.jsonl',
+          'records/knowledge-observations.jsonl',
+          'records/knowledge-retrieval-traces.jsonl',
           'records/knowledge.jsonl',
-          'records/thread-items.jsonl',
           'records/threads.jsonl',
+          'records/turn-events.jsonl',
+          'records/turns.jsonl',
           'records/workspace.json',
         ],
       },
@@ -239,7 +810,7 @@ describe('workspace export verifier', () => {
   });
 
   it('rejects imported records with unsupported required features', () => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-record-feature-'));
+    const root = freshExportRoot('openkit-workspace-import-record-feature-');
     writeWorkspaceExportTree({
       exportRoot: root,
       exportId: 'wsexp_demo',
@@ -254,23 +825,112 @@ describe('workspace export verifier', () => {
         counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
         createdAt: timestamp,
         updatedAt: timestamp,
-        requiredFeatures: ['workspace.record.future'],
       },
       threads: [],
       knowledge: [],
-      threadItems: [],
+      turns: [],
+      itemRevisions: [],
+      artifacts: [],
+      artifactReviews: [],
+      agentSessions: [],
+      turnEvents: [],
     });
+    const workspacePath = join(root, 'records', 'workspace.json');
+    const workspaceRecord = JSON.parse(readFileSync(workspacePath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    const workspaceText = `${JSON.stringify(
+      { ...workspaceRecord, requiredFeatures: ['workspace.record.future'] },
+      null,
+      2
+    )}\n`;
+    writeFileSync(workspacePath, workspaceText);
+    const manifestPath = join(root, WORKSPACE_EXPORT_MANIFEST_FILE);
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+      contentDigest: string;
+      contentInventory: Array<{ path: string; digest: string; bytes: number }>;
+    };
+    const workspaceEntry = manifest.contentInventory.find(
+      (entry) => entry.path === 'records/workspace.json'
+    );
+    if (!workspaceEntry) {
+      throw new Error('Expected workspace inventory entry.');
+    }
+    workspaceEntry.bytes = Buffer.byteLength(workspaceText);
+    workspaceEntry.digest = `sha256:${createHash('sha256').update(workspaceText).digest('hex')}`;
+    manifest.contentDigest = `sha256:${createHash('sha256')
+      .update(JSON.stringify(manifest.contentInventory))
+      .digest('hex')}`;
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
-    expect(() =>
-      readWorkspaceImportSnapshot({
-        exportRoot: root,
-        targetWorkspaceId: 'ws_imported_demo',
-      })
-    ).toThrow('Unsupported requiredFeatures in records/workspace.json: workspace.record.future');
+    expect(() => readImportSnapshot(root, 'ws_imported_demo')).toThrow(
+      'Unsupported requiredFeatures in records/workspace.json: workspace.record.future'
+    );
   });
 
-  it('strips unknown optional evidence fields while reading workspace imports', () => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-evidence-extra-'));
+  it('rejects a workspace record owned by another manifest workspace', () => {
+    const root = freshExportRoot('openkit-workspace-import-owner-mismatch-');
+    writeWorkspaceExportTree({
+      exportRoot: root,
+      exportId: 'wsexp_owner_mismatch',
+      sourceDeploymentId: 'dep_local',
+      createdAt: timestamp,
+      workspace: {
+        id: 'ws_manifest_owner',
+        name: 'Manifest owner',
+        kind: 'general',
+        status: 'active',
+        defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
+        counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      threads: [],
+      knowledge: [],
+      turns: [],
+      itemRevisions: [],
+      artifacts: [],
+      artifactReviews: [],
+      agentSessions: [],
+      turnEvents: [],
+    });
+    const workspacePath = join(root, 'records', 'workspace.json');
+    const workspaceRecord = JSON.parse(readFileSync(workspacePath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    const workspaceText = `${JSON.stringify(
+      { ...workspaceRecord, id: 'ws_record_owner' },
+      null,
+      2
+    )}\n`;
+    writeFileSync(workspacePath, workspaceText);
+    const manifestPath = join(root, WORKSPACE_EXPORT_MANIFEST_FILE);
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+      contentDigest: string;
+      contentInventory: Array<{ path: string; digest: string; bytes: number }>;
+    };
+    const workspaceEntry = manifest.contentInventory.find(
+      (entry) => entry.path === 'records/workspace.json'
+    );
+    if (!workspaceEntry) {
+      throw new Error('Expected workspace inventory entry.');
+    }
+    workspaceEntry.bytes = Buffer.byteLength(workspaceText);
+    workspaceEntry.digest = `sha256:${createHash('sha256').update(workspaceText).digest('hex')}`;
+    manifest.contentDigest = `sha256:${createHash('sha256')
+      .update(JSON.stringify(manifest.contentInventory))
+      .digest('hex')}`;
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    expect(() => readImportSnapshot(root, 'ws_imported_owner')).toThrow(
+      'Workspace record id does not match the export manifest.'
+    );
+  });
+
+  it('rejects unknown evidence fields while reading workspace imports', () => {
+    const root = freshExportRoot('openkit-workspace-import-evidence-extra-');
     writeWorkspaceExportTree({
       exportRoot: root,
       exportId: 'wsexp_demo',
@@ -288,7 +948,12 @@ describe('workspace export verifier', () => {
       },
       threads: [],
       knowledge: [],
-      threadItems: [],
+      turns: [],
+      itemRevisions: [],
+      artifacts: [],
+      artifactReviews: [],
+      agentSessions: [],
+      turnEvents: [],
       evidenceBundles: [
         {
           id: 'evb_extra',
@@ -354,30 +1019,11 @@ describe('workspace export verifier', () => {
       ],
     });
 
-    const snapshot = readWorkspaceImportSnapshot({
-      exportRoot: root,
-      targetWorkspaceId: 'ws_imported_demo',
-    });
-
-    expect(snapshot.evidenceBundles).toEqual([
-      expect.objectContaining({
-        id: 'evb_extra',
-        workspaceId: 'ws_imported_demo',
-        redactedEvidenceRefs: [{ kind: 'workspace', ref: 'ws_imported_demo' }],
-      }),
-    ]);
-    expect(snapshot.runtimeEvidence).toEqual([
-      expect.objectContaining({
-        id: 'rte_extra',
-        workspaceId: 'ws_imported_demo',
-      }),
-    ]);
-    expect(snapshot.evidenceBundles[0]).not.toHaveProperty('futureOptionalNote');
-    expect(snapshot.runtimeEvidence[0]).not.toHaveProperty('futureOptionalNote');
+    expect(() => readImportSnapshot(root, 'ws_imported_demo')).toThrow();
   });
 
-  it('strips unknown optional usage ledger fields while reading workspace imports', () => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-usage-extra-'));
+  it('rejects unknown usage ledger fields while reading workspace imports', () => {
+    const root = freshExportRoot('openkit-workspace-import-usage-extra-');
     writeWorkspaceExportTree({
       exportRoot: root,
       exportId: 'wsexp_demo',
@@ -395,7 +1041,12 @@ describe('workspace export verifier', () => {
       },
       threads: [],
       knowledge: [],
-      threadItems: [],
+      turns: [],
+      itemRevisions: [],
+      artifacts: [],
+      artifactReviews: [],
+      agentSessions: [],
+      turnEvents: [],
       capabilityCalls: [
         {
           id: 'cap_extra',
@@ -445,23 +1096,11 @@ describe('workspace export verifier', () => {
       ],
     });
 
-    const snapshot = readWorkspaceImportSnapshot({
-      exportRoot: root,
-      targetWorkspaceId: 'ws_imported_demo',
-    });
-
-    expect(snapshot.capabilityCalls).toEqual([
-      expect.objectContaining({ id: 'cap_extra', workspaceId: 'ws_imported_demo' }),
-    ]);
-    expect(snapshot.usageRecords).toEqual([
-      expect.objectContaining({ id: 'use_extra', workspaceId: 'ws_imported_demo' }),
-    ]);
-    expect(snapshot.capabilityCalls[0]).not.toHaveProperty('futureOptionalNote');
-    expect(snapshot.usageRecords[0]).not.toHaveProperty('futureOptionalNote');
+    expect(() => readImportSnapshot(root, 'ws_imported_demo')).toThrow();
   });
 
-  it('strips unknown optional Git push record fields while reading workspace imports', () => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-git-push-extra-'));
+  it('rejects unknown Git push record fields while reading workspace imports', () => {
+    const root = freshExportRoot('openkit-workspace-import-git-push-extra-');
     writeWorkspaceExportTree({
       exportRoot: root,
       exportId: 'wsexp_demo',
@@ -479,7 +1118,12 @@ describe('workspace export verifier', () => {
       },
       threads: [],
       knowledge: [],
-      threadItems: [],
+      turns: [],
+      itemRevisions: [],
+      artifacts: [],
+      artifactReviews: [],
+      agentSessions: [],
+      turnEvents: [],
       gitPushRecords: [
         {
           id: 'gpr_extra',
@@ -505,24 +1149,11 @@ describe('workspace export verifier', () => {
       ],
     });
 
-    const snapshot = readWorkspaceImportSnapshot({
-      exportRoot: root,
-      targetWorkspaceId: 'ws_imported_demo',
-    });
-
-    expect(snapshot.gitPushRecords).toEqual([
-      expect.objectContaining({
-        id: 'gpr_extra',
-        workspaceId: 'ws_imported_demo',
-        repositoryResourceId: 'repo_default',
-        outcome: 'pushed',
-      }),
-    ]);
-    expect(snapshot.gitPushRecords[0]).not.toHaveProperty('futureOptionalNote');
+    expect(() => readImportSnapshot(root, 'ws_imported_demo')).toThrow();
   });
 
   it('rewrites workspace quarantine records while reading workspace imports', () => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-quarantine-'));
+    const root = freshExportRoot('openkit-workspace-import-quarantine-');
     writeWorkspaceExportTree({
       exportRoot: root,
       exportId: 'wsexp_demo',
@@ -540,7 +1171,12 @@ describe('workspace export verifier', () => {
       },
       threads: [],
       knowledge: [],
-      threadItems: [],
+      turns: [],
+      itemRevisions: [],
+      artifacts: [],
+      artifactReviews: [],
+      agentSessions: [],
+      turnEvents: [],
       workspaceQuarantineRecords: [
         {
           id: 'wqr_import',
@@ -558,10 +1194,7 @@ describe('workspace export verifier', () => {
       ],
     });
 
-    const snapshot = readWorkspaceImportSnapshot({
-      exportRoot: root,
-      targetWorkspaceId: 'ws_imported_demo',
-    });
+    const snapshot = readImportSnapshot(root, 'ws_imported_demo');
 
     expect(snapshot.workspaceQuarantineRecords).toEqual([
       expect.objectContaining({
@@ -573,7 +1206,7 @@ describe('workspace export verifier', () => {
   });
 
   it('rewrites workspace sync evidence bundles while reading workspace imports', () => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-sync-evidence-'));
+    const root = freshExportRoot('openkit-workspace-import-sync-evidence-');
     writeWorkspaceExportTree({
       exportRoot: root,
       exportId: 'wsexp_demo',
@@ -591,7 +1224,12 @@ describe('workspace export verifier', () => {
       },
       threads: [],
       knowledge: [],
-      threadItems: [],
+      turns: [],
+      itemRevisions: [],
+      artifacts: [],
+      artifactReviews: [],
+      agentSessions: [],
+      turnEvents: [],
       workspaceSyncEvidenceBundles: [
         {
           id: 'wseb_import',
@@ -614,10 +1252,7 @@ describe('workspace export verifier', () => {
       ],
     });
 
-    const snapshot = readWorkspaceImportSnapshot({
-      exportRoot: root,
-      targetWorkspaceId: 'ws_imported_demo',
-    });
+    const snapshot = readImportSnapshot(root, 'ws_imported_demo');
 
     expect(snapshot.workspaceSyncEvidenceBundles).toEqual([
       expect.objectContaining({
@@ -629,7 +1264,46 @@ describe('workspace export verifier', () => {
   });
 
   it('exports and imports redacted worker setup evidence rows', () => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-worker-evidence-'));
+    const root = freshExportRoot('openkit-workspace-worker-evidence-');
+    const workerThread = {
+      id: 'th_1',
+      workspaceId: 'ws_demo',
+      name: 'Worker evidence thread',
+      preview: 'Worker evidence',
+      status: 'active',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const workerTurn = {
+      id: 'turn_1',
+      workspaceId: 'ws_demo',
+      threadId: workerThread.id,
+      items: [],
+      status: 'completed',
+      humanGate: null,
+      error: null,
+      configVersion: null,
+      startedAt: timestamp,
+      completedAt: timestamp,
+      durationMs: 1,
+    };
+    const workerSession = {
+      id: 'as_1',
+      agentId: 'agent_codex_host',
+      workspaceId: 'ws_demo',
+      threadId: workerThread.id,
+      status: 'idle',
+      message: null,
+      sandboxSummary: null,
+      configVersion: null,
+      environmentPackageSnapshotId: 'aepsnap_demo',
+      policySnapshotId: null,
+      sessionCompatibilityKey: null,
+      stale: false,
+      workspaceRoots: [],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
     writeWorkspaceExportTree({
       exportRoot: root,
       exportId: 'wsexp_demo',
@@ -641,13 +1315,18 @@ describe('workspace export verifier', () => {
         kind: 'general',
         status: 'active',
         defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
-        counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+        counts: { threadCount: 1, artifactCount: 0, knowledgeEntryCount: 0 },
         createdAt: timestamp,
         updatedAt: timestamp,
       },
-      threads: [],
+      threads: [workerThread],
       knowledge: [],
-      threadItems: [],
+      turns: [workerTurn],
+      itemRevisions: [],
+      artifacts: [],
+      artifactReviews: [],
+      agentSessions: [workerSession],
+      turnEvents: [],
       resolvedAgentSetups: [
         {
           id: 'ras_demo',
@@ -721,15 +1400,13 @@ describe('workspace export verifier', () => {
       readFileSync(join(root, 'records', 'agent-environment-package-snapshots.jsonl'), 'utf8')
     ).toContain('aepsnap_demo');
 
-    const snapshot = readWorkspaceImportSnapshot({
-      exportRoot: root,
-      targetWorkspaceId: 'ws_imported_demo',
-    });
+    const snapshot = readImportSnapshot(root, 'ws_imported_demo');
 
     expect(snapshot.resolvedAgentSetups).toEqual([
       expect.objectContaining({
         id: 'ras_demo',
         workspaceId: 'ws_imported_demo',
+        turnId: snapshot.turns[0]?.id,
         setup: expect.objectContaining({
           agent: { displayName: 'Codex Agent', id: 'agent_codex_host' },
         }),
@@ -738,18 +1415,23 @@ describe('workspace export verifier', () => {
     expect(snapshot.agentEnvironmentPackageSnapshots).toEqual([
       expect.objectContaining({
         contentDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
-        snapshotId: 'aepsnap_demo',
         workspaceId: 'ws_imported_demo',
         snapshot: expect.objectContaining({
-          scope: expect.objectContaining({ workspaceId: 'ws_imported_demo' }),
+          scope: expect.objectContaining({
+            workspaceId: 'ws_imported_demo',
+            threadId: snapshot.threads[0]?.id,
+            turnId: snapshot.turns[0]?.id,
+            agentSessionId: snapshot.agentSessions[0]?.id,
+          }),
         }),
       }),
     ]);
+    expect(snapshot.agentEnvironmentPackageSnapshots[0]!.snapshotId).not.toBe('aepsnap_demo');
     expect(snapshot.agentEnvironmentPackageSnapshots[0]!.contentDigest).not.toBe('digest_demo');
   });
 
   it('imports workspace-family capability call rows', () => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-capability-family-'));
+    const root = freshExportRoot('openkit-workspace-capability-family-');
     writeWorkspaceExportTree({
       exportRoot: root,
       exportId: 'wsexp_demo',
@@ -767,13 +1449,18 @@ describe('workspace export verifier', () => {
       },
       threads: [],
       knowledge: [],
-      threadItems: [],
+      turns: [],
+      itemRevisions: [],
+      artifacts: [],
+      artifactReviews: [],
+      agentSessions: [],
+      turnEvents: [],
       capabilityCalls: [
         {
           id: 'cap_workspace_read',
           workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
+          threadId: null,
+          turnId: null,
           itemId: null,
           agentId: null,
           agentSessionId: null,
@@ -794,12 +1481,7 @@ describe('workspace export verifier', () => {
       ],
     });
 
-    expect(
-      readWorkspaceImportSnapshot({
-        exportRoot: root,
-        targetWorkspaceId: 'ws_imported_demo',
-      }).capabilityCalls
-    ).toEqual([
+    expect(readImportSnapshot(root, 'ws_imported_demo').capabilityCalls).toEqual([
       expect.objectContaining({
         capabilityId: 'assistant.repository.read',
         family: 'workspace',
@@ -830,6 +1512,10 @@ describe('workspace export verifier', () => {
 
       expect(covered).toEqual(tables);
       expect(WORKSPACE_EXPORT_NON_PORTABLE_WORKSPACE_SQLITE_TABLES).toEqual([
+        {
+          table: 'idempotency_requests',
+          reason: 'short-lived request replay state is local to the source workspace',
+        },
         {
           table: 'workspace_filesystem_staging_roots',
           reason: 'host-local apply staging paths are not portable export history',

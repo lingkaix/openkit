@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync } from 'no
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 
+import { AgentSessionSchema } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
@@ -22,7 +23,12 @@ function seedDemoWorkspace(store: FsStore): void {
     workspace: demo.workspace,
     threads: [demo.thread],
     knowledge: demo.knowledge,
-    threadItems: [],
+    turns: [],
+    itemRevisions: [],
+    artifacts: [],
+    artifactReviews: [],
+    agentSessions: [],
+    turnEvents: [],
   });
 }
 
@@ -98,12 +104,6 @@ describe('FsStore persistence', () => {
     const validThread = store.createThread('ws_demo', 'Persist after rejected turn');
     store.createTurn('ws_demo', validThread.id, 'Persist valid work');
 
-    const snapshot = JSON.parse(
-      readFileSync(
-        join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo', 'store.json'),
-        'utf8'
-      )
-    ) as { turns: Array<{ id: string }> };
     const restarted = new FsStore({ dataRoot });
     let restartedOrphan: ReturnType<FsStore['getTurnById']> | null = null;
     try {
@@ -111,7 +111,6 @@ describe('FsStore persistence', () => {
     } catch {}
 
     expect.soft(inMemoryOrphan).toBeNull();
-    expect.soft(snapshot.turns.map((turn) => turn.id)).not.toContain(orphanTurnId);
     expect.soft(restartedOrphan).toBeNull();
   });
 
@@ -200,14 +199,6 @@ describe('FsStore persistence', () => {
       data: { type: 'artifact-created', artifact },
     });
 
-    const workspaceSnapshotPath = join(
-      dataRoot,
-      'users',
-      'user_local',
-      'workspaces',
-      'ws_demo',
-      'store.json'
-    );
     const artifactProjectionPath = join(
       dataRoot,
       'users',
@@ -293,8 +284,10 @@ describe('FsStore persistence', () => {
     );
     const restarted = new FsStore({ dataRoot });
 
-    expect(existsSync(workspaceSnapshotPath)).toBe(true);
-    expect(JSON.parse(readFileSync(artifactProjectionPath, 'utf8'))).toEqual(artifact);
+    expect(JSON.parse(readFileSync(artifactProjectionPath, 'utf8'))).toEqual({
+      ...artifact,
+      content: { format: artifact.content.format },
+    });
     expect(readFileSync(artifactContentPath, 'utf8')).toBe('History survived restart.');
     expect(readFileSync(knowledgeProjectionPath, 'utf8')).toContain('Knowledge survived restart.');
     expect(readFileSync(knowledgeProposalProjectionPath, 'utf8')).toContain(
@@ -332,14 +325,70 @@ describe('FsStore persistence', () => {
     ).toEqual(['codex', 'opencode', 'opencode']);
   });
 
+  it('projects agent-session events before returning or notifying listeners', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
+    const store = new FsStore({ dataRoot });
+    seedDemoWorkspace(store);
+    const thread = store.createThread('ws_demo', 'Product-safe session events');
+    const turn = store.createTurn('ws_demo', thread.id, 'Emit a product-safe session');
+    const timestamp = '2026-07-12T00:00:00.000Z';
+    const sourcePath = '/safe/fake/internal/sse-host-path-marker';
+    const agentSession = store.createAgentSession({
+      id: 'as_product_safe_event',
+      agentId: 'agent_codex_host',
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      status: 'busy',
+      message: null,
+      workspaceRoots: [
+        {
+          access: 'read-write',
+          id: 'repo',
+          sourceKind: 'host-dir',
+          sourcePath,
+          workerPath: '/workspace/repo',
+        },
+      ],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const listenerEnvelopes: string[] = [];
+    const unsubscribe = store.addTurnListener(turn.id, (event) => {
+      listenerEnvelopes.push(JSON.stringify(event));
+    });
+
+    const emitted = store.emitTurnEvent(turn.id, {
+      event: 'agent.session.updated',
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      turnId: turn.id,
+      data: { type: 'agent-session-updated', agentSession },
+    });
+    unsubscribe();
+
+    const expectedAgentSession = AgentSessionSchema.parse(agentSession);
+    const serializedEnvelopes = [JSON.stringify(emitted), ...listenerEnvelopes];
+
+    expect(listenerEnvelopes).toHaveLength(1);
+    for (const serializedEnvelope of serializedEnvelopes) {
+      const parsed = JSON.parse(serializedEnvelope) as { data: { agentSession: unknown } };
+
+      expect.soft(serializedEnvelope).not.toContain('workspaceRoots');
+      expect.soft(serializedEnvelope).not.toContain('sourcePath');
+      expect.soft(serializedEnvelope).not.toContain(sourcePath);
+      expect.soft(parsed.data.agentSession).toEqual(expectedAgentSession);
+    }
+  });
+
   it('persists command idempotency records and prunes expired entries after restart', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
     const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Idempotency workspace');
 
     store.recordCommandRequest({
       command: 'thread.create',
       requestId: '0190f4c8-0000-7000-8000-000000000501',
-      scope: { workspaceId: 'ws_demo' },
+      scope: { workspaceId: workspace.id },
       inputHash: 'sha256:live',
       response: { kind: 'thread', id: 'th_demo' },
       createdAt: '2026-05-27T00:00:00.000Z',
@@ -348,7 +397,7 @@ describe('FsStore persistence', () => {
     store.recordCommandRequest({
       command: 'thread.create',
       requestId: '0190f4c8-0000-7000-8000-000000000502',
-      scope: { workspaceId: 'ws_demo' },
+      scope: { workspaceId: workspace.id },
       inputHash: 'sha256:expired',
       response: { kind: 'thread', id: 'th_old' },
       createdAt: '2000-01-01T00:00:00.000Z',
@@ -359,17 +408,41 @@ describe('FsStore persistence', () => {
 
     expect(
       restarted.getCommandRequest('thread.create', '0190f4c8-0000-7000-8000-000000000501', {
-        workspaceId: 'ws_demo',
+        workspaceId: workspace.id,
       })?.response
     ).toEqual({ kind: 'thread', id: 'th_demo' });
     expect(
       restarted.getCommandRequest('thread.create', '0190f4c8-0000-7000-8000-000000000502', {
-        workspaceId: 'ws_demo',
+        workspaceId: workspace.id,
       })
     ).toBeNull();
     expect(restarted.listCommandRequests().map((record) => record.inputHash)).toEqual([
       'sha256:live',
     ]);
+  });
+
+  it('does not create storage for workspace-scoped idempotency without a workspace', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
+    const store = new FsStore({ dataRoot });
+    const workspaceId = 'ws_missing';
+
+    expect(() =>
+      store.recordCommandRequest({
+        command: 'thread.create',
+        requestId: '0190f4c8-0000-7000-8000-000000000505',
+        scope: { workspaceId },
+        inputHash: 'sha256:missing-workspace',
+        response: { kind: 'thread', id: 'th_missing' },
+      })
+    ).toThrow(`Workspace not found: ${workspaceId}`);
+    expect(
+      store.getCommandRequest('thread.create', '0190f4c8-0000-7000-8000-000000000505', {
+        workspaceId,
+      })
+    ).toBeNull();
+    expect(existsSync(join(dataRoot, 'users', 'user_local', 'workspaces', workspaceId))).toBe(
+      false
+    );
   });
 
   it('homes durable command idempotency in its user or workspace database', () => {

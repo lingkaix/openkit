@@ -5,8 +5,10 @@ import type {
   WorkspaceMaterializationRecord,
   WorkspaceSynchronizationBackendKind,
 } from '@openkit/app-api-schemas';
-import type { AgentEnvironmentPackage } from '@openkit/config-schema';
-import { redactAgentEnvironmentPackageSnapshot } from '@openkit/config-schema';
+import type {
+  AgentEnvironmentPackage,
+  SessionWorkspaceMaterializationPlan,
+} from '@openkit/config-schema';
 import type { FsStore } from '../lib/store.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
@@ -187,15 +189,21 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           ? { workspaceSourceRefs: context.workspaceSourceRefs }
           : {}),
       });
+      const sessionWorkspace = (
+        environmentPackage.extensions.openkit as {
+          sessionWorkspace: SessionWorkspaceMaterializationPlan;
+        }
+      ).sessionWorkspace;
       const timestamp = this.now();
       const agentSession = store.createAgentSession({
         agentId: agent.id,
         configVersion: turn.configVersion,
         createdAt: timestamp,
-        environmentPackageSnapshot: redactAgentEnvironmentPackageSnapshot(environmentPackage),
+        environmentPackageSnapshotId: environmentPackage.snapshotId,
         id: resolvedAgentSessionId,
         message: null,
         policySnapshotId: WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID,
+        sessionCompatibilityKey: sessionWorkspace.compatibilityKey.digest,
         status: 'created',
         threadId: turn.threadId,
         updatedAt: timestamp,

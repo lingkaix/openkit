@@ -506,7 +506,7 @@ export function registerDashboardRoutes({
         .find((candidate) => candidate.id === agentSessionId);
       const snapshot = resolveWorkerControlSnapshot(
         workerControlGateway,
-        storedSession?.environmentPackageSnapshot?.snapshotId ?? null,
+        storedSession?.environmentPackageSnapshotId ?? null,
         agentSessionId,
         workspaceId,
         threadId

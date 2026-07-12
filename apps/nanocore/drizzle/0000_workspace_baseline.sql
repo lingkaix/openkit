@@ -426,26 +426,6 @@ CREATE INDEX `resolved_agent_setups_agent_idx` ON `resolved_agent_setups` (`work
 --> statement-breakpoint
 CREATE INDEX `resolved_agent_setups_turn_idx` ON `resolved_agent_setups` (`workspace_id`,`turn_id`);
 --> statement-breakpoint
-CREATE TABLE `agent_environment_package_snapshots` (
-	`snapshot_id` text NOT NULL,
-	`workspace_id` text NOT NULL,
-	`turn_id` text NOT NULL,
-	`thread_id` text NOT NULL,
-	`agent_session_id` text NOT NULL,
-	`agent_id` text NOT NULL,
-	`package_id` text NOT NULL,
-	`runtime_kind` text NOT NULL,
-	`backend_kind` text NOT NULL,
-	`content_digest` text NOT NULL,
-	`snapshot_json` text NOT NULL,
-	`created_at` text NOT NULL,
-	PRIMARY KEY(`workspace_id`,`snapshot_id`)
-);
---> statement-breakpoint
-CREATE UNIQUE INDEX `aep_snapshots_digest_idx` ON `agent_environment_package_snapshots` (`workspace_id`,`content_digest`);
---> statement-breakpoint
-CREATE INDEX `aep_snapshots_turn_idx` ON `agent_environment_package_snapshots` (`workspace_id`,`turn_id`,`agent_session_id`);
---> statement-breakpoint
 ALTER TABLE `audit_events` ADD COLUMN `permission_decision_id` text;
 --> statement-breakpoint
 ALTER TABLE `audit_events` ADD COLUMN `vault_grant_id` text;

@@ -38,10 +38,12 @@ describe('nanocore e2e server workspace scoping', () => {
         headers: { cookie: secondCookie },
       }
     );
+    const secondGetBody = (await secondGetResponse.json()) as { code: string };
 
     expect(createResponse.status).toBe(201);
     expect(secondList.items.map((workspace) => workspace.id)).not.toContain(createdWorkspace.id);
-    expect(secondGetResponse.status).toBe(404);
+    expect(secondGetResponse.status).toBe(403);
+    expect(secondGetBody.code).toBe('core.auth.scope_forbidden');
   });
 });
 

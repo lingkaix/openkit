@@ -1,0 +1,29 @@
+# Authentication And Authorization
+
+This directory owns NanoCore authentication middleware, Better Auth browser sessions, actor resolution, server access-token authentication, bootstrap credential flow, and request-scope authorization helpers.
+
+## Boundaries
+
+- Browser and product requests use Better Auth session cookies; remote, MCP, and administration requests use explicit `okt_` bearer credentials.
+- Authentication establishes the actor; workspace membership and token scope still require authorization before any workspace database, store, or mutation is opened.
+- Global administration routes require the documented deployment-admin capability and must not be reachable merely because a browser session is valid.
+- Missing, removed, inactive, or cross-user membership must fail closed before resource existence is revealed.
+- Tokens, cookies, password material, OAuth material, and full unique credential identifiers must never enter logs, diagnostics, events, or test output.
+
+## File Map
+
+- `middleware.ts` owns actor authentication and request variables.
+- `better-auth.ts` and `server-flow.ts` own browser authentication and server-mode flows.
+- `access-tokens.ts` and `access-token-auth.ts` own bearer credential lifecycle and validation.
+- `bootstrap.ts` owns the one-time server owner bootstrap path.
+- `actor-store-manager.ts` owns actor-scoped store selection.
+
+## Verification
+
+Run authentication middleware, server flow, access-token, bootstrap, membership, and Server route tests relevant to the change, followed by NanoCore typecheck, lint, and build. Server-mode tests must cover unauthenticated, wrong-scope, removed-membership, read-only, and server-admin cases where applicable.
+
+## Related Design
+
+- [Remote Auth Credential Bootstrap](../../../../docs/specs/20260704-remote_auth_credential_bootstrap.md)
+- [Architecture](../../../../docs/core/architecture.md)
+

@@ -686,7 +686,7 @@ describe('thread goal summary app API', () => {
             reason: 'Goal plan needs approval.',
           },
         },
-        planItemId: `it_goal_plan_${planPayload.goal.goalId}`,
+        planItemId: 'it_goal_plan_tu_2',
         planner: {
           mode: 'goal',
           sourceAgentId: 'worker-coordinator',
@@ -867,6 +867,14 @@ describe('thread goal summary app API', () => {
       });
       const permissionDb = createWorkspaceDb(coreDb);
       try {
+        const workerTurnId = store.listThreadTurns('ws_demo', thread.id).at(-1)?.id;
+
+        expect(workerTurnId).toBeDefined();
+        expect(
+          getWorkerCheckpoint(permissionDb, 'ws_demo', thread.id, workerTurnId!)
+        ).toMatchObject({
+          workerSessionId: null,
+        });
         expect(listPermissionDecisionsForAction(permissionDb, 'runtime.launch')).toContainEqual({
           action: 'runtime.launch',
           enforcement_point: 'goal.test.supervise.worker_start',
@@ -953,7 +961,7 @@ describe('thread goal summary app API', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            requestId: 'req_goal_plan_revision_1',
+            requestId: '00000000-0000-4000-8000-000000000302',
             revision: 'Split documentation and verification into separate review gates.',
           }),
         }
@@ -1677,7 +1685,7 @@ describe('thread goal summary app API', () => {
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ requestId: 'req_goal_step_human' }),
+          body: JSON.stringify({ requestId: '00000000-0000-4000-8000-000000000303' }),
         }
       );
 

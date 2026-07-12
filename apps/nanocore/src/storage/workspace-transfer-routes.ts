@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
@@ -128,9 +128,19 @@ import { readDataRootLayoutMarker } from './fs-layout.js';
 import { applyScopedMigrations } from './migrate.js';
 import {
   dryRunWorkspaceImport,
-  readWorkspaceImportSnapshot,
+  verifyWorkspaceExportTree,
+  type WorkspaceImportDryRunReport,
   writeWorkspaceExportTree,
 } from './workspace-export.js';
+import {
+  assertCanonicalDirectory,
+  assertSafeWorkspacePathSegment,
+} from './workspace-file-records.js';
+import { readWorkspaceImportSnapshot, type WorkspaceImportSnapshot } from './workspace-import.js';
+import {
+  readWorkspacePortableFileState,
+  writeWorkspacePortableFileState,
+} from './workspace-portable-file-state.js';
 
 /**
  * Returns the first available imported workspace id using numeric suffixes.
@@ -147,6 +157,347 @@ function nextImportedWorkspaceId(baseId: string, exists: (workspaceId: string) =
     suffix += 1;
   }
   return workspaceId;
+}
+
+/**
+ * Returns whether an imported workspace id is occupied in memory or on disk.
+ *
+ * @param store Current user Store.
+ * @param dataRoot Canonical data root.
+ * @param workspaceId Candidate workspace id.
+ * @returns True when either owner already has the id.
+ */
+function importedWorkspaceExists(store: FsStore, dataRoot: string, workspaceId: string): boolean {
+  assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
+  try {
+    store.getWorkspace(workspaceId);
+    return true;
+  } catch {
+    return Boolean(
+      lstatSync(join(dataRoot, 'users', store.getUserId(), 'workspaces', workspaceId), {
+        throwIfNoEntry: false,
+      })
+    );
+  }
+}
+
+/**
+ * Verifies that request path handles identify the manifest stored at that path.
+ *
+ * @param report Verified import preview.
+ * @param sourceWorkspaceId Requested source workspace handle.
+ * @param exportId Requested export handle.
+ */
+function assertRequestedExportHandles(
+  report: { sourceWorkspaceId: string; exportId: string },
+  sourceWorkspaceId: string,
+  exportId: string
+): void {
+  if (report.sourceWorkspaceId !== sourceWorkspaceId || report.exportId !== exportId) {
+    throw new Error('Workspace import path handles do not match the export manifest.');
+  }
+}
+
+/**
+ * Resolves one existing server-managed export without following directory links.
+ *
+ * @param dataRoot Canonical data root.
+ * @param workspaceId Source workspace handle.
+ * @param exportId Export handle.
+ * @returns Existing export root.
+ * @throws Error when a handle is unsafe or any owning directory is missing or linked.
+ */
+function existingWorkspaceExportRoot(
+  dataRoot: string,
+  workspaceId: string,
+  exportId: string
+): string {
+  assertSafeWorkspacePathSegment(workspaceId, 'Source workspace id');
+  assertSafeWorkspacePathSegment(exportId, 'Export id');
+  const exportsRoot = join(dataRoot, 'server', 'exports');
+  const workspacesRoot = join(exportsRoot, 'workspaces');
+  const workspaceRoot = join(workspacesRoot, workspaceId);
+  const exportRoot = join(workspaceRoot, exportId);
+
+  for (const path of [exportsRoot, workspacesRoot, workspaceRoot, exportRoot]) {
+    assertCanonicalDirectory(path);
+  }
+  return exportRoot;
+}
+
+/**
+ * Collects every portable workspace-database row family for one export.
+ *
+ * @param coreDb Optional Core database whose presence enables durable workspace rows.
+ * @param store Current user Store.
+ * @param workspaceId Exported workspace id.
+ * @param repositoryWorkspaceDb Workspace database resolver.
+ * @returns Portable workspace-database row families, or empty families without Core storage.
+ * @throws Error when workspace database access or row validation fails.
+ */
+function collectWorkspaceExportRows(
+  coreDb: CoreDb | undefined,
+  store: FsStore,
+  workspaceId: string,
+  repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb
+) {
+  if (!coreDb) {
+    return {
+      auditEvents: [],
+      agentEnvironmentPackageSnapshots: [],
+      capabilityCalls: [],
+      evidenceBundles: [],
+      gitPushRecords: [],
+      goalRecords: [],
+      goalReviewRecords: [],
+      goalTasks: [],
+      goalVerificationRecords: [],
+      mcpToolSchemaSnapshots: [],
+      pendingUserTurns: [],
+      permissionDecisions: [],
+      resolvedAgentSetups: [],
+      runtimeEvidence: [],
+      usageRecords: [],
+      vaultUseRecords: [],
+      workerCheckpoints: [],
+      workspaceApplyPlans: [],
+      workspaceApplyResults: [],
+      workspaceReconciliationRecords: [],
+      workspaceQuarantineRecords: [],
+      workspaceSyncEvidenceBundles: [],
+      workspaceRepositories: [],
+      workspaceSyncRecords: {
+        backendWorkspaceHandles: [],
+        changeSets: [],
+        inputSnapshots: [],
+        materializationRecords: [],
+        stagedReviews: [],
+        workerOutputManifests: [],
+      },
+    };
+  }
+
+  const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+  try {
+    const workspaceSyncRecords = listExportableWorkspaceSyncRecords(workspaceDb, workspaceId);
+    return {
+      auditEvents: listWorkspaceAuditEvents(workspaceDb, workspaceId),
+      agentEnvironmentPackageSnapshots: listExportableAgentEnvironmentPackageSnapshots(
+        workspaceDb,
+        workspaceId
+      ),
+      capabilityCalls: listWorkspaceCapabilityCalls(workspaceDb, workspaceId),
+      evidenceBundles: listWorkspaceEvidenceBundles(workspaceDb, workspaceId),
+      gitPushRecords: listExportableGitPushRecords(workspaceDb, workspaceId),
+      goalRecords: listExportableGoalRecords(workspaceDb, workspaceId),
+      goalReviewRecords: listExportableGoalReviewRecords(workspaceDb, workspaceId),
+      goalTasks: listExportableGoalTasks(workspaceDb, workspaceId),
+      goalVerificationRecords: listExportableGoalVerificationRecords(workspaceDb, workspaceId),
+      mcpToolSchemaSnapshots: listExportableMcpToolSchemaSnapshots(workspaceDb, workspaceId),
+      pendingUserTurns: listExportablePendingUserTurns(workspaceDb, workspaceId),
+      permissionDecisions: listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId),
+      resolvedAgentSetups: listExportableResolvedAgentSetups(workspaceDb, workspaceId),
+      runtimeEvidence: listWorkspaceRuntimeEvidence(workspaceDb, workspaceId),
+      usageRecords: listWorkspaceUsageRecords(workspaceDb, workspaceId),
+      vaultUseRecords: listExportableWorkspaceVaultUseRecords(workspaceDb, workspaceId),
+      workerCheckpoints: listExportableWorkerCheckpoints(workspaceDb, workspaceId),
+      workspaceApplyPlans: listExportableWorkspaceApplyPlans(workspaceDb, workspaceId),
+      workspaceApplyResults: listExportableWorkspaceApplyResults(workspaceDb, workspaceId),
+      workspaceReconciliationRecords: listExportableWorkspaceReconciliationRecords(
+        workspaceDb,
+        workspaceId
+      ),
+      workspaceQuarantineRecords: listExportableWorkspaceQuarantineRecords(
+        workspaceDb,
+        workspaceId
+      ),
+      workspaceSyncEvidenceBundles: listExportableWorkspaceSyncEvidenceBundles(
+        workspaceDb,
+        workspaceId
+      ),
+      workspaceRepositories: listExportableWorkspaceRepositoryResources(workspaceDb, workspaceId),
+      workspaceSyncRecords,
+    };
+  } finally {
+    workspaceDb.sqlite.close();
+  }
+}
+
+/**
+ * Replays every portable workspace-database row into one staged workspace database.
+ *
+ * @param input Core database, staged workspace, verified snapshot, and import lineage.
+ * @throws Error when migration, row replay, or usage recording fails.
+ */
+function importWorkspaceDatabaseRows({
+  coreDb,
+  store,
+  workspaceRoot,
+  importedWorkspaceId,
+  requestId,
+  report,
+  snapshot,
+}: {
+  readonly coreDb: CoreDb;
+  readonly store: FsStore;
+  readonly workspaceRoot: string;
+  readonly importedWorkspaceId: string;
+  readonly requestId: string | null;
+  readonly report: WorkspaceImportDryRunReport;
+  readonly snapshot: WorkspaceImportSnapshot;
+}): void {
+  const workspaceDb = openWorkspaceDbAtRoot({
+    dataRoot: coreDb.dataRoot,
+    userId: store.getUserId(),
+    workspaceId: importedWorkspaceId,
+    workspaceRoot,
+  });
+
+  try {
+    applyScopedMigrations(workspaceDb);
+    importWorkspaceCapabilityUsageLedger({
+      workspaceDb,
+      capabilityCalls: snapshot.capabilityCalls,
+      usageRecords: snapshot.usageRecords,
+    });
+    importWorkspaceAuditEvents({
+      workspaceDb,
+      sourceWorkspaceId: report.exportedWorkspaceId,
+      targetWorkspaceId: importedWorkspaceId,
+      events: snapshot.auditEvents,
+    });
+    importWorkspaceEvidenceBundles(workspaceDb, snapshot.evidenceBundles);
+    importWorkspaceRuntimeEvidence(workspaceDb, snapshot.runtimeEvidence);
+    importWorkspaceRepositoryResources(
+      workspaceDb,
+      importedWorkspaceId,
+      snapshot.workspaceRepositories
+    );
+    importWorkspaceSyncRecords(workspaceDb, {
+      backendWorkspaceHandles: snapshot.backendWorkspaceHandles,
+      changeSets: snapshot.workspaceChangeSets,
+      inputSnapshots: snapshot.workspaceInputSnapshots,
+      materializationRecords: snapshot.workspaceMaterializationRecords,
+      stagedReviews: snapshot.stagedWorkspaceReviews,
+      workerOutputManifests: snapshot.workerOutputManifests,
+    });
+    importWorkspaceApplyPlans(workspaceDb, snapshot.workspaceApplyPlans);
+    importWorkspaceApplyResults(workspaceDb, snapshot.workspaceApplyResults);
+    importWorkspaceReconciliationRecords(workspaceDb, snapshot.workspaceReconciliationRecords);
+    importWorkspaceQuarantineRecords(workspaceDb, snapshot.workspaceQuarantineRecords);
+    importWorkspaceSyncEvidenceBundles(workspaceDb, snapshot.workspaceSyncEvidenceBundles);
+    importWorkspacePermissionDecisions(workspaceDb, snapshot.permissionDecisions);
+    importGoalRecords(workspaceDb, snapshot.goalRecords);
+    importGoalTasks(workspaceDb, snapshot.goalTasks);
+    importGoalReviewRecords(workspaceDb, snapshot.goalReviewRecords);
+    importGoalVerificationRecords(workspaceDb, snapshot.goalVerificationRecords);
+    importMcpToolSchemaSnapshots(workspaceDb, snapshot.mcpToolSchemaSnapshots);
+    importPendingUserTurns(workspaceDb, snapshot.pendingUserTurns);
+    importResolvedAgentSetups(workspaceDb, snapshot.resolvedAgentSetups);
+    importWorkspaceVaultUseRecords(workspaceDb, snapshot.vaultUseRecords);
+    importWorkerCheckpoints(workspaceDb, snapshot.workerCheckpoints);
+    importWorkspaceGitPushRecords(workspaceDb, snapshot.gitPushRecords);
+    importAgentEnvironmentPackageSnapshots(workspaceDb, snapshot.agentEnvironmentPackageSnapshots);
+    recordWorkspaceAuditEvent({
+      workspaceDb,
+      workspaceId: importedWorkspaceId,
+      requestId,
+      category: 'system',
+      action: 'workspace.import',
+      resource: `workspace:${importedWorkspaceId}`,
+      outcome: 'succeeded',
+      severity: 'info',
+      summary: `Workspace import created ${importedWorkspaceId} from ${report.exportedWorkspaceId}.`,
+    });
+    const now = new Date();
+    const storageImportId = randomUUID();
+    const call = startCapabilityCall({
+      workspaceDb,
+      callId: `cap_storage_import_${storageImportId}`,
+      workspaceId: importedWorkspaceId,
+      requestId,
+      family: 'storage',
+      operation: 'workspace.import.write',
+      capabilityId: 'storage.workspace_import',
+      providerRef: 'nanocore-storage',
+      serviceRef: 'workspace-import',
+      redactionClass: 'metadata-only',
+      summary: `Workspace import ${importedWorkspaceId}`,
+      now,
+    });
+    recordUsage({
+      workspaceDb,
+      call,
+      records: [
+        {
+          usageId: `use_storage_import_files_${storageImportId}`,
+          category: 'storage',
+          unit: 'files',
+          quantity: report.verification.fileCount,
+          providerRef: 'nanocore-storage',
+          source: 'workspace-import-inventory',
+        },
+        {
+          usageId: `use_storage_import_bytes_${storageImportId}`,
+          category: 'storage',
+          unit: 'bytes',
+          quantity: report.verification.totalBytes,
+          providerRef: 'nanocore-storage',
+          source: 'workspace-import-inventory',
+        },
+      ],
+      now,
+    });
+    finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded', now });
+  } finally {
+    workspaceDb.sqlite.close();
+  }
+}
+
+/**
+ * Publishes one staged workspace with its Core-owned portable rows as one recoverable operation.
+ *
+ * @param coreDb Optional Core database for Vault and injection records.
+ * @param store Current user Store.
+ * @param snapshot Verified and reminted import snapshot.
+ * @param stageWorkspace Staged file and workspace-database writer.
+ * @returns Imported workspace record.
+ * @throws Error when staged publication or transactional Core replay fails.
+ */
+function publishImportedWorkspace(
+  coreDb: CoreDb | undefined,
+  store: FsStore,
+  snapshot: WorkspaceImportSnapshot,
+  stageWorkspace: (stage: ImportWorkspaceStage) => void
+): ReturnType<FsStore['importWorkspaceSnapshot']> {
+  const importWorkspaceState = () =>
+    store.importWorkspaceSnapshot({
+      ...snapshot,
+      stageWorkspace,
+    });
+  if (!coreDb) {
+    return importWorkspaceState();
+  }
+
+  let publishedWorkspaceId: string | null = null;
+  try {
+    return coreDb.sqlite.transaction(() => {
+      const imported = importWorkspaceState();
+      publishedWorkspaceId = imported.id;
+      for (const reference of snapshot.vaultReferences) {
+        importUnboundWorkspaceVaultReference(coreDb, reference);
+      }
+      importWorkspaceVaultGrants(coreDb, snapshot.vaultGrants);
+      importInjectionPlans(coreDb, snapshot.injectionPlans);
+      importInjectionReceipts(coreDb, snapshot.injectionReceipts);
+      return imported;
+    })();
+  } catch (error) {
+    if (publishedWorkspaceId) {
+      store.rollbackImportedWorkspace(publishedWorkspaceId);
+    }
+    throw error;
+  }
 }
 
 /**
@@ -176,117 +527,21 @@ export function registerWorkspaceTransferRoutes({
     const store = requestStore(c);
     const workspace = store.getWorkspace(workspaceId);
     const threads = store.listThreads(workspaceId);
-    const dataSourceCatalogPath = join(
-      dataRoot,
-      'users',
-      store.getUserId(),
-      'workspaces',
-      workspaceId,
-      'config',
-      'data-sources.jsonc'
-    );
+    const turns = threads.flatMap((thread) => store.listThreadTurns(workspaceId, thread.id));
+    const workspaceRoot = join(dataRoot, 'users', store.getUserId(), 'workspaces', workspaceId);
+    assertCanonicalDirectory(workspaceRoot);
+    const dataSourceCatalogPath = join(workspaceRoot, 'config', 'data-sources.jsonc');
     const dataSourceCatalog = existsSync(dataSourceCatalogPath)
       ? parseWorkspaceDataSourceCatalog(
           parseJsoncObject(readFileSync(dataSourceCatalogPath, 'utf8'), dataSourceCatalogPath)
         )
       : null;
-    const workspaceRowFamilies = coreDb
-      ? (() => {
-          const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-
-          try {
-            const workspaceSyncRecords = listExportableWorkspaceSyncRecords(
-              workspaceDb,
-              workspaceId
-            );
-
-            return {
-              auditEvents: listWorkspaceAuditEvents(workspaceDb, workspaceId),
-              agentEnvironmentPackageSnapshots: listExportableAgentEnvironmentPackageSnapshots(
-                workspaceDb,
-                workspaceId
-              ),
-              capabilityCalls: listWorkspaceCapabilityCalls(workspaceDb, workspaceId),
-              evidenceBundles: listWorkspaceEvidenceBundles(workspaceDb, workspaceId),
-              gitPushRecords: listExportableGitPushRecords(workspaceDb, workspaceId),
-              goalRecords: listExportableGoalRecords(workspaceDb, workspaceId),
-              goalReviewRecords: listExportableGoalReviewRecords(workspaceDb, workspaceId),
-              goalTasks: listExportableGoalTasks(workspaceDb, workspaceId),
-              goalVerificationRecords: listExportableGoalVerificationRecords(
-                workspaceDb,
-                workspaceId
-              ),
-              mcpToolSchemaSnapshots: listExportableMcpToolSchemaSnapshots(
-                workspaceDb,
-                workspaceId
-              ),
-              pendingUserTurns: listExportablePendingUserTurns(workspaceDb, workspaceId),
-              permissionDecisions: listExportableWorkspacePermissionDecisions(
-                workspaceDb,
-                workspaceId
-              ),
-              resolvedAgentSetups: listExportableResolvedAgentSetups(workspaceDb, workspaceId),
-              runtimeEvidence: listWorkspaceRuntimeEvidence(workspaceDb, workspaceId),
-              usageRecords: listWorkspaceUsageRecords(workspaceDb, workspaceId),
-              vaultUseRecords: listExportableWorkspaceVaultUseRecords(workspaceDb, workspaceId),
-              workerCheckpoints: listExportableWorkerCheckpoints(workspaceDb, workspaceId),
-              workspaceApplyPlans: listExportableWorkspaceApplyPlans(workspaceDb, workspaceId),
-              workspaceApplyResults: listExportableWorkspaceApplyResults(workspaceDb, workspaceId),
-              workspaceReconciliationRecords: listExportableWorkspaceReconciliationRecords(
-                workspaceDb,
-                workspaceId
-              ),
-              workspaceQuarantineRecords: listExportableWorkspaceQuarantineRecords(
-                workspaceDb,
-                workspaceId
-              ),
-              workspaceSyncEvidenceBundles: listExportableWorkspaceSyncEvidenceBundles(
-                workspaceDb,
-                workspaceId
-              ),
-              workspaceRepositories: listExportableWorkspaceRepositoryResources(
-                workspaceDb,
-                workspaceId
-              ),
-              workspaceSyncRecords,
-            };
-          } finally {
-            workspaceDb.sqlite.close();
-          }
-        })()
-      : {
-          auditEvents: [],
-          agentEnvironmentPackageSnapshots: [],
-          capabilityCalls: [],
-          evidenceBundles: [],
-          gitPushRecords: [],
-          goalRecords: [],
-          goalReviewRecords: [],
-          goalTasks: [],
-          goalVerificationRecords: [],
-          mcpToolSchemaSnapshots: [],
-          pendingUserTurns: [],
-          permissionDecisions: [],
-          resolvedAgentSetups: [],
-          runtimeEvidence: [],
-          usageRecords: [],
-          vaultUseRecords: [],
-          workerCheckpoints: [],
-          workspaceApplyPlans: [],
-          workspaceApplyResults: [],
-          workspaceReconciliationRecords: [],
-          workspaceQuarantineRecords: [],
-          workspaceSyncEvidenceBundles: [],
-          workspaceRepositories: [],
-          workspaceSyncRecords: {
-            backendWorkspaceHandles: [],
-            changeSets: [],
-            inputSnapshots: [],
-            materializationRecords: [],
-            stagedReviews: [],
-            workerOutputManifests: [],
-          },
-        };
+    const workspaceRowFamilies = collectWorkspaceExportRows(
+      coreDb,
+      store,
+      workspaceId,
+      repositoryWorkspaceDb
+    );
     const workspaceVaultGrants = coreDb
       ? listExportableWorkspaceVaultGrants(coreDb, workspaceId)
       : [];
@@ -297,19 +552,37 @@ export function registerWorkspaceTransferRoutes({
         )
       : [];
     const exportId = `wsexp_${randomUUID()}`;
+    assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
+    const exportsRoot = join(dataRoot, 'server', 'exports');
+    const workspacesRoot = join(exportsRoot, 'workspaces');
+    const workspaceExportsRoot = join(workspacesRoot, workspaceId);
+    assertCanonicalDirectory(exportsRoot);
+    for (const path of [workspacesRoot, workspaceExportsRoot]) {
+      if (!lstatSync(path, { throwIfNoEntry: false })) {
+        mkdirSync(path);
+      }
+      assertCanonicalDirectory(path);
+    }
+    const exportRoot = join(workspaceExportsRoot, exportId);
     const exported = writeWorkspaceExportTree({
-      exportRoot: join(dataRoot, 'server', 'exports', 'workspaces', workspaceId, exportId),
+      exportRoot,
       exportId,
       sourceDeploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
       createdAt: new Date().toISOString(),
       workspace,
       threads,
+      turns,
       knowledge: store.listKnowledge(workspaceId),
       knowledgeProposalReviews: store.listKnowledgeProposalReviewDecisions(workspaceId),
       knowledgeProposals: store.listKnowledgeProposals(workspaceId),
       knowledgeSources: store.listKnowledgeSources(workspaceId),
       knowledgeSourceMaterials: store.listKnowledgeSourceMaterials(workspaceId),
-      threadItems: threads.flatMap((thread) => store.listThreadItems(workspaceId, thread.id)),
+      itemRevisions: store.listWorkspaceItemRevisions(workspaceId),
+      artifacts: store.listArtifacts(workspaceId),
+      artifactReviews: store.listArtifactReviewDecisions(workspaceId),
+      agentSessions: store.listWorkspaceAgentSessions(workspaceId),
+      turnEvents: turns.map((turn) => [turn.id, store.getTurnEventsForExport(turn.id)]),
+      portableFileState: readWorkspacePortableFileState(workspaceRoot),
       ...(dataSourceCatalog ? { dataSourceCatalog } : {}),
       auditEvents: workspaceRowFamilies.auditEvents,
       agentEnvironmentPackageSnapshots: workspaceRowFamilies.agentEnvironmentPackageSnapshots,
@@ -442,24 +715,19 @@ export function registerWorkspaceTransferRoutes({
     }
 
     try {
-      const report = dryRunWorkspaceImport({
-        exportRoot: join(
+      const store = requestStore(c);
+      const verified = verifyWorkspaceExportTree({
+        exportRoot: existingWorkspaceExportRoot(
           dataRoot,
-          'server',
-          'exports',
-          'workspaces',
           parsed.data.sourceWorkspaceId,
           parsed.data.exportId
         ),
-        workspaceExists: (workspaceId) => {
-          try {
-            requestStore(c).getWorkspace(workspaceId);
-            return true;
-          } catch {
-            return false;
-          }
-        },
       });
+      const report = dryRunWorkspaceImport({
+        verified,
+        workspaceExists: (workspaceId) => importedWorkspaceExists(store, dataRoot, workspaceId),
+      });
+      assertRequestedExportHandles(report, parsed.data.sourceWorkspaceId, parsed.data.exportId);
 
       return c.json(WorkspaceImportDryRunResponseSchema.parse(report));
     } catch (error) {
@@ -479,175 +747,52 @@ export function registerWorkspaceTransferRoutes({
     }
 
     const store = requestStore(c);
-    const workspaceExists = (workspaceId: string) => {
-      try {
-        store.getWorkspace(workspaceId);
-        return true;
-      } catch {
-        return false;
-      }
-    };
-    const exportRoot = join(
-      dataRoot,
-      'server',
-      'exports',
-      'workspaces',
-      parsed.data.sourceWorkspaceId,
-      parsed.data.exportId
-    );
 
     try {
-      const report = dryRunWorkspaceImport({ exportRoot, workspaceExists });
+      const workspaceExists = (workspaceId: string) =>
+        importedWorkspaceExists(store, dataRoot, workspaceId);
+      const verified = verifyWorkspaceExportTree({
+        exportRoot: existingWorkspaceExportRoot(
+          dataRoot,
+          parsed.data.sourceWorkspaceId,
+          parsed.data.exportId
+        ),
+      });
+      const report = dryRunWorkspaceImport({ verified, workspaceExists });
+      assertRequestedExportHandles(report, parsed.data.sourceWorkspaceId, parsed.data.exportId);
       const importedWorkspaceId =
         report.collision.status === 'available'
           ? report.collision.workspaceId
           : nextImportedWorkspaceId(report.collision.suggestedWorkspaceId, workspaceExists);
       const snapshot = readWorkspaceImportSnapshot({
-        exportRoot,
+        verified,
         targetWorkspaceId: importedWorkspaceId,
       });
       const importCoreDb = coreDb;
-      const stageWorkspace = importCoreDb
-        ? ({ workspaceRoot }: ImportWorkspaceStage) => {
-            if (snapshot.dataSourceCatalog) {
-              const catalogRoot = join(workspaceRoot, 'config');
-              mkdirSync(catalogRoot, { recursive: true });
-              writeFileSync(
-                join(catalogRoot, 'data-sources.jsonc'),
-                `${JSON.stringify(snapshot.dataSourceCatalog, null, 2)}\n`
-              );
-            }
-
-            const workspaceDb = openWorkspaceDbAtRoot({
-              dataRoot: importCoreDb.dataRoot,
-              userId: store.getUserId(),
-              workspaceId: importedWorkspaceId,
-              workspaceRoot,
-            });
-
-            try {
-              applyScopedMigrations(workspaceDb);
-              importWorkspaceCapabilityUsageLedger({
-                workspaceDb,
-                capabilityCalls: snapshot.capabilityCalls,
-                usageRecords: snapshot.usageRecords,
-              });
-              importWorkspaceAuditEvents({
-                workspaceDb,
-                sourceWorkspaceId: report.exportedWorkspaceId,
-                targetWorkspaceId: importedWorkspaceId,
-                events: snapshot.auditEvents,
-              });
-              importWorkspaceEvidenceBundles(workspaceDb, snapshot.evidenceBundles);
-              importWorkspaceRuntimeEvidence(workspaceDb, snapshot.runtimeEvidence);
-              importWorkspaceRepositoryResources(
-                workspaceDb,
-                importedWorkspaceId,
-                snapshot.workspaceRepositories
-              );
-              importWorkspaceSyncRecords(workspaceDb, {
-                backendWorkspaceHandles: snapshot.backendWorkspaceHandles,
-                changeSets: snapshot.workspaceChangeSets,
-                inputSnapshots: snapshot.workspaceInputSnapshots,
-                materializationRecords: snapshot.workspaceMaterializationRecords,
-                stagedReviews: snapshot.stagedWorkspaceReviews,
-                workerOutputManifests: snapshot.workerOutputManifests,
-              });
-              importWorkspaceApplyPlans(workspaceDb, snapshot.workspaceApplyPlans);
-              importWorkspaceApplyResults(workspaceDb, snapshot.workspaceApplyResults);
-              importWorkspaceReconciliationRecords(
-                workspaceDb,
-                snapshot.workspaceReconciliationRecords
-              );
-              importWorkspaceQuarantineRecords(workspaceDb, snapshot.workspaceQuarantineRecords);
-              importWorkspaceSyncEvidenceBundles(
-                workspaceDb,
-                snapshot.workspaceSyncEvidenceBundles
-              );
-              importWorkspacePermissionDecisions(workspaceDb, snapshot.permissionDecisions);
-              importGoalRecords(workspaceDb, snapshot.goalRecords);
-              importGoalTasks(workspaceDb, snapshot.goalTasks);
-              importGoalReviewRecords(workspaceDb, snapshot.goalReviewRecords);
-              importGoalVerificationRecords(workspaceDb, snapshot.goalVerificationRecords);
-              importMcpToolSchemaSnapshots(workspaceDb, snapshot.mcpToolSchemaSnapshots);
-              importPendingUserTurns(workspaceDb, snapshot.pendingUserTurns);
-              importResolvedAgentSetups(workspaceDb, snapshot.resolvedAgentSetups);
-              importWorkspaceVaultUseRecords(workspaceDb, snapshot.vaultUseRecords);
-              importWorkerCheckpoints(workspaceDb, snapshot.workerCheckpoints);
-              importWorkspaceGitPushRecords(workspaceDb, snapshot.gitPushRecords);
-              importAgentEnvironmentPackageSnapshots(
-                workspaceDb,
-                snapshot.agentEnvironmentPackageSnapshots
-              );
-              recordWorkspaceAuditEvent({
-                workspaceDb,
-                workspaceId: importedWorkspaceId,
-                requestId: parsed.data.requestId ?? null,
-                category: 'system',
-                action: 'workspace.import',
-                resource: `workspace:${importedWorkspaceId}`,
-                outcome: 'succeeded',
-                severity: 'info',
-                summary: `Workspace import created ${importedWorkspaceId} from ${report.exportedWorkspaceId}.`,
-              });
-              const now = new Date();
-              const storageImportId = randomUUID();
-              const call = startCapabilityCall({
-                workspaceDb,
-                callId: `cap_storage_import_${storageImportId}`,
-                workspaceId: importedWorkspaceId,
-                requestId: parsed.data.requestId ?? null,
-                family: 'storage',
-                operation: 'workspace.import.write',
-                capabilityId: 'storage.workspace_import',
-                providerRef: 'nanocore-storage',
-                serviceRef: 'workspace-import',
-                redactionClass: 'metadata-only',
-                summary: `Workspace import ${importedWorkspaceId}`,
-                now,
-              });
-              recordUsage({
-                workspaceDb,
-                call,
-                records: [
-                  {
-                    usageId: `use_storage_import_files_${storageImportId}`,
-                    category: 'storage',
-                    unit: 'files',
-                    quantity: report.verification.fileCount,
-                    providerRef: 'nanocore-storage',
-                    source: 'workspace-import-inventory',
-                  },
-                  {
-                    usageId: `use_storage_import_bytes_${storageImportId}`,
-                    category: 'storage',
-                    unit: 'bytes',
-                    quantity: report.verification.totalBytes,
-                    providerRef: 'nanocore-storage',
-                    source: 'workspace-import-inventory',
-                  },
-                ],
-                now,
-              });
-              finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded', now });
-            } finally {
-              workspaceDb.sqlite.close();
-            }
-          }
-        : undefined;
-      const workspace = store.importWorkspaceSnapshot({
-        ...snapshot,
-        ...(stageWorkspace ? { stageWorkspace } : {}),
-      });
-
-      if (importCoreDb) {
-        for (const reference of snapshot.vaultReferences) {
-          importUnboundWorkspaceVaultReference(importCoreDb, reference);
+      const stageWorkspace = ({ workspaceRoot }: ImportWorkspaceStage) => {
+        writeWorkspacePortableFileState(workspaceRoot, snapshot.portableFileState);
+        if (snapshot.dataSourceCatalog) {
+          const catalogRoot = join(workspaceRoot, 'config');
+          mkdirSync(catalogRoot, { recursive: true });
+          writeFileSync(
+            join(catalogRoot, 'data-sources.jsonc'),
+            `${JSON.stringify(snapshot.dataSourceCatalog, null, 2)}\n`
+          );
         }
-        importWorkspaceVaultGrants(importCoreDb, snapshot.vaultGrants);
-        importInjectionPlans(importCoreDb, snapshot.injectionPlans);
-        importInjectionReceipts(importCoreDb, snapshot.injectionReceipts);
-      }
+        if (!importCoreDb) {
+          return;
+        }
+        importWorkspaceDatabaseRows({
+          coreDb: importCoreDb,
+          store,
+          workspaceRoot,
+          importedWorkspaceId,
+          requestId: parsed.data.requestId ?? null,
+          report,
+          snapshot,
+        });
+      };
+      const workspace = publishImportedWorkspace(importCoreDb, store, snapshot, stageWorkspace);
 
       return c.json(
         WorkspaceImportResponseSchema.parse({

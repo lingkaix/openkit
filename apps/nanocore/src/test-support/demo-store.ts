@@ -18,7 +18,12 @@ export function seedDemoWorkspace(store: FsStore, userId = LOCAL_USER_ID): void 
       workspace: demo.workspace,
       threads: [demo.thread],
       knowledge: demo.knowledge,
-      threadItems: [],
+      turns: [],
+      itemRevisions: [],
+      artifacts: [],
+      artifactReviews: [],
+      agentSessions: [],
+      turnEvents: [],
     });
   }
 }

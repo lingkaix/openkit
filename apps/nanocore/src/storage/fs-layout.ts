@@ -1,6 +1,7 @@
 import {
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -209,8 +210,11 @@ export function ensureLayout(root: string): FsLayoutPaths {
     logs: resolveDataRootPath(root, 'logs'),
   };
 
-  for (const path of Object.values(paths).filter((path) => path !== paths.serverVault)) {
-    mkdirSync(path, { recursive: true });
+  ensureLayoutDirectory(paths.root, true);
+  for (const path of Object.values(paths).filter(
+    (path) => path !== paths.root && path !== paths.serverVault
+  )) {
+    ensureLayoutDirectory(path);
   }
   ensureEncryptedFileVaultStoreDirectory({ storeDir: paths.serverVault });
 
@@ -327,8 +331,10 @@ export function ensureUserLayout(root: string, userId: string): UserLayoutPaths 
     workspaces: join(userRoot, 'workspaces'),
   };
 
+  ensureLayoutDirectory(root, true);
+  ensureLayoutDirectory(resolveDataRootPath(root, 'users'));
   for (const path of Object.values(paths)) {
-    mkdirSync(path, { recursive: true });
+    ensureLayoutDirectory(path);
   }
 
   return paths;
@@ -384,8 +390,9 @@ export function ensureWorkspaceLayoutRoot(workspaceRoot: string): WorkspaceLayou
     indexes: join(workspaceRoot, 'indexes'),
   };
 
-  for (const path of Object.values(paths)) {
-    mkdirSync(path, { recursive: true });
+  ensureLayoutDirectory(paths.root, true);
+  for (const path of Object.values(paths).slice(1)) {
+    ensureLayoutDirectory(path);
   }
 
   return paths;
@@ -508,6 +515,12 @@ function verifyNoLegacyOwnershipViolations(root: string): void {
     const workspacesRoot = resolveDataRootPath(root, 'users', userId, 'workspaces');
 
     for (const workspaceId of listChildDirectories(workspacesRoot)) {
+      const legacyStoreSnapshot = join(workspacesRoot, workspaceId, 'store.json');
+
+      if (existsSync(legacyStoreSnapshot)) {
+        throw new Error(`Unsupported legacy workspace store snapshot: ${legacyStoreSnapshot}`);
+      }
+
       const legacyMemory = resolveDataRootPath(
         root,
         'users',
@@ -673,19 +686,85 @@ function isTextRecordPath(path: string): boolean {
 }
 
 /**
+ * Creates one layout directory without following an existing link.
+ *
+ * @param path Directory path to create or verify.
+ * @param recursive Whether missing ancestors may be created for the boundary root.
+ * @throws Error when the existing path is a symbolic link or non-directory.
+ */
+function ensureLayoutDirectory(path: string, recursive: boolean = false): void {
+  const metadata = lstatSync(path, { throwIfNoEntry: false });
+
+  if (!metadata) {
+    mkdirSync(path, { recursive });
+    assertLayoutDirectory(path);
+    return;
+  }
+
+  assertLayoutDirectory(path);
+}
+
+/**
+ * Verifies one existing layout directory without following links.
+ *
+ * @param path Directory path to verify.
+ * @throws Error when the path is missing, a symbolic link, or a non-directory.
+ */
+function assertLayoutDirectory(path: string): void {
+  const metadata = lstatSync(path, { throwIfNoEntry: false });
+
+  if (!metadata) {
+    throw new Error(`DATA_ROOT layout directory is missing: ${path}`);
+  }
+  if (metadata.isSymbolicLink()) {
+    throw new Error(`DATA_ROOT layout directory must not be a symbolic link: ${path}`);
+  }
+  if (!metadata.isDirectory()) {
+    throw new Error(`DATA_ROOT layout path must be a directory: ${path}`);
+  }
+}
+
+/**
+ * Reads one layout directory without following a linked parent.
+ *
+ * @param path Directory path to read.
+ * @returns Direct child entries, or an empty list when the path is absent.
+ * @throws Error when the existing path is a symbolic link or non-directory.
+ */
+function readLayoutDirectory(path: string) {
+  if (!lstatSync(path, { throwIfNoEntry: false })) {
+    return [];
+  }
+
+  assertLayoutDirectory(path);
+  return readdirSync(path, { withFileTypes: true });
+}
+
+/**
  * Lists direct child directory names in stable order.
  *
  * @param path Parent path.
  * @returns Child directory names.
  */
 function listChildDirectories(path: string): string[] {
-  if (!existsSync(path)) {
-    return [];
+  const directories: string[] = [];
+
+  for (const entry of readLayoutDirectory(path)) {
+    const entryPath = join(path, entry.name);
+
+    if (entry.isSymbolicLink()) {
+      throw new Error(`DATA_ROOT layout must not contain a symbolic link: ${entryPath}`);
+    }
+    if (entry.isDirectory()) {
+      directories.push(entry.name);
+      continue;
+    }
+    if (!entry.isFile()) {
+      throw new Error(`DATA_ROOT layout contains an unsupported entry: ${entryPath}`);
+    }
   }
 
-  return readdirSync(path)
-    .filter((name) => statSync(join(path, name)).isDirectory())
-    .sort();
+  return directories.sort();
 }
 
 /**
@@ -695,24 +774,26 @@ function listChildDirectories(path: string): string[] {
  * @returns Descendant file paths.
  */
 function listDescendantFiles(path: string): string[] {
-  if (!existsSync(path)) {
-    return [];
-  }
-
   const files: string[] = [];
 
-  for (const name of readdirSync(path).sort()) {
-    const childPath = join(path, name);
-    const childStat = statSync(childPath);
+  for (const entry of readLayoutDirectory(path).sort((left, right) =>
+    left.name.localeCompare(right.name)
+  )) {
+    const childPath = join(path, entry.name);
 
-    if (childStat.isDirectory()) {
+    if (entry.isSymbolicLink()) {
+      throw new Error(`DATA_ROOT layout must not contain a symbolic link: ${childPath}`);
+    }
+    if (entry.isDirectory()) {
       files.push(...listDescendantFiles(childPath));
       continue;
     }
-
-    if (childStat.isFile()) {
+    if (entry.isFile()) {
       files.push(childPath);
+      continue;
     }
+
+    throw new Error(`DATA_ROOT layout contains an unsupported entry: ${childPath}`);
   }
 
   return files;

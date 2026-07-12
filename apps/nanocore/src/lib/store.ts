@@ -1,9 +1,8 @@
 import { createHash } from 'node:crypto';
 import {
-  appendFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -13,38 +12,73 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type {
+  KnowledgeClaim,
+  KnowledgeConflict,
+  KnowledgeConflictStatus,
+  KnowledgeManagerContextPackageTraceRecord,
   KnowledgeManagerPrepareContextResponse,
+  KnowledgeObservation,
   MaterializedWorkspaceRoot,
   MaterializeKnowledgeContextPackageResponse,
 } from '@openkit/app-api-schemas';
 import { WorkerContextPackageManifestSchema } from '@openkit/app-api-schemas';
-import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import type {
-  AgentSessionSchema,
-  ApprovalRequestSchema,
-  ArtifactSchema,
-  ItemSchema,
   KnowledgeEntrySchema,
   ThreadSchema,
   WorkspaceRecordSchema,
   WorkspaceResourcesSchema,
 } from '@openkit/protocol';
-import { PROTOCOL_VERSION, SseEventEnvelopeSchema, TurnSchema } from '@openkit/protocol';
-import { resolveDataRoot } from '../config/data-root.js';
 import {
-  DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_TEXT,
-  DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION,
-} from '../knowledge/okf.js';
+  type AgentSessionSchema,
+  ApprovalRequestSchema,
+  ArtifactSchema,
+  ItemSchema,
+  PROTOCOL_VERSION,
+  SseEventEnvelopeSchema,
+  TurnSchema,
+} from '@openkit/protocol';
+import { resolveDataRoot } from '../config/data-root.js';
 import { ensureTurnFeedback } from '../runtime/feedback.js';
 import type { RuntimeAgent } from '../runtime/types.js';
 import {
+  getCommandRequestRecord,
+  listCommandRequestRecords,
+  recordCommandRequestRecord,
+} from '../storage/command-request-records.js';
+import {
   ensureLayout,
-  ensureUserLayout,
   ensureWorkspaceLayout,
   ensureWorkspaceLayoutRoot,
   LOCAL_USER_ID,
   resolveDataRootPath,
 } from '../storage/fs-layout.js';
+import {
+  AgentSessionRecordSchema,
+  appendWorkspaceItemRevision,
+  appendWorkspaceTurnEvent,
+  assertCanonicalDirectory,
+  assertSafeWorkspacePathSegment,
+  assertTurnEventPayloadLineage,
+  deleteWorkspaceArtifactRecords,
+  deleteWorkspaceKnowledgeRecord,
+  loadWorkspaceFileRecords,
+  parseCanonicalWorkspaceHistory,
+  readCanonicalTextFile,
+  readWorkspaceTurnEvents,
+  TURN_STREAM_EVENT_WINDOW_SIZE,
+  type WorkspaceFileRecords,
+  writeWorkspaceFileRecords,
+} from '../storage/workspace-file-records.js';
+import {
+  appendWorkspaceKnowledgeClaim,
+  appendWorkspaceKnowledgeConflict,
+  appendWorkspaceKnowledgeContextPackageTrace,
+  appendWorkspaceKnowledgeObservation,
+  readWorkspaceKnowledgeClaimLedger,
+  readWorkspaceKnowledgeConflictLedger,
+  readWorkspaceKnowledgeContextPackageTraceLedger,
+  readWorkspaceKnowledgeObservationLedger,
+} from '../storage/workspace-portable-file-state.js';
 
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
 type ProtocolWorkspaceResources = import('zod').infer<typeof WorkspaceResourcesSchema>;
@@ -70,9 +104,10 @@ type KnowledgeContextWorkspaceRootFile =
 type ApprovalRequest = import('zod').infer<typeof ApprovalRequestSchema>;
 type Agent = RuntimeAgent;
 type ProtocolAgentSession = import('zod').infer<typeof AgentSessionSchema>;
-type AgentSession = ProtocolAgentSession & {
+/** Durable app-local agent session stored beside protocol-safe session fields. */
+export type AgentSession = ProtocolAgentSession & {
   configVersion: number | null;
-  environmentPackageSnapshot?: AgentEnvironmentPackage;
+  environmentPackageSnapshotId: string | null;
   policySnapshotId: string | null;
   sessionCompatibilityKey: string | null;
   stale: boolean;
@@ -82,6 +117,7 @@ type SseEventEnvelope = import('zod').infer<typeof SseEventEnvelopeSchema>;
 type AgentSessionInput = Omit<
   AgentSession,
   | 'configVersion'
+  | 'environmentPackageSnapshotId'
   | 'policySnapshotId'
   | 'sandboxSummary'
   | 'sessionCompatibilityKey'
@@ -92,6 +128,7 @@ type AgentSessionInput = Omit<
     Pick<
       AgentSession,
       | 'configVersion'
+      | 'environmentPackageSnapshotId'
       | 'policySnapshotId'
       | 'sandboxSummary'
       | 'sessionCompatibilityKey'
@@ -120,10 +157,7 @@ type TurnEventInput = Omit<
   requestId?: SseEventEnvelope['requestId'];
 };
 
-const TURN_STREAM_EVENT_WINDOW_SIZE = 100;
 const COMMAND_REQUEST_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-const REMOVED_DEFAULT_WORKER_ID_FIELD = 'default' + 'WorkerId';
-const REMOVED_WORKSPACE_WORKERS_FIELD = 'workspaceResources.' + 'workers';
 const MAX_CONTEXT_WORKSPACE_FILE_BYTES = 64 * 1024;
 
 /**
@@ -317,20 +351,6 @@ export interface KnowledgeProposalReviewRecord {
   decidedAt: string;
 }
 
-/** Stored audit trace for one prepared Knowledge Manager context package. */
-export interface KnowledgeContextPackageTraceRecord {
-  /** Context package id. */
-  id: string;
-  /** Workspace that owns the trace. */
-  workspaceId: string;
-  /** Knowledge Manager operation id. */
-  operationId: string;
-  /** ISO timestamp when the trace was persisted. */
-  createdAt: string;
-  /** Complete prepared context response returned to the caller. */
-  response: KnowledgeManagerPrepareContextResponse;
-}
-
 /** Knowledge source kind tracked by the first source registry slice. */
 export type KnowledgeSourceKind = 'upload' | 'url' | 'document' | 'transcript' | 'code';
 
@@ -396,128 +416,6 @@ export interface KnowledgeSourceDerivedRepresentationRecord {
   createdAt: string;
 }
 
-/** Workspace maintenance observation category. */
-export type KnowledgeObservationKind =
-  | 'retrieval'
-  | 'source'
-  | 'maintenance'
-  | 'agent'
-  | 'user-feedback';
-
-/** Workspace maintenance observation lifecycle status. */
-export type KnowledgeObservationStatus = 'retained' | 'promoted' | 'expired' | 'archived';
-
-/** File-backed workspace Knowledge Store observation ledger row. */
-export interface KnowledgeObservationRecord {
-  /** Stable observation id. */
-  id: string;
-  /** Workspace that owns the observation. */
-  workspaceId: string;
-  /** Observation category. */
-  kind: KnowledgeObservationKind;
-  /** Human-readable observed event or pattern. */
-  summary: string;
-  /** Source, knowledge, or external references supporting the observation. */
-  sourceReferences: string[];
-  /** Workspace-local scope. */
-  scope: string;
-  /** Producer that recorded the observation. */
-  producer: string;
-  /** Producer confidence from 0 to 1. */
-  confidence: number;
-  /** Freshness state used by maintenance promotion. */
-  freshness: 'current' | 'stale' | 'unknown';
-  /** Observation lifecycle status. */
-  status: KnowledgeObservationStatus;
-  /** ISO timestamp for the observed event. */
-  observedAt: string;
-  /** ISO timestamp for ledger append. */
-  createdAt: string;
-}
-
-/** Workspace Knowledge Claim freshness state. */
-export type KnowledgeClaimFreshness = 'current' | 'stale' | 'unknown';
-
-/** Workspace Knowledge Claim review state. */
-export type KnowledgeClaimReviewState = 'needs-review' | 'accepted' | 'rejected' | 'deferred';
-
-/** Workspace Knowledge Claim conflict status. */
-export type KnowledgeClaimConflictStatus =
-  | 'none'
-  | 'conflicting'
-  | 'weak_evidence'
-  | 'stale'
-  | 'superseded'
-  | 'partially_superseded';
-
-/** File-backed workspace Knowledge Store claim ledger row. */
-export interface KnowledgeClaimRecord {
-  /** Stable claim id. */
-  id: string;
-  /** Workspace that owns the claim. */
-  workspaceId: string;
-  /** Reusable assertion captured from sourced knowledge. */
-  statement: string;
-  /** Source, knowledge, or external references supporting the claim. */
-  sourceReferences: string[];
-  /** Workspace-local scope. */
-  scope: string;
-  /** Producer that recorded the claim. */
-  producer: string;
-  /** Producer confidence from 0 to 1. */
-  confidence: number;
-  /** Freshness state used by maintenance review. */
-  freshness: KnowledgeClaimFreshness;
-  /** Explicit review state for claim governance. */
-  reviewState: KnowledgeClaimReviewState;
-  /** Conflict status used by later claim reconciliation. */
-  conflictStatus: KnowledgeClaimConflictStatus;
-  /** ISO timestamp for ledger append. */
-  createdAt: string;
-  /** ISO timestamp for the latest claim update. */
-  updatedAt: string;
-}
-
-/** Workspace Knowledge Conflict status. */
-export type KnowledgeConflictStatus =
-  | 'conflicting'
-  | 'needs_review'
-  | 'weak_evidence'
-  | 'stale'
-  | 'resolved'
-  | 'superseded'
-  | 'partially_superseded';
-
-/** File-backed workspace Knowledge Store conflict ledger row. */
-export interface KnowledgeConflictRecord {
-  /** Stable conflict id. */
-  id: string;
-  /** Workspace that owns the conflict. */
-  workspaceId: string;
-  /** Knowledge, claim, source, or page references that are in tension. */
-  subjectReferences: string[];
-  /** Evidence references supporting the conflict report. */
-  sourceReferences: string[];
-  /** Current conflict status. */
-  status: KnowledgeConflictStatus;
-  /** Human-readable conflict summary. */
-  summary: string;
-  /** Suggested review or repair actions. */
-  suggestedActions: string[];
-  /** Producer that recorded the conflict. */
-  producer: string;
-  /** Human-readable resolution summary when the conflict is resolved. */
-  resolution?: string;
-  /** ISO timestamp for conflict resolution. */
-  resolvedAt?: string;
-  /** Actor or agent that resolved the conflict. */
-  resolvedBy?: string;
-  /** ISO timestamp for ledger append. */
-  createdAt: string;
-  /** ISO timestamp for the latest conflict update. */
-  updatedAt: string;
-}
-
 /** Input for appending one Knowledge Store conflict resolution row. */
 export interface ResolveKnowledgeConflictInput {
   /** Workspace that owns the conflict. */
@@ -544,23 +442,6 @@ interface TurnStreamState {
 interface CreateTurnOptions {
   /** Scheduler-owned turn id when external coordination already reserved lineage. */
   turnId?: string;
-}
-
-interface StoreSnapshot {
-  workspaces: WorkspaceRecord[];
-  workspaceResources: Array<[string, WorkspaceResources]>;
-  threads: Thread[];
-  turns: Turn[];
-  items: Item[];
-  approvals: ApprovalRequest[];
-  agentSessions: AgentSession[];
-  artifacts: Artifact[];
-  artifactReviews?: ArtifactReviewRecord[];
-  knowledgeProposals?: KnowledgeProposalRecord[];
-  knowledgeProposalReviews?: KnowledgeProposalReviewRecord[];
-  knowledgeSources?: KnowledgeSourceRecord[];
-  commandRequests?: CommandRequestRecord[];
-  streamEvents: Array<[string, SseEventEnvelope[]]>;
 }
 
 /**
@@ -914,6 +795,7 @@ export class FsStore {
   private threads = new Map<string, Thread>();
   private turns = new Map<string, Turn>();
   private items = new Map<string, Item>();
+  private itemRevisions: Item[] = [];
   private approvals = new Map<string, ApprovalRequest>();
   private agentSessions = new Map<string, AgentSession>();
   private artifacts = new Map<string, Artifact>();
@@ -925,15 +807,23 @@ export class FsStore {
   private streams = new Map<string, TurnStreamState>();
   private readonly dataRoot: string | null;
   private readonly userId: string;
-  private snapshotNeedsPersistence = false;
 
   public constructor(options: FsStoreOptions = {}) {
     this.dataRoot =
       options.dataRoot ?? (process.env.OPENKIT_DATA_ROOT ? resolveDataRoot(process.env) : null);
     this.userId = options.userId ?? LOCAL_USER_ID;
 
-    if (this.dataRoot && this.loadDataRootSnapshot()) {
-      return;
+    if (this.dataRoot) {
+      const workspaceRecords = loadWorkspaceFileRecords(this.dataRoot, this.userId);
+
+      if (workspaceRecords.length > 0) {
+        if (this.restoreWorkspaceFileRecords(workspaceRecords)) {
+          for (const workspaceId of this.workspaces.keys()) {
+            this.persist(workspaceId);
+          }
+        }
+        return;
+      }
     }
 
     const timestamp = now();
@@ -963,121 +853,69 @@ export class FsStore {
       agents: [],
       models: [],
     });
-    this.persist();
+    this.persist(quickChatWorkspace.id);
   }
 
   /**
-   * Loads a snapshot file into this store.
+   * Restores in-memory indexes from canonical workspace file records.
    *
-   * @param persistencePath Snapshot file path to read.
-   * @returns True when a snapshot file existed and was loaded.
+   * @param workspaceRecords Canonical records loaded for every published workspace.
+   * @returns True when an interrupted approval projection was repaired.
    */
-  public loadSnapshot(persistencePath: string): boolean {
-    if (!existsSync(persistencePath)) {
-      return false;
-    }
-
-    const snapshot = JSON.parse(readFileSync(persistencePath, 'utf8')) as StoreSnapshot;
-    assertCurrentStoreSnapshot(snapshot);
-    const currentStreamEvents = parseCurrentStreamEventsSnapshot(snapshot.streamEvents);
-
-    this.workspaces = new Map(snapshot.workspaces.map((workspace) => [workspace.id, workspace]));
-    this.workspaceResources = new Map(snapshot.workspaceResources);
-    this.threads = new Map(snapshot.threads.map((thread) => [thread.id, thread]));
-    this.turns = new Map(snapshot.turns.map((turn) => [turn.id, TurnSchema.parse(turn)]));
-    this.items = new Map(snapshot.items.map((item) => [item.id, item]));
-    this.approvals = new Map(snapshot.approvals.map((approval) => [approval.id, approval]));
-    this.agentSessions = new Map(
-      (snapshot.agentSessions ?? []).map((session) => {
-        const currentSession = assertCurrentAgentSessionSnapshot(session);
-
-        return [currentSession.id, currentSession];
-      })
-    );
-    this.artifacts = new Map(snapshot.artifacts.map((artifact) => [artifact.id, artifact]));
-    this.artifactReviews = new Map(
-      (snapshot.artifactReviews ?? []).map((review) => [review.artifactId, review])
-    );
-    this.knowledgeProposals = new Map(
-      (snapshot.knowledgeProposals ?? []).map((proposal) => [proposal.id, proposal])
-    );
-    this.knowledgeProposalReviews = new Map(
-      (snapshot.knowledgeProposalReviews ?? []).map((review) => [review.proposalId, review])
-    );
-    this.knowledgeSources = new Map(
-      (snapshot.knowledgeSources ?? []).map((source) => [source.id, source])
-    );
-    const referenceTime = now();
-    const loadedCommandRequests = (snapshot.commandRequests ?? []).map((record) => ({
-      ...record,
-      key: record.key ?? commandRequestKey(record.command, record.requestId, record.scope),
-    }));
-    const activeCommandRequests = loadedCommandRequests.filter(
-      (record) => !isCommandRequestExpired(record, referenceTime)
-    );
-
-    this.snapshotNeedsPersistence ||= activeCommandRequests.length !== loadedCommandRequests.length;
-    this.commandRequests = new Map(activeCommandRequests.map((record) => [record.key, record]));
-    this.streams = new Map(
-      currentStreamEvents.map(([turnId, events]) => [
-        turnId,
-        {
+  private restoreWorkspaceFileRecords(workspaceRecords: readonly WorkspaceFileRecords[]): boolean {
+    for (const records of workspaceRecords) {
+      this.workspaces.set(records.workspace.id, records.workspace);
+      this.workspaceResources.set(
+        records.workspace.id,
+        records.workspace.kind === 'quick-chat'
+          ? { knowledge: [...records.knowledge], skills: [], agents: [], models: [] }
+          : createRunnableWorkspaceResources([...records.knowledge])
+      );
+      for (const thread of records.threads) {
+        this.threads.set(thread.id, thread);
+      }
+      for (const turn of records.turns) {
+        this.turns.set(turn.id, turn);
+        for (const item of turn.items) {
+          this.items.set(item.id, item);
+        }
+      }
+      this.itemRevisions.push(...records.itemRevisions);
+      for (const session of records.agentSessions) {
+        this.agentSessions.set(session.id, session);
+      }
+      for (const artifact of records.artifacts) {
+        this.artifacts.set(artifact.id, artifact);
+      }
+      for (const review of records.artifactReviews) {
+        this.artifactReviews.set(review.artifactId, review);
+      }
+      for (const proposal of records.knowledgeProposals) {
+        this.knowledgeProposals.set(proposal.id, proposal);
+      }
+      for (const review of records.knowledgeProposalReviews) {
+        this.knowledgeProposalReviews.set(review.proposalId, review);
+      }
+      for (const source of records.knowledgeSources) {
+        this.knowledgeSources.set(source.id, source);
+      }
+      for (const [turnId, events] of records.streamEvents) {
+        this.streams.set(turnId, {
           sequence: events.at(-1)?.sequence ?? 0,
-          events,
+          events: [...events],
           listeners: new Set(),
           timers: new Set(),
-        },
-      ])
-    );
-    return true;
-  }
-
-  /**
-   * Loads the first workspace snapshot from the configured v0.0.2 data-root layout.
-   *
-   * @returns True when a workspace snapshot was found and loaded.
-   */
-  private loadDataRootSnapshot(): boolean {
-    if (!this.dataRoot) {
-      return false;
-    }
-
-    ensureLayout(this.dataRoot);
-    const workspacesRoot = ensureUserLayout(this.dataRoot, this.userId).workspaces;
-
-    mkdirSync(workspacesRoot, { recursive: true });
-    rmSync(join(workspacesRoot, '.staging'), { recursive: true, force: true });
-
-    const snapshotPaths = readdirSync(workspacesRoot)
-      .map((workspaceId) => this.workspaceSnapshotPath(workspaceId))
-      .filter((snapshotPath) => existsSync(snapshotPath))
-      .sort((left, right) => {
-        const mtimeDelta = statSync(right).mtimeMs - statSync(left).mtimeMs;
-
-        return mtimeDelta || left.localeCompare(right);
-      });
-
-    for (const snapshotPath of snapshotPaths) {
-      if (this.loadSnapshot(snapshotPath)) {
-        if (this.snapshotNeedsPersistence) {
-          this.snapshotNeedsPersistence = false;
-          this.persist();
-        }
-
-        return true;
+        });
       }
     }
 
-    return false;
-  }
-
-  /**
-   * Writes the current store state to the configured snapshot path.
-   *
-   * @returns Nothing.
-   */
-  public flushSnapshot(): void {
-    this.persist();
+    const approvalState = deriveApprovalStateFromItems(
+      [...this.items.values()],
+      [...this.turns.values()]
+    );
+    this.turns = new Map(approvalState.turns.map((turn) => [turn.id, turn]));
+    this.approvals = new Map(approvalState.approvals.map((approval) => [approval.id, approval]));
+    return approvalState.repaired;
   }
 
   /**
@@ -1105,9 +943,11 @@ export class FsStore {
    * @returns Non-expired idempotency records.
    */
   public listCommandRequests(): CommandRequestRecord[] {
-    if (this.pruneExpiredCommandRequests()) {
-      this.persist();
+    if (this.dataRoot) {
+      return listCommandRequestRecords(this.dataRoot, this.userId, now());
     }
+
+    this.pruneExpiredCommandRequests();
 
     return [...this.commandRequests.values()];
   }
@@ -1125,11 +965,15 @@ export class FsStore {
     requestId: string,
     scope: CommandRequestScope
   ): CommandRequestRecord | null {
-    if (this.pruneExpiredCommandRequests()) {
-      this.persist();
+    const key = commandRequestKey(command, requestId, scope);
+
+    if (this.dataRoot) {
+      return getCommandRequestRecord(this.dataRoot, this.userId, scope.workspaceId, key, now());
     }
 
-    return this.commandRequests.get(commandRequestKey(command, requestId, scope)) ?? null;
+    this.pruneExpiredCommandRequests();
+
+    return this.commandRequests.get(key) ?? null;
   }
 
   /**
@@ -1151,90 +995,65 @@ export class FsStore {
       expiresAt: input.expiresAt ?? commandRequestExpiresAt(createdAt),
     };
 
-    this.commandRequests.set(record.key, record);
-    this.persist();
+    if (this.dataRoot) {
+      recordCommandRequestRecord(this.dataRoot, this.userId, record);
+    } else {
+      this.commandRequests.set(record.key, record);
+    }
+
     return record;
   }
 
-  private persist(): void {
+  /**
+   * Projects one workspace's in-memory state into its canonical file records.
+   *
+   * @param workspaceId Workspace to persist.
+   */
+  private persist(workspaceId: string): void {
     if (!this.dataRoot) {
       return;
     }
 
-    this.pruneExpiredCommandRequests();
-    const snapshot = this.buildSnapshot();
-
-    ensureLayout(this.dataRoot);
-
-    for (const workspaceId of this.workspaces.keys()) {
-      const snapshotPath = this.workspaceSnapshotPath(workspaceId);
-      mkdirSync(dirname(snapshotPath), { recursive: true });
-      writeFileSync(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`);
-      this.persistWorkspaceProjection(workspaceId);
-    }
-  }
-
-  /**
-   * Builds the serializable store snapshot written under workspace roots.
-   *
-   * @returns Current store snapshot.
-   */
-  private buildSnapshot(): StoreSnapshot {
-    return {
-      workspaces: [...this.workspaces.values()],
-      workspaceResources: [...this.workspaceResources.entries()],
-      threads: [...this.threads.values()],
-      turns: [...this.turns.values()],
-      items: [...this.items.values()],
-      approvals: [...this.approvals.values()],
-      agentSessions: [...this.agentSessions.values()],
-      artifacts: [...this.artifacts.values()],
-      artifactReviews: [...this.artifactReviews.values()],
-      knowledgeProposals: [...this.knowledgeProposals.values()],
-      knowledgeProposalReviews: [...this.knowledgeProposalReviews.values()],
-      knowledgeSources: [...this.knowledgeSources.values()],
-      commandRequests: [...this.commandRequests.values()],
-      streamEvents: [...this.streams.entries()].map(([turnId, stream]) => [turnId, stream.events]),
-    };
+    const workspaceRoot = ensureWorkspaceLayout(this.dataRoot, this.userId, workspaceId).root;
+    this.writeWorkspaceFileRecordsToRoot(workspaceId, workspaceRoot);
   }
 
   /**
    * Publishes one newly imported workspace through a same-filesystem staging root.
    *
-   * @param workspaceId Imported workspace id.
+   * @param records Complete canonical records to publish.
    * @param stageWorkspace Optional side-effect writer that runs under the staging root.
    */
   private persistImportedWorkspaceAtomically(
-    workspaceId: string,
+    records: WorkspaceFileRecords,
     stageWorkspace?: (stage: ImportWorkspaceStage) => void
   ): void {
     if (!this.dataRoot) {
-      this.persist();
       return;
     }
 
     ensureLayout(this.dataRoot);
 
+    const workspaceId = records.workspace.id;
     const finalRoot = this.workspaceRootPath(workspaceId);
     const stagingRoot = join(
       dirname(finalRoot),
       '.staging',
       `${workspaceId}-${process.pid}-${Date.now()}`
     );
+    const stagingParent = dirname(stagingRoot);
 
     if (existsSync(finalRoot)) {
       throw new Error(`Workspace path already exists: ${workspaceId}`);
     }
 
+    mkdirSync(stagingParent, { recursive: true });
+    assertCanonicalDirectory(stagingParent);
+
     try {
-      mkdirSync(dirname(stagingRoot), { recursive: true });
       rmSync(stagingRoot, { recursive: true, force: true });
       ensureWorkspaceLayoutRoot(stagingRoot);
-      writeFileSync(
-        join(stagingRoot, 'store.json'),
-        `${JSON.stringify(this.buildSnapshot(), null, 2)}\n`
-      );
-      this.persistWorkspaceProjectionToRoot(workspaceId, stagingRoot);
+      writeWorkspaceFileRecords(stagingRoot, records);
       stageWorkspace?.({ workspaceId, workspaceRoot: stagingRoot });
       renameSync(stagingRoot, finalRoot);
     } catch (error) {
@@ -1244,179 +1063,45 @@ export class FsStore {
   }
 
   /**
-   * Writes black-box friendly workspace, thread, turn, and item projection files.
+   * Projects current in-memory state into one canonical workspace root.
    *
-   * @param workspaceId Workspace to project under the data-root layout.
+   * @param workspaceId Workspace to write.
+   * @param workspaceRoot Resolved workspace root.
    */
-  private persistWorkspaceProjection(workspaceId: string): void {
-    const workspaceRoot = this.dataRoot
-      ? ensureWorkspaceLayout(this.dataRoot, this.userId, workspaceId).root
-      : this.workspaceRootPath(workspaceId);
-
-    this.persistWorkspaceProjectionToRoot(workspaceId, workspaceRoot);
-  }
-
-  /**
-   * Writes black-box friendly projection files under one resolved workspace root.
-   *
-   * @param workspaceId Workspace to project.
-   * @param workspaceRoot Resolved workspace root directory.
-   */
-  private persistWorkspaceProjectionToRoot(workspaceId: string, workspaceRoot: string): void {
-    ensureWorkspaceLayoutRoot(workspaceRoot);
-
-    const workspace = this.workspaces.get(workspaceId);
-
-    if (!workspace) {
-      return;
-    }
-
-    writeFileSync(join(workspaceRoot, 'workspace.json'), `${JSON.stringify(workspace, null, 2)}\n`);
-
-    for (const thread of this.listThreads(workspaceId)) {
-      const threadRoot = join(workspaceRoot, 'threads', thread.id);
-
-      mkdirSync(threadRoot, { recursive: true });
-      writeFileSync(join(threadRoot, 'thread.json'), `${JSON.stringify(thread, null, 2)}\n`);
-
-      for (const turn of this.turns.values()) {
-        if (turn.workspaceId !== workspaceId || turn.threadId !== thread.id) {
-          continue;
-        }
-
-        const turnRoot = join(threadRoot, 'turns', turn.id);
-        const turnItems = [...this.items.values()].filter((item) => item.turnId === turn.id);
-        const itemsJsonl =
-          turnItems.map((item) => JSON.stringify(item)).join('\n') + (turnItems.length ? '\n' : '');
-
-        mkdirSync(turnRoot, { recursive: true });
-        writeFileSync(join(turnRoot, 'turn.json'), `${JSON.stringify(turn, null, 2)}\n`);
-        writeFileSync(join(turnRoot, 'items.jsonl'), itemsJsonl);
-      }
-    }
-
-    const knowledgePagesRoot = join(workspaceRoot, 'knowledge', 'pages');
-    const knowledgeSchemaRoot = join(workspaceRoot, 'knowledge', 'schema');
-
-    mkdirSync(knowledgeSchemaRoot, { recursive: true });
-    mkdirSync(knowledgePagesRoot, { recursive: true });
-    writeFileSync(
-      join(knowledgeSchemaRoot, 'workspace-schema.yaml'),
-      DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_TEXT
+  private writeWorkspaceFileRecordsToRoot(workspaceId: string, workspaceRoot: string): void {
+    const workspace = this.getWorkspace(workspaceId);
+    const turnIds = new Set(
+      [...this.turns.values()]
+        .filter((turn) => turn.workspaceId === workspaceId)
+        .map((turn) => turn.id)
     );
-    for (const knowledge of this.listKnowledge(workspaceId)) {
-      const page = [
-        '---',
-        'type: "KnowledgePage"',
-        `title: ${JSON.stringify(knowledge.title)}`,
-        `schema_version: ${JSON.stringify(DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION)}`,
-        'status: "active"',
-        'scope: "workspace"',
-        `source_refs: ${JSON.stringify(knowledge.sourceReferences ?? [])}`,
-        'review_state: "accepted"',
-        'sensitivity: "normal"',
-        'freshness: "current"',
-        `openkit_entry_kind: ${JSON.stringify(knowledge.kind)}`,
-        `created_at: ${JSON.stringify(knowledge.createdAt)}`,
-        `updated_at: ${JSON.stringify(knowledge.updatedAt)}`,
-        `openkit_entry_id: ${JSON.stringify(knowledge.id)}`,
-        '---',
-        knowledge.content,
-        '',
-      ].join('\n');
 
-      writeFileSync(join(knowledgePagesRoot, `${knowledge.id}.md`), page);
-    }
-
-    const knowledgeProposalsRoot = join(workspaceRoot, 'knowledge', 'proposals');
-
-    mkdirSync(knowledgeProposalsRoot, { recursive: true });
-    for (const proposal of this.listKnowledgeProposals(workspaceId)) {
-      const page = [
-        '---',
-        'type: "proposal"',
-        `title: ${JSON.stringify(proposal.title)}`,
-        `proposal_id: ${JSON.stringify(proposal.id)}`,
-        'target_concept_ids: []',
-        'requested_operation: "review_summary"',
-        `status: ${JSON.stringify(proposal.status)}`,
-        'source_refs: []',
-        'confidence: "unknown"',
-        'freshness: "current"',
-        'review_requirement: "human"',
-        `created_at: ${JSON.stringify(proposal.createdAt)}`,
-        `updated_at: ${JSON.stringify(proposal.updatedAt)}`,
-        '---',
-        proposal.summary,
-        '',
-      ].join('\n');
-
-      writeFileSync(join(knowledgeProposalsRoot, `${proposal.id}.md`), page);
-    }
-
-    const knowledgeReviewsRoot = join(workspaceRoot, 'knowledge', 'reviews');
-
-    mkdirSync(knowledgeReviewsRoot, { recursive: true });
-    for (const review of this.listKnowledgeProposalReviewDecisions(workspaceId)) {
-      writeFileSync(
-        join(knowledgeReviewsRoot, `${review.proposalId}.json`),
-        `${JSON.stringify(review, null, 2)}\n`
-      );
-    }
-
-    const sourceRegistryRoot = join(workspaceRoot, 'sources', 'registry');
-
-    mkdirSync(sourceRegistryRoot, { recursive: true });
-    for (const source of this.listKnowledgeSources(workspaceId)) {
-      writeFileSync(
-        join(sourceRegistryRoot, `${source.id}.json`),
-        `${JSON.stringify(source, null, 2)}\n`
-      );
-    }
-
-    for (const artifact of this.listArtifacts(workspaceId)) {
-      const artifactRoot = join(workspaceRoot, 'artifacts', artifact.id);
-      const filesRoot = join(artifactRoot, 'files');
-      const contentFileName =
-        artifact.content.format === 'markdown'
-          ? 'content.md'
-          : artifact.content.format === 'text'
-            ? 'content.txt'
-            : 'content.json';
-
-      mkdirSync(filesRoot, { recursive: true });
-      for (const staleContentFileName of ['content.md', 'content.txt', 'content.json']) {
-        if (staleContentFileName !== contentFileName) {
-          rmSync(join(filesRoot, staleContentFileName), { force: true });
-        }
-      }
-      writeFileSync(join(artifactRoot, 'artifact.json'), `${JSON.stringify(artifact, null, 2)}\n`);
-      writeFileSync(join(filesRoot, contentFileName), artifact.content.body);
-    }
-
-    for (const agentSession of this.agentSessions.values()) {
-      if (agentSession.workspaceId !== workspaceId) {
-        continue;
-      }
-
-      const agentSessionRoot = join(workspaceRoot, 'runtime', 'agent-sessions', agentSession.id);
-
-      mkdirSync(agentSessionRoot, { recursive: true });
-      writeFileSync(
-        join(agentSessionRoot, 'session.json'),
-        `${JSON.stringify(agentSession, null, 2)}\n`
-      );
-    }
-  }
-
-  /**
-   * Returns the snapshot path for one workspace under the v0.0.2 user/workspace layout.
-   *
-   * @param workspaceId Workspace whose snapshot path should be returned.
-   * @returns Workspace snapshot path.
-   */
-  private workspaceSnapshotPath(workspaceId: string): string {
-    return join(this.workspaceRootPath(workspaceId), 'store.json');
+    writeWorkspaceFileRecords(workspaceRoot, {
+      workspace,
+      knowledge: this.getWorkspaceResources(workspaceId).knowledge,
+      threads: this.listThreads(workspaceId),
+      turns: [...this.turns.values()].filter((turn) => turn.workspaceId === workspaceId),
+      itemRevisions: this.itemRevisions.filter((item) => item.workspaceId === workspaceId),
+      artifacts: this.listArtifacts(workspaceId),
+      artifactReviews: [...this.artifactReviews.values()].filter(
+        (review) => review.workspaceId === workspaceId
+      ),
+      knowledgeProposals: [...this.knowledgeProposals.values()].filter(
+        (proposal) => proposal.workspaceId === workspaceId
+      ),
+      knowledgeProposalReviews: [...this.knowledgeProposalReviews.values()].filter(
+        (review) => review.workspaceId === workspaceId
+      ),
+      knowledgeSources: [...this.knowledgeSources.values()].filter(
+        (source) => source.workspaceId === workspaceId
+      ),
+      agentSessions: [...this.agentSessions.values()].filter(
+        (session) => session.workspaceId === workspaceId
+      ),
+      streamEvents: [...this.streams.entries()]
+        .filter(([turnId]) => turnIds.has(turnId))
+        .map(([turnId, stream]) => [turnId, stream.events]),
+    });
   }
 
   /**
@@ -1430,6 +1115,8 @@ export class FsStore {
       throw new Error('FsStore data root is not configured.');
     }
 
+    assertSafeWorkspacePathSegment(this.userId, 'User id');
+    assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
     return resolveDataRootPath(this.dataRoot, 'users', this.userId, 'workspaces', workspaceId);
   }
 
@@ -1541,7 +1228,6 @@ export class FsStore {
       },
       updatedAt: now(),
     });
-    this.persist();
   }
 
   public listWorkspaces(): WorkspaceRecord[] {
@@ -1571,80 +1257,99 @@ export class FsStore {
     const resources = createRunnableWorkspaceResources();
     this.workspaces.set(workspace.id, workspace);
     this.workspaceResources.set(workspace.id, resources);
-    this.persist();
+    this.persist(workspace.id);
     return workspace;
   }
 
   /**
    * Imports one verified workspace snapshot into the file-backed store.
    *
-   * @param input Workspace, resources, threads, and items to persist.
+   * @param input Complete canonical workspace history to persist.
    * @returns Imported workspace record with recomputed counts.
    * @throws Error when target ids collide or records point at another workspace.
    */
   public importWorkspaceSnapshot(input: {
     workspace: WorkspaceRecord;
     threads: readonly Thread[];
+    turns: readonly Turn[];
     knowledge: readonly KnowledgeEntry[];
-    threadItems: readonly Item[];
+    itemRevisions: readonly Item[];
+    artifacts: readonly Artifact[];
+    artifactReviews: readonly ArtifactReviewRecord[];
+    agentSessions: readonly AgentSession[];
+    turnEvents: readonly (readonly [string, readonly SseEventEnvelope[]])[];
     knowledgeProposals?: readonly KnowledgeProposalRecord[];
     knowledgeProposalReviews?: readonly KnowledgeProposalReviewRecord[];
     knowledgeSources?: readonly KnowledgeSourceRecord[];
     knowledgeSourceMaterials?: readonly KnowledgeSourceMaterialRecord[];
     stageWorkspace?: (stage: ImportWorkspaceStage) => void;
   }): WorkspaceRecord {
-    if (this.workspaces.has(input.workspace.id)) {
-      throw new Error(`Workspace already exists: ${input.workspace.id}`);
+    const history = parseCanonicalWorkspaceHistory({
+      workspace: input.workspace,
+      threads: input.threads,
+      turns: input.turns,
+      itemRevisions: input.itemRevisions,
+      artifacts: input.artifacts,
+      artifactReviews: input.artifactReviews,
+      knowledgeProposals: input.knowledgeProposals,
+      knowledgeProposalReviews: input.knowledgeProposalReviews,
+      knowledgeSources: input.knowledgeSources,
+      agentSessions: input.agentSessions,
+      turnEvents: input.turnEvents,
+    });
+    if (this.workspaces.has(history.workspace.id)) {
+      throw new Error(`Workspace already exists: ${history.workspace.id}`);
     }
 
-    for (const thread of input.threads) {
+    for (const thread of history.threads) {
       if (this.threads.has(thread.id)) {
         throw new Error(`Thread already exists: ${thread.id}`);
       }
-      if (thread.workspaceId !== input.workspace.id) {
-        throw new Error(`Imported thread points at another workspace: ${thread.id}`);
-      }
     }
 
-    for (const item of input.threadItems) {
+    const currentItems = history.turns.flatMap((turn) => turn.items);
+    const approvalState = deriveApprovalStateFromItems(currentItems, history.turns);
+
+    for (const turn of history.turns) {
+      if (this.turns.has(turn.id)) {
+        throw new Error(`Turn already exists: ${turn.id}`);
+      }
+    }
+    for (const item of history.itemRevisions) {
       if (this.items.has(item.id)) {
         throw new Error(`Thread item already exists: ${item.id}`);
       }
-      if (item.workspaceId !== input.workspace.id) {
-        throw new Error(`Imported thread item points at another workspace: ${item.id}`);
+    }
+    for (const artifact of history.artifacts) {
+      if (this.artifacts.has(artifact.id)) {
+        throw new Error(`Artifact already exists: ${artifact.id}`);
+      }
+    }
+    for (const session of history.agentSessions) {
+      if (this.agentSessions.has(session.id)) {
+        throw new Error(`Agent session already exists: ${session.id}`);
       }
     }
 
-    for (const proposal of input.knowledgeProposals ?? []) {
+    for (const proposal of history.knowledgeProposals) {
       if (this.knowledgeProposals.has(proposal.id)) {
         throw new Error(`Knowledge proposal already exists: ${proposal.id}`);
       }
-      if (proposal.workspaceId !== input.workspace.id) {
-        throw new Error(`Imported knowledge proposal points at another workspace: ${proposal.id}`);
-      }
     }
 
-    for (const review of input.knowledgeProposalReviews ?? []) {
+    for (const review of history.knowledgeProposalReviews) {
       if (this.knowledgeProposalReviews.has(review.proposalId)) {
         throw new Error(`Knowledge proposal review already exists: ${review.proposalId}`);
       }
-      if (review.workspaceId !== input.workspace.id) {
-        throw new Error(
-          `Imported knowledge proposal review points at another workspace: ${review.proposalId}`
-        );
-      }
     }
 
-    for (const source of input.knowledgeSources ?? []) {
+    for (const source of history.knowledgeSources) {
       if (this.knowledgeSources.has(source.id)) {
         throw new Error(`Knowledge source already exists: ${source.id}`);
       }
-      if (source.workspaceId !== input.workspace.id) {
-        throw new Error(`Imported knowledge source points at another workspace: ${source.id}`);
-      }
     }
 
-    const importedSourceIds = new Set((input.knowledgeSources ?? []).map((source) => source.id));
+    const importedSourceIds = new Set(history.knowledgeSources.map((source) => source.id));
     for (const material of input.knowledgeSourceMaterials ?? []) {
       if (!importedSourceIds.has(material.sourceId)) {
         throw new Error(
@@ -1654,76 +1359,157 @@ export class FsStore {
     }
 
     const workspace: WorkspaceRecord = {
-      ...input.workspace,
+      ...history.workspace,
       counts: {
-        threadCount: input.threads.length,
-        artifactCount: 0,
+        threadCount: history.threads.length,
+        artifactCount: history.artifacts.length,
         knowledgeEntryCount: input.knowledge.length,
       },
     };
+
+    const records: WorkspaceFileRecords = {
+      workspace,
+      knowledge: [...input.knowledge],
+      threads: history.threads,
+      turns: approvalState.turns,
+      itemRevisions: history.itemRevisions,
+      artifacts: history.artifacts,
+      artifactReviews: history.artifactReviews,
+      knowledgeProposals: history.knowledgeProposals,
+      knowledgeProposalReviews: history.knowledgeProposalReviews,
+      knowledgeSources: history.knowledgeSources,
+      agentSessions: history.agentSessions,
+      streamEvents: history.turnEvents,
+    };
+
+    this.persistImportedWorkspaceAtomically(records, (stage) => {
+      this.writeKnowledgeSourceMaterialsToRoot(
+        stage.workspaceRoot,
+        input.knowledgeSourceMaterials ?? [],
+        history.knowledgeSources
+      );
+      input.stageWorkspace?.(stage);
+    });
 
     this.workspaces.set(workspace.id, workspace);
     this.workspaceResources.set(
       workspace.id,
       createRunnableWorkspaceResources([...input.knowledge])
     );
-    const importedThreadIds: string[] = [];
-    const importedItemIds: string[] = [];
-    const importedKnowledgeProposalIds: string[] = [];
-    const importedKnowledgeProposalReviewIds: string[] = [];
-    const importedKnowledgeSourceIds: string[] = [];
-
-    for (const thread of input.threads) {
+    for (const thread of history.threads) {
       this.threads.set(thread.id, thread);
-      importedThreadIds.push(thread.id);
     }
-    for (const item of input.threadItems) {
+    for (const turn of approvalState.turns) {
+      this.turns.set(turn.id, turn);
+    }
+    for (const item of currentItems) {
       this.items.set(item.id, item);
-      importedItemIds.push(item.id);
     }
-    for (const proposal of input.knowledgeProposals ?? []) {
-      this.knowledgeProposals.set(proposal.id, proposal);
-      importedKnowledgeProposalIds.push(proposal.id);
+    this.itemRevisions.push(...history.itemRevisions);
+    for (const artifact of history.artifacts) {
+      this.artifacts.set(artifact.id, artifact);
     }
-    for (const review of input.knowledgeProposalReviews ?? []) {
-      this.knowledgeProposalReviews.set(review.proposalId, review);
-      importedKnowledgeProposalReviewIds.push(review.proposalId);
+    for (const review of history.artifactReviews) {
+      this.artifactReviews.set(review.artifactId, review);
     }
-    for (const source of input.knowledgeSources ?? []) {
-      this.knowledgeSources.set(source.id, source);
-      importedKnowledgeSourceIds.push(source.id);
+    for (const session of history.agentSessions) {
+      this.agentSessions.set(session.id, session);
     }
-    try {
-      this.persistImportedWorkspaceAtomically(workspace.id, (stage) => {
-        this.writeKnowledgeSourceMaterialsToRoot(
-          stage.workspaceRoot,
-          input.knowledgeSourceMaterials ?? [],
-          input.knowledgeSources ?? []
-        );
-        input.stageWorkspace?.(stage);
+    for (const [turnId, events] of history.turnEvents) {
+      this.streams.set(turnId, {
+        sequence: events.at(-1)?.sequence ?? 0,
+        events: events.slice(-TURN_STREAM_EVENT_WINDOW_SIZE),
+        listeners: new Set(),
+        timers: new Set(),
       });
-    } catch (error) {
-      this.workspaces.delete(workspace.id);
-      this.workspaceResources.delete(workspace.id);
-      for (const threadId of importedThreadIds) {
-        this.threads.delete(threadId);
-      }
-      for (const itemId of importedItemIds) {
-        this.items.delete(itemId);
-      }
-      for (const proposalId of importedKnowledgeProposalIds) {
-        this.knowledgeProposals.delete(proposalId);
-      }
-      for (const proposalId of importedKnowledgeProposalReviewIds) {
-        this.knowledgeProposalReviews.delete(proposalId);
-      }
-      for (const sourceId of importedKnowledgeSourceIds) {
-        this.knowledgeSources.delete(sourceId);
-      }
-      throw error;
+    }
+    for (const proposal of history.knowledgeProposals) {
+      this.knowledgeProposals.set(proposal.id, proposal);
+    }
+    for (const review of history.knowledgeProposalReviews) {
+      this.knowledgeProposalReviews.set(review.proposalId, review);
+    }
+    for (const source of history.knowledgeSources) {
+      this.knowledgeSources.set(source.id, source);
+    }
+    for (const approval of approvalState.approvals) {
+      this.approvals.set(approval.id, approval);
     }
 
     return workspace;
+  }
+
+  /**
+   * Removes a workspace that was published before a coordinated external import failed.
+   *
+   * @param workspaceId Imported workspace to compensate.
+   */
+  public rollbackImportedWorkspace(workspaceId: string): void {
+    this.getWorkspace(workspaceId);
+    const turnIds = new Set(
+      [...this.turns.values()]
+        .filter((turn) => turn.workspaceId === workspaceId)
+        .map((turn) => turn.id)
+    );
+
+    if (this.dataRoot) {
+      const root = this.workspaceRootPath(workspaceId);
+      if (lstatSync(root, { throwIfNoEntry: false })) {
+        assertCanonicalDirectory(root);
+        rmSync(root, { recursive: true });
+      }
+    }
+
+    this.workspaces.delete(workspaceId);
+    this.workspaceResources.delete(workspaceId);
+    for (const [threadId, thread] of this.threads) {
+      if (thread.workspaceId === workspaceId) {
+        this.threads.delete(threadId);
+      }
+    }
+    for (const turnId of turnIds) {
+      this.turns.delete(turnId);
+      const stream = this.streams.get(turnId);
+      if (stream) {
+        for (const timer of stream.timers) {
+          clearTimeout(timer);
+        }
+        this.streams.delete(turnId);
+      }
+    }
+    for (const [itemId, item] of this.items) {
+      if (item.workspaceId === workspaceId) {
+        this.items.delete(itemId);
+      }
+    }
+    this.itemRevisions = this.itemRevisions.filter((item) => item.workspaceId !== workspaceId);
+    for (const [artifactId, artifact] of this.artifacts) {
+      if (artifact.workspaceId === workspaceId) {
+        this.artifacts.delete(artifactId);
+        this.artifactReviews.delete(artifactId);
+      }
+    }
+    for (const [sessionId, session] of this.agentSessions) {
+      if (session.workspaceId === workspaceId) {
+        this.agentSessions.delete(sessionId);
+      }
+    }
+    for (const [proposalId, proposal] of this.knowledgeProposals) {
+      if (proposal.workspaceId === workspaceId) {
+        this.knowledgeProposals.delete(proposalId);
+        this.knowledgeProposalReviews.delete(proposalId);
+      }
+    }
+    for (const [sourceId, source] of this.knowledgeSources) {
+      if (source.workspaceId === workspaceId) {
+        this.knowledgeSources.delete(sourceId);
+      }
+    }
+    for (const [approvalId, approval] of this.approvals) {
+      if (approval.workspaceId === workspaceId) {
+        this.approvals.delete(approvalId);
+      }
+    }
   }
 
   public getWorkspace(workspaceId: string): WorkspaceRecord {
@@ -1785,7 +1571,7 @@ export class FsStore {
       updatedAt: now(),
     };
     this.workspaces.set(workspaceId, updated);
-    this.persist();
+    this.persist(workspaceId);
     return updated;
   }
 
@@ -1849,7 +1635,6 @@ export class FsStore {
       ...resources,
       agents,
     });
-    this.persist();
     return agent;
   }
 
@@ -1893,7 +1678,6 @@ export class FsStore {
       ...resources,
       agents,
     });
-    this.persist();
 
     return agents.map((agent) => ({
       agentId: agent.id,
@@ -1941,7 +1725,6 @@ export class FsStore {
       ...resources,
       agents,
     });
-    this.persist();
     return updatedAgent;
   }
 
@@ -1964,7 +1747,7 @@ export class FsStore {
       knowledge: [...resources.knowledge, entry],
     });
     this.refreshWorkspaceCounts(workspaceId);
-    this.persist();
+    this.persist(workspaceId);
     return entry;
   }
 
@@ -1982,12 +1765,15 @@ export class FsStore {
       throw new Error(`Knowledge entry not found: ${knowledgeEntryId}`);
     }
 
+    if (this.dataRoot) {
+      deleteWorkspaceKnowledgeRecord(this.workspaceRootPath(workspaceId), knowledgeEntryId);
+    }
     this.workspaceResources.set(workspaceId, {
       ...resources,
       knowledge,
     });
     this.refreshWorkspaceCounts(workspaceId);
-    this.persist();
+    this.persist(workspaceId);
   }
 
   public updateKnowledgeEntry(
@@ -2020,7 +1806,7 @@ export class FsStore {
       throw new Error(`Knowledge entry not found: ${knowledgeEntryId}`);
     }
 
-    this.persist();
+    this.persist(workspaceId);
     return entry;
   }
 
@@ -2040,7 +1826,7 @@ export class FsStore {
     };
     this.threads.set(thread.id, thread);
     this.refreshWorkspaceCounts(workspaceId);
-    this.persist();
+    this.persist(workspaceId);
     return thread;
   }
 
@@ -2064,7 +1850,7 @@ export class FsStore {
       updatedAt: now(),
     };
     this.threads.set(threadId, updated);
-    this.persist();
+    this.persist(workspaceId);
     return updated;
   }
 
@@ -2140,7 +1926,7 @@ export class FsStore {
       listeners: new Set(),
       timers: new Set(),
     });
-    this.persist();
+    this.persist(workspaceId);
     return turn;
   }
 
@@ -2186,11 +1972,47 @@ export class FsStore {
    * @returns Updated turn after protocol validation.
    * @throws Error when the turn does not exist or the merged turn violates the protocol schema.
    */
-  public updateTurn(turnId: string, input: Partial<Turn>): Turn {
+  public updateTurn(
+    turnId: string,
+    input: Partial<
+      Pick<
+        Turn,
+        | 'agentId'
+        | 'agentProfileId'
+        | 'agentSessionId'
+        | 'completedAt'
+        | 'configVersion'
+        | 'durationMs'
+        | 'error'
+        | 'humanGate'
+        | 'status'
+        | 'triggerSource'
+      >
+    >
+  ): Turn {
     const turn = this.turns.get(turnId);
 
     if (!turn) {
       throw new Error(`Turn not found: ${turnId}`);
+    }
+
+    const unsupportedField = Object.keys(input).find(
+      (field) =>
+        ![
+          'agentId',
+          'agentProfileId',
+          'agentSessionId',
+          'completedAt',
+          'configVersion',
+          'durationMs',
+          'error',
+          'humanGate',
+          'status',
+          'triggerSource',
+        ].includes(field)
+    );
+    if (unsupportedField) {
+      throw new Error(`Turn update cannot change field: ${unsupportedField}`);
     }
 
     const nextStatus = input.status ?? turn.status;
@@ -2213,7 +2035,7 @@ export class FsStore {
           : (input.durationMs ?? turn.durationMs),
     });
     this.turns.set(turnId, updated);
-    this.persist();
+    this.persist(turn.workspaceId);
     if (updated.status === 'completed' && !turn.completedAt && updated.completedAt) {
       ensureTurnFeedback(this, updated, this.resolveTurnAgentId(updated));
     }
@@ -2258,14 +2080,35 @@ export class FsStore {
   }
 
   public createItem(input: Item): Item {
-    this.items.set(input.id, input);
-    const turn = this.getTurnById(input.turnId);
-    this.turns.set(input.turnId, {
+    const item = ItemSchema.parse(input);
+    const existing = this.items.get(item.id);
+    const turn = this.getTurnById(item.turnId);
+    if (turn.workspaceId !== item.workspaceId || turn.threadId !== item.threadId) {
+      throw new Error(`Item has invalid turn lineage: ${item.id}`);
+    }
+    if (
+      existing &&
+      (existing.workspaceId !== item.workspaceId ||
+        existing.threadId !== item.threadId ||
+        existing.turnId !== item.turnId ||
+        existing.type !== item.type ||
+        existing.createdAt !== item.createdAt)
+    ) {
+      throw new Error(`Item immutable identity cannot change: ${item.id}`);
+    }
+    const updatedTurn = {
       ...turn,
-      items: [...turn.items, input],
-    });
-    this.persist();
-    return input;
+      items: existing
+        ? turn.items.map((candidate) => (candidate.id === item.id ? item : candidate))
+        : [...turn.items, item],
+    };
+    if (this.dataRoot) {
+      appendWorkspaceItemRevision(this.workspaceRootPath(item.workspaceId), item);
+    }
+    this.itemRevisions.push(item);
+    this.items.set(item.id, item);
+    this.turns.set(item.turnId, updatedTurn);
+    return item;
   }
 
   public updateItem(itemId: string, input: Partial<Item>): Item {
@@ -2275,16 +2118,29 @@ export class FsStore {
       throw new Error(`Item not found: ${itemId}`);
     }
 
-    const updated = { ...item, ...input } as Item;
-    this.items.set(itemId, updated);
-
+    const updated = ItemSchema.parse({ ...item, ...input });
+    if (
+      updated.id !== item.id ||
+      updated.workspaceId !== item.workspaceId ||
+      updated.threadId !== item.threadId ||
+      updated.turnId !== item.turnId ||
+      updated.type !== item.type ||
+      updated.createdAt !== item.createdAt
+    ) {
+      throw new Error(`Item immutable identity cannot change: ${itemId}`);
+    }
     const turn = this.getTurnById(item.turnId);
-    this.turns.set(item.turnId, {
+    const updatedTurn = {
       ...turn,
       items: turn.items.map((candidate) => (candidate.id === itemId ? updated : candidate)),
-    });
+    };
 
-    this.persist();
+    if (this.dataRoot) {
+      appendWorkspaceItemRevision(this.workspaceRootPath(updated.workspaceId), updated);
+    }
+    this.itemRevisions.push(updated);
+    this.items.set(itemId, updated);
+    this.turns.set(item.turnId, updatedTurn);
     return updated;
   }
 
@@ -2303,6 +2159,17 @@ export class FsStore {
   }
 
   /**
+   * Lists every durable item revision for one workspace in append order.
+   *
+   * @param workspaceId Workspace whose item history should be returned.
+   * @returns Full item revision history.
+   */
+  public listWorkspaceItemRevisions(workspaceId: string): Item[] {
+    this.getWorkspace(workspaceId);
+    return this.itemRevisions.filter((item) => item.workspaceId === workspaceId);
+  }
+
+  /**
    * Return all durable items across workspaces for app-local read models.
    *
    * @returns Stored items.
@@ -2313,7 +2180,6 @@ export class FsStore {
 
   public createApproval(input: ApprovalRequest): ApprovalRequest {
     this.approvals.set(input.id, input);
-    this.persist();
     return input;
   }
 
@@ -2334,26 +2200,35 @@ export class FsStore {
     const approval = this.getApproval(approvalRequestId);
     const updated: ApprovalRequest = { ...approval, ...input };
     this.approvals.set(approvalRequestId, updated);
-    this.persist();
     return updated;
   }
 
   public createAgentSession(input: AgentSessionInput): AgentSession {
+    this.getWorkspace(input.workspaceId);
+    if (!input.threadId) {
+      throw new Error(`Agent session requires a thread: ${input.id}`);
+    }
+    this.getThread(input.workspaceId, input.threadId);
+    const existing = this.agentSessions.get(input.id);
+
+    if (existing && existing.workspaceId !== input.workspaceId) {
+      throw new Error(`Agent session id belongs to another workspace: ${input.id}`);
+    }
+
     const workspaceRoots = input.workspaceRoots ?? [];
-    const agentSession: AgentSession = {
+    const agentSession = AgentSessionRecordSchema.parse({
       configVersion: null,
+      environmentPackageSnapshotId: null,
       policySnapshotId: null,
       sandboxSummary: sandboxSummaryForWorkspaceRoots(workspaceRoots),
-      sessionCompatibilityKey:
-        input.sessionCompatibilityKey ??
-        sessionCompatibilityKeyForPackage(input.environmentPackageSnapshot),
+      sessionCompatibilityKey: null,
       stale: false,
       workspaceRoots,
       ...input,
-    };
+    }) as AgentSession;
 
     this.agentSessions.set(agentSession.id, agentSession);
-    this.persist();
+    this.persist(agentSession.workspaceId);
     return agentSession;
   }
 
@@ -2373,15 +2248,42 @@ export class FsStore {
     return agentSession;
   }
 
-  public updateAgentSession(agentSessionId: string, input: Partial<AgentSession>): AgentSession {
+  public updateAgentSession(
+    agentSessionId: string,
+    input: Partial<
+      Pick<
+        AgentSession,
+        | 'configVersion'
+        | 'environmentPackageSnapshotId'
+        | 'message'
+        | 'stale'
+        | 'status'
+        | 'updatedAt'
+      >
+    >
+  ): AgentSession {
     const agentSession = this.getAgentSession(agentSessionId);
-    const updated: AgentSession = {
+    const unsupportedField = Object.keys(input).find(
+      (field) =>
+        ![
+          'configVersion',
+          'environmentPackageSnapshotId',
+          'message',
+          'stale',
+          'status',
+          'updatedAt',
+        ].includes(field)
+    );
+    if (unsupportedField) {
+      throw new Error(`Agent session update cannot change field: ${unsupportedField}`);
+    }
+    const updated = AgentSessionRecordSchema.parse({
       ...agentSession,
       ...input,
       updatedAt: input.updatedAt ?? now(),
-    };
+    }) as AgentSession;
     this.agentSessions.set(agentSessionId, updated);
-    this.persist();
+    this.persist(agentSession.workspaceId);
     return updated;
   }
 
@@ -2400,11 +2302,41 @@ export class FsStore {
     );
   }
 
+  /**
+   * Lists every durable agent session for one workspace.
+   *
+   * @param workspaceId Workspace whose sessions should be returned.
+   * @returns Workspace-owned agent sessions.
+   */
+  public listWorkspaceAgentSessions(workspaceId: string): AgentSession[] {
+    this.getWorkspace(workspaceId);
+    return [...this.agentSessions.values()].filter(
+      (agentSession) => agentSession.workspaceId === workspaceId
+    );
+  }
+
   public createArtifact(input: Artifact): Artifact {
-    this.artifacts.set(input.id, input);
-    this.refreshWorkspaceCounts(input.workspaceId);
-    this.persist();
-    return input;
+    const artifact = ArtifactSchema.parse(input);
+    this.getWorkspace(artifact.workspaceId);
+    if (artifact.threadId !== null) {
+      this.getThread(artifact.workspaceId, artifact.threadId);
+    }
+    if (artifact.turnId !== null) {
+      if (artifact.threadId === null) {
+        throw new Error(`Artifact turn requires a thread: ${artifact.id}`);
+      }
+      this.getTurn(artifact.workspaceId, artifact.threadId, artifact.turnId);
+    }
+    const existing = this.artifacts.get(artifact.id);
+
+    if (existing && existing.workspaceId !== artifact.workspaceId) {
+      throw new Error(`Artifact id belongs to another workspace: ${artifact.id}`);
+    }
+
+    this.artifacts.set(artifact.id, artifact);
+    this.refreshWorkspaceCounts(artifact.workspaceId);
+    this.persist(artifact.workspaceId);
+    return artifact;
   }
 
   /**
@@ -2423,9 +2355,13 @@ export class FsStore {
       throw new Error(`Artifact not found: ${artifactId}`);
     }
 
+    if (this.dataRoot) {
+      deleteWorkspaceArtifactRecords(this.workspaceRootPath(workspaceId), artifactId);
+    }
     this.artifacts.delete(artifactId);
+    this.artifactReviews.delete(artifactId);
     this.refreshWorkspaceCounts(workspaceId);
-    this.persist();
+    this.persist(workspaceId);
   }
 
   /**
@@ -2446,7 +2382,7 @@ export class FsStore {
 
     const updated: Artifact = { ...artifact, ...input, updatedAt: input.updatedAt ?? now() };
     this.artifacts.set(artifactId, updated);
-    this.persist();
+    this.persist(workspaceId);
     return updated;
   }
 
@@ -2472,7 +2408,33 @@ export class FsStore {
    */
   public recordArtifactReviewDecision(input: ArtifactReviewRecord): ArtifactReviewRecord {
     this.getWorkspace(input.workspaceId);
+    const artifact = this.artifacts.get(input.artifactId);
+
+    if (
+      !artifact ||
+      artifact.workspaceId !== input.workspaceId ||
+      artifact.threadId !== input.threadId ||
+      artifact.turnId !== input.turnId
+    ) {
+      throw new Error(`Artifact review has invalid artifact lineage: ${input.artifactId}`);
+    }
+    if (input.followUpTurnId !== null) {
+      const followUpTurn = this.turns.get(input.followUpTurnId);
+
+      if (
+        (input.lifecycle !== 'pending' && !followUpTurn) ||
+        (followUpTurn &&
+          (followUpTurn.workspaceId !== input.workspaceId ||
+            followUpTurn.threadId !== input.threadId))
+      ) {
+        throw new Error(`Artifact review has invalid follow-up turn: ${input.followUpTurnId}`);
+      }
+    }
+
     const existing = this.artifactReviews.get(input.artifactId);
+    if (existing && existing.workspaceId !== input.workspaceId) {
+      throw new Error(`Artifact review id belongs to another workspace: ${input.artifactId}`);
+    }
     if (existing) {
       const sameLineage =
         existing.workspaceId === input.workspaceId &&
@@ -2494,7 +2456,7 @@ export class FsStore {
       }
     }
     this.artifactReviews.set(input.artifactId, input);
-    this.persist();
+    this.persist(artifact.workspaceId);
     return input;
   }
 
@@ -2529,8 +2491,17 @@ export class FsStore {
    */
   public createKnowledgeProposal(input: KnowledgeProposalRecord): KnowledgeProposalRecord {
     this.getWorkspace(input.workspaceId);
+    if (input.status !== 'pending') {
+      throw new Error(`Knowledge proposal decision requires a review record: ${input.id}`);
+    }
+    const existing = this.knowledgeProposals.get(input.id);
+
+    if (existing && existing.workspaceId !== input.workspaceId) {
+      throw new Error(`Knowledge proposal id belongs to another workspace: ${input.id}`);
+    }
+
     this.knowledgeProposals.set(input.id, input);
-    this.persist();
+    this.persist(input.workspaceId);
     return input;
   }
 
@@ -2568,7 +2539,7 @@ export class FsStore {
       updatedAt: updates.updatedAt,
     };
     this.knowledgeProposals.set(proposalId, updated);
-    this.persist();
+    this.persist(proposal.workspaceId);
     return updated;
   }
 
@@ -2606,7 +2577,7 @@ export class FsStore {
       updatedAt: input.decidedAt,
     });
     this.knowledgeProposalReviews.set(input.proposalId, input);
-    this.persist();
+    this.persist(proposal.workspaceId);
     return input;
   }
 
@@ -2649,15 +2620,27 @@ export class FsStore {
     materialContent?: string
   ): KnowledgeSourceRecord {
     this.getWorkspace(input.workspaceId);
+    if (input.originatingThreadId !== null) {
+      this.getThread(input.workspaceId, input.originatingThreadId);
+    }
+    if (input.originatingTurnId !== null) {
+      if (input.originatingThreadId === null) {
+        throw new Error(`Knowledge source turn requires a thread: ${input.id}`);
+      }
+      this.getTurn(input.workspaceId, input.originatingThreadId, input.originatingTurnId);
+    }
 
     const previous = this.knowledgeSources.get(input.id);
+    if (previous && previous.workspaceId !== input.workspaceId) {
+      throw new Error(`Knowledge source id belongs to another workspace: ${input.id}`);
+    }
 
     try {
       this.knowledgeSources.set(input.id, input);
       if (materialContent !== undefined) {
         this.writeKnowledgeSourceMaterial(input.workspaceId, input.id, materialContent);
       }
-      this.persist();
+      this.persist(input.workspaceId);
     } catch (error) {
       if (previous) {
         this.knowledgeSources.set(input.id, previous);
@@ -2676,17 +2659,14 @@ export class FsStore {
    * @param input Observation row to append.
    * @returns Stored observation row.
    */
-  public recordKnowledgeObservation(input: KnowledgeObservationRecord): KnowledgeObservationRecord {
+  public recordKnowledgeObservation(input: KnowledgeObservation): KnowledgeObservation {
     this.getWorkspace(input.workspaceId);
 
     if (!this.dataRoot) {
       return input;
     }
 
-    const path = this.knowledgeObservationLedgerPath(input.workspaceId, input.observedAt);
-
-    mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(path, `${JSON.stringify(input)}\n`);
+    appendWorkspaceKnowledgeObservation(this.workspaceRootPath(input.workspaceId), input);
 
     return input;
   }
@@ -2698,10 +2678,7 @@ export class FsStore {
    * @param observationId Observation id.
    * @returns Stored observation row.
    */
-  public getKnowledgeObservation(
-    workspaceId: string,
-    observationId: string
-  ): KnowledgeObservationRecord {
+  public getKnowledgeObservation(workspaceId: string, observationId: string): KnowledgeObservation {
     const observation = this.listKnowledgeObservations(workspaceId).find(
       (candidate) => candidate.id === observationId
     );
@@ -2719,40 +2696,16 @@ export class FsStore {
    * @param workspaceId Workspace that owns the observations.
    * @returns Stored observation rows.
    */
-  public listKnowledgeObservations(workspaceId: string): KnowledgeObservationRecord[] {
+  public listKnowledgeObservations(workspaceId: string): KnowledgeObservation[] {
     this.getWorkspace(workspaceId);
 
     if (!this.dataRoot) {
       return [];
     }
 
-    const root = join(this.workspaceRootPath(workspaceId), 'knowledge', 'observations');
-
-    if (!existsSync(root)) {
-      return [];
-    }
-
-    return readdirSync(root)
-      .filter((name) => /^\d{6}\.jsonl$/.test(name))
-      .sort()
-      .flatMap((name) =>
-        readFileSync(join(root, name), 'utf8')
-          .split('\n')
-          .filter(Boolean)
-          .map((line) => JSON.parse(line) as KnowledgeObservationRecord)
-      );
-  }
-
-  /**
-   * Returns the monthly observation ledger path for an ISO timestamp.
-   *
-   * @param workspaceId Workspace that owns the observations.
-   * @param observedAt ISO timestamp for the observed event.
-   * @returns Observation ledger path.
-   */
-  private knowledgeObservationLedgerPath(workspaceId: string, observedAt: string): string {
-    const month = observedAt.slice(0, 7).replace('-', '');
-    return join(this.workspaceRootPath(workspaceId), 'knowledge', 'observations', `${month}.jsonl`);
+    return [...readWorkspaceKnowledgeObservationLedger(this.workspaceRootPath(workspaceId), true)]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .flatMap(([, rows]) => rows);
   }
 
   /**
@@ -2761,17 +2714,14 @@ export class FsStore {
    * @param input Claim row to append.
    * @returns Stored claim row.
    */
-  public recordKnowledgeClaim(input: KnowledgeClaimRecord): KnowledgeClaimRecord {
+  public recordKnowledgeClaim(input: KnowledgeClaim): KnowledgeClaim {
     this.getWorkspace(input.workspaceId);
 
     if (!this.dataRoot) {
       return input;
     }
 
-    const path = this.knowledgeClaimLedgerPath(input.workspaceId, input.createdAt);
-
-    mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(path, `${JSON.stringify(input)}\n`);
+    appendWorkspaceKnowledgeClaim(this.workspaceRootPath(input.workspaceId), input);
 
     return input;
   }
@@ -2783,7 +2733,7 @@ export class FsStore {
    * @param claimId Claim id.
    * @returns Stored claim row.
    */
-  public getKnowledgeClaim(workspaceId: string, claimId: string): KnowledgeClaimRecord {
+  public getKnowledgeClaim(workspaceId: string, claimId: string): KnowledgeClaim {
     const claim = this.listKnowledgeClaims(workspaceId).find(
       (candidate) => candidate.id === claimId
     );
@@ -2801,40 +2751,16 @@ export class FsStore {
    * @param workspaceId Workspace that owns the claims.
    * @returns Stored claim rows.
    */
-  public listKnowledgeClaims(workspaceId: string): KnowledgeClaimRecord[] {
+  public listKnowledgeClaims(workspaceId: string): KnowledgeClaim[] {
     this.getWorkspace(workspaceId);
 
     if (!this.dataRoot) {
       return [];
     }
 
-    const root = join(this.workspaceRootPath(workspaceId), 'knowledge', 'claims');
-
-    if (!existsSync(root)) {
-      return [];
-    }
-
-    return readdirSync(root)
-      .filter((name) => /^\d{6}\.jsonl$/.test(name))
-      .sort()
-      .flatMap((name) =>
-        readFileSync(join(root, name), 'utf8')
-          .split('\n')
-          .filter(Boolean)
-          .map((line) => JSON.parse(line) as KnowledgeClaimRecord)
-      );
-  }
-
-  /**
-   * Returns the monthly claim ledger path for an ISO timestamp.
-   *
-   * @param workspaceId Workspace that owns the claims.
-   * @param createdAt ISO timestamp for the claim append.
-   * @returns Claim ledger path.
-   */
-  private knowledgeClaimLedgerPath(workspaceId: string, createdAt: string): string {
-    const month = createdAt.slice(0, 7).replace('-', '');
-    return join(this.workspaceRootPath(workspaceId), 'knowledge', 'claims', `${month}.jsonl`);
+    return [...readWorkspaceKnowledgeClaimLedger(this.workspaceRootPath(workspaceId), true)]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .flatMap(([, rows]) => rows);
   }
 
   /**
@@ -2843,17 +2769,14 @@ export class FsStore {
    * @param input Conflict row to append.
    * @returns Stored conflict row.
    */
-  public recordKnowledgeConflict(input: KnowledgeConflictRecord): KnowledgeConflictRecord {
+  public recordKnowledgeConflict(input: KnowledgeConflict): KnowledgeConflict {
     this.getWorkspace(input.workspaceId);
 
     if (!this.dataRoot) {
       return input;
     }
 
-    const path = this.knowledgeConflictLedgerPath(input.workspaceId, input.createdAt);
-
-    mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(path, `${JSON.stringify(input)}\n`);
+    appendWorkspaceKnowledgeConflict(this.workspaceRootPath(input.workspaceId), input);
 
     return input;
   }
@@ -2864,9 +2787,9 @@ export class FsStore {
    * @param input Conflict resolution input.
    * @returns Latest conflict row after resolution.
    */
-  public resolveKnowledgeConflict(input: ResolveKnowledgeConflictInput): KnowledgeConflictRecord {
+  public resolveKnowledgeConflict(input: ResolveKnowledgeConflictInput): KnowledgeConflict {
     const current = this.getKnowledgeConflict(input.workspaceId, input.conflictId);
-    const resolved: KnowledgeConflictRecord = {
+    const resolved: KnowledgeConflict = {
       ...current,
       status: input.status,
       resolution: input.resolution,
@@ -2879,10 +2802,7 @@ export class FsStore {
       return resolved;
     }
 
-    const path = this.knowledgeConflictLedgerPath(input.workspaceId, input.resolvedAt);
-
-    mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(path, `${JSON.stringify(resolved)}\n`);
+    appendWorkspaceKnowledgeConflict(this.workspaceRootPath(input.workspaceId), resolved);
 
     return resolved;
   }
@@ -2894,7 +2814,7 @@ export class FsStore {
    * @param conflictId Conflict id.
    * @returns Stored conflict row.
    */
-  public getKnowledgeConflict(workspaceId: string, conflictId: string): KnowledgeConflictRecord {
+  public getKnowledgeConflict(workspaceId: string, conflictId: string): KnowledgeConflict {
     const conflict = this.listKnowledgeConflicts(workspaceId).find(
       (candidate) => candidate.id === conflictId
     );
@@ -2912,29 +2832,19 @@ export class FsStore {
    * @param workspaceId Workspace that owns the conflicts.
    * @returns Stored conflict rows.
    */
-  public listKnowledgeConflicts(workspaceId: string): KnowledgeConflictRecord[] {
+  public listKnowledgeConflicts(workspaceId: string): KnowledgeConflict[] {
     this.getWorkspace(workspaceId);
 
     if (!this.dataRoot) {
       return [];
     }
 
-    const root = join(this.workspaceRootPath(workspaceId), 'knowledge', 'conflicts');
-
-    if (!existsSync(root)) {
-      return [];
-    }
-
-    const rows = readdirSync(root)
-      .filter((name) => /^\d{6}\.jsonl$/.test(name))
-      .sort()
-      .flatMap((name) =>
-        readFileSync(join(root, name), 'utf8')
-          .split('\n')
-          .filter(Boolean)
-          .map((line) => JSON.parse(line) as KnowledgeConflictRecord)
-      );
-    const latestById = new Map<string, KnowledgeConflictRecord>();
+    const rows = [
+      ...readWorkspaceKnowledgeConflictLedger(this.workspaceRootPath(workspaceId), true),
+    ]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .flatMap(([, revisions]) => revisions);
+    const latestById = new Map<string, KnowledgeConflict>();
 
     for (const row of rows) {
       latestById.set(row.id, row);
@@ -2944,36 +2854,21 @@ export class FsStore {
   }
 
   /**
-   * Returns the monthly conflict ledger path for an ISO timestamp.
-   *
-   * @param workspaceId Workspace that owns the conflicts.
-   * @param createdAt ISO timestamp for the conflict append.
-   * @returns Conflict ledger path.
-   */
-  private knowledgeConflictLedgerPath(workspaceId: string, createdAt: string): string {
-    const month = createdAt.slice(0, 7).replace('-', '');
-    return join(this.workspaceRootPath(workspaceId), 'knowledge', 'conflicts', `${month}.jsonl`);
-  }
-
-  /**
    * Appends one Knowledge Manager context package audit trace.
    *
    * @param input Context package trace row to append.
    * @returns Stored trace row.
    */
   public recordKnowledgeContextPackageTrace(
-    input: KnowledgeContextPackageTraceRecord
-  ): KnowledgeContextPackageTraceRecord {
+    input: KnowledgeManagerContextPackageTraceRecord
+  ): KnowledgeManagerContextPackageTraceRecord {
     this.getWorkspace(input.workspaceId);
 
     if (!this.dataRoot) {
       return input;
     }
 
-    const path = this.knowledgeContextPackageTraceLedgerPath(input.workspaceId, input.createdAt);
-
-    mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(path, `${JSON.stringify(input)}\n`);
+    appendWorkspaceKnowledgeContextPackageTrace(this.workspaceRootPath(input.workspaceId), input);
 
     return input;
   }
@@ -2988,32 +2883,22 @@ export class FsStore {
   public readKnowledgeContextPackageTrace(
     workspaceId: string,
     contextPackageId: string
-  ): KnowledgeContextPackageTraceRecord | null {
+  ): KnowledgeManagerContextPackageTraceRecord | null {
     this.getWorkspace(workspaceId);
 
     if (!this.dataRoot) {
       return null;
     }
 
-    const dir = join(this.workspaceRootPath(workspaceId), 'knowledge', 'context-packages');
+    const rows = [
+      ...readWorkspaceKnowledgeContextPackageTraceLedger(this.workspaceRootPath(workspaceId), true),
+    ]
+      .sort(([left], [right]) => right.localeCompare(left))
+      .flatMap(([, traces]) => [...traces].reverse());
 
-    if (!existsSync(dir)) {
-      return null;
-    }
-
-    for (const file of readdirSync(dir).sort().reverse()) {
-      if (!file.endsWith('.jsonl')) {
-        continue;
-      }
-
-      const rows = readFileSync(join(dir, file), 'utf8').trim().split('\n').filter(Boolean);
-
-      for (const row of rows.reverse()) {
-        const parsed = JSON.parse(row) as KnowledgeContextPackageTraceRecord;
-
-        if (parsed.id === contextPackageId) {
-          return parsed;
-        }
+    for (const row of rows) {
+      if (row.id === contextPackageId) {
+        return row;
       }
     }
 
@@ -3027,7 +2912,7 @@ export class FsStore {
    * @returns Public materialization summary with worker-visible paths only.
    */
   public materializeKnowledgeContextPackageTrace(
-    input: KnowledgeContextPackageTraceRecord,
+    input: KnowledgeManagerContextPackageTraceRecord,
     options: { workspaceRoots?: readonly MaterializedWorkspaceRoot[] } = {}
   ): MaterializeKnowledgeContextPackageResponse {
     this.getWorkspace(input.workspaceId);
@@ -3036,14 +2921,15 @@ export class FsStore {
       throw new Error('A file-backed data root is required to materialize context packages.');
     }
 
-    const root = join(
+    assertSafeWorkspacePathSegment(input.id, 'Context package id');
+    const materializationsRoot = join(
       this.workspaceRootPath(input.workspaceId),
       'knowledge',
-      'context-materializations',
-      input.id,
-      'openkit',
-      'context'
+      'context-materializations'
     );
+    mkdirSync(materializationsRoot, { recursive: true });
+    assertCanonicalDirectory(materializationsRoot);
+    const root = join(materializationsRoot, input.id, 'openkit', 'context');
     rmSync(root, { force: true, recursive: true });
     mkdirSync(root, { recursive: true });
 
@@ -3115,6 +3001,7 @@ export class FsStore {
     const materializedSourceIds = new Set<string>();
 
     for (const material of input.response.materials) {
+      assertSafeWorkspacePathSegment(material.knowledgeEntryId, 'Knowledge entry id');
       const path = `/openkit/context/knowledge/${material.knowledgeEntryId}.md`;
       const knowledgeFile = writeContextFile(
         path,
@@ -3145,6 +3032,7 @@ export class FsStore {
         }
 
         const sourceId = sourceReference.slice('source:'.length);
+        assertSafeWorkspacePathSegment(sourceId, 'Knowledge source id');
         if (materializedSourceIds.has(sourceId)) {
           continue;
         }
@@ -3192,6 +3080,7 @@ export class FsStore {
     }
 
     for (const artifact of input.response.artifacts) {
+      assertSafeWorkspacePathSegment(artifact.id, 'Artifact id');
       const extension =
         artifact.content.format === 'json'
           ? 'json'
@@ -3336,6 +3225,7 @@ export class FsStore {
       return null;
     }
 
+    assertSafeWorkspacePathSegment(contextPackageId, 'Context package id');
     const root = join(
       this.workspaceRootPath(workspaceId),
       'knowledge',
@@ -3346,11 +3236,11 @@ export class FsStore {
     );
     const packagePath = join(root, 'package.json');
 
-    if (!existsSync(packagePath)) {
+    if (!lstatSync(packagePath, { throwIfNoEntry: false })) {
       return null;
     }
 
-    const packageContent = readFileSync(packagePath, 'utf8');
+    const packageContent = readCanonicalTextFile(packagePath);
     const manifest = WorkerContextPackageManifestSchema.parse(JSON.parse(packageContent));
 
     if (manifest.workspaceId !== workspaceId || manifest.contextPackageId !== contextPackageId) {
@@ -3371,12 +3261,12 @@ export class FsStore {
           throw new Error(`Context package file path escapes package root: ${entry.path}`);
         }
 
-        if (!existsSync(filePath)) {
+        if (!lstatSync(filePath, { throwIfNoEntry: false })) {
           throw new Error(`Context package file missing: ${entry.path}`);
         }
 
         const contentDigest = `sha256:${createHash('sha256')
-          .update(readFileSync(filePath, 'utf8'))
+          .update(readCanonicalTextFile(filePath))
           .digest('hex')}`;
 
         if (contentDigest !== entry.digest) {
@@ -3394,23 +3284,6 @@ export class FsStore {
     });
 
     return { files, manifest };
-  }
-
-  /**
-   * Returns the monthly context package trace ledger path for an ISO timestamp.
-   *
-   * @param workspaceId Workspace that owns the trace.
-   * @param createdAt ISO timestamp for the trace append.
-   * @returns Context package trace ledger path.
-   */
-  private knowledgeContextPackageTraceLedgerPath(workspaceId: string, createdAt: string): string {
-    const month = createdAt.slice(0, 7).replace('-', '');
-    return join(
-      this.workspaceRootPath(workspaceId),
-      'knowledge',
-      'context-packages',
-      `${month}.jsonl`
-    );
   }
 
   /**
@@ -3459,7 +3332,7 @@ export class FsStore {
 
     const path = this.knowledgeSourceMaterialPath(workspaceId, sourceId);
 
-    return existsSync(path) ? readFileSync(path, 'utf8') : null;
+    return lstatSync(path, { throwIfNoEntry: false }) ? readCanonicalTextFile(path) : null;
   }
 
   /**
@@ -3499,8 +3372,8 @@ export class FsStore {
 
       const path = this.knowledgeSourceDerivedRepresentationPath(source.workspaceId, source.id);
 
-      return existsSync(path)
-        ? [JSON.parse(readFileSync(path, 'utf8')) as KnowledgeSourceDerivedRepresentationRecord]
+      return lstatSync(path, { throwIfNoEntry: false })
+        ? [JSON.parse(readCanonicalTextFile(path)) as KnowledgeSourceDerivedRepresentationRecord]
         : [];
     });
   }
@@ -3527,6 +3400,7 @@ export class FsStore {
     const source = this.getKnowledgeSource(workspaceId, sourceId);
 
     mkdirSync(dirname(path), { recursive: true });
+    assertCanonicalDirectory(dirname(path));
     writeFileSync(path, content);
     this.writeKnowledgeSourceDerivedRepresentation(this.workspaceRootPath(workspaceId), source);
   }
@@ -3545,10 +3419,12 @@ export class FsStore {
     const sourcesById = new Map(sources.map((source) => [source.id, source]));
 
     for (const material of materials) {
+      assertSafeWorkspacePathSegment(material.sourceId, 'Knowledge source id');
       const path = join(workspaceRoot, 'sources', 'materials', material.sourceId, 'content.txt');
       const source = sourcesById.get(material.sourceId);
 
       mkdirSync(dirname(path), { recursive: true });
+      assertCanonicalDirectory(dirname(path));
       writeFileSync(path, material.content);
       if (source) {
         this.writeKnowledgeSourceDerivedRepresentation(workspaceRoot, source);
@@ -3564,6 +3440,7 @@ export class FsStore {
    * @returns Workspace-root-relative source material file path.
    */
   private knowledgeSourceMaterialPath(workspaceId: string, sourceId: string): string {
+    assertSafeWorkspacePathSegment(sourceId, 'Knowledge source id');
     return join(
       this.workspaceRootPath(workspaceId),
       'sources',
@@ -3583,6 +3460,7 @@ export class FsStore {
     workspaceRoot: string,
     source: KnowledgeSourceRecord
   ): void {
+    assertSafeWorkspacePathSegment(source.id, 'Knowledge source id');
     const path = join(workspaceRoot, 'sources', 'derived', source.id, 'text.json');
     const record: KnowledgeSourceDerivedRepresentationRecord = {
       id: `${source.id}:text`,
@@ -3597,6 +3475,7 @@ export class FsStore {
     };
 
     mkdirSync(dirname(path), { recursive: true });
+    assertCanonicalDirectory(dirname(path));
     writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`);
   }
 
@@ -3608,6 +3487,7 @@ export class FsStore {
    * @returns Derived metadata path.
    */
   private knowledgeSourceDerivedRepresentationPath(workspaceId: string, sourceId: string): string {
+    assertSafeWorkspacePathSegment(sourceId, 'Knowledge source id');
     return join(this.workspaceRootPath(workspaceId), 'sources', 'derived', sourceId, 'text.json');
   }
 
@@ -3618,13 +3498,32 @@ export class FsStore {
       throw new Error(`Turn stream not found: ${turnId}`);
     }
 
-    const envelope: SseEventEnvelope = {
+    const envelope = SseEventEnvelopeSchema.parse({
       ...event,
       protocolVersion: PROTOCOL_VERSION,
       requestId: event.requestId ?? null,
       sequence: stream.sequence + 1,
       timestamp: now(),
-    };
+    });
+    const turn = this.getTurnById(turnId);
+
+    if (
+      envelope.workspaceId !== turn.workspaceId ||
+      envelope.threadId !== turn.threadId ||
+      envelope.turnId !== turn.id
+    ) {
+      throw new Error(`Turn event ${envelope.event} has invalid lineage for ${turnId}.`);
+    }
+    assertTurnEventPayloadLineage(
+      envelope,
+      turn.workspaceId,
+      turn.threadId,
+      turn.id,
+      new Set(turn.items.map((item) => item.id))
+    );
+    if (this.dataRoot) {
+      appendWorkspaceTurnEvent(this.workspaceRootPath(envelope.workspaceId), envelope);
+    }
     stream.sequence = envelope.sequence;
     stream.events.push(envelope);
     if (stream.events.length > TURN_STREAM_EVENT_WINDOW_SIZE) {
@@ -3633,7 +3532,6 @@ export class FsStore {
     for (const listener of stream.listeners) {
       listener(envelope);
     }
-    this.persist();
     return envelope;
   }
 
@@ -3655,6 +3553,19 @@ export class FsStore {
     return this.streams.get(turnId)?.events ?? [];
   }
 
+  /**
+   * Returns the complete durable event history used by workspace export.
+   *
+   * @param turnId Turn whose event log should be exported.
+   * @returns Full canonical history, or the in-memory history when persistence is disabled.
+   */
+  public getTurnEventsForExport(turnId: string): SseEventEnvelope[] {
+    const turn = this.getTurnById(turnId);
+    return this.dataRoot
+      ? readWorkspaceTurnEvents(this.workspaceRootPath(turn.workspaceId), turn)
+      : this.getTurnEvents(turnId);
+  }
+
   public addTimer(turnId: string, timer: NodeJS.Timeout): void {
     this.streams.get(turnId)?.timers.add(timer);
   }
@@ -3674,127 +3585,128 @@ export class FsStore {
 }
 
 /**
- * Rejects removed snapshot fields before loading persisted store data.
+ * Derives approval read models and repairs their turn-gate projections.
  *
- * @param snapshot Parsed store snapshot.
- * @throws Error when the snapshot still contains removed fields.
+ * @param items Latest canonical item revisions.
+ * @param turns Canonical turns that project pending approval gates.
+ * @returns Derived approvals, reconciled turns, and whether a projection changed.
+ * @throws Error when approval items conflict or cross lineage.
  */
-function assertCurrentStoreSnapshot(snapshot: StoreSnapshot): void {
-  for (const workspace of snapshot.workspaces) {
-    const defaults = workspace.defaults as Record<string, unknown> | undefined;
+function deriveApprovalStateFromItems(items: readonly Item[], turns: readonly Turn[]) {
+  const requests = new Map<string, Extract<Item, { type: 'approval-request' }>>();
+  const decisions = new Map<string, Extract<Item, { type: 'approval-decision' }>>();
+  const turnsById = new Map(turns.map((turn) => [turn.id, turn]));
 
-    if (defaults && Object.hasOwn(defaults, REMOVED_DEFAULT_WORKER_ID_FIELD)) {
-      throw new Error(
-        `Store snapshot contains removed workspace defaults.${REMOVED_DEFAULT_WORKER_ID_FIELD} for workspace ${workspace.id}.`
-      );
+  for (const item of items) {
+    if (item.type === 'approval-request') {
+      if (requests.has(item.approvalRequestId)) {
+        throw new Error(`Duplicate approval request item: ${item.approvalRequestId}.`);
+      }
+      requests.set(item.approvalRequestId, item);
+    } else if (item.type === 'approval-decision') {
+      if (decisions.has(item.approvalRequestId)) {
+        throw new Error(`Duplicate approval decision item: ${item.approvalRequestId}.`);
+      }
+      decisions.set(item.approvalRequestId, item);
     }
   }
 
-  for (const [workspaceId, resources] of snapshot.workspaceResources) {
-    if (Object.hasOwn(resources as Record<string, unknown>, 'workers')) {
-      throw new Error(
-        `Store snapshot contains removed ${REMOVED_WORKSPACE_WORKERS_FIELD} for workspace ${workspaceId}.`
-      );
+  for (const approvalRequestId of decisions.keys()) {
+    if (!requests.has(approvalRequestId)) {
+      throw new Error(`Approval decision references a missing request: ${approvalRequestId}.`);
     }
   }
-}
 
-/**
- * Parses persisted replay events through the current strict SSE envelope schema.
- *
- * @param streamEvents Stream event entries loaded from the store snapshot.
- * @returns Current validated stream event entries.
- * @throws Error when a retained event uses a removed stream shape.
- */
-function parseCurrentStreamEventsSnapshot(
-  streamEvents: StoreSnapshot['streamEvents']
-): StoreSnapshot['streamEvents'] {
-  return streamEvents.map(([turnId, events]) => [
-    turnId,
-    events.map((event, index) => parseCurrentStreamEventSnapshot(turnId, event, index)),
-  ]);
-}
+  const pendingByTurnId = new Map<string, Extract<Item, { type: 'approval-request' }>>();
+  const approvals = [...requests.values()].map((request) => {
+    const decision = decisions.get(request.approvalRequestId);
+    const turn = turnsById.get(request.turnId);
 
-/**
- * Parses one persisted replay event through the current strict SSE envelope schema.
- *
- * @param turnId Turn id that owns the replay stream.
- * @param event Persisted replay event.
- * @param index Event index inside the retained stream.
- * @returns Current validated replay event.
- * @throws Error when the event is not a current SSE envelope.
- */
-function parseCurrentStreamEventSnapshot(
-  turnId: string,
-  event: SseEventEnvelope,
-  index: number
-): SseEventEnvelope {
-  const parsed = SseEventEnvelopeSchema.safeParse(event);
+    if (
+      decision &&
+      (decision.workspaceId !== request.workspaceId ||
+        decision.threadId !== request.threadId ||
+        decision.turnId !== request.turnId)
+    ) {
+      throw new Error(`Approval decision has invalid lineage: ${request.approvalRequestId}.`);
+    }
+    if (!turn || turn.workspaceId !== request.workspaceId || turn.threadId !== request.threadId) {
+      throw new Error(`Approval request has invalid turn lineage: ${request.approvalRequestId}.`);
+    }
+    if (!decision) {
+      if (pendingByTurnId.has(request.turnId)) {
+        throw new Error(`Turn has multiple pending approval requests: ${request.turnId}.`);
+      }
+      pendingByTurnId.set(request.turnId, request);
+    }
 
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    const path = issue?.path.length ? issue.path.join('.') : 'event';
-    throw new Error(
-      `Store snapshot contains invalid stream event for turn ${turnId} at index ${index}: ${path} ${issue?.message ?? 'failed validation'}.`
-    );
+    return ApprovalRequestSchema.parse({
+      id: request.approvalRequestId,
+      workspaceId: request.workspaceId,
+      threadId: request.threadId,
+      turnId: request.turnId,
+      kind: request.kind,
+      status: decision?.decision ?? 'pending',
+      title: request.title,
+      description: request.description,
+      createdAt: request.createdAt,
+      resolvedAt: decision ? (decision.completedAt ?? decision.createdAt) : null,
+    });
+  });
+
+  for (const turn of turns) {
+    if (turn.humanGate?.kind !== 'approval') {
+      continue;
+    }
+    const request = requests.get(turn.humanGate.approvalRequestId);
+    if (
+      !request ||
+      request.id !== turn.humanGate.itemId ||
+      request.workspaceId !== turn.workspaceId ||
+      request.threadId !== turn.threadId ||
+      request.turnId !== turn.id
+    ) {
+      throw new Error(`Approval gate is missing its canonical request item: ${turn.id}.`);
+    }
   }
 
-  return event;
-}
+  let repaired = false;
+  const reconciledTurns = turns.map((turn) => {
+    const pending = pendingByTurnId.get(turn.id);
 
-/**
- * Verifies that an agent-session snapshot carries current required app-local fields.
- *
- * @param session Agent session loaded from a snapshot.
- * @returns The current agent session snapshot.
- * @throws Error when required current fields are missing.
- */
-function assertCurrentAgentSessionSnapshot(session: AgentSession): AgentSession {
-  session.sessionCompatibilityKey ??= null;
+    if (pending) {
+      if (['completed', 'interrupted', 'cancelled', 'failed'].includes(turn.status)) {
+        throw new Error(
+          `Pending approval belongs to a terminal turn: ${pending.approvalRequestId}.`
+        );
+      }
+      if (
+        turn.status === 'awaiting_human' &&
+        turn.humanGate?.kind === 'approval' &&
+        turn.humanGate.approvalRequestId === pending.approvalRequestId &&
+        turn.humanGate.itemId === pending.id
+      ) {
+        return turn;
+      }
+      repaired = true;
+      return TurnSchema.parse({
+        ...turn,
+        status: 'awaiting_human',
+        humanGate: {
+          kind: 'approval',
+          approvalRequestId: pending.approvalRequestId,
+          itemId: pending.id,
+        },
+      });
+    }
 
-  if (!Object.hasOwn(session, 'configVersion')) {
-    throw new Error(`Agent session snapshot is missing configVersion: ${session.id}.`);
-  }
+    if (turn.humanGate?.kind === 'approval') {
+      repaired = true;
+      return TurnSchema.parse({ ...turn, status: 'running', humanGate: null });
+    }
 
-  if (!Array.isArray(session.workspaceRoots)) {
-    throw new Error(`Agent session snapshot is missing workspaceRoots: ${session.id}.`);
-  }
+    return turn;
+  });
 
-  if (typeof session.stale !== 'boolean') {
-    throw new Error(`Agent session snapshot is missing stale: ${session.id}.`);
-  }
-
-  return session;
-}
-
-/**
- * Reads the session workspace compatibility digest from an AEP snapshot.
- *
- * @param environmentPackage Optional agent environment package snapshot.
- * @returns Compatibility digest when the snapshot carries one.
- */
-function sessionCompatibilityKeyForPackage(
-  environmentPackage: AgentEnvironmentPackage | undefined
-): string | null {
-  const openkit = environmentPackage?.extensions.openkit;
-
-  if (!openkit || typeof openkit !== 'object') {
-    return null;
-  }
-
-  const sessionWorkspace = (openkit as Record<string, unknown>).sessionWorkspace;
-
-  if (!sessionWorkspace || typeof sessionWorkspace !== 'object') {
-    return null;
-  }
-
-  const compatibilityKey = (sessionWorkspace as Record<string, unknown>).compatibilityKey;
-
-  if (!compatibilityKey || typeof compatibilityKey !== 'object') {
-    return null;
-  }
-
-  const digest = (compatibilityKey as Record<string, unknown>).digest;
-
-  return typeof digest === 'string' ? digest : null;
+  return { approvals, repaired, turns: reconciledTurns };
 }

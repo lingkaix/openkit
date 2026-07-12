@@ -100,9 +100,9 @@ function writeFileIfMissing(target, content) {
   return true;
 }
 
-function readAgentSecret(serverConfigPath) {
+function readAgentSecretEnvName(serverConfigPath) {
   if (!fs.existsSync(serverConfigPath)) {
-    return { envName: null, value: null };
+    return null;
   }
 
   const serverConfig = readServerConfig(serverConfigPath);
@@ -110,12 +110,10 @@ function readAgentSecret(serverConfigPath) {
   const provider = providers.find((entry) => entry?.id === 'nano-agent-openrouter');
 
   if (!provider?.secretRef) {
-    return { envName: null, value: null };
+    return null;
   }
 
-  const envName = readEnvSecretName(provider.secretRef, provider.id);
-
-  return { envName, value: process.env[envName] ?? null };
+  return readEnvSecretName(provider.secretRef, provider.id);
 }
 
 function readServerConfig(serverConfigPath) {
@@ -172,58 +170,6 @@ function readEnvSecretName(secretRef, providerId) {
   }
 
   return envName;
-}
-
-function resourceRecords(store) {
-  return (store.workspaceResources ?? [])
-    .map((entry) => (Array.isArray(entry) ? entry[1] : entry))
-    .filter(Boolean);
-}
-
-function patchPersistedAgentStores(agentSecret) {
-  if (!agentSecret.value) {
-    if (agentSecret.envName) {
-      console.log(`Host environment ${agentSecret.envName} is not set; agent runtime secret environment was not injected.`);
-    }
-    return;
-  }
-
-  const workspaceRoot = path.join(dataRoot, 'users', 'user_local', 'workspaces');
-  if (!fs.existsSync(workspaceRoot)) {
-    return;
-  }
-
-  for (const workspaceId of fs.readdirSync(workspaceRoot)) {
-    const storePath = path.join(workspaceRoot, workspaceId, 'store.json');
-    if (!fs.existsSync(storePath)) {
-      continue;
-    }
-
-    const store = JSON.parse(fs.readFileSync(storePath, 'utf8'));
-    for (const resources of resourceRecords(store)) {
-      for (const agent of resources.agents ?? []) {
-        if (agent?.config?.adapterType === 'codex') {
-          agent.config.environment = {
-            ...(agent.config.environment ?? {}),
-            CODEX_HOME: '/data/openkit/config/agents/codex-home',
-            [agentSecret.envName]: agentSecret.value,
-          };
-        }
-
-        if (agent?.config?.adapterType === 'opencode') {
-          agent.config.environment = {
-            ...(agent.config.environment ?? {}),
-            [agentSecret.envName]: agentSecret.value,
-            OPENAI_API_KEY: agentSecret.value,
-            OPENAI_BASE_URL: 'https://openrouter.ai/api/v1',
-            OPENAI_MODEL: defaultModel,
-          };
-        }
-      }
-    }
-
-    fs.writeFileSync(storePath, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
-  }
 }
 
 function serverConfig() {
@@ -339,7 +285,7 @@ mkdirp(path.join(dataRoot, 'users', 'user_local', 'workspaces'));
 
 const serverConfigPath = path.join(dataRoot, 'config', 'server.jsonc');
 const wroteServerConfig = writeFileIfMissing(serverConfigPath, serverConfig());
-const agentSecret = readAgentSecret(serverConfigPath);
+const agentSecretEnvName = readAgentSecretEnvName(serverConfigPath);
 writeFileIfMissing(
   path.join(dataRoot, 'config', 'agents', 'codex.agent.jsonc'),
   agentConfig('agent_codex_host', 'Codex Host Agent', 'codex', 'codex-app-server')
@@ -350,11 +296,9 @@ writeFileIfMissing(
 );
 fs.writeFileSync(
   path.join(dataRoot, 'config', 'agents', 'codex-home', 'config.toml'),
-  codexConfig(agentSecret.envName ?? 'OPENROUTER_API_KEY'),
+  codexConfig(agentSecretEnvName ?? 'OPENROUTER_API_KEY'),
   { mode: 0o600 }
 );
-
-patchPersistedAgentStores(agentSecret);
 
 if (wroteServerConfig) {
   console.log(`Created ${serverConfigPath} with secretRef env references.`);

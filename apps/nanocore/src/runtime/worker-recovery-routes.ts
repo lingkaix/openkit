@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   CancelRecoveryPendingUserTurnResponseSchema,
   ClearInterruptedWorkerCheckpointRequestSchema,
@@ -371,7 +373,7 @@ export function registerWorkerRecoveryRoutes({
           );
         }
 
-        await turnExecutor.interruptTurn(store, activeTurn.id, { requestId });
+        await turnExecutor.interruptTurn(store, activeTurn.id, { requestId: randomUUID() });
         const interruptedTurn = store.getTurn(workspaceId, threadId, activeTurn.id);
         completeSchedulerLeaseForTerminalTurn(coreDb, interruptedTurn);
         const promoted = promotePendingUserTurnToInterrupt(workspaceDb, {

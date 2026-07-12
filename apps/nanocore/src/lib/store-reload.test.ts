@@ -1,16 +1,26 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import {
   ItemSchema,
   KnowledgeEntrySchema,
+  PROTOCOL_VERSION,
   ThreadSchema,
+  TurnSchema,
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
-import { seedDemoWorkspace } from '../test-support/demo-store.js';
 import { FsStore } from './store.js';
 
 const timestamp = '2026-07-06T00:00:00.000Z';
@@ -28,6 +38,18 @@ function workspaceImportPayload(
   threadId: string = 'th_blocked',
   itemId: string = 'it_blocked'
 ): Parameters<FsStore['importWorkspaceSnapshot']>[0] {
+  const item = ItemSchema.parse({
+    id: itemId,
+    workspaceId,
+    threadId,
+    turnId: `turn_${workspaceId}`,
+    type: 'user-message',
+    status: 'completed',
+    text: 'Imported message',
+    createdAt: timestamp,
+    completedAt: timestamp,
+  });
+
   return {
     workspace: WorkspaceRecordSchema.parse({
       id: workspaceId,
@@ -68,23 +90,30 @@ function workspaceImportPayload(
         updatedAt: timestamp,
       }),
     ],
-    threadItems: [
-      ItemSchema.parse({
-        id: itemId,
+    turns: [
+      TurnSchema.parse({
+        id: item.turnId,
         workspaceId,
         threadId,
-        turnId: `turn_${workspaceId}`,
-        type: 'user-message',
+        items: [item],
         status: 'completed',
-        text: 'Imported message',
-        createdAt: timestamp,
+        humanGate: null,
+        error: null,
+        configVersion: null,
+        startedAt: timestamp,
         completedAt: timestamp,
+        durationMs: 0,
       }),
     ],
+    itemRevisions: [item],
+    artifacts: [],
+    artifactReviews: [],
+    agentSessions: [],
+    turnEvents: [],
   };
 }
 
-describe('FsStore snapshot reload', () => {
+describe('FsStore canonical reload', () => {
   it('rebuilds every workspace from canonical records and resolves the latest item revision', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-canonical-reload-'));
     const store = new FsStore({ dataRoot });
@@ -147,18 +176,14 @@ describe('FsStore snapshot reload', () => {
       firstItemsPath,
       `${JSON.stringify(firstItem)}\n${JSON.stringify(updatedFirstItem)}\n`
     );
-    for (const workspace of store.listWorkspaces()) {
-      rmSync(join(dataRoot, 'users', 'user_local', 'workspaces', workspace.id, 'store.json'), {
-        force: true,
-      });
-    }
-
     const restarted = new FsStore({ dataRoot });
 
     expect(restarted.getWorkspace(firstWorkspace.id)).toEqual(
       store.getWorkspace(firstWorkspace.id)
     );
-    expect(restarted.getThread(firstWorkspace.id, firstThread.id)).toEqual(firstThread);
+    expect(restarted.getThread(firstWorkspace.id, firstThread.id)).toEqual(
+      store.getThread(firstWorkspace.id, firstThread.id)
+    );
     expect(restarted.getTurn(firstWorkspace.id, firstThread.id, firstTurn.id)).toEqual(
       store.getTurn(firstWorkspace.id, firstThread.id, firstTurn.id)
     );
@@ -168,7 +193,9 @@ describe('FsStore snapshot reload', () => {
     expect(restarted.getWorkspace(secondWorkspace.id)).toEqual(
       store.getWorkspace(secondWorkspace.id)
     );
-    expect(restarted.getThread(secondWorkspace.id, secondThread.id)).toEqual(secondThread);
+    expect(restarted.getThread(secondWorkspace.id, secondThread.id)).toEqual(
+      store.getThread(secondWorkspace.id, secondThread.id)
+    );
     expect(restarted.getTurn(secondWorkspace.id, secondThread.id, secondTurn.id)).toEqual(
       store.getTurn(secondWorkspace.id, secondThread.id, secondTurn.id)
     );
@@ -234,6 +261,7 @@ describe('FsStore snapshot reload', () => {
       turn.id,
       'items.jsonl'
     );
+    const turnPath = join(dirname(itemsPath), 'turn.json');
     const initialLog = readFileSync(itemsPath, 'utf8');
     const updatedItem = store.updateItem(item.id, {
       status: 'completed',
@@ -241,10 +269,15 @@ describe('FsStore snapshot reload', () => {
       completedAt: item.createdAt,
     });
 
-    expect(readFileSync(itemsPath, 'utf8')).toBe(`${initialLog}${JSON.stringify(updatedItem)}\n`);
+    const appendedLog = readFileSync(itemsPath, 'utf8');
+    expect(appendedLog.startsWith(initialLog)).toBe(true);
+    expect(JSON.parse(appendedLog.slice(initialLog.length))).toEqual(updatedItem);
+    const turnRecord = JSON.parse(readFileSync(turnPath, 'utf8')) as { items: unknown[] };
+    expect(turnRecord.items).toEqual([]);
+    expect(JSON.stringify(turnRecord)).not.toContain(updatedItem.text);
   });
 
-  it('reloads workspace, thread, turn, items, approval, artifact, knowledge, agent session, and events', () => {
+  it('reloads canonical workspace records and event logs without store.json', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-reload-'));
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Reload Workspace');
@@ -303,9 +336,39 @@ describe('FsStore snapshot reload', () => {
       kind: 'permission',
       status: 'pending',
       title: 'Approve reload',
-      description: 'Approval survives snapshot reload.',
+      description: 'Approval survives canonical reload.',
       createdAt: userItem.createdAt,
       resolvedAt: null,
+    });
+    const approvalRequestItem = store.createItem({
+      id: `it_approval_request_${turn.id}`,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      type: 'approval-request',
+      status: 'completed',
+      approvalRequestId: approval.id,
+      title: approval.title,
+      description: approval.description,
+      kind: approval.kind,
+      createdAt: userItem.createdAt,
+      completedAt: userItem.completedAt,
+    });
+    const approvalDecisionItem = store.createItem({
+      id: `it_approval_decision_${turn.id}`,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      type: 'approval-decision',
+      status: 'completed',
+      approvalRequestId: approval.id,
+      decision: 'granted',
+      createdAt: userItem.createdAt,
+      completedAt: userItem.completedAt,
+    });
+    const resolvedApproval = store.updateApproval(approval.id, {
+      status: 'granted',
+      resolvedAt: approvalDecisionItem.completedAt,
     });
     const agentSession = store.createAgentSession({
       id: `session_${thread.id}`,
@@ -325,12 +388,46 @@ describe('FsStore snapshot reload', () => {
       kind: 'summary',
       title: 'Reload artifact',
       status: 'ready',
-      summary: 'Artifact survives snapshot reload.',
+      summary: 'Artifact survives canonical reload.',
       version: 1,
-      content: { format: 'markdown', body: 'Artifact survives snapshot reload.' },
+      content: {
+        format: 'markdown',
+        body: '# Canonical artifact body\n\nOnly the content file owns these bytes.',
+      },
       createdAt: userItem.createdAt,
       updatedAt: userItem.createdAt,
     });
+    const artifactReview = store.recordArtifactReviewDecision({
+      artifactId: artifact.id,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      status: 'accepted',
+      requestId: 'artifact-review-reload',
+      message: 'Canonical review survives restart.',
+      decidedAt: userItem.createdAt,
+      followUpTurnId: null,
+      lifecycle: 'completed',
+    });
+    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', workspace.id);
+    const artifactMetadataPath = join(workspaceRoot, 'artifacts', artifact.id, 'artifact.json');
+    const artifactContentPath = join(
+      workspaceRoot,
+      'artifacts',
+      artifact.id,
+      'files',
+      'content.md'
+    );
+    const artifactReviewPath = join(workspaceRoot, 'reviews', 'artifacts', `${artifact.id}.json`);
+    const eventLogPath = join(
+      workspaceRoot,
+      'threads',
+      thread.id,
+      'turns',
+      turn.id,
+      'runtime',
+      'events.jsonl'
+    );
     const agentSessionEvent = store.emitTurnEvent(turn.id, {
       event: 'agent.session.updated',
       workspaceId: workspace.id,
@@ -338,6 +435,7 @@ describe('FsStore snapshot reload', () => {
       turnId: turn.id,
       data: { type: 'agent-session-updated', agentSession },
     });
+    const initialEventLog = existsSync(eventLogPath) ? readFileSync(eventLogPath, 'utf8') : '';
     const artifactEvent = store.emitTurnEvent(turn.id, {
       event: 'artifact.created',
       workspaceId: workspace.id,
@@ -350,20 +448,34 @@ describe('FsStore snapshot reload', () => {
       completedAt: userItem.completedAt,
     });
     const persistedThread = store.getThread(workspace.id, thread.id);
+    const forbiddenLegacyStorePaths = store
+      .listWorkspaces()
+      .map((persistedWorkspace) =>
+        join(dataRoot, 'users', 'user_local', 'workspaces', persistedWorkspace.id, 'store.json')
+      );
+    const artifactMetadata = JSON.parse(readFileSync(artifactMetadataPath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    const persistedArtifactReview = existsSync(artifactReviewPath)
+      ? JSON.parse(readFileSync(artifactReviewPath, 'utf8'))
+      : null;
+    const finalEventLog = existsSync(eventLogPath) ? readFileSync(eventLogPath, 'utf8') : '';
 
-    store.flushSnapshot();
+    expect.soft(artifactMetadata).toEqual({
+      ...artifact,
+      content: { format: artifact.content.format },
+    });
+    expect.soft(JSON.stringify(artifactMetadata)).not.toContain(artifact.content.body);
+    expect.soft(readFileSync(artifactContentPath, 'utf8')).toBe(artifact.content.body);
+    expect.soft(persistedArtifactReview).toEqual(artifactReview);
+    expect.soft(initialEventLog).toBe(`${JSON.stringify(agentSessionEvent)}\n`);
+    expect.soft(finalEventLog).toBe(`${initialEventLog}${JSON.stringify(artifactEvent)}\n`);
 
-    const workspaceSnapshotPath = join(
-      dataRoot,
-      'users',
-      'user_local',
-      'workspaces',
-      workspace.id,
-      'store.json'
-    );
+    expect(forbiddenLegacyStorePaths.some((path) => existsSync(path))).toBe(false);
+
     const restarted = new FsStore({ dataRoot });
 
-    expect(existsSync(workspaceSnapshotPath)).toBe(true);
     expect(restarted.getWorkspace(workspace.id)).toEqual(store.getWorkspace(workspace.id));
     expect(restarted.getWorkspaceResources(workspace.id).knowledge).toContainEqual(knowledge);
     expect(restarted.getKnowledgeSource(workspace.id, knowledgeSource.id)).toEqual(knowledgeSource);
@@ -372,62 +484,825 @@ describe('FsStore snapshot reload', () => {
     );
     expect(restarted.getThread(workspace.id, thread.id)).toEqual(persistedThread);
     expect(restarted.getTurn(workspace.id, thread.id, turn.id)).toEqual(completedTurn);
-    expect(restarted.listThreadItems(workspace.id, thread.id)).toEqual([userItem, assistantItem]);
-    expect(restarted.getApproval(approval.id)).toEqual(approval);
+    expect(restarted.listThreadItems(workspace.id, thread.id)).toEqual([
+      userItem,
+      assistantItem,
+      approvalRequestItem,
+      approvalDecisionItem,
+    ]);
+    expect(restarted.getApproval(approval.id)).toEqual(resolvedApproval);
     expect(restarted.getAgentSession(agentSession.id)).toEqual(agentSession);
     expect(restarted.getArtifact(workspace.id, artifact.id)).toEqual(artifact);
+    expect(restarted.getArtifactReviewDecision(artifact.id)).toEqual(artifactReview);
     expect(restarted.getTurnEvents(turn.id)).toEqual([agentSessionEvent, artifactEvent]);
   });
 
-  it('loads an existing snapshot through the public load API', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-load-'));
+  it('reloads only the last one hundred appended turn events', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-event-window-'));
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Public load API');
-    const persistencePath = join(
+    const workspace = store.createWorkspace('Event window workspace');
+    const thread = store.createThread(workspace.id, 'Event window thread');
+    const turn = store.createTurn(workspace.id, thread.id, 'Append bounded replay events');
+
+    for (let index = 0; index < 105; index += 1) {
+      store.emitTurnEvent(turn.id, {
+        event: 'turn.started',
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        turnId: turn.id,
+        data: { type: 'turn-started', turnId: turn.id, status: 'running' },
+      });
+    }
+
+    const restarted = new FsStore({ dataRoot });
+    const events = restarted.getTurnEvents(turn.id);
+
+    expect(events).toHaveLength(100);
+    expect(events[0]?.sequence).toBe(6);
+    expect(events.at(-1)?.sequence).toBe(105);
+  });
+
+  it('removes stale knowledge, artifact, and review records', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-stale-records-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Stale record workspace');
+    const thread = store.createThread(workspace.id, 'Stale record thread');
+    const turn = store.createTurn(workspace.id, thread.id, 'Delete canonical records');
+    const knowledge = store.createKnowledgeEntry(workspace.id, {
+      kind: 'project-context',
+      title: 'Delete this knowledge',
+      content: 'This canonical page must be removed.',
+    });
+    const artifact = store.createArtifact({
+      id: `ar_${turn.id}`,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      kind: 'summary',
+      title: 'Delete this artifact',
+      status: 'ready',
+      summary: null,
+      version: 1,
+      content: { format: 'text', body: 'Delete this body.' },
+      createdAt: turn.startedAt ?? timestamp,
+      updatedAt: turn.startedAt ?? timestamp,
+    });
+    store.recordArtifactReviewDecision({
+      artifactId: artifact.id,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      status: 'accepted',
+      requestId: 'delete-artifact-review',
+      message: null,
+      decidedAt: artifact.updatedAt,
+      followUpTurnId: null,
+      lifecycle: 'completed',
+    });
+    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', workspace.id);
+    const knowledgePath = join(workspaceRoot, 'knowledge', 'pages', `${knowledge.id}.md`);
+    const artifactRoot = join(workspaceRoot, 'artifacts', artifact.id);
+    const reviewPath = join(workspaceRoot, 'reviews', 'artifacts', `${artifact.id}.json`);
+
+    store.deleteKnowledgeEntry(workspace.id, knowledge.id);
+    store.deleteArtifact(workspace.id, artifact.id);
+
+    expect(existsSync(knowledgePath)).toBe(false);
+    expect(existsSync(artifactRoot)).toBe(false);
+    expect(existsSync(reviewPath)).toBe(false);
+  });
+
+  it('preserves a workspace-authored knowledge schema during unrelated persistence', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-custom-schema-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Custom schema workspace');
+    const schemaPath = join(
       dataRoot,
       'users',
       'user_local',
       'workspaces',
       workspace.id,
-      'store.json'
+      'knowledge',
+      'schema',
+      'workspace-schema.yaml'
     );
-    const loader = new FsStore();
+    const customSchema = 'schema_version: "custom-test"\nallowed_types: ["KnowledgePage"]\n';
 
-    expect(existsSync(persistencePath)).toBe(true);
-    expect(loader.loadSnapshot(persistencePath)).toBe(true);
-    expect(loader.getWorkspace(workspace.id)).toEqual(store.getWorkspace(workspace.id));
+    writeFileSync(schemaPath, customSchema);
+    store.createThread(workspace.id, 'Unrelated persistence');
+
+    expect(readFileSync(schemaPath, 'utf8')).toBe(customSchema);
   });
 
-  it('loads the newest data-root snapshot instead of the first sorted snapshot', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-newest-snapshot-'));
+  it('rejects path-bearing canonical record ids before they escape their family root', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-path-id-'));
     const store = new FsStore({ dataRoot });
-    seedDemoWorkspace(store);
-    const staleSnapshotPath = join(
+    const workspace = store.createWorkspace('Safe path workspace');
+    const thread = store.createThread(workspace.id, 'Safe path thread');
+    const turn = store.createTurn(workspace.id, thread.id, 'Reject unsafe artifact id');
+    const escapedPath = join(
       dataRoot,
       'users',
       'user_local',
       'workspaces',
-      'ws_0',
-      'store.json'
-    );
-    const defaultSnapshotPath = join(
-      dataRoot,
-      'users',
-      'user_local',
-      'workspaces',
-      'ws_demo',
-      'store.json'
+      workspace.id,
+      'escaped_artifact'
     );
 
-    mkdirSync(join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_0'), {
-      recursive: true,
+    expect(() =>
+      store.createArtifact({
+        id: '../../escaped_artifact',
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        turnId: turn.id,
+        kind: 'summary',
+        title: 'Unsafe artifact',
+        status: 'ready',
+        summary: null,
+        version: 1,
+        content: { format: 'text', body: 'Must not escape.' },
+        createdAt: turn.startedAt ?? timestamp,
+        updatedAt: turn.startedAt ?? timestamp,
+      })
+    ).toThrow(/safe path segment/);
+    expect(existsSync(escapedPath)).toBe(false);
+  });
+
+  it('rejects symbolic links for canonical artifact bodies and source materials', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-canonical-symlink-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Canonical symlink workspace');
+    const thread = store.createThread(workspace.id, 'Canonical symlink thread');
+    const turn = store.createTurn(workspace.id, thread.id, 'Reject canonical symlinks');
+    const artifact = store.createArtifact({
+      id: `ar_${turn.id}`,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      kind: 'summary',
+      title: 'Canonical artifact',
+      status: 'ready',
+      summary: null,
+      version: 1,
+      content: { format: 'text', body: 'Canonical artifact body.' },
+      createdAt: turn.startedAt ?? timestamp,
+      updatedAt: turn.startedAt ?? timestamp,
     });
-    writeFileSync(staleSnapshotPath, readFileSync(defaultSnapshotPath));
+    const source = store.createKnowledgeSource(
+      {
+        id: `ks_${turn.id}`,
+        workspaceId: workspace.id,
+        kind: 'upload',
+        title: 'Canonical source',
+        uri: null,
+        contentDigest: 'sha256:canonical-source',
+        originatingThreadId: thread.id,
+        originatingTurnId: turn.id,
+        originatingFileId: null,
+        createdAt: turn.startedAt ?? timestamp,
+        updatedAt: turn.startedAt ?? timestamp,
+      },
+      'Canonical source material.'
+    );
+    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', workspace.id);
+    const outsidePath = join(dataRoot, 'outside-canonical-content.txt');
+    const artifactBodyPath = join(workspaceRoot, 'artifacts', artifact.id, 'files', 'content.txt');
+    const sourceMaterialPath = join(
+      workspaceRoot,
+      'sources',
+      'materials',
+      source.id,
+      'content.txt'
+    );
 
-    const workspace = store.createWorkspace('Newest snapshot workspace');
+    writeFileSync(outsidePath, 'Outside canonical content.');
+    rmSync(artifactBodyPath);
+    symlinkSync(outsidePath, artifactBodyPath);
+    expect(() => new FsStore({ dataRoot })).toThrow(/symbolic link|regular file/);
+
+    rmSync(artifactBodyPath);
+    writeFileSync(artifactBodyPath, artifact.content.body);
+    rmSync(sourceMaterialPath);
+    symlinkSync(outsidePath, sourceMaterialPath);
+    expect(() => store.readKnowledgeSourceMaterial(workspace.id, source.id)).toThrow(
+      /symbolic link|regular file/
+    );
+  });
+
+  it('repairs a pending approval gate from its canonical request item', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-approval-request-recovery-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Approval request recovery workspace');
+    const thread = store.createThread(workspace.id, 'Approval request recovery thread');
+    const turn = store.createTurn(workspace.id, thread.id, 'Recover the pending approval gate');
+    const approval = store.createApproval({
+      id: `ap_${turn.id}`,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      kind: 'permission',
+      status: 'pending',
+      title: 'Recover approval request',
+      description: 'The request item must recover its turn projection.',
+      createdAt: turn.startedAt ?? timestamp,
+      resolvedAt: null,
+    });
+    const requestItem = store.createItem({
+      id: `it_approval_request_${turn.id}`,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      type: 'approval-request',
+      status: 'in_progress',
+      approvalRequestId: approval.id,
+      title: approval.title,
+      description: approval.description,
+      kind: approval.kind,
+      createdAt: approval.createdAt,
+      completedAt: null,
+    });
+
+    const restarted = new FsStore({ dataRoot });
+    const recoveredTurn = restarted.getTurn(workspace.id, thread.id, turn.id);
+
+    expect(restarted.getApproval(approval.id)).toEqual(approval);
+    expect(recoveredTurn).toMatchObject({
+      status: 'awaiting_human',
+      humanGate: {
+        kind: 'approval',
+        approvalRequestId: approval.id,
+        itemId: requestItem.id,
+      },
+    });
+    expect(
+      JSON.parse(
+        readFileSync(
+          join(
+            dataRoot,
+            'users',
+            'user_local',
+            'workspaces',
+            workspace.id,
+            'threads',
+            thread.id,
+            'turns',
+            turn.id,
+            'turn.json'
+          ),
+          'utf8'
+        )
+      )
+    ).toMatchObject({ status: 'awaiting_human', humanGate: recoveredTurn.humanGate });
+  });
+
+  it('clears a stale approval gate from its canonical decision item', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-approval-decision-recovery-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Approval decision recovery workspace');
+    const thread = store.createThread(workspace.id, 'Approval decision recovery thread');
+    const turn = store.createTurn(workspace.id, thread.id, 'Recover the approval decision');
+    const approval = store.createApproval({
+      id: `ap_${turn.id}`,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      kind: 'permission',
+      status: 'pending',
+      title: 'Recover approval decision',
+      description: 'The decision item must clear its stale turn gate.',
+      createdAt: turn.startedAt ?? timestamp,
+      resolvedAt: null,
+    });
+    const requestItem = store.createItem({
+      id: `it_approval_request_${turn.id}`,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      type: 'approval-request',
+      status: 'completed',
+      approvalRequestId: approval.id,
+      title: approval.title,
+      description: approval.description,
+      kind: approval.kind,
+      createdAt: approval.createdAt,
+      completedAt: approval.createdAt,
+    });
+
+    store.updateTurn(turn.id, {
+      status: 'awaiting_human',
+      humanGate: {
+        kind: 'approval',
+        approvalRequestId: approval.id,
+        itemId: requestItem.id,
+      },
+    });
+    store.createItem({
+      id: `it_approval_decision_${turn.id}`,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      type: 'approval-decision',
+      status: 'completed',
+      approvalRequestId: approval.id,
+      decision: 'granted',
+      createdAt: approval.createdAt,
+      completedAt: approval.createdAt,
+    });
+
     const restarted = new FsStore({ dataRoot });
 
-    expect(restarted.getWorkspace(workspace.id)).toEqual(workspace);
+    expect(restarted.getApproval(approval.id)).toMatchObject({
+      status: 'granted',
+      resolvedAt: approval.createdAt,
+    });
+    expect(restarted.getTurn(workspace.id, thread.id, turn.id)).toMatchObject({
+      status: 'running',
+      humanGate: null,
+    });
+  });
+
+  it('rejects an approval gate without a canonical request item', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-orphan-approval-gate-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Orphan approval gate workspace');
+    const thread = store.createThread(workspace.id, 'Orphan approval gate thread');
+    const turn = store.createTurn(workspace.id, thread.id, 'Reject an orphan approval gate');
+
+    store.updateTurn(turn.id, {
+      status: 'awaiting_human',
+      humanGate: {
+        kind: 'approval',
+        approvalRequestId: `ap_${turn.id}`,
+        itemId: `it_approval_request_${turn.id}`,
+      },
+    });
+
+    expect(() => new FsStore({ dataRoot })).toThrow(/approval gate.*request item/i);
+  });
+
+  it('does not reopen a terminal turn for an unresolved approval request', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-terminal-approval-request-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Terminal approval request workspace');
+    const thread = store.createThread(workspace.id, 'Terminal approval request thread');
+    const turn = store.createTurn(workspace.id, thread.id, 'Reject terminal approval recovery');
+    const approvalId = `ap_${turn.id}`;
+
+    store.createItem({
+      id: `it_approval_request_${turn.id}`,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      type: 'approval-request',
+      status: 'in_progress',
+      approvalRequestId: approvalId,
+      title: 'Unresolved terminal approval',
+      description: 'A terminal turn must not be reopened.',
+      kind: 'permission',
+      createdAt: turn.startedAt ?? timestamp,
+      completedAt: null,
+    });
+    store.updateTurn(turn.id, {
+      status: 'failed',
+      completedAt: turn.startedAt ?? timestamp,
+      error: { code: 'interrupted', message: 'The turn failed before recovery.' },
+    });
+
+    expect(() => new FsStore({ dataRoot })).toThrow(/pending approval.*terminal turn/i);
+  });
+
+  it('repairs only an incomplete final item-log fragment', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-truncated-item-log-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Truncated item log workspace');
+    const thread = store.createThread(workspace.id, 'Truncated item log thread');
+    const turn = store.createTurn(workspace.id, thread.id, 'Repair the final item fragment');
+    const item = store.createItem({
+      id: `it_${turn.id}`,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      type: 'assistant-message',
+      status: 'in_progress',
+      text: 'Valid item revision.',
+      createdAt: turn.startedAt ?? timestamp,
+      completedAt: null,
+    });
+    const itemsPath = join(
+      dataRoot,
+      'users',
+      'user_local',
+      'workspaces',
+      workspace.id,
+      'threads',
+      thread.id,
+      'turns',
+      turn.id,
+      'items.jsonl'
+    );
+    const validLog = readFileSync(itemsPath, 'utf8');
+
+    appendFileSync(itemsPath, '{"id":"truncated');
+    const restarted = new FsStore({ dataRoot });
+
+    expect(restarted.listThreadItems(workspace.id, thread.id)).toEqual([item]);
+    expect(readFileSync(itemsPath, 'utf8')).toBe(validLog);
+
+    writeFileSync(itemsPath, `${validLog}{"id":"broken"\n${JSON.stringify(item)}\n`);
+    expect(() => new FsStore({ dataRoot })).toThrow();
+
+    writeFileSync(itemsPath, `${validLog}not-json`);
+    expect(() => new FsStore({ dataRoot })).toThrow();
+  });
+
+  it('normalizes a valid final item revision before future appends', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-item-log-newline-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Item log newline workspace');
+    const thread = store.createThread(workspace.id, 'Item log newline thread');
+    const turn = store.createTurn(workspace.id, thread.id, 'Normalize the final item row');
+    const item = store.createItem({
+      id: `it_${turn.id}`,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      type: 'assistant-message',
+      status: 'in_progress',
+      text: 'Valid item revision.',
+      createdAt: turn.startedAt ?? timestamp,
+      completedAt: null,
+    });
+    const itemsPath = join(
+      dataRoot,
+      'users',
+      'user_local',
+      'workspaces',
+      workspace.id,
+      'threads',
+      thread.id,
+      'turns',
+      turn.id,
+      'items.jsonl'
+    );
+
+    writeFileSync(itemsPath, JSON.stringify(item));
+    const restarted = new FsStore({ dataRoot });
+    const updated = restarted.updateItem(item.id, {
+      status: 'completed',
+      completedAt: item.createdAt,
+    });
+
+    const normalizedLog = readFileSync(itemsPath, 'utf8');
+    expect(normalizedLog.endsWith('\n')).toBe(true);
+    expect(normalizedLog.trimEnd().split('\n').map(JSON.parse)).toEqual([item, updated]);
+  });
+
+  it('repairs an incomplete final event-log fragment', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-truncated-event-log-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Truncated event log workspace');
+    const thread = store.createThread(workspace.id, 'Truncated event log thread');
+    const turn = store.createTurn(workspace.id, thread.id, 'Repair the final event fragment');
+    const event = store.emitTurnEvent(turn.id, {
+      event: 'turn.started',
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      data: { type: 'turn-started', turnId: turn.id, status: 'running' },
+    });
+    const eventPath = join(
+      dataRoot,
+      'users',
+      'user_local',
+      'workspaces',
+      workspace.id,
+      'threads',
+      thread.id,
+      'turns',
+      turn.id,
+      'runtime',
+      'events.jsonl'
+    );
+    const validLog = readFileSync(eventPath, 'utf8');
+
+    appendFileSync(eventPath, '{"event":"truncated');
+    const restarted = new FsStore({ dataRoot });
+
+    expect(restarted.getTurnEvents(turn.id)).toEqual([event]);
+    expect(readFileSync(eventPath, 'utf8')).toBe(validLog);
+  });
+
+  it('rejects canonical writes through an artifact directory link', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-artifact-parent-link-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Artifact parent link workspace');
+    const thread = store.createThread(workspace.id, 'Artifact parent link thread');
+    const turn = store.createTurn(workspace.id, thread.id, 'Reject the linked artifact root');
+    const artifactId = `ar_linked_${turn.id}`;
+    const outsideRoot = join(dataRoot, 'outside-artifact-root');
+    const linkedRoot = join(
+      dataRoot,
+      'users',
+      'user_local',
+      'workspaces',
+      workspace.id,
+      'artifacts',
+      artifactId
+    );
+
+    mkdirSync(outsideRoot);
+    symlinkSync(outsideRoot, linkedRoot);
+
+    expect(() =>
+      store.createArtifact({
+        id: artifactId,
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        turnId: turn.id,
+        kind: 'summary',
+        title: 'Linked artifact',
+        status: 'ready',
+        summary: null,
+        version: 1,
+        content: { format: 'text', body: 'Must not escape through the linked parent.' },
+        createdAt: turn.startedAt ?? timestamp,
+        updatedAt: turn.startedAt ?? timestamp,
+      })
+    ).toThrow(/symbolic link/);
+    expect(existsSync(join(outsideRoot, 'artifact.json'))).toBe(false);
+    expect(existsSync(join(outsideRoot, 'files'))).toBe(false);
+  });
+
+  it('rejects immutable item revision changes on write and reload', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-item-identity-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Immutable item workspace');
+    const thread = store.createThread(workspace.id, 'Immutable item thread');
+    const turn = store.createTurn(workspace.id, thread.id, 'Protect immutable item identity');
+    const item = store.createItem({
+      id: `it_${turn.id}`,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      type: 'assistant-message',
+      status: 'completed',
+      text: 'Immutable item revision.',
+      createdAt: turn.startedAt ?? timestamp,
+      completedAt: turn.startedAt ?? timestamp,
+    });
+    const itemsPath = join(
+      dataRoot,
+      'users',
+      'user_local',
+      'workspaces',
+      workspace.id,
+      'threads',
+      thread.id,
+      'turns',
+      turn.id,
+      'items.jsonl'
+    );
+
+    expect(() => store.updateItem(item.id, { createdAt: '2026-07-07T00:00:00.000Z' })).toThrow(
+      /immutable identity/
+    );
+    appendFileSync(itemsPath, `${JSON.stringify({ ...item, type: 'user-message' })}\n`);
+    expect(() => new FsStore({ dataRoot })).toThrow(/immutable identity/);
+  });
+
+  it('rejects embedded canonical bodies that duplicate append logs or artifact files', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-embedded-canonical-body-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Embedded canonical body workspace');
+    const thread = store.createThread(workspace.id, 'Embedded canonical body thread');
+    const turn = store.createTurn(workspace.id, thread.id, 'Reject embedded canonical bodies');
+    const item = store.createItem({
+      id: `it_${turn.id}`,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      type: 'user-message',
+      status: 'completed',
+      text: 'Canonical item body.',
+      createdAt: turn.startedAt ?? timestamp,
+      completedAt: turn.startedAt ?? timestamp,
+    });
+    const artifact = store.createArtifact({
+      id: `ar_${turn.id}`,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      kind: 'summary',
+      title: 'Canonical artifact body',
+      status: 'ready',
+      summary: null,
+      version: 1,
+      content: { format: 'text', body: 'Canonical artifact body.' },
+      createdAt: turn.startedAt ?? timestamp,
+      updatedAt: turn.startedAt ?? timestamp,
+    });
+    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', workspace.id);
+    const turnPath = join(workspaceRoot, 'threads', thread.id, 'turns', turn.id, 'turn.json');
+    const artifactPath = join(workspaceRoot, 'artifacts', artifact.id, 'artifact.json');
+    const turnMetadata = JSON.parse(readFileSync(turnPath, 'utf8')) as Record<string, unknown>;
+    const artifactMetadata = JSON.parse(readFileSync(artifactPath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+
+    writeFileSync(turnPath, `${JSON.stringify({ ...turnMetadata, items: [item] }, null, 2)}\n`);
+    expect(() => new FsStore({ dataRoot })).toThrow(/must not embed items/);
+
+    writeFileSync(turnPath, `${JSON.stringify(turnMetadata, null, 2)}\n`);
+    writeFileSync(
+      artifactPath,
+      `${JSON.stringify(
+        { ...artifactMetadata, content: { format: 'text', body: 'Duplicated body.' } },
+        null,
+        2
+      )}\n`
+    );
+    expect(() => new FsStore({ dataRoot })).toThrow(/must not embed content body/);
+  });
+
+  it('rejects turn events whose nested payload crosses canonical lineage', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-event-payload-lineage-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Event payload lineage workspace');
+    const thread = store.createThread(workspace.id, 'Event payload lineage thread');
+    const turn = store.createTurn(workspace.id, thread.id, 'Reject nested event lineage');
+    const event = store.emitTurnEvent(turn.id, {
+      event: 'turn.started',
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      data: { type: 'turn-started', turnId: turn.id, status: 'running' },
+    });
+    const eventPath = join(
+      dataRoot,
+      'users',
+      'user_local',
+      'workspaces',
+      workspace.id,
+      'threads',
+      thread.id,
+      'turns',
+      turn.id,
+      'runtime',
+      'events.jsonl'
+    );
+
+    writeFileSync(
+      eventPath,
+      `${JSON.stringify({ ...event, data: { ...event.data, turnId: 'tu_other' } })}\n`
+    );
+    expect(() => new FsStore({ dataRoot })).toThrow(/nested payload lineage/);
+  });
+
+  it('rejects global ids claimed by records in two workspaces', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-global-collision-'));
+    const store = new FsStore({ dataRoot });
+    const firstWorkspace = store.createWorkspace('First collision workspace');
+    const firstThread = store.createThread(firstWorkspace.id, 'First collision thread');
+    const secondWorkspace = store.createWorkspace('Second collision workspace');
+    store.createThread(secondWorkspace.id, 'Second collision thread');
+    const duplicateRoot = join(
+      dataRoot,
+      'users',
+      'user_local',
+      'workspaces',
+      secondWorkspace.id,
+      'threads',
+      firstThread.id
+    );
+
+    mkdirSync(duplicateRoot, { recursive: true });
+    writeFileSync(
+      join(duplicateRoot, 'thread.json'),
+      `${JSON.stringify({ ...firstThread, workspaceId: secondWorkspace.id }, null, 2)}\n`
+    );
+
+    expect(() => new FsStore({ dataRoot })).toThrow(
+      `Duplicate global thread id: ${firstThread.id}`
+    );
+  });
+
+  it('rejects canonical record directories missing required records', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-missing-identity-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Missing identity workspace');
+    const thread = store.createThread(workspace.id, 'Missing identity thread');
+    const turn = store.createTurn(workspace.id, thread.id, 'Missing identity turn');
+    const artifact = store.createArtifact({
+      id: `ar_${turn.id}`,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      kind: 'summary',
+      title: 'Missing identity artifact',
+      status: 'ready',
+      summary: null,
+      version: 1,
+      content: { format: 'text', body: 'Artifact body.' },
+      createdAt: turn.startedAt ?? timestamp,
+      updatedAt: turn.startedAt ?? timestamp,
+    });
+    const session = store.createAgentSession({
+      id: `as_${turn.id}`,
+      agentId: 'agent_codex_host',
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      status: 'busy',
+      message: null,
+      createdAt: turn.startedAt ?? timestamp,
+      updatedAt: turn.startedAt ?? timestamp,
+    });
+    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', workspace.id);
+    const paths = [
+      join(workspaceRoot, 'workspace.json'),
+      join(workspaceRoot, 'threads', thread.id, 'thread.json'),
+      join(workspaceRoot, 'threads', thread.id, 'turns', turn.id, 'turn.json'),
+      join(workspaceRoot, 'threads', thread.id, 'turns', turn.id, 'items.jsonl'),
+      join(workspaceRoot, 'artifacts', artifact.id, 'artifact.json'),
+      join(workspaceRoot, 'runtime', 'agent-sessions', session.id, 'session.json'),
+    ];
+
+    for (const path of paths) {
+      const content = readFileSync(path);
+
+      rmSync(path);
+      expect(() => new FsStore({ dataRoot })).toThrow(/missing .+\.jsonl?/i);
+      writeFileSync(path, content);
+    }
+  });
+
+  it.each([
+    ['stale turn items', /Turn items/],
+    ['non-contiguous events', /Turn event .* invalid lineage/],
+    ['batch duplicate thread', /Duplicate .*thread/i],
+    ['null-thread agent session', /Agent session .* invalid lineage/],
+  ] as const)('rejects imported workspace history with %s', (violation, expectedError) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-invalid-import-history-'));
+    const store = new FsStore({ dataRoot });
+    const workspaceId = `ws_${violation.replaceAll(' ', '_')}`;
+    const input = workspaceImportPayload(
+      workspaceId,
+      `th_${violation.replaceAll(' ', '_')}`,
+      `it_${violation.replaceAll(' ', '_')}`
+    );
+    const turn = input.turns[0]!;
+
+    switch (violation) {
+      case 'stale turn items':
+        input.turns = [{ ...turn, items: [] }];
+        break;
+      case 'non-contiguous events':
+        input.turnEvents = [
+          [
+            turn.id,
+            [
+              {
+                protocolVersion: PROTOCOL_VERSION,
+                event: 'turn.started',
+                sequence: 2,
+                requestId: null,
+                timestamp,
+                workspaceId,
+                threadId: turn.threadId,
+                turnId: turn.id,
+                data: { type: 'turn-started', turnId: turn.id, status: 'running' },
+              },
+            ],
+          ],
+        ];
+        break;
+      case 'batch duplicate thread':
+        input.threads = [...input.threads, input.threads[0]!];
+        break;
+      case 'null-thread agent session':
+        input.agentSessions = [
+          {
+            id: 'as_null_thread_import',
+            agentId: 'agent_codex_host',
+            workspaceId,
+            threadId: null,
+            status: 'idle',
+            message: null,
+            sandboxSummary: null,
+            configVersion: null,
+            environmentPackageSnapshotId: null,
+            policySnapshotId: null,
+            sessionCompatibilityKey: null,
+            stale: false,
+            workspaceRoots: [],
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          },
+        ];
+        break;
+    }
+
+    expect(() => store.importWorkspaceSnapshot(input)).toThrow(expectedError);
   });
 
   it('rolls back imported records when persistence fails', () => {
@@ -489,6 +1364,58 @@ describe('FsStore snapshot reload', () => {
     expect(readFileSync(join(finalRoot, 'db', 'staged-side-effect.txt'), 'utf8')).toBe('published');
   });
 
+  it('derives approval state immediately after importing canonical history', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-import-approval-state-'));
+    const store = new FsStore({ dataRoot });
+    const input = workspaceImportPayload(
+      'ws_import_approval_state',
+      'th_import_approval_state',
+      'it_import_approval_message'
+    );
+    const turn = input.turns[0]!;
+    const approvalItem = ItemSchema.parse({
+      id: 'it_import_approval_request',
+      workspaceId: input.workspace.id,
+      threadId: turn.threadId,
+      turnId: turn.id,
+      type: 'approval-request',
+      status: 'in_progress',
+      approvalRequestId: 'apr_imported',
+      title: 'Approve imported work',
+      description: 'Confirm the imported canonical history.',
+      kind: 'permission',
+      createdAt: timestamp,
+      completedAt: null,
+    });
+
+    store.importWorkspaceSnapshot({
+      ...input,
+      turns: [
+        TurnSchema.parse({
+          ...turn,
+          items: [...turn.items, approvalItem],
+          status: 'awaiting_human',
+          humanGate: {
+            kind: 'approval',
+            approvalRequestId: approvalItem.approvalRequestId,
+            itemId: approvalItem.id,
+          },
+          completedAt: null,
+          durationMs: null,
+        }),
+      ],
+      itemRevisions: [...input.itemRevisions, approvalItem],
+    });
+
+    expect(store.getApproval(approvalItem.approvalRequestId)).toMatchObject({
+      id: approvalItem.approvalRequestId,
+      workspaceId: input.workspace.id,
+      threadId: turn.threadId,
+      turnId: turn.id,
+      status: 'pending',
+    });
+  });
+
   it('discards staged workspace side effects when import staging fails', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-import-staged-effects-fail-'));
     const store = new FsStore({ dataRoot });
@@ -524,7 +1451,7 @@ describe('FsStore snapshot reload', () => {
     );
 
     mkdirSync(stagingRoot, { recursive: true });
-    writeFileSync(join(stagingRoot, 'store.json'), '{}');
+    writeFileSync(join(stagingRoot, 'orphaned-import'), 'discarded');
 
     const restarted = new FsStore({ dataRoot });
 
@@ -532,102 +1459,24 @@ describe('FsStore snapshot reload', () => {
     expect(existsSync(stagingRoot)).toBe(false);
   });
 
-  it('rejects snapshots with removed workspace default worker ids', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-removed-worker-'));
-    const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Removed worker defaults');
-    const persistencePath = join(
-      dataRoot,
-      'users',
-      'user_local',
-      'workspaces',
-      workspace.id,
-      'store.json'
-    );
-    const snapshot = JSON.parse(readFileSync(persistencePath, 'utf8')) as {
-      workspaces: Array<{ defaults: Record<string, unknown> }>;
-    };
-
-    snapshot.workspaces = snapshot.workspaces.map((item) => ({
-      ...item,
-      defaults: {
-        defaultModelId: item.defaults.defaultModelId,
-        defaultSkillIds: item.defaults.defaultSkillIds,
-        ['default' + 'WorkerId']: 'worker_codex_host',
-      },
-    }));
-    writeFileSync(persistencePath, `${JSON.stringify(snapshot, null, 2)}\n`);
-
-    expect(() => new FsStore({ dataRoot })).toThrow(new RegExp('default' + 'WorkerId'));
-  });
-
-  it('rejects snapshots with removed workspace resource workers', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-removed-resources-'));
-    const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Removed worker resources');
-    const persistencePath = join(
-      dataRoot,
-      'users',
-      'user_local',
-      'workspaces',
-      workspace.id,
-      'store.json'
-    );
-    const snapshot = JSON.parse(readFileSync(persistencePath, 'utf8')) as {
-      workspaceResources: Array<[string, Record<string, unknown>]>;
-    };
-    const resourceEntry = snapshot.workspaceResources.find(
-      ([workspaceId]) => workspaceId === workspace.id
-    );
-
-    if (!resourceEntry) {
-      throw new Error('Expected workspace resources in snapshot.');
-    }
-
-    const [, resources] = resourceEntry;
-    const agents = resources.agents as Array<Record<string, unknown>>;
-
-    Reflect.set(
-      resources,
-      'workers',
-      agents.map((agent) => {
-        const worker = { ...agent };
-
-        delete worker.defaultProfileId;
-        delete worker.profiles;
-
-        return {
-          ...worker,
-          id:
-            typeof worker.id === 'string' && worker.id.startsWith('agent_')
-              ? `worker_${worker.id.slice('agent_'.length)}`
-              : worker.id,
-          name:
-            typeof worker.name === 'string' ? worker.name.replace('Agent', 'Worker') : worker.name,
-        };
-      })
-    );
-    delete resources.agents;
-    writeFileSync(persistencePath, `${JSON.stringify(snapshot, null, 2)}\n`);
-
-    expect(() => new FsStore({ dataRoot })).toThrow(
-      new RegExp('workspaceResources\\.' + 'workers')
-    );
-  });
-
-  it('rejects snapshots with replay events missing protocol versions', () => {
+  it('rejects canonical replay events missing protocol versions', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-removed-event-version-'));
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Removed event protocol version');
     const thread = store.createThread(workspace.id, 'Replay event thread');
     const turn = store.createTurn(workspace.id, thread.id, 'Replay event turn');
-    const persistencePath = join(
+    const eventLogPath = join(
       dataRoot,
       'users',
       'user_local',
       'workspaces',
       workspace.id,
-      'store.json'
+      'threads',
+      thread.id,
+      'turns',
+      turn.id,
+      'runtime',
+      'events.jsonl'
     );
 
     store.emitTurnEvent(turn.id, {
@@ -638,17 +1487,10 @@ describe('FsStore snapshot reload', () => {
       data: { type: 'turn-started', turnId: turn.id, status: 'running' },
     });
 
-    const snapshot = JSON.parse(readFileSync(persistencePath, 'utf8')) as {
-      streamEvents: Array<[string, Array<Record<string, unknown>>]>;
-    };
-    const replayEntry = snapshot.streamEvents.find(([turnId]) => turnId === turn.id);
+    const event = JSON.parse(readFileSync(eventLogPath, 'utf8')) as Record<string, unknown>;
 
-    if (!replayEntry?.[1][0]) {
-      throw new Error('Expected a persisted replay event.');
-    }
-
-    delete replayEntry[1][0].protocolVersion;
-    writeFileSync(persistencePath, `${JSON.stringify(snapshot, null, 2)}\n`);
+    delete event.protocolVersion;
+    writeFileSync(eventLogPath, `${JSON.stringify(event)}\n`);
 
     expect(() => new FsStore({ dataRoot })).toThrow(/protocolVersion/);
   });

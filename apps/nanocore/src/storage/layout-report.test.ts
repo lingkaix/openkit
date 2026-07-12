@@ -38,7 +38,7 @@ describe('storage layout report', () => {
             userId: 'user_1',
             userDb: expect.objectContaining({
               exists: true,
-              appliedMigrations: ['user_0000_baseline'],
+              appliedMigrations: ['user_0000_baseline', 'user_0001_idempotency_requests'],
             }),
             workspaces: [
               expect.objectContaining({
@@ -48,6 +48,7 @@ describe('storage layout report', () => {
                   appliedMigrations: [
                     'workspace_0000_baseline',
                     'workspace_0001_goal_review_resolution_snapshot',
+                    'workspace_0002_idempotency_requests',
                   ],
                 }),
                 indexesDir: expect.objectContaining({ exists: true, entryCount: 0 }),

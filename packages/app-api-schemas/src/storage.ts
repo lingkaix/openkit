@@ -1,3 +1,4 @@
+import { WORKSPACE_EXPORT_FORMAT_VERSION } from '@openkit/config-schema/workspace-export';
 import { WorkspaceRecordSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { addRawSecretIssues } from './raw-secrets.js';
@@ -95,7 +96,7 @@ export const WorkspaceExportManifestSchema = z
     sourceDeploymentId: z.string().min(1),
     workspaceId: z.string().min(1),
     exportCreatedAt: z.string().datetime(),
-    exportFormatVersion: z.literal(1),
+    exportFormatVersion: z.literal(WORKSPACE_EXPORT_FORMAT_VERSION),
     contentInventory: z.array(WorkspaceExportInventoryEntrySchema),
   })
   .strict();

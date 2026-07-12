@@ -14,9 +14,6 @@ import {
 import { recordWorkspaceReconciliationRecord } from './workspace-reconciliation-records.js';
 import { listBackendWorkspaceHandles } from './workspace-sync-records.js';
 
-/** Input for one lease-maintenance iteration. */
-export interface RunSchedulerLeaseMaintenanceOnceInput extends RunSchedulerLeaseRenewalLoopInput {}
-
 /** Result of one lease-maintenance iteration. */
 export interface SchedulerLeaseMaintenanceResult {
   /** Lease-watch loop result. */
@@ -35,7 +32,7 @@ export interface SchedulerLeaseMaintenanceTimerHooks {
 
 /** Input used to start the lease-maintenance service. */
 export interface StartSchedulerLeaseMaintenanceServiceInput
-  extends RunSchedulerLeaseMaintenanceOnceInput,
+  extends RunSchedulerLeaseRenewalLoopInput,
     SchedulerLeaseMaintenanceTimerHooks {
   /** Repeated maintenance interval. */
   readonly intervalMs: number;
@@ -60,7 +57,7 @@ export interface SchedulerLeaseMaintenanceService {
  */
 export function runSchedulerLeaseMaintenanceOnce(
   coreDb: CoreDb,
-  input: RunSchedulerLeaseMaintenanceOnceInput
+  input: RunSchedulerLeaseRenewalLoopInput
 ): SchedulerLeaseMaintenanceResult {
   const leaseWatch = runSchedulerLeaseWatchLoop(coreDb, {
     ...(input.now ? { now: input.now } : {}),

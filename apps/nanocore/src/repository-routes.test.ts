@@ -39,7 +39,12 @@ function createApp(options: CreateAppOptions = {}): ReturnType<typeof createNano
       workspace: demo.workspace,
       threads: [demo.thread],
       knowledge: demo.knowledge,
-      threadItems: [],
+      turns: [],
+      itemRevisions: [],
+      artifacts: [],
+      artifactReviews: [],
+      agentSessions: [],
+      turnEvents: [],
     });
   }
 

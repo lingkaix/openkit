@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -111,6 +112,7 @@ import {
   createGoalVerificationRecord,
   listGoalVerificationRecordsForTask,
 } from './runtime/goal-verification-records.js';
+import { commandInputHash } from './runtime/idempotent-command.js';
 import { enqueuePendingUserTurn, listPendingUserTurns } from './runtime/pending-user-turns.js';
 import type {
   AgentSessionReadModel,
@@ -207,7 +209,12 @@ function seedDemoWorkspace(store: FsStore, userId = LOCAL_USER_ID): void {
       workspace: demo.workspace,
       threads: [demo.thread],
       knowledge: demo.knowledge,
-      threadItems: [],
+      turns: [],
+      itemRevisions: [],
+      artifacts: [],
+      artifactReviews: [],
+      agentSessions: [],
+      turnEvents: [],
     });
   }
 }
@@ -1025,17 +1032,27 @@ describe('nanocore server', () => {
     const body = WorkspaceExportResponseSchema.parse(await res.json());
     expect(body).toMatchObject({
       workspaceId: 'ws_demo',
-      fileCount: 4,
+      fileCount: 14,
       checkedFiles: [
+        'records/agent-sessions.jsonl',
+        'records/artifact-reviews.jsonl',
+        'records/item-revisions.jsonl',
+        'records/knowledge-claims.jsonl',
+        'records/knowledge-conflicts.jsonl',
+        'records/knowledge-context-package-traces.jsonl',
+        'records/knowledge-observations.jsonl',
+        'records/knowledge-retrieval-traces.jsonl',
         'records/knowledge.jsonl',
-        'records/thread-items.jsonl',
         'records/threads.jsonl',
+        'records/turn-events.jsonl',
+        'records/turns.jsonl',
         'records/workspace.json',
+        'workspace-files/knowledge/schema/workspace-schema.yaml',
       ],
       manifest: {
         recordType: 'workspace-export',
         workspaceId: 'ws_demo',
-        exportFormatVersion: 1,
+        exportFormatVersion: 2,
       },
     });
     expect(JSON.stringify(body)).not.toContain(dataRoot);
@@ -1063,7 +1080,7 @@ describe('nanocore server', () => {
       sourceWorkspaceId: 'ws_demo',
       exportedWorkspaceId: 'ws_demo',
       collision: { status: 'collides', workspaceId: 'ws_demo' },
-      verification: { fileCount: 4 },
+      verification: { fileCount: 14 },
     });
     expect(store.listWorkspaces()).toHaveLength(beforeCount);
     expect(JSON.stringify(body)).not.toContain(dataRoot);
@@ -1798,6 +1815,70 @@ describe('nanocore server', () => {
     coreDb.sqlite.close();
   });
 
+  it('rolls back the published workspace and Core rows when Core import fails', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-core-rollback-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const store = createDemoStore({ dataRoot });
+    for (const suffix of ['1', '2']) {
+      createVaultReference(coreDb, {
+        backendKind: 'encrypted-file',
+        backendLocator: `encrypted-file://source-${suffix}`,
+        displayName: `Workspace provider key ${suffix}`,
+        ownerScope: 'workspace',
+        referenceId: `vault_ws_demo_${suffix}`,
+        secretKind: 'provider-api-key',
+        workspaceId: 'ws_demo',
+        now: () => `2026-07-06T00:00:0${suffix}.000Z`,
+      });
+    }
+    const targetWorkspaceId = 'ws_imported_ws_demo';
+    createVaultReference(coreDb, {
+      backendKind: 'encrypted-file',
+      backendLocator: 'encrypted-file://conflict',
+      displayName: 'Conflicting server reference',
+      ownerScope: 'server',
+      referenceId: `vault_imported_${targetWorkspaceId}_2`,
+      secretKind: 'provider-api-key',
+      now: () => '2026-07-06T00:00:03.000Z',
+    });
+    const coreRowCounts = coreDb.sqlite.prepare(`SELECT
+      (SELECT COUNT(*) FROM vault_references) AS vaultReferences,
+      (SELECT COUNT(*) FROM vault_grants) AS vaultGrants,
+      (SELECT COUNT(*) FROM injection_plans) AS injectionPlans,
+      (SELECT COUNT(*) FROM injection_receipts) AS injectionReceipts`);
+    const beforeCoreRows = coreRowCounts.get();
+    const app = createApp({ coreDb, dataRoot, store });
+    const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+    const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
+
+    const importRes = await app.request('/api/app/workspace-imports', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        sourceWorkspaceId: 'ws_demo',
+        exportId: exported.exportId,
+        requestId: '00000000-0000-4000-8000-00000000d712',
+      }),
+    });
+
+    expect(importRes.status, await importRes.clone().text()).toBe(400);
+    expect({
+      coreRows: coreRowCounts.get(),
+      finalWorkspaceRootExists: existsSync(
+        join(dataRoot, 'users', LOCAL_USER_ID, 'workspaces', targetWorkspaceId)
+      ),
+      storeHasWorkspace: store
+        .listWorkspaces()
+        .some((workspace) => workspace.id === targetWorkspaceId),
+    }).toEqual({
+      coreRows: beforeCoreRows,
+      finalWorkspaceRootExists: false,
+      storeHasWorkspace: false,
+    });
+    coreDb.sqlite.close();
+  });
+
   it('exports and imports workspace vault use records as line-oriented records', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-vault-use-route-'));
     const coreDb = openCoreDb(dataRoot);
@@ -1822,10 +1903,7 @@ describe('nanocore server', () => {
         vaultReferenceId: 'vault_ws_demo_github',
         materialVersion: 3,
         backendKind: 'encrypted-file',
-        resolvingPath: 'grant',
-        grantId: 'grant_github_1',
-        receiptId: 'receipt_github_1',
-        agentSessionId: 'asess_vault_1',
+        resolvingPath: 'provider',
         capabilityCallId: 'cap_vault_1',
         outcome: 'succeeded',
         auditEventId: 'audit_vault_1',
@@ -1865,9 +1943,9 @@ describe('nanocore server', () => {
           vaultReferenceId: importedReferences[0]?.referenceId,
           materialVersion: 3,
           backendKind: 'encrypted-file',
-          resolvingPath: 'grant',
-          grantId: 'grant_github_1',
-          receiptId: 'receipt_github_1',
+          resolvingPath: 'provider',
+          grantId: null,
+          receiptId: null,
           outcome: 'succeeded',
           auditEventId: 'audit_vault_1',
         }),
@@ -1901,12 +1979,10 @@ describe('nanocore server', () => {
       workspaceId: 'ws_demo',
       subjectSummary: 'GitHub MCP read access',
       targetAgentId: 'assistant',
-      targetAgentSessionId: 'asess_grant_1',
       targetCapabilityId: 'mcp.github.call_tool',
       allowedInjectionPaths: ['backend-provider'],
       lifetime: 'workspace',
       policyDecisionId: 'pd_grant_1',
-      approvalId: 'approval_grant_1',
       expiresAt: '2026-07-07T00:00:00.000Z',
       now: () => '2026-07-06T00:11:00.000Z',
     });
@@ -1946,7 +2022,7 @@ describe('nanocore server', () => {
         lifetime: 'workspace',
         status: 'active',
         policyDecisionId: 'pd_grant_1',
-        approvalId: 'approval_grant_1',
+        approvalId: null,
         expiresAt: '2026-07-07T00:00:00.000Z',
       }),
     ]);
@@ -1977,7 +2053,6 @@ describe('nanocore server', () => {
       ownerScope: 'workspace',
       workspaceId: 'ws_demo',
       subjectSummary: 'Codex auth runtime file',
-      targetAgentSessionId: 'asess_plan_1',
       allowedInjectionPaths: ['runtime-file'],
       lifetime: 'agent-session',
       policyDecisionId: 'pd_plan_1',
@@ -1986,7 +2061,6 @@ describe('nanocore server', () => {
     createInjectionPlan(coreDb, {
       planId: 'plan_ws_demo_codex_auth',
       grantId: 'grant_ws_demo_codex_auth',
-      packageSnapshotId: 'aep_plan_1',
       capabilityId: 'runtime.codex_auth',
       injectionVisibility: 'runtime-file',
       targetPath: '/sandbox/.codex/auth.json',
@@ -2025,7 +2099,7 @@ describe('nanocore server', () => {
       expect.objectContaining({
         planId: `plan_imported_${body.importedWorkspaceId}_1`,
         grantId: importedGrant?.grantId,
-        packageSnapshotId: 'aep_plan_1',
+        packageSnapshotId: null,
         capabilityId: 'runtime.codex_auth',
         injectionVisibility: 'runtime-file',
         targetPath: '/sandbox/.codex/auth.json',
@@ -2066,7 +2140,6 @@ describe('nanocore server', () => {
       ownerScope: 'workspace',
       workspaceId: 'ws_demo',
       subjectSummary: 'GitHub push token',
-      targetAgentSessionId: 'asess_receipt_1',
       targetCapabilityId: 'mcp.github.call_tool',
       allowedInjectionPaths: ['backend-provider'],
       lifetime: 'capability-call',
@@ -2076,7 +2149,6 @@ describe('nanocore server', () => {
     createInjectionPlan(coreDb, {
       planId: 'plan_ws_demo_github_receipt',
       grantId: 'grant_ws_demo_github_receipt',
-      packageSnapshotId: 'aep_receipt_1',
       capabilityId: 'mcp.github.call_tool',
       injectionVisibility: 'backend-provider',
       expirationBehavior: 'expire-after-capability-call',
@@ -2089,7 +2161,6 @@ describe('nanocore server', () => {
       receiptId: 'receipt_ws_demo_github',
       planId: 'plan_ws_demo_github_receipt',
       grantId: 'grant_ws_demo_github_receipt',
-      agentSessionId: 'asess_receipt_1',
       capabilityCallId: 'cap_receipt_1',
       backendSummary: 'encrypted-file material v7 injected as backend handle',
       injectedAt: '2026-07-06T00:13:02.000Z',
@@ -2109,7 +2180,6 @@ describe('nanocore server', () => {
         resolvingPath: 'plan',
         planId: 'plan_ws_demo_github_receipt',
         receiptId: 'receipt_ws_demo_github',
-        agentSessionId: 'asess_receipt_1',
         capabilityCallId: 'cap_receipt_1',
         outcome: 'succeeded',
         auditEventId: 'audit_vault_use_receipt_1',
@@ -2153,7 +2223,7 @@ describe('nanocore server', () => {
           receiptId: `receipt_imported_${body.importedWorkspaceId}_1`,
           planId: importedPlan?.planId,
           grantId: importedGrant?.grantId,
-          agentSessionId: 'asess_receipt_1',
+          agentSessionId: null,
           capabilityCallId: 'cap_receipt_1',
           backendSummary: 'encrypted-file material v7 injected as backend handle',
           injectedAt: '2026-07-06T00:13:02.000Z',
@@ -2267,7 +2337,7 @@ describe('nanocore server', () => {
         requestId: '00000000-0000-4000-8000-00000000d751',
         record: {
           actorId: 'user_local',
-          approvalRowId: 'act_git_push_1',
+          approvalRowId: null,
           commitIds: ['abc123'],
           createdAt: '2026-07-06T00:00:00.000Z',
           errorSummary: null,
@@ -2404,6 +2474,29 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     const sourceReview = workspaceSyncReviewRouteItem();
+    const sourceTurn = store.createTurn(
+      'ws_demo',
+      'th_demo',
+      'Produce workspace sync review',
+      null,
+      {
+        turnId: 'turn_route_1',
+      }
+    );
+    store.createArtifact({
+      id: sourceReview.artifactId,
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: sourceTurn.id,
+      kind: 'diff',
+      title: 'Workspace sync review',
+      status: 'ready',
+      summary: sourceReview.review.riskSummary,
+      version: 1,
+      content: { format: 'text', body: sourceReview.patchPayload?.text ?? '' },
+      createdAt: sourceReview.review.createdAt,
+      updatedAt: sourceReview.review.updatedAt,
+    });
     try {
       recordWorkspaceSyncReview(sourceDb, { item: sourceReview });
     } finally {
@@ -2431,6 +2524,7 @@ describe('nanocore server', () => {
 
     expect(importRes.status, await importRes.clone().text()).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
+    const importedArtifact = store.listArtifacts(body.importedWorkspaceId)[0];
     const importedDb = openTestWorkspaceDb(coreDb, body.importedWorkspaceId);
     try {
       expect(listWorkspaceInputSnapshots(importedDb, body.importedWorkspaceId)).toEqual([
@@ -2470,7 +2564,7 @@ describe('nanocore server', () => {
       ]);
       expect(listWorkspaceSyncReviews(importedDb, body.importedWorkspaceId)).toEqual([
         expect.objectContaining({
-          artifactId: 'ar_workspace_review_route',
+          artifactId: importedArtifact?.id,
           changeSet: expect.objectContaining({
             id: 'wcs_route_1',
             workspaceId: body.importedWorkspaceId,
@@ -2499,8 +2593,32 @@ describe('nanocore server', () => {
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const sourceReview = workspaceSyncReviewRouteItem();
+    const sourceTurn = store.createTurn(
+      'ws_demo',
+      'th_demo',
+      'Produce workspace apply result',
+      null,
+      {
+        turnId: 'turn_route_1',
+      }
+    );
+    store.createArtifact({
+      id: sourceReview.artifactId,
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: sourceTurn.id,
+      kind: 'diff',
+      title: 'Workspace apply result',
+      status: 'ready',
+      summary: sourceReview.review.riskSummary,
+      version: 1,
+      content: { format: 'text', body: sourceReview.patchPayload?.text ?? '' },
+      createdAt: sourceReview.review.createdAt,
+      updatedAt: sourceReview.review.updatedAt,
+    });
     try {
-      recordWorkspaceSyncReview(sourceDb, { item: workspaceSyncReviewRouteItem() });
+      recordWorkspaceSyncReview(sourceDb, { item: sourceReview });
       recordWorkspaceApplyResult(sourceDb, {
         requestId: '00000000-0000-4000-8000-00000000d771',
         result: {
@@ -2566,6 +2684,9 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
+    store.createTurn('ws_demo', 'th_demo', 'Record permission decision', null, {
+      turnId: 'turn_demo',
+    });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     try {
       recordProductPermissionDecision({
@@ -2651,6 +2772,20 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
+    const sourceTurn = store.createTurn('ws_demo', 'th_demo', 'Queue pending user turn', null, {
+      turnId: 'turn_pending_import_1',
+    });
+    store.createItem({
+      id: 'item_pending_import_1',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: sourceTurn.id,
+      type: 'user-message',
+      status: 'completed',
+      text: 'Queued input',
+      createdAt: '2026-07-06T00:02:59.000Z',
+      completedAt: '2026-07-06T00:02:59.000Z',
+    });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     try {
       enqueuePendingUserTurn(sourceDb, {
@@ -2682,20 +2817,22 @@ describe('nanocore server', () => {
 
     expect(importRes.status, await importRes.clone().text()).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
+    const importedThreadId = `th_imported_${body.importedWorkspaceId}_1`;
+    const importedItemId = `it_imported_${body.importedWorkspaceId}_1`;
     const importedDb = openTestWorkspaceDb(coreDb, body.importedWorkspaceId);
     try {
       expect(
         listPendingUserTurns(importedDb, {
           workspaceId: body.importedWorkspaceId,
-          threadId: 'th_demo',
+          threadId: importedThreadId,
         })
       ).toEqual([
         expect.objectContaining({
-          contentItemId: 'item_pending_import_1',
-          pendingTurnId: `${body.importedWorkspaceId}:th_demo:00000000-0000-4000-8000-00000000d791`,
+          contentItemId: importedItemId,
+          pendingTurnId: `${body.importedWorkspaceId}:${importedThreadId}:00000000-0000-4000-8000-00000000d791`,
           queueMode: 'safe_point_steering',
           requestId: '00000000-0000-4000-8000-00000000d791',
-          threadId: 'th_demo',
+          threadId: importedThreadId,
           workspaceId: body.importedWorkspaceId,
         }),
       ]);
@@ -2951,7 +3088,7 @@ describe('nanocore server', () => {
       workspaceId: 'ws_demo',
       threadId: thread.id,
       turnId: turn.id,
-      kind: 'text',
+      kind: 'summary',
       title: 'Release evidence',
       status: 'ready',
       summary: 'Release evidence is ready.',
@@ -3755,16 +3892,17 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
+    store.createTurn('ws_demo', 'th_demo', 'Checkpoint worker turn', null, {
+      turnId: 'tu_checkpoint',
+    });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     try {
       upsertWorkerCheckpoint(sourceDb, {
         contextDigest: 'sha256:checkpoint-context',
         diagnosticsSummary: 'checkpoint diagnostics',
-        goalId: 'goal_checkpoint',
         iteration: 3,
         now: () => '2026-07-06T00:04:00.000Z',
         stage: 'running_worker',
-        taskId: 'task_checkpoint',
         threadId: 'th_demo',
         turnId: 'tu_checkpoint',
         workerSessionId: 'as_checkpoint',
@@ -3791,20 +3929,22 @@ describe('nanocore server', () => {
 
     expect(importRes.status, await importRes.clone().text()).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
+    const importedThreadId = `th_imported_${body.importedWorkspaceId}_1`;
+    const importedTurnId = `tu_imported_${body.importedWorkspaceId}_1`;
     const importedDb = openTestWorkspaceDb(coreDb, body.importedWorkspaceId);
     try {
       expect(
-        getWorkerCheckpoint(importedDb, body.importedWorkspaceId, 'th_demo', 'tu_checkpoint')
+        getWorkerCheckpoint(importedDb, body.importedWorkspaceId, importedThreadId, importedTurnId)
       ).toEqual(
         expect.objectContaining({
-          checkpointId: `${body.importedWorkspaceId}:th_demo:tu_checkpoint`,
+          checkpointId: `${body.importedWorkspaceId}:${importedThreadId}:${importedTurnId}`,
           contextDigest: 'sha256:checkpoint-context',
-          goalId: 'goal_checkpoint',
+          goalId: null,
           iteration: 3,
           stage: 'running_worker',
-          taskId: 'task_checkpoint',
-          threadId: 'th_demo',
-          turnId: 'tu_checkpoint',
+          taskId: null,
+          threadId: importedThreadId,
+          turnId: importedTurnId,
           workerSessionId: 'as_checkpoint',
           workspaceId: body.importedWorkspaceId,
         })
@@ -3824,6 +3964,20 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
+    const sourceTurn = store.createTurn('ws_demo', 'th_demo', 'Create portable goal', null, {
+      turnId: 'turn_goal_import_1',
+    });
+    store.createItem({
+      id: 'item_goal_import_1',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: sourceTurn.id,
+      type: 'user-message',
+      status: 'completed',
+      text: 'Create an importable goal',
+      createdAt: '2026-07-06T00:04:59.000Z',
+      completedAt: '2026-07-06T00:04:59.000Z',
+    });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     try {
       createGoalRecord(sourceDb, {
@@ -3874,17 +4028,21 @@ describe('nanocore server', () => {
 
     expect(importRes.status, await importRes.clone().text()).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
+    const importedThreadId = `th_imported_${body.importedWorkspaceId}_1`;
+    const importedItemId = `it_imported_${body.importedWorkspaceId}_1`;
+    const importedGoalId = `goal_imported_${body.importedWorkspaceId}_1`;
+    const importedTaskId = `task_imported_${body.importedWorkspaceId}_1`;
     const importedDb = openTestWorkspaceDb(coreDb, body.importedWorkspaceId);
     try {
       expect(
         listGoalRecordsForThread(importedDb, {
           workspaceId: body.importedWorkspaceId,
-          threadId: 'th_demo',
+          threadId: importedThreadId,
         })
       ).toEqual([
         expect.objectContaining({
-          createdByItemId: 'item_goal_import_1',
-          goalId: 'goal_import_1',
+          createdByItemId: importedItemId,
+          goalId: importedGoalId,
           objective: 'Import this goal.',
           status: 'running',
           title: 'Import goal',
@@ -3894,15 +4052,15 @@ describe('nanocore server', () => {
       expect(
         listGoalTasks(importedDb, {
           workspaceId: body.importedWorkspaceId,
-          threadId: 'th_demo',
-          goalId: 'goal_import_1',
+          threadId: importedThreadId,
+          goalId: importedGoalId,
         })
       ).toEqual([
         expect.objectContaining({
           acceptanceCriteria: ['Task imported.'],
-          goalId: 'goal_import_1',
+          goalId: importedGoalId,
           status: 'ready',
-          taskId: 'task_import_1',
+          taskId: importedTaskId,
           verificationChecks: [{ kind: 'manual', description: 'Confirm imported task.' }],
           workspaceId: body.importedWorkspaceId,
         }),
@@ -3922,6 +4080,34 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
+    const sourceTurn = store.createTurn('ws_demo', 'th_demo', 'Collect goal evidence', null, {
+      turnId: 'turn_evidence_1',
+    });
+    store.createItem({
+      id: 'item_evidence_1',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: sourceTurn.id,
+      type: 'assistant-message',
+      status: 'completed',
+      text: 'Evidence collected',
+      createdAt: '2026-07-06T00:05:59.000Z',
+      completedAt: '2026-07-06T00:05:59.000Z',
+    });
+    store.createArtifact({
+      id: 'artifact_evidence_1',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: sourceTurn.id,
+      kind: 'summary',
+      title: 'Goal evidence',
+      status: 'ready',
+      summary: 'Portable goal evidence.',
+      version: 1,
+      content: { format: 'text', body: 'Evidence body' },
+      createdAt: '2026-07-06T00:05:59.000Z',
+      updatedAt: '2026-07-06T00:05:59.000Z',
+    });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     try {
       const sourceGoal = createGoalRecord(sourceDb, {
@@ -4019,34 +4205,41 @@ describe('nanocore server', () => {
 
     expect(importRes.status, await importRes.clone().text()).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
+    const importedThreadId = `th_imported_${body.importedWorkspaceId}_1`;
+    const importedTurnId = `tu_imported_${body.importedWorkspaceId}_1`;
+    const importedItemId = `it_imported_${body.importedWorkspaceId}_1`;
+    const importedArtifactId = `ar_imported_${body.importedWorkspaceId}_1`;
+    const importedGoalId = `goal_imported_${body.importedWorkspaceId}_1`;
+    const importedTaskId = `task_imported_${body.importedWorkspaceId}_1`;
     const importedDb = openTestWorkspaceDb(coreDb, body.importedWorkspaceId);
     try {
       expect(
         listGoalReviewRecordsForTask(importedDb, {
           workspaceId: body.importedWorkspaceId,
-          threadId: 'th_demo',
-          goalId: 'goal_evidence_1',
-          taskId: 'task_evidence_1',
+          threadId: importedThreadId,
+          goalId: importedGoalId,
+          taskId: importedTaskId,
         })
       ).toEqual([
         expect.objectContaining({
-          artifactIds: ['artifact_evidence_1'],
-          goalId: 'goal_evidence_1',
-          itemIds: ['item_evidence_1'],
-          reviewId: 'gr_evidence_1',
+          artifactIds: [importedArtifactId],
+          goalId: importedGoalId,
+          itemIds: [importedItemId],
+          reviewId: `review_imported_${body.importedWorkspaceId}_1`,
           resolutionSnapshot: {
             outcome: 'complete_goal',
             task: expect.objectContaining({
-              taskId: 'task_evidence_1',
+              taskId: importedTaskId,
               workspaceId: body.importedWorkspaceId,
             }),
             goal: expect.objectContaining({
-              goalId: 'goal_evidence_1',
+              goalId: importedGoalId,
               workspaceId: body.importedWorkspaceId,
             }),
             nextTask: null,
           },
-          taskId: 'task_evidence_1',
+          taskId: importedTaskId,
+          turnId: importedTurnId,
           verdict: 'accept',
           workspaceId: body.importedWorkspaceId,
         }),
@@ -4054,20 +4247,21 @@ describe('nanocore server', () => {
       expect(
         listGoalVerificationRecordsForTask(importedDb, {
           workspaceId: body.importedWorkspaceId,
-          threadId: 'th_demo',
-          goalId: 'goal_evidence_1',
-          taskId: 'task_evidence_1',
+          threadId: importedThreadId,
+          goalId: importedGoalId,
+          taskId: importedTaskId,
         })
       ).toEqual([
         expect.objectContaining({
-          artifactIds: ['artifact_evidence_1'],
+          artifactIds: [importedArtifactId],
           commandId: 'cmd_evidence_1',
-          goalId: 'goal_evidence_1',
-          itemIds: ['item_evidence_1'],
+          goalId: importedGoalId,
+          itemIds: [importedItemId],
           outputPointers: ['stdout:evidence'],
           status: 'passed',
-          taskId: 'task_evidence_1',
-          verificationId: 'gv_evidence_1',
+          taskId: importedTaskId,
+          turnId: importedTurnId,
+          verificationId: `verification_imported_${body.importedWorkspaceId}_1`,
           workspaceId: body.importedWorkspaceId,
         }),
       ]);
@@ -6397,6 +6591,9 @@ describe('nanocore server', () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    store.createTurn('ws_demo', 'th_demo', 'Produce workspace review', null, {
+      turnId: 'turn_demo',
+    });
     const timestamp = new Date().toISOString();
     const patchText = 'diff --git a/docs/spec.md b/docs/spec.md\n';
     const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
@@ -6561,6 +6758,9 @@ describe('nanocore server', () => {
     const store = createDemoStore();
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const item = workspaceSyncReviewRouteItem();
+    store.createTurn('ws_demo', 'th_demo', 'Produce artifact-only workspace review', null, {
+      turnId: 'turn_demo',
+    });
 
     store.createArtifact({
       id: item.artifactId,
@@ -6692,6 +6892,9 @@ describe('nanocore server', () => {
     const store = createDemoStore();
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const item = workspaceSyncReviewRouteItem();
+    store.createTurn('ws_demo', 'th_demo', 'Produce durable workspace review', null, {
+      turnId: 'turn_demo',
+    });
 
     store.createArtifact({
       id: item.artifactId,
@@ -7555,21 +7758,30 @@ describe('nanocore server', () => {
           headers: jsonHeaders(),
         }
       );
+      const conflictingInput = {
+        requestId: 'workspace-generic-conflicting-refinement',
+        decision: 'needs_refinement' as const,
+        message: 'Refine instead.',
+      };
+      const conflictingFollowUpTurnId = `tu_artifact_review_${commandInputHash({
+        artifactId: item.artifactId,
+        input: conflictingInput,
+        workspaceId: 'ws_demo',
+      }).slice(7, 31)}`;
+      store.createTurn('ws_demo', thread.id, conflictingInput.message, null, {
+        turnId: conflictingFollowUpTurnId,
+      });
       const conflicting = await app.request(
         `/api/app/workspaces/ws_demo/artifacts/${item.artifactId}/review`,
         {
           method: 'POST',
-          body: JSON.stringify({
-            requestId: 'workspace-generic-conflicting-refinement',
-            decision: 'needs_refinement',
-            message: 'Refine instead.',
-          }),
+          body: JSON.stringify(conflictingInput),
           headers: jsonHeaders(),
         }
       );
 
       expect(dedicated.status).toBe(200);
-      expect(conflicting.status).toBe(409);
+      expect(conflicting.status, await conflicting.clone().text()).toBe(409);
       expect(store.getArtifactReviewDecision(item.artifactId)).toMatchObject({
         lifecycle: 'failed',
         requestId: 'workspace-generic-conflicting-refinement',
@@ -7597,7 +7809,10 @@ describe('nanocore server', () => {
         requestId: 'workspace-generic-matching-rejection',
         status: 'rejected',
       });
-      expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(1);
+      expect(store.listThreadTurns('ws_demo', thread.id).map((turn) => turn.id)).toEqual([
+        sourceTurn.id,
+        conflictingFollowUpTurnId,
+      ]);
     } finally {
       coreDb.sqlite.close();
     }
@@ -9461,7 +9676,7 @@ describe('nanocore server', () => {
       status: 'busy',
       message: null,
       configVersion: 1,
-      environmentPackageSnapshot: currentPackage,
+      environmentPackageSnapshotId: currentPackage.snapshotId,
       workspaceRoots: [],
       createdAt: '2026-06-16T00:00:02.000Z',
       updatedAt: '2026-06-16T00:00:03.000Z',
@@ -9530,7 +9745,7 @@ describe('nanocore server', () => {
     );
     const unavailablePackage = createOpenShellWorkerControlPackage(store, unavailableTurn.id);
     store.updateAgentSession(currentPackage.scope.agentSessionId, {
-      environmentPackageSnapshot: unavailablePackage,
+      environmentPackageSnapshotId: unavailablePackage.snapshotId,
     });
 
     const unavailableRes = await app.request(

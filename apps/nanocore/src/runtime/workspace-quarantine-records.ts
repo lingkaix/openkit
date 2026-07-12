@@ -8,9 +8,6 @@ interface WorkspaceQuarantineRecordRow {
   readonly payload_json: string;
 }
 
-/** Exportable workspace quarantine record. */
-export interface ExportedWorkspaceQuarantineRecord extends WorkspaceQuarantineRecord {}
-
 /**
  * Persists one durable workspace quarantine record.
  *
@@ -91,7 +88,7 @@ export function listWorkspaceQuarantineRecords(
 export function listExportableWorkspaceQuarantineRecords(
   workspaceDb: WorkspaceDb,
   workspaceId: string
-): ExportedWorkspaceQuarantineRecord[] {
+): WorkspaceQuarantineRecord[] {
   return [...listWorkspaceQuarantineRecords(workspaceDb, workspaceId)].reverse();
 }
 
@@ -103,7 +100,7 @@ export function listExportableWorkspaceQuarantineRecords(
  */
 export function importWorkspaceQuarantineRecords(
   workspaceDb: WorkspaceDb,
-  records: readonly ExportedWorkspaceQuarantineRecord[]
+  records: readonly WorkspaceQuarantineRecord[]
 ): void {
   for (const record of records) {
     recordWorkspaceQuarantineRecord(workspaceDb, WorkspaceQuarantineRecordSchema.parse(record));

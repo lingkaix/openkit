@@ -5,9 +5,6 @@ interface WorkspaceApplyPlanRow {
   readonly payload_json: string;
 }
 
-/** Exportable workspace apply plan plus storage-only replay fields. */
-export interface ExportedWorkspaceApplyPlan extends WorkspaceApplyPlan {}
-
 /**
  * Persists one durable workspace apply plan.
  *
@@ -100,7 +97,7 @@ export function listWorkspaceApplyPlans(
 export function listExportableWorkspaceApplyPlans(
   workspaceDb: WorkspaceDb,
   workspaceId: string
-): ExportedWorkspaceApplyPlan[] {
+): WorkspaceApplyPlan[] {
   return [...listWorkspaceApplyPlans(workspaceDb, workspaceId)].reverse();
 }
 
@@ -112,7 +109,7 @@ export function listExportableWorkspaceApplyPlans(
  */
 export function importWorkspaceApplyPlans(
   workspaceDb: WorkspaceDb,
-  plans: readonly ExportedWorkspaceApplyPlan[]
+  plans: readonly WorkspaceApplyPlan[]
 ): void {
   for (const plan of plans) {
     recordWorkspaceApplyPlan(workspaceDb, WorkspaceApplyPlanSchema.parse(plan));
