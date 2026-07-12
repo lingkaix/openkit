@@ -8,6 +8,7 @@ import {
 import type { WorkspaceDb } from '../storage/db.js';
 import { type GoalReviewVerdict, goalReviewRecords } from '../storage/schema/index.js';
 import { getGoalRecord, listGoalTasks } from './goal-store.js';
+import type { AdvanceGoalAfterReviewResult } from './goal-supervise-advance.js';
 
 /**
  * JSON-compatible evidence captured for a review record after redaction.
@@ -48,6 +49,8 @@ export interface GoalReviewRecord {
   readonly resolvedAt: string | null;
   /** Request id that resolved this review, if resolved. */
   readonly resolutionRequestId: string | null;
+  /** Immutable first successful task-graph advance result. */
+  readonly resolutionSnapshot: AdvanceGoalAfterReviewResult | null;
 }
 
 /**
@@ -108,6 +111,8 @@ export interface ResolveGoalReviewRecordInput {
   readonly reviewId: string;
   /** Request id that resolved the review. */
   readonly requestId: string;
+  /** Immutable task-graph advance result to store with the first resolution. */
+  readonly resolutionSnapshot: AdvanceGoalAfterReviewResult;
   /** Optional clock used by deterministic tests. */
   readonly now?: () => string;
 }
@@ -267,6 +272,9 @@ export function importGoalReviewRecords(
         reason: record.reason,
         resolvedAt: record.resolvedAt,
         resolutionRequestId: record.resolutionRequestId,
+        resolutionSnapshotJson: record.resolutionSnapshot
+          ? JSON.stringify(record.resolutionSnapshot)
+          : null,
         reviewId: record.reviewId,
         taskId: record.taskId,
         threadId: record.threadId,
@@ -300,14 +308,20 @@ export function resolveGoalReviewRecord(
     input.goalId,
     input.reviewId
   );
+
+  if (existing.resolvedAt) {
+    return existing;
+  }
+
   const timestamp = input.now?.() ?? new Date().toISOString();
 
   workspaceDb.db
     .update(goalReviewRecords)
     .set({
-      resolvedAt: existing.resolvedAt ?? timestamp,
-      resolutionRequestId: existing.resolutionRequestId ?? input.requestId,
-      updatedAt: existing.resolvedAt ? existing.updatedAt : timestamp,
+      resolvedAt: timestamp,
+      resolutionRequestId: input.requestId,
+      resolutionSnapshotJson: JSON.stringify(input.resolutionSnapshot),
+      updatedAt: timestamp,
     })
     .where(
       and(
@@ -437,6 +451,7 @@ function mapGoalReviewRecordRow(row: typeof goalReviewRecords.$inferSelect): Goa
     updatedAt: row.updatedAt,
     resolvedAt: row.resolvedAt,
     resolutionRequestId: row.resolutionRequestId,
+    resolutionSnapshot: parseResolutionSnapshot(row.resolutionSnapshotJson),
   };
 }
 
@@ -490,4 +505,49 @@ function parseEvidenceArray(value: string): GoalReviewVerificationEvidence[] {
   }
 
   return parsed;
+}
+
+/**
+ * Parses one stored Goal Review resolution snapshot.
+ *
+ * @param value Nullable JSON snapshot text.
+ * @returns Parsed immutable resolution snapshot.
+ * @throws Error when the stored JSON is malformed.
+ */
+function parseResolutionSnapshot(value: string | null): AdvanceGoalAfterReviewResult | null {
+  if (value === null) {
+    return null;
+  }
+
+  const parsed = JSON.parse(value) as unknown;
+
+  if (
+    !parsed ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed) ||
+    ![
+      'complete_next_task',
+      'complete_goal',
+      'continue',
+      'retry',
+      'needs_revision',
+      'decompose',
+      'awaiting_human',
+      'blocked',
+      'aborted',
+    ].includes(String((parsed as { outcome?: unknown }).outcome)) ||
+    !(parsed as { task?: unknown }).task ||
+    typeof (parsed as { task?: unknown }).task !== 'object' ||
+    Array.isArray((parsed as { task?: unknown }).task) ||
+    ((parsed as { goal?: unknown }).goal !== null &&
+      (typeof (parsed as { goal?: unknown }).goal !== 'object' ||
+        Array.isArray((parsed as { goal?: unknown }).goal))) ||
+    ((parsed as { nextTask?: unknown }).nextTask !== null &&
+      (typeof (parsed as { nextTask?: unknown }).nextTask !== 'object' ||
+        Array.isArray((parsed as { nextTask?: unknown }).nextTask)))
+  ) {
+    throw new Error('Stored goal review resolution snapshot is malformed.');
+  }
+
+  return parsed as AdvanceGoalAfterReviewResult;
 }

@@ -10,79 +10,119 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import { createApp } from './app.js';
+import type { ProviderProfile } from './config/providers-loader.js';
 import { CodexResponsesClient, type CodexTokenResolver } from './llm/codex-responses-client.js';
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
-import { LLMProviderConfigStore } from './llm/provider-config.js';
 import { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createDemoStore } from './test-support/demo-store.js';
-import { createVaultUnlockState } from './vault-unlock-state.js';
-import { listVaultUseRecords } from './vault-use-records.js';
+import { createVaultUnlockState } from './vault/vault-unlock-state.js';
+import { listVaultUseRecords } from './vault/vault-use-records.js';
 
-function createConfiguredStore(): LLMProviderConfigStore {
-  const configStore = new LLMProviderConfigStore();
-  configStore.upsertProvider({
-    providerId: 'ollama',
-    model: 'llama3.2',
-  });
-  configStore.updateDefaults({
-    gateway: { providerId: 'ollama', model: 'llama3.2' },
-  });
-  return configStore;
+/**
+ * Creates runtime app options for one Gateway provider fixture.
+ *
+ * @param profile Provider profile with an explicit default model.
+ * @param credential Credential resolved for the profile secret reference.
+ * @returns Runtime provider registry, Gateway defaults, and credential resolver.
+ */
+function createProviderOptions(
+  profile: ProviderProfile & { defaultModel: string },
+  credential: string | null = null
+) {
+  return {
+    openKitConfig: {
+      defaults: {
+        gatewayModel: profile.defaultModel,
+        gatewayProviderId: profile.id,
+      },
+    },
+    providerCredentialResolver: () => credential,
+    providerRegistry: new ProviderRegistry([profile]),
+  };
 }
 
-function createOpenAIStore(): LLMProviderConfigStore {
-  const configStore = new LLMProviderConfigStore();
-  configStore.upsertProvider({
-    providerId: 'openai',
-    model: 'gpt-5.1',
-    apiKey: 'sk-test',
+/** Creates the runtime Ollama fixture used by Gateway tests. */
+function createOllamaProviderOptions() {
+  return createProviderOptions({
+    baseUrl: 'http://localhost:11434/v1',
+    defaultModel: 'llama3.2',
+    displayName: 'Ollama',
+    id: 'ollama',
+    kind: 'local',
+    models: ['llama3.2'],
+    vendor: 'ollama',
   });
-  configStore.updateDefaults({
-    gateway: { providerId: 'openai', model: 'gpt-5.1' },
-  });
-  return configStore;
 }
 
-function createAnthropicStore(): LLMProviderConfigStore {
-  const configStore = new LLMProviderConfigStore();
-  configStore.upsertProvider({
-    providerId: 'anthropic',
-    model: 'faux-chat',
-    apiKey: 'anthropic-secret',
-  });
-  configStore.updateDefaults({
-    gateway: { providerId: 'anthropic', model: 'faux-chat' },
-  });
-  return configStore;
+/** Creates the runtime OpenAI fixture used by Gateway tests. */
+function createOpenAIProviderOptions() {
+  return createProviderOptions(
+    {
+      baseUrl: 'https://api.openai.com/v1',
+      defaultModel: 'gpt-5.1',
+      displayName: 'OpenAI',
+      id: 'openai',
+      kind: 'direct',
+      models: ['gpt-5.1'],
+      secretRef: 'env:OPENAI_API_KEY',
+      vendor: 'openai',
+    },
+    'sk-test'
+  );
 }
 
-function createPiAiStore(providerId: string): LLMProviderConfigStore {
-  const configStore = new LLMProviderConfigStore();
-  configStore.upsertProvider({
-    providerId,
-    model: 'faux-chat',
-    apiKey: `${providerId}-secret`,
-  });
-  configStore.updateDefaults({
-    gateway: { providerId, model: 'faux-chat' },
-  });
-  return configStore;
+/** Creates the runtime Anthropic fixture used by Gateway tests. */
+function createAnthropicProviderOptions() {
+  return createProviderOptions(
+    {
+      defaultModel: 'faux-chat',
+      displayName: 'Anthropic',
+      id: 'anthropic',
+      kind: 'direct',
+      models: ['faux-chat'],
+      secretRef: 'env:ANTHROPIC_API_KEY',
+      vendor: 'anthropic',
+    },
+    'anthropic-secret'
+  );
 }
 
-function createCodexStore(): LLMProviderConfigStore {
-  const configStore = new LLMProviderConfigStore();
-  configStore.upsertProvider({
-    providerId: 'openai_codex',
-    model: 'openai-codex/gpt-5.1-codex',
+/**
+ * Creates a runtime Google or OpenRouter fixture used by pi-ai Gateway tests.
+ *
+ * @param providerId Provider implemented by the pi-ai adapter.
+ * @returns Runtime provider options with the matching credential.
+ */
+function createPiAiProviderOptions(providerId: 'google' | 'openrouter') {
+  return createProviderOptions(
+    {
+      defaultModel: 'faux-chat',
+      displayName: providerId === 'google' ? 'Gemini' : 'OpenRouter',
+      id: providerId,
+      kind: providerId === 'openrouter' ? 'gateway' : 'direct',
+      models: ['faux-chat'],
+      secretRef: providerId === 'google' ? 'env:GOOGLE_GEMINI_API_KEY' : 'env:OPENROUTER_API_KEY',
+      vendor: providerId,
+    },
+    `${providerId}-secret`
+  );
+}
+
+/** Creates the runtime default-account Codex fixture used by Gateway tests. */
+function createCodexProviderOptions() {
+  return createProviderOptions({
+    baseUrl: 'https://chatgpt.com/backend-api',
+    defaultModel: 'openai-codex/gpt-5.1-codex',
+    displayName: 'OpenAI Codex',
+    extensions: { openkit: { codexOAuth: { accountSlotId: 'default' } } },
+    id: 'openai_codex',
+    kind: 'oauth',
+    models: ['openai-codex/gpt-5.1-codex'],
+    vendor: 'openai_codex',
   });
-  configStore.updateDefaults({
-    quickChat: { providerId: 'openai_codex', model: 'openai-codex/gpt-5.1-codex' },
-    gateway: { providerId: 'openai_codex', model: 'openai-codex/gpt-5.1-codex' },
-  });
-  return configStore;
 }
 
 function unusedCodexClient(): CodexResponsesClient {
@@ -139,12 +179,17 @@ function runtimeProviderRegistry(): ProviderRegistry {
 describe('OpenAI-compatible agent gateway', () => {
   it('keeps the public Gateway surface on Chat Completions and Responses only', () => {
     const appSource = readFileSync('./src/app.ts', 'utf8');
+    const gatewaySource = readFileSync('./src/llm/gateway-routes.ts', 'utf8');
     const facadeSource = readFileSync('./src/providers/openai-compat-facade.ts', 'utf8');
 
-    expect(appSource).toContain("app.get('/v1/models'");
-    expect(appSource).toContain("app.post('/v1/chat/completions'");
-    expect(appSource).toContain("app.post('/v1/responses'");
-    expect(appSource).not.toContain("app.post('/v1/completions'");
+    expect(appSource).toContain('registerLlmGatewayRoutes({');
+    expect(appSource).not.toContain("app.get('/v1/models'");
+    expect(appSource).not.toContain("app.post('/v1/chat/completions'");
+    expect(appSource).not.toContain("app.post('/v1/responses'");
+    expect(gatewaySource).toContain("app.get('/v1/models'");
+    expect(gatewaySource).toContain("app.post('/v1/chat/completions'");
+    expect(gatewaySource).toContain("app.post('/v1/responses'");
+    expect(gatewaySource).not.toContain("app.post('/v1/completions'");
     expect(facadeSource.match(/app\.post\('\/internal\/v1\//g)).toHaveLength(1);
     expect(facadeSource).toContain("app.post('/internal/v1/chat/completions'");
   });
@@ -160,29 +205,8 @@ describe('OpenAI-compatible agent gateway', () => {
     });
   });
 
-  it('lists models exposed by configured providers', async () => {
-    const app = createApp({
-      llmProviderConfigStore: createConfiguredStore(),
-      llmPiAiClient: {
-        listModels: async () => ({
-          data: [{ id: 'llama3.2', object: 'model' }],
-        }),
-      } as unknown as PiAiGatewayClient,
-    });
-
-    const res = await app.request('/v1/models');
-
-    expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({
-      object: 'list',
-      data: [{ id: 'llama3.2', object: 'model', owned_by: 'ollama' }],
-    });
-  });
-
   it('does not expose the unsupported text completions endpoint', async () => {
-    const app = createApp({
-      llmProviderConfigStore: createConfiguredStore(),
-    });
+    const app = createApp();
 
     const res = await app.request('/v1/completions', {
       method: 'POST',
@@ -196,7 +220,7 @@ describe('OpenAI-compatible agent gateway', () => {
     expect(res.status).toBe(404);
   });
 
-  it('lists models from the runtime provider registry when no app-local store is configured', async () => {
+  it('lists models from the runtime provider registry', async () => {
     const app = createApp({
       openKitConfig: {
         defaults: {
@@ -231,7 +255,7 @@ describe('OpenAI-compatible agent gateway', () => {
   it('routes non-streaming chat completions through the gateway default provider', async () => {
     const seenRequests: unknown[] = [];
     const app = createApp({
-      llmProviderConfigStore: createConfiguredStore(),
+      ...createOllamaProviderOptions(),
       llmPiAiClient: {
         createChatCompletion: async (_provider, request) => {
           seenRequests.push(request);
@@ -281,7 +305,7 @@ describe('OpenAI-compatible agent gateway', () => {
     models.setProvider(faux.provider);
     faux.setResponses([fauxAssistantMessage('Anthropic through pi-ai')]);
     const app = createApp({
-      llmProviderConfigStore: createAnthropicStore(),
+      ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
         codexResponsesClient: unusedCodexClient(),
         piAiClient: new PiAiGatewayClient({ models }),
@@ -314,7 +338,7 @@ describe('OpenAI-compatible agent gateway', () => {
       }),
     ]);
     const app = createApp({
-      llmProviderConfigStore: createAnthropicStore(),
+      ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
         codexResponsesClient: unusedCodexClient(),
         piAiClient: new PiAiGatewayClient({ models }),
@@ -371,7 +395,7 @@ describe('OpenAI-compatible agent gateway', () => {
     models.setProvider(faux.provider);
     faux.setResponses([fauxAssistantMessage('Anthropic stream through pi-ai')]);
     const app = createApp({
-      llmProviderConfigStore: createAnthropicStore(),
+      ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
         codexResponsesClient: unusedCodexClient(),
         piAiClient: new PiAiGatewayClient({ models }),
@@ -412,7 +436,7 @@ describe('OpenAI-compatible agent gateway', () => {
       ),
     ]);
     const app = createApp({
-      llmProviderConfigStore: createAnthropicStore(),
+      ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
         codexResponsesClient: unusedCodexClient(),
         piAiClient: new PiAiGatewayClient({ models }),
@@ -457,7 +481,7 @@ describe('OpenAI-compatible agent gateway', () => {
     models.setProvider(faux.provider);
     faux.setResponses([fauxAssistantMessage('Anthropic responses through pi-ai')]);
     const app = createApp({
-      llmProviderConfigStore: createAnthropicStore(),
+      ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
         codexResponsesClient: unusedCodexClient(),
         piAiClient: new PiAiGatewayClient({ models }),
@@ -492,7 +516,7 @@ describe('OpenAI-compatible agent gateway', () => {
       models.setProvider(faux.provider);
       faux.setResponses([fauxAssistantMessage(`${providerId} via pi-ai`)]);
       const app = createApp({
-        llmProviderConfigStore: createPiAiStore(providerId),
+        ...createPiAiProviderOptions(providerId),
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
           codexResponsesClient: unusedCodexClient(),
           piAiClient: new PiAiGatewayClient({ models }),
@@ -520,14 +544,33 @@ describe('OpenAI-compatible agent gateway', () => {
     const coreDb = openCoreDb(dataRoot);
     const store = createDemoStore({ dataRoot });
     const workspace = store.createWorkspace('Gateway usage');
-    const faux = fauxProvider({
-      provider: 'anthropic',
-      models: [{ id: 'faux-chat' }],
-      tokenSize: { min: 1000, max: 1000 },
-    });
-    const models = createModels();
-    models.setProvider(faux.provider);
-    faux.setResponses([fauxAssistantMessage('durable usage ok')]);
+    const piAiClient: Pick<PiAiGatewayClient, 'createChatCompletion'> = {
+      createChatCompletion: async (_provider, request, onUsage) => {
+        onUsage?.({
+          cacheRead: 3,
+          cacheWrite: 2,
+          cost: { total: 0.0012 },
+          input: 6,
+          output: 4,
+          totalTokens: 15,
+        });
+
+        return {
+          choices: [
+            {
+              finish_reason: 'stop',
+              index: 0,
+              message: { content: 'durable usage ok', role: 'assistant' },
+            },
+          ],
+          created: 1,
+          id: 'chatcmpl_durable_usage',
+          model: request.model,
+          object: 'chat.completion',
+          usage: { completion_tokens: 4, prompt_tokens: 9, total_tokens: 13 },
+        };
+      },
+    };
 
     try {
       applyMigrations(coreDb);
@@ -536,10 +579,10 @@ describe('OpenAI-compatible agent gateway', () => {
         coreDb,
         dataRoot,
         store,
-        llmProviderConfigStore: createAnthropicStore(),
+        ...createAnthropicProviderOptions(),
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
           codexResponsesClient: unusedCodexClient(),
-          piAiClient: new PiAiGatewayClient({ models }),
+          piAiClient: piAiClient as PiAiGatewayClient,
         }),
       });
 
@@ -547,7 +590,9 @@ describe('OpenAI-compatible agent gateway', () => {
         method: 'POST',
         body: JSON.stringify({
           model: 'faux-chat',
-          messages: [{ role: 'user', content: 'Hello' }],
+          messages: [{ role: 'user', content: 'Hello with an appended suffix' }],
+          prompt_cache_key: 'private-cache-key',
+          prompt_cache_retention: 'long',
           metadata: {
             openkit: {
               agentId: 'assistant',
@@ -567,6 +612,10 @@ describe('OpenAI-compatible agent gateway', () => {
       const responseText = await res.text();
 
       expect(res.status, responseText).toBe(200);
+      expect(responseText).not.toContain('cacheRead');
+      expect(responseText).not.toContain('cacheWrite');
+      expect(responseText).not.toContain('cost');
+      expect(responseText).not.toContain('private-cache-key');
 
       const workspaceDb = openWorkspaceDb(dataRoot, 'user_local', workspace.id);
       try {
@@ -584,7 +633,7 @@ describe('OpenAI-compatible agent gateway', () => {
                     agent_id, agent_session_id, source_ids_json, category, unit, quantity,
                     model_id, provider_ref, source
              FROM usage_records
-             ORDER BY quantity`
+             ORDER BY source`
           )
           .all();
 
@@ -605,29 +654,40 @@ describe('OpenAI-compatible agent gateway', () => {
           turn_id: 'turn_1',
           workspace_id: workspace.id,
         });
-        expect(usageRows).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              category: 'llm',
-              model_id: 'faux-chat',
-              provider_ref: 'anthropic',
-              quantity: expect.any(Number),
-              source: 'llm-gateway-adapter-reported:input',
-              unit: 'tokens',
-              workspace_id: workspace.id,
-            }),
-            expect.objectContaining({
-              category: 'llm',
-              model_id: 'faux-chat',
-              provider_ref: 'anthropic',
-              quantity: expect.any(Number),
-              source: 'llm-gateway-adapter-reported:output',
-              unit: 'tokens',
-              workspace_id: workspace.id,
-            }),
-          ])
-        );
-        expect(usageRows.length).toBeGreaterThan(0);
+        expect(
+          usageRows.map((row) => {
+            const usage = row as { quantity: number; source: string; unit: string };
+
+            return { quantity: usage.quantity, source: usage.source, unit: usage.unit };
+          })
+        ).toEqual([
+          {
+            quantity: 3,
+            source: 'llm-gateway-adapter-reported:cache_read',
+            unit: 'tokens',
+          },
+          {
+            quantity: 2,
+            source: 'llm-gateway-adapter-reported:cache_write',
+            unit: 'tokens',
+          },
+          {
+            quantity: 0.0012,
+            source: 'llm-gateway-adapter-reported:cost_estimate',
+            unit: 'usd',
+          },
+          {
+            quantity: 6,
+            source: 'llm-gateway-adapter-reported:input',
+            unit: 'tokens',
+          },
+          {
+            quantity: 4,
+            source: 'llm-gateway-adapter-reported:output',
+            unit: 'tokens',
+          },
+        ]);
+        expect(usageRows.every((row) => (row as { quantity: number }).quantity > 0)).toBe(true);
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -683,24 +743,29 @@ describe('OpenAI-compatible agent gateway', () => {
         },
         providerRegistry: runtimeProviderRegistry(),
         llmPiAiClient: {
-          createChatCompletion: async (_provider, request) => ({
-            id: 'chatcmpl_openai_usage',
-            object: 'chat.completion',
-            created: 1,
-            model: request.model,
-            choices: [
-              {
-                index: 0,
-                message: { role: 'assistant', content: 'Native OpenAI usage' },
-                finish_reason: 'stop',
-              },
-            ],
-            usage: {
+          createChatCompletion: async (_provider, request, onUsage) => {
+            const usage = {
               prompt_tokens: 7,
               completion_tokens: 5,
               total_tokens: 12,
-            },
-          }),
+            };
+            onUsage?.(usage);
+
+            return {
+              id: 'chatcmpl_openai_usage',
+              object: 'chat.completion',
+              created: 1,
+              model: request.model,
+              choices: [
+                {
+                  index: 0,
+                  message: { role: 'assistant', content: 'Native OpenAI usage' },
+                  finish_reason: 'stop',
+                },
+              ],
+              usage,
+            };
+          },
         } as unknown as PiAiGatewayClient,
       });
 
@@ -776,7 +841,7 @@ describe('OpenAI-compatible agent gateway', () => {
         coreDb,
         dataRoot,
         store,
-        llmProviderConfigStore: createCodexStore(),
+        ...createCodexProviderOptions(),
         llmCodexResponsesClient: {
           createResponses: async (_provider, request) => ({
             id: 'resp_codex_usage',
@@ -881,7 +946,7 @@ describe('OpenAI-compatible agent gateway', () => {
       const app = createApp({
         coreDb,
         dataRoot,
-        llmProviderConfigStore: createAnthropicStore(),
+        ...createAnthropicProviderOptions(),
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
           codexResponsesClient: unusedCodexClient(),
           piAiClient: new PiAiGatewayClient({ models }),
@@ -952,7 +1017,7 @@ describe('OpenAI-compatible agent gateway', () => {
       const app = createApp({
         coreDb,
         dataRoot,
-        llmProviderConfigStore: createAnthropicStore(),
+        ...createAnthropicProviderOptions(),
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
           codexResponsesClient: unusedCodexClient(),
           piAiClient: new PiAiGatewayClient({ models }),
@@ -1031,7 +1096,7 @@ describe('OpenAI-compatible agent gateway', () => {
       const app = createApp({
         coreDb,
         dataRoot,
-        llmProviderConfigStore: createAnthropicStore(),
+        ...createAnthropicProviderOptions(),
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
           codexResponsesClient: unusedCodexClient(),
           piAiClient: new PiAiGatewayClient({ models }),
@@ -1094,7 +1159,7 @@ describe('OpenAI-compatible agent gateway', () => {
     models.setProvider(faux.provider);
     faux.setResponses([fauxAssistantMessage('Anthropic response stream through pi-ai')]);
     const app = createApp({
-      llmProviderConfigStore: createAnthropicStore(),
+      ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
         codexResponsesClient: unusedCodexClient(),
         piAiClient: new PiAiGatewayClient({ models }),
@@ -1175,7 +1240,7 @@ describe('OpenAI-compatible agent gateway', () => {
         const app = createApp({
           coreDb,
           dataRoot,
-          llmProviderConfigStore: createAnthropicStore(),
+          ...createAnthropicProviderOptions(),
           llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
             codexResponsesClient: unusedCodexClient(),
             piAiClient: new PiAiGatewayClient({ models }),
@@ -1239,7 +1304,7 @@ describe('OpenAI-compatible agent gateway', () => {
       const app = createApp({
         coreDb,
         dataRoot,
-        llmProviderConfigStore: createAnthropicStore(),
+        ...createAnthropicProviderOptions(),
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
           codexResponsesClient: unusedCodexClient(),
           piAiClient: new PiAiGatewayClient({ models }),
@@ -1335,7 +1400,7 @@ describe('OpenAI-compatible agent gateway', () => {
         const app = createApp({
           coreDb,
           dataRoot,
-          llmProviderConfigStore: createAnthropicStore(),
+          ...createAnthropicProviderOptions(),
           llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
             codexResponsesClient: unusedCodexClient(),
             piAiClient: new PiAiGatewayClient({ models }),
@@ -1552,7 +1617,7 @@ describe('OpenAI-compatible agent gateway', () => {
       },
     });
     const app = createApp({
-      llmProviderConfigStore: createConfiguredStore(),
+      ...createOllamaProviderOptions(),
       llmPiAiClient: {
         createChatCompletionStream: async (_provider, request) => {
           seenRequests.push(request);
@@ -1603,7 +1668,7 @@ describe('OpenAI-compatible agent gateway', () => {
       },
     });
     const app = createApp({
-      llmProviderConfigStore: createConfiguredStore(),
+      ...createOllamaProviderOptions(),
       llmPiAiClient: {
         createChatCompletionStream: async () => stream,
       } as unknown as PiAiGatewayClient,
@@ -1655,7 +1720,7 @@ describe('OpenAI-compatible agent gateway', () => {
         },
       });
       const app = createApp({
-        llmProviderConfigStore: createConfiguredStore(),
+        ...createOllamaProviderOptions(),
         llmPiAiClient: {
           createChatCompletionStream: async () => stream,
         } as unknown as PiAiGatewayClient,
@@ -1683,7 +1748,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
   it('routes non-streaming Responses requests through native OpenAI responses support', async () => {
     const app = createApp({
-      llmProviderConfigStore: createOpenAIStore(),
+      ...createOpenAIProviderOptions(),
       llmPiAiClient: {
         createResponses: async (_provider, request) => ({
           id: 'resp_gateway',
@@ -1724,7 +1789,7 @@ describe('OpenAI-compatible agent gateway', () => {
       readonly prompt_cache_key?: unknown;
     }> = [];
     const app = createApp({
-      llmProviderConfigStore: createConfiguredStore(),
+      ...createOllamaProviderOptions(),
       llmPiAiClient: {
         createChatCompletion: async (_provider, request) => {
           seenRequests.push(request);
@@ -1769,7 +1834,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
   it('returns unsupported feature errors when Responses built-in tools target chat-only providers', async () => {
     const app = createApp({
-      llmProviderConfigStore: createConfiguredStore(),
+      ...createOllamaProviderOptions(),
       llmPiAiClient: {} as unknown as PiAiGatewayClient,
     });
 
@@ -1794,7 +1859,7 @@ describe('OpenAI-compatible agent gateway', () => {
   it('routes OpenAI Codex Responses requests through the subscription Responses client', async () => {
     const seenRequests: unknown[] = [];
     const app = createApp({
-      llmProviderConfigStore: createCodexStore(),
+      ...createCodexProviderOptions(),
       llmCodexResponsesClient: {
         createResponses: async (_provider, request) => {
           seenRequests.push(request);
@@ -1842,7 +1907,7 @@ describe('OpenAI-compatible agent gateway', () => {
   it('bridges chat completions to OpenAI Codex native Responses', async () => {
     const seenRequests: unknown[] = [];
     const app = createApp({
-      llmProviderConfigStore: createCodexStore(),
+      ...createCodexProviderOptions(),
       llmCodexResponsesClient: {
         createResponses: async (_provider, request) => {
           seenRequests.push(request);
@@ -1894,7 +1959,7 @@ describe('OpenAI-compatible agent gateway', () => {
   it('preserves explicit prompt cache keys for native Responses providers', async () => {
     const seenRequests: unknown[] = [];
     const app = createApp({
-      llmProviderConfigStore: createOpenAIStore(),
+      ...createOpenAIProviderOptions(),
       llmPiAiClient: {
         createResponses: async (_provider, request) => {
           seenRequests.push(request);
@@ -1932,7 +1997,7 @@ describe('OpenAI-compatible agent gateway', () => {
   it('preserves explicit prompt cache keys for native Chat Completions providers', async () => {
     const seenRequests: unknown[] = [];
     const app = createApp({
-      llmProviderConfigStore: createConfiguredStore(),
+      ...createOllamaProviderOptions(),
       llmPiAiClient: {
         createChatCompletion: async (_provider, request) => {
           seenRequests.push(request);
@@ -1971,7 +2036,7 @@ describe('OpenAI-compatible agent gateway', () => {
   it('derives prompt cache keys from OpenKit metadata for Chat Completions requests', async () => {
     const seenRequests: Array<{ prompt_cache_key?: unknown }> = [];
     const app = createApp({
-      llmProviderConfigStore: createConfiguredStore(),
+      ...createOllamaProviderOptions(),
       llmPiAiClient: {
         createChatCompletion: async (_provider, request) => {
           seenRequests.push(request);
@@ -2014,7 +2079,7 @@ describe('OpenAI-compatible agent gateway', () => {
   it('derives prompt cache keys from OpenKit metadata for Responses requests', async () => {
     const seenRequests: Array<{ prompt_cache_key?: unknown }> = [];
     const app = createApp({
-      llmProviderConfigStore: createOpenAIStore(),
+      ...createOpenAIProviderOptions(),
       llmPiAiClient: {
         createResponses: async (_provider, request) => {
           seenRequests.push(request);
@@ -2054,23 +2119,28 @@ describe('OpenAI-compatible agent gateway', () => {
 
   it('reports Gateway usage and cached token diagnostics', async () => {
     const app = createApp({
-      llmProviderConfigStore: createOpenAIStore(),
+      ...createOpenAIProviderOptions(),
       llmPiAiClient: {
-        createResponses: async (_provider, request) => ({
-          id: 'resp_gateway',
-          object: 'response',
-          status: 'completed',
-          model: request.model,
-          output: [],
-          usage: {
+        createResponses: async (_provider, request, onUsage) => {
+          const usage = {
             input_tokens: 100,
             output_tokens: 25,
             total_tokens: 125,
             input_tokens_details: {
               cached_tokens: 60,
             },
-          },
-        }),
+          };
+          onUsage?.(usage);
+
+          return {
+            id: 'resp_gateway',
+            object: 'response',
+            status: 'completed',
+            model: request.model,
+            output: [],
+            usage,
+          };
+        },
       } as unknown as PiAiGatewayClient,
     });
 

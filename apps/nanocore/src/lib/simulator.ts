@@ -599,7 +599,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       createdAt: timestamp,
       updatedAt: timestamp,
     });
-    const updatedArtifact = store.updateArtifact(artifact.id, {
+    const updatedArtifact = store.updateArtifact(state.workspaceId, artifact.id, {
       status: 'ready',
       summary: 'Deterministic simulator artifact ready.',
       version: 2,

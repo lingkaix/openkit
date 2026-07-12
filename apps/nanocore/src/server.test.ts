@@ -83,8 +83,8 @@ import { createInjectionReceipt, listInjectionReceipts } from './injection-recei
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { createDemoWorkspaceForUser, FsStore, type FsStoreOptions } from './lib/store.js';
 import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
-import { LLMProviderConfigStore } from './llm/provider-config.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
+import { ProviderRegistry } from './providers/registry.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
 import {
@@ -97,6 +97,7 @@ import {
   createGoalReviewRecord,
   getGoalReviewRecord,
   listGoalReviewRecordsForTask,
+  resolveGoalReviewRecord,
 } from './runtime/goal-review-records.js';
 import {
   createGoalRecord,
@@ -104,6 +105,7 @@ import {
   listGoalRecordsForThread,
   listGoalTasks,
   updateGoalStatus,
+  updateGoalTask,
 } from './runtime/goal-store.js';
 import {
   createGoalVerificationRecord,
@@ -149,14 +151,14 @@ import {
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { LOCAL_USER_ID, recordDataRootDeploymentMove } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { createVaultGrant, listVaultGrants } from './vault-grants.js';
+import { createVaultGrant, listVaultGrants } from './vault/vault-grants.js';
 import {
   createVaultReference,
   getVaultReference,
   listVaultReferences,
-} from './vault-references.js';
-import { createVaultUnlockState } from './vault-unlock-state.js';
-import { createVaultUseRecord, listVaultUseRecords } from './vault-use-records.js';
+} from './vault/vault-references.js';
+import { createVaultUnlockState } from './vault/vault-unlock-state.js';
+import { createVaultUseRecord, listVaultUseRecords } from './vault/vault-use-records.js';
 import {
   listWorkspaceRepositoryResources,
   upsertWorkspaceRepositoryResource,
@@ -3071,9 +3073,9 @@ describe('nanocore server', () => {
         ownerScope: 'workspace',
         policyEngineVersion: 'nanocore-worker-policy:v1',
         policySnapshotId: 'worker_turn_launch_policy',
-        reasonCode: 'worker_turn_start_allowed',
+        reasonCode: 'higher_authority_required',
         resourceSummary: { kind: 'worker-turn', turnId: 'turn_demo' },
-        result: 'allow',
+        result: 'require_escalation',
         subjectSummary: { id: 'worker-coordinator', kind: 'nanocore' },
         workspaceDb,
         workspaceId: 'ws_demo',
@@ -3094,7 +3096,7 @@ describe('nanocore server', () => {
         {
           action: 'runtime.launch',
           decisionId: 'pd_route_1',
-          result: 'allow',
+          result: 'require_escalation',
           workspaceId: 'ws_demo',
         },
       ],
@@ -3117,9 +3119,9 @@ describe('nanocore server', () => {
       ownerScope: 'server',
       policyEngineVersion: 'nanocore-gateway-policy:v1',
       policySnapshotId: 'runtime_config_gateway_policy',
-      reasonCode: 'gateway_allowed',
+      reasonCode: 'policy_context_missing',
       resourceSummary: { kind: 'llm-provider', providerId: 'openrouter' },
-      result: 'allow',
+      result: 'defer',
       subjectSummary: { id: 'openai-compatible', kind: 'gateway-client' },
       now: new Date('2026-07-07T00:02:00.000Z'),
     });
@@ -3134,7 +3136,7 @@ describe('nanocore server', () => {
         {
           action: 'llm.gateway.chat_completions',
           decisionId: 'pd_server_route_1',
-          result: 'allow',
+          result: 'defer',
           workspaceId: null,
         },
       ],
@@ -3550,6 +3552,78 @@ describe('nanocore server', () => {
     }
   });
 
+  it('rejects pending-input interrupt promotion when the executor cannot interrupt', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-user-turn-no-interrupt-route-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const thread = store.createThread('ws_demo', 'Unsupported pending interrupt route');
+    const turn = store.createTurn('ws_demo', thread.id, 'Keep active turn running');
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    try {
+      enqueuePendingUserTurn(workspaceDb, {
+        contentItemId: 'item_pending_no_interrupt_route',
+        queueMode: 'safe_point_steering',
+        receivedAt: '2026-07-06T00:06:00.000Z',
+        requestId: 'req_pending_no_interrupt_route',
+        threadId: thread.id,
+        workspaceId: 'ws_demo',
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+    const interruptTurn = vi.fn(async () => undefined);
+    const turnExecutor: TurnExecutor = {
+      capabilities: {
+        approvals: false,
+        artifacts: false,
+        interrupts: false,
+        questions: false,
+        workspaceConfig: true,
+        workspaceKnowledgeEditing: false,
+      },
+      eventFamilies: [],
+      interruptTurn,
+      startTurn: async () => undefined,
+    };
+    const app = createApp({ coreDb, dataRoot, store, turnExecutor });
+
+    const promoteRes = await app.request(
+      `/api/app/workspaces/ws_demo/threads/${thread.id}/recovery/pending-user-turns/req_pending_no_interrupt_route/interrupt`,
+      { method: 'POST' }
+    );
+
+    await expect(promoteRes.json()).resolves.toMatchObject({ code: 'interrupts_not_supported' });
+    expect(promoteRes.status).toBe(501);
+    expect(interruptTurn).not.toHaveBeenCalled();
+    expect(store.getTurn('ws_demo', thread.id, turn.id)).toEqual(turn);
+
+    const reopenedDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    try {
+      expect(
+        listPendingUserTurns(reopenedDb, { workspaceId: 'ws_demo', threadId: thread.id })
+      ).toEqual([
+        expect.objectContaining({
+          contentItemId: 'item_pending_no_interrupt_route',
+          queueMode: 'safe_point_steering',
+          requestId: 'req_pending_no_interrupt_route',
+        }),
+      ]);
+      expect(
+        reopenedDb.sqlite
+          .prepare(
+            `SELECT action
+            FROM audit_events
+            WHERE action = 'human.pending_user_turn.promote_interrupt'`
+          )
+          .all()
+      ).toEqual([]);
+    } finally {
+      reopenedDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('restarts runtime config stale sessions by retiring the old session record', async () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Retire stale session');
@@ -3850,7 +3924,7 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     try {
-      createGoalRecord(sourceDb, {
+      const sourceGoal = createGoalRecord(sourceDb, {
         goalId: 'goal_evidence_1',
         objective: 'Import goal evidence.',
         status: 'reviewing',
@@ -3860,7 +3934,7 @@ describe('nanocore server', () => {
         workspaceId: 'ws_demo',
         now: () => '2026-07-06T00:06:00.000Z',
       });
-      createGoalTask(sourceDb, {
+      const sourceTask = createGoalTask(sourceDb, {
         acceptanceCriteria: ['Evidence imported.'],
         contextBudgetTokens: 12000,
         dependsOnTaskIds: [],
@@ -3887,6 +3961,25 @@ describe('nanocore server', () => {
         verificationEvidence: [{ kind: 'manual', summary: 'Looks good.' }],
         workspaceId: 'ws_demo',
         now: () => '2026-07-06T00:06:02.000Z',
+      });
+      resolveGoalReviewRecord(sourceDb, {
+        goalId: 'goal_evidence_1',
+        requestId: 'goal-review-evidence-resolution-1',
+        resolutionSnapshot: {
+          outcome: 'complete_goal',
+          task: { ...sourceTask, status: 'completed' },
+          goal: {
+            ...sourceGoal,
+            status: 'completed',
+            currentTaskId: null,
+            terminalStopReason: 'completed',
+          },
+          nextTask: null,
+        },
+        reviewId: 'gr_evidence_1',
+        threadId: 'th_demo',
+        workspaceId: 'ws_demo',
+        now: () => '2026-07-06T00:06:02.500Z',
       });
       createGoalVerificationRecord(sourceDb, {
         artifactIds: ['artifact_evidence_1'],
@@ -3941,6 +4034,18 @@ describe('nanocore server', () => {
           goalId: 'goal_evidence_1',
           itemIds: ['item_evidence_1'],
           reviewId: 'gr_evidence_1',
+          resolutionSnapshot: {
+            outcome: 'complete_goal',
+            task: expect.objectContaining({
+              taskId: 'task_evidence_1',
+              workspaceId: body.importedWorkspaceId,
+            }),
+            goal: expect.objectContaining({
+              goalId: 'goal_evidence_1',
+              workspaceId: body.importedWorkspaceId,
+            }),
+            nextTask: null,
+          },
           taskId: 'task_evidence_1',
           verdict: 'accept',
           workspaceId: body.importedWorkspaceId,
@@ -5525,6 +5630,31 @@ describe('nanocore server', () => {
     ]);
   });
 
+  it('clears workspace default model and agent selections with explicit nulls', async () => {
+    const app = createApp({ turnExecutor: new FakeTurnExecutor() });
+    const res = await app.request('/api/workspaces/ws_demo', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        requestId: '0190f4c8-0000-7000-8000-000000000210',
+        defaults: {
+          defaultModelId: null,
+          defaultAgentId: null,
+          defaultSkillIds: [],
+        },
+      }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      defaults: {
+        defaultModelId: null,
+        defaultAgentId: null,
+        defaultSkillIds: [],
+      },
+    });
+  });
+
   it('creates a thread from the name field used by the protocol package', async () => {
     const app = createApp({ turnExecutor: new FakeTurnExecutor() });
     const res = await app.request('/api/workspaces/ws_demo/threads', {
@@ -6226,6 +6356,41 @@ describe('nanocore server', () => {
       status: 'ready',
       summary: 'Updated through the Core artifact metadata command.',
     });
+  });
+
+  it('does not update an artifact through a different workspace path', async () => {
+    const store = createDemoStore();
+    const otherWorkspace = store.createWorkspace('Other artifact workspace');
+    const timestamp = new Date().toISOString();
+    store.createArtifact({
+      id: 'ar_other_workspace',
+      workspaceId: otherWorkspace.id,
+      threadId: null,
+      turnId: null,
+      kind: 'summary',
+      title: 'Other workspace artifact',
+      status: 'draft',
+      summary: null,
+      version: 1,
+      content: { format: 'markdown', body: '# Other workspace' },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const app = createApp({ store, turnExecutor: new FakeTurnExecutor() });
+
+    const response = await app.request('/api/workspaces/ws_demo/artifacts/ar_other_workspace', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        requestId: '0190f4c8-0000-7000-8000-000000000210',
+        title: 'Cross-workspace mutation',
+      }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(response.status).toBe(404);
+    expect(store.getArtifact(otherWorkspace.id, 'ar_other_workspace').title).toBe(
+      'Other workspace artifact'
+    );
   });
 
   it('lists and reads workspace synchronization reviews from review artifacts', async () => {
@@ -8761,7 +8926,7 @@ describe('nanocore server', () => {
     }
   });
 
-  it('resolves goal review decisions idempotently', async () => {
+  it('accepts a goal review, unlocks its dependent task, and replays persisted state', async () => {
     const coreDb = createCoreDb();
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     const store = createDemoStore();
@@ -8783,24 +8948,38 @@ describe('nanocore server', () => {
         workspaceId: 'ws_demo',
         threadId: thread.id,
         goalId: 'goal_route',
-        taskId: 'task_route',
-        title: 'Route reviewed task',
-        objective: 'Retry after review decision.',
-        orderIndex: 0,
+        taskId: 'task_route_1',
+        title: 'First reviewed task',
+        objective: 'Complete the first reviewed task.',
+        orderIndex: 1,
         dependsOnTaskIds: [],
-        acceptanceCriteria: ['Retry result is durable.'],
+        acceptanceCriteria: ['The first task is accepted.'],
         contextBudgetTokens: 1024,
         status: 'reviewing',
         now: () => '2026-05-31T00:00:00.000Z',
+      });
+      createGoalTask(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_route',
+        taskId: 'task_route_2',
+        title: 'Dependent task',
+        objective: 'Continue after the first task is accepted.',
+        orderIndex: 2,
+        dependsOnTaskIds: ['task_route_1'],
+        acceptanceCriteria: ['The dependent task becomes ready.'],
+        contextBudgetTokens: 1024,
+        status: 'pending',
+        now: () => '2026-05-31T00:00:30.000Z',
       });
       createGoalReviewRecord(workspaceDb, {
         reviewId: 'review_route',
         workspaceId: 'ws_demo',
         threadId: thread.id,
         goalId: 'goal_route',
-        taskId: 'task_route',
-        verdict: 'retry',
-        reason: 'Retry with stronger verification.',
+        taskId: 'task_route_1',
+        verdict: 'accept',
+        reason: 'Accept the first task and continue.',
         now: () => '2026-05-31T00:01:00.000Z',
       });
 
@@ -8818,7 +8997,17 @@ describe('nanocore server', () => {
 
       expect(firstRes.status).toBe(200);
       expect(secondRes.status).toBe(200);
-      expect(await secondRes.json()).toEqual(await firstRes.json());
+      const first = await firstRes.json();
+      const second = await secondRes.json();
+      expect(second).toEqual(first);
+      expect(first).toMatchObject({
+        advance: {
+          outcome: 'complete_next_task',
+          task: { taskId: 'task_route_1', status: 'completed' },
+          goal: { status: 'running', currentTaskId: 'task_route_2' },
+          nextTask: { taskId: 'task_route_2', status: 'ready' },
+        },
+      });
       expect(
         getGoalReviewRecord(workspaceDb, 'ws_demo', thread.id, 'goal_route', 'review_route')
       ).toMatchObject({
@@ -8830,8 +9019,252 @@ describe('nanocore server', () => {
           workspaceId: 'ws_demo',
           threadId: thread.id,
           goalId: 'goal_route',
-        }).find((task) => task.taskId === 'task_route')
-      ).toMatchObject({ status: 'ready' });
+        }).map((task) => ({ taskId: task.taskId, status: task.status }))
+      ).toEqual([
+        { taskId: 'task_route_1', status: 'completed' },
+        { taskId: 'task_route_2', status: 'ready' },
+      ]);
+      expect(
+        listGoalRecordsForThread(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+        }).find((goal) => goal.goalId === 'goal_route')
+      ).toMatchObject({ status: 'running', currentTaskId: 'task_route_2' });
+
+      updateGoalTask(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_route',
+        taskId: 'task_route_2',
+        status: 'completed',
+      });
+      updateGoalStatus(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_route',
+        status: 'completed',
+        currentTaskId: null,
+        terminalStopReason: 'completed',
+      });
+      const delayedReplayRes = await app.request(href, {
+        method: 'POST',
+        body: JSON.stringify({ requestId: 'goal-review-request-1' }),
+        headers: { 'content-type': 'application/json' },
+      });
+
+      expect(delayedReplayRes.status).toBe(200);
+      expect(await delayedReplayRes.json()).toEqual(first);
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('completes a goal when its final goal review is accepted', async () => {
+    const coreDb = createCoreDb();
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Final goal review decision');
+    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+
+    try {
+      createGoalRecord(workspaceDb, {
+        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
+        goalId: 'goal_final_review',
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        title: 'Final route goal review',
+        objective: 'Complete a goal after its final task is accepted.',
+        status: 'reviewing',
+        now: () => '2026-05-31T01:00:00.000Z',
+      });
+      createGoalTask(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_final_review',
+        taskId: 'task_final_review',
+        title: 'Final reviewed task',
+        objective: 'Complete the goal.',
+        orderIndex: 1,
+        dependsOnTaskIds: [],
+        acceptanceCriteria: ['The goal is completed.'],
+        contextBudgetTokens: 1024,
+        status: 'reviewing',
+        now: () => '2026-05-31T01:00:30.000Z',
+      });
+      createGoalReviewRecord(workspaceDb, {
+        reviewId: 'review_final_route',
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_final_review',
+        taskId: 'task_final_review',
+        verdict: 'accept',
+        reason: 'Accept the final task and complete the goal.',
+        now: () => '2026-05-31T01:01:00.000Z',
+      });
+
+      const response = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goals/goal_final_review/reviews/review_final_route/decision`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ requestId: 'goal-review-final-request-1' }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        advance: {
+          outcome: 'complete_goal',
+          task: { taskId: 'task_final_review', status: 'completed' },
+          goal: { status: 'completed', currentTaskId: null, terminalStopReason: 'completed' },
+          nextTask: null,
+        },
+      });
+      expect(
+        getGoalReviewRecord(
+          workspaceDb,
+          'ws_demo',
+          thread.id,
+          'goal_final_review',
+          'review_final_route'
+        )
+      ).toMatchObject({
+        resolvedAt: expect.any(String),
+        resolutionRequestId: 'goal-review-final-request-1',
+      });
+      expect(
+        listGoalTasks(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: 'goal_final_review',
+        })
+      ).toEqual([expect.objectContaining({ taskId: 'task_final_review', status: 'completed' })]);
+      expect(
+        listGoalRecordsForThread(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+        }).find((goal) => goal.goalId === 'goal_final_review')
+      ).toMatchObject({
+        status: 'completed',
+        currentTaskId: null,
+        terminalStopReason: 'completed',
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rolls back a goal review decision when review resolution persistence fails', async () => {
+    const coreDb = createCoreDb();
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Goal review rollback');
+    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+
+    try {
+      createGoalRecord(workspaceDb, {
+        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
+        goalId: 'goal_review_rollback',
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        title: 'Rollback route goal review',
+        objective: 'Roll back all state when review resolution fails.',
+        status: 'reviewing',
+        now: () => '2026-05-31T02:00:00.000Z',
+      });
+      createGoalTask(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_review_rollback',
+        taskId: 'task_review_rollback_1',
+        title: 'Reviewed rollback task',
+        objective: 'Remain reviewing after a failed decision.',
+        orderIndex: 1,
+        dependsOnTaskIds: [],
+        acceptanceCriteria: ['The decision is atomic.'],
+        contextBudgetTokens: 1024,
+        status: 'reviewing',
+        now: () => '2026-05-31T02:00:30.000Z',
+      });
+      createGoalTask(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_review_rollback',
+        taskId: 'task_review_rollback_2',
+        title: 'Dependent rollback task',
+        objective: 'Remain pending after a failed decision.',
+        orderIndex: 2,
+        dependsOnTaskIds: ['task_review_rollback_1'],
+        acceptanceCriteria: ['The task unlocks only after a durable decision.'],
+        contextBudgetTokens: 1024,
+        status: 'pending',
+        now: () => '2026-05-31T02:01:00.000Z',
+      });
+      createGoalReviewRecord(workspaceDb, {
+        reviewId: 'review_rollback',
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_review_rollback',
+        taskId: 'task_review_rollback_1',
+        verdict: 'accept',
+        reason: 'Accept the first task atomically.',
+        now: () => '2026-05-31T02:01:30.000Z',
+      });
+      workspaceDb.sqlite.exec(`CREATE TRIGGER fail_goal_review_resolution
+        BEFORE UPDATE OF resolved_at ON goal_review_records
+        WHEN NEW.review_id = 'review_rollback'
+        BEGIN
+          SELECT RAISE(ABORT, 'forced goal review resolution failure');
+        END;`);
+
+      const href = `/api/app/workspaces/ws_demo/threads/${thread.id}/goals/goal_review_rollback/reviews/review_rollback/decision`;
+      const failedResponse = await app.request(href, {
+        method: 'POST',
+        body: JSON.stringify({ requestId: 'goal-review-rollback-request-1' }),
+        headers: { 'content-type': 'application/json' },
+      });
+      const reviewAfterFailure = getGoalReviewRecord(
+        workspaceDb,
+        'ws_demo',
+        thread.id,
+        'goal_review_rollback',
+        'review_rollback'
+      );
+      const tasksAfterFailure = listGoalTasks(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_review_rollback',
+      }).map((task) => ({ taskId: task.taskId, status: task.status }));
+      const goalAfterFailure = listGoalRecordsForThread(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+      }).find((goal) => goal.goalId === 'goal_review_rollback');
+
+      workspaceDb.sqlite.exec('DROP TRIGGER fail_goal_review_resolution');
+      const retryResponse = await app.request(href, {
+        method: 'POST',
+        body: JSON.stringify({ requestId: 'goal-review-rollback-request-1' }),
+        headers: { 'content-type': 'application/json' },
+      });
+
+      expect(failedResponse.status).not.toBe(200);
+      expect(reviewAfterFailure).toMatchObject({ resolvedAt: null, resolutionRequestId: null });
+      expect(tasksAfterFailure).toEqual([
+        { taskId: 'task_review_rollback_1', status: 'reviewing' },
+        { taskId: 'task_review_rollback_2', status: 'pending' },
+      ]);
+      expect(goalAfterFailure).toMatchObject({ status: 'reviewing' });
+      expect(retryResponse.status).toBe(200);
+      expect(await retryResponse.json()).toMatchObject({
+        advance: {
+          outcome: 'complete_next_task',
+          task: { taskId: 'task_review_rollback_1', status: 'completed' },
+          goal: { status: 'running', currentTaskId: 'task_review_rollback_2' },
+          nextTask: { taskId: 'task_review_rollback_2', status: 'ready' },
+        },
+      });
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -8839,58 +9272,30 @@ describe('nanocore server', () => {
   });
 
   it('routes interrupts through the turn executor', async () => {
-    const coreDb = createCoreDb();
     const store = createDemoStore();
-    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-interrupt-turn-repository-'));
-
-    try {
-      mkdirSync(join(repositoryPath, '.git'));
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Interrupt turn repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-
-      const turnRes = await app.request('/api/turns', {
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Interrupt this running turn');
+    const app = createApp({ store, turnExecutor: new FakeTurnExecutor() });
+    const interruptRes = await app.request(
+      `/api/workspaces/ws_demo/threads/th_demo/turns/${turn.id}/interrupt`,
+      {
         method: 'POST',
         body: JSON.stringify({
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
-          requestId: '0190f4c8-0000-7000-8000-000000000205',
-          input: 'Ship the update',
+          turnId: turn.id,
+          requestId: '0190f4c8-0000-7000-8000-000000000206',
         }),
         headers: { 'content-type': 'application/json' },
-      });
-      const turn = (await turnRes.json()) as { id: string };
+      }
+    );
 
-      const interruptRes = await app.request(
-        `/api/workspaces/ws_demo/threads/th_demo/turns/${turn.id}/interrupt`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: turn.id,
-            requestId: '0190f4c8-0000-7000-8000-000000000206',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
-      );
-
-      expect(interruptRes.status).toBe(200);
-      expect((await interruptRes.json()) as { status: string }).toMatchObject({
-        status: 'interrupted',
-      });
-      expect(store.getTurnEvents(turn.id).at(-1)?.requestId).toBe(
-        '0190f4c8-0000-7000-8000-000000000206'
-      );
-    } finally {
-      coreDb.sqlite.close();
-    }
+    expect(interruptRes.status).toBe(200);
+    expect((await interruptRes.json()) as { status: string }).toMatchObject({
+      status: 'interrupted',
+    });
+    expect(store.getTurnEvents(turn.id).at(-1)?.requestId).toBe(
+      '0190f4c8-0000-7000-8000-000000000206'
+    );
   });
 
   it('projects live OpenShell worker control status into thread dashboard sessions', async () => {
@@ -8994,6 +9399,168 @@ describe('nanocore server', () => {
     });
   });
 
+  it('projects worker control status from the active package snapshot when a session id is reused', async () => {
+    const store = createDemoStore();
+    const oldTurn = store.createTurn('ws_demo', 'th_demo', 'Run the old worker package');
+    const currentTurn = store.createTurn('ws_demo', 'th_demo', 'Run the current worker package');
+    const oldPackage = createOpenShellWorkerControlPackage(store, oldTurn.id);
+    const currentPackage = createOpenShellWorkerControlPackage(store, currentTurn.id);
+    const gateway = new WorkerControlGateway({
+      createToken: vi
+        .fn()
+        .mockReturnValueOnce('token_dashboard_control_old')
+        .mockReturnValueOnce('token_dashboard_control_current'),
+      now: () => '2026-06-16T00:00:03.000Z',
+    });
+    const oldRegistration = gateway.registerSession(oldPackage);
+    const currentRegistration = gateway.registerSession(currentPackage);
+    const oldLineage = {
+      agentSessionId: oldPackage.scope.agentSessionId,
+      packageSnapshotId: oldPackage.snapshotId,
+      requestId: oldPackage.scope.requestId,
+      threadId: oldPackage.scope.threadId,
+      turnId: oldPackage.scope.turnId,
+      workspaceId: oldPackage.scope.workspaceId,
+    };
+    const currentLineage = {
+      agentSessionId: currentPackage.scope.agentSessionId,
+      packageSnapshotId: currentPackage.snapshotId,
+      requestId: currentPackage.scope.requestId,
+      threadId: currentPackage.scope.threadId,
+      turnId: currentPackage.scope.turnId,
+      workspaceId: currentPackage.scope.workspaceId,
+    };
+
+    gateway.recordHeartbeat({
+      authorization: `Bearer ${oldRegistration.token}`,
+      lineage: oldLineage,
+      sequence: 1,
+      status: 'stopping',
+    });
+    gateway.recordArtifactNotice({
+      artifact: {
+        mediaType: 'text/markdown',
+        path: '/openkit/artifacts/old-report.md',
+        title: 'Old worker report',
+      },
+      authorization: `Bearer ${oldRegistration.token}`,
+      lineage: oldLineage,
+      sequence: 2,
+    });
+    gateway.recordHeartbeat({
+      authorization: `Bearer ${currentRegistration.token}`,
+      lineage: currentLineage,
+      sequence: 1,
+      status: 'running',
+    });
+    store.createAgentSession({
+      id: currentPackage.scope.agentSessionId,
+      agentId: 'agent_codex_host',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      status: 'busy',
+      message: null,
+      configVersion: 1,
+      environmentPackageSnapshot: currentPackage,
+      workspaceRoots: [],
+      createdAt: '2026-06-16T00:00:02.000Z',
+      updatedAt: '2026-06-16T00:00:03.000Z',
+    });
+    const app = createApp({
+      store,
+      turnExecutor: new OpenShellDashboardTurnExecutor({
+        id: currentPackage.scope.agentSessionId,
+        status: 'busy',
+        message: null,
+        configVersion: 1,
+        workspaceRoots: [],
+        stale: false,
+        sandboxSummary: null,
+        backend: {
+          kind: 'openshell',
+          health: 'ready',
+          controlMode: 'sidecar',
+          control: null,
+          gatewayName: 'openshell',
+          gatewayEndpoint: 'https://127.0.0.1:17670',
+          version: '0.0.63',
+          sandboxName: 'openkit-as-dashboard-control-current',
+        },
+      }),
+      workerControlGateway: gateway,
+    });
+
+    const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/dashboard');
+    const body = (await res.json()) as {
+      activeSession: { backend: { control: Record<string, unknown> | null } };
+    };
+
+    expect(res.status).toBe(200);
+    expect(body.activeSession.backend.control).toMatchObject({
+      heartbeat: {
+        status: 'running',
+        sequence: 1,
+      },
+      artifactNoticeCount: 0,
+    });
+
+    const terminalRes = await app.request(
+      `/api/app/workspaces/ws_demo/threads/th_demo/agent-sessions/${currentPackage.scope.agentSessionId}/terminal-commands`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          requestId: 'terminal-request-current-package',
+          argv: ['pwd'],
+          cwd: '/workspace',
+        }),
+        headers: { 'content-type': 'application/json' },
+      }
+    );
+
+    expect(terminalRes.status).toBe(200);
+    expect(gateway.getSessionSnapshot(oldPackage.snapshotId)?.commands).toEqual([]);
+    expect(gateway.getSessionSnapshot(currentPackage.snapshotId)?.commands).toEqual([
+      expect.objectContaining({ commandId: 'terminal-request-current-package' }),
+    ]);
+
+    const unavailableTurn = store.createTurn(
+      'ws_demo',
+      'th_demo',
+      'Run an unavailable worker package'
+    );
+    const unavailablePackage = createOpenShellWorkerControlPackage(store, unavailableTurn.id);
+    store.updateAgentSession(currentPackage.scope.agentSessionId, {
+      environmentPackageSnapshot: unavailablePackage,
+    });
+
+    const unavailableRes = await app.request(
+      '/api/app/workspaces/ws_demo/threads/th_demo/dashboard'
+    );
+    const unavailableBody = (await unavailableRes.json()) as {
+      activeSession: { backend: { control: Record<string, unknown> | null } };
+    };
+
+    expect(unavailableRes.status).toBe(200);
+    expect(unavailableBody.activeSession.backend.control).toBeNull();
+
+    const unavailableTerminalRes = await app.request(
+      `/api/app/workspaces/ws_demo/threads/th_demo/agent-sessions/${currentPackage.scope.agentSessionId}/terminal-commands`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          requestId: 'terminal-request-unavailable-package',
+          argv: ['pwd'],
+          cwd: '/workspace',
+        }),
+        headers: { 'content-type': 'application/json' },
+      }
+    );
+
+    expect(unavailableTerminalRes.status).toBe(404);
+    expect(gateway.getSessionSnapshot(oldPackage.snapshotId)?.commands).toEqual([]);
+    expect(gateway.getSessionSnapshot(currentPackage.snapshotId)?.commands).toHaveLength(1);
+  });
+
   it('queues terminal commands for the active OpenShell worker session', async () => {
     const store = createDemoStore();
     const turn = store.createTurn('ws_demo', 'th_demo', 'Queue a terminal command');
@@ -9056,6 +9623,22 @@ describe('nanocore server', () => {
         kind: 'terminal-command',
       }),
     ]);
+
+    const wrongSessionRes = await app.request(
+      '/api/app/workspaces/ws_demo/threads/th_demo/agent-sessions/as_wrong/terminal-commands',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          requestId: 'terminal-request-wrong-session',
+          argv: ['pwd'],
+          cwd: '/workspace',
+        }),
+        headers: { 'content-type': 'application/json' },
+      }
+    );
+
+    expect(wrongSessionRes.status).toBe(404);
+    expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.commands).toHaveLength(1);
   });
 
   it('passes the selected repository cwd to worker turn startup', async () => {
@@ -9189,7 +9772,29 @@ describe('nanocore server', () => {
     const turn = store.createTurn(workspace.id, thread.id, 'Publish accepted work');
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-git-push-approval-repository-'));
 
-    mkdirSync(join(repositoryPath, '.git'));
+    execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'repository-local@example.invalid'], {
+      cwd: repositoryPath,
+      stdio: 'ignore',
+    });
+    execFileSync('git', ['config', 'user.name', 'Repository Local'], {
+      cwd: repositoryPath,
+      stdio: 'ignore',
+    });
+    writeFileSync(join(repositoryPath, 'README.md'), '# Approval\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repositoryPath, stdio: 'ignore' });
+    execFileSync('git', ['commit', '-m', 'approvable change'], {
+      cwd: repositoryPath,
+      stdio: 'ignore',
+    });
+    execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/openkit/openkit.git'], {
+      cwd: repositoryPath,
+      stdio: 'ignore',
+    });
+    const commitId = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: repositoryPath,
+      encoding: 'utf8',
+    }).trim();
 
     try {
       const repositoryRes = await app.request(
@@ -9212,20 +9817,21 @@ describe('nanocore server', () => {
 
       expect(repositoryRes.status).toBe(200);
 
+      const approvalRequest = {
+        requestId: '00000000-0000-4000-8000-000000000024',
+        threadId: thread.id,
+        turnId: turn.id,
+        sourceRef: 'HEAD',
+        targetBranch: 'main',
+        commitIds: [commitId],
+      };
+
       const approvalRes = await app.request(
         `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push/approval`,
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: '00000000-0000-4000-8000-000000000024',
-            threadId: thread.id,
-            turnId: turn.id,
-            remoteSummary: 'GitHub repository openkit on origin',
-            sourceRef: 'HEAD',
-            targetBranch: 'main',
-            commitIds: ['abc123'],
-          }),
+          body: JSON.stringify(approvalRequest),
         }
       );
 
@@ -9240,6 +9846,24 @@ describe('nanocore server', () => {
         },
       });
       expect(store.getTurn(workspace.id, thread.id, turn.id).status).toBe('awaiting_human');
+
+      execFileSync('git', ['remote', 'remove', 'origin'], {
+        cwd: repositoryPath,
+        stdio: 'ignore',
+      });
+      const approvalReplayRes = await app.request(
+        `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push/approval`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(approvalRequest),
+        }
+      );
+
+      expect(approvalReplayRes.status).toBe(200);
+      await expect(approvalReplayRes.json()).resolves.toMatchObject({
+        approval: { id: approvalPayload.approval.id },
+      });
 
       const actionCenterRes = await app.request(
         `/api/app/workspaces/${workspace.id}/action-center`
@@ -9275,16 +9899,21 @@ describe('nanocore server', () => {
 
       const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
       try {
-        expect(
-          workspaceDb.sqlite
-            .prepare(
-              `SELECT action, result, approval_id AS approvalId
-               FROM permission_decisions
-               WHERE action = 'repo.push'
-               ORDER BY created_at ASC`
-            )
-            .all()
-        ).toEqual([
+        const decisions = workspaceDb.sqlite
+          .prepare(
+            `SELECT action, result, approval_id AS approvalId, resource_summary_json AS resourceSummary
+             FROM permission_decisions
+             WHERE action = 'repo.push'
+             ORDER BY created_at ASC`
+          )
+          .all() as Array<{
+          action: string;
+          approvalId: string;
+          resourceSummary: string;
+          result: string;
+        }>;
+
+        expect(decisions).toEqual([
           expect.objectContaining({
             action: 'repo.push',
             approvalId: approvalPayload.approval.id,
@@ -9296,9 +9925,90 @@ describe('nanocore server', () => {
             result: 'allow',
           }),
         ]);
+        for (const decision of decisions) {
+          expect(JSON.parse(decision.resourceSummary)).toMatchObject({
+            commitIds: [commitId],
+            remoteIdentity: 'github:openkit/openkit',
+            remoteName: 'origin',
+            remoteSummary: 'GitHub repository openkit/openkit on origin',
+            sourceCommit: commitId,
+            sourceRef: 'HEAD',
+          });
+        }
       } finally {
         workspaceDb.sqlite.close();
       }
+
+      execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/openkit/openkit.git'], {
+        cwd: repositoryPath,
+        stdio: 'ignore',
+      });
+      writeFileSync(join(repositoryPath, 'STALE.md'), '# Stale source\n');
+      execFileSync('git', ['add', 'STALE.md'], { cwd: repositoryPath, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'move approved source'], {
+        cwd: repositoryPath,
+        stdio: 'ignore',
+      });
+      const staleSourceRes = await app.request(
+        `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000032',
+            approvalRequestId: approvalPayload.approval.id,
+          }),
+        }
+      );
+
+      expect(staleSourceRes.status).toBe(404);
+      await expect(staleSourceRes.json()).resolves.toMatchObject({
+        code: 'git_push_failed',
+        message: expect.stringContaining('approval scope mismatch'),
+      });
+
+      execFileSync('git', ['reset', '--hard', commitId], {
+        cwd: repositoryPath,
+        stdio: 'ignore',
+      });
+      const driftRemotePath = mkdtempSync(join(tmpdir(), 'openkit-git-push-drift-remote-'));
+      execFileSync('git', ['init', '--bare'], { cwd: driftRemotePath, stdio: 'ignore' });
+      execFileSync('git', ['remote', 'set-url', 'origin', driftRemotePath], {
+        cwd: repositoryPath,
+        stdio: 'ignore',
+      });
+      const staleRemoteRes = await app.request(
+        `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000033',
+            approvalRequestId: approvalPayload.approval.id,
+          }),
+        }
+      );
+
+      expect(staleRemoteRes.status).toBe(404);
+      await expect(staleRemoteRes.json()).resolves.toMatchObject({
+        code: 'git_push_failed',
+        message: expect.stringContaining('approval scope mismatch'),
+      });
+
+      const driftDb = openTestWorkspaceDb(coreDb, workspace.id);
+      try {
+        expect(listGitPushRecords(driftDb, workspace.id)).toEqual([]);
+        expect(listVaultUseRecords(driftDb)).toEqual([]);
+      } finally {
+        driftDb.sqlite.close();
+      }
+      expect(() =>
+        execFileSync('git', ['rev-parse', 'refs/heads/main'], {
+          cwd: driftRemotePath,
+          encoding: 'utf8',
+          stdio: 'pipe',
+        })
+      ).toThrow();
     } finally {
       coreDb.sqlite.close();
     }
@@ -9318,7 +10028,6 @@ describe('nanocore server', () => {
             requestId: '00000000-0000-4000-8000-000000000030',
             threadId: 'th_quick_chat',
             turnId: 'turn_quick_chat',
-            remoteSummary: 'GitHub repository openkit on origin',
             sourceRef: 'HEAD',
             targetBranch: 'main',
             commitIds: ['abc123'],
@@ -9340,11 +10049,6 @@ describe('nanocore server', () => {
           body: JSON.stringify({
             requestId: '00000000-0000-4000-8000-000000000031',
             approvalRequestId: 'ap_quick_chat',
-            policyDecisionId: 'pd_quick_chat',
-            remoteSummary: 'GitHub repository openkit on origin',
-            sourceRef: 'HEAD',
-            targetBranch: 'main',
-            commitIds: ['abc123'],
           }),
         }
       );
@@ -9359,7 +10063,7 @@ describe('nanocore server', () => {
     }
   });
 
-  it('executes approved Git pushes through the App API', async () => {
+  it('refuses non-GitHub push URLs despite GitHub request metadata', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
     const workspace = store.createWorkspace('Git push execution');
@@ -9478,7 +10182,6 @@ describe('nanocore server', () => {
             requestId: '00000000-0000-4000-8000-000000000027',
             threadId: thread.id,
             turnId: turn.id,
-            remoteSummary: 'GitHub repository openkit on origin',
             sourceRef: commitId,
             targetBranch: 'feature/demo',
             commitIds: [commitId],
@@ -9516,11 +10219,6 @@ describe('nanocore server', () => {
               body: JSON.stringify({
                 requestId: '00000000-0000-4000-8000-000000000029',
                 approvalRequestId: approvalPayload.approval.id,
-                policyDecisionId: `pd_repo_push_granted_${approvalPayload.approval.id}`,
-                remoteSummary: 'GitHub repository openkit on origin',
-                sourceRef: commitId,
-                targetBranch: 'feature/demo',
-                commitIds: [commitId],
               }),
             }
           );
@@ -9538,31 +10236,76 @@ describe('nanocore server', () => {
       const pushPayload = JSON.parse(pushText);
       expect(pushPayload).toMatchObject({
         commitIds: [commitId],
-        outcome: 'pushed',
+        outcome: 'unsupported-provider',
+        remoteSummary: 'Unsupported Git remote on origin',
         reviewIds: ['swr_push_route_1'],
       });
       expect(JSON.stringify(pushPayload)).not.toContain('ghp_route_secret');
+
+      const executeLedger = store
+        .listCommandRequests()
+        .find((record) => record.command === 'git_push.execute');
+      if (!executeLedger) {
+        throw new Error('Git push execution ledger was not recorded.');
+      }
+      executeLedger.expiresAt = '2000-01-01T00:00:00.000Z';
+      expect(
+        store.listCommandRequests().some((record) => record.command === 'git_push.execute')
+      ).toBe(false);
+      execFileSync('git', ['remote', 'remove', 'origin'], {
+        cwd: repositoryPath,
+        stdio: 'ignore',
+      });
+
+      const duplicatePushRes = await app.request(
+        `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000034',
+            approvalRequestId: approvalPayload.approval.id,
+          }),
+        }
+      );
+
+      expect(duplicatePushRes.status).toBe(200);
+      await expect(duplicatePushRes.json()).resolves.toMatchObject({ id: pushPayload.id });
+      const duplicatePushDb = openTestWorkspaceDb(coreDb, workspace.id);
+      try {
+        expect(listGitPushRecords(duplicatePushDb, workspace.id)).toHaveLength(1);
+      } finally {
+        duplicatePushDb.sqlite.close();
+      }
+
+      const pushReplayRes = await app.request(
+        `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000029',
+            approvalRequestId: approvalPayload.approval.id,
+          }),
+        }
+      );
+
+      expect(pushReplayRes.status).toBe(200);
+      await expect(pushReplayRes.json()).resolves.toMatchObject({ id: pushPayload.id });
+
       const vaultUseDb = openTestWorkspaceDb(coreDb, workspace.id);
       try {
-        expect(listVaultUseRecords(vaultUseDb)).toEqual([
-          expect.objectContaining({
-            grantId: 'grant_github_push',
-            outcome: 'succeeded',
-            ownerScope: 'workspace',
-            resolvingPath: 'grant',
-            vaultReferenceId: 'vault_github_push',
-            workspaceId: workspace.id,
-          }),
-        ]);
+        expect(listVaultUseRecords(vaultUseDb)).toEqual([]);
       } finally {
         vaultUseDb.sqlite.close();
       }
-      expect(
+      expect(() =>
         execFileSync('git', ['rev-parse', 'refs/heads/feature/demo'], {
           cwd: remotePath,
           encoding: 'utf8',
-        }).trim()
-      ).toBe(commitId);
+          stdio: 'pipe',
+        })
+      ).toThrow();
     } finally {
       coreDb.sqlite.close();
     }
@@ -10021,23 +10764,26 @@ describe('nanocore server', () => {
   });
 
   it('returns a rate-limit API error for quick chat provider 429 responses', async () => {
-    const llmProviderConfigStore = new LLMProviderConfigStore();
-
-    llmProviderConfigStore.upsertProvider({
-      providerId: 'openrouter',
-      model: 'openai/gpt-5.2',
-      apiKey: 'test-key',
-    });
-    llmProviderConfigStore.updateDefaults({
-      quickChat: {
-        providerId: 'openrouter',
-        model: 'openai/gpt-5.2',
-      },
-    });
-
     const app = createApp({
+      openKitConfig: {
+        defaults: {
+          gatewayModel: 'openai/gpt-5.2',
+          gatewayProviderId: 'openrouter',
+        },
+      },
+      providerCredentialResolver: () => 'test-key',
+      providerRegistry: new ProviderRegistry([
+        {
+          baseUrl: 'https://openrouter.ai/api/v1',
+          defaultModel: 'openai/gpt-5.2',
+          displayName: 'OpenRouter',
+          id: 'openrouter',
+          kind: 'gateway',
+          models: ['openai/gpt-5.2'],
+          secretRef: 'env:OPENROUTER_API_KEY',
+        },
+      ]),
       turnExecutor: new FakeTurnExecutor(),
-      llmProviderConfigStore,
       internalAgentRunner: {
         getDiagnostics: () => ({
           agents: [],

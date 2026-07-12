@@ -40,4 +40,58 @@ describe('server config schema', () => {
       },
     });
   });
+
+  it('accepts an absolute encrypted-file vault key path', () => {
+    expect(
+      OpenKitConfigSchema.parse({
+        schemaVersion: 1,
+        vault: {
+          encryptedFile: {
+            keyFilePath: '/run/secrets/openkit-vault.key',
+          },
+        },
+      })
+    ).toEqual({
+      schemaVersion: 1,
+      vault: {
+        encryptedFile: {
+          keyFilePath: '/run/secrets/openkit-vault.key',
+        },
+      },
+    });
+  });
+
+  it('rejects relative key paths and unknown vault fields', () => {
+    expect(() =>
+      OpenKitConfigSchema.parse({
+        vault: {
+          encryptedFile: {
+            keyFilePath: './openkit-vault.key',
+          },
+        },
+      })
+    ).toThrow();
+
+    expect(() =>
+      OpenKitConfigSchema.parse({
+        vault: {
+          encryptedFile: {
+            keyFilePath: '/run/secrets/openkit-vault.key',
+            unknownEncryptedFileField: true,
+          },
+        },
+      })
+    ).toThrow();
+
+    expect(() =>
+      OpenKitConfigSchema.parse({
+        vault: {
+          encryptedFile: {
+            keyFilePath: '/run/secrets/openkit-vault.key',
+          },
+          unknownVaultField: true,
+        },
+      })
+    ).toThrow();
+  });
 });

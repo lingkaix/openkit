@@ -1,4 +1,4 @@
-import type { ResolvedLLMProviderConfig } from './provider-config.js';
+import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 
 /**
  * Gateway endpoint family used for usage aggregation.
@@ -17,7 +17,7 @@ export interface GatewayUsageRecordInput {
   readonly endpoint: GatewayUsageEndpoint;
   /** Provider-native usage payload. */
   readonly usage?: unknown;
-  /** Optional side-effect observer for each parsed usage payload. */
+  /** Optional side-effect observer for each adapter-reported usage payload. */
   readonly onUsage?: (usage: unknown) => void;
 }
 
@@ -86,6 +86,13 @@ export class GatewayUsageTracker {
    */
   public recordUsage(input: GatewayUsageRecordInput): void {
     const parsed = parseUsage(input.usage);
+    const rawInputTokens = readNumber(readRecord(input.usage).input);
+    const trackedInputTokens =
+      rawInputTokens === undefined ? parsed.inputTokens : rawInputTokens + parsed.cachedInputTokens;
+    const trackedTotalTokens =
+      rawInputTokens === undefined
+        ? parsed.totalTokens
+        : trackedInputTokens + parsed.completionTokens;
     const key = usageBucketKey(input);
     const existing = this.buckets.get(key);
     const next = existing ?? {
@@ -102,8 +109,8 @@ export class GatewayUsageTracker {
 
     next.cachedInputTokens += parsed.cachedInputTokens;
     next.completionTokens += parsed.completionTokens;
-    next.inputTokens += parsed.inputTokens;
-    next.totalTokens += parsed.totalTokens;
+    next.inputTokens += trackedInputTokens;
+    next.totalTokens += trackedTotalTokens;
     next.requestCount += 1;
     next.lastObservedAt = this.now().toISOString();
 
@@ -211,6 +218,8 @@ interface ParsedUsage {
   completionTokens: number;
   totalTokens: number;
   cachedInputTokens: number;
+  cacheWriteTokens: number;
+  costEstimateUsd: number;
 }
 
 /**
@@ -220,23 +229,32 @@ interface ParsedUsage {
  * @returns Normalized usage counts.
  */
 export function parseUsage(usage: unknown): ParsedUsage {
-  if (!usage || typeof usage !== 'object') {
-    return { cachedInputTokens: 0, completionTokens: 0, inputTokens: 0, totalTokens: 0 };
-  }
-
-  const record = usage as Record<string, unknown>;
+  const record = readRecord(usage);
+  const cost = readRecord(record.cost);
   const promptDetails = readRecord(record.prompt_tokens_details);
   const inputDetails = readRecord(record.input_tokens_details);
 
   return {
     cachedInputTokens:
+      readNumber(record.cacheRead) ??
+      readNumber(record.cache_read) ??
       readNumber(promptDetails.cached_tokens) ??
       readNumber(inputDetails.cached_tokens) ??
       readNumber(record.cached_tokens) ??
       0,
-    completionTokens: readNumber(record.completion_tokens) ?? readNumber(record.output_tokens) ?? 0,
-    inputTokens: readNumber(record.prompt_tokens) ?? readNumber(record.input_tokens) ?? 0,
-    totalTokens: readNumber(record.total_tokens) ?? 0,
+    cacheWriteTokens: readNumber(record.cacheWrite) ?? readNumber(record.cache_write) ?? 0,
+    completionTokens:
+      readNumber(record.output) ??
+      readNumber(record.completion_tokens) ??
+      readNumber(record.output_tokens) ??
+      0,
+    costEstimateUsd: readNumber(cost.total) ?? 0,
+    inputTokens:
+      readNumber(record.input) ??
+      readNumber(record.prompt_tokens) ??
+      readNumber(record.input_tokens) ??
+      0,
+    totalTokens: readNumber(record.totalTokens) ?? readNumber(record.total_tokens) ?? 0,
   };
 }
 
@@ -277,5 +295,5 @@ function readRecord(value: unknown): Record<string, unknown> {
 }
 
 function readNumber(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 }

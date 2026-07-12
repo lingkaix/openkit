@@ -24,26 +24,6 @@ export interface ApproveGoalPlanInput {
 }
 
 /**
- * Input for rejecting one Goal Mode plan.
- */
-export interface RejectGoalPlanInput {
-  /** Open workspace-scope database handle. */
-  readonly workspaceDb: WorkspaceDb;
-  /** App-local durable store. */
-  readonly store: FsStore;
-  /** Workspace that owns the goal. */
-  readonly workspaceId: string;
-  /** Thread that owns the goal. */
-  readonly threadId: string;
-  /** Goal being rejected. */
-  readonly goalId: string;
-  /** Human-readable rejection reason. */
-  readonly reason: string;
-  /** Status to move the goal into after rejection. */
-  readonly nextStatus: 'awaiting_user' | 'blocked';
-}
-
-/**
  * Input for requesting one Goal Mode plan revision.
  */
 export interface ReviseGoalPlanInput {
@@ -71,18 +51,6 @@ export interface ApproveGoalPlanResult {
   readonly status: 'approved';
   /** Ready task summaries derived from the approved plan. */
   readonly readyTasks: readonly { readonly taskId: string; readonly status: 'ready' }[];
-  /** True only when a worker turn was started by this helper. */
-  readonly startsWorkerTurn: false;
-}
-
-/**
- * Result returned after rejecting one plan.
- */
-export interface RejectGoalPlanResult {
-  /** Goal status after rejection. */
-  readonly status: 'awaiting_user' | 'blocked';
-  /** Durable status item containing the rejection reason. */
-  readonly reasonItem: GoalPlanApprovalItem;
   /** True only when a worker turn was started by this helper. */
   readonly startsWorkerTurn: false;
 }
@@ -121,45 +89,6 @@ export function approveGoalPlan(input: ApproveGoalPlanInput): ApproveGoalPlanRes
     readyTasks: plan.tasks.map((task) => ({ taskId: task.taskId, status: 'ready' })),
     startsWorkerTurn: false,
   };
-}
-
-/**
- * Rejects one plan and records the rejection reason.
- *
- * @param input Plan rejection input.
- * @returns Rejection result and durable reason item.
- */
-export function rejectGoalPlan(input: RejectGoalPlanInput): RejectGoalPlanResult {
-  const turn = input.store.createTurn(input.workspaceId, input.threadId, 'Reject goal plan');
-  const timestamp = turn.startedAt ?? new Date().toISOString();
-  const reasonItem = input.store.createItem({
-    id: `it_goal_plan_reject_${input.goalId}`,
-    workspaceId: input.workspaceId,
-    threadId: input.threadId,
-    turnId: turn.id,
-    type: 'status',
-    status: 'completed',
-    level: input.nextStatus === 'blocked' ? 'error' : 'warning',
-    title: 'Plan rejected',
-    summary: input.reason,
-    createdAt: timestamp,
-    completedAt: timestamp,
-  });
-
-  input.store.updateTurn(turn.id, {
-    status: 'completed',
-    completedAt: timestamp,
-    durationMs: 0,
-  });
-  updateGoalStatus(input.workspaceDb, {
-    workspaceId: input.workspaceId,
-    threadId: input.threadId,
-    goalId: input.goalId,
-    status: input.nextStatus,
-    terminalStopReason: input.nextStatus === 'blocked' ? 'ask_user' : null,
-  });
-
-  return { status: input.nextStatus, reasonItem, startsWorkerTurn: false };
 }
 
 /**

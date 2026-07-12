@@ -334,4 +334,46 @@ describe('permission decision recorder', () => {
       coreDb.sqlite.close();
     }
   });
+
+  it('rolls back a permission decision when its linked audit event cannot persist', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-decision-atomic-audit-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      workspaceDb.sqlite.exec(`
+        CREATE TRIGGER reject_permission_audit
+        BEFORE INSERT ON audit_events
+        WHEN NEW.action = 'permission.decision'
+        BEGIN
+          SELECT RAISE(ABORT, 'injected permission audit failure');
+        END
+      `);
+
+      expect(() =>
+        recordProductPermissionDecision({
+          action: 'repo.push',
+          contextSummary: { requestId: 'request_atomic_audit' },
+          decisionId: 'pd_atomic_audit',
+          enforcementPoint: 'repo.push.approval_response',
+          ownerScope: 'workspace',
+          policyEngineVersion: 'nanocore-approval-policy:v1',
+          policySnapshotId: 'policy_snapshot_runtime',
+          reasonCode: 'repo_push_approved',
+          resourceSummary: { repositoryId: 'repo_default' },
+          result: 'allow',
+          subjectSummary: { kind: 'user' },
+          workspaceDb,
+          workspaceId: 'ws_demo',
+        })
+      ).toThrow('injected permission audit failure');
+      expect(
+        workspaceDb.sqlite
+          .prepare('SELECT COUNT(*) AS count FROM permission_decisions WHERE decision_id = ?')
+          .get('pd_atomic_audit')
+      ).toEqual({ count: 0 });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
 });

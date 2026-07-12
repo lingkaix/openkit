@@ -151,7 +151,7 @@ export class TurnStartValidationError extends Error {
  * @returns Matching agent id, or null when no override was supplied.
  * @throws TurnStartValidationError when the model is missing, disabled, or unsupported.
  */
-function resolveModelAgentOverride(
+export function resolveModelAgentOverride(
   store: FsStore,
   workspaceId: string,
   modelId?: string | null

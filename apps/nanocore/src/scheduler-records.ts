@@ -1,4 +1,5 @@
 import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
+import type { TurnStatus } from '@openkit/protocol';
 import type { CoreDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import type {
@@ -532,16 +533,20 @@ export interface DenySchedulerAdmissionEntryInput {
 export interface RetryDeniedSchedulerAdmissionEntryInput {
   /** Queue entry to retry. */
   readonly queueEntryId: string;
-  /** Optional workspace guard for public API callers. */
-  readonly workspaceId?: string;
+  /** User that owns the scheduler admission. */
+  readonly userId: string;
+  /** Workspace that owns the scheduler admission. */
+  readonly workspaceId: string;
 }
 
 /** Input used to cancel one human-actionable scheduler admission entry. */
 export interface CancelSchedulerAdmissionEntryInput {
   /** Queue entry to cancel. */
   readonly queueEntryId: string;
-  /** Optional workspace guard for public API callers. */
-  readonly workspaceId?: string;
+  /** User that owns the scheduler admission. */
+  readonly userId: string;
+  /** Workspace that owns the scheduler admission. */
+  readonly workspaceId: string;
 }
 
 /** Input used to create one scheduler placement plan. */
@@ -821,6 +826,8 @@ export interface CompleteSchedulerTurnLeaseInput {
 
 /** Input used to list scheduler admission entries for one workspace projection. */
 export interface ListSchedulerAdmissionEntriesForWorkspaceInput {
+  /** Store owner user id to project. */
+  readonly userId: string;
   /** Workspace lineage id to project. */
   readonly workspaceId: string;
   /** Admission statuses to include. */
@@ -1012,25 +1019,23 @@ export function retryDeniedSchedulerAdmissionEntry(
   coreDb: CoreDb,
   input: RetryDeniedSchedulerAdmissionEntryInput
 ): SchedulerAdmissionEntryRecord {
-  const entry = requireSchedulerAdmissionEntry(coreDb, input.queueEntryId);
-
-  if (input.workspaceId && entry.workspaceId !== input.workspaceId) {
-    throw new Error(
-      `Scheduler admission entry ${input.queueEntryId} does not belong to workspace.`
-    );
-  }
+  const entry = requireSchedulerAdmissionEntry(coreDb, input.queueEntryId, input);
 
   if (entry.status !== 'denied') {
     throw new Error(`Scheduler admission entry ${input.queueEntryId} is not denied.`);
   }
 
-  coreDb.sqlite
+  const updated = coreDb.sqlite
     .prepare(
-      "UPDATE scheduler_admission_entries SET status = 'queued', denial_reason = NULL WHERE queue_entry_id = ?"
+      "UPDATE scheduler_admission_entries SET status = 'queued', denial_reason = NULL WHERE queue_entry_id = ? AND user_id = ? AND workspace_id = ? AND status = 'denied'"
     )
-    .run(input.queueEntryId);
+    .run(input.queueEntryId, entry.userId, entry.workspaceId);
 
-  return requireSchedulerAdmissionEntry(coreDb, input.queueEntryId);
+  if (updated.changes !== 1) {
+    throw new Error(`Scheduler admission entry could not be retried: ${input.queueEntryId}`);
+  }
+
+  return requireSchedulerAdmissionEntry(coreDb, input.queueEntryId, input);
 }
 
 /**
@@ -1045,25 +1050,23 @@ export function cancelSchedulerAdmissionEntry(
   coreDb: CoreDb,
   input: CancelSchedulerAdmissionEntryInput
 ): SchedulerAdmissionEntryRecord {
-  const entry = requireSchedulerAdmissionEntry(coreDb, input.queueEntryId);
-
-  if (input.workspaceId && entry.workspaceId !== input.workspaceId) {
-    throw new Error(
-      `Scheduler admission entry ${input.queueEntryId} does not belong to workspace.`
-    );
-  }
+  const entry = requireSchedulerAdmissionEntry(coreDb, input.queueEntryId, input);
 
   if (entry.status !== 'queued' && entry.status !== 'denied') {
     throw new Error(`Scheduler admission entry ${input.queueEntryId} cannot be cancelled.`);
   }
 
-  coreDb.sqlite
+  const updated = coreDb.sqlite
     .prepare(
-      "UPDATE scheduler_admission_entries SET status = 'cancelled', denial_reason = NULL WHERE queue_entry_id = ?"
+      "UPDATE scheduler_admission_entries SET status = 'cancelled', denial_reason = NULL WHERE queue_entry_id = ? AND user_id = ? AND workspace_id = ? AND status = ?"
     )
-    .run(input.queueEntryId);
+    .run(input.queueEntryId, entry.userId, entry.workspaceId, entry.status);
 
-  return requireSchedulerAdmissionEntry(coreDb, input.queueEntryId);
+  if (updated.changes !== 1) {
+    throw new Error(`Scheduler admission entry could not be cancelled: ${input.queueEntryId}`);
+  }
+
+  return requireSchedulerAdmissionEntry(coreDb, input.queueEntryId, input);
 }
 
 /**
@@ -1115,10 +1118,10 @@ export function listSchedulerAdmissionEntriesForWorkspace(
     coreDb.sqlite
       .prepare(
         `${schedulerAdmissionSelectSql()}
-        WHERE workspace_id = ? AND status IN (${placeholders})
+        WHERE user_id = ? AND workspace_id = ? AND status IN (${placeholders})
         ORDER BY enqueued_at ASC, queue_entry_id ASC`
       )
-      .all(input.workspaceId, ...input.statuses) as SchedulerAdmissionEntryRow[]
+      .all(input.userId, input.workspaceId, ...input.statuses) as SchedulerAdmissionEntryRow[]
   ).map(mapSchedulerAdmissionEntryRow);
 }
 
@@ -1685,6 +1688,61 @@ export function completeSchedulerTurnLease(
 }
 
 /**
+ * Completes scheduler capacity accounting when a product turn reaches a terminal state.
+ *
+ * @param coreDb Optional Core database handle.
+ * @param turn Product turn lineage and status.
+ */
+export function completeSchedulerLeaseForTerminalTurn(
+  coreDb: CoreDb | undefined,
+  turn: {
+    readonly id: string;
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly status: TurnStatus;
+  }
+): void {
+  if (!coreDb) {
+    return;
+  }
+
+  if (turn.status === 'completed') {
+    completeSchedulerTurnLease(coreDb, {
+      workspaceId: turn.workspaceId,
+      threadId: turn.threadId,
+      turnId: turn.id,
+      terminalStatus: 'released',
+      releaseReason: 'turn-completed',
+    });
+  } else if (turn.status === 'interrupted') {
+    completeSchedulerTurnLease(coreDb, {
+      workspaceId: turn.workspaceId,
+      threadId: turn.threadId,
+      turnId: turn.id,
+      terminalStatus: 'released',
+      releaseReason: 'turn-interrupted',
+    });
+  } else if (turn.status === 'cancelled') {
+    completeSchedulerTurnLease(coreDb, {
+      workspaceId: turn.workspaceId,
+      threadId: turn.threadId,
+      turnId: turn.id,
+      terminalStatus: 'released',
+      releaseReason: 'turn-cancelled',
+    });
+  } else if (turn.status === 'failed') {
+    completeSchedulerTurnLease(coreDb, {
+      workspaceId: turn.workspaceId,
+      threadId: turn.threadId,
+      turnId: turn.id,
+      terminalStatus: 'failed',
+      releaseReason: 'turn-failed',
+      recoveryState: 'needs-evidence',
+    });
+  }
+}
+
+/**
  * Upserts one scheduler worker pool record.
  *
  * @param coreDb Open Core database handle.
@@ -2156,18 +2214,24 @@ function threadHasNonTerminalSchedulerLease(
  *
  * @param coreDb Open Core database handle.
  * @param queueEntryId Queue entry id.
+ * @param ownership Optional user and workspace ownership guard.
  * @returns Stored admission entry.
- * @throws Error when the entry does not exist.
+ * @throws Error when the entry does not exist in the guarded owner scope.
  */
 function requireSchedulerAdmissionEntry(
   coreDb: CoreDb,
-  queueEntryId: string
+  queueEntryId: string,
+  ownership?: { readonly userId: string; readonly workspaceId: string }
 ): SchedulerAdmissionEntryRecord {
   const row = coreDb.sqlite
     .prepare(`${schedulerAdmissionSelectSql()} WHERE queue_entry_id = ?`)
     .get(queueEntryId) as SchedulerAdmissionEntryRow | undefined;
 
-  if (!row) {
+  if (
+    !row ||
+    (ownership !== undefined &&
+      (row.user_id !== ownership.userId || row.workspace_id !== ownership.workspaceId))
+  ) {
     throw new Error(`Scheduler admission entry not found: ${queueEntryId}`);
   }
 

@@ -4,13 +4,12 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir, platform as osPlatform } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
-
+import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type { GetAccountResponse } from '../runtime/codex/protocol.js';
 import type {
   OpenAICompatibleResponsesRequest,
   OpenAICompatibleResponsesResponse,
 } from './openai-compatible-client.js';
-import type { ResolvedLLMProviderConfig } from './provider-config.js';
 
 const DEFAULT_CODEX_BASE_URL = 'https://chatgpt.com/backend-api';
 const CODEX_RESPONSES_PATH = 'codex/responses';

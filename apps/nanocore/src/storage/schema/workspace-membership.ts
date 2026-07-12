@@ -9,7 +9,7 @@ export type WorkspaceRegistryStatus = 'active';
 /**
  * Minimal workspace membership lifecycle states.
  */
-export type WorkspaceMemberStatus = 'active';
+export type WorkspaceMemberStatus = 'active' | 'removed';
 
 /**
  * Registers each workspace and its canonical owner user.
@@ -50,7 +50,7 @@ export const workspaceMembers = sqliteTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     /** Workspace membership status. */
-    status: text('status', { enum: ['active'] })
+    status: text('status', { enum: ['active', 'removed'] })
       .$type<WorkspaceMemberStatus>()
       .notNull(),
     /** ISO timestamp for membership creation. */

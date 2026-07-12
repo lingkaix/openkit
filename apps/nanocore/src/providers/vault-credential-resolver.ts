@@ -3,9 +3,9 @@ import type { CoreDb } from '../storage/db.js';
 import {
   type VaultBackend,
   VaultBackendError,
-  type VaultSecretMaterial,
-} from '../vault-backend.js';
-import { createVaultUseAuditedBackend } from '../vault-use-audited-backend.js';
+  vaultSecretMaterialToString,
+} from '../vault/vault-backend.js';
+import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend.js';
 import type { ProviderCredentialResolver } from './registry.js';
 
 /** Input used to create a vault-backed provider credential resolver. */
@@ -56,7 +56,7 @@ export function createVaultProviderCredentialResolver(
         ...(input.createUseId ? { createUseId: input.createUseId } : {}),
       });
 
-      return vaultMaterialToString(auditedBackend.resolve({ referenceId }));
+      return vaultSecretMaterialToString(auditedBackend.resolve({ referenceId }));
     } catch (error) {
       if (error instanceof VaultBackendError) {
         throw new OpenAICompatibleProviderError({
@@ -88,14 +88,4 @@ function readVaultReferenceId(secretRef: string): string | null {
   const referenceId = secretRef.slice(prefix.length);
 
   return referenceId.length > 0 ? referenceId : null;
-}
-
-/**
- * Converts vault material to the provider credential string expected by LLM clients.
- *
- * @param material Vault secret material.
- * @returns UTF-8 credential string.
- */
-function vaultMaterialToString(material: VaultSecretMaterial): string {
-  return typeof material === 'string' ? material : Buffer.from(material).toString('utf8');
 }

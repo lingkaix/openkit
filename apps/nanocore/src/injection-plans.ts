@@ -1,6 +1,6 @@
 import type { CoreDb } from './storage/db.js';
 import type { InjectionPlanStatus, InjectionVisibility } from './storage/schema/index.js';
-import { getVaultGrant } from './vault-grants.js';
+import { getVaultGrant } from './vault/vault-grants.js';
 
 /** Durable non-secret injection plan record. */
 export interface InjectionPlanRecord {

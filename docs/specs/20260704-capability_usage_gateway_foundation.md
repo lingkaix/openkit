@@ -139,13 +139,13 @@ Rules:
 LLM usage rows:
 
 - category: `llm`
-- unit: token class or request count according to `UsageRecordSchema`
+- unit: `tokens` for input, output, cache-read, and cache-write quantities; `usd` for a positive provider-reported cost estimate; request count only when a producer has no token measurement
 - providerRef: OpenKit provider instance id, never a pi-ai provider name
 - modelId
 - quantity
 - cache metrics when available
-- cost estimate when pi-ai reports one
-- source: pi-ai-reported measurement for pi-ai-routed calls
+- cost estimate when pi-ai reports one, treated as telemetry rather than billing truth
+- source: OpenKit vocabulary that distinguishes input, output, cache-read, cache-write, total fallback, and cost estimate without storing a provider-native payload
 - requestId and capabilityCallId
 
 MCP usage rows:
@@ -265,11 +265,11 @@ Current relevant code is split:
 - Workspace-scoped databases now own `capability_calls` and `usage_records` tables through `workspace_0013_capability_usage_ledger`.
 - Authenticated worker knowledge capability routes now use the same recorder when NanoCore has a Core database. `knowledge.search` and `knowledge.read` write durable workspace-scoped `CapabilityCall` rows, keep the existing worker response summary shape, and do not write `UsageRecord` rows because list/read knowledge operations are not metered usage producers.
 - QuickChatAgent LLM calls now use the same recorder when NanoCore has a Core database. The producer writes one workspace-scoped `CapabilityCall` with family `llm` and one linked `UsageRecord` using provider-reported total tokens when available, falling back to one request-count row when token usage is absent.
-- Public `/v1/chat/completions` and `/v1/responses` calls routed through pi-ai now use the same recorder when the request carries `metadata.openkit.workspaceId`. NanoCore starts a workspace-scoped `CapabilityCall` with family `llm`, records linked token usage rows from the normalized gateway usage payload after success, and marks started calls failed when dispatch, stream consumption, or usage recording fails. Public calls without workspace attribution still remain process-local diagnostics only.
+- Public `/v1/chat/completions` and `/v1/responses` calls routed through pi-ai now use the same recorder when the request carries `metadata.openkit.workspaceId`. NanoCore starts a workspace-scoped `CapabilityCall` with family `llm`, observes raw pi-ai terminal usage exactly once before public normalization, records positive input, output, cache-read, and cache-write token rows plus one positive estimated-USD row when available, and marks started calls failed when dispatch, stream consumption, or usage recording fails. The same observation feeds process-local diagnostics while retaining their existing public token and cache-hit semantics. Public calls without workspace attribution remain process-local diagnostics only, and public responses never expose raw usage, cost objects, or prompt-cache keys.
 - Authenticated worker MCP list routes now use the same recorder for MCP-family capability calls without usage rows. `mcp.call_tool` also requires an allowed workspace-scoped `mcp.call` `PermissionDecision`, validates arguments against the AEP schema subset, records one MCP-family `CapabilityCall`, and emits one linked `UsageRecord` with `category: "tool"`, `unit: "tool_calls"`, and quantity `1` only after policy and argument validation pass.
 - Worker MCP server lifecycle is not implemented.
 
-The shared recorder now exists, non-metered worker capability producers use it, the first workspace-attributed internal and public LLM producers write durable usage, and worker MCP tool calls write durable tool-call usage after policy allow. Cross-producer conformance coverage proves LLM and MCP producers use the same recorder lifecycle for `startCapabilityCall`, `recordUsage`, `finishCapabilityCall`, linked `UsageRecord` rows, and terminal audit events. Public pi-ai stream route coverage proves aborted and timed-out attributed streams finish durable `CapabilityCall` rows as `failed`, keep partial usage rows when upstream usage exists, classify the public SSE error without leaking provider secrets, and avoid leaving abandoned `running` ledger state.
+The shared recorder now exists, non-metered worker capability producers use it, workspace-attributed internal and public LLM producers write durable usage, and worker MCP tool calls write durable tool-call usage after policy allow. Cross-producer conformance coverage proves LLM and MCP producers use the same recorder lifecycle for `startCapabilityCall`, `recordUsage`, `finishCapabilityCall`, linked `UsageRecord` rows, and terminal audit events. Pi dispatcher coverage proves successful, provider-error, and aborted terminal usage is observed once, public Pi streams omit raw cache-write, cost, and cache-key data, and Codex non-streaming and streaming usage retain the existing public-payload accounting path. Public pi-ai stream route coverage proves aborted and timed-out attributed streams finish durable `CapabilityCall` rows as `failed`, keep partial usage rows when upstream usage exists, classify the public SSE error without leaking provider secrets, and avoid leaving abandoned `running` ledger state.
 
 ## Alternatives Considered
 
@@ -334,7 +334,7 @@ Previously open questions are resolved by accepted V1 defaults: worker execution
 
 - Durable outbox for asynchronous accounting.
 - Budget and rate-limit enforcement over the new ledger.
-- Native OpenAI and Codex durable LLM usage producers.
+- Broader durable LLM usage for unattributed server-scope calls when an accepted ownership policy exists.
 - Non-gateway metering for runtime, storage, sandbox lifetime, and network volume.
 - UI cost allocation and billing exports.
 

@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   acceptSchedulerLeaseHeartbeat,
   cancelSchedulerAdmissionEntry,
+  completeSchedulerLeaseForTerminalTurn,
   completeSchedulerSessionLease,
   createSchedulerAdmissionEntry,
   createSchedulerPlacementPlan,
@@ -380,6 +381,8 @@ describe('scheduler records', () => {
 
       const retried = retryDeniedSchedulerAdmissionEntry(coreDb, {
         queueEntryId: 'queue_retry_denied',
+        userId: 'user_local',
+        workspaceId: 'ws_demo',
       });
 
       expect(retried.status).toBe('queued');
@@ -411,6 +414,8 @@ describe('scheduler records', () => {
 
       const cancelled = cancelSchedulerAdmissionEntry(coreDb, {
         queueEntryId: 'queue_cancel',
+        userId: 'user_local',
+        workspaceId: 'ws_demo',
       });
 
       expect(cancelled.status).toBe('cancelled');
@@ -748,6 +753,64 @@ describe('scheduler records', () => {
           .prepare('SELECT status FROM scheduler_placement_plans WHERE plan_id = ?')
           .get('plan_terminal_release')
       ).toEqual({ status: 'completed' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    ['completed', 'released', 'turn-completed', null],
+    ['interrupted', 'released', 'turn-interrupted', null],
+    ['cancelled', 'released', 'turn-cancelled', null],
+    ['failed', 'failed', 'turn-failed', 'needs-evidence'],
+  ] as const)('maps %s product turns to the terminal scheduler lease transition', (turnStatus, leaseStatus, releaseReason, recoveryState) => {
+    const coreDb = createMigratedCoreDb();
+    const suffix = `turn_${turnStatus}`;
+
+    try {
+      createDispatchedLease(coreDb, `lease_${suffix}`);
+      completeSchedulerLeaseForTerminalTurn(coreDb, {
+        id: `turn_${suffix}`,
+        workspaceId: 'ws_demo',
+        threadId: `thread_${suffix}`,
+        status: turnStatus,
+      });
+
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT status, release_reason AS releaseReason, recovery_state AS recoveryState
+               FROM scheduler_session_leases
+               WHERE lease_id = ?`
+          )
+          .get(`lease_${suffix}`)
+      ).toEqual({ status: leaseStatus, releaseReason, recoveryState });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('leaves scheduler leases live for non-terminal product turns', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      createDispatchedLease(coreDb, 'lease_turn_running');
+      completeSchedulerLeaseForTerminalTurn(coreDb, {
+        id: 'turn_turn_running',
+        workspaceId: 'ws_demo',
+        threadId: 'thread_turn_running',
+        status: 'running',
+      });
+
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT status, release_reason AS releaseReason
+             FROM scheduler_session_leases
+             WHERE lease_id = ?`
+          )
+          .get('lease_turn_running')
+      ).toEqual({ status: 'acquired', releaseReason: null });
     } finally {
       coreDb.sqlite.close();
     }

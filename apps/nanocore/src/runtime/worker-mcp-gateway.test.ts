@@ -1,46 +1,14 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WorkerControlGatewayError } from './worker-control-gateway.js';
-import { callStdioWorkerMcpTool, createDefaultWorkerMcpGateway } from './worker-mcp-gateway.js';
+import { createDefaultWorkerMcpGateway } from './worker-mcp-gateway.js';
 
 describe('worker MCP gateway', () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
-  });
-
-  it('calls stdio MCP tools through JSON-RPC initialize and tools/call', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'openkit-mcp-gateway-'));
-    const serverPath = join(dir, 'server.mjs');
-
-    writeFileSync(
-      serverPath,
-      `
-import { createInterface } from 'node:readline/promises';
-const lines = createInterface({ input: process.stdin });
-for await (const line of lines) {
-  const message = JSON.parse(line);
-  if (message.method === 'initialize') {
-    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: '2025-06-18', capabilities: {}, serverInfo: { name: 'stub', version: '1.0.0' } } }) + '\\n');
-  }
-  if (message.method === 'tools/call') {
-    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { structuredContent: { echoed: message.params.arguments, tool: message.params.name } } }) + '\\n');
-  }
-}
-`
-    );
-
-    await expect(
-      callStdioWorkerMcpTool({
-        args: { owner: 'openkit', repo: 'openkit' },
-        command: [process.execPath, serverPath],
-        toolName: 'repos.get',
-      })
-    ).resolves.toEqual({
-      echoed: { owner: 'openkit', repo: 'openkit' },
-      tool: 'repos.get',
-    });
   });
 
   it('reuses initialized stdio MCP servers across default gateway calls', async () => {
@@ -99,25 +67,87 @@ for await (const line of lines) {
       vaultGrantIds: [],
     };
 
-    const first = await gateway.callTool({
-      arguments: { owner: 'openkit' },
-      server,
-      toolName: 'repos.get',
-    });
-    const second = await gateway.callTool({
-      arguments: { owner: 'openkit' },
-      server,
-      toolName: 'repos.get',
-    });
+    try {
+      const first = await gateway.callTool({
+        arguments: { owner: 'openkit' },
+        server,
+        toolName: 'repos.get',
+      });
+      const second = await gateway.callTool({
+        arguments: { owner: 'openkit' },
+        server,
+        toolName: 'repos.get',
+      });
 
-    expect(second).toMatchObject({
-      calls: 2,
-      initialized: 1,
-      pid: first.pid,
-    });
+      expect(second).toMatchObject({
+        calls: 2,
+        initialized: 1,
+        pid: first.pid,
+      });
+    } finally {
+      await gateway.close?.();
+    }
   });
 
-  it('reports degraded stdio health after unavailable calls and restores ready after success', async () => {
+  it('closes stdio sessions created with explicit credentials', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'openkit-mcp-gateway-close-credentials-'));
+    const serverPath = join(dir, 'server.mjs');
+
+    writeFileSync(
+      serverPath,
+      `
+import { createInterface } from 'node:readline/promises';
+const lines = createInterface({ input: process.stdin });
+for await (const line of lines) {
+  const message = JSON.parse(line);
+  if (message.method === 'initialize') {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: {} }) + '\\n');
+  }
+  if (message.method === 'tools/call') {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { structuredContent: { pid: process.pid } } }) + '\\n');
+  }
+}
+`
+    );
+
+    const gateway = createDefaultWorkerMcpGateway();
+    const server = {
+      allowedPrompts: [],
+      allowedTools: ['repos.get'],
+      command: [process.execPath, serverPath],
+      id: 'explicit-credentials-test',
+      networkPolicyHints: [],
+      providerInstanceIds: [],
+      secretRefIds: [],
+      toolSchemas: [],
+      transport: 'stdio' as const,
+      vaultGrantIds: [],
+    };
+
+    try {
+      const first = await gateway.callTool({
+        arguments: {},
+        credentials: { environment: { TEST_TOKEN: 'secret' } },
+        server,
+        toolName: 'repos.get',
+      });
+
+      await gateway.closeServer?.(server);
+
+      const second = await gateway.callTool({
+        arguments: {},
+        credentials: { environment: { TEST_TOKEN: 'secret' } },
+        server,
+        toolName: 'repos.get',
+      });
+
+      expect(second.pid).not.toBe(first.pid);
+    } finally {
+      await gateway.close?.();
+    }
+  });
+
+  it('reports credentialed stdio health after unavailable calls and recovery', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'openkit-mcp-gateway-health-'));
     const serverPath = join(dir, 'server.mjs');
     const statePath = join(dir, 'state.txt');
@@ -173,23 +203,109 @@ for await (const line of lines) {
       vaultGrantIds: [],
     };
 
-    expect(gateway.getServerHealth?.(server)).toBe('ready');
-    await expect(
-      gateway.callTool({
-        arguments: { owner: 'openkit' },
-        server,
-        toolName: 'repos.get',
-      })
-    ).rejects.toMatchObject({ code: 'mcp-server-unavailable' });
-    expect(gateway.getServerHealth?.(server)).toBe('degraded');
-    await expect(
-      gateway.callTool({
-        arguments: { owner: 'openkit' },
-        server,
-        toolName: 'repos.get',
-      })
-    ).resolves.toEqual({ ok: true });
-    expect(gateway.getServerHealth?.(server)).toBe('ready');
+    try {
+      expect(gateway.getServerHealth?.(server)).toBe('ready');
+      await expect(
+        gateway.callTool({
+          arguments: { owner: 'openkit' },
+          credentials: { environment: { TEST_TOKEN: 'secret' } },
+          server,
+          toolName: 'repos.get',
+        })
+      ).rejects.toMatchObject({ code: 'mcp-server-unavailable' });
+      expect(gateway.getServerHealth?.(server)).toBe('degraded');
+      await expect(
+        gateway.callTool({
+          arguments: { owner: 'openkit' },
+          credentials: { environment: { TEST_TOKEN: 'secret' } },
+          server,
+          toolName: 'repos.get',
+        })
+      ).resolves.toEqual({ ok: true });
+      expect(gateway.getServerHealth?.(server)).toBe('ready');
+    } finally {
+      await gateway.close?.();
+    }
+  });
+
+  it('times out cached stdio calls and replaces the stalled session', async () => {
+    const realSetTimeout = setTimeout;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const dir = mkdtempSync(join(tmpdir(), 'openkit-mcp-gateway-timeout-'));
+    const serverPath = join(dir, 'server.mjs');
+    const statePath = join(dir, 'state.txt');
+
+    writeFileSync(
+      serverPath,
+      `
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { createInterface } from 'node:readline/promises';
+const statePath = process.argv[2];
+const previous = existsSync(statePath) ? Number(readFileSync(statePath, 'utf8')) : 0;
+writeFileSync(statePath, String(previous + 1));
+const shouldHang = previous === 0;
+const lines = createInterface({ input: process.stdin });
+for await (const line of lines) {
+  const message = JSON.parse(line);
+  if (shouldHang) {
+    continue;
+  }
+  if (message.method === 'initialize') {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: {} }) + '\\n');
+  }
+  if (message.method === 'tools/call') {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { structuredContent: { recovered: true } } }) + '\\n');
+  }
+}
+`
+    );
+
+    const gateway = createDefaultWorkerMcpGateway();
+    const server = {
+      allowedPrompts: [],
+      allowedTools: ['repos.get'],
+      command: [process.execPath, serverPath, statePath],
+      id: 'timeout-test',
+      networkPolicyHints: [],
+      providerInstanceIds: [],
+      secretRefIds: [],
+      toolSchemas: [],
+      transport: 'stdio' as const,
+      vaultGrantIds: [],
+    };
+
+    try {
+      const outcome = gateway.callTool({ arguments: {}, server, toolName: 'repos.get' }).then(
+        (value) => ({ status: 'resolved' as const, value }),
+        (error) => ({ error, status: 'rejected' as const })
+      );
+
+      for (let attempt = 0; attempt < 100 && !existsSync(statePath); attempt += 1) {
+        await new Promise<void>((resolve) => realSetTimeout(resolve, 10));
+      }
+      expect(existsSync(statePath)).toBe(true);
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      const pending = Symbol('pending');
+      const settled = await Promise.race([outcome, Promise.resolve(pending)]);
+
+      expect(settled).not.toBe(pending);
+      expect(settled).toMatchObject({
+        error: {
+          code: 'mcp-timeout',
+          message: 'MCP tool call timed out.',
+          status: 504,
+        },
+        status: 'rejected',
+      });
+      expect(gateway.getServerHealth?.(server)).toBe('degraded');
+      await expect(
+        gateway.callTool({ arguments: {}, server, toolName: 'repos.get' })
+      ).resolves.toEqual({ recovered: true });
+      expect(gateway.getServerHealth?.(server)).toBe('ready');
+    } finally {
+      await gateway.close?.();
+    }
   });
 
   it('reports live stdio tool schemas when pinned schemas are checked', async () => {
@@ -217,34 +333,56 @@ for await (const line of lines) {
 `
     );
 
-    await expect(
-      callStdioWorkerMcpTool({
-        args: { owner: 'openkit' },
-        command: [process.execPath, serverPath],
-        expectedInputSchema: {
-          additionalProperties: false,
-          required: ['owner'],
-          type: 'object',
-        },
-        liveSchemaSnapshotSink: (snapshot) => snapshots.push(snapshot),
-        toolName: 'repos.get',
-      })
-    ).resolves.toEqual({ ok: true });
-    expect(snapshots).toEqual([
-      {
-        serverInfo: { name: 'stub', version: '1.0.0' },
-        tools: [
-          {
-            inputSchema: {
-              additionalProperties: false,
-              required: ['owner'],
-              type: 'object',
-            },
-            name: 'repos.get',
+    const gateway = createDefaultWorkerMcpGateway();
+    const server = {
+      allowedPrompts: [],
+      allowedTools: ['repos.get'],
+      command: [process.execPath, serverPath],
+      id: 'live-schema-test',
+      networkPolicyHints: [],
+      providerInstanceIds: [],
+      secretRefIds: [],
+      toolSchemas: [
+        {
+          inputSchema: {
+            additionalProperties: false,
+            required: ['owner'],
+            type: 'object',
           },
-        ],
-      },
-    ]);
+          name: 'repos.get',
+        },
+      ],
+      transport: 'stdio' as const,
+      vaultGrantIds: [],
+    };
+
+    try {
+      await expect(
+        gateway.callTool({
+          arguments: { owner: 'openkit' },
+          liveSchemaSnapshotSink: (snapshot) => snapshots.push(snapshot),
+          server,
+          toolName: 'repos.get',
+        })
+      ).resolves.toEqual({ ok: true });
+      expect(snapshots).toEqual([
+        {
+          serverInfo: { name: 'stub', version: '1.0.0' },
+          tools: [
+            {
+              inputSchema: {
+                additionalProperties: false,
+                required: ['owner'],
+                type: 'object',
+              },
+              name: 'repos.get',
+            },
+          ],
+        },
+      ]);
+    } finally {
+      await gateway.close?.();
+    }
   });
 
   it('calls HTTP MCP tools through the default gateway', async () => {
@@ -321,29 +459,35 @@ for await (const line of lines) {
 `
     );
 
-    await expect(
-      createDefaultWorkerMcpGateway({
-        env: { GITHUB_TOKEN: 'github-secret-token', NPM_TOKEN: 'npm-secret-token' },
-      }).callTool({
-        arguments: {},
-        server: {
-          allowedPrompts: [],
-          allowedTools: ['repos.get'],
-          command: [process.execPath, serverPath],
-          id: 'github',
-          networkPolicyHints: [],
-          providerInstanceIds: ['provider_github_read'],
-          secretRefIds: ['vault_github_read'],
-          toolSchemas: [],
-          transport: 'stdio',
-          vaultGrantIds: ['grant_github_read'],
-        },
-        toolName: 'repos.get',
-      })
-    ).resolves.toEqual({
-      npmToken: null,
-      token: '[REDACTED]',
+    const gateway = createDefaultWorkerMcpGateway({
+      env: { GITHUB_TOKEN: 'github-secret-token', NPM_TOKEN: 'npm-secret-token' },
     });
+
+    try {
+      await expect(
+        gateway.callTool({
+          arguments: {},
+          server: {
+            allowedPrompts: [],
+            allowedTools: ['repos.get'],
+            command: [process.execPath, serverPath],
+            id: 'github',
+            networkPolicyHints: [],
+            providerInstanceIds: ['provider_github_read'],
+            secretRefIds: ['vault_github_read'],
+            toolSchemas: [],
+            transport: 'stdio',
+            vaultGrantIds: ['grant_github_read'],
+          },
+          toolName: 'repos.get',
+        })
+      ).resolves.toEqual({
+        npmToken: null,
+        token: '[REDACTED]',
+      });
+    } finally {
+      await gateway.close?.();
+    }
   });
 
   it('injects GitHub authorization only into GitHub HTTP MCP servers', async () => {
@@ -415,31 +559,59 @@ for await (const line of lines) {
 `
     );
 
-    await expect(
-      callStdioWorkerMcpTool({
-        args: {},
-        command: [process.execPath, serverPath],
-        toolName: 'repos.get',
-      })
-    ).rejects.toMatchObject<Partial<WorkerControlGatewayError>>({
-      code: 'mcp-call-failed',
-      message: 'MCP tool call failed.',
-      status: 502,
-    });
+    const gateway = createDefaultWorkerMcpGateway();
+    const server = {
+      allowedPrompts: [],
+      allowedTools: ['repos.get'],
+      command: [process.execPath, serverPath],
+      id: 'error-test',
+      networkPolicyHints: [],
+      providerInstanceIds: [],
+      secretRefIds: [],
+      toolSchemas: [],
+      transport: 'stdio' as const,
+      vaultGrantIds: [],
+    };
+
+    try {
+      await expect(
+        gateway.callTool({ arguments: {}, server, toolName: 'repos.get' })
+      ).rejects.toMatchObject<Partial<WorkerControlGatewayError>>({
+        code: 'mcp-call-failed',
+        message: 'MCP tool call failed.',
+        status: 502,
+      });
+    } finally {
+      await gateway.close?.();
+    }
   });
 
   it('normalizes missing stdio MCP server executables as unavailable', async () => {
-    await expect(
-      callStdioWorkerMcpTool({
-        args: {},
-        command: ['/openkit/missing/mcp-server'],
-        toolName: 'repos.get',
-      })
-    ).rejects.toMatchObject<Partial<WorkerControlGatewayError>>({
-      code: 'mcp-server-unavailable',
-      message: 'MCP server is unavailable.',
-      status: 503,
-    });
+    const gateway = createDefaultWorkerMcpGateway();
+    const server = {
+      allowedPrompts: [],
+      allowedTools: ['repos.get'],
+      command: ['/openkit/missing/mcp-server'],
+      id: 'missing-executable-test',
+      networkPolicyHints: [],
+      providerInstanceIds: [],
+      secretRefIds: [],
+      toolSchemas: [],
+      transport: 'stdio' as const,
+      vaultGrantIds: [],
+    };
+
+    try {
+      await expect(
+        gateway.callTool({ arguments: {}, server, toolName: 'repos.get' })
+      ).rejects.toMatchObject<Partial<WorkerControlGatewayError>>({
+        code: 'mcp-server-unavailable',
+        message: 'MCP server is unavailable.',
+        status: 503,
+      });
+    } finally {
+      await gateway.close?.();
+    }
   });
 
   it('normalizes stdio MCP server exits before initialize as unavailable', async () => {
@@ -448,17 +620,31 @@ for await (const line of lines) {
 
     writeFileSync(serverPath, `process.exit(7);\n`);
 
-    await expect(
-      callStdioWorkerMcpTool({
-        args: {},
-        command: [process.execPath, serverPath],
-        toolName: 'repos.get',
-      })
-    ).rejects.toMatchObject<Partial<WorkerControlGatewayError>>({
-      code: 'mcp-server-unavailable',
-      message: 'MCP server is unavailable.',
-      status: 503,
-    });
+    const gateway = createDefaultWorkerMcpGateway();
+    const server = {
+      allowedPrompts: [],
+      allowedTools: ['repos.get'],
+      command: [process.execPath, serverPath],
+      id: 'early-exit-test',
+      networkPolicyHints: [],
+      providerInstanceIds: [],
+      secretRefIds: [],
+      toolSchemas: [],
+      transport: 'stdio' as const,
+      vaultGrantIds: [],
+    };
+
+    try {
+      await expect(
+        gateway.callTool({ arguments: {}, server, toolName: 'repos.get' })
+      ).rejects.toMatchObject<Partial<WorkerControlGatewayError>>({
+        code: 'mcp-server-unavailable',
+        message: 'MCP server is unavailable.',
+        status: 503,
+      });
+    } finally {
+      await gateway.close?.();
+    }
   });
 
   it('rejects oversized MCP tool results without returning the payload', async () => {
@@ -476,24 +662,37 @@ for await (const line of lines) {
     process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: {} }) + '\\n');
   }
   if (message.method === 'tools/call') {
-    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { structuredContent: { text: 'x'.repeat(80) } } }) + '\\n');
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { structuredContent: { text: 'x'.repeat(1_048_577) } } }) + '\\n');
   }
 }
 `
     );
 
-    await expect(
-      callStdioWorkerMcpTool({
-        args: {},
-        command: [process.execPath, serverPath],
-        maxResultBytes: 64,
-        toolName: 'repos.get',
-      })
-    ).rejects.toMatchObject<Partial<WorkerControlGatewayError>>({
-      code: 'mcp-result-too-large',
-      message: 'MCP tool result exceeds the gateway payload limit.',
-      status: 413,
-    });
+    const gateway = createDefaultWorkerMcpGateway();
+    const server = {
+      allowedPrompts: [],
+      allowedTools: ['repos.get'],
+      command: [process.execPath, serverPath],
+      id: 'oversized-result-test',
+      networkPolicyHints: [],
+      providerInstanceIds: [],
+      secretRefIds: [],
+      toolSchemas: [],
+      transport: 'stdio' as const,
+      vaultGrantIds: [],
+    };
+
+    try {
+      await expect(
+        gateway.callTool({ arguments: {}, server, toolName: 'repos.get' })
+      ).rejects.toMatchObject<Partial<WorkerControlGatewayError>>({
+        code: 'mcp-result-too-large',
+        message: 'MCP tool result exceeds the gateway payload limit.',
+        status: 413,
+      });
+    } finally {
+      await gateway.close?.();
+    }
   });
 
   it('redacts credential-shaped fields from MCP tool results', async () => {
@@ -517,17 +716,31 @@ for await (const line of lines) {
 `
     );
 
-    await expect(
-      callStdioWorkerMcpTool({
-        args: {},
-        command: [process.execPath, serverPath],
-        toolName: 'repos.get',
-      })
-    ).resolves.toEqual({
-      nested: { apiKey: '[REDACTED]' },
-      token: '[REDACTED]',
-      value: 'safe',
-    });
+    const gateway = createDefaultWorkerMcpGateway();
+    const server = {
+      allowedPrompts: [],
+      allowedTools: ['repos.get'],
+      command: [process.execPath, serverPath],
+      id: 'redaction-test',
+      networkPolicyHints: [],
+      providerInstanceIds: [],
+      secretRefIds: [],
+      toolSchemas: [],
+      transport: 'stdio' as const,
+      vaultGrantIds: [],
+    };
+
+    try {
+      await expect(
+        gateway.callTool({ arguments: {}, server, toolName: 'repos.get' })
+      ).resolves.toEqual({
+        nested: { apiKey: '[REDACTED]' },
+        token: '[REDACTED]',
+        value: 'safe',
+      });
+    } finally {
+      await gateway.close?.();
+    }
   });
 
   it('rejects pinned MCP schema drift before tool execution', async () => {
@@ -554,20 +767,42 @@ for await (const line of lines) {
 `
     );
 
-    await expect(
-      callStdioWorkerMcpTool({
-        args: { owner: 'openkit', repo: 'openkit' },
-        command: [process.execPath, serverPath],
-        expectedInputSchema: {
-          required: ['owner', 'repo'],
-          type: 'object',
+    const gateway = createDefaultWorkerMcpGateway();
+    const server = {
+      allowedPrompts: [],
+      allowedTools: ['repos.get'],
+      command: [process.execPath, serverPath],
+      id: 'schema-drift-test',
+      networkPolicyHints: [],
+      providerInstanceIds: [],
+      secretRefIds: [],
+      toolSchemas: [
+        {
+          inputSchema: {
+            required: ['owner', 'repo'],
+            type: 'object',
+          },
+          name: 'repos.get',
         },
-        toolName: 'repos.get',
-      })
-    ).rejects.toMatchObject<Partial<WorkerControlGatewayError>>({
-      code: 'mcp-schema-drift',
-      message: 'MCP tool schema drift detected.',
-      status: 409,
-    });
+      ],
+      transport: 'stdio' as const,
+      vaultGrantIds: [],
+    };
+
+    try {
+      await expect(
+        gateway.callTool({
+          arguments: { owner: 'openkit', repo: 'openkit' },
+          server,
+          toolName: 'repos.get',
+        })
+      ).rejects.toMatchObject<Partial<WorkerControlGatewayError>>({
+        code: 'mcp-schema-drift',
+        message: 'MCP tool schema drift detected.',
+        status: 409,
+      });
+    } finally {
+      await gateway.close?.();
+    }
   });
 });

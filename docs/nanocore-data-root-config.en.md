@@ -18,7 +18,7 @@ DATA_ROOT/
       *.agent.jsonc
 ```
 
-`server.jsonc` owns server-wide mode, auth, networking, provider instances, defaults, gateway settings, diagnostics, and extensions.
+`server.jsonc` owns server-wide mode, auth, networking, Vault startup, provider instances, defaults, gateway settings, diagnostics, and extensions.
 
 `providers/*.provider.jsonc` defines reusable provider profiles that are merged with provider instances from `server.jsonc`.
 
@@ -68,6 +68,7 @@ Minimal example:
 | `server` | object | No | Public network settings. |
 | `auth` | object | No | Authentication settings. |
 | `data` | object | No | Data-root metadata. |
+| `vault` | object | No | Vault backend selection and encrypted-file key source. |
 | `providers` | array | No | Server-owned provider instances. |
 | `defaults` | object | No | Default provider, model, workspace, and agent IDs. |
 | `gateway` | object | No | OpenAI-compatible gateway settings. |
@@ -115,6 +116,39 @@ Resolution order is:
 | --- | --- | --- |
 | `root` | string | Human-authored data-root path metadata. Use `OPENKIT_DATA_ROOT` to select the actual process data root. |
 | `layoutVersion` | positive integer | Data-root layout version. Current templates use `1`. |
+
+### `vault`
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `localDefaultBackend` | `"os-keychain"` or `"encrypted-file"` | Local mode defaults to `os-keychain`; set `encrypted-file` only when local operation should use the server-owned encrypted store. Server mode always selects `encrypted-file`. |
+| `encryptedFile.keyFilePath` | absolute path string | Optional boot key for the encrypted-file backend. The file must be a regular, non-symlink file owned by the NanoCore process user, have exact `0600` permissions, and contain exactly 32 raw bytes. |
+
+Use a key file outside `DATA_ROOT`: production boot's general portability gate rejects `server.jsonc` when it embeds the current absolute data-root path, and an external key stays out of data-root backups and portable records. Do not store hex or base64 text in the file; NanoCore reads exactly 32 binary bytes through one no-follow file descriptor.
+
+Generate a new key as the same operating-system user that runs NanoCore:
+
+```bash
+umask 077
+node -e "require('node:fs').writeFileSync('/absolute/external/openkit-vault.key', require('node:crypto').randomBytes(32), { flag: 'wx', mode: 0o600 })"
+chmod 600 /absolute/external/openkit-vault.key
+```
+
+Keep a separately protected backup of this key. Never regenerate or replace it for an existing store: losing the only correct key makes existing Vault material unrecoverable, while a wrong replacement remains locked and cannot repair the store.
+
+```jsonc
+{
+  "schemaVersion": 1,
+  "vault": {
+    "localDefaultBackend": "encrypted-file",
+    "encryptedFile": {
+      "keyFilePath": "/run/secrets/openkit-vault.key"
+    }
+  }
+}
+```
+
+At boot, a valid configured key initializes an authenticated header only when `DATA_ROOT/server/vault` is empty, or verifies the existing header before the backend becomes available. A missing, invalid, or wrong key leaves Vault locked and readiness degraded without blocking unrelated product work or exposing the key path or material. A non-empty store without a header is never initialized or repaired automatically.
 
 ### `providers`
 

@@ -1771,9 +1771,13 @@ export class FsStore {
       defaults: input.defaults
         ? {
             defaultModelId:
-              input.defaults.defaultModelId ?? workspace.defaults?.defaultModelId ?? null,
+              input.defaults.defaultModelId === undefined
+                ? (workspace.defaults?.defaultModelId ?? null)
+                : input.defaults.defaultModelId,
             defaultAgentId:
-              input.defaults.defaultAgentId ?? workspace.defaults?.defaultAgentId ?? null,
+              input.defaults.defaultAgentId === undefined
+                ? (workspace.defaults?.defaultAgentId ?? null)
+                : input.defaults.defaultAgentId,
             defaultSkillIds:
               input.defaults.defaultSkillIds ?? workspace.defaults?.defaultSkillIds ?? [],
           }
@@ -2110,6 +2114,7 @@ export class FsStore {
       throw new Error(`Turn already exists: ${turnId}`);
     }
 
+    const thread = this.getThread(workspaceId, threadId);
     const turn: Turn = {
       id: turnId,
       workspaceId,
@@ -2124,7 +2129,6 @@ export class FsStore {
       durationMs: null,
     };
     this.turns.set(turn.id, turn);
-    const thread = this.getThread(workspaceId, threadId);
     this.threads.set(threadId, {
       ...thread,
       preview: input,
@@ -2424,12 +2428,21 @@ export class FsStore {
     this.persist();
   }
 
-  public updateArtifact(artifactId: string, input: Partial<Artifact>): Artifact {
-    const artifact = this.artifacts.get(artifactId);
-
-    if (!artifact) {
-      throw new Error(`Artifact not found: ${artifactId}`);
-    }
+  /**
+   * Updates one artifact within its owning workspace.
+   *
+   * @param workspaceId Workspace that must own the artifact.
+   * @param artifactId Artifact to update.
+   * @param input Artifact fields to replace.
+   * @returns Updated artifact.
+   * @throws Error when the artifact is absent or belongs to another workspace.
+   */
+  public updateArtifact(
+    workspaceId: string,
+    artifactId: string,
+    input: Partial<Pick<Artifact, 'status' | 'summary' | 'title' | 'updatedAt' | 'version'>>
+  ): Artifact {
+    const artifact = this.getArtifact(workspaceId, artifactId);
 
     const updated: Artifact = { ...artifact, ...input, updatedAt: input.updatedAt ?? now() };
     this.artifacts.set(artifactId, updated);

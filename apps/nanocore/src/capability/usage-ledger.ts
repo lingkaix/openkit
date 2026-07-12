@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   type CapabilityCall,
   CapabilityCallSchema,
+  RequestIdSchema,
   type UsageRecord,
   UsageRecordSchema,
 } from '@openkit/protocol';
@@ -148,6 +149,18 @@ export interface RecoverRunningCapabilityCallsInput {
   workspaceDb: WorkspaceDb;
   /** Recovery time. */
   now?: Date;
+}
+
+/**
+ * Returns a capability-ledger-safe request id.
+ *
+ * @param requestId Caller-supplied request id.
+ * @returns UUID request id accepted by protocol capability schemas, or null.
+ */
+export function normalizeCapabilityRequestId(requestId: string | null | undefined): string | null {
+  const parsed = RequestIdSchema.safeParse(requestId);
+
+  return parsed.success ? parsed.data : null;
 }
 
 /**

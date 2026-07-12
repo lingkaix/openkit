@@ -113,7 +113,7 @@ OpenKit already has the right architectural slot for this feature.
 - Goal Mode start, plan, approval, steering, and bounded worker step
 - unified Human Attention Action Center
 - artifact inventory and content
-- Codex host-adapter coordination
+- governed container worker coordination
 - local-mode operation through `127.0.0.1`
 
 The AI Interface should expose those capabilities to AI applications through stable product verbs.
@@ -193,7 +193,7 @@ NanoCore owns:
 - idempotency behavior
 - human attention projection
 - artifact review and Goal Review decisions
-- host-adapter execution and diagnostics
+- governed worker execution and diagnostics
 
 The MCP server owns:
 
@@ -595,7 +595,7 @@ Returns:
 - plan status
 - task summaries
 - review status
-- terminal closeout if available
+- terminal summary and stored verification evidence when available
 - next suggested actions
 
 #### `openkit.draft_goal_plan`
@@ -659,7 +659,7 @@ Inputs:
 - `workspaceId`
 - `threadId`
 - optional `followUpDrainMode`
-- optional `reviewPolicyOverride`
+- optional `reviewPolicyOverride`: `human` or `none`
 - optional `requestId`
 
 Maps to:
@@ -671,7 +671,11 @@ POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/step
 Defaults:
 
 - `followUpDrainMode`: `one_at_a_time`
-- `reviewPolicyOverride`: default review behavior, not `none`
+- `reviewPolicyOverride`: `human`
+
+`human` creates a durable unresolved Goal Review exposed as an actionable Action Center row after the worker step completes. Accepting the review atomically resolves it and advances the task graph. `none` skips only that completed step's review and still advances dependencies and remaining tasks; it does not end the goal.
+
+Stored verification evidence may appear in goal and terminal summaries. It does not imply a Task Evaluator or final-verifier gate, which remain deferred.
 
 Returns:
 
@@ -1034,7 +1038,7 @@ The MCP server must not expose a generic command execution tool.
 
 The only process-management-shaped tool in the current AI Interface is the diagnostic NanoCore startup status helper.
 
-Worker execution remains mediated by NanoCore Goal Mode and host adapters.
+Worker execution remains mediated by NanoCore Goal Mode and governed container backends.
 
 ### Review Before Side Effects
 

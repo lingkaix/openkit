@@ -353,7 +353,7 @@ export const ReviseThreadGoalPlanResponseSchema = z.object({
 export const GoalStepFollowUpDrainModeSchema = z.enum(['one_at_a_time', 'all']);
 
 /** Review policy override requested for one real Goal Mode worker step. */
-export const GoalStepReviewPolicyOverrideSchema = z.enum(['human', 'auto', 'none']);
+export const GoalStepReviewPolicyOverrideSchema = z.enum(['human', 'none']);
 
 /** Product-facing pending attention returned by one real Goal Mode worker step. */
 export const GoalStepPendingAttentionSchema = z.object({

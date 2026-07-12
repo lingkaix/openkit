@@ -5,7 +5,7 @@ import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
 } from '@openkit/config-schema';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createApp, createDefaultWorkerControlGateway } from './app.js';
 import type { FsStore } from './lib/store.js';
 import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
@@ -14,6 +14,7 @@ import {
   type WorkerControlGatewayError,
   type WorkerControlLineage,
 } from './runtime/worker-control-gateway.js';
+import { listWorkerControlRejectedEvidenceForWorkspace } from './runtime/worker-control-rejected-evidence.js';
 import {
   listBackendWorkspaceHandles,
   recordWorkspaceMaterializationRecords,
@@ -90,6 +91,37 @@ function createWorkerControlRouteFixture(): {
 }
 
 describe('worker control routes', () => {
+  it('keeps worker route planes ahead of product API middleware', () => {
+    const routes = createApp()
+      .routes.filter(({ path }) => path.startsWith('/api/worker-') || path === '/api/*')
+      .map(({ method, path }) => `${method} ${path}`);
+
+    expect(routes).toEqual([
+      'ALL /api/worker-control/*',
+      'POST /api/worker-control/heartbeat',
+      'POST /api/worker-control/artifacts',
+      'POST /api/worker-control/commands/poll',
+      'POST /api/worker-control/commands/ack',
+      'POST /api/worker-control/terminal-results',
+      'POST /api/worker-control/events/append',
+      'POST /api/worker-control/final-status',
+      'POST /api/worker-control/supply-refresh-ack',
+      'POST /api/worker-control/capability-summary',
+      'POST /api/worker-control/knowledge-proposal-summary',
+      'ALL /api/worker-capabilities/*',
+      'POST /api/worker-capabilities/knowledge/search',
+      'POST /api/worker-capabilities/knowledge/read',
+      'POST /api/worker-capabilities/knowledge/proposals',
+      'POST /api/worker-capabilities/artifacts/read',
+      'POST /api/worker-capabilities/mcp/list-servers',
+      'POST /api/worker-capabilities/mcp/list-tools',
+      'POST /api/worker-capabilities/mcp/call-tool',
+      'POST /api/worker-capabilities/diagnostics/read',
+      'ALL /api/*',
+      'ALL /api/*',
+    ]);
+  });
+
   it('keeps event append sequence conflicts durable across default gateway instances', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-sequence-')));
     const store = createDemoStore();
@@ -941,6 +973,110 @@ describe('worker control routes', () => {
     ]);
   });
 
+  it('preserves stored knowledge proposal timestamps on exact replay', async () => {
+    vi.useFakeTimers();
+
+    try {
+      vi.setSystemTime(new Date('2026-06-16T00:00:03.000Z'));
+      const { app, lineage, store, token } = createWorkerControlRouteFixture();
+      const request = {
+        body: {
+          proposalId: 'knowledge_proposal_replay',
+          summary: 'Persist the worker-discovered project decision.',
+          title: 'Remember replayed project decision',
+        },
+        lineage,
+        operation: 'knowledge_proposal_summary',
+        schemaVersion: 1,
+        sequence: 12,
+      };
+      const init = {
+        body: JSON.stringify(request),
+        headers: {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json',
+        },
+        method: 'POST',
+      };
+
+      const first = await app.request('/api/worker-control/knowledge-proposal-summary', init);
+      store.updateKnowledgeProposalContent('knowledge_proposal_replay', {
+        summary: 'Human-edited project decision.',
+        title: 'Reviewed project decision',
+        updatedAt: '2026-06-16T00:30:03.000Z',
+      });
+      store.recordKnowledgeProposalReviewDecision({
+        decidedAt: '2026-06-16T00:31:03.000Z',
+        message: 'Keep the edited proposal.',
+        proposalId: 'knowledge_proposal_replay',
+        requestId: 'req_review_proposal_replay',
+        status: 'edited',
+        workspaceId: lineage.workspaceId,
+      });
+      const reviewed = store.getKnowledgeProposal('knowledge_proposal_replay');
+
+      vi.setSystemTime(new Date('2026-06-16T01:00:03.000Z'));
+      const replay = await app.request('/api/worker-control/knowledge-proposal-summary', init);
+
+      expect(first.status).toBe(200);
+      expect(replay.status).toBe(200);
+      expect(store.getKnowledgeProposal('knowledge_proposal_replay')).toEqual(reviewed);
+      expect(store.getKnowledgeProposalReviewDecision('knowledge_proposal_replay')).toMatchObject({
+        status: 'edited',
+        message: 'Keep the edited proposal.',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects a colliding worker proposal id before accepting its sequence', async () => {
+    const { app, environmentPackage, gateway, lineage, store, token } =
+      createWorkerControlRouteFixture();
+    const existing = store.createKnowledgeProposal({
+      createdAt: '2026-06-15T00:00:00.000Z',
+      id: 'knowledge_proposal_collision',
+      status: 'pending',
+      summary: 'Existing workspace proposal.',
+      title: 'Existing proposal',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+      workspaceId: lineage.workspaceId,
+    });
+    const init = {
+      body: JSON.stringify({
+        body: {
+          proposalId: existing.id,
+          summary: 'Worker proposal must not overwrite an existing proposal.',
+          title: 'Conflicting worker proposal',
+        },
+        lineage,
+        operation: 'knowledge_proposal_summary',
+        schemaVersion: 1,
+        sequence: 13,
+      }),
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+    };
+
+    const first = await app.request('/api/worker-control/knowledge-proposal-summary', init);
+    const replay = await app.request('/api/worker-control/knowledge-proposal-summary', init);
+    const firstBody = (await first.json()) as { code?: string };
+    const replayBody = (await replay.json()) as { code?: string };
+
+    expect([first.status, replay.status]).toEqual([409, 409]);
+    expect([firstBody.code, replayBody.code]).toEqual([
+      'worker_control_knowledge_proposal_conflict',
+      'worker_control_knowledge_proposal_conflict',
+    ]);
+    expect(store.getKnowledgeProposal(existing.id)).toEqual(existing);
+    expect(
+      gateway.getSessionSnapshot(environmentPackage.snapshotId)?.knowledgeProposalSummaries
+    ).toEqual([]);
+  });
+
   it('rejects oversized control envelopes before schema handling', async () => {
     const { app, lineage, token } = createWorkerControlRouteFixture();
 
@@ -968,6 +1104,57 @@ describe('worker control routes', () => {
     expect(body.code).toBe('worker_control_payload_too_large');
   });
 
+  it('rejects oversized simple control requests before sandbox authentication', async () => {
+    const { app, lineage } = createWorkerControlRouteFixture();
+    const padding = 'x'.repeat(70 * 1024);
+    const requests = [
+      {
+        body: { lineage, message: padding, sequence: 1, status: 'running' },
+        path: '/api/worker-control/heartbeat',
+      },
+      {
+        body: {
+          artifact: { path: padding, title: 'Oversized artifact' },
+          lineage,
+          sequence: 1,
+        },
+        path: '/api/worker-control/artifacts',
+      },
+      {
+        body: { lineage, padding },
+        path: '/api/worker-control/commands/poll',
+      },
+      {
+        body: { commandId: 'command_missing', lineage, padding },
+        path: '/api/worker-control/commands/ack',
+      },
+    ];
+    const results = await Promise.all(
+      requests.map(async ({ body, path }) => {
+        const response = await app.request(path, {
+          body: JSON.stringify(body),
+          headers: {
+            authorization: 'Bearer invalid',
+            'content-type': 'application/json',
+          },
+          method: 'POST',
+        });
+
+        return {
+          body: (await response.json()) as { code: string },
+          status: response.status,
+        };
+      })
+    );
+
+    expect(results).toEqual(
+      requests.map(() => ({
+        body: expect.objectContaining({ code: 'worker_control_payload_too_large' }),
+        status: 413,
+      }))
+    );
+  });
+
   it('accepts sandbox bearer heartbeats without a browser session cookie', async () => {
     const { app, lineage, token } = createWorkerControlRouteFixture();
 
@@ -990,6 +1177,36 @@ describe('worker control routes', () => {
     expect(body.heartbeat).toMatchObject({
       lastHeartbeatAt: '2026-06-16T00:00:02.000Z',
       status: 'running',
+    });
+  });
+
+  it('accepts worker artifact notices over HTTP', async () => {
+    const { app, lineage, token } = createWorkerControlRouteFixture();
+
+    const res = await app.request('/api/worker-control/artifacts', {
+      body: JSON.stringify({
+        artifact: {
+          mediaType: 'text/markdown',
+          path: '/openkit/artifacts/report.md',
+          title: 'Worker report',
+        },
+        lineage,
+        sequence: 2,
+      }),
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+    });
+    const body = (await res.json()) as {
+      artifact: { path: string; title: string };
+    };
+
+    expect(res.status).toBe(200);
+    expect(body.artifact).toMatchObject({
+      path: '/openkit/artifacts/report.md',
+      title: 'Worker report',
     });
   });
 
@@ -1022,6 +1239,37 @@ describe('worker control routes', () => {
         kind: 'terminal-command',
       }),
     ]);
+  });
+
+  it('records command poll rejection evidence with the canonical operation', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-command-poll-rejected-')));
+    const { gateway, lineage, store } = createWorkerControlRouteFixture();
+
+    try {
+      applyMigrations(coreDb);
+      const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
+      const res = await app.request('/api/worker-control/commands/poll', {
+        body: JSON.stringify({ lineage }),
+        headers: {
+          authorization: 'Bearer wrong',
+          'content-type': 'application/json',
+        },
+        method: 'POST',
+      });
+      const evidence = listWorkerControlRejectedEvidenceForWorkspace(
+        coreDb,
+        lineage.workspaceId
+      )[0];
+
+      expect(res.status).toBe(401);
+      expect(evidence).toMatchObject({
+        errorCode: 'worker_control_unauthorized',
+        operation: 'command_poll',
+        route: '/api/worker-control/commands/poll',
+      });
+    } finally {
+      coreDb.sqlite.close();
+    }
   });
 
   it('persists worker-control command delivery state through the default gateway', async () => {

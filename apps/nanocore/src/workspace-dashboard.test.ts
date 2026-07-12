@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createApp } from './app.js';
+import { ProviderRegistry } from './providers/registry.js';
 import { createDemoStore } from './test-support/demo-store.js';
 
 describe('workspace dashboard app API', () => {
@@ -44,6 +45,27 @@ describe('workspace dashboard app API', () => {
         },
       ],
     });
+  });
+
+  it('counts providers from the runtime registry', async () => {
+    const app = createApp({
+      providerRegistry: new ProviderRegistry([
+        {
+          baseUrl: 'https://api.example.com/v1',
+          displayName: 'Example',
+          id: 'example',
+          kind: 'direct',
+          models: ['example-model'],
+          secretRef: 'env:EXAMPLE_API_KEY',
+        },
+      ]),
+      store: createDemoStore(),
+    });
+    const res = await app.request('/api/app/workspaces/ws_demo/dashboard');
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.counts.providerCount).toBe(1);
   });
 
   it('summarizes active work, completions, and attention-needed items', async () => {

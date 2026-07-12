@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -85,6 +85,165 @@ function workspaceImportPayload(
 }
 
 describe('FsStore snapshot reload', () => {
+  it('rebuilds every workspace from canonical records and resolves the latest item revision', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-canonical-reload-'));
+    const store = new FsStore({ dataRoot });
+    const firstWorkspace = store.createWorkspace('First canonical workspace');
+    const firstThread = store.createThread(firstWorkspace.id, 'First canonical thread');
+    const firstTurn = store.createTurn(
+      firstWorkspace.id,
+      firstThread.id,
+      'Persist the first canonical turn'
+    );
+    const firstItem = store.createItem({
+      id: `it_${firstTurn.id}`,
+      workspaceId: firstWorkspace.id,
+      threadId: firstThread.id,
+      turnId: firstTurn.id,
+      type: 'assistant-message',
+      status: 'completed',
+      text: 'Initial canonical item text.',
+      createdAt: firstTurn.startedAt ?? timestamp,
+      completedAt: firstTurn.startedAt ?? timestamp,
+    });
+    const updatedFirstItem = store.updateItem(firstItem.id, {
+      text: 'Latest canonical item text.',
+    });
+    const secondWorkspace = store.createWorkspace('Second canonical workspace');
+    const secondThread = store.createThread(secondWorkspace.id, 'Second canonical thread');
+    const secondTurn = store.createTurn(
+      secondWorkspace.id,
+      secondThread.id,
+      'Persist the second canonical turn'
+    );
+    const secondItem = store.createItem({
+      id: `it_${secondTurn.id}`,
+      workspaceId: secondWorkspace.id,
+      threadId: secondThread.id,
+      turnId: secondTurn.id,
+      type: 'user-message',
+      status: 'completed',
+      text: 'Second workspace item.',
+      createdAt: secondTurn.startedAt ?? timestamp,
+      completedAt: secondTurn.startedAt ?? timestamp,
+    });
+    const firstWorkspaceRoot = join(
+      dataRoot,
+      'users',
+      'user_local',
+      'workspaces',
+      firstWorkspace.id
+    );
+    const firstItemsPath = join(
+      firstWorkspaceRoot,
+      'threads',
+      firstThread.id,
+      'turns',
+      firstTurn.id,
+      'items.jsonl'
+    );
+
+    writeFileSync(
+      firstItemsPath,
+      `${JSON.stringify(firstItem)}\n${JSON.stringify(updatedFirstItem)}\n`
+    );
+    for (const workspace of store.listWorkspaces()) {
+      rmSync(join(dataRoot, 'users', 'user_local', 'workspaces', workspace.id, 'store.json'), {
+        force: true,
+      });
+    }
+
+    const restarted = new FsStore({ dataRoot });
+
+    expect(restarted.getWorkspace(firstWorkspace.id)).toEqual(
+      store.getWorkspace(firstWorkspace.id)
+    );
+    expect(restarted.getThread(firstWorkspace.id, firstThread.id)).toEqual(firstThread);
+    expect(restarted.getTurn(firstWorkspace.id, firstThread.id, firstTurn.id)).toEqual(
+      store.getTurn(firstWorkspace.id, firstThread.id, firstTurn.id)
+    );
+    expect(restarted.listThreadItems(firstWorkspace.id, firstThread.id)).toEqual([
+      updatedFirstItem,
+    ]);
+    expect(restarted.getWorkspace(secondWorkspace.id)).toEqual(
+      store.getWorkspace(secondWorkspace.id)
+    );
+    expect(restarted.getThread(secondWorkspace.id, secondThread.id)).toEqual(secondThread);
+    expect(restarted.getTurn(secondWorkspace.id, secondThread.id, secondTurn.id)).toEqual(
+      store.getTurn(secondWorkspace.id, secondThread.id, secondTurn.id)
+    );
+    expect(restarted.listThreadItems(secondWorkspace.id, secondThread.id)).toEqual([secondItem]);
+  });
+
+  it('does not create workspace-wide store snapshots during normal persistence', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-canonical-persist-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Canonical persistence workspace');
+    const thread = store.createThread(workspace.id, 'Canonical persistence thread');
+    const turn = store.createTurn(workspace.id, thread.id, 'Persist canonical records only');
+
+    store.createItem({
+      id: `it_${turn.id}`,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      type: 'user-message',
+      status: 'completed',
+      text: 'Canonical persistence only.',
+      createdAt: turn.startedAt ?? timestamp,
+      completedAt: turn.startedAt ?? timestamp,
+    });
+
+    expect(
+      store
+        .listWorkspaces()
+        .some((persistedWorkspace) =>
+          existsSync(
+            join(dataRoot, 'users', 'user_local', 'workspaces', persistedWorkspace.id, 'store.json')
+          )
+        )
+    ).toBe(false);
+  });
+
+  it('appends item revisions to the canonical item log', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-item-log-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Append-only item workspace');
+    const thread = store.createThread(workspace.id, 'Append-only item thread');
+    const turn = store.createTurn(workspace.id, thread.id, 'Append item revisions');
+    const item = store.createItem({
+      id: `it_${turn.id}`,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      type: 'assistant-message',
+      status: 'in_progress',
+      text: 'Initial item revision.',
+      createdAt: turn.startedAt ?? timestamp,
+      completedAt: null,
+    });
+    const itemsPath = join(
+      dataRoot,
+      'users',
+      'user_local',
+      'workspaces',
+      workspace.id,
+      'threads',
+      thread.id,
+      'turns',
+      turn.id,
+      'items.jsonl'
+    );
+    const initialLog = readFileSync(itemsPath, 'utf8');
+    const updatedItem = store.updateItem(item.id, {
+      status: 'completed',
+      text: 'Completed item revision.',
+      completedAt: item.createdAt,
+    });
+
+    expect(readFileSync(itemsPath, 'utf8')).toBe(`${initialLog}${JSON.stringify(updatedItem)}\n`);
+  });
+
   it('reloads workspace, thread, turn, items, approval, artifact, knowledge, agent session, and events', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-reload-'));
     const store = new FsStore({ dataRoot });

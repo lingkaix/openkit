@@ -11,7 +11,7 @@ import {
   listGoalReviewRecordsForTask,
   resolveGoalReviewRecord,
 } from './goal-review-records.js';
-import { createGoalRecord, createGoalTask } from './goal-store.js';
+import { createGoalRecord, createGoalTask, getGoalRecord, listGoalTasks } from './goal-store.js';
 
 /**
  * Opens a migrated Core database for goal review record tests.
@@ -118,6 +118,7 @@ describe('goal review records', () => {
         updatedAt: '2026-05-31T00:02:00.000Z',
         resolvedAt: null,
         resolutionRequestId: null,
+        resolutionSnapshot: null,
       });
       expect(
         getGoalReviewRecord(workspaceDb, 'ws_demo', 'th_demo', 'goal_demo', 'review_demo')
@@ -313,6 +314,18 @@ describe('goal review records', () => {
         reason: 'Retry with stronger verification.',
         now: () => '2026-05-31T00:02:00.000Z',
       });
+      const goal = getGoalRecord(workspaceDb, 'ws_demo', 'th_demo', 'goal_demo')!;
+      const task = listGoalTasks(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        goalId: 'goal_demo',
+      })[0]!;
+      const resolutionSnapshot = {
+        outcome: 'retry' as const,
+        task: { ...task, status: 'ready' as const },
+        goal: { ...goal, status: 'running' as const, currentTaskId: task.taskId },
+        nextTask: { ...task, status: 'ready' as const },
+      };
 
       const resolved = resolveGoalReviewRecord(workspaceDb, {
         workspaceId: 'ws_demo',
@@ -320,6 +333,7 @@ describe('goal review records', () => {
         goalId: 'goal_demo',
         reviewId: 'review_resolved',
         requestId: 'review-resolution-1',
+        resolutionSnapshot,
         now: () => '2026-05-31T00:03:00.000Z',
       });
 
@@ -327,6 +341,7 @@ describe('goal review records', () => {
         reviewId: 'review_resolved',
         resolvedAt: '2026-05-31T00:03:00.000Z',
         resolutionRequestId: 'review-resolution-1',
+        resolutionSnapshot,
         updatedAt: '2026-05-31T00:03:00.000Z',
       });
       expect(
@@ -334,7 +349,24 @@ describe('goal review records', () => {
       ).toMatchObject({
         resolvedAt: '2026-05-31T00:03:00.000Z',
         resolutionRequestId: 'review-resolution-1',
+        resolutionSnapshot,
       });
+      expect(
+        resolveGoalReviewRecord(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          goalId: 'goal_demo',
+          reviewId: 'review_resolved',
+          requestId: 'review-resolution-2',
+          resolutionSnapshot: {
+            outcome: 'complete_goal',
+            task: { ...task, status: 'completed' },
+            goal: { ...goal, status: 'completed', currentTaskId: null },
+            nextTask: null,
+          },
+          now: () => '2026-05-31T00:04:00.000Z',
+        })
+      ).toEqual(resolved);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();

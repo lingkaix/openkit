@@ -63,6 +63,7 @@ import {
 } from './storage/fs-layout.js';
 import { rebuildExistingWorkspaceDerivedIndexes } from './storage/index-rebuild.js';
 import { applyMigrations, listAppliedMigrationIds } from './storage/migrate.js';
+import type { VaultUnlockState } from './vault/vault-unlock-state.js';
 
 const dataRoot = resolveDataRoot(process.env);
 const bootId = createBootId();
@@ -87,6 +88,9 @@ let schedulerEpoch = 1;
 let runtimeConfigSnapshot: RuntimeConfigSnapshot | undefined;
 let mode: ReturnType<typeof resolveMode> | undefined;
 let coreDb: CoreDb | undefined;
+let vaultUnlockState: VaultUnlockState | undefined;
+
+process.once('exit', releaseProcessResources);
 
 const bootResult = await runBootPhases({
   bootId,
@@ -191,7 +195,26 @@ const bootResult = await runBootPhases({
       name: 'vault',
       subsystem: 'vault',
       critical: false,
-      run: checkBootVaultBackend,
+      run: () => {
+        const config = requireBootValue(
+          runtimeConfigSnapshot,
+          'Runtime config was not loaded.'
+        ).openKitConfig;
+        vaultUnlockState = createDefaultVaultUnlockState({
+          dataRoot,
+          mode: requireBootValue(mode, 'Core mode was not resolved.'),
+          ...(config.vault?.localDefaultBackend
+            ? { localDefaultBackend: config.vault.localDefaultBackend }
+            : {}),
+        });
+
+        return checkBootVaultBackend({
+          ...(config.vault?.encryptedFile?.keyFilePath
+            ? { keyFilePath: config.vault.encryptedFile.keyFilePath }
+            : {}),
+          vaultUnlockState,
+        });
+      },
     },
     {
       name: 'local-identity',
@@ -237,6 +260,7 @@ const criticalBootFailure = bootResult.outcomes.find(
 if (criticalBootFailure || !bootReadiness.acceptingProductWork) {
   const message = formatBootFailureMessage(bootResult);
   console.error(message);
+  vaultUnlockState?.lock();
   releaseDataRootLock();
   throw new Error(message);
 }
@@ -245,6 +269,10 @@ runtimeConfigSnapshot = requireBootValue(runtimeConfigSnapshot, 'Runtime config 
 mode = requireBootValue(mode, 'Core mode was not resolved.');
 coreDb = requireBootValue(coreDb, 'Core database was not initialized.');
 const serverCoreDb = coreDb;
+const activeVaultUnlockState = requireBootValue(
+  vaultUnlockState,
+  'Vault unlock state was not initialized.'
+);
 
 const runtimeConfigManager = createRuntimeConfigManager({
   dataRoot,
@@ -264,16 +292,9 @@ if (mode === 'server') {
   }
 }
 const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
-const vaultUnlockState = createDefaultVaultUnlockState({
-  dataRoot,
-  mode,
-  ...(runtimeConfigSnapshot.openKitConfig.vault?.localDefaultBackend
-    ? { localDefaultBackend: runtimeConfigSnapshot.openKitConfig.vault.localDefaultBackend }
-    : {}),
-});
 const turnExecutor = createConfiguredTurnExecutor({
   coreDb,
-  vaultBackend: () => vaultUnlockState.backend(),
+  vaultBackend: () => activeVaultUnlockState.backend(),
   workerControlGateway,
 });
 const refreshStatusCollector = maybeOpenShellRefreshStatusCollector(turnExecutor);
@@ -288,7 +309,7 @@ const app = createApp({
   runtimeConfigManager,
   schedulerEpoch,
   turnExecutor,
-  vaultUnlockState,
+  vaultUnlockState: activeVaultUnlockState,
   workerControlGateway,
 });
 const hostname = resolveBindHost(process.env, mode);
@@ -415,7 +436,6 @@ function maybeOpenShellRefreshStatusCollector(
 
 process.once('SIGINT', shutdown);
 process.once('SIGTERM', shutdown);
-process.once('exit', releaseDataRootLock);
 
 /**
  * Returns a required boot value or throws a boot failure.
@@ -462,9 +482,16 @@ function finishShutdown(
   deadlineForcedExit: boolean,
   exitCode: number
 ): void {
-  recordShutdownAudit(signal, stepsCompleted, deadlineForcedExit);
+  vaultUnlockState?.lock();
+  recordShutdownAudit(signal, [...stepsCompleted, 'vault.lock'], deadlineForcedExit);
   releaseDataRootLock();
   process.exit(exitCode);
+}
+
+/** Locks secret state and releases the data-root lock during process exit. */
+function releaseProcessResources(): void {
+  vaultUnlockState?.lock();
+  releaseDataRootLock();
 }
 
 /**

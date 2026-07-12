@@ -1,10 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
-
+import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type {
   OpenAICompatibleChatCompletionRequest,
   OpenAICompatibleResponsesRequest,
 } from './openai-compatible-client.js';
-import type { ResolvedLLMProviderConfig } from './provider-config.js';
 
 /**
  * OpenAI-compatible text generation request shape that accepts prompt cache fields.

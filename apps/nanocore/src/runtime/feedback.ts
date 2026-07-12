@@ -1,48 +1,17 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import {
+  type SubmitTurnFeedbackRequest,
+  type TurnFeedbackResponse,
+  TurnFeedbackResponseSchema,
+} from '@openkit/app-api-schemas';
 import type { TurnSchema } from '@openkit/protocol';
-import { z } from 'zod';
 import type { FsStore } from '../lib/store.js';
 
-type Turn = z.infer<typeof TurnSchema>;
+type Turn = import('zod').infer<typeof TurnSchema>;
 
-/**
- * Turn feedback rating schema.
- */
-export const TurnFeedbackRatingSchema = z.enum(['good', 'bad']).nullable();
-
-/**
- * Turn feedback schema persisted on disk.
- */
-export const TurnFeedbackSchema = z
-  .object({
-    createdAt: z.string().min(1),
-    note: z.string().nullable(),
-    rating: TurnFeedbackRatingSchema,
-    turnId: z.string().min(1),
-    agentId: z.string().min(1).nullable(),
-  })
-  .strict();
-
-/**
- * Turn feedback update request schema.
- */
-export const UpdateTurnFeedbackRequestSchema = z
-  .object({
-    note: z.string().nullable(),
-    rating: TurnFeedbackRatingSchema,
-  })
-  .strict();
-
-/**
- * Persisted turn feedback.
- */
-export type TurnFeedback = z.infer<typeof TurnFeedbackSchema>;
-
-/**
- * Turn feedback update input.
- */
-export type UpdateTurnFeedbackInput = z.infer<typeof UpdateTurnFeedbackRequestSchema>;
+/** Strict public feedback shape used at the disk boundary. */
+const PersistedTurnFeedbackSchema = TurnFeedbackResponseSchema.strict();
 
 /**
  * Returns the feedback file path for one turn.
@@ -85,7 +54,7 @@ export function ensureTurnFeedback(
   store: FsStore,
   turn: Turn,
   agentId: string | null
-): TurnFeedback | null {
+): TurnFeedbackResponse | null {
   if (!store.getDataRoot()) {
     return null;
   }
@@ -96,7 +65,7 @@ export function ensureTurnFeedback(
     return readFeedbackFile(path);
   }
 
-  const feedback: TurnFeedback = {
+  const feedback: TurnFeedbackResponse = {
     createdAt: new Date().toISOString(),
     note: null,
     rating: null,
@@ -115,7 +84,7 @@ export function ensureTurnFeedback(
  * @param turnId Turn id.
  * @returns Feedback record.
  */
-export function readTurnFeedback(store: FsStore, turnId: string): TurnFeedback {
+export function readTurnFeedback(store: FsStore, turnId: string): TurnFeedbackResponse {
   return readFeedbackFile(feedbackFilePath(store, store.getTurnById(turnId)));
 }
 
@@ -130,8 +99,8 @@ export function readTurnFeedback(store: FsStore, turnId: string): TurnFeedback {
 export function updateTurnFeedback(
   store: FsStore,
   turnId: string,
-  input: UpdateTurnFeedbackInput
-): TurnFeedback {
+  input: SubmitTurnFeedbackRequest
+): TurnFeedbackResponse {
   const turn = store.getTurnById(turnId);
   const existing =
     store.getDataRoot() && existsSync(feedbackFilePath(store, turn))
@@ -142,7 +111,7 @@ export function updateTurnFeedback(
     throw new Error('Turn feedback requires a file-backed data root.');
   }
 
-  const updated: TurnFeedback = {
+  const updated: TurnFeedbackResponse = {
     ...existing,
     note: input.note,
     rating: input.rating,
@@ -158,8 +127,8 @@ export function updateTurnFeedback(
  * @param path Feedback file path.
  * @returns Feedback record.
  */
-function readFeedbackFile(path: string): TurnFeedback {
-  return TurnFeedbackSchema.parse(JSON.parse(readFileSync(path, 'utf8')));
+function readFeedbackFile(path: string): TurnFeedbackResponse {
+  return PersistedTurnFeedbackSchema.parse(JSON.parse(readFileSync(path, 'utf8')));
 }
 
 /**
@@ -168,7 +137,7 @@ function readFeedbackFile(path: string): TurnFeedback {
  * @param path Feedback file path.
  * @param feedback Feedback record.
  */
-function writeFeedbackFile(path: string, feedback: TurnFeedback): void {
+function writeFeedbackFile(path: string, feedback: TurnFeedbackResponse): void {
   mkdirSync(dirname(path), { recursive: true });
 
   const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;

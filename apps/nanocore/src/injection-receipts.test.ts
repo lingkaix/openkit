@@ -11,8 +11,8 @@ import {
 } from './injection-receipts.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
-import { createVaultGrant } from './vault-grants.js';
-import { createVaultReference } from './vault-references.js';
+import { createVaultGrant } from './vault/vault-grants.js';
+import { createVaultReference } from './vault/vault-references.js';
 
 /**
  * Opens a migrated Core database for injection receipt tests.

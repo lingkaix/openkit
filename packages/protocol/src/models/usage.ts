@@ -18,6 +18,7 @@ import { TimestampSchema } from '../common/timestamps.js';
  */
 export const UsageUnitSchema = z.enum([
   'tokens',
+  'usd',
   'requests',
   'seconds',
   'bytes',

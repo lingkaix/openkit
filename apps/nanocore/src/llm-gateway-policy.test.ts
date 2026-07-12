@@ -6,28 +6,34 @@ import { describe, expect, it } from 'vitest';
 import { createApp } from './app.js';
 import { GatewayPolicyStore } from './llm/gateway-policy.js';
 import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
-import { LLMProviderConfigStore } from './llm/provider-config.js';
+import { ProviderRegistry } from './providers/registry.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 
-function createConfiguredStore(): LLMProviderConfigStore {
-  const configStore = new LLMProviderConfigStore();
-  configStore.upsertProvider({
-    providerId: 'ollama',
-    model: 'llama3.2',
-  });
-  configStore.updateDefaults({
-    gateway: { providerId: 'ollama', model: 'llama3.2' },
-  });
-  return configStore;
+function createConfiguredProviderOptions() {
+  return {
+    openKitConfig: {
+      defaults: { gatewayProviderId: 'ollama', gatewayModel: 'llama3.2' },
+    },
+    providerRegistry: new ProviderRegistry([
+      {
+        defaultModel: 'llama3.2',
+        displayName: 'Ollama',
+        id: 'ollama',
+        kind: 'local',
+        models: ['llama3.2'],
+        vendor: 'ollama',
+      },
+    ]),
+  };
 }
 
 describe('LLM gateway policy controls', () => {
   it('can disable agent gateway chat completions', async () => {
     const coreDb = createTestCoreDb();
     const app = createApp({
+      ...createConfiguredProviderOptions(),
       coreDb,
-      llmProviderConfigStore: createConfiguredStore(),
       gatewayPolicyStore: new GatewayPolicyStore({ enabled: false }),
     });
 
@@ -59,8 +65,8 @@ describe('LLM gateway policy controls', () => {
   it('can restrict gateway routing to approved providers', async () => {
     const coreDb = createTestCoreDb();
     const app = createApp({
+      ...createConfiguredProviderOptions(),
       coreDb,
-      llmProviderConfigStore: createConfiguredStore(),
       gatewayPolicyStore: new GatewayPolicyStore({ allowedProviderIds: ['openai'] }),
       llmPiAiClient: {
         createChatCompletion: async () => {
@@ -97,8 +103,8 @@ describe('LLM gateway policy controls', () => {
   it('records allowed gateway chat completion policy decisions', async () => {
     const coreDb = createTestCoreDb();
     const app = createApp({
+      ...createConfiguredProviderOptions(),
       coreDb,
-      llmProviderConfigStore: createConfiguredStore(),
       llmPiAiClient: {
         createChatCompletion: async (_provider, request) => ({
           id: 'chatcmpl_policy_allowed',

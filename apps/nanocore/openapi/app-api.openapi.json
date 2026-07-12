@@ -10541,6 +10541,7 @@
                   "type": "string",
                   "enum": [
                     "tokens",
+                    "usd",
                     "requests",
                     "seconds",
                     "bytes",
@@ -25789,46 +25790,11 @@
           "approvalRequestId": {
             "type": "string",
             "minLength": 1
-          },
-          "policyDecisionId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "remoteSummary": {
-            "type": "string",
-            "minLength": 1
-          },
-          "remoteName": {
-            "default": "origin",
-            "type": "string",
-            "minLength": 1
-          },
-          "sourceRef": {
-            "type": "string",
-            "minLength": 1
-          },
-          "targetBranch": {
-            "type": "string",
-            "minLength": 1
-          },
-          "commitIds": {
-            "minItems": 1,
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
           }
         },
         "required": [
           "requestId",
-          "approvalRequestId",
-          "policyDecisionId",
-          "remoteSummary",
-          "remoteName",
-          "sourceRef",
-          "targetBranch",
-          "commitIds"
+          "approvalRequestId"
         ],
         "additionalProperties": false
       },
@@ -32696,6 +32662,8 @@
                     "allow",
                     "deny",
                     "require_approval",
+                    "require_escalation",
+                    "defer",
                     "not_applicable",
                     "error"
                   ]
@@ -34301,6 +34269,8 @@
                     "allow",
                     "deny",
                     "require_approval",
+                    "require_escalation",
+                    "defer",
                     "not_applicable",
                     "error"
                   ]
@@ -53383,10 +53353,6 @@
             "type": "string",
             "minLength": 1
           },
-          "remoteSummary": {
-            "type": "string",
-            "minLength": 1
-          },
           "sourceRef": {
             "type": "string",
             "minLength": 1
@@ -53408,7 +53374,6 @@
           "requestId",
           "threadId",
           "turnId",
-          "remoteSummary",
           "sourceRef",
           "targetBranch",
           "commitIds"
@@ -58080,7 +58045,6 @@
             "type": "string",
             "enum": [
               "human",
-              "auto",
               "none"
             ]
           }
@@ -105465,5 +105429,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:6ba8e6b3e2d1650ea871c71d5b434748f2ec106c9b4f4bd7b5c598f8fa6e5442"
+  "x-openkit-source-digest": "sha256:826e87967c62fdd7e18a2f80214328ee65c2f7a85af5b4bf43f2eace56314926"
 }

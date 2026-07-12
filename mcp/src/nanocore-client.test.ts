@@ -1537,7 +1537,6 @@ describe('NanoCore public client facade', () => {
       threadId: 'th_demo',
       turnId: 'tu_demo',
       repositoryResourceId: 'repo_default',
-      remoteSummary: 'GitHub repository openkit on origin',
       sourceRef: 'HEAD',
       targetBranch: 'main',
       commitIds: ['abc123'],
@@ -1552,7 +1551,6 @@ describe('NanoCore public client facade', () => {
           resourceId: 'repo_default',
           input: {
             commitIds: ['abc123'],
-            remoteSummary: 'GitHub repository openkit on origin',
             requestId: '00000000-0000-4000-8000-000000000024',
             sourceRef: 'HEAD',
             targetBranch: 'main',
@@ -1572,11 +1570,6 @@ describe('NanoCore public client facade', () => {
       workspaceId: 'ws_demo',
       repositoryResourceId: 'repo_default',
       approvalRequestId: 'ap_git_push_1',
-      policyDecisionId: 'pd_repo_push_granted_ap_git_push_1',
-      remoteSummary: 'GitHub repository openkit on origin',
-      sourceRef: 'HEAD',
-      targetBranch: 'main',
-      commitIds: ['abc123'],
       requestId: '00000000-0000-4000-8000-000000000026',
     });
 
@@ -1588,13 +1581,7 @@ describe('NanoCore public client facade', () => {
           resourceId: 'repo_default',
           input: {
             approvalRequestId: 'ap_git_push_1',
-            commitIds: ['abc123'],
-            policyDecisionId: 'pd_repo_push_granted_ap_git_push_1',
-            remoteName: 'origin',
-            remoteSummary: 'GitHub repository openkit on origin',
             requestId: '00000000-0000-4000-8000-000000000026',
-            sourceRef: 'HEAD',
-            targetBranch: 'main',
           },
         },
       },

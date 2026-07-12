@@ -1,9 +1,11 @@
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
 
 let harness: NanoCoreHarness | null = null;
+const vaultKeyFilePath = join(tmpdir(), `openkit-vault-config-e2e-${process.pid}.key`);
 
 afterEach(async () => {
   const current = harness;
@@ -13,6 +15,7 @@ afterEach(async () => {
     await current.stop();
     await removeDataRoot(current.dataRoot);
   }
+  rmSync(vaultKeyFilePath, { force: true });
 });
 
 describe('nanocore e2e config loading', () => {
@@ -73,5 +76,43 @@ describe('nanocore e2e config loading', () => {
     expect(existsSync(join(harness.dataRoot, 'config', 'agents', 'simulator.agent.jsonc'))).toBe(
       false
     );
+  });
+
+  it('unlocks encrypted-file vault from config and degrades safely after a wrong-key restart', async () => {
+    harness = await startNanoCoreHarness({ seedDemoWorkspace: false });
+    const dataRoot = harness.dataRoot;
+
+    await harness.stop();
+    writeFileSync(vaultKeyFilePath, Buffer.alloc(32, 7), { mode: 0o600 });
+    writeFileSync(
+      join(dataRoot, 'config', 'server.jsonc'),
+      JSON.stringify({
+        schemaVersion: 1,
+        vault: {
+          encryptedFile: { keyFilePath: vaultKeyFilePath },
+          localDefaultBackend: 'encrypted-file',
+        },
+      })
+    );
+
+    harness = await startNanoCoreHarness({ dataRoot, seedDemoWorkspace: false });
+    const available = await fetch(`${harness.baseUrl}/api/app/vault/status`);
+
+    expect(available.status).toBe(200);
+    await expect(available.json()).resolves.toMatchObject({
+      backendKind: 'encrypted-file',
+      state: 'available',
+    });
+
+    await harness.stop();
+    writeFileSync(vaultKeyFilePath, Buffer.alloc(32, 8));
+    harness = await startNanoCoreHarness({ dataRoot, seedDemoWorkspace: false });
+    const locked = await fetch(`${harness.baseUrl}/api/app/vault/status`);
+
+    expect(locked.status).toBe(200);
+    await expect(locked.json()).resolves.toMatchObject({
+      backendKind: 'encrypted-file',
+      state: 'locked',
+    });
   });
 });

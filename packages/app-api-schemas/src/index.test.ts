@@ -150,6 +150,7 @@ import {
   SubmitKnowledgeProposalDecisionResponseSchema,
   SubmitThreadGoalSteeringRequestSchema,
   SubmitThreadGoalSteeringResponseSchema,
+  SubmitTurnFeedbackRequestSchema,
   SubmitWorkspaceRecoveryDecisionRequestSchema,
   SubmitWorkspaceRecoveryDecisionResponseSchema,
   SubmitWorkspaceSyncReviewDecisionRequestSchema,
@@ -1806,11 +1807,11 @@ describe('app api schemas', () => {
           requestId,
           capabilityCallId: 'cap_1',
           category: 'llm',
-          unit: 'tokens',
-          quantity: 12,
+          unit: 'usd',
+          quantity: 0.012,
           modelId: 'openai/gpt-5.1',
           providerRef: 'openrouter',
-          source: 'llm-gateway-adapter-reported:input',
+          source: 'llm-gateway-adapter-reported:cost_estimate',
           recordedAt: timestamp,
         },
       ],
@@ -1818,6 +1819,7 @@ describe('app api schemas', () => {
     });
 
     expect(parsed.usageRecords[0]?.capabilityCallId).toBe('cap_1');
+    expect(parsed.usageRecords[0]?.unit).toBe('usd');
   });
 
   it('accepts evidence bundle create and list read models', () => {
@@ -1935,8 +1937,8 @@ describe('app api schemas', () => {
             threadId: 'th_demo',
             turnId: 'turn_demo',
           },
-          result: 'allow',
-          reasonCode: 'worker_turn_start_allowed',
+          result: 'require_escalation',
+          reasonCode: 'higher_authority_required',
           enforcementPoint: 'runtime.worker_turn_loop.start',
           requiredApprovalKind: null,
           approvalId: null,
@@ -1973,8 +1975,8 @@ describe('app api schemas', () => {
           action: 'llm.gateway.chat_completions',
           resourceSummary: { kind: 'llm-provider', providerId: 'openrouter' },
           contextSummary: { route: '/v1/chat/completions' },
-          result: 'allow',
-          reasonCode: 'gateway_allowed',
+          result: 'defer',
+          reasonCode: 'policy_context_missing',
           enforcementPoint: 'llm.gateway.policy',
           requiredApprovalKind: null,
           approvalId: null,
@@ -3185,12 +3187,11 @@ describe('app api schemas', () => {
     ).toBe(false);
   });
 
-  it('accepts Git push approval requests and rejects raw secrets or host paths', () => {
+  it('accepts Git push approval requests without caller-authored remote identity', () => {
     const request = {
       requestId: '00000000-0000-4000-8000-000000000024',
       threadId: 'th_demo',
       turnId: 'tu_demo',
-      remoteSummary: 'GitHub repository openkit on origin',
       sourceRef: 'HEAD',
       targetBranch: 'main',
       commitIds: ['abc123'],
@@ -3208,7 +3209,7 @@ describe('app api schemas', () => {
       resolvedAt: null,
     };
 
-    expect(RequestGitPushApprovalRequestSchema.parse(request).targetBranch).toBe('main');
+    expect(RequestGitPushApprovalRequestSchema.parse(request)).toEqual(request);
     expect(
       RequestGitPushApprovalResponseSchema.parse({
         approval,
@@ -3219,26 +3220,15 @@ describe('app api schemas', () => {
     expect(
       RequestGitPushApprovalRequestSchema.safeParse({
         ...request,
-        remoteSummary: 'GitHub repository at /Users/example/openkit',
-      }).success
-    ).toBe(false);
-    expect(
-      RequestGitPushApprovalRequestSchema.safeParse({
-        ...request,
-        remoteSummary: 'GitHub repository token ghp_openkit_secret',
+        remoteSummary: 'GitHub repository openkit on origin',
       }).success
     ).toBe(false);
   });
 
-  it('accepts approved Git push execution requests and rejects raw secrets or host paths', () => {
+  it('accepts approval-bound Git push execution requests and rejects repeated authority', () => {
     const request = {
       requestId: '00000000-0000-4000-8000-000000000026',
       approvalRequestId: 'ap_git_push_1',
-      policyDecisionId: 'pd_repo_push_granted_ap_git_push_1',
-      remoteSummary: 'GitHub repository openkit on origin',
-      sourceRef: 'HEAD',
-      targetBranch: 'main',
-      commitIds: ['abc123'],
     };
     const record = {
       id: 'gpr_1',
@@ -3260,20 +3250,20 @@ describe('app api schemas', () => {
       updatedAt: timestamp,
     };
 
-    expect(ExecuteGitPushRequestSchema.parse(request).remoteName).toBe('origin');
+    expect(ExecuteGitPushRequestSchema.parse(request)).toEqual(request);
     expect(ExecuteGitPushResponseSchema.parse(record).outcome).toBe('pushed');
-    expect(
-      ExecuteGitPushRequestSchema.safeParse({
-        ...request,
-        remoteSummary: 'GitHub repository at /Users/example/openkit',
-      }).success
-    ).toBe(false);
-    expect(
-      ExecuteGitPushRequestSchema.safeParse({
-        ...request,
-        remoteSummary: 'GitHub repository token ghp_openkit_secret',
-      }).success
-    ).toBe(false);
+    for (const repeatedAuthority of [
+      { policyDecisionId: 'pd_repo_push_granted_ap_git_push_1' },
+      { remoteSummary: 'GitHub repository openkit on origin' },
+      { remoteName: 'origin' },
+      { sourceRef: 'HEAD' },
+      { targetBranch: 'main' },
+      { commitIds: ['abc123'] },
+    ]) {
+      expect(
+        ExecuteGitPushRequestSchema.safeParse({ ...request, ...repeatedAuthority }).success
+      ).toBe(false);
+    }
   });
 
   it('accepts repository diagnostics snapshots and rejects raw local paths', () => {
@@ -3814,6 +3804,9 @@ describe('app api schemas', () => {
         createdAt: timestamp,
       }).rating
     ).toBe('good');
+    expect(
+      SubmitTurnFeedbackRequestSchema.safeParse({ rating: 'good', note: null, extra: true }).success
+    ).toBe(false);
     expect(
       WorkspaceDashboardResponseSchema.parse({
         workspace: {
@@ -5319,6 +5312,36 @@ describe('app api schemas', () => {
     expect(
       SubmitKnowledgeProposalDecisionRequestSchema.safeParse({
         decision: 'redo',
+      }).success
+    ).toBe(false);
+  });
+
+  it('limits goal step review overrides to implemented policies', () => {
+    expect(
+      RunThreadGoalStepRequestSchema.safeParse({ requestId: 'goal-step-default' }).success
+    ).toBe(true);
+    expect(
+      RunThreadGoalStepRequestSchema.safeParse({
+        requestId: 'goal-step-human',
+        reviewPolicyOverride: 'human',
+      }).success
+    ).toBe(true);
+    expect(
+      RunThreadGoalStepRequestSchema.safeParse({
+        requestId: 'goal-step-none',
+        reviewPolicyOverride: 'none',
+      }).success
+    ).toBe(true);
+    expect(
+      RunThreadGoalStepRequestSchema.safeParse({
+        requestId: 'goal-step-auto',
+        reviewPolicyOverride: 'auto',
+      }).success
+    ).toBe(false);
+    expect(
+      RunThreadGoalStepRequestSchema.safeParse({
+        requestId: 'goal-step-unknown',
+        reviewPolicyOverride: 'unknown',
       }).success
     ).toBe(false);
   });

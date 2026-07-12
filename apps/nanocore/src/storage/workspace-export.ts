@@ -379,6 +379,25 @@ const ExportedGoalTaskSchema = z
 
 type ExportedGoalTask = z.infer<typeof ExportedGoalTaskSchema>;
 
+const ExportedGoalReviewResolutionSnapshotSchema = z
+  .object({
+    outcome: z.enum([
+      'complete_next_task',
+      'complete_goal',
+      'continue',
+      'retry',
+      'needs_revision',
+      'decompose',
+      'awaiting_human',
+      'blocked',
+      'aborted',
+    ]),
+    task: ExportedGoalTaskSchema,
+    goal: ExportedGoalRecordSchema.nullable(),
+    nextTask: ExportedGoalTaskSchema.nullable(),
+  })
+  .strict();
+
 const ExportedGoalReviewRecordSchema = z
   .object({
     reviewId: z.string().min(1),
@@ -396,6 +415,7 @@ const ExportedGoalReviewRecordSchema = z
     updatedAt: z.string().datetime(),
     resolvedAt: z.string().datetime().nullable(),
     resolutionRequestId: z.string().min(1).nullable(),
+    resolutionSnapshot: ExportedGoalReviewResolutionSnapshotSchema.nullable(),
   })
   .strict();
 
@@ -1691,6 +1711,18 @@ export function readWorkspaceImportSnapshot(
 
     return ExportedGoalReviewRecordSchema.parse({
       ...parsed,
+      resolutionSnapshot: parsed.resolutionSnapshot
+        ? {
+            ...parsed.resolutionSnapshot,
+            task: { ...parsed.resolutionSnapshot.task, workspaceId: input.targetWorkspaceId },
+            goal: parsed.resolutionSnapshot.goal
+              ? { ...parsed.resolutionSnapshot.goal, workspaceId: input.targetWorkspaceId }
+              : null,
+            nextTask: parsed.resolutionSnapshot.nextTask
+              ? { ...parsed.resolutionSnapshot.nextTask, workspaceId: input.targetWorkspaceId }
+              : null,
+          }
+        : null,
       workspaceId: input.targetWorkspaceId,
     });
   });

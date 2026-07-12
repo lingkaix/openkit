@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest';
-
-import { GatewayUsageTracker } from './gateway-usage.js';
-import type { ResolvedLLMProviderConfig } from './provider-config.js';
-import { findProviderSpec } from './provider-registry.js';
+import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import { GatewayUsageTracker, parseUsage } from './gateway-usage.js';
 
 /**
  * Creates a provider config suitable for usage-tracker tests.
@@ -10,29 +8,83 @@ import { findProviderSpec } from './provider-registry.js';
  * @returns Resolved provider config.
  */
 function providerConfig(): ResolvedLLMProviderConfig {
-  const spec = findProviderSpec('openai');
-
-  if (!spec) {
-    throw new Error('Missing OpenAI provider spec');
-  }
-
   return {
-    id: 'openai',
-    specId: 'openai',
-    displayName: 'OpenAI',
-    model: 'gpt-5.1',
-    baseUrl: 'https://api.example.test/v1',
-    hasApiKey: true,
-    apiKeySource: 'stored',
-    gatewayCapabilities: spec.gatewayCapabilities,
-    extraHeaders: {},
-    extraBody: {},
-    spec,
+    adapterId: 'openai',
     apiKey: 'sk-test',
+    backend: 'pi-ai',
+    baseUrl: 'https://api.example.test/v1',
+    displayName: 'OpenAI',
+    extraBody: {},
+    extraHeaders: {},
+    gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
+    id: 'openai',
+    requiresApiKey: true,
   };
 }
 
 describe('GatewayUsageTracker', () => {
+  it('retains raw pi-ai cache-write and cost usage while rejecting invalid quantities', () => {
+    expect(
+      parseUsage({
+        cacheRead: 7,
+        cacheWrite: 5,
+        cost: { total: 0.0012 },
+        input: 3,
+        output: 4,
+        totalTokens: 19,
+      })
+    ).toEqual({
+      cachedInputTokens: 7,
+      cacheWriteTokens: 5,
+      completionTokens: 4,
+      costEstimateUsd: 0.0012,
+      inputTokens: 3,
+      totalTokens: 19,
+    });
+    expect(
+      parseUsage({
+        cacheRead: Number.NaN,
+        cacheWrite: -1,
+        cost: { total: Number.POSITIVE_INFINITY },
+        input: -1,
+        output: Number.NEGATIVE_INFINITY,
+        totalTokens: -1,
+      })
+    ).toEqual({
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      completionTokens: 0,
+      costEstimateUsd: 0,
+      inputTokens: 0,
+      totalTokens: 0,
+    });
+  });
+
+  it('preserves public diagnostics semantics for raw pi-ai usage', () => {
+    const tracker = new GatewayUsageTracker({ now: () => new Date('2026-05-26T00:00:00.000Z') });
+
+    tracker.recordUsage({
+      endpoint: 'chat_completions',
+      model: 'claude-sonnet-4-5',
+      provider: providerConfig(),
+      usage: {
+        cacheRead: 60,
+        cacheWrite: 20,
+        input: 40,
+        output: 5,
+        totalTokens: 125,
+      },
+    });
+
+    expect(tracker.snapshot().summaries[0]).toMatchObject({
+      cachedInputTokens: 60,
+      cacheHitRate: 0.6,
+      inputTokens: 100,
+      requestCount: 1,
+      totalTokens: 105,
+    });
+  });
+
   it('aggregates Chat-style cached token usage', () => {
     const tracker = new GatewayUsageTracker({ now: () => new Date('2026-05-26T00:00:00.000Z') });
 

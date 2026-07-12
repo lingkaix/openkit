@@ -6,13 +6,7 @@ export default defineConfig({
     include: ['src/**/*.test.ts'],
     testTimeout: 15_000,
     coverage: {
-      exclude: [
-        'dist/**',
-        'src/index.ts',
-        'src/runtime/codex/transport.ts',
-        'src/runtime/host-adapter.ts',
-        'src/runtime/opencode/command-session.ts',
-      ],
+      exclude: ['dist/**', 'src/index.ts', 'src/runtime/codex/transport.ts'],
       provider: 'v8',
       thresholds: {
         lines: 70,

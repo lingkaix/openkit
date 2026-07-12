@@ -20,10 +20,10 @@ import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../s
 import { LOCAL_USER_ID, workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { createVaultGrant } from '../vault-grants.js';
-import { createVaultReference } from '../vault-references.js';
-import { createVaultUnlockState } from '../vault-unlock-state.js';
-import { listVaultUseRecords } from '../vault-use-records.js';
+import { createVaultGrant } from '../vault/vault-grants.js';
+import { createVaultReference } from '../vault/vault-references.js';
+import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
+import { listVaultUseRecords } from '../vault/vault-use-records.js';
 import { upsertWorkspaceRepositoryResource } from '../workspace/repository-store.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import type {
@@ -332,6 +332,28 @@ function testGitRefExists(repositoryPath: string, reference: string): boolean {
 }
 
 describe('WorkerGovernanceTurnExecutor', () => {
+  it('rejects direct interrupts when the executor advertises no interrupt support', async () => {
+    const store = createDemoStore();
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Keep the one-shot worker running');
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend: new FakeWorkerGovernanceBackend(),
+      environmentBackend: {
+        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        kind: 'openshell',
+        sandboxImageRef: 'openkit/worker-codex:dev',
+      },
+    });
+
+    expect(executor.capabilities.interrupts).toBe(false);
+    await expect(
+      executor.interruptTurn(store, turn.id, { requestId: 'req_unsupported_interrupt' })
+    ).rejects.toThrow();
+    expect(store.getTurnById(turn.id)).toEqual(turn);
+    expect(
+      store.getTurnEvents(turn.id).filter((event) => event.event === 'turn.completed')
+    ).toEqual([]);
+  });
+
   it('imports worker transcript records and tears down the materialized backend session', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-records-')));
 

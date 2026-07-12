@@ -5,6 +5,7 @@ import type {
   CreateAutomationRequest,
   CreateOpenKitAccessTokenRequest,
   EditRecoveryPendingUserTurnRequest,
+  GoalStepReviewPolicyOverride,
   KnowledgeManagerAnswerRequest,
   KnowledgeManagerDraftProposalRequest,
   KnowledgeManagerHealthCheckRequest,
@@ -510,7 +511,7 @@ export interface StepGoalInput extends ThreadScopeInput {
   /** Follow-up draining mode for the worker step. */
   followUpDrainMode: 'one_at_a_time';
   /** Optional review policy override accepted by NanoCore. */
-  reviewPolicyOverride?: string | undefined;
+  reviewPolicyOverride?: GoalStepReviewPolicyOverride | undefined;
   /** Request id for idempotent mutation tracking. */
   requestId: string;
 }
@@ -593,8 +594,6 @@ export interface RequestGitPushApprovalInput extends ThreadScopeInput {
   turnId: string;
   /** Repository resource id to publish from. */
   repositoryResourceId: string;
-  /** Redacted remote display summary. */
-  remoteSummary: string;
   /** Source ref to publish. */
   sourceRef: string;
   /** Target branch to update. */
@@ -611,18 +610,6 @@ export interface ExecuteGitPushInput extends WorkspaceScopeInput {
   repositoryResourceId: string;
   /** Approval request that authorized the push. */
   approvalRequestId: string;
-  /** Permission decision that allowed the push. */
-  policyDecisionId: string;
-  /** Redacted remote display summary. */
-  remoteSummary: string;
-  /** Optional Git remote name. */
-  remoteName?: string | undefined;
-  /** Source ref to publish. */
-  sourceRef: string;
-  /** Target branch to update. */
-  targetBranch: string;
-  /** OpenKit-created commit ids to publish. */
-  commitIds: string[];
   /** Request id for idempotent mutation tracking. */
   requestId: string;
 }
@@ -916,13 +903,7 @@ export function createNanoCoreFacade(
     executeGitPush: (input) =>
       client.repositories.executeGitPush(input.workspaceId, input.repositoryResourceId, {
         approvalRequestId: input.approvalRequestId,
-        commitIds: input.commitIds,
-        policyDecisionId: input.policyDecisionId,
-        remoteName: input.remoteName ?? 'origin',
-        remoteSummary: input.remoteSummary,
         requestId: input.requestId,
-        sourceRef: input.sourceRef,
-        targetBranch: input.targetBranch,
       }),
     linkRepository: (input) =>
       client.repositories.setDefault(input.workspaceId, {
@@ -1163,7 +1144,6 @@ export function createNanoCoreFacade(
     requestGitPushApproval: (input) =>
       client.repositories.requestGitPushApproval(input.workspaceId, input.repositoryResourceId, {
         commitIds: input.commitIds,
-        remoteSummary: input.remoteSummary,
         requestId: input.requestId,
         sourceRef: input.sourceRef,
         targetBranch: input.targetBranch,
@@ -1318,9 +1298,7 @@ export function createNanoCoreFacade(
       client.app.runThreadGoalStep(input.workspaceId, input.threadId, {
         followUpDrainMode: input.followUpDrainMode,
         requestId: input.requestId,
-        ...(input.reviewPolicyOverride
-          ? { reviewPolicyOverride: input.reviewPolicyOverride as never }
-          : {}),
+        ...(input.reviewPolicyOverride ? { reviewPolicyOverride: input.reviewPolicyOverride } : {}),
       }),
     submitSteering: (input) =>
       client.app.submitThreadGoalSteering(input.workspaceId, input.threadId, {

@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 
 import { parseRecordEnvelope } from '@openkit/config-schema';
 
-import { ensureEncryptedFileVaultStoreDirectory } from '../vault-store-directory.js';
+import { ensureEncryptedFileVaultStoreDirectory } from '../vault/vault-store-directory.js';
 
 const CONFIG_TEMPLATE_SUFFIXES = {
   providers: '.provider.jsonc',

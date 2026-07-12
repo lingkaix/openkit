@@ -1,27 +1,11 @@
 import { z } from 'zod';
 
 import { WORKER_COORDINATOR_AGENT_ID } from './tools.js';
-import type {
-  WorkerCoordinatorDecision,
-  WorkerCoordinatorDecisionKind,
-  WorkerCoordinatorRuntime,
-} from './worker-coordinator.js';
+import type { WorkerCoordinatorRuntime } from './worker-coordinator.js';
 
 export const WORKER_DELEGATION_DRAFT_SCHEMA_VERSION = 1;
 export const STRUCTURED_WORKER_DELEGATION_REQUEST_SCHEMA_VERSION = 1;
-export const WORKER_ROUTING_SUMMARY_SCHEMA_VERSION = 1;
-export const TASK_EVALUATION_NOTE_SCHEMA_VERSION = 1;
 export const STRUCTURED_WORKER_DELEGATION_MAX_CONTEXT_TOKENS = 240_000;
-export const SUSTAINED_MODE_SOURCE_SPEC =
-  'docs/specs/20260525-sustained_mode_long_running_agent.md';
-export const DELEGATION_COMPOSITION_PHASES = [
-  'planning',
-  'worker_execution',
-  'review',
-  'handoff',
-  'knowledge_proposal',
-  'progress_tracking',
-] as const;
 
 const ContextRefSchema = z.object({
   kind: z.enum(['workspace', 'thread', 'artifact', 'knowledge', 'item']),
@@ -118,7 +102,7 @@ export interface StructuredWorkerDelegationRequestInput {
 export const WorkerDelegationDraftSchema = z.object({
   schemaVersion: z.literal(WORKER_DELEGATION_DRAFT_SCHEMA_VERSION),
   source: z.literal(WORKER_COORDINATOR_AGENT_ID),
-  mode: z.enum(['automation', 'delegation']),
+  mode: z.literal('automation'),
   prompt: z.string().min(1),
   workspaceId: z.string().min(1),
   threadId: z.string().min(1),
@@ -142,8 +126,6 @@ export interface WorkerDelegationDraftInput {
   readonly workspaceId: string;
   /** Thread id for the delegated work. */
   readonly threadId: string;
-  /** Product mode that produced the draft. */
-  readonly mode?: 'automation' | 'delegation';
   /** Selected worker target. */
   readonly target: {
     /** Worker agent id. */
@@ -158,97 +140,6 @@ export interface WorkerDelegationDraftInput {
 }
 
 /**
- * App-level routing decision record kind.
- */
-export type WorkerRoutingDecisionRecordKind = 'read_model' | 'item';
-
-/**
- * Read-model or item-backed summary of a WorkerCoordinatorAgent decision.
- */
-export const WorkerRoutingDecisionSummarySchema = z.object({
-  schemaVersion: z.literal(WORKER_ROUTING_SUMMARY_SCHEMA_VERSION),
-  recordKind: z.enum(['read_model', 'item']),
-  sourceAgentId: z.literal(WORKER_COORDINATOR_AGENT_ID),
-  decision: z.enum([
-    'quick_chat',
-    'worker_turn',
-    'goal',
-    'clarify',
-    'review',
-    'refinement',
-    'retry',
-    'handoff',
-    'unsupported',
-    'blocked',
-  ]),
-  confidence: z.number().min(0).max(1),
-  explanation: z.string().min(1),
-  selectedAgentId: z.string().nullable(),
-  requiredUserAction: z.string().nullable(),
-  delegationDraft: WorkerDelegationDraftSchema.nullable(),
-});
-
-/**
- * Summary of one WorkerCoordinatorAgent decision suitable for read models or item records.
- */
-export type WorkerRoutingDecisionSummary = z.infer<typeof WorkerRoutingDecisionSummarySchema>;
-
-/**
- * Product-facing delegation preparation snapshot.
- */
-export const DelegationPreparationSnapshotSchema = z.object({
-  mode: z.literal('delegation'),
-  fullLoopEnabled: z.literal(false),
-  sourceSpec: z.literal(SUSTAINED_MODE_SOURCE_SPEC),
-  compositionPhases: z.tuple([
-    z.literal('planning'),
-    z.literal('worker_execution'),
-    z.literal('review'),
-    z.literal('handoff'),
-    z.literal('knowledge_proposal'),
-    z.literal('progress_tracking'),
-  ]),
-  routingSummary: WorkerRoutingDecisionSummarySchema,
-});
-
-/**
- * Product-facing snapshot that prepares future delegation without running the full loop.
- */
-export type DelegationPreparationSnapshot = z.infer<typeof DelegationPreparationSnapshotSchema>;
-
-/**
- * Reserved task evaluation note shape for later review-mode work.
- */
-export const TaskEvaluationNoteSchema = z.object({
-  schemaVersion: z.literal(TASK_EVALUATION_NOTE_SCHEMA_VERSION),
-  sourceAgentId: z.literal('task-evaluator'),
-  status: z.literal('reserved'),
-  outcome: z.enum(['accept', 'revise', 'retry', 'handoff', 'escalate']),
-  summary: z.string().min(1),
-  evidenceRefs: z.array(ContextRefSchema),
-  recommendedNextAction: z.string().min(1),
-});
-
-/**
- * Reserved task evaluation note for future TaskEvaluatorAgent output.
- */
-export type TaskEvaluationNote = z.infer<typeof TaskEvaluationNoteSchema>;
-
-/**
- * Input for a reserved task evaluation note.
- */
-export interface TaskEvaluationNoteInput {
-  /** Evaluation outcome. */
-  readonly outcome?: TaskEvaluationNote['outcome'];
-  /** Human-readable evaluation summary. */
-  readonly summary: string;
-  /** Source references used by the evaluator. */
-  readonly evidenceRefs: readonly DelegationContextRef[];
-  /** Recommended next action for Core or the user. */
-  readonly recommendedNextAction: string;
-}
-
-/**
  * Creates a stable worker delegation draft without enabling sustained iteration.
  *
  * @param input Draft source data.
@@ -260,7 +151,7 @@ export function createWorkerDelegationDraft(
   return WorkerDelegationDraftSchema.parse({
     schemaVersion: WORKER_DELEGATION_DRAFT_SCHEMA_VERSION,
     source: WORKER_COORDINATOR_AGENT_ID,
-    mode: input.mode ?? 'automation',
+    mode: 'automation',
     prompt: input.prompt,
     workspaceId: input.workspaceId,
     threadId: input.threadId,
@@ -297,76 +188,4 @@ export function createStructuredWorkerDelegationRequest(
     verification: input.verification,
     reviewPolicy: input.reviewPolicy,
   });
-}
-
-/**
- * Converts a WorkerCoordinatorAgent decision to a stable record-ready summary.
- *
- * @param decision WorkerCoordinatorAgent decision.
- * @param recordKind Storage projection kind for the summary.
- * @returns Worker routing decision summary.
- */
-export function createWorkerRoutingDecisionSummary(
-  decision: WorkerCoordinatorDecision,
-  recordKind: WorkerRoutingDecisionRecordKind
-): WorkerRoutingDecisionSummary {
-  return WorkerRoutingDecisionSummarySchema.parse({
-    schemaVersion: WORKER_ROUTING_SUMMARY_SCHEMA_VERSION,
-    recordKind,
-    sourceAgentId: WORKER_COORDINATOR_AGENT_ID,
-    decision: normalizeRoutingDecision(decision.decision),
-    confidence: decision.confidence,
-    explanation: decision.explanation,
-    selectedAgentId: decision.selectedWorkerCandidate?.agentId ?? null,
-    requiredUserAction: decision.requiredUserAction === 'none' ? null : decision.requiredUserAction,
-    delegationDraft: decision.delegationDraft,
-  });
-}
-
-/**
- * Creates a delegation preparation snapshot without enabling the sustained loop.
- *
- * @param decision WorkerCoordinatorAgent decision to summarize.
- * @returns Delegation preparation snapshot.
- */
-export function createDelegationPreparationSnapshot(
-  decision: WorkerCoordinatorDecision
-): DelegationPreparationSnapshot {
-  return DelegationPreparationSnapshotSchema.parse({
-    mode: 'delegation',
-    fullLoopEnabled: false,
-    sourceSpec: SUSTAINED_MODE_SOURCE_SPEC,
-    compositionPhases: DELEGATION_COMPOSITION_PHASES,
-    routingSummary: createWorkerRoutingDecisionSummary(decision, 'read_model'),
-  });
-}
-
-/**
- * Creates a reserved task evaluation note for future review-mode implementation.
- *
- * @param input Evaluation note input.
- * @returns Reserved task evaluation note.
- */
-export function createTaskEvaluationNote(input: TaskEvaluationNoteInput): TaskEvaluationNote {
-  return TaskEvaluationNoteSchema.parse({
-    schemaVersion: TASK_EVALUATION_NOTE_SCHEMA_VERSION,
-    sourceAgentId: 'task-evaluator',
-    status: 'reserved',
-    outcome: input.outcome ?? 'revise',
-    summary: input.summary,
-    evidenceRefs: input.evidenceRefs,
-    recommendedNextAction: input.recommendedNextAction,
-  });
-}
-
-/**
- * Normalizes routing decisions to the record-supported decision set.
- *
- * @param decision Worker coordinator decision.
- * @returns Record-supported decision label.
- */
-function normalizeRoutingDecision(
-  decision: WorkerCoordinatorDecisionKind
-): WorkerRoutingDecisionSummary['decision'] {
-  return decision;
 }

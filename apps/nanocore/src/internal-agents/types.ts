@@ -4,8 +4,8 @@ import type {
   OpenAICompatibleChatCompletionResponse,
   OpenAICompatibleChatMessage,
 } from '../llm/openai-compatible-client.js';
-import type { ResolvedLLMProviderConfig } from '../llm/provider-config.js';
 import type { LLMGatewayDispatchContext } from '../llm/provider-dispatcher.js';
+import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type { InternalAgentHookFailureDiagnostic } from './hooks.js';
 
 /**

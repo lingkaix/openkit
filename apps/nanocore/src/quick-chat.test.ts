@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StartChatModeResponseSchema } from '@openkit/app-api-schemas';
@@ -10,14 +10,14 @@ import { InternalAgentRunner } from './internal-agents/runner.js';
 import type { InternalAgentStreamEvent } from './internal-agents/types.js';
 import type { CodexResponsesClient } from './llm/codex-responses-client.js';
 import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
-import { LLMProviderConfigStore } from './llm/provider-config.js';
+import { resolveProviderProfileToLLMConfig } from './providers/llm-config.js';
 import { ProviderRegistry } from './providers/registry.js';
 import type { TurnExecutor } from './runtime/types.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore } from './test-support/demo-store.js';
-import { createVaultUnlockState } from './vault-unlock-state.js';
-import { listVaultUseRecords } from './vault-use-records.js';
+import { createVaultUnlockState } from './vault/vault-unlock-state.js';
+import { listVaultUseRecords } from './vault/vault-use-records.js';
 
 class ThrowingTurnExecutor implements TurnExecutor {
   public readonly capabilities = {
@@ -46,22 +46,28 @@ class ThrowingTurnExecutor implements TurnExecutor {
 }
 
 /**
- * Creates a provider store with one quick-chat default.
+ * Creates runtime provider options with one quick-chat default.
  *
- * @returns Configured provider store for quick-chat tests.
+ * @returns Runtime provider options for quick-chat tests.
  */
-function createQuickChatProviderStore(): LLMProviderConfigStore {
-  const configStore = new LLMProviderConfigStore();
-
-  configStore.upsertProvider({
-    providerId: 'ollama',
-    model: 'llama3.2',
-  });
-  configStore.updateDefaults({
-    quickChat: { providerId: 'ollama', model: 'llama3.2' },
-  });
-
-  return configStore;
+function createQuickChatProviderOptions() {
+  return {
+    openKitConfig: {
+      defaults: {
+        gatewayModel: 'llama3.2',
+        gatewayProviderId: 'ollama',
+      },
+    },
+    providerRegistry: new ProviderRegistry([
+      {
+        defaultModel: 'llama3.2',
+        displayName: 'Ollama',
+        id: 'ollama',
+        kind: 'local' as const,
+        models: ['llama3.2'],
+      },
+    ]),
+  };
 }
 
 /**
@@ -81,12 +87,26 @@ async function collectAsync<T>(iterable: AsyncIterable<T>): Promise<T[]> {
 }
 
 describe('quick chat app API', () => {
+  it('keeps Quick Chat, Chat Mode, and Task Mode route ownership outside app composition', () => {
+    const appSource = readFileSync('./src/app.ts', 'utf8');
+    const modeEntrySource = readFileSync('./src/mode-entry-routes.ts', 'utf8');
+
+    expect(appSource).toContain('registerQuickAndChatModeRoutes({');
+    expect(appSource).toContain('registerTaskModeRoute({');
+    expect(appSource).not.toContain("registerAppApiRoute(app, 'quickChat'");
+    expect(appSource).not.toContain("registerAppApiRoute(app, 'startChatMode'");
+    expect(appSource).not.toContain("registerAppApiRoute(app, 'startTaskMode'");
+    expect(modeEntrySource).toContain("registerAppApiRoute(app, 'quickChat'");
+    expect(modeEntrySource).toContain("registerAppApiRoute(app, 'startChatMode'");
+    expect(modeEntrySource).toContain("registerAppApiRoute(app, 'startTaskMode'");
+  });
+
   it('records a thread-scoped Chat Mode answer without starting a worker turn', async () => {
     const calls: Parameters<InternalAgentRunner['run']>[0][] = [];
     const app = createApp({
+      ...createQuickChatProviderOptions(),
       store: createDemoStore(),
       turnExecutor: new ThrowingTurnExecutor(),
-      llmProviderConfigStore: createQuickChatProviderStore(),
       internalAgentRunner: {
         run: async (input) => {
           calls.push(input);
@@ -147,10 +167,10 @@ describe('quick chat app API', () => {
       const thread = store.createThread(workspace.id, 'Chat usage lineage');
       const requestId = '11111111-1111-4111-8111-111111111111';
       const app = createApp({
+        ...createQuickChatProviderOptions(),
         coreDb,
         store,
         turnExecutor: new ThrowingTurnExecutor(),
-        llmProviderConfigStore: createQuickChatProviderStore(),
         llmPiAiClient: {
           createChatCompletion: async (_provider, request) => ({
             id: 'chatcmpl_chat_mode_usage',
@@ -365,19 +385,10 @@ describe('quick chat app API', () => {
 
   it('routes requests through QuickChatAgent while preserving the app response shape', async () => {
     const calls: Parameters<InternalAgentRunner['run']>[0][] = [];
-    const configStore = new LLMProviderConfigStore();
-
-    configStore.upsertProvider({
-      providerId: 'ollama',
-      model: 'llama3.2',
-    });
-    configStore.updateDefaults({
-      quickChat: { providerId: 'ollama', model: 'llama3.2' },
-    });
 
     const app = createApp({
+      ...createQuickChatProviderOptions(),
       turnExecutor: new ThrowingTurnExecutor(),
-      llmProviderConfigStore: configStore,
       internalAgentRunner: {
         run: async (input) => {
           calls.push(input);
@@ -435,17 +446,9 @@ describe('quick chat app API', () => {
 
   it('answers with the configured quick-chat provider without starting an agent session', async () => {
     const seenRequests: Array<{ metadata?: unknown; prompt_cache_key?: unknown }> = [];
-    const configStore = new LLMProviderConfigStore();
-    configStore.upsertProvider({
-      providerId: 'ollama',
-      model: 'llama3.2',
-    });
-    configStore.updateDefaults({
-      quickChat: { providerId: 'ollama', model: 'llama3.2' },
-    });
     const app = createApp({
+      ...createQuickChatProviderOptions(),
       turnExecutor: new ThrowingTurnExecutor(),
-      llmProviderConfigStore: configStore,
       llmPiAiClient: {
         createChatCompletion: async (_provider, request) => {
           seenRequests.push(request);
@@ -496,7 +499,7 @@ describe('quick chat app API', () => {
       backendKind: 'encrypted-file',
       storeDir: join(dataRoot, 'server', 'vault'),
     });
-    const seenProviders: Array<{ apiKey: string | null; apiKeySource: string; id: string }> = [];
+    const seenProviders: Array<{ apiKey: string | null; id: string }> = [];
 
     try {
       applyMigrations(coreDb);
@@ -532,7 +535,6 @@ describe('quick chat app API', () => {
           createChatCompletion: async (provider, request) => {
             seenProviders.push({
               apiKey: provider.apiKey,
-              apiKeySource: provider.apiKeySource,
               id: provider.id,
             });
 
@@ -570,7 +572,6 @@ describe('quick chat app API', () => {
       expect(seenProviders).toEqual([
         {
           apiKey: 'sk-vault-quick-chat',
-          apiKeySource: 'vault',
           id: 'quick-vault',
         },
       ]);
@@ -593,11 +594,10 @@ describe('quick chat app API', () => {
     applyMigrations(coreDb);
 
     try {
-      const configStore = createQuickChatProviderStore();
       const app = createApp({
+        ...createQuickChatProviderOptions(),
         coreDb,
         turnExecutor: new ThrowingTurnExecutor(),
-        llmProviderConfigStore: configStore,
         llmPiAiClient: {
           createChatCompletion: async (_provider, request) => ({
             id: 'chatcmpl_quick_usage',
@@ -665,7 +665,6 @@ describe('quick chat app API', () => {
   it('returns a config error when no quick-chat provider is selected', async () => {
     const app = createApp({
       turnExecutor: new ThrowingTurnExecutor(),
-      llmProviderConfigStore: new LLMProviderConfigStore(),
     });
 
     const res = await app.request('/api/app/quick-chat', {
@@ -682,17 +681,31 @@ describe('quick chat app API', () => {
 
   it('adds stable OpenKit prompt cache metadata for Codex-backed quick chat', async () => {
     const seenRequests: Array<{ metadata?: unknown; prompt_cache_key?: unknown }> = [];
-    const configStore = new LLMProviderConfigStore();
-    configStore.upsertProvider({
-      providerId: 'openai_codex',
-      model: 'openai-codex/gpt-5.1-codex',
-    });
-    configStore.updateDefaults({
-      quickChat: { providerId: 'openai_codex', model: 'openai-codex/gpt-5.1-codex' },
-    });
     const app = createApp({
+      openKitConfig: {
+        defaults: {
+          gatewayModel: 'openai-codex/gpt-5.1-codex',
+          gatewayProviderId: 'openai_codex',
+        },
+      },
+      providerRegistry: new ProviderRegistry([
+        {
+          defaultModel: 'openai-codex/gpt-5.1-codex',
+          displayName: 'OpenAI Codex',
+          extensions: {
+            openkit: {
+              codexOAuth: {
+                accountSlotId: 'default',
+              },
+            },
+          },
+          id: 'openai_codex',
+          kind: 'oauth',
+          models: ['openai-codex/gpt-5.1-codex'],
+          vendor: 'openai_codex',
+        },
+      ]),
       turnExecutor: new ThrowingTurnExecutor(),
-      llmProviderConfigStore: configStore,
       llmCodexResponsesClient: {
         createResponses: async (_provider, request) => {
           seenRequests.push(request);
@@ -730,8 +743,12 @@ describe('quick chat app API', () => {
   });
 
   it('streams QuickChatAgent message_update events through the internal event path', async () => {
+    const { openKitConfig, providerRegistry } = createQuickChatProviderOptions();
     const runner = new InternalAgentRunner({
-      providerConfigStore: createQuickChatProviderStore(),
+      defaultSelectionResolver: () => ({
+        providerId: openKitConfig.defaults.gatewayProviderId,
+        model: openKitConfig.defaults.gatewayModel,
+      }),
       llmClient: {
         createChatCompletion: async (_provider, request) => ({
           id: 'chatcmpl_quick_stream',
@@ -747,6 +764,8 @@ describe('quick chat app API', () => {
           ],
         }),
       },
+      providerResolver: (providerId) =>
+        resolveProviderProfileToLLMConfig(providerRegistry.get(providerId)!),
     });
 
     const events = await collectAsync(
@@ -774,13 +793,19 @@ describe('quick chat app API', () => {
   });
 
   it('emits terminal stop reasons for QuickChatAgent stream errors after stream start', async () => {
+    const { openKitConfig, providerRegistry } = createQuickChatProviderOptions();
     const runner = new InternalAgentRunner({
-      providerConfigStore: createQuickChatProviderStore(),
+      defaultSelectionResolver: () => ({
+        providerId: openKitConfig.defaults.gatewayProviderId,
+        model: openKitConfig.defaults.gatewayModel,
+      }),
       llmClient: {
         createChatCompletion: async () => {
           throw new Error('provider failed token=tok_secret');
         },
       },
+      providerResolver: (providerId) =>
+        resolveProviderProfileToLLMConfig(providerRegistry.get(providerId)!),
     });
 
     const events = await collectAsync(

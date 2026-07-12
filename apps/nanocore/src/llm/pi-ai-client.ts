@@ -6,6 +6,8 @@ import {
   createProvider,
   type Model,
   type MutableModels,
+  type Provider,
+  type ProviderStreams,
   type StreamOptions,
 } from '@earendil-works/pi-ai';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
@@ -19,7 +21,7 @@ import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
 import { xaiProvider } from '@earendil-works/pi-ai/providers/xai';
 import { zaiProvider } from '@earendil-works/pi-ai/providers/zai';
-
+import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import {
   convertChatCompletionResponseToResponsesResponse,
   convertChatCompletionStreamToResponsesStream,
@@ -30,12 +32,10 @@ import type {
   OpenAICompatibleChatCompletionRequest,
   OpenAICompatibleChatCompletionResponse,
   OpenAICompatibleChatMessage,
-  OpenAICompatibleModelListResponse,
   OpenAICompatibleResponsesRequest,
   OpenAICompatibleResponsesResponse,
 } from './openai-compatible-client.js';
 import { OpenAICompatibleProviderError } from './openai-compatible-client.js';
-import type { ResolvedLLMProviderConfig } from './provider-config.js';
 
 const ZERO_USAGE = {
   input: 0,
@@ -72,25 +72,6 @@ export class PiAiGatewayConfigurationError extends Error {
 }
 
 /**
- * Provider failure surfaced by a pi-ai-routed call with optional reported usage.
- */
-export class PiAiGatewayProviderError extends OpenAICompatibleProviderError {
-  /** Usage reported by pi-ai before the provider failure, when available. */
-  public readonly usage?: unknown;
-
-  /**
-   * Creates one pi-ai provider failure.
-   *
-   * @param input Product-safe provider failure details.
-   */
-  public constructor(input: { readonly message: string; readonly usage?: unknown }) {
-    super({ code: 'provider_error', message: input.message, status: 502, type: 'provider_error' });
-    this.name = 'PiAiGatewayProviderError';
-    this.usage = input.usage;
-  }
-}
-
-/**
  * Construction options for the pi-ai gateway client.
  */
 export interface PiAiGatewayClientOptions {
@@ -121,6 +102,7 @@ export function createDefaultPiAiGatewayModels(): MutableModels {
  * Internal adapter from NanoCore's gateway request shape to pi-ai.
  */
 export class PiAiGatewayClient {
+  private readonly adapterProviders: ReadonlyMap<string, Provider>;
   private readonly models: MutableModels;
 
   /**
@@ -130,6 +112,9 @@ export class PiAiGatewayClient {
    */
   public constructor(options: PiAiGatewayClientOptions = {}) {
     this.models = options.models ?? createDefaultPiAiGatewayModels();
+    this.adapterProviders = new Map(
+      this.models.getProviders().map((provider) => [provider.id, provider])
+    );
   }
 
   /**
@@ -137,11 +122,13 @@ export class PiAiGatewayClient {
    *
    * @param provider Resolved OpenKit provider config.
    * @param request Chat Completions request.
+   * @param onUsage Optional observer for the provider-native terminal usage payload.
    * @returns OpenAI-compatible Chat Completions response.
    */
   public async createChatCompletion(
     provider: ResolvedLLMProviderConfig,
-    request: OpenAICompatibleChatCompletionRequest
+    request: OpenAICompatibleChatCompletionRequest,
+    onUsage?: (usage: unknown) => void
   ): Promise<OpenAICompatibleChatCompletionResponse> {
     this.assertExplicitCredential(provider);
     this.assertSupportedRequest(request, { allowStream: false });
@@ -152,11 +139,14 @@ export class PiAiGatewayClient {
       this.toContext(request, model),
       this.toStreamOptions(provider, request)
     );
+    onUsage?.(response.usage);
 
     if (response.stopReason === 'error' || response.stopReason === 'aborted') {
-      throw new PiAiGatewayProviderError({
+      throw new OpenAICompatibleProviderError({
+        code: 'provider_error',
         message: response.errorMessage ?? 'pi-ai provider failed',
-        usage: toChatUsage(response.usage),
+        status: 502,
+        type: 'provider_error',
       });
     }
 
@@ -168,11 +158,13 @@ export class PiAiGatewayClient {
    *
    * @param provider Resolved OpenKit provider config.
    * @param request Chat Completions request.
+   * @param onUsage Optional observer for the provider-native terminal usage payload.
    * @returns OpenAI-compatible Chat Completions SSE stream.
    */
   public async createChatCompletionStream(
     provider: ResolvedLLMProviderConfig,
-    request: OpenAICompatibleChatCompletionRequest
+    request: OpenAICompatibleChatCompletionRequest,
+    onUsage?: (usage: unknown) => void
   ): Promise<ReadableStream<Uint8Array>> {
     this.assertExplicitCredential(provider);
     this.assertSupportedRequest(request, { allowStream: true });
@@ -184,30 +176,7 @@ export class PiAiGatewayClient {
       this.toStreamOptions(provider, request)
     );
 
-    return this.toChatCompletionSseStream(events, request.model);
-  }
-
-  /**
-   * Lists known models for a resolved provider without calling NanoCore's legacy HTTP client.
-   *
-   * @param provider Resolved OpenKit provider config.
-   * @returns OpenAI-compatible model list payload.
-   */
-  public async listModels(
-    provider: ResolvedLLMProviderConfig
-  ): Promise<OpenAICompatibleModelListResponse> {
-    const configuredModel = provider.model ? this.resolveModel(provider, provider.model) : null;
-    const models = this.lookupProviderModels(provider);
-    const data = models.length > 0 ? models : configuredModel ? [configuredModel] : [];
-
-    return {
-      object: 'list',
-      data: data.map((model) => ({
-        id: model.id,
-        object: 'model',
-        owned_by: model.provider,
-      })),
-    };
+    return this.toChatCompletionSseStream(events, request.model, onUsage);
   }
 
   /**
@@ -215,16 +184,19 @@ export class PiAiGatewayClient {
    *
    * @param provider Resolved OpenKit provider config.
    * @param request Responses request.
+   * @param onUsage Optional observer for the provider-native terminal usage payload.
    * @returns OpenAI-compatible Responses response.
    */
   public async createResponses(
     provider: ResolvedLLMProviderConfig,
-    request: OpenAICompatibleResponsesRequest
+    request: OpenAICompatibleResponsesRequest,
+    onUsage?: (usage: unknown) => void
   ): Promise<OpenAICompatibleResponsesResponse> {
     return convertChatCompletionResponseToResponsesResponse(
       await this.createChatCompletion(
         provider,
-        convertResponsesRequestToChatCompletionRequest(request)
+        convertResponsesRequestToChatCompletionRequest(request),
+        onUsage
       )
     );
   }
@@ -234,16 +206,19 @@ export class PiAiGatewayClient {
    *
    * @param provider Resolved OpenKit provider config.
    * @param request Responses request.
+   * @param onUsage Optional observer for the provider-native terminal usage payload.
    * @returns OpenAI-compatible Responses SSE stream.
    */
   public async createResponsesStream(
     provider: ResolvedLLMProviderConfig,
-    request: OpenAICompatibleResponsesRequest
+    request: OpenAICompatibleResponsesRequest,
+    onUsage?: (usage: unknown) => void
   ): Promise<ReadableStream<Uint8Array>> {
     return convertChatCompletionStreamToResponsesStream(
       await this.createChatCompletionStream(
         provider,
-        convertResponsesRequestToChatCompletionRequest({ ...request, stream: true })
+        convertResponsesRequestToChatCompletionRequest({ ...request, stream: true }),
+        onUsage
       )
     );
   }
@@ -256,66 +231,77 @@ export class PiAiGatewayClient {
    * @returns pi-ai model record.
    */
   private resolveModel(provider: ResolvedLLMProviderConfig, modelId: string): Model<string> {
-    const model = this.lookupProviderIds(provider)
-      .map((providerId) => this.models.getModel(providerId, modelId))
-      .find((candidate): candidate is Model<string> => Boolean(candidate));
+    const model = this.registerConfiguredProviderModel(
+      provider,
+      modelId,
+      this.lookupAdapterModel(provider, modelId)
+    );
 
-    if (model) {
-      return model;
-    }
-
-    const customModel = this.registerCustomOpenAICompatibleModel(provider, modelId);
-
-    if (!customModel) {
+    if (!model) {
       throw new PiAiGatewayConfigurationError(
         `Provider ${provider.id} does not expose model ${modelId}.`
       );
     }
 
-    return customModel;
+    return model;
   }
 
   /**
-   * Registers a runtime OpenAI-compatible endpoint as a pi-ai custom provider when no catalog entry exists.
+   * Registers a configured provider instance around catalog behavior or a conservative custom model.
    *
    * @param provider Resolved OpenKit provider config.
    * @param modelId Requested model id.
-   * @returns Registered pi-ai model, or null when the provider is not a custom endpoint.
+   * @param template Optional catalog model and adapter implementation to preserve.
+   * @returns Registered instance model, or null when the backend cannot resolve the model safely.
    */
-  private registerCustomOpenAICompatibleModel(
+  private registerConfiguredProviderModel(
     provider: ResolvedLLMProviderConfig,
-    modelId: string
+    modelId: string,
+    template: { readonly model: Model<string>; readonly provider: Provider } | null
   ): Model<string> | null {
-    if (
-      !provider.baseUrl ||
-      provider.spec.backend !== 'pi-ai' ||
-      (provider.gatewayCapabilities.responses === 'native' && provider.specId !== provider.id)
-    ) {
+    if (provider.backend !== 'pi-ai') {
       return null;
     }
 
-    const api =
-      provider.gatewayCapabilities.responses === 'native'
-        ? 'openai-responses'
-        : 'openai-completions';
-    const model: Model<'openai-completions' | 'openai-responses'> = {
-      api,
-      baseUrl: provider.baseUrl,
-      contextWindow: 128000,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      id: modelId,
-      input: ['text'],
-      maxTokens: 32000,
-      name: modelId,
-      provider: provider.id,
-      reasoning: provider.spec.supportsReasoning,
-    };
+    let model: Model<string>;
+    let api: ProviderStreams;
+
+    if (template) {
+      model = {
+        ...template.model,
+        baseUrl: provider.baseUrl ?? template.model.baseUrl,
+        provider: provider.id,
+      };
+      api = template.provider;
+    } else {
+      if (!provider.baseUrl) {
+        return null;
+      }
+
+      const apiName =
+        provider.gatewayCapabilities.responses === 'native'
+          ? 'openai-responses'
+          : 'openai-completions';
+      model = {
+        api: apiName,
+        baseUrl: provider.baseUrl,
+        contextWindow: 128000,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        id: modelId,
+        input: ['text'],
+        maxTokens: 32000,
+        name: modelId,
+        provider: provider.id,
+        reasoning: false,
+      };
+      api = apiName === 'openai-responses' ? openAIResponsesApi() : openAICompletionsApi();
+    }
 
     this.models.setProvider(
       createProvider({
         id: provider.id,
         name: provider.displayName,
-        baseUrl: provider.baseUrl,
+        baseUrl: model.baseUrl,
         auth: {
           apiKey: {
             name: `${provider.displayName} API key`,
@@ -324,14 +310,39 @@ export class PiAiGatewayClient {
           },
         },
         models: [model],
-        api:
-          api === 'openai-responses'
-            ? { 'openai-responses': openAIResponsesApi() }
-            : { 'openai-completions': openAICompletionsApi() },
+        api,
       })
     );
 
     return model;
+  }
+
+  /**
+   * Finds a catalog model and its original adapter implementation.
+   *
+   * @param provider Resolved provider instance.
+   * @param modelId Requested model id.
+   * @returns Adapter model and provider, or null when the catalog has no match.
+   */
+  private lookupAdapterModel(
+    provider: ResolvedLLMProviderConfig,
+    modelId: string
+  ): { readonly model: Model<string>; readonly provider: Provider } | null {
+    for (const providerId of this.lookupProviderIds(provider)) {
+      const adapterProvider = this.adapterProviders.get(providerId);
+
+      if (!adapterProvider) {
+        continue;
+      }
+
+      const model = adapterProvider.getModels().find((candidate) => candidate.id === modelId);
+
+      if (model) {
+        return { model, provider: adapterProvider };
+      }
+    }
+
+    return null;
   }
 
   /**
@@ -342,23 +353,11 @@ export class PiAiGatewayClient {
    */
   private lookupProviderIds(provider: ResolvedLLMProviderConfig): string[] {
     return [
+      provider.adapterId,
+      ...(PI_AI_PROVIDER_ALIASES[provider.adapterId] ?? []),
       provider.id,
-      provider.specId,
-      ...(PI_AI_PROVIDER_ALIASES[provider.specId] ?? []),
       ...(PI_AI_PROVIDER_ALIASES[provider.id] ?? []),
     ].filter((value, index, values) => values.indexOf(value) === index);
-  }
-
-  /**
-   * Lists known pi-ai models for one OpenKit provider config.
-   *
-   * @param provider Resolved OpenKit provider config.
-   * @returns Known pi-ai model records.
-   */
-  private lookupProviderModels(provider: ResolvedLLMProviderConfig): readonly Model<string>[] {
-    return this.lookupProviderIds(provider).flatMap((providerId) =>
-      this.models.getModels(providerId)
-    );
   }
 
   /**
@@ -410,7 +409,7 @@ export class PiAiGatewayClient {
    * @param provider Resolved provider config.
    */
   private assertExplicitCredential(provider: ResolvedLLMProviderConfig): void {
-    if (provider.spec.requiresApiKey && !provider.apiKey) {
+    if (provider.requiresApiKey && !provider.apiKey) {
       throw new PiAiGatewayConfigurationError(
         `Provider ${provider.id} requires an explicit API key.`
       );
@@ -524,16 +523,19 @@ export class PiAiGatewayClient {
    *
    * @param stream pi-ai assistant event stream.
    * @param requestModel Model requested by the caller.
+   * @param onUsage Optional observer for the provider-native terminal usage payload.
    * @returns Public Chat Completions SSE stream.
    */
   private toChatCompletionSseStream(
     stream: AsyncIterable<AssistantMessageEvent>,
-    requestModel: string
+    requestModel: string,
+    onUsage?: (usage: unknown) => void
   ): ReadableStream<Uint8Array> {
     const encoder = new TextEncoder();
     let id = `chatcmpl_pi_${Date.now()}`;
     let created = Math.floor(Date.now() / 1000);
     let model = requestModel;
+    let usageObserved = false;
     const toolIndexes = new Map<number, number>();
 
     return new ReadableStream<Uint8Array>({
@@ -617,6 +619,10 @@ export class PiAiGatewayClient {
             }
 
             if (event.type === 'error') {
+              if (!usageObserved) {
+                usageObserved = true;
+                onUsage?.(event.error.usage);
+              }
               const usage = toChatUsage(event.error.usage);
               if (usage) {
                 controller.enqueue(
@@ -635,6 +641,10 @@ export class PiAiGatewayClient {
             }
 
             if (event.type === 'done') {
+              if (!usageObserved) {
+                usageObserved = true;
+                onUsage?.(event.message.usage);
+              }
               const usage = toChatUsage(event.message.usage);
               controller.enqueue(
                 encoder.encode(

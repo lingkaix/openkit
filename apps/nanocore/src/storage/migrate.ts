@@ -21,6 +21,10 @@ const migrations: MigrationFile[] = [
 
 const workspaceMigrations: MigrationFile[] = [
   { id: '0000_baseline', fileName: '0000_workspace_baseline.sql' },
+  {
+    id: '0001_goal_review_resolution_snapshot',
+    fileName: '0001_workspace_goal_review_resolution_snapshot.sql',
+  },
 ];
 
 const userMigrations: MigrationFile[] = [

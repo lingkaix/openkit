@@ -3,6 +3,7 @@ import {
   ConsumeOpenKitBootstrapTokenResponseSchema,
   CreateAutomationRequestSchema,
   CreateOpenKitAccessTokenRequestSchema,
+  GoalStepReviewPolicyOverrideSchema,
   RotateOpenKitAccessTokenRequestSchema,
   UpdateAutomationRequestSchema,
   VaultAdminBootstrapCodexAuthJsonRequestSchema,
@@ -408,13 +409,7 @@ const toolSchemas = {
   'openkit.draft_goal_plan': threadSchema.merge(optionalRequestIdSchema),
   'openkit.execute_git_push': workspaceSchema.merge(optionalRequestIdSchema).extend({
     approvalRequestId: z.string().min(1),
-    commitIds: z.array(z.string().min(1)).min(1),
-    policyDecisionId: z.string().min(1),
-    remoteName: z.string().min(1).optional(),
-    remoteSummary: z.string().min(1),
     repositoryResourceId: z.string().min(1),
-    sourceRef: z.string().min(1),
-    targetBranch: z.string().min(1),
   }),
   'openkit.create_data_root_backup': optionalRequestIdSchema,
   'openkit.verify_data_root_backup': z.object({
@@ -504,7 +499,6 @@ const toolSchemas = {
   }),
   'openkit.request_git_push_approval': threadSchema.merge(optionalRequestIdSchema).extend({
     commitIds: z.array(z.string().min(1)).min(1),
-    remoteSummary: z.string().min(1),
     repositoryResourceId: z.string().min(1),
     sourceRef: z.string().min(1),
     targetBranch: z.string().min(1),
@@ -573,7 +567,7 @@ const toolSchemas = {
   }),
   'openkit.step_goal': threadSchema.merge(optionalRequestIdSchema).extend({
     followUpDrainMode: z.literal('one_at_a_time').optional(),
-    reviewPolicyOverride: z.string().min(1).optional(),
+    reviewPolicyOverride: GoalStepReviewPolicyOverrideSchema.optional(),
   }),
   'openkit.submit_steering': threadSchema
     .merge(optionalRequestIdSchema)

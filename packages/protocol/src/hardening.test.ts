@@ -450,12 +450,12 @@ describe('protocol hardening boundary', () => {
         itemId: 'it_assistant',
         capabilityCallId: 'cap_demo',
         sourceIds: ['repo_default'],
-        unit: 'tokens',
-        quantity: 42,
-        source: 'llm.gateway',
+        unit: 'usd',
+        quantity: 0.042,
+        source: 'llm.gateway.cost_estimate',
         recordedAt: '2026-05-27T00:00:01Z',
       })
-    ).toMatchObject({ sourceIds: ['repo_default'], unit: 'tokens' });
+    ).toMatchObject({ sourceIds: ['repo_default'], unit: 'usd' });
 
     expect(
       protocol.AuditEventSchema.parse({

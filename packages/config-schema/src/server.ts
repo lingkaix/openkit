@@ -1,3 +1,5 @@
+import { isAbsolute } from 'node:path';
+
 import { z } from 'zod';
 
 import { ProviderExtensionsSchema, ProviderKindSchema } from './provider.js';
@@ -113,6 +115,12 @@ export const OpenKitDataConfigSchema = z
  */
 export const OpenKitVaultConfigSchema = z
   .object({
+    encryptedFile: z
+      .object({
+        keyFilePath: z.string().min(1).refine(isAbsolute, 'Vault key file path must be absolute.'),
+      })
+      .strict()
+      .optional(),
     localDefaultBackend: z.enum(['os-keychain', 'encrypted-file']).optional(),
   })
   .strict();

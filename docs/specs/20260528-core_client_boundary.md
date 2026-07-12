@@ -154,6 +154,8 @@ Empty successful delete routes return `void` without parsing through `z.never`.
 
 Turn SSE validation errors are delivered through the async iterator instead of a callback-only subscription path.
 
+Turn feedback submissions use the strict shared `SubmitTurnFeedbackRequestSchema`: NanoCore and `@openkit/core-client` reject unknown request fields, while the generated OpenAPI projection documents the same closed object shape. NanoCore derives persisted feedback validation from `TurnFeedbackResponseSchema` and applies strict validation at the disk boundary without defining a second public schema.
+
 ## Current Implementation Projection
 
 The composed `@openkit/core-client` surface, shared `@openkit/app-api-schemas` package, NanoCore App API validation path, Web consumption path, and MCP facade all follow this boundary.

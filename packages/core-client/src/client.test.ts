@@ -3551,7 +3551,6 @@ describe('createCoreClient', () => {
         requestId: '00000000-0000-4000-8000-000000000024',
         threadId: 'th_demo',
         turnId: 'tu_demo',
-        remoteSummary: 'GitHub repository openkit on origin',
         sourceRef: 'HEAD',
         targetBranch: 'main',
         commitIds: ['abc123'],
@@ -3561,11 +3560,6 @@ describe('createCoreClient', () => {
       client.repositories.executeGitPush('ws_demo', 'repo_default', {
         requestId: '00000000-0000-4000-8000-000000000026',
         approvalRequestId: 'ap_git_push_1',
-        policyDecisionId: 'pd_repo_push_granted_ap_git_push_1',
-        remoteSummary: 'GitHub repository openkit on origin',
-        sourceRef: 'HEAD',
-        targetBranch: 'main',
-        commitIds: ['abc123'],
       })
     ).resolves.toMatchObject({ id: 'gpr_1', outcome: 'pushed' });
     await expect(
@@ -3586,7 +3580,6 @@ describe('createCoreClient', () => {
     ]);
     expect(requests[4]?.body).toEqual({
       commitIds: ['abc123'],
-      remoteSummary: 'GitHub repository openkit on origin',
       requestId: '00000000-0000-4000-8000-000000000024',
       sourceRef: 'HEAD',
       targetBranch: 'main',
@@ -3595,13 +3588,7 @@ describe('createCoreClient', () => {
     });
     expect(requests[5]?.body).toEqual({
       approvalRequestId: 'ap_git_push_1',
-      commitIds: ['abc123'],
-      policyDecisionId: 'pd_repo_push_granted_ap_git_push_1',
-      remoteName: 'origin',
-      remoteSummary: 'GitHub repository openkit on origin',
       requestId: '00000000-0000-4000-8000-000000000026',
-      sourceRef: 'HEAD',
-      targetBranch: 'main',
     });
     expect(requests[6]?.body).toEqual({
       displayName: 'OpenKit',

@@ -264,6 +264,32 @@ export function getGitPushRecord(
 }
 
 /**
+ * Reads the terminal Git push record produced by one approval row.
+ *
+ * @param workspaceDb Open workspace-scope database handle.
+ * @param workspaceId Workspace id.
+ * @param approvalRowId Approval item row id.
+ * @returns The first terminal record for the approval, or null.
+ */
+export function getGitPushRecordByApprovalRowId(
+  workspaceDb: WorkspaceDb,
+  workspaceId: string,
+  approvalRowId: string
+): GitPushRecord | null {
+  const row = workspaceDb.sqlite
+    .prepare(
+      `SELECT push_record_id
+       FROM git_push_records
+       WHERE workspace_id = ? AND approval_row_id = ?
+       ORDER BY created_at ASC, push_record_id ASC
+       LIMIT 1`
+    )
+    .get(workspaceId, approvalRowId) as { push_record_id: string } | undefined;
+
+  return row ? getGitPushRecord(workspaceDb, workspaceId, row.push_record_id) : null;
+}
+
+/**
  * Lists durable Git push records for one workspace.
  *
  * @param workspaceDb Open workspace-scope database handle.

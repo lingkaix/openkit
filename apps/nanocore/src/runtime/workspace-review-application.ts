@@ -1,4 +1,6 @@
 import {
+  type ArtifactReviewDecision,
+  GetWorkspaceSyncReviewResponseSchema,
   type SubmitWorkspaceSyncReviewDecisionResponse,
   WorkspaceApplyPlanSchema,
   type WorkspaceApplyResult,
@@ -25,6 +27,7 @@ import {
 } from './workspace-review-git.js';
 import {
   getWorkspaceSyncReview,
+  listWorkspaceSyncReviews,
   parseWorkspaceSyncReviewItem,
   recordWorkspaceSyncReview,
   updateWorkspaceSyncReviewDecision,
@@ -32,6 +35,94 @@ import {
 
 /** Process-local command tails keyed by workspace and review id. */
 const workspaceReviewDecisionTails = new Map<string, Promise<void>>();
+
+/** Parsed artifact read model used by workspace-review projections. */
+type ArtifactReadModel = ReturnType<FsStore['listArtifacts']>[number];
+
+/**
+ * Parses one workspace synchronization review artifact into a public App API item.
+ *
+ * @param artifact Artifact candidate from the workspace store.
+ * @returns Parsed workspace sync review item, or null when the artifact is not one.
+ */
+export function parseWorkspaceSyncReviewArtifact(
+  artifact: ArtifactReadModel
+): WorkspaceSyncReviewItem | null {
+  if (artifact.content.format !== 'json') {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(artifact.content.body) as unknown;
+
+    return GetWorkspaceSyncReviewResponseSchema.parse({
+      ...(parsed && typeof parsed === 'object' ? parsed : {}),
+      artifactId: artifact.id,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Lists parsed workspace synchronization review artifacts in stable newest-first order.
+ *
+ * @param artifacts Workspace artifact candidates.
+ * @returns Parsed workspace sync review items.
+ */
+export function listWorkspaceSyncReviewArtifacts(
+  artifacts: readonly ArtifactReadModel[]
+): WorkspaceSyncReviewItem[] {
+  return artifacts
+    .map(parseWorkspaceSyncReviewArtifact)
+    .filter((item): item is WorkspaceSyncReviewItem => item !== null)
+    .sort((left, right) => right.review.updatedAt.localeCompare(left.review.updatedAt));
+}
+
+/**
+ * Lists workspace reviews without mutating artifact or durable state.
+ *
+ * Durable review lifecycle state takes precedence over immutable artifact snapshots.
+ *
+ * @param artifacts Workspace artifact candidates.
+ * @param workspaceDb Open workspace-scope database handle.
+ * @param workspaceId Workspace whose reviews should be listed.
+ * @returns Durable and artifact-only reviews in stable newest-first order.
+ */
+export function listWorkspaceSyncReviewsForRead(
+  artifacts: readonly ArtifactReadModel[],
+  workspaceDb: WorkspaceDb,
+  workspaceId: string
+): WorkspaceSyncReviewItem[] {
+  const durableReviews = listWorkspaceSyncReviews(workspaceDb, workspaceId);
+  const durableReviewIds = new Set(durableReviews.map((item) => item.review.id));
+
+  return [
+    ...durableReviews,
+    ...listWorkspaceSyncReviewArtifacts(artifacts).filter(
+      (item) => !durableReviewIds.has(item.review.id)
+    ),
+  ].sort((left, right) => right.review.updatedAt.localeCompare(left.review.updatedAt));
+}
+
+/**
+ * Maps the generic artifact decision vocabulary to the durable workspace-review vocabulary.
+ *
+ * @param decision Artifact review decision selected by the user.
+ * @returns Equivalent durable workspace review decision.
+ */
+export function workspaceSyncDecisionFromArtifact(
+  decision: ArtifactReviewDecision
+): WorkspaceSyncReviewDecision {
+  if (decision === 'redo') {
+    return 'needs_refinement';
+  }
+  if (decision === 'deferred') {
+    return 'blocked';
+  }
+
+  return decision;
+}
 
 /**
  * Resolves one durable workspace review decision and its optional apply result.

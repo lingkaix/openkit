@@ -1,4 +1,4 @@
-import { normalizeProviderId } from './provider-registry.js';
+import { normalizeProviderId } from '../providers/registry.js';
 
 /**
  * Gateway policy configuration input.

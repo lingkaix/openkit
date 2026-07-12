@@ -8,7 +8,7 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { LOCAL_USER_ID } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { createPolicyApprovalGate, createPolicyEscalationRow } from './approval-gates.js';
+import { createPolicyApprovalGate } from './approval-gates.js';
 
 describe('policy approval gates', () => {
   it('creates a durable approval gate and exposes it through Action Center', async () => {
@@ -68,60 +68,6 @@ describe('policy approval gates', () => {
           itemId: 'it_policy_gate',
           kind: 'approval',
           title: 'Approve protected resource use',
-        })
-      );
-    } finally {
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('creates a durable escalation row and exposes it through Action Center', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-policy-escalation-'));
-    const coreDb = openCoreDb(dataRoot);
-    const workspaceDb = openWorkspaceDb(dataRoot, LOCAL_USER_ID, 'ws_demo');
-    const store = createDemoStore();
-    const thread = store.createThread('ws_demo', 'Policy escalation');
-    const turn = store.createTurn('ws_demo', thread.id, 'Change policy');
-
-    try {
-      applyMigrations(coreDb);
-      applyScopedMigrations(workspaceDb);
-
-      const row = createPolicyEscalationRow({
-        decisionId: 'pd_policy_escalation',
-        description: 'A higher-authority operator must review this policy change.',
-        itemId: 'it_policy_escalation',
-        reasonCode: 'higher_authority_required',
-        resourceSummary: { kind: 'workspace-policy', id: 'ws_demo' },
-        store,
-        subjectSummary: { kind: 'agent', id: 'agent_demo' },
-        title: 'Policy escalation required',
-        turnId: turn.id,
-        workspaceDb,
-        workspaceId: 'ws_demo',
-      });
-
-      expect(row).toEqual({
-        decisionId: 'pd_policy_escalation',
-        itemId: 'it_policy_escalation',
-      });
-      expect(permissionDecision(workspaceDb, 'pd_policy_escalation')).toMatchObject({
-        policy_engine_version: 'nanocore-approval-policy:v1',
-        result: 'require_escalation',
-      });
-
-      const app = createApp({ store });
-      const res = await app.request('/api/app/workspaces/ws_demo/action-center');
-      const rows = ListHumanAttentionResponseSchema.parse(await res.json()).items;
-
-      expect(rows).toContainEqual(
-        expect.objectContaining({
-          id: 'policy-escalation:it_policy_escalation',
-          itemId: 'it_policy_escalation',
-          kind: 'blocked_turn',
-          severity: 'risk',
-          title: 'Policy escalation required',
         })
       );
     } finally {

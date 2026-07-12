@@ -48,6 +48,8 @@ export const goalReviewRecords = sqliteTable(
     resolvedAt: text('resolved_at'),
     /** Request id that resolved this review decision. */
     resolutionRequestId: text('resolution_request_id'),
+    /** Immutable JSON snapshot of the first successful review advance result. */
+    resolutionSnapshotJson: text('resolution_snapshot_json'),
   },
   (table) => [
     primaryKey({ columns: [table.workspaceId, table.threadId, table.goalId, table.reviewId] }),

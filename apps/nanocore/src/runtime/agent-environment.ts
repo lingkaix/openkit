@@ -17,10 +17,10 @@ import { createInjectionPlan } from '../injection-plans.js';
 import { createInjectionReceipt } from '../injection-receipts.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import type { CoreDb } from '../storage/db.js';
-import type { VaultBackend } from '../vault-backend.js';
-import { getVaultGrant, type VaultGrantRecord } from '../vault-grants.js';
-import { getVaultReference, type VaultReferenceRecord } from '../vault-references.js';
-import { createVaultUseAuditedBackend } from '../vault-use-audited-backend.js';
+import { type VaultBackend, vaultSecretMaterialToString } from '../vault/vault-backend.js';
+import { getVaultGrant, type VaultGrantRecord } from '../vault/vault-grants.js';
+import { getVaultReference, type VaultReferenceRecord } from '../vault/vault-references.js';
+import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend.js';
 import type { RuntimeAgent } from './types.js';
 
 type Turn = z.infer<typeof TurnSchema>;
@@ -1194,7 +1194,7 @@ function resolveWorkerCredentialDeclarations(
       declaration,
       grant,
       input,
-      material: vaultMaterialToString(material),
+      material: vaultSecretMaterialToString(material),
       reference,
     });
   }
@@ -1576,16 +1576,6 @@ function resolveCodexAuthRuntimeFileDeclarations(
       visibility: 'runtime-file',
     },
   ];
-}
-
-/**
- * Converts vault material to the provider credential string expected by OpenShell.
- *
- * @param material Vault secret material.
- * @returns UTF-8 credential string.
- */
-function vaultMaterialToString(material: string | Uint8Array): string {
-  return typeof material === 'string' ? material : Buffer.from(material).toString('utf8');
 }
 
 /**

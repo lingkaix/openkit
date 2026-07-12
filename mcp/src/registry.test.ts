@@ -799,6 +799,21 @@ describe('OpenKit AI Interface registry', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('rejects unsupported Goal Mode review policy overrides', async () => {
+    const { calls, client } = createFakeNanoCoreClient();
+    const registry = createOpenKitAiInterface({ nanoCore: client });
+
+    await expect(
+      registry.callTool('openkit.step_goal', {
+        requestId: explicitRequestId,
+        reviewPolicyOverride: 'auto',
+        threadId: 'th_demo',
+        workspaceId: 'ws_demo',
+      })
+    ).rejects.toThrow();
+    expect(calls).toHaveLength(0);
+  });
+
   it('routes Knowledge Manager answer requests through a read-only tool', async () => {
     const { calls, client } = createFakeNanoCoreClient();
     const registry = createOpenKitAiInterface({ nanoCore: client });
@@ -2132,7 +2147,6 @@ describe('OpenKit AI Interface registry', () => {
       threadId: 'th_demo',
       turnId: 'tu_demo',
       repositoryResourceId: 'repo_default',
-      remoteSummary: 'GitHub repository openkit on origin',
       sourceRef: 'HEAD',
       targetBranch: 'main',
       commitIds: ['abc123'],
@@ -2143,7 +2157,6 @@ describe('OpenKit AI Interface registry', () => {
         method: 'requestGitPushApproval',
         input: {
           commitIds: ['abc123'],
-          remoteSummary: 'GitHub repository openkit on origin',
           repositoryResourceId: 'repo_default',
           requestId: expect.any(String),
           sourceRef: 'HEAD',
@@ -2170,11 +2183,6 @@ describe('OpenKit AI Interface registry', () => {
       workspaceId: 'ws_demo',
       repositoryResourceId: 'repo_default',
       approvalRequestId: 'ap_git_push_1',
-      policyDecisionId: 'pd_repo_push_granted_ap_git_push_1',
-      remoteSummary: 'GitHub repository openkit on origin',
-      sourceRef: 'HEAD',
-      targetBranch: 'main',
-      commitIds: ['abc123'],
     });
 
     expect(calls).toEqual([
@@ -2182,13 +2190,8 @@ describe('OpenKit AI Interface registry', () => {
         method: 'executeGitPush',
         input: {
           approvalRequestId: 'ap_git_push_1',
-          commitIds: ['abc123'],
-          policyDecisionId: 'pd_repo_push_granted_ap_git_push_1',
-          remoteSummary: 'GitHub repository openkit on origin',
           repositoryResourceId: 'repo_default',
           requestId: expect.any(String),
-          sourceRef: 'HEAD',
-          targetBranch: 'main',
           workspaceId: 'ws_demo',
         },
       },

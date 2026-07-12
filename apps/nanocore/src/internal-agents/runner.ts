@@ -1,11 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
-import type {
-  LLMProviderConfigStore,
-  LLMProviderDefaultSelection,
-  ResolvedLLMProviderConfig,
-} from '../llm/provider-config.js';
+import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import {
   createInternalAgentHookDispatcher,
   type InternalAgentHook,
@@ -47,22 +43,20 @@ export type InternalAgentProviderResolver = (providerId: string) => ResolvedLLMP
  */
 export type InternalAgentDefaultSelectionResolver = (
   defaultUse: InternalAgentDefaultProviderUse
-) => LLMProviderDefaultSelection;
+) => { readonly providerId: string | null; readonly model: string | null };
 
 /**
  * Construction options for the internal agent runner.
  */
 export interface InternalAgentRunnerOptions {
+  /** Resolver for the current default provider and model selection. */
+  readonly defaultSelectionResolver: InternalAgentDefaultSelectionResolver;
   /** LLM client or dispatcher used by internal agents. */
   readonly llmClient: InternalAgentLLMClient;
-  /** Provider config store used for provider resolution. */
-  readonly providerConfigStore: LLMProviderConfigStore;
+  /** Resolver for one current secret-bearing provider configuration. */
+  readonly providerResolver: InternalAgentProviderResolver;
   /** Optional registry override for tests or future composition. */
   readonly registry?: InternalAgentRegistry;
-  /** Optional provider resolver for runtime-config-backed app callers. */
-  readonly providerResolver?: InternalAgentProviderResolver;
-  /** Optional default resolver for runtime-config-backed app callers. */
-  readonly defaultSelectionResolver?: InternalAgentDefaultSelectionResolver;
   /** Optional app-local hooks that observe internal-agent loop events. */
   readonly hooks?: readonly InternalAgentHook[];
   /** Optional clock for deterministic diagnostics tests. */
@@ -130,14 +124,13 @@ export class InternalAgentTimeoutError extends Error {
  * Common runner for bounded NanoCore internal agent provider calls.
  */
 export class InternalAgentRunner {
-  private readonly defaultSelectionResolver: InternalAgentDefaultSelectionResolver | undefined;
+  private readonly defaultSelectionResolver: InternalAgentDefaultSelectionResolver;
   private readonly failures: InternalAgentFailureDiagnostic[] = [];
   private readonly hookDispatcher: InternalAgentHookDispatcher | null;
   private readonly hookFailures: InternalAgentHookFailureDiagnostic[] = [];
   private readonly llmClient: InternalAgentLLMClient;
   private readonly now: () => Date;
-  private readonly providerConfigStore: LLMProviderConfigStore;
-  private readonly providerResolver: InternalAgentProviderResolver | undefined;
+  private readonly providerResolver: InternalAgentProviderResolver;
   private readonly registry: InternalAgentRegistry;
 
   /**
@@ -153,7 +146,6 @@ export class InternalAgentRunner {
         : null;
     this.llmClient = options.llmClient;
     this.now = options.now ?? (() => new Date());
-    this.providerConfigStore = options.providerConfigStore;
     this.providerResolver = options.providerResolver;
     this.registry = options.registry ?? createDefaultInternalAgentRegistry();
   }
@@ -188,7 +180,7 @@ export class InternalAgentRunner {
     this.enforceLimits(definition, input);
 
     const startedAt = Date.now();
-    const provider = this.resolveProvider(selection.providerId);
+    const provider = this.providerResolver(selection.providerId);
     let assistantContent = '';
     let loopFailureRecorded = false;
     let terminalEvent: InternalAgentAgentEndEvent | null = null;
@@ -293,7 +285,7 @@ export class InternalAgentRunner {
 
     this.enforceLimits(definition, input);
 
-    const provider = this.resolveProvider(selection.providerId);
+    const provider = this.providerResolver(selection.providerId);
     const createChatCompletionStream = this.llmClient.createChatCompletionStream?.bind(
       this.llmClient
     );
@@ -352,22 +344,14 @@ export class InternalAgentRunner {
   private resolveSelection(
     definition: InternalAgentDefinition,
     input: InternalAgentRunInput
-  ): LLMProviderDefaultSelection {
-    const defaults = this.defaultSelectionResolver?.(definition.defaultProviderUse) ?? {
-      ...this.providerConfigStore.getDefaults()[definition.defaultProviderUse],
-    };
+  ): ReturnType<InternalAgentDefaultSelectionResolver> {
+    const defaults = this.defaultSelectionResolver(definition.defaultProviderUse);
     const { providerId: defaultProviderId, model: defaultModel } = defaults;
 
     return {
       providerId: input.providerId ?? defaultProviderId,
       model: input.model ?? defaultModel,
     };
-  }
-
-  private resolveProvider(providerId: string): ResolvedLLMProviderConfig {
-    return (
-      this.providerResolver?.(providerId) ?? this.providerConfigStore.resolveProvider(providerId)
-    );
   }
 
   private enforceLimits(definition: InternalAgentDefinition, input: InternalAgentRunInput): void {
@@ -395,9 +379,7 @@ export class InternalAgentRunner {
   private createProviderDiagnostic(
     definition: InternalAgentDefinition
   ): InternalAgentProviderDiagnostic {
-    const selection =
-      this.defaultSelectionResolver?.(definition.defaultProviderUse) ??
-      this.providerConfigStore.getDefaults()[definition.defaultProviderUse];
+    const selection = this.defaultSelectionResolver(definition.defaultProviderUse);
 
     if (!selection.providerId) {
       return { configured: false, reason: 'provider-missing' };

@@ -8,6 +8,7 @@ import { applyScopedMigrations } from '../storage/migrate.js';
 import type { WorkspaceRepositoryGitConfig } from '../workspace/repository-store.js';
 import {
   getGitPushRecord,
+  getGitPushRecordByApprovalRowId,
   listGitPushRecords,
   prepareGitPushAttempt,
   recordGitPushRecord,
@@ -83,6 +84,11 @@ describe('Git push records', () => {
         outcome: 'pushed',
         commitIds: ['abc123'],
       });
+      expect(getGitPushRecordByApprovalRowId(workspaceDb, 'ws_demo', 'har_1')).toMatchObject({
+        id: 'gpr_1',
+      });
+      expect(getGitPushRecordByApprovalRowId(workspaceDb, 'ws_other', 'har_1')).toBeNull();
+      expect(getGitPushRecordByApprovalRowId(workspaceDb, 'ws_demo', 'har_missing')).toBeNull();
       expect(listGitPushRecords(workspaceDb, 'ws_demo')).toEqual([
         expect.objectContaining({
           id: 'gpr_1',

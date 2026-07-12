@@ -5,6 +5,7 @@ import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { WorkerControlGatewayError } from './worker-control-gateway.js';
 
 const DEFAULT_MCP_RESULT_MAX_BYTES = 1024 * 1024;
+const DEFAULT_MCP_CALL_TIMEOUT_MS = 60_000;
 const MCP_SECRET_FIELD_NAMES = new Set([
   'apiKey',
   'authorization',
@@ -148,11 +149,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       return 'ready';
     }
 
-    return (
-      this.stdioHealth.get(
-        this.stdioSessionKey(server, workerMcpCredentialEnvironment(server, this.env))
-      ) ?? 'ready'
-    );
+    return this.stdioHealth.get(this.stdioServerKey(server)) ?? 'ready';
   }
 
   /**
@@ -176,15 +173,19 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       return;
     }
 
-    const key = this.stdioSessionKey(server, workerMcpCredentialEnvironment(server, this.env));
-    const sessionPromise = this.stdioSessions.get(key);
-    this.stdioSessions.delete(key);
-    this.stdioHealth.set(key, 'degraded');
-
-    if (sessionPromise) {
-      const session = await sessionPromise.catch(() => null);
-      await session?.close();
-    }
+    const serverKey = this.stdioServerKey(server);
+    const sessionKeyPrefix = `${serverKey}\n`;
+    const sessionPromises = [...this.stdioSessions.entries()]
+      .filter(([key]) => key.startsWith(sessionKeyPrefix))
+      .map(([key, sessionPromise]) => {
+        this.stdioSessions.delete(key);
+        return sessionPromise;
+      });
+    this.stdioHealth.set(serverKey, 'degraded');
+    const sessions = await Promise.allSettled(sessionPromises);
+    await Promise.all(
+      sessions.map((session) => (session.status === 'fulfilled' ? session.value.close() : null))
+    );
   }
 
   /**
@@ -201,33 +202,48 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     const command = input.server.command ?? [];
     const env =
       input.credentials?.environment ?? workerMcpCredentialEnvironment(input.server, this.env);
+    const serverKey = this.stdioServerKey(input.server);
     const key = this.stdioSessionKey(input.server, env);
     let sessionPromise = this.stdioSessions.get(key);
 
     if (!sessionPromise) {
-      sessionPromise = Promise.resolve(
-        new StdioMcpSession(command, env, () => {
-          this.stdioSessions.delete(key);
-        })
+      sessionPromise = Promise.resolve().then(
+        () =>
+          new StdioMcpSession(command, env, () => {
+            if (this.stdioSessions.get(key) === sessionPromise) {
+              this.stdioSessions.delete(key);
+              this.stdioHealth.set(serverKey, 'degraded');
+            }
+          })
       );
       this.stdioSessions.set(key, sessionPromise);
     }
 
     try {
       const session = await sessionPromise;
-      const result = await session.callTool({
-        args: input.arguments,
-        expectedInputSchema,
-        liveSchemaSnapshotSink: input.liveSchemaSnapshotSink,
-        maxResultBytes: DEFAULT_MCP_RESULT_MAX_BYTES,
-        toolName: input.toolName,
-      });
-      this.stdioHealth.set(key, 'ready');
+      const result = await withTimeout(DEFAULT_MCP_CALL_TIMEOUT_MS, () =>
+        session.callTool(input, expectedInputSchema)
+      );
+      if (this.stdioSessions.get(key) === sessionPromise) {
+        this.stdioHealth.set(serverKey, 'ready');
+      }
       return result;
     } catch (error) {
-      if (error instanceof WorkerControlGatewayError && error.code === 'mcp-server-unavailable') {
-        this.stdioSessions.delete(key);
-        this.stdioHealth.set(key, 'degraded');
+      if (
+        error instanceof WorkerControlGatewayError &&
+        (error.code === 'mcp-server-unavailable' || error.code === 'mcp-timeout')
+      ) {
+        const currentSessionPromise = this.stdioSessions.get(key);
+        if (!currentSessionPromise || currentSessionPromise === sessionPromise) {
+          if (currentSessionPromise) {
+            this.stdioSessions.delete(key);
+          }
+          this.stdioHealth.set(serverKey, 'degraded');
+        }
+        if (error.code === 'mcp-timeout') {
+          const session = await sessionPromise.catch(() => null);
+          await session?.close();
+        }
       }
       throw error;
     }
@@ -241,28 +257,18 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
    * @returns Stable cache key for this process configuration.
    */
   private stdioSessionKey(server: WorkerMcpServerSnapshot, env: Record<string, string>): string {
-    return JSON.stringify({ command: server.command ?? [], env, serverId: server.id });
+    return `${this.stdioServerKey(server)}\n${canonicalJson({ command: server.command ?? [], env })}`;
   }
-}
 
-/** Input for one stdio MCP tool call. */
-export interface StdioWorkerMcpToolCallInput {
-  /** Command argv used to start the MCP server. */
-  command: string[];
-  /** Gateway-private environment variables for the MCP server process. */
-  env?: Record<string, string>;
-  /** MCP tool name to call. */
-  toolName: string;
-  /** JSON arguments for the tool. */
-  args: Record<string, unknown>;
-  /** Pinned input schema expected for this tool. */
-  expectedInputSchema?: Record<string, unknown> | undefined;
-  /** Optional sink for live server-reported schemas observed during the call. */
-  liveSchemaSnapshotSink?: ((snapshot: WorkerMcpLiveSchemaSnapshot) => void) | undefined;
-  /** Timeout in milliseconds. */
-  timeoutMs?: number;
-  /** Maximum serialized structured result size in bytes. */
-  maxResultBytes?: number;
+  /**
+   * Builds the identity key shared by every credential variant of one stdio server.
+   *
+   * @param server AEP-resolved MCP server snapshot.
+   * @returns Stable server identity key.
+   */
+  private stdioServerKey(server: WorkerMcpServerSnapshot): string {
+    return JSON.stringify({ serverId: server.id });
+  }
 }
 
 /** Input for one HTTP MCP tool call. */
@@ -297,49 +303,6 @@ type JsonRpcResponse =
       result: unknown;
     };
 
-type StdioMcpSessionToolCallInput = Omit<StdioWorkerMcpToolCallInput, 'command' | 'env'>;
-
-/** Calls one stdio MCP server using newline-delimited JSON-RPC. */
-export async function callStdioWorkerMcpTool(
-  input: StdioWorkerMcpToolCallInput
-): Promise<Record<string, unknown>> {
-  if (input.command.length === 0) {
-    throw mcpServerUnavailableError();
-  }
-
-  return withTimeout(input.timeoutMs ?? 60_000, async () => {
-    const client = new StdioJsonRpcClient(input.command, input.env ?? {});
-
-    try {
-      const initializeResult = await client.request('initialize', {
-        capabilities: {},
-        clientInfo: { name: 'openkit-nanocore', version: '0.1.0' },
-        protocolVersion: '2025-06-18',
-      });
-      await client.notify('initialized', {});
-
-      if (input.expectedInputSchema) {
-        const liveTools = extractLiveToolSchemas(await client.request('tools/list', {}));
-        enforcePinnedToolSchema(liveTools, input.toolName, input.expectedInputSchema);
-        input.liveSchemaSnapshotSink?.({
-          serverInfo: extractServerInfo(initializeResult),
-          tools: liveTools,
-        });
-      }
-
-      return toolResultPayload(
-        await client.request('tools/call', {
-          arguments: input.args,
-          name: input.toolName,
-        }),
-        input.maxResultBytes ?? DEFAULT_MCP_RESULT_MAX_BYTES
-      );
-    } finally {
-      await client.close();
-    }
-  });
-}
-
 /** Calls one HTTP MCP server using request/response JSON-RPC. */
 export async function callHttpWorkerMcpTool(
   input: HttpWorkerMcpToolCallInput
@@ -348,7 +311,7 @@ export async function callHttpWorkerMcpTool(
     throw mcpServerUnavailableError();
   }
 
-  return withTimeout(input.timeoutMs ?? 60_000, async () => {
+  return withTimeout(input.timeoutMs ?? DEFAULT_MCP_CALL_TIMEOUT_MS, async () => {
     const client = new HttpJsonRpcClient(input.url, input.headers ?? {});
 
     const initializeResult = await client.request('initialize', {
@@ -398,10 +361,14 @@ class StdioMcpSession {
    * Calls one tool after initializing the session once.
    *
    * @param input Tool call input.
+   * @param expectedInputSchema Pinned input schema for drift checks.
    * @returns Product-safe structured tool result.
    */
-  public async callTool(input: StdioMcpSessionToolCallInput): Promise<Record<string, unknown>> {
-    const run = this.chain.then(() => this.callToolSerial(input));
+  public async callTool(
+    input: WorkerMcpToolCallInput,
+    expectedInputSchema: Record<string, unknown> | undefined
+  ): Promise<Record<string, unknown>> {
+    const run = this.chain.then(() => this.callToolSerial(input, expectedInputSchema));
     this.chain = run.then(
       () => undefined,
       () => undefined
@@ -420,10 +387,12 @@ class StdioMcpSession {
    * Runs one serialized MCP tool call on the child process.
    *
    * @param input Tool call input.
+   * @param expectedInputSchema Pinned input schema for drift checks.
    * @returns Product-safe structured tool result.
    */
   private async callToolSerial(
-    input: StdioMcpSessionToolCallInput
+    input: WorkerMcpToolCallInput,
+    expectedInputSchema: Record<string, unknown> | undefined
   ): Promise<Record<string, unknown>> {
     if (!this.initialized) {
       this.initializeResult = await this.client.request('initialize', {
@@ -435,9 +404,9 @@ class StdioMcpSession {
       this.initialized = true;
     }
 
-    if (input.expectedInputSchema) {
+    if (expectedInputSchema) {
       const liveTools = extractLiveToolSchemas(await this.client.request('tools/list', {}));
-      enforcePinnedToolSchema(liveTools, input.toolName, input.expectedInputSchema);
+      enforcePinnedToolSchema(liveTools, input.toolName, expectedInputSchema);
       input.liveSchemaSnapshotSink?.({
         serverInfo: extractServerInfo(this.initializeResult),
         tools: liveTools,
@@ -446,10 +415,10 @@ class StdioMcpSession {
 
     return toolResultPayload(
       await this.client.request('tools/call', {
-        arguments: input.args,
+        arguments: input.arguments,
         name: input.toolName,
       }),
-      input.maxResultBytes ?? DEFAULT_MCP_RESULT_MAX_BYTES
+      DEFAULT_MCP_RESULT_MAX_BYTES
     );
   }
 }

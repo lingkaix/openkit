@@ -2,6 +2,16 @@ import { AuditEventSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { addRawSecretIssues } from './raw-secrets.js';
 
+const PermissionDecisionResultSchema = z.enum([
+  'allow',
+  'deny',
+  'require_approval',
+  'require_escalation',
+  'defer',
+  'not_applicable',
+  'error',
+]);
+
 /** Redacted workspace permission decision exposed through the App API. */
 export const WorkspacePermissionDecisionSchema = z
   .object({
@@ -14,7 +24,7 @@ export const WorkspacePermissionDecisionSchema = z
     action: z.string().min(1),
     resourceSummary: z.unknown(),
     contextSummary: z.unknown(),
-    result: z.enum(['allow', 'deny', 'require_approval', 'not_applicable', 'error']),
+    result: PermissionDecisionResultSchema,
     reasonCode: z.string().min(1),
     enforcementPoint: z.string().min(1),
     requiredApprovalKind: z.string().min(1).nullable(),
@@ -39,7 +49,7 @@ export const ServerPermissionDecisionSchema = z
     action: z.string().min(1),
     resourceSummary: z.unknown(),
     contextSummary: z.unknown(),
-    result: z.enum(['allow', 'deny', 'require_approval', 'not_applicable', 'error']),
+    result: PermissionDecisionResultSchema,
     reasonCode: z.string().min(1),
     enforcementPoint: z.string().min(1),
     requiredApprovalKind: z.string().min(1).nullable(),

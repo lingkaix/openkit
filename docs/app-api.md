@@ -2,7 +2,7 @@
 
 Status: Accepted
 Date: 2026-05-31
-Updated: 2026-07-11
+Updated: 2026-07-12
 
 ## Purpose
 
@@ -61,7 +61,7 @@ The App API owns:
 - Chat Mode, Task Mode, Goal Mode, and NanoCore internal-agent product projections.
 - Knowledge and notebook product projections over Core knowledge semantics.
 - Workspace repository resource setup and redacted diagnostics.
-- Thread Goal Mode planning, plan approval, steering, progress, and terminal closeout projections.
+- Thread Goal Mode planning, plan approval, steering, progress, terminal summaries, and stored verification evidence projections.
 - Provider registry summaries and gateway diagnostics that are safe for the UI.
 - NanoCore readiness, token administration, vault unlock/status, workspace export/import, Git push records, and worker MCP catalog projections as those accepted specs are implemented.
 - OpenAI-compatible gateway endpoints that agents can consume with standard SDKs.
@@ -181,11 +181,11 @@ The current Web UI consumes the repository prerequisite indirectly through Goal 
 
 Goal Mode is an App API workflow over the stable Core workspace, thread, turn, and item model.
 
-Current route families are `GET /api/app/workspaces/:workspaceId/threads/:threadId/goal`, `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal`, `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/plan`, `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/plan/approve`, `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/step`, and `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/steering`.
+Current route families are `GET /api/app/workspaces/:workspaceId/threads/:threadId/goal`, `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal`, `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/plan`, `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/plan/approve`, `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/plan/revise`, `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/pause`, `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/resume`, `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/step`, `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/steering`, and `POST /api/app/workspaces/:workspaceId/threads/:threadId/goals/:goalId/reviews/:reviewId/decision`.
 
-The summary route returns no-goal, planning, awaiting-plan-approval, running, awaiting-user, blocked, failed, aborted, and completed read models.
+The summary route returns no-goal, planning, awaiting-plan-approval, running, paused, reviewing, verifying, awaiting-user, blocked, failed, aborted, and completed read models.
 
-Goal summaries can include the current task, task counts, pending human attention, queued and applied steering counts, terminal stop reason, and terminal closeout details with verification evidence, artifact ids, risks, and suggested next work.
+Goal summaries can include the current task, task counts, pending human attention, queued and applied steering counts, terminal stop reason, terminal summary, stored task verification evidence, artifact ids, risks, and suggested next work. Task Evaluator loops and an independent final-verifier completion gate remain deferred.
 
 The start route records the objective as a durable user-message item and rejects a second active goal in the same thread.
 
@@ -193,7 +193,9 @@ The plan route currently uses the app-local planner path and deterministic fallb
 
 The approval route persists ordered goal tasks and marks dependency-free tasks ready without starting a worker turn.
 
-The step route starts one bounded worker envelope iteration. The request requires `requestId` and may include `followUpDrainMode`; the response returns the refreshed goal summary, worker turn id, stop reason, checkpoint stage, redacted or nullable worker session id, evidence item and artifact ids, stop decision, and product-facing pending attention.
+The step route starts one bounded worker envelope iteration. The request requires `requestId` and may include `followUpDrainMode` plus `reviewPolicyOverride: human | none`; omission defaults to `human`. The response returns the refreshed goal summary, worker turn id, stop reason, checkpoint stage, redacted or nullable worker session id, evidence item and artifact ids, stop decision, and product-facing pending attention.
+
+`human` creates a durable actionable unresolved Goal Review. Accepting it atomically resolves the review and advances the task graph. `none` skips only that completed step's review and still advances dependencies and remaining tasks.
 
 The steering route records active safe-point steering or human-gated follow-up input and returns whether the input was queued or blocked.
 
@@ -209,9 +211,15 @@ The Agent Catalog slice returns product-visible agent entries without adapter-na
 
 Current route families are `GET /api/app/agents`, `GET /api/app/agents/:agentId`, and `POST /api/app/workspaces/:workspaceId/agents/health/refresh`.
 
+The global list and detail reads are built only from the request actor's visible workspace set. Workspace-scoped tokens are limited to token-bound workspaces with active membership before catalog entries are projected; entries continue to exclude adapter-native runtime config.
+
+The current global routes still de-duplicate the union of visible workspace catalogs by agent id and use the first visible workspace in store order for both list and detail reads. This is an implementation projection, not the canonical workspace-visible catalog semantic owned by `docs/core/agent-supply.md`; an explicit workspace route shape or a deliberate cross-workspace index remains unresolved.
+
 The Action Center slice returns unified Human Attention rows for pending human actions and product-visible review states.
 
 Current route families are `GET /api/app/workspaces/:workspaceId/action-center`, `POST /api/app/workspaces/:workspaceId/artifacts/:artifactId/review`, and `POST /api/app/workspaces/:workspaceId/threads/:threadId/goals/:goalId/reviews/:reviewId/decision`.
+
+The Goal Review projection includes live default-accept unresolved rows with an executable accept action; other verdicts retain their own projected actions.
 
 Approval response mutation stays on the Core command path at `POST /api/approvals/:approvalRequestId/respond`.
 
@@ -240,6 +248,8 @@ Client methods live under `client.app`.
 The storage layout report slice returns the read-only NanoCore data-root ownership report for operator inspection: server, user, and workspace database presence, migration ledgers, derived-index directory status, and quarantined storage files.
 
 The current route family is `GET /api/app/storage/layout-report`.
+
+The route is a deployment-wide administration surface, not a workspace diagnostic, and follows the local-or-`server-admin` authority rule owned by `docs/specs/20260704-remote_auth_credential_bootstrap.md`.
 
 The report is diagnostic and read-only. It must not repair, migrate, delete, salvage, or read quarantined file contents.
 

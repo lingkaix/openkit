@@ -84,7 +84,10 @@ describe('scoped storage databases', () => {
         'workspace_repository_resources',
         'workspace_sync_evidence_bundles',
       ]);
-      expect(listMigrationIds(workspaceDb.sqlite)).toEqual(['workspace_0000_baseline']);
+      expect(listMigrationIds(workspaceDb.sqlite)).toEqual([
+        'workspace_0000_baseline',
+        'workspace_0001_goal_review_resolution_snapshot',
+      ]);
     } finally {
       workspaceDb.sqlite.close();
     }

@@ -331,7 +331,7 @@ The durable GitHub MCP and Codex auth JSON materialization paths have already mo
 
 `apps/nanocore/src/runtime/worker-governance-backend.ts` already supports backend-private provider credentials, backend-private runtime-file uploads, and runtime-env materialization.
 
-`apps/nanocore/src/vault-use-audited-backend.ts` already records vault resolve success and typed failure without storing secret material.
+`apps/nanocore/src/vault/vault-use-audited-backend.ts` already records vault resolve success and typed failure without storing secret material.
 
 `packages/config-schema/src/agent-environment.ts` already has AEP vault references, grants, provider attachments, raw-secret guards, backend capabilities, and redaction helpers.
 

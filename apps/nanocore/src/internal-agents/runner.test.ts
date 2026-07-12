@@ -4,8 +4,8 @@ import type {
   OpenAICompatibleChatCompletionRequest,
   OpenAICompatibleChatCompletionResponse,
 } from '../llm/openai-compatible-client.js';
-import { LLMProviderConfigStore, type ResolvedLLMProviderConfig } from '../llm/provider-config.js';
 import type { LLMGatewayDispatchContext } from '../llm/provider-dispatcher.js';
+import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { QUICK_CHAT_AGENT_DEFINITION } from './quick-chat.js';
 import { createDefaultInternalAgentRegistry, QUICK_CHAT_AGENT_ID } from './registry.js';
 import {
@@ -14,29 +14,43 @@ import {
   type InternalAgentTimeoutError,
 } from './runner.js';
 import { WORKER_COORDINATOR_AGENT_ID } from './tools.js';
-import type { InternalAgentLLMClient } from './types.js';
+import type { InternalAgentDefaultProviderUse, InternalAgentLLMClient } from './types.js';
+
+const RESOLVED_PROVIDER = {
+  adapterId: 'ollama',
+  apiKey: null,
+  backend: 'pi-ai',
+  baseUrl: 'http://localhost:11434/v1',
+  displayName: 'Ollama',
+  extraBody: {},
+  extraHeaders: {},
+  gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
+  id: 'ollama',
+  requiresApiKey: false,
+} satisfies ResolvedLLMProviderConfig;
 
 /**
- * Creates a provider store with one Ollama quick-chat default.
+ * Resolves the test provider used by runner calls.
  *
- * @returns Configured provider store for fake-provider tests.
+ * @param _providerId Provider id requested by the runner.
+ * @returns Minimal resolved provider fixture.
  */
-function createQuickChatProviderStore(): LLMProviderConfigStore {
-  const store = new LLMProviderConfigStore();
+function resolveProvider(_providerId: string): ResolvedLLMProviderConfig {
+  return RESOLVED_PROVIDER;
+}
 
-  store.upsertProvider({
-    providerId: 'ollama',
-    model: 'llama3.2',
-  });
-  store.updateDefaults({
-    quickChat: { providerId: 'ollama', model: 'llama3.2' },
-  });
-
-  return store;
+/**
+ * Resolves the test provider and model defaults for every internal-agent use.
+ *
+ * @param _defaultUse Default slot requested by the runner.
+ * @returns Test provider and model selection.
+ */
+function resolveDefaultSelection(_defaultUse: InternalAgentDefaultProviderUse) {
+  return { providerId: RESOLVED_PROVIDER.id, model: 'llama3.2' };
 }
 
 describe('internal agent runner', () => {
-  it('resolves the QuickChatAgent provider and model through existing quick-chat defaults', async () => {
+  it('resolves the QuickChatAgent provider and model through injected dependencies', async () => {
     const seen: Array<{
       context: LLMGatewayDispatchContext;
       provider: ResolvedLLMProviderConfig;
@@ -62,8 +76,9 @@ describe('internal agent runner', () => {
       },
     };
     const runner = new InternalAgentRunner({
+      defaultSelectionResolver: resolveDefaultSelection,
       llmClient,
-      providerConfigStore: createQuickChatProviderStore(),
+      providerResolver: resolveProvider,
       registry: createDefaultInternalAgentRegistry(),
     });
 
@@ -96,8 +111,9 @@ describe('internal agent runner', () => {
       },
     };
     const runner = new InternalAgentRunner({
+      defaultSelectionResolver: () => ({ model: null, providerId: null }),
       llmClient,
-      providerConfigStore: new LLMProviderConfigStore(),
+      providerResolver: resolveProvider,
       registry: createDefaultInternalAgentRegistry(),
     });
 
@@ -113,16 +129,6 @@ describe('internal agent runner', () => {
   });
 
   it('redacts prompts, tokens, account ids, auth headers, and secrets from diagnostics', async () => {
-    const store = new LLMProviderConfigStore();
-
-    store.upsertProvider({
-      providerId: 'openai_codex',
-      model: 'openai-codex/gpt-5.1-codex',
-    });
-    store.updateDefaults({
-      quickChat: { providerId: 'openai_codex', model: 'openai-codex/gpt-5.1-codex' },
-    });
-
     const llmClient: InternalAgentLLMClient = {
       createChatCompletion: async () => {
         throw new Error(
@@ -131,8 +137,9 @@ describe('internal agent runner', () => {
       },
     };
     const runner = new InternalAgentRunner({
+      defaultSelectionResolver: resolveDefaultSelection,
       llmClient,
-      providerConfigStore: store,
+      providerResolver: resolveProvider,
       registry: createDefaultInternalAgentRegistry(),
     });
 
@@ -170,16 +177,6 @@ describe('internal agent runner', () => {
   });
 
   it('parses structured JSON output for WorkerCoordinatorAgent decisions', async () => {
-    const store = new LLMProviderConfigStore();
-
-    store.upsertProvider({
-      providerId: 'openai',
-      model: 'gpt-5.1',
-    });
-    store.updateDefaults({
-      internalTasks: { providerId: 'openai', model: 'gpt-5.1' },
-    });
-
     const llmClient: InternalAgentLLMClient = {
       createChatCompletion: async (_provider, request) => ({
         id: 'chatcmpl_worker_coordinator',
@@ -212,8 +209,9 @@ describe('internal agent runner', () => {
       }),
     };
     const runner = new InternalAgentRunner({
+      defaultSelectionResolver: resolveDefaultSelection,
       llmClient,
-      providerConfigStore: store,
+      providerResolver: resolveProvider,
       registry: createDefaultInternalAgentRegistry(),
     });
 
@@ -237,16 +235,6 @@ describe('internal agent runner', () => {
   });
 
   it('rejects malformed structured output for WorkerCoordinatorAgent and redacts diagnostics', async () => {
-    const store = new LLMProviderConfigStore();
-
-    store.upsertProvider({
-      providerId: 'openai',
-      model: 'gpt-5.1',
-    });
-    store.updateDefaults({
-      internalTasks: { providerId: 'openai', model: 'gpt-5.1' },
-    });
-
     const llmClient: InternalAgentLLMClient = {
       createChatCompletion: async (_provider, request) => ({
         id: 'chatcmpl_worker_invalid',
@@ -274,8 +262,9 @@ describe('internal agent runner', () => {
       }),
     };
     const runner = new InternalAgentRunner({
+      defaultSelectionResolver: resolveDefaultSelection,
       llmClient,
-      providerConfigStore: store,
+      providerResolver: resolveProvider,
       registry: createDefaultInternalAgentRegistry(),
     });
 
@@ -297,16 +286,6 @@ describe('internal agent runner', () => {
   });
 
   it('times out bounded internal agent provider calls and records redacted diagnostics', async () => {
-    const store = new LLMProviderConfigStore();
-
-    store.upsertProvider({
-      providerId: 'ollama',
-      model: 'llama3.2',
-    });
-    store.updateDefaults({
-      quickChat: { providerId: 'ollama', model: 'llama3.2' },
-    });
-
     const llmClient: InternalAgentLLMClient = {
       createChatCompletion: async () =>
         new Promise<OpenAICompatibleChatCompletionResponse>(() => {
@@ -314,8 +293,9 @@ describe('internal agent runner', () => {
         }),
     };
     const runner = new InternalAgentRunner({
+      defaultSelectionResolver: resolveDefaultSelection,
       llmClient,
-      providerConfigStore: store,
+      providerResolver: resolveProvider,
       registry: createDefaultInternalAgentRegistry([
         {
           ...QUICK_CHAT_AGENT_DEFINITION,
@@ -345,7 +325,6 @@ describe('internal agent runner', () => {
   });
 
   it('dispatches loop events to observational hooks without failing the run', async () => {
-    const store = createQuickChatProviderStore();
     const seenEvents: string[] = [];
     const llmClient: InternalAgentLLMClient = {
       createChatCompletion: async (_provider, request) => ({
@@ -363,6 +342,7 @@ describe('internal agent runner', () => {
       }),
     };
     const runner = new InternalAgentRunner({
+      defaultSelectionResolver: resolveDefaultSelection,
       hooks: [
         {
           id: 'record-events',
@@ -380,7 +360,7 @@ describe('internal agent runner', () => {
         },
       ],
       llmClient,
-      providerConfigStore: store,
+      providerResolver: resolveProvider,
       registry: createDefaultInternalAgentRegistry(),
     });
 

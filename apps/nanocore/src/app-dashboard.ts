@@ -1,180 +1,32 @@
+import {
+  type DashboardArtifactSummary,
+  QueueAgentSessionTerminalCommandRequestSchema,
+  QueueAgentSessionTerminalCommandResponseSchema,
+  ThreadDashboardResponseSchema,
+  type ThreadWorkStatus,
+  type WorkRouting,
+  type WorkspaceDashboardResponse,
+  WorkspaceDashboardResponseSchema,
+} from '@openkit/app-api-schemas';
 import type { ArtifactSchema, ItemSchema, ThreadSchema, TurnSchema } from '@openkit/protocol';
+import type { Context, Hono } from 'hono';
+
+import { asApiError } from './api-errors.js';
+import type { AuthVariables } from './auth/middleware.js';
+import type { RuntimeConfigManager } from './config/runtime-config.js';
+import type { FsStore } from './lib/store.js';
+import { registerAppApiRoute } from './openapi.js';
+import {
+  getThreadAgentSession,
+  resolveWorkerControlSnapshot,
+} from './runtime/agent-session-read-model.js';
+import type { TurnExecutor } from './runtime/types.js';
+import type { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 
 type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type Item = import('zod').infer<typeof ItemSchema>;
 type Thread = import('zod').infer<typeof ThreadSchema>;
 type Turn = import('zod').infer<typeof TurnSchema>;
-
-/**
- * Product modes exposed by NanoCore app-level read models.
- */
-export type ProductWorkMode = 'chat' | 'automation' | 'plan' | 'review' | 'organize' | 'delegation';
-
-/**
- * Routing decision labels shown by product dashboard surfaces.
- */
-export type WorkRoutingDecision =
-  | 'quick_chat'
-  | 'worker_turn'
-  | 'review'
-  | 'plan'
-  | 'organize'
-  | 'delegation'
-  | 'handoff'
-  | 'unsupported'
-  | 'idle';
-
-/**
- * Product-visible routing summary for the current workbench.
- */
-export interface WorkRoutingSummary {
-  /** NanoCore routing decision label. */
-  decision: WorkRoutingDecision;
-  /** Human-readable explanation for why this route was selected. */
-  explanation: string;
-  /** Worker agent selected by the route, when one applies. */
-  selectedAgentId: string | null;
-  /** Deterministic routing confidence for the current local read model. */
-  confidence: number | null;
-  /** Next user action needed before work can continue. */
-  requiredUserAction: string | null;
-}
-
-/**
- * Compact artifact summary for dashboard read models.
- */
-export interface DashboardArtifactSummary {
-  /** Artifact id. */
-  id: string;
-  /** Artifact title. */
-  title: string;
-  /** Artifact lifecycle status. */
-  status: Artifact['status'];
-  /** Optional artifact summary. */
-  summary: string | null;
-  /** Last artifact update timestamp. */
-  updatedAt: string;
-}
-
-/**
- * Thread-level product work status for the workbench header.
- */
-export interface ThreadWorkStatus {
-  /** Current product mode represented by the thread. */
-  currentMode: ProductWorkMode;
-  /** Selected worker agent id, when the mode delegates to a worker. */
-  selectedAgentId: string | null;
-  /** Active turn status or idle when the thread has no active turn. */
-  activeTurnStatus: Turn['status'] | 'idle';
-  /** Count of unresolved approval request items. */
-  pendingApprovalCount: number;
-  /** Count of unresolved user-input request items. */
-  pendingQuestionCount: number;
-  /** Most recently updated artifact attached to the thread. */
-  latestArtifact: DashboardArtifactSummary | null;
-  /** Product-visible NanoCore routing explanation. */
-  routing: WorkRoutingSummary;
-}
-
-/**
- * Active work row for a workspace dashboard.
- */
-export interface WorkspaceActiveWork {
-  /** Thread id with active work. */
-  threadId: string;
-  /** Thread title. */
-  title: string;
-  /** Active turn status. */
-  status: Turn['status'];
-  /** Product mode for this work item. */
-  mode: ProductWorkMode;
-  /** Worker agent associated with the active turn. */
-  agentId: string | null;
-  /** Current thread preview. */
-  summary: string | null;
-  /** Timestamp used to sort active work. */
-  updatedAt: string;
-}
-
-/**
- * Completed turn row for a workspace dashboard.
- */
-export interface WorkspaceCompletion {
-  /** Thread id with the completed turn. */
-  threadId: string;
-  /** Thread title. */
-  title: string;
-  /** Completed turn id. */
-  turnId: string;
-  /** Completion timestamp. */
-  completedAt: string;
-  /** Count of artifacts attached to the turn. */
-  artifactCount: number;
-  /** Completion summary from the latest artifact or thread preview. */
-  summary: string | null;
-}
-
-/**
- * Attention-needed row for a workspace dashboard.
- */
-export interface WorkspaceAttention {
-  /** Thread id that needs attention. */
-  threadId: string;
-  /** Thread title. */
-  title: string;
-  /** Turn id that needs attention. */
-  turnId: string;
-  /** Attention category. */
-  kind: 'approval' | 'question' | 'failed' | 'interrupted' | 'cancelled';
-  /** Source item id when attention comes from an item. */
-  itemId: string | null;
-  /** Product-visible attention summary. */
-  summary: string;
-  /** Timestamp used to sort attention rows. */
-  updatedAt: string;
-}
-
-/**
- * Workspace dashboard product work sections.
- */
-export interface WorkspaceWorkSections {
-  /** Running or pending worker work. */
-  activeWork: WorkspaceActiveWork[];
-  /** Recently completed worker turns. */
-  recentCompletions: WorkspaceCompletion[];
-  /** Work blocked on user attention or terminal failure. */
-  attentionNeeded: WorkspaceAttention[];
-}
-
-/**
- * Input required to build one thread work status read model.
- */
-export interface ThreadWorkStatusInput {
-  /** Thread turn history. */
-  turns: readonly Turn[];
-  /** Thread item history. */
-  items: readonly Item[];
-  /** Thread artifact inventory. */
-  artifacts: readonly Artifact[];
-  /** Worker agent selected for this thread. */
-  selectedAgentId: string | null;
-}
-
-/**
- * Input required to build workspace work sections.
- */
-export interface WorkspaceWorkSectionsInput {
-  /** Workspace threads sorted by the caller's preferred base ordering. */
-  threads: readonly Thread[];
-  /** Workspace artifact inventory. */
-  artifacts: readonly Artifact[];
-  /** Returns turns for one thread. */
-  getThreadTurns(thread: Thread): readonly Turn[];
-  /** Returns items for one thread. */
-  getThreadItems(thread: Thread): readonly Item[];
-  /** Resolves the worker agent associated with a turn. */
-  resolveAgentId(turn: Turn): string | null;
-}
 
 const ACTIVE_WORK_STATUSES = new Set<Turn['status']>(['pending', 'running']);
 const ATTENTION_TURN_STATUSES = new Set<Turn['status']>([
@@ -276,7 +128,7 @@ function pendingQuestionItems(
  * @param artifact Artifact to summarize.
  * @returns Dashboard artifact summary.
  */
-export function summarizeDashboardArtifact(artifact: Artifact): DashboardArtifactSummary {
+function summarizeDashboardArtifact(artifact: Artifact): DashboardArtifactSummary {
   return {
     id: artifact.id,
     title: artifact.title,
@@ -298,7 +150,7 @@ function buildWorkerRouting(
   selectedAgentId: string | null,
   pendingApprovalCount: number,
   pendingQuestionCount: number
-): WorkRoutingSummary {
+): WorkRouting {
   if (!selectedAgentId) {
     return {
       decision: 'unsupported',
@@ -344,7 +196,9 @@ function threadTitle(thread: Thread): string {
  * @param status Turn status to convert.
  * @returns Attention kind for failed terminal statuses.
  */
-function terminalAttentionKind(status: Turn['status']): WorkspaceAttention['kind'] | null {
+function terminalAttentionKind(
+  status: Turn['status']
+): WorkspaceDashboardResponse['attentionNeeded'][number]['kind'] | null {
   switch (status) {
     case 'failed':
     case 'interrupted':
@@ -371,7 +225,12 @@ function terminalTurnSummary(turn: Turn): string {
  * @param input Thread work status source data.
  * @returns Product work status for the thread workbench.
  */
-export function buildThreadWorkStatus(input: ThreadWorkStatusInput): ThreadWorkStatus {
+function buildThreadWorkStatus(input: {
+  turns: readonly Turn[];
+  items: readonly Item[];
+  artifacts: readonly Artifact[];
+  selectedAgentId: string | null;
+}): ThreadWorkStatus {
   const turns = sortTurns(input.turns);
   const activeTurn = [...turns]
     .reverse()
@@ -398,20 +257,26 @@ export function buildThreadWorkStatus(input: ThreadWorkStatusInput): ThreadWorkS
 /**
  * Builds workspace-level product work sections.
  *
- * @param input Workspace work section source data.
+ * @param store Store that owns dashboard records.
+ * @param workspaceId Workspace whose work sections are projected.
+ * @param threads Workspace threads in the caller's preferred base ordering.
+ * @param artifacts Workspace artifact inventory.
  * @returns Active work, completions, and attention-needed sections.
  */
-export function buildWorkspaceWorkSections(
-  input: WorkspaceWorkSectionsInput
-): WorkspaceWorkSections {
-  const activeWork: WorkspaceActiveWork[] = [];
-  const recentCompletions: WorkspaceCompletion[] = [];
-  const attentionNeeded: WorkspaceAttention[] = [];
+function buildWorkspaceWorkSections(
+  store: FsStore,
+  workspaceId: string,
+  threads: readonly Thread[],
+  artifacts: readonly Artifact[]
+): Pick<WorkspaceDashboardResponse, 'activeWork' | 'recentCompletions' | 'attentionNeeded'> {
+  const activeWork: WorkspaceDashboardResponse['activeWork'] = [];
+  const recentCompletions: WorkspaceDashboardResponse['recentCompletions'] = [];
+  const attentionNeeded: WorkspaceDashboardResponse['attentionNeeded'] = [];
 
-  for (const thread of input.threads) {
-    const turns = sortTurns(input.getThreadTurns(thread));
-    const items = input.getThreadItems(thread);
-    const threadArtifacts = input.artifacts.filter((artifact) => artifact.threadId === thread.id);
+  for (const thread of threads) {
+    const turns = sortTurns(store.listThreadTurns(workspaceId, thread.id));
+    const items = store.listThreadItems(workspaceId, thread.id);
+    const threadArtifacts = artifacts.filter((artifact) => artifact.threadId === thread.id);
     const newestArtifact = sortArtifactsNewestFirst(threadArtifacts)[0] ?? null;
     const activeTurn = [...turns].reverse().find((turn) => isActiveWorkStatus(turn.status));
 
@@ -421,7 +286,7 @@ export function buildWorkspaceWorkSections(
         title: threadTitle(thread),
         status: activeTurn.status,
         mode: 'automation',
-        agentId: input.resolveAgentId(activeTurn),
+        agentId: store.resolveTurnAgentId(activeTurn),
         summary: thread.preview ?? null,
         updatedAt: activeTurn.startedAt ?? thread.updatedAt,
       });
@@ -500,4 +365,174 @@ export function buildWorkspaceWorkSections(
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       .slice(0, 5),
   };
+}
+
+/**
+ * Registers workspace and thread dashboard routes, including active-session terminal commands.
+ *
+ * @param dependencies Hono app and current dashboard data owners.
+ */
+export function registerDashboardRoutes({
+  app,
+  requestStore,
+  runtimeConfigManager,
+  turnExecutor,
+  workerControlGateway,
+}: {
+  readonly app: Hono<{ Variables: AuthVariables }>;
+  readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
+  readonly runtimeConfigManager: RuntimeConfigManager;
+  readonly turnExecutor: TurnExecutor;
+  readonly workerControlGateway: WorkerControlGateway;
+}): void {
+  registerAppApiRoute(app, 'getWorkspaceDashboard', (c) => {
+    try {
+      const store = requestStore(c);
+      const workspaceId = c.req.param('workspaceId');
+      const workspace = store.getWorkspace(workspaceId);
+      const resources = store.getWorkspaceResources(workspaceId);
+      const threads = store
+        .listThreads(workspaceId)
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+      const providerCount = runtimeConfigManager.current().providerRegistry.list().length;
+      const workspaceArtifacts = store.listArtifacts(workspaceId);
+      const workSections = buildWorkspaceWorkSections(
+        store,
+        workspaceId,
+        threads,
+        workspaceArtifacts
+      );
+
+      return c.json(
+        WorkspaceDashboardResponseSchema.parse({
+          workspace,
+          counts: {
+            ...workspace.counts,
+            providerCount,
+          },
+          defaultContext: {
+            modelId: workspace.defaults?.defaultModelId ?? null,
+            agentId: workspace.defaults?.defaultAgentId ?? null,
+            skillIds: workspace.defaults?.defaultSkillIds ?? [],
+          },
+          agentHealth: resources.agents.map((agent) => ({
+            agentId: agent.id,
+            status: agent.health.status,
+            message: agent.health.message,
+            checkedAt: agent.health.checkedAt,
+          })),
+          recentThreads: threads.slice(0, 10),
+          activeWork: workSections.activeWork,
+          recentCompletions: workSections.recentCompletions,
+          attentionNeeded: workSections.attentionNeeded,
+        })
+      );
+    } catch (error) {
+      return asApiError((error as Error).message);
+    }
+  });
+
+  registerAppApiRoute(app, 'getThreadDashboard', (c) => {
+    try {
+      const store = requestStore(c);
+      const workspaceId = c.req.param('workspaceId');
+      const threadId = c.req.param('threadId');
+      const workspace = store.getWorkspace(workspaceId);
+      const thread = store.getThread(workspaceId, threadId);
+      const turns = store.listThreadTurns(workspaceId, threadId);
+      const threadItems = store.listThreadItems(workspaceId, threadId);
+      const latestTurn = turns.at(-1) ?? null;
+      const selectedAgentId = latestTurn
+        ? store.resolveTurnAgentId(latestTurn)
+        : (workspace.defaults?.defaultAgentId ?? null);
+      const threadArtifacts = store
+        .listArtifacts(workspaceId)
+        .filter((artifact) => artifact.threadId === threadId);
+      const artifacts = threadArtifacts.map((artifact) => summarizeDashboardArtifact(artifact));
+
+      return c.json(
+        ThreadDashboardResponseSchema.parse({
+          thread,
+          activeSession: getThreadAgentSession(
+            turnExecutor,
+            store,
+            workspaceId,
+            threadId,
+            runtimeConfigManager.current().version,
+            workerControlGateway
+          ),
+          turns,
+          artifacts,
+          workStatus: buildThreadWorkStatus({
+            turns,
+            items: threadItems,
+            artifacts: threadArtifacts,
+            selectedAgentId,
+          }),
+          composer: {
+            disabled: false,
+            defaultModelId: workspace.defaults?.defaultModelId ?? null,
+            defaultAgentId: workspace.defaults?.defaultAgentId ?? null,
+          },
+          itemLog: {
+            href: `/api/app/workspaces/${workspaceId}/threads/${threadId}/items`,
+          },
+        })
+      );
+    } catch (error) {
+      return asApiError((error as Error).message);
+    }
+  });
+
+  registerAppApiRoute(app, 'queueAgentSessionTerminalCommand', async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId');
+      const threadId = c.req.param('threadId');
+      const agentSessionId = c.req.param('agentSessionId');
+      const request = QueueAgentSessionTerminalCommandRequestSchema.parse(await c.req.json());
+      const store = requestStore(c);
+      const activeSession = turnExecutor.getAgentSession?.(store, workspaceId, threadId) ?? null;
+
+      if (!activeSession || activeSession.id !== agentSessionId) {
+        return asApiError(
+          `Active agent session not found: ${agentSessionId}`,
+          'agent_session_not_found',
+          404
+        );
+      }
+
+      const storedSession = store
+        .listThreadAgentSessions(workspaceId, threadId)
+        .find((candidate) => candidate.id === agentSessionId);
+      const snapshot = resolveWorkerControlSnapshot(
+        workerControlGateway,
+        storedSession?.environmentPackageSnapshot?.snapshotId ?? null,
+        agentSessionId,
+        workspaceId,
+        threadId
+      );
+
+      if (!snapshot) {
+        return asApiError(
+          `Worker control session not found: ${agentSessionId}`,
+          'worker_control_session_not_found',
+          404
+        );
+      }
+
+      const command = workerControlGateway.enqueueTerminalCommand(snapshot.packageSnapshotId, {
+        argv: request.argv,
+        commandId: request.requestId,
+        cwd: request.cwd,
+      });
+
+      return c.json(
+        QueueAgentSessionTerminalCommandResponseSchema.parse({
+          command,
+        })
+      );
+    } catch (error) {
+      return asApiError((error as Error).message, 'terminal_command_queue_failed', 400);
+    }
+  });
 }

@@ -1,6 +1,6 @@
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import type { CoreDb } from '../storage/db.js';
-import type { VaultBackend } from '../vault-backend.js';
+import type { VaultBackend } from '../vault/vault-backend.js';
 import { OpenShellCli } from './openshell-cli.js';
 import type { OpenShellNetworkEndpoint } from './openshell-policy.js';
 import type { TurnExecutor } from './types.js';

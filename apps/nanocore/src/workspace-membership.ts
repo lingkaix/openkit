@@ -15,7 +15,8 @@ export interface RecordWorkspaceOwnerMembershipInput {
 }
 
 /**
- * Idempotently records a workspace registry row and owner membership row.
+ * Records the initial workspace registry and adds owner membership without reviving removed access.
+ * Membership removal must retain its row with `status = 'removed'`; deleting the row discards the tombstone.
  *
  * @param input Workspace owner membership input.
  */
@@ -33,10 +34,7 @@ export function recordWorkspaceOwnerMembership(input: RecordWorkspaceOwnerMember
           updated_at
         )
          VALUES (?, ?, 'active', ?, ?)
-         ON CONFLICT(workspace_id) DO UPDATE SET
-          owner_user_id = excluded.owner_user_id,
-          status = 'active',
-          updated_at = excluded.updated_at`
+         ON CONFLICT(workspace_id) DO NOTHING`
       )
       .run(input.workspaceId, input.ownerUserId, now, now);
 
@@ -50,9 +48,7 @@ export function recordWorkspaceOwnerMembership(input: RecordWorkspaceOwnerMember
           updated_at
         )
          VALUES (?, ?, 'active', ?, ?)
-         ON CONFLICT(workspace_id, user_id) DO UPDATE SET
-          status = 'active',
-          updated_at = excluded.updated_at`
+         ON CONFLICT(workspace_id, user_id) DO NOTHING`
       )
       .run(input.workspaceId, input.ownerUserId, now, now);
   })();

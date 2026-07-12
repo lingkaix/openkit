@@ -24,10 +24,10 @@ import type { WorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore } from './test-support/demo-store.js';
-import { createVaultGrant, revokeVaultGrant } from './vault-grants.js';
-import { createVaultReference } from './vault-references.js';
-import { createVaultUnlockState, type VaultUnlockState } from './vault-unlock-state.js';
-import { listVaultUseRecords } from './vault-use-records.js';
+import { createVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
+import { createVaultReference } from './vault/vault-references.js';
+import { createVaultUnlockState, type VaultUnlockState } from './vault/vault-unlock-state.js';
+import { listVaultUseRecords } from './vault/vault-use-records.js';
 
 /**
  * Creates an app with one registered worker capability session and seeded knowledge.
@@ -2103,6 +2103,324 @@ for await (const line of lines) {
       id: knowledge?.id,
       title: 'Worker runtime policy',
     });
+  });
+
+  it('resolves worker capability data through the authenticated AEP user store', async () => {
+    const ownerUserId = 'user_worker_owner';
+    const ownerStore = createDemoStore({ userId: ownerUserId });
+    const localStore = createDemoStore();
+    const workspace = ownerStore.listWorkspaces().find((candidate) => candidate.kind === 'code');
+
+    if (!workspace) {
+      throw new Error('missing owner-scoped demo workspace');
+    }
+
+    const thread = ownerStore.listThreads(workspace.id)[0];
+    const defaultAgentId = workspace.defaults.defaultAgentId;
+
+    if (!thread || !defaultAgentId) {
+      throw new Error('missing owner-scoped demo thread or default agent');
+    }
+
+    const turn = ownerStore.createTurn(
+      workspace.id,
+      thread.id,
+      'Worker capability owner isolation'
+    );
+    const environmentPackage = AgentEnvironmentPackageSchema.parse(
+      resolveAgentEnvironmentPackage({
+        agent: ownerStore.getAgent(workspace.id, defaultAgentId),
+        agentSessionId: 'as_capability_owner_1',
+        userId: ownerUserId,
+        backend: {
+          controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+          kind: 'openshell',
+          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
+        },
+        createdAt: '2026-06-16T00:00:00.000Z',
+        requestId: '00000000-0000-4000-8000-000000000401',
+        turn,
+        workspaceCwd: '/workspace/repo',
+        workspaceRoots: [],
+      })
+    );
+    const gateway = new WorkerControlGateway({
+      createToken: () => 'token_capability_owner_1',
+      now: () => '2026-06-16T00:00:02.000Z',
+    });
+    const registration = gateway.registerSession(environmentPackage);
+    const lineage: WorkerControlLineage = {
+      agentSessionId: environmentPackage.scope.agentSessionId,
+      packageSnapshotId: environmentPackage.snapshotId,
+      requestId: environmentPackage.scope.requestId,
+      threadId: environmentPackage.scope.threadId,
+      turnId: environmentPackage.scope.turnId,
+      workspaceId: environmentPackage.scope.workspaceId,
+    };
+    const ownerKnowledge = ownerStore.createKnowledgeEntry(workspace.id, {
+      content: 'Only the authenticated AEP owner can read this marker.',
+      kind: 'project-context',
+      title: 'AEP owner marker',
+    });
+    ownerStore.createArtifact({
+      id: 'artifact_aep_owner',
+      content: { body: 'Owner-scoped artifact body', format: 'markdown' },
+      createdAt: '2026-06-16T00:00:03.000Z',
+      kind: 'summary',
+      status: 'ready',
+      summary: 'Owner-scoped artifact summary',
+      threadId: thread.id,
+      title: 'AEP owner artifact',
+      turnId: turn.id,
+      updatedAt: '2026-06-16T00:00:03.000Z',
+      version: 1,
+      workspaceId: workspace.id,
+    });
+    const stores = new Map([
+      [ownerUserId, ownerStore],
+      ['user_local', localStore],
+    ]);
+    const app = createApp({
+      mode: 'server',
+      storeFactory: (userId) => {
+        const store = stores.get(userId);
+
+        if (!store) {
+          throw new Error(`Unexpected worker store owner: ${userId}`);
+        }
+
+        return store;
+      },
+      workerControlGateway: gateway,
+    });
+    const headers = {
+      authorization: `Bearer ${registration.token}`,
+      'content-type': 'application/json',
+    };
+    const searchRes = await app.request('/api/worker-capabilities/knowledge/search', {
+      body: JSON.stringify({ lineage, query: 'authenticated AEP owner' }),
+      headers,
+      method: 'POST',
+    });
+    const searchBody = (await searchRes.json()) as { items?: Array<{ id: string; title: string }> };
+    const artifactRes = await app.request('/api/worker-capabilities/artifacts/read', {
+      body: JSON.stringify({ artifactId: 'artifact_aep_owner', lineage }),
+      headers,
+      method: 'POST',
+    });
+    const artifactBody = (await artifactRes.json()) as { artifact?: { id: string } };
+    const proposalRes = await app.request('/api/worker-capabilities/knowledge/proposals', {
+      body: JSON.stringify({
+        confidence: 0.9,
+        lineage,
+        sourceReferences: [`knowledge:${ownerKnowledge.id}`],
+        summary: 'Keep worker capability data in the authenticated owner store.',
+        title: 'AEP owner proposal',
+      }),
+      headers,
+      method: 'POST',
+    });
+    const proposalBody = (await proposalRes.json()) as {
+      draft?: { proposal: { id: string; title: string } };
+    };
+    const proposalId = proposalBody.draft?.proposal.id ?? 'missing_owner_proposal';
+
+    expect({
+      artifact: artifactBody.artifact,
+      artifactStatus: artifactRes.status,
+      proposal: proposalBody.draft?.proposal,
+      proposalStatus: proposalRes.status,
+      searchItems: searchBody.items,
+      searchStatus: searchRes.status,
+    }).toMatchObject({
+      artifact: { id: 'artifact_aep_owner' },
+      artifactStatus: 200,
+      proposal: { title: 'AEP owner proposal' },
+      proposalStatus: 200,
+      searchItems: [{ id: ownerKnowledge.id, title: 'AEP owner marker' }],
+      searchStatus: 200,
+    });
+    expect(ownerStore.getKnowledgeProposal(proposalId)).toMatchObject({
+      id: proposalId,
+      workspaceId: workspace.id,
+    });
+    expect(localStore.getKnowledgeProposal(proposalId)).toBeNull();
+  });
+
+  it('rejects capability families omitted from the authenticated AEP', async () => {
+    const fixture = createWorkerCapabilityRouteFixture();
+    fixture.environmentPackage.capabilities.routes =
+      fixture.environmentPackage.capabilities.routes.filter(
+        (route) => route.family !== 'knowledge.read'
+      );
+    const gateway = new WorkerControlGateway({
+      createToken: () => 'token_capability_route_filtered',
+    });
+    const registration = gateway.registerSession(fixture.environmentPackage);
+    const app = createApp({
+      mode: 'server',
+      store: fixture.store,
+      workerControlGateway: gateway,
+    });
+    const knowledge = fixture.store.listKnowledge(fixture.lineage.workspaceId)[0];
+    const res = await app.request('/api/worker-capabilities/knowledge/read', {
+      body: JSON.stringify({
+        knowledgeEntryId: knowledge?.id,
+        lineage: fixture.lineage,
+      }),
+      headers: {
+        authorization: `Bearer ${registration.token}`,
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+    });
+    const body = (await res.json()) as { code?: string };
+
+    expect(res.status).toBe(403);
+    expect(body.code).toBe('capability_not_in_package');
+  });
+
+  it('fails closed when a restored worker session has no environment package', async () => {
+    const fixture = createWorkerCapabilityRouteFixture();
+    const gateway = new WorkerControlGateway();
+
+    gateway.restoreSession({
+      lineage: fixture.lineage,
+      registeredAt: '2026-06-16T00:00:00.000Z',
+      token: 'token_capability_restored',
+    });
+
+    const app = createApp({
+      mode: 'server',
+      store: fixture.store,
+      workerControlGateway: gateway,
+    });
+    const res = await app.request('/api/worker-capabilities/knowledge/search', {
+      body: JSON.stringify({ lineage: fixture.lineage, query: 'OpenShell' }),
+      headers: {
+        authorization: 'Bearer token_capability_restored',
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+    });
+    const body = (await res.json()) as { code?: string };
+
+    expect(res.status).toBe(409);
+    expect(body.code).toBe('worker_control_package_unavailable');
+  });
+
+  it('rejects MCP capability calls when the authenticated package disables capabilities', async () => {
+    const fixture = createMcpWorkerCapabilityRouteFixture();
+    fixture.environmentPackage.capabilities.mode = 'disabled';
+    const gateway = new WorkerControlGateway({
+      createToken: () => 'token_capability_disabled',
+    });
+    const registration = gateway.registerSession(fixture.environmentPackage);
+    const app = createApp({
+      mode: 'server',
+      store: fixture.store,
+      workerControlGateway: gateway,
+    });
+    const res = await app.request('/api/worker-capabilities/mcp/list-servers', {
+      body: JSON.stringify({ lineage: fixture.lineage }),
+      headers: {
+        authorization: `Bearer ${registration.token}`,
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+    });
+    const body = (await res.json()) as { code?: string };
+
+    expect(res.status).toBe(403);
+    expect(body.code).toBe('capability_unavailable');
+  });
+
+  it('rejects mismatched configured stores without changing workspace ownership', async () => {
+    const fixture = createWorkerCapabilityRouteFixture();
+    const mismatchedStore = createDemoStore({ userId: 'user_other' });
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-owner-mismatch-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    coreDb.sqlite
+      .prepare(
+        `INSERT INTO users (
+          id,
+          display_name,
+          email,
+          email_verified,
+          image,
+          created_at,
+          updated_at,
+          kind,
+          last_seen_at
+        )
+         VALUES ('user_local', 'Local User', 'local@example.com', false, NULL, ?, ?, 'human', NULL)`
+      )
+      .run(Date.now(), Date.now());
+    const gateway = new WorkerControlGateway({
+      createToken: () => 'token_capability_owner_mismatch',
+    });
+    const registration = gateway.registerSession(fixture.environmentPackage);
+
+    try {
+      const apps = [
+        createApp({ mode: 'server', store: mismatchedStore, workerControlGateway: gateway }),
+        createApp({
+          coreDb,
+          mode: 'server',
+          storeFactory: () => mismatchedStore,
+          workerControlGateway: gateway,
+        }),
+      ];
+      const results = await Promise.all(
+        apps.map(async (app) => {
+          const res = await app.request('/api/worker-capabilities/knowledge/search', {
+            body: JSON.stringify({ lineage: fixture.lineage, query: 'OpenShell' }),
+            headers: {
+              authorization: `Bearer ${registration.token}`,
+              'content-type': 'application/json',
+            },
+            method: 'POST',
+          });
+
+          return { body: (await res.json()) as { code?: string }, status: res.status };
+        })
+      );
+
+      expect(results).toEqual([
+        {
+          body: expect.objectContaining({ code: 'worker_control_package_owner_mismatch' }),
+          status: 409,
+        },
+        {
+          body: expect.objectContaining({ code: 'worker_control_package_owner_mismatch' }),
+          status: 409,
+        },
+      ]);
+      expect(coreDb.sqlite.prepare('SELECT * FROM workspace_registry').all()).toEqual([]);
+      expect(coreDb.sqlite.prepare('SELECT * FROM workspace_members').all()).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects worker capability requests whose lineage mismatches the authenticated session', async () => {
+    const { app, lineage, token } = createWorkerCapabilityRouteFixture();
+    const res = await app.request('/api/worker-capabilities/knowledge/search', {
+      body: JSON.stringify({
+        lineage: { ...lineage, workspaceId: 'ws_other' },
+        query: 'OpenShell',
+      }),
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+    });
+    const body = (await res.json()) as { code?: string };
+
+    expect(res.status).toBe(403);
+    expect(body.code).toBe('worker_control_lineage_mismatch');
   });
 
   it('rejects worker capability calls with invalid sandbox bearer tokens', async () => {

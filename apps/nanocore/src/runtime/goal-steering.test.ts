@@ -5,11 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
-import {
-  applyGoalSteeringAtSafePoint,
-  getGoalSteeringReadModel,
-  recordActiveGoalSteering,
-} from './goal-steering.js';
+import { getGoalSteeringReadModel, recordActiveGoalSteering } from './goal-steering.js';
 import { createGoalRecord, updateGoalStatus } from './goal-store.js';
 import { listPendingUserTurns } from './pending-user-turns.js';
 
@@ -100,40 +96,6 @@ describe('goal steering', () => {
           queueMode: 'follow_up',
         },
       });
-    } finally {
-      workspaceDb.sqlite.close();
-    }
-  });
-
-  it('applies safe-point steering to the next prepared turn shape', () => {
-    const workspaceDb = createWorkspaceDb();
-
-    try {
-      seedGoal(workspaceDb, 'running');
-      recordActiveGoalSteering(workspaceDb, {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        goalId: 'goal_demo',
-        requestId: 'req_steer',
-        contentItemId: 'item_steer',
-      });
-
-      const result = applyGoalSteeringAtSafePoint(workspaceDb, {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        goalId: 'goal_demo',
-      });
-
-      expect(result.messages).toEqual([
-        expect.objectContaining({
-          kind: 'safe_point_steering_message',
-          owner: 'system',
-          startsWorkerTurn: false,
-        }),
-      ]);
-      expect(
-        listPendingUserTurns(workspaceDb, { workspaceId: 'ws_demo', threadId: 'th_demo' })
-      ).toEqual([]);
     } finally {
       workspaceDb.sqlite.close();
     }

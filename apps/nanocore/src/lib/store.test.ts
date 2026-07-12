@@ -1,9 +1,13 @@
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 
+import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
+import { openUserDb, openWorkspaceDb } from '../storage/db.js';
+import { userDbPath, workspaceDbPath } from '../storage/fs-layout.js';
+import { applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoWorkspaceForUser, FsStore } from './store.js';
 
 /**
@@ -19,6 +23,24 @@ function seedDemoWorkspace(store: FsStore): void {
     threads: [demo.thread],
     knowledge: demo.knowledge,
     threadItems: [],
+  });
+}
+
+/**
+ * Finds serialized files containing one forbidden value.
+ *
+ * @param root Storage tree to inspect.
+ * @param value Value that must not be serialized.
+ * @returns Root-relative paths containing the value.
+ */
+function findStorageFilesContaining(root: string, value: string): string[] {
+  return readdirSync(root, { encoding: 'utf8', recursive: true }).filter((path) => {
+    const absolutePath = join(root, path);
+    return (
+      !path.split(sep).includes('db') &&
+      statSync(absolutePath).isFile() &&
+      readFileSync(absolutePath, 'utf8').includes(value)
+    );
   });
 }
 
@@ -53,6 +75,44 @@ describe('FsStore persistence', () => {
     expect(resources.models.map((model) => model.id)).toContain('model_codex');
     expect(resources.agents.map((agent) => agent.id)).toContain('agent_codex_host');
     expect(store.getAgentForThread(workspace.id, 'th_new').id).toBe('agent_codex_host');
+  });
+
+  it('does not retain a turn when its owning thread is missing', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
+    const store = new FsStore({ dataRoot });
+    const orphanTurnId = 'tu_missing_thread';
+
+    seedDemoWorkspace(store);
+
+    expect(() =>
+      store.createTurn('ws_demo', 'th_missing', 'Reject this turn', null, {
+        turnId: orphanTurnId,
+      })
+    ).toThrow('Thread not found: th_missing');
+
+    let inMemoryOrphan: ReturnType<FsStore['getTurnById']> | null = null;
+    try {
+      inMemoryOrphan = store.getTurnById(orphanTurnId);
+    } catch {}
+
+    const validThread = store.createThread('ws_demo', 'Persist after rejected turn');
+    store.createTurn('ws_demo', validThread.id, 'Persist valid work');
+
+    const snapshot = JSON.parse(
+      readFileSync(
+        join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo', 'store.json'),
+        'utf8'
+      )
+    ) as { turns: Array<{ id: string }> };
+    const restarted = new FsStore({ dataRoot });
+    let restartedOrphan: ReturnType<FsStore['getTurnById']> | null = null;
+    try {
+      restartedOrphan = restarted.getTurnById(orphanTurnId);
+    } catch {}
+
+    expect.soft(inMemoryOrphan).toBeNull();
+    expect.soft(snapshot.turns.map((turn) => turn.id)).not.toContain(orphanTurnId);
+    expect.soft(restartedOrphan).toBeNull();
   });
 
   it('restores thread, turn, event, knowledge, artifact, and agent session history after restart', () => {
@@ -310,6 +370,123 @@ describe('FsStore persistence', () => {
     expect(restarted.listCommandRequests().map((record) => record.inputHash)).toEqual([
       'sha256:live',
     ]);
+  });
+
+  it('homes durable command idempotency in its user or workspace database', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
+    const store = new FsStore({ dataRoot });
+    seedDemoWorkspace(store);
+    const userDb = openUserDb(dataRoot, 'user_local');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'user_local', 'ws_demo');
+    try {
+      applyScopedMigrations(userDb);
+      applyScopedMigrations(workspaceDb);
+    } finally {
+      userDb.sqlite.close();
+      workspaceDb.sqlite.close();
+    }
+    const workspaceRequestId = '0190f4c8-0000-7000-8000-000000000503';
+    const userRequestId = '0190f4c8-0000-7000-8000-000000000504';
+
+    store.recordCommandRequest({
+      command: 'thread.create',
+      requestId: workspaceRequestId,
+      scope: { workspaceId: 'ws_demo' },
+      inputHash: 'sha256:workspace-database-owner',
+      response: { kind: 'thread', id: 'th_database_owned' },
+      createdAt: '2026-07-12T00:00:00.000Z',
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    store.recordCommandRequest({
+      command: 'workspace.create',
+      requestId: userRequestId,
+      scope: {},
+      inputHash: 'sha256:user-database-owner',
+      response: { kind: 'workspace', id: 'ws_database_owned' },
+      createdAt: '2026-07-12T00:00:01.000Z',
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+
+    for (const expected of [
+      {
+        inputHash: 'sha256:user-database-owner',
+        path: userDbPath(dataRoot, 'user_local'),
+        requestId: userRequestId,
+      },
+      {
+        inputHash: 'sha256:workspace-database-owner',
+        path: workspaceDbPath(dataRoot, 'user_local', 'ws_demo'),
+        requestId: workspaceRequestId,
+      },
+    ]) {
+      const sqlite = new Database(expected.path, { fileMustExist: true, readonly: true });
+      try {
+        const tableName = sqlite
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+          .pluck()
+          .get('idempotency_requests');
+        const row =
+          tableName === 'idempotency_requests'
+            ? sqlite
+                .prepare(
+                  'SELECT request_id AS requestId, input_hash AS inputHash FROM idempotency_requests WHERE request_id = ?'
+                )
+                .get(expected.requestId)
+            : undefined;
+
+        expect.soft(tableName).toBe('idempotency_requests');
+        expect.soft(row).toEqual({
+          requestId: expected.requestId,
+          inputHash: expected.inputHash,
+        });
+      } finally {
+        sqlite.close();
+      }
+    }
+
+    const fileBackedRecordsRoot = join(dataRoot, 'users', 'user_local', 'workspaces');
+    expect.soft(findStorageFilesContaining(fileBackedRecordsRoot, workspaceRequestId)).toEqual([]);
+    expect.soft(findStorageFilesContaining(fileBackedRecordsRoot, userRequestId)).toEqual([]);
+  });
+
+  it('does not serialize dynamic execution resources under workspace storage', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
+    const store = new FsStore({ dataRoot });
+    seedDemoWorkspace(store);
+    const marker = 'runtime_only_test_marker';
+    const resources = store.getWorkspaceResources('ws_demo');
+    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+
+    resources.models.push({
+      id: `model_${marker}`,
+      name: 'Runtime-only test model',
+      enabled: true,
+      isDefault: false,
+    });
+    resources.skills.push({
+      id: `skill_${marker}`,
+      name: 'Runtime-only test skill',
+      enabled: true,
+    });
+    store.upsertAgent('ws_demo', {
+      ...agent,
+      id: `agent_${marker}`,
+      modelId: `model_${marker}`,
+      skillIds: [`skill_${marker}`],
+      config: {
+        ...agent.config,
+        environment: {
+          OPENKIT_FAKE_API_TOKEN: `fake_${marker}_secret_not_real`,
+        },
+      },
+    });
+
+    expect(
+      findStorageFilesContaining(
+        join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo'),
+        marker
+      )
+    ).toEqual([]);
   });
 
   it('clamps derived turn duration when completion time is earlier than start time', () => {

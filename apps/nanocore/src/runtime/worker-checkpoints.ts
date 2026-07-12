@@ -122,14 +122,6 @@ export interface UpdateWorkerCheckpointInput {
 }
 
 /**
- * Input used to list stale checkpoint rows.
- */
-export interface ListStaleWorkerCheckpointsInput {
-  /** ISO timestamp; checkpoints updated before this value are stale. */
-  readonly olderThan: string;
-}
-
-/**
  * Evidence ids attached to a worker terminal checkpoint.
  */
 export interface WorkerCheckpointEvidenceRefs {
@@ -421,28 +413,6 @@ export function clearTerminalWorkerCheckpoint(
   }
 
   return clearWorkerCheckpoint(workspaceDb, workspaceId, threadId, turnId);
-}
-
-/**
- * Lists stale worker checkpoints in deterministic order.
- *
- * @param workspaceDb Open workspace-scope database handle.
- * @param input Stale checkpoint query input.
- * @returns Worker checkpoints updated before the cutoff.
- */
-export function listStaleWorkerCheckpoints(
-  workspaceDb: WorkspaceDb,
-  input: ListStaleWorkerCheckpointsInput
-): WorkerCheckpointRecord[] {
-  return (
-    workspaceDb.sqlite
-      .prepare(
-        `${workerCheckpointSelectSql()}
-        WHERE updated_at < ?
-        ORDER BY updated_at ASC, checkpoint_id ASC`
-      )
-      .all(input.olderThan) as WorkerCheckpointRow[]
-  ).map(mapWorkerCheckpointRow);
 }
 
 /**

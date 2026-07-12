@@ -3,12 +3,7 @@ import type { GoalRecord } from './goal-store.js';
 import { getGoalRecord } from './goal-store.js';
 import type { PendingUserTurnRecord } from './pending-user-turns.js';
 import { listPendingUserTurns } from './pending-user-turns.js';
-import {
-  drainSteeringForSafePoint,
-  enqueueFollowUpInput,
-  enqueueSteeringForSafePoint,
-  type SafePointSteeringMessage,
-} from './user-turn-queues.js';
+import { enqueueFollowUpInput, enqueueSteeringForSafePoint } from './user-turn-queues.js';
 
 /**
  * Stored steering state after active user input is accepted.
@@ -43,26 +38,6 @@ export interface RecordActiveGoalSteeringResult {
   readonly state: RecordedGoalSteeringState;
   /** Stored pending input row. */
   readonly pendingTurn: PendingUserTurnRecord;
-}
-
-/**
- * Input used to apply safe-point steering.
- */
-export interface ApplyGoalSteeringAtSafePointInput {
-  /** Workspace that owns the goal. */
-  readonly workspaceId: string;
-  /** Thread that owns the goal. */
-  readonly threadId: string;
-  /** Goal that receives steering. */
-  readonly goalId: string;
-}
-
-/**
- * Result returned after safe-point steering is drained for a worker turn.
- */
-export interface ApplyGoalSteeringAtSafePointResult {
-  /** System-owned messages ready to pass into prepareNextTurn. */
-  readonly messages: readonly SafePointSteeringMessage[];
 }
 
 /**
@@ -121,25 +96,6 @@ export function recordActiveGoalSteering(
   return {
     pendingTurn: enqueueFollowUpInput(workspaceDb, pendingInput),
     state: 'pending_follow_up',
-  };
-}
-
-/**
- * Drains pending safe-point steering into the next prepared-turn message shape.
- *
- * @param workspaceDb Open workspace-scope database handle for goal and pending input rows.
- * @param input Goal steering scope.
- * @returns Safe-point steering messages ready for prepareNextTurn.
- * @throws Error when the goal does not exist in the requested scope.
- */
-export function applyGoalSteeringAtSafePoint(
-  workspaceDb: WorkspaceDb,
-  input: ApplyGoalSteeringAtSafePointInput
-): ApplyGoalSteeringAtSafePointResult {
-  requireGoal(workspaceDb, input);
-
-  return {
-    messages: drainSteeringForSafePoint(workspaceDb, input),
   };
 }
 

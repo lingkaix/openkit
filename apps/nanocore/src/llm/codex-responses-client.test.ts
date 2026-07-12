@@ -2,14 +2,12 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-
+import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import {
   CodexAuthTokenResolver,
   CodexResponsesClient,
   type CodexTokenResolutionAccountStore,
 } from './codex-responses-client.js';
-import type { ResolvedLLMProviderConfig } from './provider-config.js';
-import { findProviderSpec } from './provider-registry.js';
 
 class FakeAccountStore implements CodexTokenResolutionAccountStore {
   public readonly refreshes: boolean[] = [];
@@ -52,25 +50,17 @@ class FakeAccountStore implements CodexTokenResolutionAccountStore {
 function codexProvider(
   overrides: Partial<ResolvedLLMProviderConfig> = {}
 ): ResolvedLLMProviderConfig {
-  const spec = findProviderSpec('openai_codex');
-
-  if (!spec) {
-    throw new Error('Missing OpenAI Codex provider spec');
-  }
-
   return {
-    id: 'openai_codex',
-    specId: 'openai_codex',
-    displayName: 'OpenAI Codex',
-    model: 'openai-codex/gpt-5.1-codex',
-    baseUrl: 'https://chatgpt.example.test/backend-api',
-    hasApiKey: false,
-    apiKeySource: 'not-required',
-    gatewayCapabilities: spec.gatewayCapabilities,
-    extraHeaders: {},
-    extraBody: {},
-    spec,
+    adapterId: 'openai_codex',
     apiKey: null,
+    backend: 'codex-oauth',
+    baseUrl: 'https://chatgpt.example.test/backend-api',
+    displayName: 'OpenAI Codex',
+    extraBody: {},
+    extraHeaders: {},
+    gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+    id: 'openai_codex',
+    requiresApiKey: false,
     ...overrides,
   };
 }

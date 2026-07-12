@@ -48,7 +48,7 @@ export type AccessTokenVerifier = (
 ) => AccessTokenVerification | null | Promise<AccessTokenVerification | null>;
 
 /**
- * Checks whether one token owner is an active workspace member.
+ * Checks whether one authenticated actor is an active workspace member.
  */
 export type WorkspaceMembershipVerifier = (
   actor: Actor,
@@ -61,7 +61,7 @@ export type WorkspaceMembershipVerifier = (
 export interface AuthMiddlewareOptions {
   /** Verifier for OpenKit `okt_` bearer tokens. */
   accessTokenVerifier?: AccessTokenVerifier;
-  /** Verifier for token-owner workspace membership. */
+  /** Verifier for authenticated-actor workspace membership. */
   workspaceMembershipVerifier?: WorkspaceMembershipVerifier;
 }
 
@@ -70,7 +70,7 @@ export interface AuthMiddlewareOptions {
  *
  * @param mode Resolved NanoCore runtime mode.
  * @param auth Optional Better Auth server.
- * @param options Optional access-token verifier.
+ * @param options Optional authentication middleware dependencies.
  * @returns Hono middleware that records an actor and continues the request.
  */
 export function createAuthMiddleware(
@@ -124,7 +124,18 @@ export function createAuthMiddleware(
       return unauthorized(c);
     }
 
-    c.set('actor', actorFromSession(session));
+    const actor = actorFromSession(session);
+    c.set('actor', actor);
+    const workspaceId =
+      workspaceIdFromPath(c.req.path) ?? (await workspaceIdFromJsonBody(c.req.raw));
+    if (
+      workspaceId &&
+      (!options.workspaceMembershipVerifier ||
+        !(await options.workspaceMembershipVerifier(actor, workspaceId)))
+    ) {
+      return scopeForbidden(c);
+    }
+
     await next();
   };
 }
@@ -216,7 +227,7 @@ async function tokenScopeViolation(
     return true;
   }
 
-  if (workspaceMembershipVerifier && !(await workspaceMembershipVerifier(actor, workspaceId))) {
+  if (!workspaceMembershipVerifier || !(await workspaceMembershipVerifier(actor, workspaceId))) {
     return true;
   }
 
@@ -314,7 +325,7 @@ function scopeForbidden(c: Parameters<MiddlewareHandler>[0]) {
     ApiErrorSchema.parse({
       protocolVersion: PROTOCOL_VERSION,
       code: 'core.auth.scope_forbidden',
-      message: 'Access token scope does not allow this request.',
+      message: 'Actor scope does not allow this request.',
     }),
     403
   );

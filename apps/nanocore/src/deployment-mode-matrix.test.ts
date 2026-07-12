@@ -8,6 +8,7 @@ import type {
 } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 import { createApp } from './app.js';
+import { ensureLocalUser } from './auth/identity.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import type { FsStore } from './lib/store.js';
 import { createGoalRecord, createGoalTask } from './runtime/goal-store.js';
@@ -29,6 +30,7 @@ import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { upsertWorkspaceRepositoryResource } from './workspace/repository-store.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** NanoCore product deployment mode used by the six-mode verification matrix. */
 type CoreDeploymentMode = 'local' | 'server';
@@ -88,6 +90,14 @@ describe('NanoCore deployment mode matrix', () => {
     try {
       seedRepositoryAndGoal(coreDb, thread.id, repositoryPath, runtimePlacement);
       seedThreadContext(store, thread.id, runtimePlacement);
+      if (coreMode === 'server') {
+        ensureLocalUser(coreDb);
+        recordWorkspaceOwnerMembership({
+          coreDb,
+          ownerUserId: LOCAL_USER_ID,
+          workspaceId: 'ws_demo',
+        });
+      }
       const turnExecutor = createMatrixLoopTurnExecutor(runtimePlacement, coreDb);
       const app = createApp({
         ...(coreMode === 'server' ? { auth: createSignedInAuthStub(), mode: 'server' } : {}),
@@ -551,7 +561,7 @@ function createSignedInAuthStub(): BetterAuthServer {
     api: {
       getSession: async () => ({
         session: { id: 'session_matrix_secret' },
-        user: { id: 'user_matrix' },
+        user: { id: LOCAL_USER_ID },
       }),
     },
     handler: async () => Response.json({ status: 'auth-ok' }),

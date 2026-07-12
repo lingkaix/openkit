@@ -11,7 +11,7 @@ import type { OpenKitConfig } from './config/openkit-config.js';
 import { loadOpenKitConfig, openKitConfigPath } from './config/openkit-config.js';
 import { InternalAgentRunner } from './internal-agents/runner.js';
 import type { InternalAgentLLMClient } from './internal-agents/types.js';
-import { LLMProviderConfigStore } from './llm/provider-config.js';
+import { resolveProviderProfileToLLMConfig } from './providers/llm-config.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { ensureLayout } from './storage/fs-layout.js';
 
@@ -537,16 +537,26 @@ describe('Settings diagnostics app API', () => {
   });
 
   it('exposes internal agent diagnostics without leaking prompts or provider secrets', async () => {
-    const providerStore = new LLMProviderConfigStore();
-    providerStore.upsertProvider({
-      providerId: 'openai',
-      model: 'gpt-5.1',
-    });
-    providerStore.updateDefaults({
-      internalTasks: { providerId: 'openai', model: 'gpt-5.1' },
-      quickChat: { providerId: 'openai', model: 'gpt-5.1' },
-    });
-
+    const openKitConfig: OpenKitConfig = {
+      defaults: {
+        coreModel: 'gpt-5.1',
+        coreProviderId: 'openai',
+        gatewayModel: 'gpt-5.1',
+        gatewayProviderId: 'openai',
+      },
+    };
+    const providerCredentialResolver = () => 'sk-internal-provider';
+    const providerRegistry = new ProviderRegistry([
+      {
+        baseUrl: 'https://api.openai.com/v1',
+        defaultModel: 'gpt-5.1',
+        displayName: 'OpenAI',
+        id: 'openai',
+        kind: 'direct',
+        models: ['gpt-5.1'],
+        secretRef: 'env:OPENAI_API_KEY',
+      },
+    ]);
     const llmClient: InternalAgentLLMClient = {
       createChatCompletion: async () => {
         throw new Error(
@@ -555,12 +565,28 @@ describe('Settings diagnostics app API', () => {
       },
     };
     const internalAgentRunner = new InternalAgentRunner({
+      defaultSelectionResolver: (defaultUse) => ({
+        providerId:
+          defaultUse === 'quickChat'
+            ? (openKitConfig.defaults?.gatewayProviderId ?? null)
+            : (openKitConfig.defaults?.coreProviderId ?? null),
+        model:
+          defaultUse === 'quickChat'
+            ? (openKitConfig.defaults?.gatewayModel ?? null)
+            : (openKitConfig.defaults?.coreModel ?? null),
+      }),
       llmClient,
-      providerConfigStore: providerStore,
+      providerResolver: (providerId) =>
+        resolveProviderProfileToLLMConfig(
+          providerRegistry.get(providerId)!,
+          providerCredentialResolver
+        ),
     });
     const app = createApp({
       internalAgentRunner,
-      llmProviderConfigStore: providerStore,
+      openKitConfig,
+      providerCredentialResolver,
+      providerRegistry,
     });
 
     await app.request('/api/app/quick-chat', {

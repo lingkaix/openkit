@@ -6,7 +6,7 @@ import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { createDeterministicGoalPlanFallback } from './goal-plan.js';
-import { approveGoalPlan, rejectGoalPlan, reviseGoalPlan } from './goal-plan-approval.js';
+import { approveGoalPlan, reviseGoalPlan } from './goal-plan-approval.js';
 import { createGoalRecord, getGoalRecord } from './goal-store.js';
 
 /**
@@ -56,48 +56,6 @@ describe('goal plan approval flow', () => {
       expect(getGoalRecord(workspaceDb, 'ws_demo', 'th_demo', 'goal_approval')).toMatchObject({
         status: 'running',
         planItemId: 'it_goal_plan_goal_approval',
-      });
-    } finally {
-      workspaceDb.sqlite.close();
-    }
-  });
-
-  it('rejects a plan into awaiting user or blocked state with a reason', () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
-    const thread = store.createThread('ws_demo', 'Reject plan thread');
-
-    try {
-      createGoalRecord(workspaceDb, {
-        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
-        goalId: 'goal_reject',
-        workspaceId: 'ws_demo',
-        threadId: thread.id,
-        title: 'Reject plan',
-        objective: 'Reject the current plan.',
-      });
-
-      const result = rejectGoalPlan({
-        workspaceDb,
-        store,
-        workspaceId: 'ws_demo',
-        threadId: thread.id,
-        goalId: 'goal_reject',
-        reason: 'The plan needs a smaller first task.',
-        nextStatus: 'awaiting_user',
-      });
-
-      expect(result).toMatchObject({
-        status: 'awaiting_user',
-        startsWorkerTurn: false,
-        reasonItem: {
-          type: 'status',
-          title: 'Plan rejected',
-          summary: 'The plan needs a smaller first task.',
-        },
-      });
-      expect(getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_reject')).toMatchObject({
-        status: 'awaiting_user',
       });
     } finally {
       workspaceDb.sqlite.close();

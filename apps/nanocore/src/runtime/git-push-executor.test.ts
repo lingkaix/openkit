@@ -17,7 +17,7 @@ import {
   type GitPushCommandRunner,
   runGitPushCommand,
 } from './git-push-executor.js';
-import { listGitPushRecords } from './git-push-records.js';
+import { listGitPushRecords, type PrepareGitPushAttemptInput } from './git-push-records.js';
 import { recordWorkspaceApplyResult } from './workspace-apply-results.js';
 
 const baseGitConfig: WorkspaceRepositoryGitConfig = {
@@ -30,6 +30,36 @@ const baseGitConfig: WorkspaceRepositoryGitConfig = {
   stagingStrategy: 'staging-root',
   vaultGrantRef: null,
 };
+const BASE_COMMIT = '0'.repeat(40);
+const SOURCE_COMMIT = 'a'.repeat(40);
+
+/**
+ * Creates the common approved push attempt used by executor tests.
+ *
+ * @param overrides Fields that differ in one scenario.
+ * @returns Complete push preflight and record lineage input.
+ */
+function gitPushAttempt(
+  overrides: Partial<PrepareGitPushAttemptInput> = {}
+): PrepareGitPushAttemptInput {
+  return {
+    actorId: 'user_1',
+    approvalNamesProtectedTarget: false,
+    approvalRowId: 'har_1',
+    commitIds: ['commit_a'],
+    git: baseGitConfig,
+    now: () => '2026-07-05T00:00:00.000Z',
+    policyDecisionId: 'pd_1',
+    recordId: 'gpr_test',
+    remoteSummary: 'GitHub repository openkit on origin',
+    repositoryResourceId: 'repo_default',
+    requestId: '00000000-0000-4000-8000-000000000001',
+    sourceRef: 'HEAD',
+    targetBranch: 'feature/demo',
+    workspaceId: 'ws_demo',
+    ...overrides,
+  };
+}
 
 /**
  * Opens a migrated workspace database for Git push executor tests.
@@ -44,18 +74,65 @@ function createWorkspaceDb(): WorkspaceDb {
 }
 
 /**
+ * Creates an empty Git repository for executor fixtures.
+ *
+ * @param objectFormat Git object format used by the repository.
+ * @returns Repository path and object database path.
+ */
+function createGitRepository(objectFormat: 'sha1' | 'sha256' = 'sha1'): {
+  readonly objectDirectory: string;
+  readonly path: string;
+} {
+  const path = mkdtempSync(join(tmpdir(), 'openkit-git-push-repo-'));
+  execFileSync('git', ['init', `--object-format=${objectFormat}`], { cwd: path, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.email', 'openkit@example.invalid'], {
+    cwd: path,
+    stdio: 'ignore',
+  });
+  execFileSync('git', ['config', 'user.name', 'OpenKit'], { cwd: path, stdio: 'ignore' });
+
+  return {
+    objectDirectory: execFileSync(
+      'git',
+      ['rev-parse', '--path-format=absolute', '--git-path', 'objects'],
+      { cwd: path, encoding: 'utf8' }
+    ).trim(),
+    path,
+  };
+}
+
+/**
+ * Commits one README revision and returns its immutable commit id.
+ *
+ * @param repositoryPath Fixture repository path.
+ * @param content README content.
+ * @param message Commit message.
+ * @returns New commit id.
+ */
+function commitReadme(repositoryPath: string, content: string, message: string): string {
+  writeFileSync(join(repositoryPath, 'README.md'), content);
+  execFileSync('git', ['add', 'README.md'], { cwd: repositoryPath, stdio: 'ignore' });
+  execFileSync('git', ['commit', '-m', message], { cwd: repositoryPath, stdio: 'ignore' });
+  return execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: repositoryPath,
+    encoding: 'utf8',
+  }).trim();
+}
+
+/**
  * Records one accepted apply result for Git push linkage tests.
  *
  * @param workspaceDb Workspace database handle.
+ * @param commitIds Applied commit ids linked to the review.
  */
-function recordLinkedCommit(workspaceDb: WorkspaceDb): void {
+function recordLinkedCommit(workspaceDb: WorkspaceDb, commitIds = ['commit_a']): void {
   recordWorkspaceApplyResult(workspaceDb, {
     requestId: '00000000-0000-4000-8000-000000000027',
     result: {
       appliedAt: '2026-07-05T00:00:00.000Z',
       appliedPaths: ['README.md'],
       changeSetId: 'wcs_1',
-      commitIds: ['commit_a'],
+      commitIds,
       conflictRecords: [],
       id: 'war_1',
       reviewId: 'swr_1',
@@ -111,25 +188,19 @@ describe('Git push executor', () => {
 
     try {
       const record = await executeGitPushAttempt(workspaceDb, {
-        attempt: {
-          actorId: 'user_1',
-          approvalNamesProtectedTarget: false,
-          approvalRowId: 'har_1',
-          commitIds: ['commit_a'],
+        attempt: gitPushAttempt({
           git: { ...baseGitConfig, allowedPushTargets: [] },
-          now: () => '2026-07-05T00:00:00.000Z',
-          policyDecisionId: 'pd_1',
           recordId: 'gpr_refused',
-          remoteSummary: 'GitHub repository openkit on origin',
-          repositoryResourceId: 'repo_default',
           requestId: '00000000-0000-4000-8000-000000000028',
-          sourceRef: 'HEAD',
-          targetBranch: 'feature/demo',
-          workspaceId: 'ws_demo',
-        },
+        }),
         cwd: '/repo',
+        env: { GITHUB_TOKEN: 'secret-token' },
+        objectDirectory: '/repo/.git/objects',
+        objectFormat: 'sha1',
+        provider: 'github',
         remoteName: 'origin',
         runner,
+        sourceCommit: 'commit_a',
       });
 
       expect(record).toMatchObject({ id: 'gpr_refused', outcome: 'refused-policy' });
@@ -139,7 +210,7 @@ describe('Git push executor', () => {
     }
   });
 
-  it('records unsupported provider refusals without invoking the command runner', async () => {
+  it('records unsupported, missing, or untrusted provider refusals without invoking the command runner', async () => {
     const workspaceDb = createWorkspaceDb();
     const runner: GitPushCommandRunner = async () => {
       throw new Error('runner should not be called');
@@ -148,35 +219,42 @@ describe('Git push executor', () => {
     try {
       recordLinkedCommit(workspaceDb);
       recordRepoPushAllowDecision(workspaceDb, 'pd_1');
-      const record = await executeGitPushAttempt(workspaceDb, {
-        attempt: {
-          actorId: 'user_1',
-          approvalNamesProtectedTarget: false,
-          approvalRowId: 'har_1',
-          commitIds: ['commit_a'],
-          git: baseGitConfig,
-          now: () => '2026-07-05T00:00:00.000Z',
-          policyDecisionId: 'pd_1',
-          recordId: 'gpr_unsupported',
-          remoteSummary: 'GitLab repository openkit on origin',
-          repositoryResourceId: 'repo_default',
-          requestId: '00000000-0000-4000-8000-000000000031',
-          sourceRef: 'HEAD',
-          targetBranch: 'feature/demo',
-          workspaceId: 'ws_demo',
-        },
-        cwd: '/repo',
-        provider: 'unsupported',
-        remoteName: 'origin',
-        runner,
-      });
+      for (const [recordId, provider, remoteName, requestId] of [
+        [
+          'gpr_unsupported',
+          'unsupported',
+          'https://github.com/openkit/openkit.git',
+          '00000000-0000-4000-8000-000000000031',
+        ],
+        [
+          'gpr_missing_provider',
+          undefined,
+          'https://github.com/openkit/openkit.git',
+          '00000000-0000-4000-8000-000000000037',
+        ],
+        ['gpr_untrusted_target', 'github', 'origin', '00000000-0000-4000-8000-000000000039'],
+      ] as const) {
+        const record = await executeGitPushAttempt(workspaceDb, {
+          attempt: gitPushAttempt({
+            recordId,
+            remoteSummary: 'GitLab repository openkit on origin',
+            requestId,
+          }),
+          cwd: '/repo',
+          objectFormat: 'sha1',
+          provider: provider as 'github' | 'unsupported',
+          remoteName,
+          runner,
+          sourceCommit: 'commit_a',
+        });
 
-      expect(record).toMatchObject({
-        errorSummary: 'Git push refused because V1 supports GitHub remotes only.',
-        id: 'gpr_unsupported',
-        outcome: 'unsupported-provider',
-        reviewIds: ['swr_1'],
-      });
+        expect(record).toMatchObject({
+          errorSummary: 'Git push refused because V1 supports GitHub remotes only.',
+          id: recordId,
+          outcome: 'unsupported-provider',
+          reviewIds: ['swr_1'],
+        });
+      }
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -191,26 +269,18 @@ describe('Git push executor', () => {
     try {
       recordLinkedCommit(workspaceDb);
       const record = await executeGitPushAttempt(workspaceDb, {
-        attempt: {
-          actorId: 'user_1',
-          approvalNamesProtectedTarget: false,
-          approvalRowId: 'har_1',
-          commitIds: ['commit_a'],
-          git: baseGitConfig,
-          now: () => '2026-07-05T00:00:00.000Z',
+        attempt: gitPushAttempt({
           policyDecisionId: 'pd_missing',
           recordId: 'gpr_policy_missing',
-          remoteSummary: 'GitHub repository openkit on origin',
-          repositoryResourceId: 'repo_default',
           requestId: '00000000-0000-4000-8000-000000000034',
-          sourceRef: 'HEAD',
-          targetBranch: 'feature/demo',
-          workspaceId: 'ws_demo',
-        },
+        }),
         cwd: '/repo',
+        objectDirectory: '/repo/.git/objects',
+        objectFormat: 'sha1',
         provider: 'github',
-        remoteName: 'origin',
+        remoteName: 'https://github.com/openkit/openkit.git',
         runner,
+        sourceCommit: 'commit_a',
       });
 
       expect(record).toMatchObject({
@@ -234,26 +304,17 @@ describe('Git push executor', () => {
       recordLinkedCommit(workspaceDb);
       recordRepoPushAllowDecision(workspaceDb, 'pd_wrong_target', 'feature/other');
       const record = await executeGitPushAttempt(workspaceDb, {
-        attempt: {
-          actorId: 'user_1',
-          approvalNamesProtectedTarget: false,
-          approvalRowId: 'har_1',
-          commitIds: ['commit_a'],
-          git: baseGitConfig,
-          now: () => '2026-07-05T00:00:00.000Z',
+        attempt: gitPushAttempt({
           policyDecisionId: 'pd_wrong_target',
           recordId: 'gpr_policy_target_mismatch',
-          remoteSummary: 'GitHub repository openkit on origin',
-          repositoryResourceId: 'repo_default',
           requestId: '00000000-0000-4000-8000-000000000035',
-          sourceRef: 'HEAD',
-          targetBranch: 'feature/demo',
-          workspaceId: 'ws_demo',
-        },
+        }),
         cwd: '/repo',
+        objectFormat: 'sha1',
         provider: 'github',
-        remoteName: 'origin',
+        remoteName: 'https://github.com/openkit/openkit.git',
         runner,
+        sourceCommit: 'commit_a',
       });
 
       expect(record).toMatchObject({
@@ -270,37 +331,30 @@ describe('Git push executor', () => {
 
   it('records auth failures when push credentials cannot be resolved', async () => {
     const workspaceDb = createWorkspaceDb();
+    let resolvedCapabilityCallId: string | undefined;
     const runner: GitPushCommandRunner = async () => {
       throw new Error('runner should not be called');
     };
 
     try {
-      recordLinkedCommit(workspaceDb);
+      recordLinkedCommit(workspaceDb, [SOURCE_COMMIT]);
       recordRepoPushAllowDecision(workspaceDb, 'pd_1');
       const record = await executeGitPushAttempt(workspaceDb, {
-        attempt: {
-          actorId: 'user_1',
-          approvalNamesProtectedTarget: false,
-          approvalRowId: 'har_1',
-          commitIds: ['commit_a'],
-          git: baseGitConfig,
-          now: () => '2026-07-05T00:00:00.000Z',
-          policyDecisionId: 'pd_1',
+        attempt: gitPushAttempt({
+          commitIds: [SOURCE_COMMIT],
           recordId: 'gpr_auth_failed',
-          remoteSummary: 'GitHub repository openkit on origin',
-          repositoryResourceId: 'repo_default',
           requestId: '00000000-0000-4000-8000-000000000036',
-          sourceRef: 'HEAD',
-          targetBranch: 'feature/demo',
-          workspaceId: 'ws_demo',
-        },
+        }),
         cwd: '/repo',
+        objectFormat: 'sha1',
         provider: 'github',
-        remoteName: 'origin',
-        resolveEnv: () => {
+        remoteName: 'https://github.com/openkit/openkit.git',
+        resolveEnv: (capabilityCallId) => {
+          resolvedCapabilityCallId = capabilityCallId;
           throw new Error('vault-locked');
         },
         runner,
+        sourceCommit: SOURCE_COMMIT,
       });
 
       expect(record).toMatchObject({
@@ -309,6 +363,157 @@ describe('Git push executor', () => {
         outcome: 'auth-failed',
         reviewIds: ['swr_1'],
       });
+      const calls = listWorkspaceCapabilityCalls(workspaceDb, 'ws_demo');
+      expect(resolvedCapabilityCallId).toBe(calls[0]?.id);
+      expect(calls).toMatchObject([
+        {
+          capabilityId: 'workspace.git.push',
+          errorCode: 'auth-failed',
+          status: 'failed',
+        },
+      ]);
+      expect(listWorkspaceUsageRecords(workspaceDb, 'ws_demo')).toEqual([]);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('rejects an unsafe source commit before resolving credentials', async () => {
+    const workspaceDb = createWorkspaceDb();
+    let resolvedCredentials = false;
+
+    try {
+      recordLinkedCommit(workspaceDb, [SOURCE_COMMIT]);
+      recordRepoPushAllowDecision(workspaceDb, 'pd_1');
+      const record = await executeGitPushAttempt(workspaceDb, {
+        attempt: gitPushAttempt({
+          commitIds: [SOURCE_COMMIT],
+          recordId: 'gpr_unsafe_source',
+          requestId: '00000000-0000-4000-8000-000000000040',
+        }),
+        cwd: '/repo',
+        objectDirectory: '/repo/.git/objects',
+        objectFormat: 'sha1',
+        provider: 'github',
+        remoteName: 'https://github.com/openkit/openkit.git',
+        resolveEnv: () => {
+          resolvedCredentials = true;
+          return { GITHUB_TOKEN: 'secret-token' };
+        },
+        runner: async () => {
+          throw new Error('runner should not be called');
+        },
+        sourceCommit: '+commit_a',
+      });
+
+      expect(record).toMatchObject({
+        errorSummary: 'Git push refused because the approved ref shape is not safe.',
+        id: 'gpr_unsafe_source',
+        outcome: 'refused-policy',
+      });
+      expect(resolvedCredentials).toBe(false);
+      expect(listWorkspaceCapabilityCalls(workspaceDb, 'ws_demo')).toEqual([]);
+      expect(listWorkspaceUsageRecords(workspaceDb, 'ws_demo')).toEqual([]);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('refuses to create a missing remote branch in V1', async () => {
+    const workspaceDb = createWorkspaceDb();
+    const calls: Parameters<GitPushCommandRunner>[0][] = [];
+    const runner: GitPushCommandRunner = async (command) => {
+      calls.push(command);
+      if (calls.length === 1) {
+        return { exitCode: 0, stderr: '', stdout: '' };
+      }
+      throw new Error('missing remote branches must not reach local range checks or push');
+    };
+
+    try {
+      recordLinkedCommit(workspaceDb, [SOURCE_COMMIT]);
+      recordRepoPushAllowDecision(workspaceDb, 'pd_1');
+      const record = await executeGitPushAttempt(workspaceDb, {
+        attempt: gitPushAttempt({
+          commitIds: [SOURCE_COMMIT],
+          recordId: 'gpr_missing_remote_branch',
+          requestId: '00000000-0000-4000-8000-000000000042',
+        }),
+        env: { GITHUB_TOKEN: 'secret-token' },
+        objectDirectory: '/repo/.git/objects',
+        objectFormat: 'sha1',
+        provider: 'github',
+        remoteName: 'https://github.com/openkit/openkit.git',
+        runner,
+        sourceCommit: SOURCE_COMMIT,
+      });
+
+      expect(calls).toHaveLength(1);
+      expect(record).toMatchObject({
+        errorSummary: 'Git push refused because V1 does not create remote branches.',
+        outcome: 'refused-policy',
+        remoteHeadAfter: null,
+        remoteHeadBefore: null,
+      });
+      expect(listWorkspaceUsageRecords(workspaceDb, 'ws_demo')).toMatchObject([
+        { quantity: 1, unit: 'requests' },
+      ]);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('rejects a remote head that is not an ancestor of the approved source', async () => {
+    const workspaceDb = createWorkspaceDb();
+    const calls: Parameters<GitPushCommandRunner>[0][] = [];
+    const runner: GitPushCommandRunner = async (command) => {
+      calls.push(command);
+      return calls.length === 1
+        ? {
+            exitCode: 0,
+            stderr: '',
+            stdout: `${BASE_COMMIT}\trefs/heads/feature/demo\n`,
+          }
+        : { exitCode: 1, stderr: '', stdout: '' };
+    };
+
+    try {
+      recordLinkedCommit(workspaceDb, [SOURCE_COMMIT]);
+      recordRepoPushAllowDecision(workspaceDb, 'pd_1');
+      const record = await executeGitPushAttempt(workspaceDb, {
+        attempt: gitPushAttempt({
+          commitIds: [SOURCE_COMMIT],
+          recordId: 'gpr_divergent_remote_head',
+          requestId: '00000000-0000-4000-8000-000000000043',
+        }),
+        env: { GITHUB_TOKEN: 'secret-token' },
+        objectDirectory: '/repo/.git/objects',
+        objectFormat: 'sha1',
+        provider: 'github',
+        remoteName: 'https://github.com/openkit/openkit.git',
+        runner,
+        sourceCommit: SOURCE_COMMIT,
+      });
+
+      expect(calls.map((call) => call.args)).toEqual([
+        [
+          'ls-remote',
+          '--refs',
+          '--heads',
+          '--',
+          'https://github.com/openkit/openkit.git',
+          'refs/heads/feature/demo',
+        ],
+        ['merge-base', '--is-ancestor', BASE_COMMIT, SOURCE_COMMIT],
+      ]);
+      expect(record).toMatchObject({
+        outcome: 'rejected-non-fast-forward',
+        remoteHeadAfter: null,
+        remoteHeadBefore: BASE_COMMIT,
+      });
+      expect(listWorkspaceUsageRecords(workspaceDb, 'ws_demo')).toMatchObject([
+        { quantity: 1, unit: 'requests' },
+      ]);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -316,53 +521,110 @@ describe('Git push executor', () => {
 
   it('runs a fixed push command and records successful terminal outcomes', async () => {
     const workspaceDb = createWorkspaceDb();
+    const repository = createGitRepository();
+    const repositoryPath = repository.path;
+    execFileSync('git', ['config', 'credential.helper', '!echo helper-should-not-run'], {
+      cwd: repositoryPath,
+      stdio: 'ignore',
+    });
+    execFileSync('git', ['config', 'http.sslVerify', 'false'], {
+      cwd: repositoryPath,
+      stdio: 'ignore',
+    });
+    execFileSync(
+      'git',
+      ['config', 'url.file:///tmp/openkit-attacker/.insteadOf', 'https://github.com/'],
+      { cwd: repositoryPath, stdio: 'ignore' }
+    );
     const calls: Parameters<GitPushCommandRunner>[0][] = [];
+    const results = [
+      {
+        exitCode: 0,
+        stderr: '',
+        stdout: `${BASE_COMMIT}\trefs/heads/feature/demo\n`,
+      },
+      { exitCode: 0, stderr: '', stdout: '' },
+      { exitCode: 0, stderr: '', stdout: `${SOURCE_COMMIT}\n` },
+      { exitCode: 0, stderr: '', stdout: 'ok' },
+    ];
     const runner: GitPushCommandRunner = async (command) => {
+      expect(command.cwd).not.toBe(repositoryPath);
+      expect(command.env).toMatchObject({
+        GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
+        GIT_CONFIG_NOSYSTEM: '1',
+        GIT_DIR: command.cwd,
+        GIT_NO_REPLACE_OBJECTS: '1',
+        GIT_OBJECT_DIRECTORY: repository.objectDirectory,
+      });
+      expect(command.env).not.toHaveProperty('HOME');
+      expect(JSON.stringify(command)).not.toContain('secret-token');
+      for (const args of [
+        ['config', '--get-all', 'credential.helper'],
+        ['config', '--get', 'http.sslVerify'],
+        ['config', '--get-regexp', '^url\\.'],
+      ]) {
+        expect(() =>
+          execFileSync('git', args, {
+            cwd: command.cwd,
+            env: command.env,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          })
+        ).toThrow();
+      }
       calls.push(command);
-      return { exitCode: 0, stderr: '', stdout: 'ok' };
+      const result = results[calls.length - 1];
+      if (!result) {
+        throw new Error('unexpected Git command');
+      }
+      return result;
     };
 
     try {
-      recordLinkedCommit(workspaceDb);
+      recordLinkedCommit(workspaceDb, [SOURCE_COMMIT]);
       recordRepoPushAllowDecision(workspaceDb, 'pd_1');
       const record = await executeGitPushAttempt(workspaceDb, {
-        attempt: {
-          actorId: 'user_1',
-          approvalNamesProtectedTarget: false,
-          approvalRowId: 'har_1',
-          commitIds: ['commit_a'],
-          git: baseGitConfig,
-          now: () => '2026-07-05T00:00:00.000Z',
-          policyDecisionId: 'pd_1',
+        attempt: gitPushAttempt({
+          commitIds: [SOURCE_COMMIT],
           recordId: 'gpr_pushed',
-          remoteSummary: 'GitHub repository openkit on origin',
-          repositoryResourceId: 'repo_default',
           requestId: '00000000-0000-4000-8000-000000000029',
-          sourceRef: 'HEAD',
-          targetBranch: 'feature/demo',
-          workspaceId: 'ws_demo',
-        },
-        cwd: '/repo',
+        }),
+        cwd: repositoryPath,
         env: { GITHUB_TOKEN: 'secret-token', PATH: '/usr/bin' },
-        remoteHeadAfter: 'commit_a',
-        remoteHeadBefore: 'commit_0',
-        remoteName: 'origin',
+        objectDirectory: repository.objectDirectory,
+        objectFormat: 'sha1',
+        remoteName: 'https://github.com/openkit/openkit.git',
+        provider: 'github',
         runner,
+        sourceCommit: SOURCE_COMMIT,
       });
 
-      expect(calls).toEqual([
-        {
-          args: ['push', '--porcelain', '--', 'origin', 'HEAD:refs/heads/feature/demo'],
-          command: 'git',
-          cwd: '/repo',
-          env: { GITHUB_TOKEN: 'secret-token', GIT_TERMINAL_PROMPT: '0', PATH: '/usr/bin' },
-        },
+      expect(calls).toHaveLength(4);
+      expect(calls.map((call) => call.args)).toEqual([
+        [
+          'ls-remote',
+          '--refs',
+          '--heads',
+          '--',
+          'https://github.com/openkit/openkit.git',
+          'refs/heads/feature/demo',
+        ],
+        ['merge-base', '--is-ancestor', BASE_COMMIT, SOURCE_COMMIT],
+        ['rev-list', '--reverse', '--topo-order', `${BASE_COMMIT}..${SOURCE_COMMIT}`],
+        [
+          'push',
+          '--porcelain',
+          '--no-verify',
+          `--force-with-lease=refs/heads/feature/demo:${BASE_COMMIT}`,
+          '--',
+          'https://github.com/openkit/openkit.git',
+          `${SOURCE_COMMIT}:refs/heads/feature/demo`,
+        ],
       ]);
       expect(record).toMatchObject({
         id: 'gpr_pushed',
         outcome: 'pushed',
-        remoteHeadAfter: 'commit_a',
-        remoteHeadBefore: 'commit_0',
+        remoteHeadAfter: SOURCE_COMMIT,
+        remoteHeadBefore: BASE_COMMIT,
         reviewIds: ['swr_1'],
       });
       expect(listWorkspaceCapabilityCalls(workspaceDb, 'ws_demo')).toMatchObject([
@@ -378,7 +640,7 @@ describe('Git push executor', () => {
         {
           category: 'network',
           providerRef: 'github',
-          quantity: 1,
+          quantity: 2,
           requestId: '00000000-0000-4000-8000-000000000029',
           source: 'git-push-executor',
           unit: 'requests',
@@ -390,94 +652,240 @@ describe('Git push executor', () => {
     }
   });
 
-  it('pushes to a local bare remote through the host runner', async () => {
+  it('matches the isolated Git view to a SHA-256 repository object format', async () => {
     const workspaceDb = createWorkspaceDb();
-    const repoDir = mkdtempSync(join(tmpdir(), 'openkit-git-push-runner-repo-'));
-    const remoteDir = mkdtempSync(join(tmpdir(), 'openkit-git-push-runner-remote-'));
+    const repository = createGitRepository('sha256');
+    const baseCommit = commitReadme(repository.path, 'base\n', 'base');
+    const sourceCommit = commitReadme(repository.path, 'source\n', 'source');
+    const calls: Parameters<GitPushCommandRunner>[0][] = [];
+    const observedFormats: string[] = [];
+    const runner: GitPushCommandRunner = async (command) => {
+      calls.push(command);
+      observedFormats.push(
+        execFileSync('git', ['rev-parse', '--show-object-format'], {
+          cwd: command.cwd,
+          encoding: 'utf8',
+          env: command.env,
+        }).trim()
+      );
+      if (command.args[0] === 'ls-remote') {
+        return {
+          exitCode: 0,
+          stderr: '',
+          stdout: `${baseCommit}\trefs/heads/feature/demo\n`,
+        };
+      }
+      if (command.args[0] === 'push') {
+        return { exitCode: 0, stderr: '', stdout: 'ok' };
+      }
+      return runGitPushCommand(command);
+    };
 
     try {
-      execFileSync('git', ['init', '--bare'], { cwd: remoteDir, stdio: 'ignore' });
-      execFileSync('git', ['init'], { cwd: repoDir, stdio: 'ignore' });
-      execFileSync('git', ['config', 'user.email', 'openkit@example.invalid'], {
-        cwd: repoDir,
-        stdio: 'ignore',
-      });
-      execFileSync('git', ['config', 'user.name', 'OpenKit'], {
-        cwd: repoDir,
-        stdio: 'ignore',
-      });
-      execFileSync('git', ['remote', 'add', 'origin', remoteDir], {
-        cwd: repoDir,
-        stdio: 'ignore',
-      });
-      writeFileSync(join(repoDir, 'README.md'), 'initial\n');
-      execFileSync('git', ['add', 'README.md'], { cwd: repoDir, stdio: 'ignore' });
-      execFileSync('git', ['commit', '-m', 'initial'], { cwd: repoDir, stdio: 'ignore' });
-      writeFileSync(join(repoDir, 'README.md'), 'changed\n');
-      execFileSync('git', ['add', 'README.md'], { cwd: repoDir, stdio: 'ignore' });
-      execFileSync('git', ['commit', '-m', 'change'], { cwd: repoDir, stdio: 'ignore' });
-      const commitId = execFileSync('git', ['rev-parse', 'HEAD'], {
-        cwd: repoDir,
-        encoding: 'utf8',
-      }).trim();
-
-      recordWorkspaceApplyResult(workspaceDb, {
-        requestId: '00000000-0000-4000-8000-000000000032',
-        result: {
-          appliedAt: '2026-07-05T00:00:00.000Z',
-          appliedPaths: ['README.md'],
-          changeSetId: 'wcs_2',
-          commitIds: [commitId],
-          conflictRecords: [],
-          id: 'war_2',
-          reviewId: 'swr_2',
-          skippedPaths: [],
-          status: 'applied',
-          verification: [],
-          workspaceId: 'ws_demo',
-        },
-      });
+      recordLinkedCommit(workspaceDb, [sourceCommit]);
       recordRepoPushAllowDecision(workspaceDb, 'pd_1');
-
       const record = await executeGitPushAttempt(workspaceDb, {
-        attempt: {
-          actorId: 'user_1',
-          approvalNamesProtectedTarget: false,
-          approvalRowId: 'har_1',
-          commitIds: [commitId],
-          git: baseGitConfig,
-          now: () => '2026-07-05T00:00:00.000Z',
-          policyDecisionId: 'pd_1',
-          recordId: 'gpr_local_push',
-          remoteSummary: 'Local bare Git remote on origin',
-          repositoryResourceId: 'repo_default',
-          requestId: '00000000-0000-4000-8000-000000000033',
-          sourceRef: 'HEAD',
-          targetBranch: 'feature/demo',
-          workspaceId: 'ws_demo',
-        },
-        cwd: repoDir,
+        attempt: gitPushAttempt({
+          commitIds: [sourceCommit],
+          recordId: 'gpr_sha256',
+          requestId: '00000000-0000-4000-8000-000000000044',
+        }),
+        env: { GITHUB_TOKEN: 'secret-token' },
+        objectDirectory: repository.objectDirectory,
+        objectFormat: 'sha256',
         provider: 'github',
-        remoteHeadAfter: commitId,
-        remoteName: 'origin',
-        runner: runGitPushCommand,
+        remoteName: 'https://github.com/openkit/openkit.git',
+        runner,
+        sourceCommit,
       });
 
+      expect(calls).toHaveLength(4);
+      expect(observedFormats).toEqual(['sha256', 'sha256', 'sha256', 'sha256']);
       expect(record).toMatchObject({
-        commitIds: [commitId],
-        id: 'gpr_local_push',
         outcome: 'pushed',
-        reviewIds: ['swr_2'],
+        remoteHeadAfter: sourceCommit,
+        remoteHeadBefore: baseCommit,
       });
-      expect(
-        execFileSync('git', ['rev-parse', 'refs/heads/feature/demo'], {
-          cwd: remoteDir,
-          encoding: 'utf8',
-        }).trim()
-      ).toBe(commitId);
     } finally {
       workspaceDb.sqlite.close();
     }
+  });
+
+  it('refuses an unapproved commit hidden by a replace ref on an existing remote branch', async () => {
+    const workspaceDb = createWorkspaceDb();
+    const repository = createGitRepository();
+    const repositoryPath = repository.path;
+    const baseCommit = commitReadme(repositoryPath, 'base\n', 'base');
+    const hiddenCommit = commitReadme(repositoryPath, 'hidden\n', 'hidden');
+    const sourceCommit = commitReadme(repositoryPath, 'source\n', 'source');
+    execFileSync('git', ['replace', '--graft', sourceCommit, baseCommit], {
+      cwd: repositoryPath,
+      stdio: 'ignore',
+    });
+    expect(
+      execFileSync('git', ['rev-list', '--reverse', `${baseCommit}..${sourceCommit}`], {
+        cwd: repositoryPath,
+        encoding: 'utf8',
+      }).trim()
+    ).toBe(sourceCommit);
+    const calls: Parameters<GitPushCommandRunner>[0][] = [];
+    let observedOutgoing: string[] = [];
+    const runner: GitPushCommandRunner = async (command) => {
+      calls.push(command);
+      if (calls.length === 1) {
+        return {
+          exitCode: 0,
+          stderr: '',
+          stdout: `${baseCommit}\trefs/heads/feature/demo\n`,
+        };
+      }
+      if (calls.length === 2 || calls.length === 3) {
+        expect(command.env).not.toHaveProperty('GIT_CONFIG_VALUE_1');
+        const result = await runGitPushCommand(command);
+        if (calls.length === 3) {
+          observedOutgoing = result.stdout.trim().split(/\r?\n/);
+        }
+        return result;
+      }
+      throw new Error('push should not be called');
+    };
+
+    try {
+      recordLinkedCommit(workspaceDb, [sourceCommit]);
+      recordRepoPushAllowDecision(workspaceDb, 'pd_1');
+      const record = await executeGitPushAttempt(workspaceDb, {
+        attempt: gitPushAttempt({
+          commitIds: [sourceCommit],
+          recordId: 'gpr_hidden_ancestor',
+          requestId: '00000000-0000-4000-8000-000000000041',
+        }),
+        env: { GITHUB_TOKEN: 'secret-token' },
+        objectDirectory: repository.objectDirectory,
+        objectFormat: 'sha1',
+        provider: 'github',
+        remoteName: 'https://github.com/openkit/openkit.git',
+        runner,
+        sourceCommit,
+      });
+
+      expect(observedOutgoing).toEqual([hiddenCommit, sourceCommit]);
+      expect(calls).toHaveLength(3);
+      expect(record).toMatchObject({
+        errorSummary: 'Git push refused because approved commits do not match the outgoing range.',
+        id: 'gpr_hidden_ancestor',
+        outcome: 'refused-linkage',
+        remoteHeadAfter: null,
+        remoteHeadBefore: baseCommit,
+      });
+      expect(listWorkspaceUsageRecords(workspaceDb, 'ws_demo')).toMatchObject([
+        { quantity: 1, unit: 'requests' },
+      ]);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('rejects a push when the remote head changes after outgoing commits are checked', async () => {
+    const workspaceDb = createWorkspaceDb();
+    const repository = createGitRepository();
+    const repositoryPath = repository.path;
+    const remotePath = mkdtempSync(join(tmpdir(), 'openkit-git-push-cas-remote-'));
+    execFileSync('git', ['init', '--bare'], { cwd: remotePath, stdio: 'ignore' });
+    const baseCommit = commitReadme(repositoryPath, 'base\n', 'base');
+    execFileSync('git', ['push', remotePath, `${baseCommit}:refs/heads/feature/demo`], {
+      cwd: repositoryPath,
+      stdio: 'ignore',
+    });
+    const intermediateCommit = commitReadme(repositoryPath, 'intermediate\n', 'intermediate');
+    execFileSync('git', ['push', remotePath, `${intermediateCommit}:refs/heads/staging`], {
+      cwd: repositoryPath,
+      stdio: 'ignore',
+    });
+    execFileSync('git', ['update-ref', '-d', 'refs/heads/staging'], {
+      cwd: remotePath,
+      stdio: 'ignore',
+    });
+    const sourceCommit = commitReadme(repositoryPath, 'source\n', 'source');
+    const canonicalRemote = 'https://github.com/openkit/openkit.git';
+    const calls: Parameters<GitPushCommandRunner>[0][] = [];
+    const runner: GitPushCommandRunner = async (command) => {
+      calls.push(command);
+      if (command.args[0] === 'push') {
+        execFileSync(
+          'git',
+          ['update-ref', 'refs/heads/feature/demo', intermediateCommit, baseCommit],
+          { cwd: remotePath, stdio: 'ignore' }
+        );
+      }
+      return runGitPushCommand({
+        ...command,
+        args: command.args.map((arg) => (arg === canonicalRemote ? remotePath : arg)),
+      });
+    };
+
+    try {
+      recordLinkedCommit(workspaceDb, [intermediateCommit, sourceCommit]);
+      recordRepoPushAllowDecision(workspaceDb, 'pd_1');
+      const record = await executeGitPushAttempt(workspaceDb, {
+        attempt: gitPushAttempt({
+          commitIds: [intermediateCommit, sourceCommit],
+          recordId: 'gpr_cas_race',
+          requestId: '00000000-0000-4000-8000-000000000045',
+        }),
+        env: { GITHUB_TOKEN: 'secret-token' },
+        objectDirectory: repository.objectDirectory,
+        objectFormat: 'sha1',
+        provider: 'github',
+        remoteName: canonicalRemote,
+        runner,
+        sourceCommit,
+      });
+
+      expect(calls).toHaveLength(4);
+      expect(calls.at(-1)?.args).toContain(
+        `--force-with-lease=refs/heads/feature/demo:${baseCommit}`
+      );
+      expect(record).toMatchObject({
+        outcome: 'rejected-non-fast-forward',
+        remoteHeadAfter: null,
+        remoteHeadBefore: baseCommit,
+      });
+      expect(
+        execFileSync('git', ['rev-parse', 'refs/heads/feature/demo'], {
+          cwd: remotePath,
+          encoding: 'utf8',
+        }).trim()
+      ).toBe(intermediateCommit);
+      expect(listWorkspaceUsageRecords(workspaceDb, 'ws_demo')).toMatchObject([
+        { quantity: 2, unit: 'requests' },
+      ]);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('runs one fixed Git command against a local bare remote', async () => {
+    const repository = createGitRepository();
+    const repoDir = repository.path;
+    const remoteDir = mkdtempSync(join(tmpdir(), 'openkit-git-push-runner-remote-'));
+
+    execFileSync('git', ['init', '--bare'], { cwd: remoteDir, stdio: 'ignore' });
+    const commitId = commitReadme(repoDir, 'changed\n', 'change');
+
+    const result = await runGitPushCommand({
+      args: ['push', '--porcelain', '--', remoteDir, `${commitId}:refs/heads/feature/demo`],
+      command: 'git',
+      cwd: repoDir,
+      env: { GIT_TERMINAL_PROMPT: '0' },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(
+      execFileSync('git', ['rev-parse', 'refs/heads/feature/demo'], {
+        cwd: remoteDir,
+        encoding: 'utf8',
+      }).trim()
+    ).toBe(commitId);
   });
 
   it('records non-fast-forward terminal failures from the command runner', async () => {
@@ -492,25 +900,18 @@ describe('Git push executor', () => {
       recordLinkedCommit(workspaceDb);
       recordRepoPushAllowDecision(workspaceDb, 'pd_1');
       const record = await executeGitPushAttempt(workspaceDb, {
-        attempt: {
-          actorId: 'user_1',
-          approvalNamesProtectedTarget: false,
-          approvalRowId: 'har_1',
-          commitIds: ['commit_a'],
-          git: baseGitConfig,
-          now: () => '2026-07-05T00:00:00.000Z',
-          policyDecisionId: 'pd_1',
+        attempt: gitPushAttempt({
           recordId: 'gpr_rejected',
-          remoteSummary: 'GitHub repository openkit on origin',
-          repositoryResourceId: 'repo_default',
           requestId: '00000000-0000-4000-8000-000000000030',
-          sourceRef: 'HEAD',
-          targetBranch: 'feature/demo',
-          workspaceId: 'ws_demo',
-        },
+        }),
         cwd: '/repo',
-        remoteName: 'origin',
+        env: { GITHUB_TOKEN: 'secret-token' },
+        objectDirectory: '/repo/.git/objects',
+        objectFormat: 'sha1',
+        provider: 'github',
+        remoteName: 'https://github.com/openkit/openkit.git',
         runner,
+        sourceCommit: SOURCE_COMMIT,
       });
 
       expect(record).toMatchObject({
@@ -538,6 +939,67 @@ describe('Git push executor', () => {
           source: 'git-push-executor',
           unit: 'requests',
           workspaceId: 'ws_demo',
+        },
+      ]);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('records a terminal failure when the command runner throws', async () => {
+    const workspaceDb = createWorkspaceDb();
+    let resolvedCapabilityCallId: string | undefined;
+    const runner: GitPushCommandRunner = async () => {
+      throw new Error('spawn exposed a secret');
+    };
+
+    try {
+      recordLinkedCommit(workspaceDb, [SOURCE_COMMIT]);
+      recordRepoPushAllowDecision(workspaceDb, 'pd_1');
+      const record = await executeGitPushAttempt(workspaceDb, {
+        attempt: gitPushAttempt({
+          commitIds: [SOURCE_COMMIT],
+          recordId: 'gpr_runner_failure',
+          requestId: '00000000-0000-4000-8000-000000000038',
+        }),
+        cwd: '/repo',
+        objectDirectory: '/repo/.git/objects',
+        objectFormat: 'sha1',
+        provider: 'github',
+        remoteName: 'https://github.com/openkit/openkit.git',
+        resolveEnv: (capabilityCallId) => {
+          resolvedCapabilityCallId = capabilityCallId;
+          return { GITHUB_TOKEN: 'secret-token' };
+        },
+        runner,
+        sourceCommit: SOURCE_COMMIT,
+      });
+
+      expect(record).toMatchObject({
+        errorSummary: 'Git push failed before the remote head could be updated.',
+        id: 'gpr_runner_failure',
+        outcome: 'remote-unreachable',
+        reviewIds: ['swr_1'],
+      });
+      expect(JSON.stringify(record)).not.toContain('spawn exposed a secret');
+      expect(listGitPushRecords(workspaceDb, 'ws_demo')).toEqual([record]);
+      const calls = listWorkspaceCapabilityCalls(workspaceDb, 'ws_demo');
+      expect(resolvedCapabilityCallId).toBe(calls[0]?.id);
+      expect(calls).toMatchObject([
+        {
+          capabilityId: 'workspace.git.push',
+          errorCode: 'git_push_runner_error',
+          status: 'failed',
+        },
+      ]);
+      expect(listWorkspaceUsageRecords(workspaceDb, 'ws_demo')).toMatchObject([
+        {
+          category: 'network',
+          providerRef: 'github',
+          quantity: 1,
+          requestId: '00000000-0000-4000-8000-000000000038',
+          source: 'git-push-executor',
+          unit: 'requests',
         },
       ]);
     } finally {

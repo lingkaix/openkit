@@ -17,9 +17,12 @@ export const CODEX_OAUTH_ACCOUNT_SLOT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
  * @returns True when the profile should use the Codex OAuth backend.
  */
 export function isCodexOAuthProviderProfile(profile: ProviderProfile): boolean {
+  const vendor = (profile as { vendor?: unknown }).vendor;
+
   return (
-    profile.id === 'openai_codex' ||
-    (profile as { vendor?: unknown }).vendor === 'openai_codex' ||
+    profile.id.trim().toLowerCase().replaceAll('-', '_') === 'openai_codex' ||
+    (typeof vendor === 'string' &&
+      vendor.trim().toLowerCase().replaceAll('-', '_') === 'openai_codex') ||
     Boolean(readOpenKitCodexOAuthExtension(profile))
   );
 }

@@ -1,6 +1,13 @@
 import type { ProviderProfile } from '../config/providers-loader.js';
-import type { LLMProviderGatewayCapabilities } from '../llm/provider-registry.js';
 import { isCodexOAuthProviderProfile } from './codex-oauth-profile.js';
+
+/** Gateway support matrix for one runtime provider profile. */
+export interface ProviderGatewayCapabilities {
+  /** Support for `/v1/chat/completions`. */
+  readonly chatCompletions: 'native' | 'bridged' | 'unsupported';
+  /** Support for `/v1/responses`. */
+  readonly responses: 'native' | 'bridged' | 'unsupported';
+}
 
 /**
  * Redacted provider summary exposed through app diagnostics.
@@ -17,7 +24,7 @@ export interface ProviderRegistrySummary {
   /** Provider backend family. */
   kind: ProviderProfile['kind'];
   /** Gateway support matrix for this provider profile. */
-  gatewayCapabilities: LLMProviderGatewayCapabilities;
+  gatewayCapabilities: ProviderGatewayCapabilities;
   /** Models declared by the provider profile. */
   models: string[];
   /** Provider readiness state, when configured. */
@@ -33,6 +40,16 @@ export interface ProviderRegistrySummary {
 export type ProviderCredentialResolver = (secretRef: string) => string | null;
 
 const unresolvedProviderCredential: ProviderCredentialResolver = () => null;
+
+/**
+ * Normalizes a provider id for adapter and policy comparisons.
+ *
+ * @param id Provider id supplied by config or dispatch.
+ * @returns Lowercase id with hyphen and underscore separators unified.
+ */
+export function normalizeProviderId(id: string): string {
+  return id.trim().toLowerCase().replaceAll('-', '_');
+}
 
 /**
  * In-memory provider registry built from loaded provider profiles.
@@ -81,7 +98,14 @@ export class ProviderRegistry {
   ): boolean | null {
     const provider = this.get(id);
 
-    return provider ? hasResolvableProviderCredentials(provider, credentialResolver) : null;
+    if (!provider) {
+      return null;
+    }
+
+    return (
+      !providerRequiresCredentials(provider) ||
+      Boolean(resolveProviderSecretRef(provider, credentialResolver))
+    );
   }
 
   /**
@@ -112,24 +136,6 @@ export class ProviderRegistry {
       return summary;
     });
   }
-}
-
-/**
- * Checks whether a provider profile has resolvable credentials when it requires them.
- *
- * @param profile Provider profile to inspect.
- * @param credentialResolver Resolver used to check credential references.
- * @returns True when no credential is required or a configured credential resolves.
- */
-export function hasResolvableProviderCredentials(
-  profile: ProviderProfile,
-  credentialResolver: ProviderCredentialResolver = unresolvedProviderCredential
-): boolean {
-  if (!providerRequiresCredentials(profile)) {
-    return true;
-  }
-
-  return Boolean(resolveProviderSecretRef(profile, credentialResolver));
 }
 
 /**
@@ -194,10 +200,11 @@ export function redactBaseUrl(baseUrl: string): string {
  */
 export function gatewayCapabilitiesForProfile(
   profile: ProviderProfile
-): LLMProviderGatewayCapabilities {
+): ProviderGatewayCapabilities {
   const vendor = (profile as { vendor?: unknown }).vendor;
+  const vendorId = typeof vendor === 'string' ? normalizeProviderId(vendor) : null;
 
-  if (profile.id === 'openai' || vendor === 'openai') {
+  if (normalizeProviderId(profile.id) === 'openai' || vendorId === 'openai') {
     return { chatCompletions: 'native', responses: 'native' };
   }
 

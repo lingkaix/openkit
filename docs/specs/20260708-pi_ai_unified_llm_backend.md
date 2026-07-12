@@ -83,7 +83,7 @@ All other provider profiles
 
 The provider registry should no longer expose `openai-compatible` as a steady-state backend. Any provider that previously used `openai-compatible` becomes `pi-ai` unless it is removed or deliberately marked unsupported.
 
-`OpenAICompatibleChatClient` may remain temporarily as a test fixture or migration helper, but it must not remain on the production Gateway dispatch path after this spec is implemented.
+The retired `OpenAICompatibleChatClient` migration fixture is removed. Shared OpenAI-compatible wire types and normalized provider errors remain independent of transport selection.
 
 ## Request Routing Contract
 

@@ -8,11 +8,11 @@ import { createApp } from '../app.js';
 import type { BetterAuthServer } from '../auth/middleware.js';
 import type { OpenAICompatibleChatCompletionRequest } from '../llm/openai-compatible-client.js';
 import type { PiAiGatewayClient } from '../llm/pi-ai-client.js';
-import type { ResolvedLLMProviderConfig } from '../llm/provider-config.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { createVaultUnlockState } from '../vault-unlock-state.js';
-import { listVaultUseRecords } from '../vault-use-records.js';
+import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
+import { listVaultUseRecords } from '../vault/vault-use-records.js';
+import type { ResolvedLLMProviderConfig } from './llm-config.js';
 import { ProviderRegistry } from './registry.js';
 
 /**
@@ -202,7 +202,6 @@ describe('OpenAI-compatible internal facade', () => {
         {
           provider: expect.objectContaining({
             apiKey: 'sk-vault-internal',
-            apiKeySource: 'vault',
             id: 'internal-vault',
           }),
           request: expect.objectContaining({

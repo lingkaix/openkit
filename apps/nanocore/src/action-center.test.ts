@@ -567,6 +567,38 @@ describe('action center app API', () => {
     }
   });
 
+  it('omits another user scheduler admissions when workspace ids collide', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore();
+
+    try {
+      createSchedulerAdmissionEntry(coreDb, {
+        queueEntryId: 'queue_other_user_action_center',
+        userId: 'user_victim',
+        workspaceId: 'ws_demo',
+        threadId: 'thread_victim',
+        turnId: 'turn_victim',
+        turnInput: 'Keep another user scheduler row out of Action Center.',
+        requestedAgentId: 'agent_codex_host',
+        profileRef: 'agent_codex_host',
+        priorityClass: 'interactive',
+        requiredPoolConstraints: ['openshell.local'],
+        now: () => timestamp,
+      });
+
+      const app = createApp({ coreDb, store });
+      const res = await app.request('/api/app/workspaces/ws_demo/action-center');
+      const items = ListHumanAttentionResponseSchema.parse(await res.json()).items;
+
+      expect(res.status).toBe(200);
+      expect(items.map((row) => row.id)).not.toContain(
+        'scheduler-admission:queue_other_user_action_center'
+      );
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('projects recovery evidence into the unified action center', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
@@ -788,6 +820,102 @@ describe('action center app API', () => {
     }
   });
 
+  it('projects only active unresolved accept goal reviews with an executable action', async () => {
+    const coreDb = createCoreDb();
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const store = createDemoStore();
+    const activeThread = store.createThread('ws_demo', 'Active accept review');
+    const inactiveGoalThread = store.createThread('ws_demo', 'Inactive goal accept review');
+    const inactiveTaskThread = store.createThread('ws_demo', 'Inactive task accept review');
+    const scenarios = [
+      {
+        id: 'active',
+        thread: activeThread,
+        goalStatus: 'reviewing',
+        taskStatus: 'reviewing',
+      },
+      {
+        id: 'inactive_goal',
+        thread: inactiveGoalThread,
+        goalStatus: 'running',
+        taskStatus: 'reviewing',
+      },
+      {
+        id: 'inactive_task',
+        thread: inactiveTaskThread,
+        goalStatus: 'reviewing',
+        taskStatus: 'completed',
+      },
+    ] as const;
+
+    try {
+      for (const scenario of scenarios) {
+        createGoalRecord(workspaceDb, {
+          workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
+          goalId: `goal_accept_${scenario.id}`,
+          workspaceId: 'ws_demo',
+          threadId: scenario.thread.id,
+          title: 'Accept review goal',
+          objective: 'Project only actionable accept review attention.',
+          status: scenario.goalStatus,
+          now: () => timestamp,
+        });
+        createGoalTask(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: scenario.thread.id,
+          goalId: `goal_accept_${scenario.id}`,
+          taskId: `task_accept_${scenario.id}`,
+          title: 'Accept review task',
+          objective: 'Expose the accept review while the task is reviewing.',
+          orderIndex: 0,
+          dependsOnTaskIds: [],
+          acceptanceCriteria: ['The actionable review state is projected exactly once.'],
+          contextBudgetTokens: 1024,
+          status: scenario.taskStatus,
+          now: () => timestamp,
+        });
+        createGoalReviewRecord(workspaceDb, {
+          reviewId: `review_accept_${scenario.id}`,
+          workspaceId: 'ws_demo',
+          threadId: scenario.thread.id,
+          goalId: `goal_accept_${scenario.id}`,
+          taskId: `task_accept_${scenario.id}`,
+          verdict: 'accept',
+          reason: 'Accept the completed worker output.',
+          now: () => timestamp,
+        });
+      }
+
+      const app = createApp({ coreDb, store });
+      const res = await app.request('/api/app/workspaces/ws_demo/action-center');
+      const reviewRows = ListHumanAttentionResponseSchema.parse(await res.json()).items.filter(
+        (row) => row.source.type === 'goal_review'
+      );
+      const decisionHref = `/api/app/workspaces/ws_demo/threads/${activeThread.id}/goals/goal_accept_active/reviews/review_accept_active/decision`;
+
+      expect(reviewRows).toEqual([
+        expect.objectContaining({
+          id: `goal-review:ws_demo:${activeThread.id}:goal_accept_active:review_accept_active`,
+          source: expect.objectContaining({
+            type: 'goal_review',
+            reviewId: 'review_accept_active',
+            verdict: 'accept',
+          }),
+          actions: expect.arrayContaining([
+            expect.objectContaining({
+              kind: 'accept_review',
+              method: 'POST',
+              href: decisionHref,
+            }),
+          ]),
+        }),
+      ]);
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('omits resolved goal review rows', async () => {
     const coreDb = createCoreDb();
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
@@ -796,7 +924,7 @@ describe('action center app API', () => {
     const turn = store.createTurn('ws_demo', thread.id, 'Review then resolve');
 
     try {
-      createGoalRecord(workspaceDb, {
+      const goal = createGoalRecord(workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_resolved_review',
         workspaceId: 'ws_demo',
@@ -806,7 +934,7 @@ describe('action center app API', () => {
         status: 'reviewing',
         now: () => timestamp,
       });
-      createGoalTask(workspaceDb, {
+      const task = createGoalTask(workspaceDb, {
         workspaceId: 'ws_demo',
         threadId: thread.id,
         goalId: 'goal_resolved_review',
@@ -827,8 +955,8 @@ describe('action center app API', () => {
         goalId: 'goal_resolved_review',
         taskId: 'task_resolved_review',
         turnId: turn.id,
-        verdict: 'retry',
-        reason: 'Retry was already accepted.',
+        verdict: 'accept',
+        reason: 'The accepted review was already resolved.',
         now: () => timestamp,
       });
       resolveGoalReviewRecord(workspaceDb, {
@@ -837,6 +965,17 @@ describe('action center app API', () => {
         goalId: 'goal_resolved_review',
         reviewId: 'review_resolved_attention',
         requestId: 'resolution-request-1',
+        resolutionSnapshot: {
+          outcome: 'complete_goal',
+          task: { ...task, status: 'completed' },
+          goal: {
+            ...goal,
+            status: 'completed',
+            currentTaskId: null,
+            terminalStopReason: 'completed',
+          },
+          nextTask: null,
+        },
         now: () => timestamp,
       });
 

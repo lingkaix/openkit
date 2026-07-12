@@ -1,13 +1,39 @@
 import type { ProviderProfile } from '../config/providers-loader.js';
-import type { LLMProviderApiKeySource, ResolvedLLMProviderConfig } from '../llm/provider-config.js';
-import type { LLMProviderSpec } from '../llm/provider-registry.js';
-import { findProviderSpec } from '../llm/provider-registry.js';
 import { isCodexOAuthProviderProfile, readCodexOAuthAccountSlotId } from './codex-oauth-profile.js';
 import {
   gatewayCapabilitiesForProfile,
+  normalizeProviderId,
   type ProviderCredentialResolver,
+  type ProviderGatewayCapabilities,
+  providerRequiresCredentials,
   resolveProviderSecretRef,
 } from './registry.js';
+
+/** Secret-bearing provider configuration used by internal LLM callers. */
+export interface ResolvedLLMProviderConfig {
+  /** Pi AI adapter identity, distinct from the configured instance id. */
+  readonly adapterId: string;
+  /** Resolved credential, never returned through app APIs. */
+  readonly apiKey: string | null;
+  /** Runtime backend used for dispatch. */
+  readonly backend: 'codex-oauth' | 'pi-ai';
+  /** Effective provider endpoint. */
+  readonly baseUrl: string | null;
+  /** Human-readable provider name. */
+  readonly displayName: string;
+  /** OpenAI-compatible extra request body fields. */
+  readonly extraBody: Record<string, unknown>;
+  /** OpenAI-compatible extra request headers. */
+  readonly extraHeaders: Record<string, string>;
+  /** Gateway endpoint support matrix. */
+  readonly gatewayCapabilities: ProviderGatewayCapabilities;
+  /** Configured provider instance id. */
+  readonly id: string;
+  /** Whether dispatch requires an explicit credential. */
+  readonly requiresApiKey: boolean;
+  /** Codex OAuth account slot for subscription providers. */
+  readonly codexOAuthAccountSlotId?: string;
+}
 
 /**
  * Converts a runtime provider profile into the secret-bearing config used by LLM clients.
@@ -21,110 +47,36 @@ export function resolveProviderProfileToLLMConfig(
   credentialResolver?: ProviderCredentialResolver
 ): ResolvedLLMProviderConfig {
   const baseUrl = profile.baseUrl ?? null;
-  const spec = createProviderSpecFromProfile(profile);
+  const isCodexOAuth = isCodexOAuthProviderProfile(profile);
+  const adapterId = isCodexOAuth ? 'openai_codex' : readProviderAdapterId(profile);
   const apiKey = resolveProviderSecretRef(profile, credentialResolver);
   const codexOAuthAccountSlotId = readCodexOAuthAccountSlotId(profile);
 
   return {
+    adapterId,
     apiKey,
-    apiKeySource: readResolvedCredentialSource(profile.secretRef, apiKey),
+    backend: isCodexOAuth ? 'codex-oauth' : 'pi-ai',
     baseUrl,
     displayName: profile.displayName,
     extraBody: readStringRecord((profile as { extraBody?: unknown }).extraBody),
     extraHeaders: readStringHeaders((profile as { extraHeaders?: unknown }).extraHeaders),
-    gatewayCapabilities: spec.gatewayCapabilities,
-    hasApiKey: Boolean(apiKey),
+    gatewayCapabilities: gatewayCapabilitiesForProfile(profile),
     id: profile.id,
-    model: profile.defaultModel ?? null,
-    spec,
-    specId: profile.id,
+    requiresApiKey: isCodexOAuth ? false : providerRequiresCredentials(profile),
     ...(codexOAuthAccountSlotId ? { codexOAuthAccountSlotId } : {}),
   };
 }
 
 /**
- * Creates static provider metadata required by shared LLM client types.
+ * Reads the adapter identity declared by a runtime provider profile.
  *
  * @param profile Provider profile loaded from runtime config.
- * @returns Provider spec projection.
+ * @returns Declared vendor id, or the configured instance id when no vendor is present.
  */
-export function createProviderSpecFromProfile(profile: ProviderProfile): LLMProviderSpec {
-  const isCodexOAuth = isCodexOAuthProviderProfile(profile);
-  const isCustomOpenAICompatible = profile.kind === 'custom';
-  const staticSpec = findProviderSpec(profile.id);
+function readProviderAdapterId(profile: ProviderProfile): string {
+  const vendor = (profile as { vendor?: unknown }).vendor;
 
-  if (staticSpec && !isCodexOAuth) {
-    return {
-      ...staticSpec,
-      defaultBaseUrl: profile.baseUrl ?? staticSpec.defaultBaseUrl,
-      displayName: profile.displayName,
-      envKey: readEnvSecretName(profile.secretRef) ?? staticSpec.envKey,
-      isGateway: profile.kind === 'gateway',
-      isLocal: profile.kind === 'local',
-      isOAuth: profile.kind === 'oauth',
-      requiresApiKey: providerProfileRequiresApiKey(profile),
-    };
-  }
-
-  return {
-    backend: isCodexOAuth ? 'codex-oauth' : 'pi-ai',
-    defaultBaseUrl: profile.baseUrl ?? null,
-    displayName: profile.displayName,
-    envKey: readEnvSecretName(profile.secretRef),
-    extraBodyAllowed: !isCustomOpenAICompatible,
-    extraHeadersAllowed: !isCustomOpenAICompatible,
-    gatewayCapabilities: gatewayCapabilitiesForProfile(profile),
-    id: profile.id,
-    isGateway: profile.kind === 'gateway',
-    isLocal: profile.kind === 'local',
-    isOAuth: isCodexOAuth || profile.kind === 'oauth',
-    modelKeywords: [],
-    requiresApiKey: isCodexOAuth ? false : providerProfileRequiresApiKey(profile),
-    supportsReasoning:
-      isCodexOAuth ||
-      isCustomOpenAICompatible ||
-      (profile as { vendor?: unknown }).vendor === 'openai',
-    supportsStreaming: true,
-    supportsToolCalls: true,
-  };
-}
-
-/**
- * Returns whether a runtime provider profile requires an API key.
- *
- * @param profile Runtime provider profile.
- * @returns True when the profile declares a credential or is hosted.
- */
-function providerProfileRequiresApiKey(profile: ProviderProfile): boolean {
-  return profile.kind === 'direct' || profile.kind === 'gateway' || Boolean(profile.secretRef);
-}
-
-/**
- * Reads an environment variable name from an env secret reference.
- *
- * @param secretRef Secret reference.
- * @returns Environment variable name, when supported.
- */
-export function readEnvSecretName(secretRef: string | undefined): string | null {
-  return secretRef?.startsWith('env:') ? secretRef.slice('env:'.length) : null;
-}
-
-/**
- * Classifies a resolved provider credential source.
- *
- * @param secretRef Provider secret reference.
- * @param apiKey Resolved provider credential value.
- * @returns Non-secret source label for diagnostics and internal dispatch.
- */
-export function readResolvedCredentialSource(
-  secretRef: string | undefined,
-  apiKey: string | null
-): LLMProviderApiKeySource {
-  if (!apiKey) {
-    return secretRef ? 'missing' : 'not-required';
-  }
-
-  return secretRef?.startsWith('vault://') ? 'vault' : 'env';
+  return normalizeProviderId(typeof vendor === 'string' && vendor.trim() ? vendor : profile.id);
 }
 
 function readStringHeaders(value: unknown): Record<string, string> {

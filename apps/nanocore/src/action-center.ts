@@ -4,8 +4,11 @@ import {
   ListHumanAttentionResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { StopReason } from '@openkit/protocol';
+import type { Context, Hono } from 'hono';
+import { asApiError } from './api-errors.js';
+import type { AuthVariables } from './auth/middleware.js';
 import type { ArtifactReviewStatus, FsStore } from './lib/store.js';
-import { POLICY_ESCALATION_CAUSATION_PREFIX } from './policy/approval-gates.js';
+import { registerAppApiRoute } from './openapi.js';
 import { listGoalReviewRecordsForTask } from './runtime/goal-review-records.js';
 import { type GoalRecord, listGoalRecordsForThread, listGoalTasks } from './runtime/goal-store.js';
 import { listPendingUserTurns } from './runtime/pending-user-turns.js';
@@ -24,14 +27,13 @@ import type { CoreDb, WorkspaceDb } from './storage/db.js';
 type StoreItem = ReturnType<FsStore['listAllItems']>[number];
 type ApprovalRequestStoreItem = Extract<StoreItem, { type: 'approval-request' }>;
 type ApprovalDecisionStoreItem = Extract<StoreItem, { type: 'approval-decision' }>;
-type StatusStoreItem = Extract<StoreItem, { type: 'status' }>;
 type UserInputRequestStoreItem = Extract<StoreItem, { type: 'user-input-request' }>;
 type UserInputResponseStoreItem = Extract<StoreItem, { type: 'user-input-response' }>;
 
 /**
  * Input used to build unified Human Attention rows.
  */
-export interface BuildHumanAttentionRowsInput {
+interface BuildHumanAttentionRowsInput {
   /** Request-scoped workspace store. */
   store: FsStore;
   /** Optional Core database handles for app-local runtime rows. */
@@ -43,14 +45,43 @@ export interface BuildHumanAttentionRowsInput {
 }
 
 /**
- * Builds the unified Human Attention Action Center response for one workspace.
+ * Registers the workspace Action Center route.
  *
- * @param input Projection dependencies and workspace scope.
- * @returns Strict App API response payload.
+ * @param dependencies Hono app, request-scoped storage, and optional durable databases.
  */
-export function buildHumanAttentionResponse(input: BuildHumanAttentionRowsInput): unknown {
-  return ListHumanAttentionResponseSchema.parse({
-    items: buildHumanAttentionRows(input),
+export function registerActionCenterRoutes({
+  app,
+  coreDb,
+  repositoryWorkspaceDb,
+  requestStore,
+}: {
+  readonly app: Hono<{ Variables: AuthVariables }>;
+  readonly coreDb: CoreDb | undefined;
+  readonly repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb;
+  readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
+}): void {
+  registerAppApiRoute(app, 'listHumanAttention', (c) => {
+    try {
+      const store = requestStore(c);
+      const workspaceId = c.req.param('workspaceId');
+      const workspaceDb = coreDb ? repositoryWorkspaceDb(store, workspaceId) : undefined;
+      try {
+        return c.json(
+          ListHumanAttentionResponseSchema.parse({
+            items: buildHumanAttentionRows({
+              store,
+              coreDb,
+              workspaceDb,
+              workspaceId,
+            }),
+          })
+        );
+      } finally {
+        workspaceDb?.sqlite.close();
+      }
+    } catch (error) {
+      return asApiError((error as Error).message);
+    }
   });
 }
 
@@ -60,14 +91,13 @@ export function buildHumanAttentionResponse(input: BuildHumanAttentionRowsInput)
  * @param input Projection dependencies and workspace scope.
  * @returns Human Attention rows in deterministic creation order.
  */
-export function buildHumanAttentionRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] {
+function buildHumanAttentionRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] {
   input.store.getWorkspace(input.workspaceId);
 
   const artifactRows = artifactReviewRows(input);
   const rows = [
     ...approvalRows(input.store, input.workspaceId),
     ...questionRows(input.store, input.workspaceId),
-    ...policyEscalationRows(input.store, input.workspaceId),
     ...runtimeRows(input),
     ...agentReadinessRows(input.store, input.workspaceId),
     ...artifactRows,
@@ -166,60 +196,6 @@ function isUserInputRequestItem(item: StoreItem): item is UserInputRequestStoreI
  */
 function isUserInputResponseItem(item: StoreItem): item is UserInputResponseStoreItem {
   return item.type === 'user-input-response';
-}
-
-/**
- * Returns true when one status item carries a policy escalation marker.
- *
- * @param item Store item to inspect.
- * @returns True when the item is a policy escalation row source.
- */
-function isPolicyEscalationItem(item: StoreItem): item is StatusStoreItem {
-  return (
-    item.type === 'status' &&
-    typeof item.causationId === 'string' &&
-    item.causationId.startsWith(POLICY_ESCALATION_CAUSATION_PREFIX)
-  );
-}
-
-/**
- * Projects policy escalation status items into blocked Action Center rows.
- *
- * @param store Request-scoped workspace store.
- * @param workspaceId Workspace id to inspect.
- * @returns Policy escalation rows.
- */
-function policyEscalationRows(store: FsStore, workspaceId: string): HumanAttentionRow[] {
-  return store
-    .listAllItems()
-    .filter((item) => item.workspaceId === workspaceId)
-    .filter(isPolicyEscalationItem)
-    .map((item) => {
-      const thread = store.getThread(item.workspaceId, item.threadId);
-
-      return {
-        id: `policy-escalation:${item.id}`,
-        kind: 'blocked_turn',
-        workspaceId: item.workspaceId,
-        threadId: item.threadId,
-        turnId: item.turnId,
-        itemId: item.id,
-        title: item.title,
-        summary: item.summary ?? 'A higher-authority policy decision is required.',
-        severity: 'risk',
-        createdAt: item.createdAt,
-        recommendedAction: 'Review the escalation and decide the next policy action.',
-        source: {
-          type: 'protocol_item',
-          itemType: item.type,
-          workspaceId: item.workspaceId,
-          threadId: item.threadId,
-          turnId: item.turnId,
-          itemId: item.id,
-        },
-        actions: [openThreadAction(thread.id)],
-      };
-    });
 }
 
 /**
@@ -341,7 +317,7 @@ function runtimeRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] {
   }
 
   return [
-    ...schedulerAdmissionRows(input.coreDb, input.workspaceId),
+    ...schedulerAdmissionRows(input.coreDb, input.store.getUserId(), input.workspaceId),
     ...workerControlRejectedEvidenceRows(input.coreDb, input.workspaceId),
     ...schedulerOrphanWorkerRows(input.coreDb, input.workspaceId),
     ...(input.workspaceDb
@@ -357,11 +333,17 @@ function runtimeRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] {
  * Projects durable scheduler admissions into product-visible attention rows.
  *
  * @param coreDb Open server-scope Core database handle.
+ * @param userId Store owner user id to project.
  * @param workspaceId Workspace id to project.
  * @returns Scheduler admission rows for queued or human-actionable denied entries.
  */
-function schedulerAdmissionRows(coreDb: CoreDb, workspaceId: string): HumanAttentionRow[] {
+function schedulerAdmissionRows(
+  coreDb: CoreDb,
+  userId: string,
+  workspaceId: string
+): HumanAttentionRow[] {
   return listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+    userId,
     workspaceId,
     statuses: ['queued', 'denied'],
   }).map((entry) => {
@@ -793,7 +775,7 @@ function goalRow(
 }
 
 /**
- * Projects non-accept goal review records into rows.
+ * Projects actionable unresolved goal review records into rows.
  *
  * @param workspaceDb Open workspace-scope database handle.
  * @param goal Goal whose tasks should be inspected.
@@ -803,8 +785,12 @@ function goalReviewRows(workspaceDb: WorkspaceDb, goal: GoalRecord): HumanAttent
   return listGoalTasks(workspaceDb, goal).flatMap((task) =>
     listGoalReviewRecordsForTask(workspaceDb, { ...goal, taskId: task.taskId })
       .filter((review) => review.taskId === task.taskId)
-      .filter((review) => review.verdict !== 'accept')
       .filter((review) => review.resolvedAt === null)
+      .filter(
+        (review) =>
+          review.verdict !== 'accept' ||
+          (goal.status === 'reviewing' && task.status === 'reviewing')
+      )
       .map((review) => ({
         id: `goal-review:${review.workspaceId}:${review.threadId}:${review.goalId}:${review.reviewId}`,
         kind: review.verdict === 'decompose' ? 'review_cap' : 'artifact_review',
@@ -1192,6 +1178,8 @@ function goalReviewActions(
  */
 function goalReviewVerdictAction(verdict: string, href: string): HumanAttentionAction | null {
   switch (verdict) {
+    case 'accept':
+      return { kind: 'accept_review', label: 'Accept review', method: 'POST', href };
     case 'refine':
     case 'decompose':
       return { kind: 'request_refinement', label: 'Request refinement', method: 'POST', href };

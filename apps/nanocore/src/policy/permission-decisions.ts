@@ -181,6 +181,75 @@ interface PermissionDecisionRow {
   readonly created_at: string;
 }
 
+/** Stored require-approval policy decision. */
+interface PolicyApprovalDecisionRow {
+  /** Product action that required approval. */
+  readonly action: string;
+  /** Stored permission decision id. */
+  readonly decisionId: string;
+  /** Redacted context summary. */
+  readonly contextSummary: unknown;
+  /** Redacted resource summary. */
+  readonly resourceSummary: unknown;
+  /** Redacted subject summary. */
+  readonly subjectSummary: unknown;
+}
+
+/**
+ * Reads the policy decision that opened one approval gate.
+ *
+ * @param workspaceDb Open workspace-scope database handle.
+ * @param workspaceId Workspace id that owns the approval.
+ * @param approvalId Approval request id.
+ * @param action Optional action filter.
+ * @param result Permission result to read.
+ * @returns Stored approval-linked decision row, or null.
+ */
+export function readPolicyApprovalDecision(
+  workspaceDb: WorkspaceDb,
+  workspaceId: string,
+  approvalId: string,
+  action?: string,
+  result: PermissionDecisionResult = 'require_approval'
+): PolicyApprovalDecisionRow | null {
+  const row = workspaceDb.sqlite
+    .prepare(
+      `SELECT
+        action,
+        decision_id,
+        subject_summary_json,
+        resource_summary_json,
+        context_summary_json
+      FROM permission_decisions
+      WHERE owner_scope = 'workspace'
+        AND workspace_id = ?
+        AND result = ?
+        AND approval_id = ?
+        AND (? IS NULL OR action = ?)
+      ORDER BY created_at DESC
+      LIMIT 1`
+    )
+    .get(workspaceId, result, approvalId, action ?? null, action ?? null) as
+    | {
+        action: string;
+        context_summary_json: string;
+        decision_id: string;
+        resource_summary_json: string;
+        subject_summary_json: string;
+      }
+    | undefined;
+
+  return row
+    ? {
+        action: row.action,
+        contextSummary: JSON.parse(row.context_summary_json),
+        decisionId: row.decision_id,
+        resourceSummary: JSON.parse(row.resource_summary_json),
+        subjectSummary: JSON.parse(row.subject_summary_json),
+      }
+    : null;
+}
+
 /** Input for recording one LLM gateway policy decision. */
 export interface RecordGatewayPolicyDecisionInput {
   /** Server-scope database handle. */
@@ -290,91 +359,93 @@ export function recordProductPermissionDecision(input: RecordProductPermissionDe
   const sqlite = permissionDecisionDb(input);
   const auditEventId = permissionDecisionAuditEventId(input);
 
-  sqlite
-    .prepare(
-      `INSERT INTO permission_decisions (
-        decision_id,
-        owner_scope,
-        workspace_id,
-        policy_engine_version,
-        policy_snapshot_id,
-        subject_summary_json,
-        action,
-        resource_summary_json,
-        context_summary_json,
-        result,
-        reason_code,
-        enforcement_point,
-        required_approval_kind,
-        approval_id,
-        audit_event_id,
-        created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      input.decisionId,
-      input.ownerScope,
-      input.workspaceId ?? null,
-      input.policyEngineVersion,
-      input.policySnapshotId,
-      JSON.stringify(input.subjectSummary),
-      input.action,
-      JSON.stringify(input.resourceSummary),
-      JSON.stringify(input.contextSummary),
-      input.result,
-      input.reasonCode,
-      input.enforcementPoint,
-      input.requiredApprovalKind ?? null,
-      input.approvalId ?? null,
-      auditEventId,
-      createdAt
-    );
+  sqlite.transaction(() => {
+    sqlite
+      .prepare(
+        `INSERT INTO permission_decisions (
+          decision_id,
+          owner_scope,
+          workspace_id,
+          policy_engine_version,
+          policy_snapshot_id,
+          subject_summary_json,
+          action,
+          resource_summary_json,
+          context_summary_json,
+          result,
+          reason_code,
+          enforcement_point,
+          required_approval_kind,
+          approval_id,
+          audit_event_id,
+          created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        input.decisionId,
+        input.ownerScope,
+        input.workspaceId ?? null,
+        input.policyEngineVersion,
+        input.policySnapshotId,
+        JSON.stringify(input.subjectSummary),
+        input.action,
+        JSON.stringify(input.resourceSummary),
+        JSON.stringify(input.contextSummary),
+        input.result,
+        input.reasonCode,
+        input.enforcementPoint,
+        input.requiredApprovalKind ?? null,
+        input.approvalId ?? null,
+        auditEventId,
+        createdAt
+      );
 
-  if (
-    input.ownerScope === 'workspace' &&
-    input.workspaceDb &&
-    input.workspaceId &&
-    auditEventId &&
-    !input.auditEventId
-  ) {
-    recordWorkspaceAuditEvent({
-      action: 'permission.decision',
-      auditEventId,
-      category: 'approval',
-      errorCode: permissionAuditErrorCode(input),
-      itemId: optionalStringField(input.contextSummary, 'itemId'),
-      now,
-      outcome: permissionAuditOutcome(input.result),
-      permissionDecisionId: input.decisionId,
-      requestId: optionalStringField(input.contextSummary, 'requestId'),
-      resource: `permission:${input.action}`,
-      severity: permissionAuditSeverity(input.result),
-      summary: `Permission decision ${input.result}: ${input.action}`,
-      threadId: optionalStringField(input.contextSummary, 'threadId'),
-      turnId: optionalStringField(input.contextSummary, 'turnId'),
-      workspaceDb: input.workspaceDb,
-      workspaceId: input.workspaceId,
-    });
-  }
-  if (input.ownerScope === 'server' && input.coreDb && auditEventId && !input.auditEventId) {
-    recordServerAuditEvent({
-      action: 'permission.decision',
-      auditEventId,
-      category: 'approval',
-      errorCode: permissionAuditErrorCode(input),
-      itemId: optionalStringField(input.contextSummary, 'itemId'),
-      coreDb: input.coreDb,
-      now,
-      outcome: permissionAuditOutcome(input.result),
-      permissionDecisionId: input.decisionId,
-      requestId: optionalStringField(input.contextSummary, 'requestId'),
-      resource: `permission:${input.action}`,
-      severity: permissionAuditSeverity(input.result),
-      summary: `Permission decision ${input.result}: ${input.action}`,
-      threadId: optionalStringField(input.contextSummary, 'threadId'),
-      turnId: optionalStringField(input.contextSummary, 'turnId'),
-    });
-  }
+    if (
+      input.ownerScope === 'workspace' &&
+      input.workspaceDb &&
+      input.workspaceId &&
+      auditEventId &&
+      !input.auditEventId
+    ) {
+      recordWorkspaceAuditEvent({
+        action: 'permission.decision',
+        auditEventId,
+        category: 'approval',
+        errorCode: permissionAuditErrorCode(input),
+        itemId: optionalStringField(input.contextSummary, 'itemId'),
+        now,
+        outcome: permissionAuditOutcome(input.result),
+        permissionDecisionId: input.decisionId,
+        requestId: optionalStringField(input.contextSummary, 'requestId'),
+        resource: `permission:${input.action}`,
+        severity: permissionAuditSeverity(input.result),
+        summary: `Permission decision ${input.result}: ${input.action}`,
+        threadId: optionalStringField(input.contextSummary, 'threadId'),
+        turnId: optionalStringField(input.contextSummary, 'turnId'),
+        workspaceDb: input.workspaceDb,
+        workspaceId: input.workspaceId,
+      });
+    }
+    if (input.ownerScope === 'server' && input.coreDb && auditEventId && !input.auditEventId) {
+      recordServerAuditEvent({
+        action: 'permission.decision',
+        auditEventId,
+        category: 'approval',
+        errorCode: permissionAuditErrorCode(input),
+        itemId: optionalStringField(input.contextSummary, 'itemId'),
+        coreDb: input.coreDb,
+        now,
+        outcome: permissionAuditOutcome(input.result),
+        permissionDecisionId: input.decisionId,
+        requestId: optionalStringField(input.contextSummary, 'requestId'),
+        resource: `permission:${input.action}`,
+        severity: permissionAuditSeverity(input.result),
+        summary: `Permission decision ${input.result}: ${input.action}`,
+        threadId: optionalStringField(input.contextSummary, 'threadId'),
+        turnId: optionalStringField(input.contextSummary, 'turnId'),
+      });
+    }
+  })();
 }
 
 /**

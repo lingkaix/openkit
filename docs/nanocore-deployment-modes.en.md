@@ -84,6 +84,14 @@ Use `OPENKIT_BIND_HOST` only when you intentionally expose NanoCore beyond loopb
 
 When running from a release app image, mount the persistent data root at `/data/openkit` and keep worker images separate. The app image is not the normal worker runtime bundle.
 
+## Vault Startup
+
+Local mode defaults to the operating-system keychain. Server mode defaults to the encrypted-file Vault; local mode can select the same backend with `vault.localDefaultBackend: "encrypted-file"` in `config/server.jsonc`.
+
+The only configured encrypted-file key source in V1 is `vault.encryptedFile.keyFilePath`. It must name an absolute regular file owned by the NanoCore process user, with exact `0600` permissions and exactly 32 raw bytes. Production's DATA_ROOT portability gate requires the configured path to be external to the current data root. See [NanoCore DATA_ROOT Config Guide](./nanocore-data-root-config.en.md) for key generation, backup warnings, and the config shape.
+
+When the key is valid, NanoCore authenticates it against `server/vault/header.json` before exposing the backend as available. Missing, invalid, or wrong keys leave Vault locked and readiness degraded, but do not stop NanoCore or expose filesystem and key details. The process clears temporary key buffers after every unlock attempt and clears its owned key during lock, orderly shutdown, and process-exit cleanup.
+
 ## Core Modes
 
 ### Local Mode

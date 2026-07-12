@@ -8,7 +8,7 @@ import {
   type OpenAICompatibleChatMessage,
   OpenAICompatibleProviderError,
 } from '../llm/openai-compatible-client.js';
-import type { ResolvedLLMProviderConfig } from '../llm/provider-config.js';
+import type { ResolvedLLMProviderConfig } from './llm-config.js';
 import { resolveProviderProfileToLLMConfig } from './llm-config.js';
 import type { ProviderCredentialResolver, ProviderRegistry } from './registry.js';
 

@@ -14,7 +14,6 @@ import {
   clearWorkerCheckpoint,
   createWorkerCheckpointEvidenceDiagnostics,
   getWorkerCheckpoint,
-  listStaleWorkerCheckpoints,
   updateWorkerCheckpoint,
   upsertWorkerCheckpoint,
 } from './worker-checkpoints.js';
@@ -84,7 +83,7 @@ describe('worker checkpoint storage', () => {
     }
   });
 
-  it('updates, clears, and lists stale worker checkpoints', () => {
+  it('updates and clears worker checkpoints', () => {
     const workspaceDb = createWorkspaceDb();
 
     try {
@@ -113,11 +112,6 @@ describe('worker checkpoint storage', () => {
         diagnosticsSummary: 'provider failed',
         updatedAt: '2026-05-31T00:10:00.000Z',
       });
-      expect(
-        listStaleWorkerCheckpoints(workspaceDb, {
-          olderThan: '2026-05-31T00:11:00.000Z',
-        }).map((checkpoint) => checkpoint.turnId)
-      ).toEqual(['turn_demo']);
       expect(clearWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'turn_demo')).toBe(true);
       expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'turn_demo')).toBeNull();
     } finally {

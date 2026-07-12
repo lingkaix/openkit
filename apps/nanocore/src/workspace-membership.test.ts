@@ -7,6 +7,7 @@ import { createApp } from './app.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
  * Creates a Better Auth test double with one signed-in user.
@@ -80,6 +81,84 @@ describe('workspace membership foundation', () => {
         user_id: 'user_owner',
         workspace_id: workspace.id,
       });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('preserves removed access while adding another user for the same imported workspace id', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-membership-import-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      const now = Date.now();
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO users (
+          id,
+          display_name,
+          email,
+          email_verified,
+          created_at,
+          updated_at,
+          kind
+        )
+         VALUES
+          ('user_first', 'First User', 'first@example.com', false, ?, ?, 'human'),
+          ('user_second', 'Second User', 'second@example.com', false, ?, ?, 'human')`
+        )
+        .run(now, now, now, now);
+
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'user_first',
+        workspaceId: 'ws_imported_shared',
+      });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'user_second',
+        workspaceId: 'ws_imported_shared',
+      });
+      coreDb.sqlite
+        .prepare(
+          `UPDATE workspace_members
+           SET status = 'removed'
+           WHERE workspace_id = ? AND user_id = ?`
+        )
+        .run('ws_imported_shared', 'user_first');
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'user_first',
+        workspaceId: 'ws_imported_shared',
+      });
+
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT workspace_id, user_id, status
+             FROM workspace_members
+             WHERE workspace_id = ?
+             ORDER BY user_id`
+          )
+          .all('ws_imported_shared')
+      ).toEqual([
+        {
+          workspace_id: 'ws_imported_shared',
+          user_id: 'user_first',
+          status: 'removed',
+        },
+        {
+          workspace_id: 'ws_imported_shared',
+          user_id: 'user_second',
+          status: 'active',
+        },
+      ]);
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
+          .get('ws_imported_shared')
+      ).toEqual({ owner_user_id: 'user_first' });
     } finally {
       coreDb.sqlite.close();
     }

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createApp } from './app.js';
 import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
-import { LLMProviderConfigStore } from './llm/provider-config.js';
+import { ProviderRegistry } from './providers/registry.js';
 
 describe('quick-chat workspace mode', () => {
   it('seeds a special lightweight workspace for simple provider-backed prompts', async () => {
@@ -21,16 +21,22 @@ describe('quick-chat workspace mode', () => {
   });
 
   it('uses the quick-chat workspace when no workspace is selected', async () => {
-    const configStore = new LLMProviderConfigStore();
-    configStore.upsertProvider({
-      providerId: 'ollama',
-      model: 'llama3.2',
-    });
-    configStore.updateDefaults({
-      quickChat: { providerId: 'ollama', model: 'llama3.2' },
-    });
     const app = createApp({
-      llmProviderConfigStore: configStore,
+      openKitConfig: {
+        defaults: {
+          gatewayModel: 'llama3.2',
+          gatewayProviderId: 'ollama',
+        },
+      },
+      providerRegistry: new ProviderRegistry([
+        {
+          defaultModel: 'llama3.2',
+          displayName: 'Ollama',
+          id: 'ollama',
+          kind: 'local',
+          models: ['llama3.2'],
+        },
+      ]),
       llmPiAiClient: {
         createChatCompletion: async () => ({
           id: 'chatcmpl_quick_workspace',

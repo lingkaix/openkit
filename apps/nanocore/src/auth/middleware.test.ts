@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
 
-import { createAuthMiddleware } from './middleware.js';
+import { type BetterAuthServer, createAuthMiddleware } from './middleware.js';
 
 describe('createAuthMiddleware', () => {
   it('passes through local-mode requests and exposes the local actor', async () => {
@@ -116,6 +116,7 @@ describe('createAuthMiddleware', () => {
           },
           tokenId: 'tok_1',
         }),
+        workspaceMembershipVerifier: async () => true,
       })
     );
     app.get('/api/app/workspaces/:workspaceId/dashboard', (c) => c.json(c.get('actor')));
@@ -163,6 +164,83 @@ describe('createAuthMiddleware', () => {
     expect(body.code).toBe('core.auth.scope_forbidden');
   });
 
+  it('rejects workspace tokens when membership verification is unavailable', async () => {
+    const app = new Hono();
+
+    app.use(
+      '/api/*',
+      createAuthMiddleware('server', undefined, {
+        accessTokenVerifier: async () => ({
+          actor: {
+            userId: 'user_token',
+            kind: 'token',
+            tokenScope: 'workspace',
+            tokenWorkspaceIds: ['ws_allowed'],
+          },
+          tokenId: 'tok_1',
+        }),
+      })
+    );
+    app.get('/api/app/workspaces/:workspaceId/dashboard', (c) => c.json(c.get('actor')));
+
+    const denied = await app.request('/api/app/workspaces/ws_allowed/dashboard', {
+      headers: { authorization: 'Bearer okt_test_token' },
+    });
+
+    expect(denied.status).toBe(403);
+    await expect(denied.json()).resolves.toMatchObject({ code: 'core.auth.scope_forbidden' });
+  });
+
+  it('checks workspace membership for Better Auth session actors', async () => {
+    const app = new Hono();
+    const auth: BetterAuthServer = {
+      api: {
+        getSession: async () => ({ user: { id: 'user_session' } }),
+      },
+      handler: async () => new Response(null, { status: 404 }),
+    };
+    const checkedWorkspaceIds: string[] = [];
+
+    app.use(
+      '/api/*',
+      createAuthMiddleware('server', auth, {
+        workspaceMembershipVerifier: async (actor, workspaceId) => {
+          expect(actor).toEqual({ kind: 'session', userId: 'user_session' });
+          checkedWorkspaceIds.push(workspaceId);
+          return workspaceId === 'ws_allowed';
+        },
+      })
+    );
+    app.get('/api/app/workspaces/:workspaceId/dashboard', (c) => c.json(c.get('actor')));
+
+    const allowed = await app.request('/api/app/workspaces/ws_allowed/dashboard');
+    const denied = await app.request('/api/app/workspaces/ws_denied/dashboard');
+    const body = await denied.json();
+
+    expect(allowed.status).toBe(200);
+    expect(denied.status).toBe(403);
+    expect(body.code).toBe('core.auth.scope_forbidden');
+    expect(checkedWorkspaceIds).toEqual(['ws_allowed', 'ws_denied']);
+  });
+
+  it('rejects Better Auth session workspace access when membership verification is unavailable', async () => {
+    const app = new Hono();
+    const auth: BetterAuthServer = {
+      api: {
+        getSession: async () => ({ user: { id: 'user_session' } }),
+      },
+      handler: async () => new Response(null, { status: 404 }),
+    };
+
+    app.use('/api/*', createAuthMiddleware('server', auth));
+    app.get('/api/app/workspaces/:workspaceId/dashboard', (c) => c.json(c.get('actor')));
+
+    const denied = await app.request('/api/app/workspaces/ws_allowed/dashboard');
+
+    expect(denied.status).toBe(403);
+    await expect(denied.json()).resolves.toMatchObject({ code: 'core.auth.scope_forbidden' });
+  });
+
   it('rejects workspace-readonly tokens on mutating workspace routes', async () => {
     const app = new Hono();
 
@@ -178,6 +256,7 @@ describe('createAuthMiddleware', () => {
           },
           tokenId: 'tok_1',
         }),
+        workspaceMembershipVerifier: async () => true,
       })
     );
     app.get('/api/app/workspaces/:workspaceId/dashboard', (c) => c.json(c.get('actor')));
@@ -210,6 +289,7 @@ describe('createAuthMiddleware', () => {
           },
           tokenId: 'tok_1',
         }),
+        workspaceMembershipVerifier: async () => true,
       })
     );
     app.post('/api/approvals/:approvalRequestId/respond', async (c) => c.json(await c.req.json()));

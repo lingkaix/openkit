@@ -4,10 +4,12 @@ import { z } from 'zod';
 export const TurnFeedbackRatingSchema = z.enum(['good', 'bad']).nullable();
 
 /** Turn feedback submit request. */
-export const SubmitTurnFeedbackRequestSchema = z.object({
-  rating: TurnFeedbackRatingSchema,
-  note: z.string().nullable(),
-});
+export const SubmitTurnFeedbackRequestSchema = z
+  .object({
+    rating: TurnFeedbackRatingSchema,
+    note: z.string().nullable(),
+  })
+  .strict();
 
 /** Turn feedback response payload. */
 export const TurnFeedbackResponseSchema = z.object({

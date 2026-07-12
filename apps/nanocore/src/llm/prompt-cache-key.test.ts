@@ -1,12 +1,10 @@
 import { describe, expect, it } from 'vitest';
-
+import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type {
   OpenAICompatibleChatCompletionRequest,
   OpenAICompatibleResponsesRequest,
 } from './openai-compatible-client.js';
 import { PromptCacheKeyResolver } from './prompt-cache-key.js';
-import type { ResolvedLLMProviderConfig } from './provider-config.js';
-import { findProviderSpec } from './provider-registry.js';
 
 /**
  * Creates a provider config suitable for prompt-cache-key tests.
@@ -17,25 +15,17 @@ import { findProviderSpec } from './provider-registry.js';
 function providerConfig(
   overrides: Partial<ResolvedLLMProviderConfig> = {}
 ): ResolvedLLMProviderConfig {
-  const spec = findProviderSpec('openai');
-
-  if (!spec) {
-    throw new Error('Missing OpenAI provider spec');
-  }
-
   return {
-    id: 'openai',
-    specId: 'openai',
-    displayName: 'OpenAI',
-    model: 'gpt-5.1',
-    baseUrl: 'https://api.example.test/v1',
-    hasApiKey: true,
-    apiKeySource: 'stored',
-    gatewayCapabilities: spec.gatewayCapabilities,
-    extraHeaders: {},
-    extraBody: {},
-    spec,
+    adapterId: 'openai',
     apiKey: 'sk-test',
+    backend: 'pi-ai',
+    baseUrl: 'https://api.example.test/v1',
+    displayName: 'OpenAI',
+    extraBody: {},
+    extraHeaders: {},
+    gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
+    id: 'openai',
+    requiresApiKey: true,
     ...overrides,
   };
 }

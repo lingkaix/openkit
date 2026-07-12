@@ -227,8 +227,29 @@ describe('storage migrations', () => {
 
       expect(listMigrationIds(userDb)).toEqual(['user_0000_baseline']);
       expect(listTableNames(userDb)).toEqual(['schema_migrations']);
-      expect(listMigrationIds(workspaceDb)).toEqual(['workspace_0000_baseline']);
+      expect(listMigrationIds(workspaceDb)).toEqual([
+        'workspace_0000_baseline',
+        'workspace_0001_goal_review_resolution_snapshot',
+      ]);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
+      expect(listColumnNames(workspaceDb, 'goal_review_records')).toEqual([
+        'review_id',
+        'workspace_id',
+        'thread_id',
+        'goal_id',
+        'task_id',
+        'turn_id',
+        'item_ids_json',
+        'artifact_ids_json',
+        'verification_evidence_json',
+        'verdict',
+        'reason',
+        'created_at',
+        'updated_at',
+        'resolved_at',
+        'resolution_request_id',
+        'resolution_snapshot_json',
+      ]);
       expect(listColumnNames(workspaceDb, 'workspace_repository_resources')).toEqual([
         'workspace_id',
         'resource_id',

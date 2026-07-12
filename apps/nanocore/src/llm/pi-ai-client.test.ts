@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import {
   type Context,
   createModels,
@@ -8,15 +10,13 @@ import {
   type StreamOptions,
 } from '@earendil-works/pi-ai';
 import { describe, expect, it } from 'vitest';
-
+import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { GatewayUnsupportedFeatureError } from './gateway-converters.js';
 import {
   createDefaultPiAiGatewayModels,
   PiAiGatewayClient,
   PiAiGatewayConfigurationError,
 } from './pi-ai-client.js';
-import type { ResolvedLLMProviderConfig } from './provider-config.js';
-import type { LLMProviderSpec } from './provider-registry.js';
 
 /**
  * Creates a pi-ai-backed provider config for adapter tests.
@@ -25,43 +25,33 @@ import type { LLMProviderSpec } from './provider-registry.js';
  * @returns Resolved provider config.
  */
 function providerConfig(input: Partial<ResolvedLLMProviderConfig> = {}): ResolvedLLMProviderConfig {
-  const spec: LLMProviderSpec = {
-    id: 'anthropic',
-    displayName: 'Anthropic',
-    backend: 'pi-ai',
-    defaultBaseUrl: null,
-    envKey: 'ANTHROPIC_API_KEY',
-    modelKeywords: ['claude'],
-    isGateway: false,
-    isLocal: false,
-    isOAuth: false,
-    requiresApiKey: true,
-    supportsStreaming: true,
-    supportsToolCalls: true,
-    supportsReasoning: true,
-    gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
-    extraHeadersAllowed: false,
-    extraBodyAllowed: false,
-  };
-
   return {
-    id: 'anthropic_primary',
-    specId: 'anthropic',
-    displayName: 'Anthropic',
-    model: 'faux-chat',
-    baseUrl: null,
-    hasApiKey: true,
-    apiKeySource: 'stored',
-    gatewayCapabilities: spec.gatewayCapabilities,
-    extraHeaders: {},
-    extraBody: {},
-    spec,
+    adapterId: 'anthropic',
     apiKey: 'explicit-secret',
+    backend: 'pi-ai',
+    baseUrl: null,
+    displayName: 'Anthropic',
+    extraBody: {},
+    extraHeaders: {},
+    gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
+    id: 'anthropic_primary',
+    requiresApiKey: true,
     ...input,
   };
 }
 
 describe('PiAiGatewayClient', () => {
+  it('keeps the pi-ai dependency exact-pinned and importable inside nanocore', async () => {
+    const packageJson = JSON.parse(
+      readFileSync(new URL('../../package.json', import.meta.url), 'utf8')
+    ) as { dependencies: Record<string, string> };
+    const version = packageJson.dependencies['@earendil-works/pi-ai'];
+
+    expect(version).toBe('0.80.3');
+    expect(version).not.toMatch(/^[~^]/);
+    await expect(import('@earendil-works/pi-ai')).resolves.toHaveProperty('createModels');
+  });
+
   it('registers Anthropic models in the default pi-ai collection', () => {
     const models = createDefaultPiAiGatewayModels();
 
@@ -88,17 +78,10 @@ describe('PiAiGatewayClient', () => {
   it('registers a custom OpenAI-compatible provider model when pi-ai has no catalog entry', () => {
     const models = createModels();
     const customProvider = providerConfig({
+      adapterId: 'custom-proxy',
       id: 'custom-proxy',
-      specId: 'custom-proxy',
       displayName: 'Custom Proxy',
-      model: 'custom-chat',
       baseUrl: 'https://proxy.example/v1',
-      spec: {
-        ...providerConfig().spec,
-        id: 'custom-proxy',
-        displayName: 'Custom Proxy',
-        defaultBaseUrl: 'https://proxy.example/v1',
-      },
     });
 
     const client = new PiAiGatewayClient({ models }) as unknown as {
@@ -116,6 +99,60 @@ describe('PiAiGatewayClient', () => {
       id: 'custom-proxy',
       baseUrl: 'https://proxy.example/v1',
     });
+  });
+
+  it('binds adapter models to the configured instance endpoint and auth boundary', async () => {
+    const models = createDefaultPiAiGatewayModels();
+    const provider = providerConfig({
+      adapterId: 'openai',
+      apiKey: null,
+      baseUrl: 'https://proxy.example/v1',
+      gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
+      id: 'proxy-openai',
+      requiresApiKey: false,
+    });
+    const client = new PiAiGatewayClient({ models }) as unknown as {
+      resolveModel(provider: ResolvedLLMProviderConfig, modelId: string): Model<string>;
+    };
+    const previousApiKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = 'ambient-secret';
+
+    try {
+      const model = client.resolveModel(provider, 'gpt-5.1');
+
+      expect(model).toMatchObject({
+        baseUrl: 'https://proxy.example/v1',
+        provider: 'proxy-openai',
+      });
+      await expect(models.getAuth(model)).resolves.toBeUndefined();
+
+      expect(client.resolveModel(provider, 'private-gpt')).toMatchObject({
+        api: 'openai-responses',
+        baseUrl: 'https://proxy.example/v1',
+        provider: 'proxy-openai',
+      });
+    } finally {
+      if (previousApiKey === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = previousApiKey;
+      }
+    }
+  });
+
+  it('prefers the adapter identity over a colliding configured instance id', () => {
+    const client = new PiAiGatewayClient() as unknown as {
+      lookupProviderIds(provider: ResolvedLLMProviderConfig): string[];
+    };
+
+    expect(
+      client.lookupProviderIds(
+        providerConfig({
+          adapterId: 'anthropic',
+          id: 'openai',
+        })
+      )
+    ).toEqual(['anthropic', 'openai']);
   });
 
   it('maps a pi-ai completion to an OpenAI-compatible chat response', async () => {
@@ -166,6 +203,95 @@ describe('PiAiGatewayClient', () => {
       completion_tokens: expect.any(Number),
       total_tokens: expect.any(Number),
     });
+  });
+
+  it('observes raw terminal usage exactly once for a successful completion', async () => {
+    const faux = fauxProvider({
+      provider: 'anthropic_primary',
+      models: [
+        {
+          id: 'faux-chat',
+          cost: { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 1.5 },
+        },
+      ],
+    });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    faux.setResponses([fauxAssistantMessage('usage observed')]);
+    const observed: unknown[] = [];
+
+    await new PiAiGatewayClient({ models }).createChatCompletion(
+      providerConfig(),
+      {
+        model: 'faux-chat',
+        messages: [{ role: 'user', content: 'Observe usage' }],
+        prompt_cache_key: 'private-cache-key',
+        prompt_cache_retention: 'long',
+      },
+      (usage: unknown) => observed.push(usage)
+    );
+
+    expect(observed).toEqual([
+      expect.objectContaining({
+        cacheRead: expect.any(Number),
+        cacheWrite: expect.any(Number),
+        cost: expect.objectContaining({ total: expect.any(Number) }),
+        input: expect.any(Number),
+        output: expect.any(Number),
+      }),
+    ]);
+    expect((observed[0] as { cacheWrite: number }).cacheWrite).toBeGreaterThan(0);
+    expect((observed[0] as { cost: { total: number } }).cost.total).toBe(0);
+  });
+
+  it.each([
+    { message: 'terminal provider error', stopReason: 'error' as const },
+    { message: 'terminal provider abort', stopReason: 'aborted' as const },
+  ])('observes raw usage exactly once for a $stopReason stream', async (testCase) => {
+    const faux = fauxProvider({
+      provider: 'anthropic_primary',
+      models: [
+        {
+          id: 'faux-chat',
+          cost: { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 1.5 },
+        },
+      ],
+      tokenSize: { min: 1000, max: 1000 },
+    });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    faux.setResponses([
+      fauxAssistantMessage('partially consumed usage', {
+        errorMessage: testCase.message,
+        stopReason: testCase.stopReason,
+      }),
+    ]);
+    const observed: unknown[] = [];
+
+    const stream = await new PiAiGatewayClient({ models }).createChatCompletionStream(
+      providerConfig(),
+      {
+        model: 'faux-chat',
+        messages: [{ role: 'user', content: 'Observe terminal usage' }],
+        prompt_cache_key: 'private-cache-key',
+        prompt_cache_retention: 'long',
+        stream: true,
+      },
+      (usage: unknown) => observed.push(usage)
+    );
+
+    await expect(new Response(stream).text()).rejects.toThrow(testCase.message);
+    expect(observed).toEqual([
+      expect.objectContaining({
+        cacheRead: expect.any(Number),
+        cacheWrite: expect.any(Number),
+        cost: expect.objectContaining({ total: expect.any(Number) }),
+        input: expect.any(Number),
+        output: expect.any(Number),
+      }),
+    ]);
+    expect((observed[0] as { cacheWrite: number }).cacheWrite).toBeGreaterThan(0);
+    expect((observed[0] as { cost: { total: number } }).cost.total).toBe(0);
   });
 
   it('maps chat function tools and tool choice into the pi-ai request', async () => {
@@ -381,10 +507,10 @@ describe('PiAiGatewayClient', () => {
 
     try {
       await expect(
-        new PiAiGatewayClient({ models }).createChatCompletion(
-          providerConfig({ apiKey: null, hasApiKey: false, apiKeySource: 'missing' }),
-          { model: 'faux-chat', messages: [{ role: 'user', content: 'Hello' }] }
-        )
+        new PiAiGatewayClient({ models }).createChatCompletion(providerConfig({ apiKey: null }), {
+          model: 'faux-chat',
+          messages: [{ role: 'user', content: 'Hello' }],
+        })
       ).rejects.toBeInstanceOf(PiAiGatewayConfigurationError);
       expect(faux.state.callCount).toBe(0);
     } finally {

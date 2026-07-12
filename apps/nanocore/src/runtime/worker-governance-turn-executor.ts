@@ -11,7 +11,7 @@ import type { FsStore } from '../lib/store.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
-import type { VaultBackend } from '../vault-backend.js';
+import type { VaultBackend } from '../vault/vault-backend.js';
 import { getWorkspaceRepositoryResource } from '../workspace/repository-store.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
@@ -405,29 +405,18 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   /**
    * Interrupt is unsupported for the initial one-shot backend executor.
    *
-   * @param store Store that owns the turn.
-   * @param turnId Turn id to interrupt.
-   * @param context Runtime command context.
-   * @returns Promise that resolves after marking the turn interrupted.
+   * @param _store Store that owns the turn.
+   * @param _turnId Turn id to interrupt.
+   * @param _context Runtime command context.
+   * @returns Promise that always rejects because the backend cannot interrupt turns.
+   * @throws Error Always, because interrupting a governed worker is unsupported.
    */
   public async interruptTurn(
-    store: FsStore,
-    turnId: string,
-    context: TurnCommandRuntimeContext = { requestId: null }
+    _store: FsStore,
+    _turnId: string,
+    _context: TurnCommandRuntimeContext = { requestId: null }
   ): Promise<void> {
-    const turn = store.updateTurn(turnId, {
-      completedAt: this.now(),
-      status: 'interrupted',
-    });
-
-    store.emitTurnEvent(turnId, {
-      data: { stopReason: 'aborted', turn, type: 'turn-completed' },
-      event: 'turn.completed',
-      requestId: context.requestId ?? null,
-      threadId: turn.threadId,
-      turnId,
-      workspaceId: turn.workspaceId,
-    });
+    throw new Error('The worker governance executor does not support turn interruption.');
   }
 
   /**

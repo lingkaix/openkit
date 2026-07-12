@@ -6,8 +6,8 @@ import { describe, expect, it } from 'vitest';
 import { createApp } from '../app.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { createVaultUnlockState } from '../vault-unlock-state.js';
-import { listVaultUseRecords } from '../vault-use-records.js';
+import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
+import { listVaultUseRecords } from '../vault/vault-use-records.js';
 import { ProviderRegistry } from './registry.js';
 import { createVaultProviderCredentialResolver } from './vault-credential-resolver.js';
 

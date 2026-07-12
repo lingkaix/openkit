@@ -9,10 +9,10 @@ import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-deci
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { createVaultGrant } from '../vault-grants.js';
-import { createVaultReference } from '../vault-references.js';
-import { createVaultUnlockState } from '../vault-unlock-state.js';
-import { listVaultUseRecords } from '../vault-use-records.js';
+import { createVaultGrant } from '../vault/vault-grants.js';
+import { createVaultReference } from '../vault/vault-references.js';
+import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
+import { listVaultUseRecords } from '../vault/vault-use-records.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 
 describe('agent environment package resolver', () => {

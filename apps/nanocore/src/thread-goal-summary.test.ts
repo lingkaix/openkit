@@ -4,8 +4,10 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { createApp } from './app.js';
+import { ensureLocalUser } from './auth/identity.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
+import { listGoalReviewRecordsForTask } from './runtime/goal-review-records.js';
 import {
   createGoalRecord,
   createGoalTask,
@@ -21,6 +23,7 @@ import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { upsertWorkspaceRepositoryResource } from './workspace/repository-store.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
  * Opens a migrated Core database for thread goal summary route tests.
@@ -69,6 +72,61 @@ function createWorkspaceDb(coreDb: CoreDb): WorkspaceDb {
 }
 
 /**
+ * Creates a synchronous worker fixture that completes every started turn with artifact evidence.
+ *
+ * @returns Turn executor suitable for repeated live Goal Mode steps.
+ */
+function createCompletingGoalTurnExecutor(): TurnExecutor {
+  return {
+    capabilities: {
+      approvals: true,
+      interrupts: true,
+      artifacts: true,
+      workspaceConfig: true,
+      workspaceKnowledgeEditing: true,
+      questions: true,
+    },
+    eventFamilies: [],
+    async startTurn(workerStore, turnId, input) {
+      const turn = workerStore.getTurnById(turnId);
+      const timestamp = turn.startedAt ?? '2026-05-31T00:00:00.000Z';
+      const artifact = workerStore.createArtifact({
+        id: `art_${turnId}`,
+        workspaceId: turn.workspaceId,
+        threadId: turn.threadId,
+        turnId,
+        kind: 'summary',
+        title: 'Worker result',
+        status: 'ready',
+        summary: 'Worker evidence ready.',
+        version: 1,
+        content: { format: 'markdown', body: input },
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+      workerStore.createItem({
+        id: `it_artifact_${turnId}`,
+        workspaceId: turn.workspaceId,
+        threadId: turn.threadId,
+        turnId,
+        type: 'artifact-reference',
+        status: 'completed',
+        artifactId: artifact.id,
+        title: artifact.title,
+        summary: artifact.summary,
+        createdAt: timestamp,
+        completedAt: timestamp,
+      });
+      workerStore.updateTurn(turnId, {
+        status: 'completed',
+        completedAt: timestamp,
+        durationMs: 0,
+      });
+    },
+  };
+}
+
+/**
  * Lists permission decision rows for one action.
  *
  * @param workspaceDb Workspace database handle.
@@ -107,7 +165,7 @@ function listPermissionDecisionsForAction(
 function createSignedInAuthStub(): BetterAuthServer {
   return {
     api: {
-      getSession: async () => ({ user: { id: 'user_1' } }),
+      getSession: async () => ({ user: { id: LOCAL_USER_ID } }),
     },
     handler: async () => Response.json({ status: 'auth-ok' }),
   };
@@ -252,6 +310,7 @@ describe('thread goal summary app API', () => {
         workspaceId: 'ws_demo',
         threadId: thread.id,
         goalId: 'goal_running',
+        taskId: 'task_done',
         status: 'passed',
         command: 'pnpm -w verify:release',
         summary: 'Release verification passed.',
@@ -828,6 +887,12 @@ describe('thread goal summary app API', () => {
     const thread = store.createThread('ws_demo', 'Server supervise route thread');
 
     try {
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: LOCAL_USER_ID,
+        workspaceId: 'ws_demo',
+      });
       const app = createApp({
         auth: createSignedInAuthStub(),
         coreDb,
@@ -996,56 +1061,7 @@ describe('thread goal summary app API', () => {
         now: () => '2026-05-31T00:00:00.000Z',
       });
 
-      const turnExecutor: TurnExecutor = {
-        capabilities: {
-          approvals: true,
-          interrupts: true,
-          artifacts: true,
-          workspaceConfig: true,
-          workspaceKnowledgeEditing: true,
-          questions: true,
-        },
-        eventFamilies: [],
-        async startTurn(workerStore, turnId, input) {
-          const turn = workerStore.getTurnById(turnId);
-          const timestamp = turn.startedAt ?? '2026-05-31T00:00:00.000Z';
-          const artifact = workerStore.createArtifact({
-            id: `art_${turnId}`,
-            workspaceId: turn.workspaceId,
-            threadId: turn.threadId,
-            turnId,
-            kind: 'summary',
-            title: 'Worker result',
-            status: 'ready',
-            summary: 'Worker evidence ready.',
-            version: 1,
-            content: {
-              format: 'markdown',
-              body: input,
-            },
-            createdAt: timestamp,
-            updatedAt: timestamp,
-          });
-          workerStore.createItem({
-            id: `it_artifact_${turnId}`,
-            workspaceId: turn.workspaceId,
-            threadId: turn.threadId,
-            turnId,
-            type: 'artifact-reference',
-            status: 'completed',
-            artifactId: artifact.id,
-            title: artifact.title,
-            summary: artifact.summary,
-            createdAt: timestamp,
-            completedAt: timestamp,
-          });
-          workerStore.updateTurn(turnId, {
-            status: 'completed',
-            completedAt: timestamp,
-            durationMs: 0,
-          });
-        },
-      };
+      const turnExecutor = createCompletingGoalTurnExecutor();
       const app = createApp({ coreDb, store, turnExecutor });
       const stepRes = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
@@ -1115,9 +1131,316 @@ describe('thread goal summary app API', () => {
           reason: 'Worker result needs review.',
         },
       });
+      const unresolvedReviews = listGoalReviewRecordsForTask(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_real_step',
+        taskId: 'task_real_step',
+      }).filter((review) => review.resolvedAt === null);
+
+      expect(unresolvedReviews).toHaveLength(1);
+      const review = unresolvedReviews[0]!;
+      expect(review).toMatchObject({
+        verdict: 'accept',
+        turnId: stepPayload.worker.turnId,
+        itemIds: stepPayload.worker.evidence.itemIds,
+        artifactIds: stepPayload.worker.evidence.artifactIds,
+        resolvedAt: null,
+      });
+
+      const attentionRes = await app.request('/api/app/workspaces/ws_demo/action-center');
+      expect(attentionRes.status).toBe(200);
+      await expect(attentionRes.json()).resolves.toMatchObject({
+        items: expect.arrayContaining([
+          expect.objectContaining({
+            source: expect.objectContaining({
+              type: 'goal_review',
+              reviewId: review.reviewId,
+            }),
+            actions: expect.arrayContaining([expect.objectContaining({ kind: 'accept_review' })]),
+          }),
+        ]),
+      });
+
+      const repeatedStepRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: 'req_goal_step_while_reviewing' }),
+        }
+      );
+
+      expect(repeatedStepRes.status).toBe(409);
+      await expect(repeatedStepRes.json()).resolves.toMatchObject({ code: 'goal_not_running' });
+      expect(
+        listGoalReviewRecordsForTask(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: 'goal_real_step',
+          taskId: 'task_real_step',
+        }).filter((candidate) => candidate.resolvedAt === null)
+      ).toHaveLength(1);
       expect(
         getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, stepPayload.worker.turnId)
       ).toBeNull();
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('continues no-review Goal Mode until every dependent task completes', async () => {
+    const coreDb = createCoreDb();
+    const workspaceDb = createWorkspaceDb(coreDb);
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Dependent no-review goal thread');
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-no-review-goal-step-repo-'));
+    mkdirSync(join(repositoryPath, '.git'));
+
+    try {
+      seedReadyRepository(coreDb, repositoryPath);
+      const contextTurn = store.createTurn('ws_demo', thread.id, 'Provide context');
+      store.createItem({
+        id: `it_context_${thread.id}`,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        turnId: contextTurn.id,
+        type: 'user-message',
+        status: 'completed',
+        text: 'Complete both dependent tasks without review gates.',
+        createdAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
+        completedAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
+      });
+      store.updateTurn(contextTurn.id, {
+        status: 'completed',
+        completedAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
+        durationMs: 0,
+      });
+      createGoalRecord(workspaceDb, {
+        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
+        goalId: 'goal_no_review',
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        title: 'Run dependent tasks',
+        objective: 'Complete two dependent tasks without review.',
+        status: 'running',
+      });
+      createGoalTask(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_no_review',
+        taskId: 'task_no_review_1',
+        title: 'Complete first task',
+        objective: 'Complete the first dependency.',
+        orderIndex: 0,
+        dependsOnTaskIds: [],
+        acceptanceCriteria: ['The first task completes.'],
+        contextBudgetTokens: 12_000,
+        verificationChecks: [{ kind: 'manual', description: 'Review the first task output.' }],
+        status: 'ready',
+      });
+      createGoalTask(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_no_review',
+        taskId: 'task_no_review_2',
+        title: 'Complete second task',
+        objective: 'Complete the task unlocked by the first dependency.',
+        orderIndex: 1,
+        dependsOnTaskIds: ['task_no_review_1'],
+        acceptanceCriteria: ['The second task completes.'],
+        contextBudgetTokens: 12_000,
+        verificationChecks: [{ kind: 'manual', description: 'Review the second task output.' }],
+        status: 'pending',
+      });
+
+      const app = createApp({
+        coreDb,
+        store,
+        turnExecutor: createCompletingGoalTurnExecutor(),
+      });
+      const href = `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`;
+      const firstRes = await app.request(href, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'req_goal_no_review_1',
+          reviewPolicyOverride: 'none',
+        }),
+      });
+
+      expect(firstRes.status).toBe(200);
+      const firstPayload = await firstRes.json();
+      expect(firstPayload).toMatchObject({
+        goal: {
+          status: 'running',
+          currentTask: { taskId: 'task_no_review_2', status: 'ready' },
+          taskCounts: { completed: 1, pending: 0, ready: 1 },
+        },
+        decision: { outcome: 'continue', shouldStop: false, stopReason: 'completed' },
+        pendingAttention: null,
+      });
+      expect(
+        listGoalTasks(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: 'goal_no_review',
+        }).map((task) => ({ taskId: task.taskId, status: task.status }))
+      ).toEqual([
+        { taskId: 'task_no_review_1', status: 'completed' },
+        { taskId: 'task_no_review_2', status: 'ready' },
+      ]);
+      expect(
+        listGoalReviewRecordsForTask(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: 'goal_no_review',
+          taskId: 'task_no_review_1',
+        })
+      ).toEqual([]);
+
+      const secondRes = await app.request(href, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'req_goal_no_review_2',
+          reviewPolicyOverride: 'none',
+        }),
+      });
+
+      expect(secondRes.status).toBe(200);
+      await expect(secondRes.json()).resolves.toMatchObject({
+        goal: {
+          status: 'completed',
+          currentTask: null,
+          taskCounts: { completed: 2, ready: 0 },
+          terminalState: { status: 'completed', stopReason: 'completed' },
+          terminalSummary: { risks: [] },
+        },
+        decision: { outcome: 'complete', shouldStop: true, stopReason: 'completed' },
+        pendingAttention: null,
+      });
+      expect(
+        listGoalTasks(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: 'goal_no_review',
+        }).map((task) => ({ taskId: task.taskId, status: task.status }))
+      ).toEqual([
+        { taskId: 'task_no_review_1', status: 'completed' },
+        { taskId: 'task_no_review_2', status: 'completed' },
+      ]);
+      expect(
+        listGoalReviewRecordsForTask(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: 'goal_no_review',
+          taskId: 'task_no_review_2',
+        })
+      ).toEqual([]);
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rolls back review creation when the reviewing goal transition fails', async () => {
+    const coreDb = createCoreDb();
+    const workspaceDb = createWorkspaceDb(coreDb);
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Atomic goal review thread');
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-atomic-goal-review-repo-'));
+    mkdirSync(join(repositoryPath, '.git'));
+
+    try {
+      seedReadyRepository(coreDb, repositoryPath);
+      const contextTurn = store.createTurn('ws_demo', thread.id, 'Provide context');
+      store.createItem({
+        id: `it_context_${thread.id}`,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        turnId: contextTurn.id,
+        type: 'user-message',
+        status: 'completed',
+        text: 'Produce reviewable worker evidence.',
+        createdAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
+        completedAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
+      });
+      store.updateTurn(contextTurn.id, {
+        status: 'completed',
+        completedAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
+        durationMs: 0,
+      });
+      createGoalRecord(workspaceDb, {
+        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
+        goalId: 'goal_atomic_review',
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        title: 'Persist review atomically',
+        objective: 'Create one review gate atomically.',
+        status: 'running',
+      });
+      createGoalTask(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_atomic_review',
+        taskId: 'task_atomic_review',
+        title: 'Produce review evidence',
+        objective: 'Produce evidence for the atomic review gate.',
+        orderIndex: 0,
+        dependsOnTaskIds: [],
+        acceptanceCriteria: ['The review gate is stored atomically.'],
+        contextBudgetTokens: 12_000,
+        verificationChecks: [{ kind: 'manual', description: 'Review worker evidence.' }],
+        status: 'ready',
+      });
+      workspaceDb.sqlite.exec(`
+        CREATE TRIGGER fail_goal_review_transition
+        BEFORE UPDATE OF status ON goal_records
+        WHEN NEW.goal_id = 'goal_atomic_review' AND NEW.status = 'reviewing'
+        BEGIN
+          SELECT RAISE(ABORT, 'injected goal review transition failure');
+        END;
+      `);
+
+      const app = createApp({
+        coreDb,
+        store,
+        turnExecutor: createCompletingGoalTurnExecutor(),
+      });
+      const stepRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: 'req_goal_atomic_review' }),
+        }
+      );
+
+      expect(stepRes.status).toBe(400);
+      await expect(stepRes.json()).resolves.toMatchObject({ code: 'goal_step_failed' });
+      expect(
+        listGoalRecordsForThread(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+        }).find((goal) => goal.goalId === 'goal_atomic_review')
+      ).toMatchObject({ status: 'failed', terminalStopReason: 'error' });
+      expect(
+        listGoalTasks(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: 'goal_atomic_review',
+        })
+      ).toEqual([expect.objectContaining({ taskId: 'task_atomic_review', status: 'completed' })]);
+      expect(
+        listGoalReviewRecordsForTask(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: 'goal_atomic_review',
+          taskId: 'task_atomic_review',
+        })
+      ).toEqual([]);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -1243,7 +1566,10 @@ describe('thread goal summary app API', () => {
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ requestId: 'req_goal_async_step' }),
+          body: JSON.stringify({
+            requestId: 'req_goal_async_step',
+            reviewPolicyOverride: 'human',
+          }),
         }
       );
 
@@ -1265,6 +1591,26 @@ describe('thread goal summary app API', () => {
             artifactIds: expect.arrayContaining([expect.stringMatching(/^art_async_/)]),
           },
         },
+      });
+      const reviews = listGoalReviewRecordsForTask(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_async_step',
+        taskId: 'task_async_step',
+      }).filter((review) => review.resolvedAt === null);
+
+      expect(reviews).toEqual([expect.objectContaining({ verdict: 'accept' })]);
+      const attentionRes = await app.request('/api/app/workspaces/ws_demo/action-center');
+      await expect(attentionRes.json()).resolves.toMatchObject({
+        items: expect.arrayContaining([
+          expect.objectContaining({
+            source: expect.objectContaining({
+              type: 'goal_review',
+              reviewId: reviews[0]!.reviewId,
+            }),
+            actions: expect.arrayContaining([expect.objectContaining({ kind: 'accept_review' })]),
+          }),
+        ]),
       });
     } finally {
       workspaceDb.sqlite.close();

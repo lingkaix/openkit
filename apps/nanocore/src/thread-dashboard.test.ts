@@ -61,6 +61,44 @@ describe('thread dashboard app API', () => {
     });
   });
 
+  it('does not borrow lineage from a different persisted agent session', async () => {
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Fresh simulator session');
+    store.createTurn('ws_demo', thread.id, 'Run fresh simulator turn');
+    store.createAgentSession({
+      id: 'session_old',
+      agentId: 'agent_codex_host',
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      status: 'busy',
+      message: null,
+      configVersion: 7,
+      workspaceRoots: [
+        {
+          access: 'read-write',
+          id: 'old-root',
+          sourceKind: 'host-dir',
+          sourcePath: '/old/root',
+          workerPath: '/workspace/old-root',
+        },
+      ],
+      createdAt: '2026-07-01T00:00:00.000Z',
+      updatedAt: '2026-07-01T00:00:00.000Z',
+    });
+    const app = createApp({ store, turnExecutor: new SimulatedTurnExecutor() });
+
+    const res = await app.request(`/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`);
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      activeSession: {
+        id: `session_sim_${thread.id}`,
+        configVersion: null,
+        workspaceRoots: [],
+      },
+    });
+  });
+
   it('returns product work status for the thread workbench', async () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Routed worker thread');

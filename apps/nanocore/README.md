@@ -12,7 +12,7 @@
 - Codex-managed ChatGPT subscription login state
 - agent-facing LLM Gateway endpoints for Chat Completions and Responses
 - workspace repository resources for governed worker materialization
-- Goal Mode planning, task supervision, review, verification, steering, and terminal closeout storage
+- Goal Mode planning, task supervision, actionable human review, steering, stored verification evidence, and terminal summaries
 - real HTTP + SSE protocol surface
 - thread-bound agent reuse
 
@@ -21,8 +21,8 @@
 - `nanocore` starts governed worker sessions through the configured container worker runtime.
 - one nanocore thread binds to one Codex agent session
 - follow-up turns on the same thread reuse the same agent session when it stays healthy
-- current capabilities: turn execution, streaming assistant text, approval bridging, user-input questions, interruption, artifact inventory/content and review decisions, workspace configuration, workspace knowledge editing, repository linking, Goal Mode start and plan approval, Goal Mode steering and closeout read models, unified Human Attention Action Center projection, Codex/ChatGPT login coordination, and dual-entry LLM Gateway routing
-- current non-goals: remote agents and full Sustained Mode automation
+- current capabilities: turn execution, streaming assistant text, approval bridging, user-input questions, interruption, artifact inventory/content and review decisions, workspace configuration, workspace knowledge editing, repository linking, Goal Mode start and plan approval, Goal Mode steering, actionable Goal Review, stored verification evidence, terminal summaries, unified Human Attention Action Center projection, Codex/ChatGPT login coordination, and dual-entry LLM Gateway routing
+- current non-goals: remote agents, full Sustained Mode automation, Task Evaluator loops, and an independent final-verifier completion gate
 
 ## Prerequisites
 
@@ -67,11 +67,13 @@ The server listens on `http://localhost:3000` and exposes the demo protocol surf
 
 The unified Human Attention Action Center is available at `GET /api/app/workspaces/:workspaceId/action-center`. It replaces the old split pending approvals and pending questions endpoints, and projects approval gates, user-input gates, Goal Mode attention, pending input, checkpoint recovery, scheduler admissions, agent readiness failures, artifact review, durable workspace review, and explicit knowledge proposal records into one App API read model. Scheduler admission readback is available at `GET /api/app/workspaces/:workspaceId/scheduler/admissions`; it returns workspace-filtered queued and denied admissions with queue position and denial reasons, but excludes raw turn input, user ids, captured cwd, and workspace root paths. Scheduler admission actions are available at `POST /api/app/workspaces/:workspaceId/scheduler/admissions/:queueEntryId/retry` for denied admissions and `POST /api/app/workspaces/:workspaceId/scheduler/admissions/:queueEntryId/cancel` for queued or denied admissions. Durable workspace review decisions are available at `POST /api/app/workspaces/:workspaceId/workspace-sync/reviews/:reviewId/decision` for accepted, refinement, rejected, and blocked outcomes.
 
+Live default-accept Goal Review rows created by human-reviewed steps expose an accept action; accepting one atomically resolves the review and advances the goal task graph.
+
 Redacted Agent Environment Package snapshot readback is available at `GET /api/app/workspaces/:workspaceId/agent-environment/snapshots` and `GET /api/app/workspaces/:workspaceId/agent-environment/snapshots/:snapshotId`. These routes return durable workspace-owned package snapshots for diagnostics and evidence without exposing backend-private fields, raw credentials, or host-local runtime references.
 
 Knowledge Store observation ledgers are available at `POST /api/app/workspaces/:workspaceId/knowledge/observations` and `GET /api/app/workspaces/:workspaceId/knowledge/observations`. Knowledge Store claim ledgers are available at `POST /api/app/workspaces/:workspaceId/knowledge/claims` and `GET /api/app/workspaces/:workspaceId/knowledge/claims`. Knowledge Store conflict ledgers are available at `POST /api/app/workspaces/:workspaceId/knowledge/conflicts`, `GET /api/app/workspaces/:workspaceId/knowledge/conflicts`, and `POST /api/app/workspaces/:workspaceId/knowledge/conflicts/:conflictId/resolution`. Knowledge Store derived indexes are available at `GET /api/app/workspaces/:workspaceId/knowledge/indexes`. The index route rebuilds disposable workspace knowledge indexes from file-backed records and returns the current Markdown concept-link graph, per-page validation report, source-reference index, and portable full-text index. Deterministic first-slice retrieval is available at `POST /api/app/workspaces/:workspaceId/knowledge/retrievals`; it ranks active valid pages from the full-text index and appends the selected/excluded decision trace to `knowledge/traces/<YYYYMM>.jsonl`. Knowledge Manager context preparation is available at `POST /api/app/workspaces/:workspaceId/knowledge/manager/context`; NanoCore persists the response snapshot under `knowledge/context-packages/<YYYYMM>.jsonl`, `GET /api/app/workspaces/:workspaceId/knowledge/manager/context/:contextPackageId` reads one persisted trace, and `POST /api/app/workspaces/:workspaceId/knowledge/manager/context/:contextPackageId/materialization` writes the first worker-visible `/openkit/context` package snapshot under workspace-owned storage.
 
-The storage App API exposes `GET /api/app/storage/layout-report`, `POST /api/app/data-root/backups`, and `POST /api/app/data-root/backups/:backupId/verify` for layout diagnostics and server-managed hot backup verification. Backup responses return only a backup id, manifest, and checked inventory summary; they do not expose filesystem paths.
+The storage App API exposes `GET /api/app/storage/layout-report`, `POST /api/app/data-root/backups`, and `POST /api/app/data-root/backups/:backupId/verify` for layout diagnostics and server-managed hot backup verification. All three deployment-wide routes accept only the implicit local actor or a `server-admin` bearer token; Better Auth sessions and workspace-scoped tokens receive `403 Forbidden`. Backup responses return only a backup id, manifest, and checked inventory summary; they do not expose filesystem paths.
 
 Restore is intentionally a stopped-server operator command, not a live App API:
 
@@ -87,7 +89,13 @@ The Codex ChatGPT subscription login app API is available under `/api/app/oauth/
 
 The agent-facing LLM Gateway exposes `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`, and `GET /health`. Provider diagnostics show whether each provider supports Chat Completions and Responses natively or through a bridge. The Gateway preserves OpenAI-compatible `prompt_cache_key` and `prompt_cache_retention` fields, ensures every upstream native Chat Completions or Responses request has a `prompt_cache_key`, and reports process-local cached input token summaries in Settings Diagnostics. Workspace-attributed capability calls and usage rows can be read through `GET /api/app/workspaces/:workspaceId/capability-usage`, workspace evidence bundles can be created and read through `POST /api/app/workspaces/:workspaceId/evidence-bundles` and `GET /api/app/workspaces/:workspaceId/evidence-bundles`, workspace audit events can be read through `GET /api/app/workspaces/:workspaceId/audit/events`, server audit events can be read through `GET /api/app/audit/events`, workspace permission decisions can be read through `GET /api/app/workspaces/:workspaceId/permission-decisions`, and server permission decisions can be read through `GET /api/app/permission-decisions`. It does not expose `POST /v1/completions`. The `openai_codex` provider uses Codex-managed ChatGPT subscription auth for native Responses calls and supports Chat Completions through the text-only bridge.
 
-Vault admin routes expose redacted status and lock controls under `/api/app/vault/*`. `POST /api/app/vault/bootstrap/codex-auth-json` stores base64 request content as the server-owned `vault_codex_auth_json` reference and creates `grant_codex_auth_json` for OpenShell runtime-file injection to `/sandbox/.codex/auth.json`; responses never echo the submitted auth JSON. Workspace vault recovery uses `GET /api/app/workspaces/:workspaceId/vault/references` for redacted reference discovery and `POST /api/app/workspaces/:workspaceId/vault/references/:referenceId/rebind` for imported unbound reference re-binding. Server vault-use evidence can be read through `GET /api/app/vault/use-records`, and workspace vault-use evidence can be read through `GET /api/app/workspaces/:workspaceId/vault/use-records`; responses contain only non-secret use metadata and linked audit ids.
+Pi-ai-routed requests observe one provider-native terminal usage payload before public OpenAI normalization. Workspace-attributed calls write positive input, output, cache-read, and cache-write token rows plus one `unit: "usd"` cost-estimate row when reported; that estimate is telemetry, not billing truth. Public responses, SSE, errors, and diagnostics keep the existing OpenAI-compatible vocabulary and never expose raw cost objects or prompt-cache keys.
+
+Vault admin routes expose redacted status and lock controls under `/api/app/vault/*`. Global status, unlock, lock, Codex auth JSON bootstrap, and server vault-use evidence accept only the local actor or a `server-admin` bearer token; Better Auth sessions and workspace-scoped tokens cannot use that deployment-admin surface. `POST /api/app/vault/bootstrap/codex-auth-json` stores base64 request content as the server-owned `vault_codex_auth_json` reference and creates `grant_codex_auth_json` for OpenShell runtime-file injection to `/sandbox/.codex/auth.json`; responses never echo the submitted auth JSON. Workspace vault recovery uses `GET /api/app/workspaces/:workspaceId/vault/references` for redacted reference discovery and `POST /api/app/workspaces/:workspaceId/vault/references/:referenceId/rebind` for imported unbound reference re-binding. Better Auth sessions require active membership; workspace and workspace-readonly tokens require active membership plus a binding to the addressed workspace; local and `server-admin` actors are not workspace-bound; readonly tokens cannot rebind. Server vault-use evidence can be read through `GET /api/app/vault/use-records`, and workspace vault-use evidence can be read through `GET /api/app/workspaces/:workspaceId/vault/use-records`; responses contain only non-secret use metadata and linked audit ids. The owning authorization matrix is in `docs/specs/20260704-vault_backend_implementation.md`.
+
+For the encrypted-file backend, `config/server.jsonc` may set `vault.encryptedFile.keyFilePath` to an absolute external file containing exactly 32 raw bytes with exact `0600` permissions and process-user ownership. NanoCore verifies that key against the authenticated store header during the non-critical Vault boot phase, reuses the same unlock state for runtime requests, stays locked and degraded on any redacted key failure, and clears owned key material on lock and shutdown. The full operator contract is in [the DATA_ROOT config guide](../../docs/nanocore-data-root-config.en.md).
+
+Source ownership and local verification for this subsystem are documented in [the Vault source guide](src/vault/README.md).
 
 Real subscription inference smoke tests must be opt-in because they can consume user quota:
 
@@ -170,6 +178,10 @@ curl -s http://127.0.0.1:3000/api/app/workspaces/ws_demo/threads/th_demo/goal/st
 
 The real step route requires a ready workspace repository before worker checkpointing begins, asks Workflow Coordinator for the selected worker summary, drains safe-point steering before context preparation, records the worker context digest and product-safe context assembly summary in the checkpoint, normalizes terminal worker outcomes to stable stop reasons, and clears terminal checkpoints only after the goal and task read models are saved.
 
+`reviewPolicyOverride` accepts `human` or `none` and defaults to `human`. `human` creates a durable actionable unresolved Goal Review after the completed step; accepting it atomically advances the task graph. `none` skips only that step's review and still advances dependencies and remaining tasks.
+
+NanoCore stores and projects task-scoped verification evidence, but it does not yet run Task Evaluator loops or enforce an independent final-verifier completion gate.
+
 `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/test/supervise/step` is local-mode deterministic test support for local e2e and L6 story validation.
 
 For user-facing deployment documentation, see [NanoCore Deployment Modes](../../docs/nanocore-deployment-modes.en.md).
@@ -224,9 +236,9 @@ The preflight defaults `OPENKIT_L6_CODEX_OAUTH_ACCOUNT_DIR` to `/Users/m5pro/nan
 
 ## Server Mode Auth
 
-Server mode uses Better Auth email/password routes under `/api/auth/*`, protects product APIs with HTTP-only session cookies, and accepts server-issued `okt_` bearer tokens for remote access.
+Server mode uses Better Auth email/password routes under `/api/auth/*`, protects product APIs with HTTP-only session cookies, and accepts server-issued `okt_` bearer tokens for remote access. A valid session establishes the actor identity but does not grant deployment-admin authority or bypass active workspace membership checks.
 
-Access-token administration is available at `GET /api/app/auth/tokens`, `POST /api/app/auth/tokens`, and `POST /api/app/auth/tokens/:tokenId/revoke`. Token list and revoke responses expose only redacted token records; the plaintext token is returned only once by the create route.
+Access-token administration is available to `server-admin` bearer tokens at `GET /api/app/auth/tokens`, `POST /api/app/auth/tokens`, `POST /api/app/auth/tokens/:tokenId/revoke`, and `POST /api/app/auth/tokens/:tokenId/rotate`. Better Auth sessions and workspace-scoped tokens are denied. Token list, revoke, and rotate responses expose only redacted token records; plaintext tokens are returned only once by create and rotate.
 
 Start in server mode:
 

@@ -16,6 +16,7 @@ import {
 import type { CoreDb } from '../storage/db.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { importUnboundWorkspaceVaultReference } from '../vault/vault-references.js';
 import { createBetterAuth } from './better-auth.js';
 
 /**
@@ -268,7 +269,27 @@ describe('server auth flow', () => {
         headers: { cookie: secondCookie },
       });
 
-      expect(crossUserGet.status).toBe(404);
+      expect(crossUserGet.status).toBe(403);
+      await expect(crossUserGet.json()).resolves.toMatchObject({
+        code: 'core.auth.scope_forbidden',
+      });
+
+      importUnboundWorkspaceVaultReference(coreDb, {
+        backendKind: 'encrypted-file',
+        displayName: 'First user private reference',
+        referenceId: 'vault_first_user_private',
+        secretKind: 'api-token',
+        workspaceId: firstWorkspace.id,
+      });
+      const crossUserVaultReferences = await app.request(
+        `/api/app/workspaces/${firstWorkspace.id}/vault/references`,
+        { headers: { cookie: secondCookie } }
+      );
+
+      expect(crossUserVaultReferences.status).toBe(403);
+      await expect(crossUserVaultReferences.json()).resolves.toMatchObject({
+        code: 'core.auth.scope_forbidden',
+      });
 
       const userRoots = readdirSync(join(dataRoot, 'users')).sort();
 

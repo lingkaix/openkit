@@ -203,7 +203,6 @@ export const RequestGitPushApprovalRequestSchema = z
     requestId: z.string().min(1),
     threadId: z.string().min(1),
     turnId: z.string().min(1),
-    remoteSummary: RepositorySafeTextSchema,
     sourceRef: z.string().min(1),
     targetBranch: z.string().min(1),
     commitIds: z.array(z.string().min(1)).min(1),
@@ -230,12 +229,6 @@ export const ExecuteGitPushRequestSchema = z
   .object({
     requestId: z.string().min(1),
     approvalRequestId: z.string().min(1),
-    policyDecisionId: z.string().min(1),
-    remoteSummary: RepositorySafeTextSchema,
-    remoteName: z.string().min(1).default('origin'),
-    sourceRef: z.string().min(1),
-    targetBranch: z.string().min(1),
-    commitIds: z.array(z.string().min(1)).min(1),
   })
   .strict()
   .superRefine((value, ctx) => {
