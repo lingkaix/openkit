@@ -1,0 +1,29 @@
+{
+  "snapshotId": "openshell-0.0.80-2026-07-11",
+  "sourceBoundary": "NVIDIA OpenShell CLI, gateway, provider, and sandbox policy surface consumed by OpenKit",
+  "sourceProject": "https://github.com/NVIDIA/OpenShell",
+  "sourceVersion": "0.0.80",
+  "sourceRelease": "https://github.com/NVIDIA/OpenShell/releases/tag/v0.0.80",
+  "sourceTag": "v0.0.80",
+  "sourceCommit": "709aa0fe3e9e4d2b5fea336b5d6e393b45481898",
+  "sourcePaths": [
+    "proto/openshell.proto",
+    "crates/openshell-core/src/secrets.rs",
+    "crates/openshell-providers/src/profiles.rs",
+    "crates/openshell-supervisor-network/src/l7/mod.rs",
+    "crates/openshell-cli/src/main.rs",
+    "providers/*.yaml"
+  ],
+  "mappingVersion": "openshell-v2",
+  "refreshedAt": "2026-07-11",
+  "compatibleGatewayRange": {
+    "min": "0.0.80",
+    "maxExclusive": "0.1.0"
+  },
+  "checksums": {
+    "provider-profile-surface.json": "da585b51596eb05e1826604c605271cc77993e1c149683d78bf9cdf8016d1bdf",
+    "policy-surface.json": "7981b08fd81152b8c4924624518fa2a13d9f0c6254638ed667fcaf8b93b73aca",
+    "cli-surface.json": "9111611213395ef1f53b5e140f95290ec6e99d593ad3d85ec1358dabc85333ed"
+  },
+  "maintenanceNote": "The snapshot separates the full upstream provider and policy surface from the narrower OpenKit-emitted mapping. Refresh only as an explicit external-boundary update after reviewing tagged OpenShell profile, policy, and CLI source."
+}

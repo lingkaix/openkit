@@ -1,7 +1,7 @@
 # Worker Agent Capability
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
 
 ## Summary
 
@@ -25,6 +25,7 @@ The clean target is one governed worker agent capability plane at `https://capab
 - Vault storage or raw secret material.
 - Global audit projection outside gateway-mediated capability calls.
 - Non-gateway runtime, sandbox, storage, or workspace-sync metering.
+- Runtime-internal sub-agent provenance, trusted worker-inference session binding, and runtime cache lineage.
 - User-facing `@openkit/mcp` product channel behavior.
 
 ## Core References
@@ -62,7 +63,7 @@ The missing design is the first complete non-LLM worker agent capability contrac
 
 ## Current Implementation Projection
 
-The current V1 worker capability plane is implemented:
+The current V1 worker capability plane is implemented for authenticated `capability.local` routes and shared durable recording, while the trusted worker-specific `inference.local` identity projection remains incomplete:
 
 - `packages/config-schema` and `apps/nanocore/src/runtime/agent-environment.ts` resolve `openkit-worker-capability-v1` into AEP snapshots with `https://capability.local/v1` and `https://inference.local/v1`.
 - The resolved AEP currently declares sidecar capability routes for `knowledge.search`, `knowledge.read`, `knowledge.proposal`, `artifact.read`, and `diagnostic.read`, all backed by the sandbox session token.
@@ -74,8 +75,9 @@ The current V1 worker capability plane is implemented:
 - `apps/nanocore/src/capability/usage-ledger.ts` persists durable `CapabilityCall`, `UsageRecord`, and terminal `AuditEvent` rows through one shared ledger, including source id arrays for source-aware producers. Worker knowledge search/read/proposal routes, worker artifact reads, worker diagnostic reads, worker MCP list/call routes, QuickChat LLM calls, and workspace-attributed public pi-ai gateway calls use the ledger where applicable. Successful worker knowledge, artifact, and diagnostic capability calls write one linked `UsageRecord` with `category: "tool"`, `unit: "capability_calls"`, and quantity `1`; successful `mcp.call_tool` calls write one linked `UsageRecord` with `category: "tool"`, `unit: "tool_calls"`, and quantity `1`. Authenticated MCP calls denied during policy evaluation, missing worker knowledge reads, and missing worker artifact reads now write failed `CapabilityCall` rows with stable error codes and no usage row.
 - `apps/nanocore/src/llm/provider-dispatcher.ts` routes OpenAI-compatible Chat Completions and Responses calls for the LLM gateway projection. `apps/nanocore/src/llm/gateway-policy.ts` enforces the enabled flag and provider allowlist.
 - `GatewayUsageTracker` in `apps/nanocore/src/llm/gateway-usage.ts` records process-local LLM gateway usage summaries for diagnostics.
+- Public LLM Gateway routes currently accept durable attribution from caller-supplied `metadata.openkit`; they do not yet authenticate an AEP-bound worker inference session, preserve runtime-internal origin, or separate runtime cache lineage from shared outer OpenKit lineage.
 
-Network egress, external API routing, generic future credential classes, the full Capability Catalog, baseline rate-limit and budget enforcement, and transformer-pipeline routing are deferred beyond V1. The implemented V1 scope is the governed worker capability plane for knowledge, artifacts, diagnostics, and MCP tool supply, plus the specialized OpenAI-compatible inference projection.
+Network egress, external API routing, generic future credential classes, the full Capability Catalog, baseline rate-limit and budget enforcement, and transformer-pipeline routing are deferred beyond V1. The implemented V1 scope is the governed worker capability plane for knowledge, artifacts, diagnostics, and MCP tool supply plus generic OpenAI-compatible inference dispatch. Alignment remains partial until `docs/specs/20260711-worker_runtime_subagent_provenance.md` adds the authenticated worker inference binding and runtime origin/cache correlation required by the specialized inference projection.
 
 Server capability flags exposed through NanoCore metadata and consumed by `packages/core-client/src/capabilities.ts` are feature discovery flags. They are not worker agent capability declarations.
 
@@ -365,3 +367,4 @@ The worker receives an actionable error without raw upstream secrets or backend 
 - `docs/specs/20260703-worker_context_package.md`
 - `docs/specs/20260703-vault_secret_injection.md`
 - `docs/specs/20260703-audit_usage_evidence_records.md`
+- `docs/specs/20260711-worker_runtime_subagent_provenance.md`

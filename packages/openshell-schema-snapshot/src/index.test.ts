@@ -9,17 +9,21 @@ import {
   assertOpenShellPolicyConformant,
   assertOpenShellProviderProfileConformant,
   OPEN_SHELL_MAPPING_VERSION,
+  OPEN_SHELL_POLICY_SURFACE,
+  OPEN_SHELL_PROVIDER_PROFILE_SURFACE,
   OPEN_SHELL_SCHEMA_SNAPSHOT,
   OPEN_SHELL_SCHEMA_SNAPSHOT_ID,
+  OPEN_SHELL_UPSTREAM_POLICY_SURFACE,
+  OPEN_SHELL_UPSTREAM_PROVIDER_PROFILE_SURFACE,
 } from './index.js';
 
 const packageRoot = fileURLToPath(new URL('../', import.meta.url));
-const snapshotRoot = join(packageRoot, 'snapshots', '2026-07-05');
+const snapshotRoot = join(packageRoot, 'snapshots', '2026-07-11');
 
 describe('OpenShell schema snapshot', () => {
   it('pins metadata and checksums for every snapshot artifact', () => {
-    expect(OPEN_SHELL_SCHEMA_SNAPSHOT_ID).toBe('openshell-0.0.63-2026-07-05');
-    expect(OPEN_SHELL_MAPPING_VERSION).toBe('openshell-v1');
+    expect(OPEN_SHELL_SCHEMA_SNAPSHOT_ID).toBe('openshell-0.0.80-2026-07-11');
+    expect(OPEN_SHELL_MAPPING_VERSION).toBe('openshell-v2');
 
     for (const [fileName, checksum] of Object.entries(OPEN_SHELL_SCHEMA_SNAPSHOT.checksums)) {
       expect(sha256File(join(snapshotRoot, fileName))).toBe(checksum);
@@ -27,9 +31,20 @@ describe('OpenShell schema snapshot', () => {
   });
 
   it('accepts only the pinned OpenShell CLI compatibility range', () => {
-    expect(() => assertCompatibleOpenShellVersion('0.0.63')).not.toThrow();
-    expect(() => assertCompatibleOpenShellVersion('0.0.62')).toThrow('outside the pinned range');
+    expect(() => assertCompatibleOpenShellVersion('0.0.80')).not.toThrow();
+    expect(() => assertCompatibleOpenShellVersion('0.0.79')).toThrow('outside the pinned range');
     expect(() => assertCompatibleOpenShellVersion('0.1.0')).toThrow('outside the pinned range');
+  });
+
+  it('separates the upstream provider and policy surface from the OpenKit mapping', () => {
+    expect(OPEN_SHELL_UPSTREAM_PROVIDER_PROFILE_SURFACE.categories).toContain('source_control');
+    expect(OPEN_SHELL_UPSTREAM_PROVIDER_PROFILE_SURFACE.builtInProfileIds).toContain('codex');
+    expect(OPEN_SHELL_PROVIDER_PROFILE_SURFACE.categories).toContain('mcp');
+    expect(OPEN_SHELL_PROVIDER_PROFILE_SURFACE.categories).not.toContain('source_control');
+    expect(OPEN_SHELL_UPSTREAM_POLICY_SURFACE.protocols).toContain('websocket');
+    expect(OPEN_SHELL_UPSTREAM_POLICY_SURFACE.accessModes).toContain('full');
+    expect(OPEN_SHELL_POLICY_SURFACE.protocols).toEqual(['rest']);
+    expect(OPEN_SHELL_POLICY_SURFACE.accessModes).toEqual(['read-only', 'read-write']);
   });
 
   it('validates generated provider profiles against reserved namespaces', () => {
@@ -73,6 +88,15 @@ describe('OpenShell schema snapshot', () => {
         displayName: 'Built-in GitHub',
         endpoints: {},
         id: 'github',
+      })
+    ).toThrow('reserved');
+    expect(() =>
+      assertOpenShellProviderProfileConformant({
+        category: 'agent',
+        credentials: {},
+        displayName: 'Codex',
+        endpoints: {},
+        id: 'codex',
       })
     ).toThrow('reserved');
   });

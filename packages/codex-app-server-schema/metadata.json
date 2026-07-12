@@ -1,9 +1,14 @@
 {
   "sourceBoundary": "codex app-server JSON-RPC",
+  "sourceProject": "https://github.com/openai/codex",
+  "sourcePackage": "@openai/codex@0.144.1",
+  "sourceRelease": "https://github.com/openai/codex/releases/tag/rust-v0.144.1",
+  "sourceTag": "rust-v0.144.1",
+  "sourceCommit": "44918ea10c0f99151c6710411b4322c2f5c96bea",
   "generatorCommand": "codex app-server generate-json-schema --out generated-schema",
-  "generatorVersion": "codex-cli 0.134.0",
-  "refreshedAt": "2026-05-29",
-  "maintenanceNote": "Refreshed from the upstream Codex CLI stable release. Refresh only through explicit maintenance work and review the generated schema diff before reconciling NanoCore adapter behavior.",
+  "generatorVersion": "codex-cli 0.144.1",
+  "refreshedAt": "2026-07-11",
+  "maintenanceNote": "Generated from the pinned upstream Codex CLI stable release. Refresh only through explicit maintenance work, remove stale generated JSON files, preserve generated-schema/README.md, and review the schema diff before reconciling NanoCore adapter behavior.",
   "requiredFiles": [
     "ClientRequest.json",
     "ClientNotification.json",

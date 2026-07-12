@@ -1,7 +1,7 @@
 # Durable Scheduler Design
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
 
 ## Owns
 

@@ -394,7 +394,7 @@ Mitigation: Keep PR gates to the lightweight repository check, run L0-L3 plus L5
 - `docs/app-api.md`
 - `docs/core/protocol.md`
 - `docs/specs/20260529-l6_story_acceptance.md`
-- `docs/specs/retired/agent-workflow/20260526-nano_core_lightweight_agents.md`
+- `docs/specs/superseded/agent-workflow/20260526-nano_core_lightweight_agents.md`
 - `docs/specs/20260628-protocol_contract_consolidation.md`
 - `docs/specs/20260528-core_client_boundary.md`
 - `docs/specs/superseded/20260529-remove_legacy_compatibility.md`

@@ -1,7 +1,7 @@
 # Human Attention And Intervention Model
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
 
 ## Owns
 
@@ -76,7 +76,7 @@ The current core model already has the right foundation.
 
 `docs/core/protocol.md` defines approval and user-input gates as item-backed pauses that share the `awaiting_human` turn state and branch by `humanGate.kind`.
 
-`docs/specs/retired/human-attention/20260515-codex_user_input_bridge.md` records the original separate `user-input-request` and `user-input-response` item types for Codex app-server questions.
+`docs/specs/superseded/human-attention/20260515-codex_user_input_bridge.md` records the original separate `user-input-request` and `user-input-response` item types for Codex app-server questions.
 
 `docs/specs/20260531-worker_turn_reliability_envelope.md` introduces app-local worker continuation primitives, including `prepareNextTurn`, `shouldStopAfterTurn`, a system-owned steering queue, a user-owned or runtime-owned follow-up queue, runtime checkpoints, and pending user turns.
 
@@ -811,9 +811,9 @@ Mitigation: make caps configurable per mode and provide a bounded continue optio
 - [Core Work Model](../core/work-model.md)
 - [Core Communication Model](../core/communication.md)
 - [Core Protocol](../core/protocol.md)
-- [Codex User Input Bridge](./retired/human-attention/20260515-codex_user_input_bridge.md)
-- [Codex Approval Bridge](./retired/human-attention/20260515-codex_approval_bridge.md)
-- [NanoCore Lightweight Agents](./retired/agent-workflow/20260526-nano_core_lightweight_agents.md)
-- [Sustained Mode](./retired/agent-workflow/20260525-sustained_mode_long_running_agent.md)
+- [Codex User Input Bridge](./superseded/human-attention/20260515-codex_user_input_bridge.md)
+- [Codex Approval Bridge](./superseded/human-attention/20260515-codex_approval_bridge.md)
+- [NanoCore Lightweight Agents](./superseded/agent-workflow/20260526-nano_core_lightweight_agents.md)
+- [Sustained Mode](./superseded/agent-workflow/20260525-sustained_mode_long_running_agent.md)
 - [Worker Turn Reliability Envelope](./20260531-worker_turn_reliability_envelope.md)
 - [Self-Improvement Evaluation Loop](./20260710-self_improvement_evaluation_loop.md)

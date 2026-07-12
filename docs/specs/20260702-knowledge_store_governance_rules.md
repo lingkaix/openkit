@@ -710,4 +710,4 @@ Users should be able to inspect and edit the notebook without understanding ever
 - `docs/specs/20260703-worker_agent_capability.md`
 - `docs/specs/20260710-self_improvement_evaluation_loop.md`
 - `docs/specs/20260711-scheduler_recurring_event_triggers.md`
-- `docs/specs/retired/agent-workflow/20260526-nano_core_lightweight_agents.md`
+- `docs/specs/superseded/agent-workflow/20260526-nano_core_lightweight_agents.md`

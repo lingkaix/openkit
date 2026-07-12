@@ -297,6 +297,8 @@ Canonical product records are created only when NanoCore imports and verifies th
 
 OpenShell ids, gateway ids, provider handles, supervisor logs, process ids, and native file-transfer handles must not become the public product identity.
 
+Runtime-internal sub-agent streams and their native origin indexes follow the restricted evidence and product-safe normalization contract in `docs/specs/20260711-worker_runtime_subagent_provenance.md`; they do not create additional OpenKit thread, turn, or agent-session storage trees.
+
 ## Server Storage Layout
 
 `server/db/core.sqlite` owns:
@@ -422,3 +424,4 @@ Post-baseline import is an explicit contract with three verifiable rules:
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260703-workspace_synchronization.md`
 - `docs/specs/20260629-worker_runtime_communication_model.md`
+- `docs/specs/20260711-worker_runtime_subagent_provenance.md`

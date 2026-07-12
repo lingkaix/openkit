@@ -9,7 +9,7 @@ This spec consolidates the current NanoCore identity, auth, runtime config, serv
 
 OpenKit treats NanoCore as the kernel source of truth. Local mode remains a single-user development path. Server mode uses Better Auth-backed session behavior for protected product APIs and is the foundation for future remote and multi-user deployments.
 
-Historical identity and config specs have been moved under `docs/specs/retired/nanocore-config-identity/` and remain supporting detail.
+Historical identity and config specs have been moved under `docs/specs/superseded/nanocore-config-identity/` and remain supporting detail.
 
 ## Owns
 
@@ -105,7 +105,7 @@ The following items remain outside this V1 contract:
 
 ## Reference Specs
 
-The historical auth, identity, config, and data-layout specs have been moved under `docs/specs/retired/nanocore-config-identity/`.
+The historical auth, identity, config, and data-layout specs have been moved under `docs/specs/superseded/nanocore-config-identity/`.
 
 They remain useful for implementation background, but this spec and the core identity/storage docs are the current entry points.
 

@@ -98,6 +98,7 @@ Worker runtime, supply, and synchronization:
 - [`20260628-agent_setup_runtime_supply_contract.md`](./20260628-agent_setup_runtime_supply_contract.md)
 - [`20260703-agent_manifest_aep_resolution.md`](./20260703-agent_manifest_aep_resolution.md)
 - [`20260629-worker_runtime_communication_model.md`](./20260629-worker_runtime_communication_model.md)
+- [`20260711-worker_runtime_subagent_provenance.md`](./20260711-worker_runtime_subagent_provenance.md)
 - [`20260627-remote_openshell_gateway.md`](./20260627-remote_openshell_gateway.md)
 - [`20260708-container_image_packaging.md`](./20260708-container_image_packaging.md)
 - [`20260704-session_static_workspace_materialization.md`](./20260704-session_static_workspace_materialization.md)
@@ -112,6 +113,8 @@ Worker runtime, supply, and synchronization:
 - [`20260703-workspace_synchronization.md`](./20260703-workspace_synchronization.md)
 - [`20260704-git_write_workflow.md`](./20260704-git_write_workflow.md)
 - [`20260709-worker_credential_access_declarations.md`](./20260709-worker_credential_access_declarations.md)
+- [`20260709-worker_sandbox_freedom_policy.md`](./20260709-worker_sandbox_freedom_policy.md)
+- [`20260711-scheduler_recurring_event_triggers.md`](./20260711-scheduler_recurring_event_triggers.md)
 
 Storage, knowledge, policy, vault, audit, and metering:
 
@@ -126,6 +129,8 @@ Storage, knowledge, policy, vault, audit, and metering:
 - [`20260703-openshell_mechanism_internalization.md`](./20260703-openshell_mechanism_internalization.md)
 - [`20260703-audit_usage_evidence_records.md`](./20260703-audit_usage_evidence_records.md)
 - [`20260704-workspace_backup_export_import.md`](./20260704-workspace_backup_export_import.md)
+- [`20260710-self_improvement_evaluation_loop.md`](./20260710-self_improvement_evaluation_loop.md)
+- [`20260711-evaluation_harness_design.md`](./20260711-evaluation_harness_design.md)
 
 Capability and provider slices:
 
@@ -135,12 +140,13 @@ Capability and provider slices:
 - [`20260704-capability_usage_gateway_foundation.md`](./20260704-capability_usage_gateway_foundation.md)
 - [`20260526-codex_chatgpt_subscription_login.md`](./20260526-codex_chatgpt_subscription_login.md)
 - [`20260522-vendor_snapshot_packages.md`](./20260522-vendor_snapshot_packages.md)
+- [`20260711-skill_catalog_versioning_pinning.md`](./20260711-skill_catalog_versioning_pinning.md)
 
-Historical or supporting material lives under `retired/` or `superseded/` and must not be treated as current guidance unless an active root spec links to it explicitly as background.
+Historical or supporting material lives under the status-matching `superseded/`, `retired/`, or `rejected/` directory and must not be treated as current guidance unless an active root spec links to it explicitly as background.
 
 ## Status Values
 
-Every spec should state its document authority status near the top.
+Every spec MUST state exactly one document-authority status near the top.
 
 `Status` describes whether the document is current guidance. It does not
 describe whether the implementation is complete.
@@ -148,18 +154,25 @@ describe whether the implementation is complete.
 - `Draft`: proposed or still being shaped.
 - `Accepted`: current guidance for implementation and review.
 - `Deprecated`: still describes existing legacy or external interoperability behavior, but should not be extended as the future design direction.
-- `Superseded`: replaced by another spec or stable core document and no longer active guidance.
+- `Superseded`: its contract or substantive proposal continues under a named replacement spec or stable core document, which is now the current authority.
+- `Retired`: its contract or product capability ended without a successor contract, including a module or product surface that was removed or deliberately reset.
+- `Rejected`: the proposal never became current guidance because review found it unsound, infeasible, unnecessary, or contrary to the chosen direction.
 
-When a spec is deprecated or superseded, link to the replacement, migration
-plan, removal plan, or current guidance where possible.
+`Archived` is not a status. It describes retaining a non-active file for
+historical evidence under `superseded/`, `retired/`, or `rejected/`.
+
+The existence of a later document about the same product area does not by
+itself make an older spec `Superseded`. Use `Superseded` only when the later
+authority actually continues or absorbs the earlier contract or substantive proposal. Use `Retired`
+when the old contract was ended and a later design starts again from a new
+contract.
 
 Do not use `Completed` as a `Status`. Completion is implementation alignment,
 not document authority.
 
 ## Implementation Values
 
-Every active spec should state its implementation alignment near the top when
-implementation alignment is meaningful.
+Every spec MUST state exactly one implementation-alignment value near the top.
 
 `Implementation` describes how the current system relates to the spec contract.
 It does not decide whether the spec is current guidance.
@@ -171,27 +184,89 @@ It does not decide whether the spec is current guidance.
 - `Diverged`: the current system no longer matches the spec and the spec or implementation needs review.
 - `N/A`: implementation alignment does not apply to this spec.
 
+The values and capitalization above are exact. Do not introduce descriptive
+variants such as `Not started` or `Standard-aligned subset`; explain narrower
+alignment under `Current Implementation Projection` and use the closest exact
+value.
+
 Common combinations:
 
 - `Status: Draft` with `Implementation: N/A` or `Not Started` while the design is still being shaped.
 - `Status: Accepted` with any implementation value from `Not Started` through `Implemented`.
 - `Status: Accepted` with `Implementation: Diverged` when the design is still intended to be current but the implementation or documentation has drifted.
 - `Status: Deprecated` when existing legacy or external interoperability behavior remains documented but should not be extended.
-- `Status: Superseded` when another spec or core document is the current source of guidance.
+- `Status: Superseded` with `Implementation: N/A` when a named replacement owns the continuing contract.
+- `Status: Retired` with `Implementation: N/A` when the contract or capability ended without a successor.
+- `Status: Rejected` with `Implementation: N/A` when a proposal was declined before acceptance.
 
 When a diverged spec is reconciled and again represents the current contract,
 keep or restore `Status: Accepted` and set `Implementation` to the real
 alignment value.
 
-## Active, Retired, And Superseded Specs
+## Lifecycle Transitions
+
+Normal transitions are:
+
+```text
+Draft -> Accepted
+Draft -> Rejected
+Draft -> Superseded
+Accepted -> Deprecated -> Superseded | Retired
+Accepted -> Superseded
+Accepted -> Retired
+Deprecated -> Accepted
+```
+
+`Deprecated` is transitional: the old behavior still exists and needs current
+documentation, but it must not be extended. `Superseded`, `Retired`, and
+`Rejected` are terminal document-authority states. A terminal spec may return
+to an active state only through an explicit new decision that explains why the
+earlier terminal decision no longer applies. Returning a `Deprecated` spec to
+`Accepted` likewise requires an explicit decision that cancels the deprecation.
+
+## Lifecycle Evidence
+
+Every `Deprecated`, `Superseded`, `Retired`, or `Rejected` spec MUST include the
+following metadata near the top:
+
+```markdown
+Status Changed: YYYY-MM-DD
+Current Guidance: <repository-relative link or None>
+Decision Evidence: <change record, PR, issue, or commit link>
+```
+
+It MUST also include a substantive `Lifecycle Reason` section. Every archived
+terminal spec MUST additionally include a substantive `Retention Reason`
+section.
+
+- `Lifecycle Reason` explains what decision or condition ended or restricted the old document's authority, why the old contract is no longer current, and which parts of the old direction are invalid or discontinued.
+- `Retention Reason` explains which historical constraints, rejected alternatives, migration details, edge cases, or audit evidence remain useful enough to keep the file.
+- A generic statement such as "retained for historical context" is not a sufficient lifecycle reason or archived-spec retention reason.
+- Reasons MUST be supported by the linked decision evidence. Agents MUST NOT invent a reason when evidence is missing; they must leave the document unmoved and record the evidence gap in the governing change plan.
+
+Additional rules depend on the terminal state:
+
+- `Deprecated` MUST link to current guidance and include a `Rollout / Migration Plan` with an exit condition.
+- `Superseded` MUST identify the replacement authority in `Current Guidance`; the replacement must actually absorb or continue the old contract or substantive proposal.
+- `Retired` MUST use `Current Guidance: None` for the ended contract. Related new work may be linked as context, but it must not be presented as a replacement unless the contract continues.
+- `Rejected` MUST identify why the proposal was not accepted. `Current Guidance` may be `None` or may link to the independently chosen direction.
+
+## Active And Archived Specs
 
 Keep current specs at the root of `docs/specs/`.
 
-Use `docs/specs/retired/` for superseded specs that still contain useful details.
+Use `docs/specs/superseded/` only for `Status: Superseded` documents whose
+contracts or substantive proposals were absorbed or continued by named current guidance.
 
-Use `docs/specs/superseded/` for historical superseded specs that should not influence current product direction, release readiness, or implementation planning.
+Use `docs/specs/retired/` only for `Status: Retired` documents whose contracts,
+modules, capabilities, or product directions ended without successor contracts.
 
-Retired and superseded specs must state `Status: Superseded` and link to current guidance where possible.
+Use `docs/specs/rejected/` only when at least one real `Status: Rejected` spec
+needs historical retention; do not create the directory speculatively.
+
+Root-level current specs MUST use `Draft`, `Accepted`, or `Deprecated`.
+Archived specs MUST use the status matching their directory. Directory
+placement never substitutes for explicit lifecycle metadata and evidence.
 
 ## Internal Development Compatibility Rule
 
@@ -270,9 +345,9 @@ Implementation: Not Started
 - Protocol, data, lifecycle, storage, gateway, identity, permission, metering, audit, or runtime specs should include `Contract / Expected Behavior`.
 - Removal, migration, deprecation, or rollout specs should include `Rollout / Migration Plan`.
 - Specs that discuss current code should put package names, endpoints, file paths, database tables, and implementation status under `Current Implementation Projection`.
-- Small specs may omit irrelevant sections, but they must still make ownership, non-ownership, status, and replacement links clear.
-- Superseded specs must state `Status: Superseded` and link to the current root-level spec or stable core document.
-- Existing specs that encode implementation progress in the `Status` line may be migrated incrementally. When updating one, split document authority into `Status` and implementation alignment into `Implementation`.
+- Small specs may omit irrelevant sections, but they must still make ownership, non-ownership, status, implementation alignment, and lifecycle links clear.
+- Deprecated and archived specs must include the lifecycle metadata and evidence required above.
+- Existing and new specs must separate document authority into `Status` and implementation alignment into `Implementation`.
 
 ## Open Questions And Deferred Work
 

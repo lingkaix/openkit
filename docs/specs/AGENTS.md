@@ -4,9 +4,9 @@ Read `README.md` first. This file contains only local agent execution rules for 
 
 ## Local Agent Rules
 
-- Keep active specs at the root of `docs/specs/` unless they are explicitly retired or superseded material.
+- Keep active specs at the root of `docs/specs/`; keep terminal specs only in the directory matching their canonical status.
 - Do not leave stale, obsolete, or known-wrong information in an active spec in a way that can mislead future implementation or review.
-- Update, supersede, or move obsolete specs with an explicit replacement link and status note.
+- Update or archive obsolete specs with the lifecycle metadata, evidence, and substantive reasons required by `README.md`.
 - Do not use specs as task logs, release progress logs, or one-off implementation summaries.
 - If a related design document does not exist and a change has meaningful design trade-offs, create or update a spec before implementation proceeds.
 - Use `Status` for document authority and `Implementation` for implementation alignment. Do not use `Completed` as a spec status.
@@ -52,8 +52,8 @@ there is a clear reason to omit one:
 Small specs may omit irrelevant sections, but they must still include `Status`,
 `Owns`, `Does Not Own`, `Core References`, `Summary`, and `Decision`.
 
-Active specs with meaningful implementation impact should also include
-`Implementation`.
+Every spec must include `Implementation` using one exact value defined in
+`README.md`.
 
 Protocol, storage, data model, lifecycle, gateway, permission, identity,
 metering, audit, runtime, or worker-facing specs should include
@@ -64,30 +64,21 @@ Removal, migration, deprecation, or rollout specs should include
 
 ## Status And Implementation Rules
 
-`Status` describes whether the document is current guidance:
-
-- `Draft`: proposed or still being shaped.
-- `Accepted`: current guidance for implementation and review.
-- `Deprecated`: still describes existing legacy or external interoperability behavior, but should not be extended as the future design direction.
-- `Superseded`: replaced by another spec or stable core document and no longer active guidance.
-
-`Implementation` describes how the current system relates to the spec contract:
-
-- `Not Started`: the accepted contract has no meaningful implementation yet.
-- `In Progress`: implementation work is actively underway.
-- `Partial`: the system implements part of the contract, but acceptance criteria are not fully satisfied.
-- `Implemented`: the system, tests, and current implementation projection are aligned with the spec contract.
-- `Diverged`: the current system no longer matches the spec and the spec or implementation needs review.
-- `N/A`: implementation alignment does not apply to this spec.
+`README.md` is the single source of truth for status values, implementation
+values, lifecycle transitions, archive directories, required metadata, and
+evidence. Do not restate or extend its enums in an individual spec.
 
 Rules:
 
 - Do not mark a spec `Accepted` only because implementation is complete; mark it `Accepted` when the design contract is approved as current guidance.
 - Do not mark a spec `Superseded` only because implementation has drifted; use `Implementation: Diverged` when the design is still intended to be current.
 - Use `Status: Deprecated` when legacy or external interoperability behavior still exists but should not be extended.
-- Use `Status: Superseded` when another spec or core document is the current source of guidance.
+- Use `Status: Superseded` only when a named current authority continues or absorbs the old contract or substantive proposal.
+- Use `Status: Retired` when the old contract, module, capability, or product direction ended without a successor contract, including a deliberate reset.
+- Use `Status: Rejected` when a proposal was declined before it became current guidance.
 - When a diverged spec is reconciled, keep or restore `Status: Accepted` and set `Implementation` to the real alignment value.
-- Superseded specs must link to their replacement or current guidance where possible.
+- Do not treat the existence of later work in the same area as proof of supersession; verify contract continuity from current guidance and decision evidence.
+- Do not move or relabel a terminal spec until its lifecycle reason and decision evidence are trustworthy.
 - When editing an existing spec that has implementation progress in the `Status` line, split it into separate `Status` and `Implementation` fields.
 
 ## Contract Writing Rules
@@ -100,7 +91,7 @@ Rules:
 - Mark unresolved current-scope design decisions as `Open Questions`.
 - Mark important out-of-scope future material as `Deferred / Future Work`.
 - Do not mix accepted contract text with speculative implementation notes.
-- If a spec becomes the current owner of a contract previously spread across several specs, consolidate the active guidance and move older detail to `retired/` or `superseded/`.
+- If a spec becomes the current owner of a contract previously spread across several specs, consolidate the active guidance and archive the older contracts under `superseded/` with evidence.
 
 ## Open Questions Rules
 
@@ -120,20 +111,20 @@ Rules:
 - If a question is only meant to encourage thinking and has no decision owner, acceptance impact, or follow-up path, remove it from the spec.
 - `Deferred / Future Work` must not change the meaning of the accepted contract.
 
-## Retired And Superseded Handling
+## Archived Spec Handling
 
-Use `docs/specs/retired/` for superseded specs that still contain useful field-level details, prior alternatives, edge cases, or implementation notes.
+Use `docs/specs/superseded/` only for specs whose contracts or substantive proposals continue under named replacement guidance.
 
-Retired specs are not active guidance. They MUST state `Status: Superseded` and link to the consolidated root-level spec or stable `docs/core/` document that replaced them.
+Use `docs/specs/retired/` only for specs whose contracts or product capabilities ended without successor contracts.
 
-Use `docs/specs/superseded/` for historical superseded specs that should not influence current product direction, release readiness, or implementation planning.
+Use `docs/specs/rejected/` only after a real rejected proposal needs historical retention.
 
-Historical superseded specs MUST state `Status: Superseded` and explain why they are retained. Prefer subfolders with explicit intent, such as `superseded/web-ui-pre-rebuild/`.
+Archived specs are not active guidance. They MUST use the status matching their directory, set terminal implementation alignment to `N/A`, and include the lifecycle metadata, lifecycle reason, retention reason, current-guidance value, and decision evidence required by `README.md`.
 
-When several specs describe one strongly related contract, create one consolidated root-level spec and move the older files under `retired/`.
+When several specs describe one strongly related contract, create one consolidated root-level spec and move absorbed older contracts under `superseded/`.
 
-When a product surface is being intentionally rebuilt later, move the old slice specs under `superseded/` and create one root-level posture spec that explains the future direction.
+When a product surface or module is deleted or deliberately reset without contract continuity, move the old specs under `retired/`. A later clean-slate design does not retroactively supersede the retired contract.
 
-Do not leave active docs pointing at moved historical specs as the current entry point. Active docs should link to the consolidated root-level spec first and only link to `retired/` or `superseded/` when historical detail is explicitly needed.
+Do not leave active docs pointing at archived specs as the current entry point. Active docs should link to current guidance first and only link to archived specs when historical detail is explicitly needed.
 
-When moving specs between active, retired, and superseded locations, update replacement links in the moved files and keep the live file layout consistent with `README.md`.
+When moving specs between active and archived locations, update inbound and outbound links and keep the live file layout consistent with `README.md`.

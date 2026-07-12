@@ -480,7 +480,7 @@ Mitigation: every isolated hook failure must emit a diagnostic event and appear 
 
 - [earendil-works/pi](https://github.com/earendil-works/pi)
 - [HKUDS/nanobot](https://github.com/HKUDS/nanobot)
-- [NanoCore Lightweight Agents](./retired/agent-workflow/20260526-nano_core_lightweight_agents.md)
-- [Sustained Mode: Long-Running, Self-Correcting, Token-Efficient Agent Operation](./retired/agent-workflow/20260525-sustained_mode_long_running_agent.md)
+- [NanoCore Lightweight Agents](./superseded/agent-workflow/20260526-nano_core_lightweight_agents.md)
+- [Sustained Mode: Long-Running, Self-Correcting, Token-Efficient Agent Operation](./superseded/agent-workflow/20260525-sustained_mode_long_running_agent.md)
 - [Core Protocol Hardening](./20260628-protocol_contract_consolidation.md)
 - [Core Protocol](../core/protocol.md)

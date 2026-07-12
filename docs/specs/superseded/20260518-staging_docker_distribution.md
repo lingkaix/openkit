@@ -1,8 +1,18 @@
 # Staging Docker Distribution
 
 Status: Superseded
+Implementation: N/A
+Status Changed: 2026-07-08
+Current Guidance: `docs/specs/20260708-container_image_packaging.md`
+Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
-Superseded: 2026-06-28. This file is retained as historical context and is not an active implementation or release-readiness spec.
+## Lifecycle Reason
+
+Container Image Packaging And Release Publishing absorbed image taxonomy, Dockerfile ownership, smoke validation, metadata, and release publication into the active packaging contract. The staging-only distribution lost authority because its bundled host-mode runtime assumptions conflict with the current governed worker architecture.
+
+## Retention Reason
+
+This document preserves the original staging image goals, single-container deployment constraints, provider seeding, and platform assumptions so packaging history remains auditable without allowing the obsolete host-mode bundle to shape current releases.
 
 Updated 2026-05-29: Staging provider seed config uses `secretRef: "env:OPENROUTER_API_KEY"` and rejects inline credential fields such as `apiKey`. `defaultProviderId` remains current where it names the gateway or internal facade default. See [Remove Historical Compatibility Layers](./20260529-remove_legacy_compatibility.md).
 
@@ -366,9 +376,9 @@ Mitigation: keep image taxonomy in docs and tests, and assert that `Dockerfile.s
 
 ## Links
 
-- [v0.0.2 working log](../working_logs/2026-05-17-openkit-v0-0-2/)
+- Historical v0.0.2 working log (no longer retained in the repository)
 - [OpenCode documentation](https://opencode.ai/docs/)
 - [OpenCode SDK package](https://www.npmjs.com/package/@opencode-ai/sdk)
 - [OpenAI-Compatible Internal Facade](./20260517-openai_compat_facade.md)
-- [Agent Manifest Loader](./20260517-agent_manifest_loader.md)
-- [NanoCore Black-Box E2E Harness](./20260517-nano_core_e2e_harness.md)
+- [Agent Manifest Loader](./agent-setup-runtime-supply/20260517-agent_manifest_loader.md)
+- [NanoCore Black-Box E2E Harness](./test-strategy/20260517-nano_core_e2e_harness.md)

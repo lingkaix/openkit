@@ -9,7 +9,7 @@ This spec consolidates the stable conclusions from earlier protocol package, lif
 
 The active contract is that `packages/protocol`, NanoCore App API schemas, and MCP-facing read/write tools stay structurally aligned around OpenKit-owned concepts. Runtime-native payloads, backend logs, and external protocol shapes may be projected into OpenKit records only through explicit adapters.
 
-Historical protocol hardening specs have been moved under `docs/specs/retired/protocol-hardening/` and are retained as supporting detail.
+Historical protocol hardening specs have been moved under `docs/specs/superseded/protocol-hardening/` and are retained as supporting detail.
 
 ## Owns
 
@@ -95,7 +95,7 @@ Use backend vocabulary only inside backend-private evidence, adapter code, diagn
 
 ## Reference Specs
 
-The historical protocol specs have been moved under `docs/specs/retired/protocol-hardening/`.
+The historical protocol specs have been moved under `docs/specs/superseded/protocol-hardening/`.
 
 They are useful for why older names changed, but current work should start from this spec and the core protocol docs.
 

@@ -1,12 +1,20 @@
 # Core Protocol Model Notes
 
 Status: Superseded
-
-Superseded: 2026-06-28. This file is retained as historical context and is not an active implementation or release-readiness spec.
-Superseded by: `docs/core/core-concepts.md`, `docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/identity.md`, `docs/core/storage.md`, `docs/core/knowledge.md`, `docs/core/permissions.md`, `docs/core/audit.md`, `docs/core/contract-evolution.md`, `docs/specs/20260513-protocol_package_organization.md`
+Implementation: N/A
+Status Changed: 2026-06-28
+Current Guidance: `docs/core/core-concepts.md`, `docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/identity.md`, `docs/core/storage.md`, `docs/core/knowledge.md`, `docs/core/permissions.md`, `docs/core/audit.md`, `docs/core/contract-evolution.md`
+Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 Date: 2026-05-13
 
-This note preserves discussion history that has since been promoted into stable core docs and accepted follow-up specs.
+
+## Lifecycle Reason
+
+The stable Core concept, protocol, communication, identity, storage, knowledge, permissions, audit, and contract-evolution documents absorbed the durable conclusions from these exploratory notes. The notes lost authority because cross-aspect discussion cannot remain a parallel source beside explicit canonical aspect owners.
+
+## Retention Reason
+
+This document preserves the original cross-cutting questions, alternatives, and promotion trail so maintainers can reconstruct how the stable Core model was separated into aspect owners without treating the discussion notes as current doctrine.
 
 The stable concept model has been promoted to `docs/core/core-concepts.md`.
 

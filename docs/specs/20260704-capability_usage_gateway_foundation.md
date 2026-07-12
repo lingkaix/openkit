@@ -18,6 +18,7 @@ Implementation: Implemented
 - The abstract worker capability model. That stays owned by `docs/specs/20260703-worker_agent_capability.md` and `docs/core/agent-capability.md`.
 - Final table DDL, storage migration details, backup/export format, or non-gateway metering.
 - Budget enforcement, rate-limit policy, billing, invoices, or cost allocation UI.
+- Runtime-internal sub-agent provenance, authenticated worker-inference identity, and worker runtime cache lineage, which are owned by `docs/specs/20260711-worker_runtime_subagent_provenance.md`.
 
 ## Core References
 
@@ -346,6 +347,7 @@ Previously open questions are resolved by accepted V1 defaults: worker execution
 - `docs/specs/20260703-audit_usage_evidence_records.md`
 - `docs/specs/20260703-storage_layout_record_ownership.md`
 - `docs/specs/20260704-nanocore_bootstrap_readiness.md`
+- `docs/specs/20260711-worker_runtime_subagent_provenance.md`
 - `docs/core/agent-capability.md`
 - `docs/core/audit.md`
 - `docs/core/metering.md`

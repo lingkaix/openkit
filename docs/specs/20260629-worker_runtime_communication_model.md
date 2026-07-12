@@ -593,6 +593,7 @@ Mitigation: persist product-safe materialization and collection state, collect t
 This overview records the worker runtime communication direction. Detailed implementation decisions live in the narrower specs that own each contract:
 
 - Worker-control live append route shape, envelope semantics, event sequence idempotency, stale/conflicting sequence handling, and response fields are owned by `docs/specs/20260703-worker_control_protocol.md`.
+- Runtime-internal sub-agent raw capture, parent-child provenance, trusted worker-inference identity, and runtime cache lineage are owned by `docs/specs/20260711-worker_runtime_subagent_provenance.md`.
 - Worker capability route projection, canonical `knowledge.*` target families, sandbox bearer lineage, `WorkerCapabilityCallSummary`, metering, and audit hooks are owned by `docs/specs/20260703-worker_agent_capability.md` and `docs/specs/20260702-knowledge_store_governance_rules.md`.
 - Worker-side Skill and MCP catalog resolution, approved catalog ids, version or digest resolution, runtime-adapter compatibility, provider and vault references, and generated runtime config materialization are owned by `docs/specs/20260703-agent_manifest_aep_resolution.md` and `docs/specs/20260616-agent_environment_package.md`.
 - Filesystem workspace staging, resolved-path containment, symlink escape rejection, staged review, apply, and recovery behavior are owned by `docs/specs/20260703-workspace_synchronization.md`.
@@ -617,4 +618,5 @@ This overview records the worker runtime communication direction. Detailed imple
 - `docs/specs/20260531-worker_turn_reliability_envelope.md`
 - `docs/specs/20260703-worker_control_protocol.md`
 - `docs/specs/20260703-worker_agent_capability.md`
+- `docs/specs/20260711-worker_runtime_subagent_provenance.md`
 - `docs/specs/20260703-runtime_scheduling_scale.md`

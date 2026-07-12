@@ -6,7 +6,7 @@ import { parse } from 'jsonc-parser';
 
 const packageRoot = fileURLToPath(new URL('../', import.meta.url));
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
-const snapshotVersion = '2026-05-29';
+const snapshotVersion = '2026-07-11';
 const snapshotRoot = join(packageRoot, 'snapshots', snapshotVersion);
 
 /**
@@ -96,6 +96,18 @@ async function validateSnapshot() {
 
   if (metadata.version !== snapshotVersion || metadata.refreshedAt !== snapshotVersion) {
     throw new Error('metadata version and refreshedAt must match the current snapshot version');
+  }
+
+  for (const key of [
+    'fetchedAt',
+    'responseEtag',
+    'rawChecksumSha256',
+    'observedSourceRevision',
+    'observedSourceRevisionAt',
+  ]) {
+    if (typeof metadata[key] !== 'string' || metadata[key].length === 0) {
+      throw new Error(`metadata.${key} must be a non-empty string`);
+    }
   }
 
   const providerMappings = metadata.providerMappings;

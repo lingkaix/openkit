@@ -1,7 +1,7 @@
 # OpenKit Policy Model
 
 Status: Accepted
-Implementation: Standard-aligned subset
+Implementation: Implemented
 
 ## Summary
 

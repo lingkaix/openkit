@@ -14,7 +14,7 @@ Each entry states what the area is, why it is deferred, where its boundary is cu
 
 ### Unified proxy: third-party resource proxy, network egress
 
-The product vision (§6.5) defines a unified proxy covering LLM providers, MCP servers, third-party APIs, and network egress, with auth injection, access control, rate limiting, and audit. The LLM provider plane is active (`docs/specs/20260526-llm_gateway_responses_api.md`, `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`), and the MCP plane for worker traffic is now active (`docs/specs/20260704-worker_mcp_tool_supply.md`). The remaining planes — authenticated third-party resource access and a unified network egress — are deferred. Boundary declarations live in `docs/core/agent-capability.md`. Design should start only after the capability plane's catalog and budget model exists, since proxy access control composes with capability grants; credential-bearing paths must reuse the vault injection contract (`docs/specs/20260703-vault_secret_injection.md`, `docs/specs/20260703-openshell_mechanism_internalization.md`) rather than inventing a parallel mechanism.
+The product vision (§6.5) defines a unified proxy covering LLM providers, MCP servers, third-party APIs, and network egress, with auth injection, access control, rate limiting, and audit. The LLM provider plane is active (`docs/specs/20260526-llm_gateway_responses_api.md`, `docs/specs/20260708-pi_ai_unified_llm_backend.md`), and the MCP plane for worker traffic is now active (`docs/specs/20260704-worker_mcp_tool_supply.md`). The remaining planes — authenticated third-party resource access and a unified network egress — are deferred. Boundary declarations live in `docs/core/agent-capability.md`. Design should start only after the capability plane's catalog and budget model exists, since proxy access control composes with capability grants; credential-bearing paths must reuse the vault injection contract (`docs/specs/20260703-vault_secret_injection.md`, `docs/specs/20260703-openshell_mechanism_internalization.md`) rather than inventing a parallel mechanism.
 
 ### Capability catalog and rate-limit/budget model
 
@@ -22,19 +22,19 @@ The worker capability plane (`docs/specs/20260703-worker_agent_capability.md`) d
 
 ### Metering beyond the gateway
 
-`docs/core/metering.md` is an explicit placeholder boundary for resources that do not originate from a gateway call: compute time, sandbox lifetime, storage growth, and network volume. Usage capture for gateway-mediated LLM calls is active through `docs/specs/20260703-audit_usage_evidence_records.md` and the pi-ai adoption spec. System-wide metering design should start after durable usage producers exist and real dogfooding shows which non-gateway resources actually matter for cost visibility.
+`docs/core/metering.md` is an explicit placeholder boundary for resources that do not originate from a gateway call: compute time, sandbox lifetime, storage growth, and network volume. Usage capture for gateway-mediated LLM calls is active through `docs/specs/20260703-audit_usage_evidence_records.md` and the unified pi-ai backend spec. System-wide metering design should start after durable usage producers exist and real dogfooding shows which non-gateway resources actually matter for cost visibility.
 
 ### LLM provider gateway later slices
 
-The LLM provider plane is active through the native OpenAI/Codex paths and the pi-ai adoption spec (`docs/specs/20260703-pi_ai_provider_gateway_adoption.md`), but several provider-expansion choices stay deferred until the first routed-provider path is stable in real use. Deferred slices include pi-ai OAuth-based provider logins such as Anthropic subscription, GitHub Copilot, or Gemini CLI; image generation through pi-ai's image API surface; explicit policy-directed cross-provider handoff using pi-ai context replay; replacing the native OpenAI adapter with pi-ai routing; and migrating the Codex path from the NanoCore-native Codex Responses client to pi-ai's `openai-codex-responses` API. Design should start only when gateway usage records, credential isolation tests, and provider catalog reconciliation have enough evidence to prove that these choices reduce maintenance cost without weakening audit, credential, or protocol boundaries.
-
-### Task Evaluator evaluation model
-
-`docs/core/architecture.md` and `docs/core/agent-workflow.md` define the Task Evaluator as a placeholder internal role: it may review task outcomes, workflow or Skill updates, test evidence, and measured improvement before changes are accepted. It stays a placeholder until an evaluation, verification, and measurement model is designed. Prerequisite: enough L6 story acceptance history and evidence bundle data to define what "measured improvement" means empirically rather than speculatively.
+The LLM provider plane is active through the NanoCore-native Codex Responses path and the unified pi-ai backend for non-Codex providers (`docs/specs/20260708-pi_ai_unified_llm_backend.md`). Several provider-expansion choices stay deferred until the routed-provider paths are stable in real use. Deferred slices include pi-ai OAuth-based provider logins such as Anthropic subscription, GitHub Copilot, or Gemini CLI; image generation through pi-ai's image API surface; explicit policy-directed cross-provider handoff using pi-ai context replay; and migrating the Codex path from the NanoCore-native Codex Responses client to pi-ai's `openai-codex-responses` API. Design should start only when gateway usage records, credential isolation tests, and provider catalog reconciliation have enough evidence to prove that these choices reduce maintenance cost without weakening audit, credential, or protocol boundaries.
 
 ### Workflow Coordinator dynamic planning
 
-The V1 Workflow Coordinator internal-agent contract is active in `docs/specs/20260704-workflow_coordinator_internal_agent.md` and covers explicit routing, worker selection, context assembly coordination, plan drafting, and stop decisions. The deferred evolution target from the product vision (§6.1) is dynamic planning from accumulated outcomes: selecting agent config packs, workers, context assembly, and handoff patterns from task characteristics and historical performance. Boundary declarations live in `docs/core/agent-workflow.md`, which also gates graph semantics (dependencies, branches, joins) as "earned" only when real workflows require them. Prerequisite: accumulated task history plus the Task Evaluator model above, since dynamic planning without outcome measurement cannot improve.
+The V1 Workflow Coordinator internal-agent contract is active in `docs/specs/20260704-workflow_coordinator_internal_agent.md` and covers explicit routing, worker selection, context assembly coordination, plan drafting, and stop decisions. The deferred evolution target from the product vision (§6.1) is dynamic planning from accumulated outcomes: selecting agent config packs, workers, context assembly, and handoff patterns from task characteristics and historical performance. Boundary declarations live in `docs/core/agent-workflow.md`, which also gates graph semantics (dependencies, branches, joins) as "earned" only when real workflows require them. Prerequisite: accumulated task history plus the active evaluation and self-improvement design listed under Recently Activated, since dynamic planning without outcome measurement cannot improve.
+
+### Workflow graphs and reusable recipes
+
+`docs/core/agent-workflow.md` intentionally reserves workflow dependencies, attempts, branches, joins, lineage, and reusable recipes without forcing runtime-private task graphs into the Core model. The full graph contract remains deferred until active Goal, Task, automation, and evaluation workflows require scheduling or reviewing relationships that cannot be represented by normal thread, turn, item, causation, checkpoint, and handoff semantics. The owning design must define graph authority, persistence, retry and cancellation behavior, branch and join failure semantics, human review projection, evidence lineage, and the boundary between Core-visible workflow structure and agent-private planning before these concepts become implementation requirements.
 
 ### Git provider adapters beyond GitHub
 
@@ -82,11 +82,16 @@ The vision (§2) targets 3–5 person expert teams sharing a workspace, and the 
 
 ### Skill and plugin distribution
 
-OpenKit-authored Skills ship in-repo today (`skills/README.md`), and a general plugin marketplace is an explicit MVP non-goal. Whether OpenKit eventually needs third-party skill packaging, versioning, trust, and distribution — or stays with repository-shipped Skills plus workspace-local additions — is an open product question to revisit after real dogfooding shows demand.
+OpenKit-authored Skills ship in-repo today (`skills/README.md`), and immutable catalog version identity, pinning, and promotion are now active design work in `docs/specs/20260711-skill_catalog_versioning_pinning.md`. A general plugin marketplace remains an explicit MVP non-goal. Third-party packaging, publisher trust, signature policy, discovery, installation, and distribution should not be designed until versioned first-party and workspace-local supply has been dogfooded and demonstrates a real need for an external ecosystem.
 
 ## Recently Activated (moved out of this list)
 
-- LLM provider expansion and usage statistics via `@earendil-works/pi-ai`: `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`.
+- Unified non-Codex LLM routing through `@earendil-works/pi-ai`: `docs/specs/20260708-pi_ai_unified_llm_backend.md`.
+- Task evaluation and self-improvement through the Reflector, Harness, and Judge design, which is the active path for resolving the Task Evaluator placeholder: `docs/specs/20260710-self_improvement_evaluation_loop.md` and `docs/specs/20260711-evaluation_harness_design.md`.
+- Durable recurring scheduler and event-trigger design: `docs/specs/20260711-scheduler_recurring_event_triggers.md`.
+- Immutable Skill catalog version identity, pinning, and promotion: `docs/specs/20260711-skill_catalog_versioning_pinning.md`.
+- Worker sandbox freedom and explicit process, filesystem, network, credential, and review boundaries: `docs/specs/20260709-worker_sandbox_freedom_policy.md`.
+- Worker runtime sub-agent provenance, trusted inference identity, and runtime-cache lineage design currently being authored: `docs/specs/20260711-worker_runtime_subagent_provenance.md`.
 - Vault injection, audit import, and NGAC policy enforcement mechanics via OpenShell mechanism borrowing with internalized definitions: `docs/specs/20260703-openshell_mechanism_internalization.md`.
 - Knowledge Store implementation with pinned OKF 0.1: `docs/specs/20260703-knowledge_store_implementation.md`.
 - Durable scheduler design: `docs/specs/20260703-durable_scheduler_design.md`.

@@ -1,7 +1,7 @@
 # Agent Environment Package And Worker Governance Backends
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
 
 ## Owns
 
@@ -11,7 +11,7 @@ It owns the resolved package shape for worker identity, runtime image and comman
 
 ## Does Not Own
 
-This spec does not own stable core definitions, user-authored agent manifest resolution, worker-control commands, workspace synchronization records, runtime scheduling, policy evaluation, vault storage, capability gateway routing, backend-native OpenShell schemas, or UI readiness layouts.
+This spec does not own stable core definitions, user-authored agent manifest resolution, worker-control commands, workspace synchronization records, runtime scheduling, policy evaluation, vault storage, capability gateway routing, backend-native OpenShell schemas, worker-runtime sub-agent provenance, worker-inference identity specialization, or UI readiness layouts.
 
 Those contracts are owned by the relevant core documents and current active specs.
 
@@ -66,7 +66,7 @@ The current NanoCore implementation uses the Agent Environment Package as the co
 
 The first OpenShell-backed path uses an OpenKit-owned sidecar or worker shim shape for `control.local` rather than treating OpenShell service forwarding or backend logs as the product control plane.
 
-The accepted V1 boundary is implemented for NanoCore-owned AEP resolution and OpenShell-backed materialization. Authored setup can project required backend capabilities into AEP backend requirements, backend materialization validates missing required capabilities before launch, grant-backed provider and runtime-file attachments flow through vault records without storing secret material in the package, worker Skill and MCP supply are resolved from approved catalog entries, worker-visible Knowledge and MCP capability projections are present, and redacted package snapshots can be listed and read without exposing backend-private fields, raw credentials, or host-local runtime references. Rich Web readiness views, broader provider profiles, object-store mounts, and deployment-specific OpenShell service-management contracts remain future extensions over the same AEP boundary.
+The accepted V1 boundary is implemented for NanoCore-owned AEP resolution and OpenShell-backed materialization. Authored setup can project required backend capabilities into AEP backend requirements, backend materialization validates missing required capabilities before launch, grant-backed provider and runtime-file attachments flow through vault records without storing secret material in the package, worker Skill and MCP supply are resolved from approved catalog entries, worker-visible Knowledge and MCP capability projections are present, and redacted package snapshots can be listed and read without exposing backend-private fields, raw credentials, or host-local runtime references. The accepted worker-runtime provenance and trusted worker-inference binding extension in `docs/specs/20260711-worker_runtime_subagent_provenance.md` is not implemented, so overall AEP alignment is partial until package requirements, transcript paths, relay identity binding, and capability negotiation cover that contract. Rich Web readiness views, broader provider profiles, object-store mounts, and deployment-specific OpenShell service-management contracts remain future extensions over the same AEP boundary.
 
 ## Goals / Non-goals
 
@@ -101,7 +101,7 @@ OpenKit already has the long-term product boundary: App surfaces submit work, Na
 
 The missing infrastructure contract is the package that says what a worker receives at execution time.
 
-Earlier work in `docs/specs/retired/worker-runtime/20260526-workspace_data_mounts.md` intentionally limited the first workspace-root slice to `host-dir`.
+Earlier work in `docs/specs/superseded/worker-runtime/20260526-workspace_data_mounts.md` intentionally limited the first workspace-root slice to `host-dir`.
 
 That was appropriate for the earliest trusted-local worker loop, but it leaves open questions for containers, remote sandboxes, object stores, repository checkout, generated setup files, skills, tools, vault-backed credentials, LLM routing, provider-aware policy, audit ingestion, and runtime enforcement.
 
@@ -1441,7 +1441,7 @@ Rules:
 
 `llm` describes how the worker obtains model inference.
 
-The recommended OpenShell-backed path is that the worker calls `https://inference.local/v1`, OpenShell strips sandbox-supplied credentials and forwards the request to NanoCore's OpenAI-compatible `/v1` gateway, and NanoCore then selects the real provider, model, credential source, usage attribution, prompt cache metadata, and audit linkage.
+The recommended OpenShell-backed path is that the worker calls `https://inference.local/v1`, OpenShell strips sandbox-supplied credentials and forwards the request through an authenticated AEP-bound relay to NanoCore's internal worker-inference routes, and NanoCore then selects the real provider, model, credential source, usage attribution, prompt cache metadata, and audit linkage.
 
 In that arrangement, `inference.local` is the sandbox-local endpoint, but NanoCore remains the canonical inference gateway.
 
@@ -1465,7 +1465,7 @@ In that arrangement, `inference.local` is the sandbox-local endpoint, but NanoCo
         "credentialVisibility": "none",
         "promptCache": {
           "enabled": true,
-          "keyScope": "workspace-thread-agent-session"
+          "keyScope": "runtime-cache-lineage"
         }
       }
     ],
@@ -1493,7 +1493,7 @@ In that arrangement, `inference.local` is the sandbox-local endpoint, but NanoCo
 
 Preferred mode is `gateway`.
 
-For OpenShell-backed workers, preferred `gateway` mode still uses the sandbox-local `https://inference.local` endpoint when possible, but OpenShell should route that endpoint to NanoCore's `/v1` gateway instead of directly owning final provider selection.
+For OpenShell-backed workers, preferred `gateway` mode still uses the sandbox-local `https://inference.local` endpoint when possible, but OpenShell should route that endpoint to NanoCore's authenticated worker-inference routes instead of the generic public `/v1` routes or a backend-owned final provider selection.
 
 `backend-local` is acceptable only when the backend can preserve OpenKit provider IDs, usage, prompt cache metadata, and audit linkage.
 
@@ -1506,7 +1506,10 @@ Rules:
 - NanoCore should authenticate the sandbox or control session before honoring requests forwarded from `inference.local`.
 - NanoCore should map forwarded inference calls to workspace, thread, turn, agent session, provider instance, and request IDs.
 - NanoCore should record capability calls, usage, and audit events for forwarded inference.
-- If a backend-level `inference.local` implementation cannot preserve NanoCore lineage, provider IDs, usage, and audit, NanoCore should use a direct OpenKit gateway endpoint instead.
+- If a backend-level `inference.local` implementation cannot preserve NanoCore lineage, provider IDs, usage, and audit, NanoCore should use an OpenKit-owned authenticated relay to the internal worker-inference route instead.
+- Worker authority-bearing lineage must come from an authenticated AEP and lease binding, not request-body `metadata.openkit` or runtime-supplied headers.
+- Runtime-native causal origin and runtime cache lineage must follow `docs/specs/20260711-worker_runtime_subagent_provenance.md`; the shared outer OpenKit thread, turn, or agent session must not become the cache key for every runtime-internal child.
+- An AEP that requires complete worker-inference attribution must configure the root runtime and every runtime-internal child to use `inference.local`, withhold direct provider credentials, deny direct provider API egress, and fail capability negotiation when the backend cannot prove that coverage; `backend-local` and `direct-external` modes must report attribution as incomplete unless they satisfy the same authenticated relay contract.
 
 ## Policy Intent
 
@@ -1912,7 +1915,7 @@ An OpenShell backend should map OpenKit package fields as follows.
 | `policy.filesystem` | `filesystem_policy` and Landlock settings. |
 | `policy.process` | OpenShell `process` and binary policy where supported. |
 | `policy.network` | `network_policies` plus provider-derived layers. |
-| `llm.mode: gateway` with `workerBaseUrl: https://inference.local/v1` | OpenShell `inference.local` privacy router forwarding to NanoCore `/v1` gateway. |
+| `llm.mode: gateway` with `workerBaseUrl: https://inference.local/v1` | OpenShell `inference.local` privacy router forwarding through an authenticated AEP-bound relay to NanoCore's internal worker-inference routes. |
 | `llm.mode: backend-local` | OpenShell `inference.local` owns final provider routing when explicitly selected. |
 | `observability.formats.preferred: ocsf-json` | OpenShell OCSF JSON export setting. |
 | `resources.cpu` and `resources.memory` | Sandbox create `--cpu` and `--memory` where driver supports them. |
@@ -1924,7 +1927,7 @@ OpenShell-specific constraints:
 - Provider attach or detach affects future effective policy reads and future process launches, but already-running processes may keep their original environment.
 - Filesystem policy is static and requires sandbox recreation when changed.
 - Network policy may be dynamic when OpenShell supports policy update for the selected session.
-- `inference.local` should initially forward to NanoCore's `/v1` gateway so NanoCore keeps provider, model, usage, prompt cache, and audit ownership.
+- `inference.local` should initially forward to NanoCore's internal worker-inference routes so NanoCore keeps authenticated package lineage, provider, model, usage, prompt cache, and audit ownership.
 - If OpenShell itself owns final `inference.local` provider routing, NanoCore must treat that as `backend-local` mode and require explicit audit and usage preservation checks.
 - Stock OpenShell must not be assumed to support arbitrary `control.local` routing through the `inference.local` privacy router.
 - The no-fork OpenShell integration should provide `control.local` through an OpenKit sidecar or shim packaged into the sandbox image.
@@ -2165,7 +2168,9 @@ If they need persistence, they must live in server-owned runtime storage, backen
 
 ## Relationship To Existing Specs
 
-This spec extends the earlier supporting detail in `docs/specs/retired/worker-runtime/20260526-workspace_data_mounts.md`.
+This spec extends the earlier supporting detail in `docs/specs/superseded/worker-runtime/20260526-workspace_data_mounts.md`.
+
+Runtime-internal sub-agent provenance, trusted worker-inference identity, and runtime cache lineage are specialized by `docs/specs/20260711-worker_runtime_subagent_provenance.md`.
 
 The earlier `host-dir` reference remains useful only as historical host-local mount material. The canonical target vocabulary is workspace-owned or workspace-linked materialization, not host ownership.
 
@@ -2185,7 +2190,7 @@ The environment package is the per-session resolved snapshot.
 
 This spec complements `docs/specs/20260526-llm_gateway_responses_api.md`.
 
-The LLM gateway remains NanoCore-owned unless a backend-local inference route is explicitly selected and can preserve OpenKit usage and audit linkage.
+The LLM gateway remains NanoCore-owned unless a backend-local inference route is explicitly selected and can preserve OpenKit usage and audit linkage. A backend-local route cannot claim complete worker-inference attribution unless it also satisfies the authenticated relay and direct-egress blocking contract.
 
 ## Alternatives Considered
 
@@ -2286,7 +2291,7 @@ NanoCore must know which user, workspace, thread, turn, agent session, provider 
 2. Materialize `/openkit/session/*.jsonl` as the durable transcript sink.
 3. Package an OpenKit sidecar or shim that exposes `https://control.local/v1/worker-control` inside the sandbox.
 4. Allow only the sidecar binary to reach NanoCore's Worker Control Gateway for live progress and bounded commands.
-5. Expose only OpenKit LLM gateway route by default for model traffic, preferably through `https://inference.local/v1` when OpenShell can forward to NanoCore `/v1`.
+5. Expose only the OpenKit LLM gateway route by default for model traffic, preferably through `https://inference.local/v1` when OpenShell can forward through the authenticated AEP-bound relay to NanoCore's internal worker-inference routes.
 6. Attach GitHub read-only provider.
 7. Record policy application and sandbox lifecycle evidence.
 8. Collect declared output artifacts.
@@ -2345,7 +2350,7 @@ NanoCore must know which user, workspace, thread, turn, agent session, provider 
 - Compile no-fork OpenShell live progress mode to an OpenKit sidecar plus outbound NanoCore Worker Control Gateway route.
 - Reject package materialization that assumes stock OpenShell `inference.local` can route arbitrary OpenKit control requests.
 - Reject package materialization that uses OpenShell service forwarding as the canonical OpenKit worker control channel.
-- Compile `inference.local` routing to NanoCore `/v1` gateway when `llm.mode` is `gateway`.
+- Compile `inference.local` routing to NanoCore's authenticated internal worker-inference routes when `llm.mode` is `gateway`.
 - Generate OpenShell-style policy with provider-derived network rules where supported.
 - Generate redacted materialization records.
 - Do not persist derived provider rules as canonical NanoCore policy.
@@ -2440,7 +2445,7 @@ Mitigation: run OpenShell Gateway as a NanoCore-managed backend service or deplo
 - OpenKit-authored provider profile and AEP config fields use OpenKit-style camelCase. OpenShell-compatible snake_case belongs only in backend extensions or generated OpenShell materialization artifacts.
 - Provider profiles are server-owned by default. Workspace-defined custom profiles require policy-reviewed setup proposals and must not grant authority beyond server and workspace policy.
 - The first provider profile baseline is GitHub/source-control, OpenAI-compatible inference, and OpenAI Codex account slot. PyPI, generic REST API, and object-store profiles are deferred until a concrete worker task requires them.
-- NanoCore should not hard-code an OpenShell version for `inference.local` behavior. The backend must declare or prove required feature flags during preflight, and NanoCore must fail closed or use a direct OpenKit gateway route when lineage, usage, or audit preservation cannot be proven.
+- NanoCore should not hard-code an OpenShell version for `inference.local` behavior. The backend must declare or prove required feature flags during preflight, and NanoCore must fail closed or use an OpenKit-owned authenticated relay to the internal worker-inference route when lineage, usage, or audit preservation cannot be proven.
 - The first object-store target should be a generic S3-compatible contract that can project to S3 and R2 before adding provider-specific GCS, Azure Blob, or Box contracts.
 - Object-store materialization should start with OpenKit-managed staged files or gateway-mediated reads. Backend FUSE, sync-on-demand, and backend-native mounts require separate backend capability declarations and recovery tests.
 - Generated files are runtime files by default. They become artifacts only when they are user-visible outputs, review inputs, or evidence that must survive beyond the worker session.
@@ -2469,10 +2474,10 @@ Mitigation: run OpenShell Gateway as a NanoCore-managed backend service or deplo
 - [Agent Supply](../core/agent-supply.md)
 - [Runtime Model](../core/runtime-model.md)
 - [Session Static Workspace Materialization](./20260704-session_static_workspace_materialization.md)
-- [Workspace Data Mount Materialization](./retired/worker-runtime/20260526-workspace_data_mounts.md)
+- [Workspace Data Mount Materialization](./superseded/worker-runtime/20260526-workspace_data_mounts.md)
 - [Agent Setup And Runtime Supply Contract](./20260628-agent_setup_runtime_supply_contract.md)
-- [Agent Profile Model](./retired/agent-setup-runtime-supply/20260522-agent_profile_model.md)
-- [Server Config and Data Layout](./retired/nanocore-config-identity/20260519-server_config_data_layout.md)
+- [Agent Profile Model](./superseded/agent-setup-runtime-supply/20260522-agent_profile_model.md)
+- [Server Config and Data Layout](./superseded/nanocore-config-identity/20260519-server_config_data_layout.md)
 - [LLM Gateway Responses API](./20260526-llm_gateway_responses_api.md)
 - [NVIDIA OpenShell Providers v2](https://docs.nvidia.com/openshell/latest/sandboxes/providers-v2)
 - [NVIDIA OpenShell How It Works](https://docs.nvidia.com/openshell/latest/about/how-it-works)

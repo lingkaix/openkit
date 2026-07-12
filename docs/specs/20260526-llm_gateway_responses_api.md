@@ -9,7 +9,7 @@ This spec owns the NanoCore LLM Gateway HTTP surface for OpenAI-compatible Chat 
 
 ## Does Not Own
 
-This spec does not own the broader Agent Capability model, worker-side capability gateway records, provider-account login UX, vault storage, usage metering ledgers, policy evaluation, or `packages/protocol` schemas.
+This spec does not own the broader Agent Capability model, worker-side capability gateway records, worker-runtime sub-agent provenance, authenticated worker-inference identity binding, runtime cache lineage specialization, provider-account login UX, vault storage, usage metering ledgers, policy evaluation, or `packages/protocol` schemas.
 
 ## Core References
 
@@ -214,3 +214,5 @@ NanoCore implements the accepted Gateway surface through `/v1/chat/completions`,
 
 Real Codex or real subscription verification must stay skip-aware and explicitly gated so default release gates do not consume user subscription quota.
 The current opt-in real Codex Goal Mode preflight uses `pnpm -w test:stories:real-codex` with `OPENKIT_L6_REAL_CODEX=1`, `OPENKIT_L6_ALLOW_PROVIDER_QUOTA=1`, `OPENKIT_L6_GOAL_REPO_ROOT`, and `OPENKIT_L6_EVIDENCE_DIR`.
+
+Worker-specific trusted identity and cache-lineage behavior is owned by `docs/specs/20260711-worker_runtime_subagent_provenance.md` and does not change the generic public Gateway contract in this spec.

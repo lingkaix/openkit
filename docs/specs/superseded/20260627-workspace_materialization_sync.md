@@ -1,13 +1,18 @@
 # Workspace Materialization And Synchronization
 
 Status: Superseded
-Superseded: 2026-07-03 by `docs/specs/20260703-workspace_synchronization.md`.
+Implementation: N/A
+Status Changed: 2026-07-03
+Current Guidance: `docs/specs/20260703-workspace_synchronization.md`
+Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
-This historical spec is retained because it contains the original materialization
-design narrative and implementation rollout context. Its active contract has
-been consolidated into `docs/specs/20260703-workspace_synchronization.md`.
-Historical open questions in this file are not active guidance; the replacement
-spec owns their resolved or deferred status.
+## Lifecycle Reason
+
+The unified Workspace Synchronization specification absorbed this document's materialization, collection, staging, review, and application contract. This earlier slice lost authority because keeping its rollout assumptions and open questions active beside the consolidated contract would create competing ownership.
+
+## Retention Reason
+
+This document preserves the original backend-portable materialization design and rollout reasoning so maintainers can trace how the consolidated synchronization contract was formed without treating unresolved historical questions as current requirements.
 
 ## Summary
 

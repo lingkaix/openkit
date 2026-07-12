@@ -192,4 +192,4 @@ Do not promote implementation-specific fields before the abstract model is agree
 
 Retire or merge a core document only after its canonical terms, principles, invariants, open points, related specs, and incoming references have been migrated to an explicit surviving owner.
 
-Superseded specs may preserve history, but they are not active decision logs. New durable decisions should either update the relevant core document or be recorded in a current spec under `docs/specs/`.
+Archived `Superseded`, `Retired`, and `Rejected` specs may preserve history, but they are not active decision logs. New durable decisions should either update the relevant core document or be recorded in a current spec at the root of `docs/specs/`.

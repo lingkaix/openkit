@@ -1,9 +1,18 @@
 # Worker Context Taxonomy
 
 Status: Superseded
-Superseded: 2026-07-03 by `docs/specs/20260703-worker_context_package.md`.
+Implementation: N/A
+Status Changed: 2026-07-03
+Current Guidance: `docs/specs/20260703-worker_context_package.md`, `docs/core/knowledge.md`
+Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
-This historical draft is retained for the original taxonomy discussion. The active worker-facing package contract now owns context categories used during package assembly, while `docs/core/knowledge.md` owns the canonical Knowledge, Source, Notebook, Knowledge Manager, Agent-Near Context, and Context Package semantics.
+## Lifecycle Reason
+
+The Worker Context Package specification absorbed the operational context categories used during package assembly, while the Core Knowledge document became the canonical owner for durable knowledge semantics. This draft lost authority because its mixed taxonomy can no longer govern either contract independently.
+
+## Retention Reason
+
+This document preserves the original taxonomy discussion and the boundary questions between durable knowledge and task-local context so maintainers can understand why ownership was split between the active package contract and Core semantics.
 
 ## Summary
 

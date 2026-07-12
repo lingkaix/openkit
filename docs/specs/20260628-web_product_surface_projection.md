@@ -98,7 +98,7 @@ The current Web implementation is a contract projection surface:
 
 ## Superseded Web Specs
 
-The previous Web UI MVP slice specs have been moved under `docs/specs/superseded/web-ui-pre-rebuild/`.
+The previous Web UI MVP slice specs have been moved under `docs/specs/retired/web-ui-pre-rebuild/` because the old module was deliberately removed and the current product surface is a clean-slate rebuild rather than a contract-preserving successor.
 
 They are retained to recover useful copy, interaction details, and edge-case notes during future Web product work, but they no longer represent active release gates.
 

@@ -14,6 +14,6 @@ These JSONC templates are copied into `OPENKIT_DATA_ROOT/config/providers/` when
 
 Operators should keep credentials out of provider files and create the matching vault reference before enabling a provider.
 
-The non-custom provider ids and starter model ids are traceable to the vendored `models.dev` snapshot under `packages/models-dev-catalog/snapshots/2026-05-29/`.
+The non-custom provider ids and starter model ids are traceable to the vendored `models.dev` snapshot under `packages/models-dev-catalog/snapshots/2026-07-11/`.
 
 The custom OpenAI-compatible template is operator-defined and intentionally has no upstream `models.dev` provider id.

@@ -1,8 +1,18 @@
 # Codex OAuth Account UX Recovery
 
 Status: Superseded
+Implementation: N/A
+Status Changed: 2026-06-28
+Current Guidance: `docs/specs/20260526-codex_chatgpt_subscription_login.md`
+Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
-Superseded: 2026-06-28. This file is retained as historical context and is not an active implementation or release-readiness spec.
+## Lifecycle Reason
+
+Codex ChatGPT Subscription Login absorbed account slots, sanitized diagnostics, scoped login/logout actions, provider binding, and route ownership into one accepted contract. This recovery note lost authority because account UX and server behavior now evolve together under that active owner.
+
+## Retention Reason
+
+This document preserves the original diagnostics recovery problem, removed snapshot-repair behavior, and account-row expectations so maintainers can audit the migration without treating the recovery note as the current login contract.
 
 Superseded note: The 20260529 cleanup spec removes workspace snapshot repair and the top-level `oauth.openaiCodex` diagnostics mirror.
 

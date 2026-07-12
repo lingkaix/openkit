@@ -14,7 +14,7 @@ max_threads = 12
 
 [agents.research]
 description = "Research existing projects and produce or update reference reports for improving this repository. Use primary sources first, then use DeepWiki as a co-researcher to cross-check findings, compare interpretations, and reduce omissions."
-config_file = "agents/research.toml"
+config_file = "agents/researcher.toml"
 nickname_candidates = ["Archivist", "Surveyor", "Analyst"]
 
 [agents.builder]

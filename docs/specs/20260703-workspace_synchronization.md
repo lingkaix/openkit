@@ -1,7 +1,7 @@
 # Workspace Synchronization
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Diverged
 
 ## Owns
 
@@ -24,7 +24,7 @@ It is the canonical active spec for `WorkspaceInputSnapshot`,
 `WorkspaceMaterializationRecord`, `BackendWorkspaceHandle`,
 `WorkerOutputManifest`, `WorkspaceChangeSet`, `StagedWorkspaceReview`,
 `WorkspaceApplyPlan`, `WorkspaceApplyResult`,
-`WorkspaceReconciliationRecord`, and `WorkspaceSyncEvidenceBundle`.
+and `WorkspaceReconciliationRecord`. Workspace synchronization evidence uses the general `EvidenceBundle` ledger and evidence ids carried directly by the owning lifecycle records rather than a parallel synchronization-specific bundle record.
 
 ## Does Not Own
 
@@ -190,7 +190,7 @@ Rules:
 
 ## Current Implementation Projection
 
-The current implementation realizes the accepted V1 contract:
+The current implementation realizes the accepted V1 synchronization behavior below but still retains the rejected synchronization-specific evidence bundle record family, so alignment remains diverged until the linked change plan lands:
 
 - `packages/app-api-schemas/src/workspace-sync.ts` defines schemas for input snapshots, materialization records, backend workspace handles, worker output manifests, change sets, staged reviews, review patch payloads, and apply results.
 - `apps/nanocore/drizzle/0010_workspace_sync_records.sql` persists input snapshots, materialization records, change sets, and staged reviews.
@@ -213,7 +213,7 @@ The current implementation realizes the accepted V1 contract:
 - Server tests cover review listing, Git patch apply, filesystem staging apply, filesystem permission-change apply, and persisted apply results after app restart.
 - `WorkspaceSynchronizationBackendKindSchema` still includes `host` for host-local staging, deterministic harnesses, and inferred legacy artifact-backed records. It must not be read as permission to reintroduce host execution as a product Worker Agent runtime.
 
-The implementation now persists redacted `BackendWorkspaceHandle` rows at materialization time and carries them through workspace export/import. It also persists `WorkerOutputManifest` rows derived from collected change sets before reviewed change-set readback, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It persists `WorkspaceApplyPlan` rows before accepted Git patch or filesystem staging apply mutations, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It persists `WorkspaceReconciliationRecord` rows for recovery transitions, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It persists `WorkspaceQuarantineRecord` rows for isolated invalid synchronization material, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It persists `WorkspaceSyncEvidenceBundle` rows as product-safe linkage records over redacted backend evidence manifests and general `EvidenceBundle` ids, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It also automatically promotes materialization readiness evidence, staged review evidence refs, patch digests, and apply-result lineage into the general `EvidenceBundle` ledger. It projects recovery-specific Action Center rows for `WorkspaceReconciliationRecord` rows in `requires-human`; `resume_collection`, `stage_verified`, `quarantine`, and `abandon` recovery decisions are executable through App API/Core Client/MCP. Terminal recovery decisions set the record retention decision to `teardown-backend`, and `resume_collection` recovers from already durable worker output manifests and workspace sync evidence bundles without requiring live backend reachability. Filesystem synchronization detects POSIX permission-only changes as `mode_changed`, carries old and new permission summaries on changed paths, records them in apply plans, applies accepted permission changes through the same reviewed filesystem staging path, and reports target path type conflicts during apply preflight before mutating the workspace. Binary changed paths carry artifact-only review presentation with digest, media type, byte size, summary, and typed staged-review diagnostics; binary payloads over 1 MiB use the same artifact-only presentation with an explicit payload-size reason. Worker-control terminal events move matching `BackendWorkspaceHandle` rows from `pending` to `retained`, while governed worker teardown later moves matching handles to `cleaned` after successful backend teardown or `failed` after teardown failure. Scheduler lease maintenance records `WorkspaceReconciliationRecord` recovery triggers when a stale lease still has pending backend workspace handles. Live backend reconnection collection, object-store synchronization, and richer multi-backend recovery orchestration remain deferred future work.
+The implementation now persists redacted `BackendWorkspaceHandle` rows at materialization time and carries them through workspace export/import. It also persists `WorkerOutputManifest` rows derived from collected change sets before reviewed change-set readback, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It persists `WorkspaceApplyPlan` rows before accepted Git patch or filesystem staging apply mutations, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It persists `WorkspaceReconciliationRecord` rows for recovery transitions, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It persists `WorkspaceQuarantineRecord` rows for isolated invalid synchronization material, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It also automatically promotes materialization readiness evidence, staged review evidence refs, patch digests, and apply-result lineage into the general `EvidenceBundle` ledger. The accepted contract removes the redundant `WorkspaceSyncEvidenceBundle` schema, table, APIs, client and MCP projections, and workspace export/import record family; the current implementation temporarily retains them pending the [Evidence Surface Simplification](../changes/202607111848520001-evidence_surface_simplification.md) change plan. Recovery reads evidence bundle ids directly from owning lifecycle and reconciliation records. It projects recovery-specific Action Center rows for `WorkspaceReconciliationRecord` rows in `requires-human`; `resume_collection`, `stage_verified`, `quarantine`, and `abandon` recovery decisions are executable through App API/Core Client/MCP. Terminal recovery decisions set the record retention decision to `teardown-backend`, and `resume_collection` recovers from already durable worker output manifests and general evidence bundle references without requiring live backend reachability. Filesystem synchronization detects POSIX permission-only changes as `mode_changed`, carries old and new permission summaries on changed paths, records them in apply plans, applies accepted permission changes through the same reviewed filesystem staging path, and reports target path type conflicts during apply preflight before mutating the workspace. Binary changed paths carry artifact-only review presentation with digest, media type, byte size, summary, and typed staged-review diagnostics; binary payloads over 1 MiB use the same artifact-only presentation with an explicit payload-size reason. Worker-control terminal events move matching `BackendWorkspaceHandle` rows from `pending` to `retained`, while governed worker teardown later moves matching handles to `cleaned` after successful backend teardown or `failed` after teardown failure. Scheduler lease maintenance records `WorkspaceReconciliationRecord` recovery triggers when a stale lease still has pending backend workspace handles. Live backend reconnection collection, object-store synchronization, and richer multi-backend recovery orchestration remain deferred future work.
 
 ## Record Contract
 
@@ -291,8 +291,7 @@ when applicable, final status, and reviewer decision linkage.
 - cleanup or retention decision
 - start and finish timestamps
 
-`WorkspaceSyncEvidenceBundle` links raw backend evidence to OpenKit ids and
-digests. It stores redacted evidence manifests, not unrestricted raw payloads.
+Workspace synchronization MUST attach general `EvidenceBundle` ids directly to the lifecycle records that own the evidence relationship. It MUST NOT introduce a parallel workspace-synchronization evidence bundle schema, table, API, or export record family. Backend-native evidence remains referenced through product-safe refs and digests on the owning materialization, output, review, reconciliation, quarantine, apply, or general evidence records.
 
 ## State Model
 
@@ -559,7 +558,7 @@ After NanoCore restart:
 1. Load active materialization, worker session, review, staging, apply, and backend handle records.
 2. Check whether the backend session is still reachable.
 3. If reachable, collect output manifests and evidence.
-4. If unreachable, use the latest durable materialization record, backend handle, and evidence refs.
+4. If unreachable, use the latest durable materialization record, backend handle, and general evidence bundle refs.
 5. Verify digests and lineage.
 6. Create or update collection and reconciliation state.
 7. Stage a review when a valid change set exists.
@@ -602,10 +601,7 @@ requirements are:
   pending backend workspace handles. Human recovery decisions now produce
   terminal `recovered`, `quarantined`, or `unrecoverable` states and mark the
   backend retention decision as `teardown-backend`.
-- `WorkspaceSyncEvidenceBundle` is now persisted in first-slice form as a
-  product-safe linkage record over lifecycle record ids, general
-  `EvidenceBundle` ids, redacted backend evidence refs, redacted evidence
-  manifests, content digests, retention class, and creation timestamp.
+The accepted recovery contract does not persist a separate synchronization-specific evidence linkage record. `WorkspaceReconciliationRecord.evidenceBundleIds` and evidence ids on the owning lifecycle records provide the required recovery linkage, while the general `EvidenceBundle` ledger owns cross-record evidence indexing, retention, sensitivity, promotion, and import status.
 
 Quarantine is a record, not just a state. A `WorkspaceQuarantineRecord` MUST
 carry: quarantine id, the lifecycle record ids it isolates, the validation
@@ -788,5 +784,6 @@ Contract above; their build-out is implementation work tracked through the
 - `docs/core/audit.md`
 - `docs/core/agent-workflow.md`
 - `docs/product-vision.md`
+- [Evidence Surface Simplification](../changes/202607111848520001-evidence_surface_simplification.md)
 - [NVIDIA/NemoClaw](https://github.com/NVIDIA/NemoClaw)
 - [NVIDIA OpenShell documentation](https://docs.nvidia.com/openshell/)

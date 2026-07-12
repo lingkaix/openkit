@@ -1,7 +1,7 @@
 # Self-Improvement Evaluation Loop
 
 Status: Draft
-Implementation: Not started
+Implementation: Not Started
 
 ## Owns
 

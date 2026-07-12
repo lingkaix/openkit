@@ -7,7 +7,7 @@ Read `README.md` first. This file contains only local agent execution rules for 
 - Keep one aspect per document.
 - Write in English.
 - Keep these docs conceptual and implementation-neutral.
-- Treat `docs/core/` as the canonical promoted model. Do not use superseded specs as active decision logs.
+- Treat `docs/core/` as the canonical promoted model. Do not use archived `Superseded`, `Retired`, or `Rejected` specs as active decision logs.
 - Before editing a core document, identify which aspect owns the terms being changed by checking the README term index.
 - Define each canonical concept in exactly one owner document. Other core documents may project that concept into their aspect, but they must not redefine it.
 - Replace duplicated concept definitions with cross-references to the canonical owner and keep only the aspect-specific projection.

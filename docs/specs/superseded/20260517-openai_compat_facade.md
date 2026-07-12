@@ -2,10 +2,17 @@
 
 Status: Superseded
 Implementation: N/A
+Status Changed: 2026-07-03
+Current Guidance: `docs/specs/20260526-llm_gateway_responses_api.md`, `docs/specs/20260703-worker_agent_capability.md`
+Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
-Superseded by `docs/specs/20260526-llm_gateway_responses_api.md` and `docs/specs/20260703-worker_agent_capability.md`.
+## Lifecycle Reason
 
-This document is retained as historical implementation context for the NanoCore internal OpenAI-compatible chat-completions facade. It is not active guidance and should not be used to extend the product direction.
+The public LLM Gateway Responses API and Worker Agent Capability contract absorbed OpenAI-compatible request mapping, provider routing, auth boundaries, and capability mediation. The internal facade slice lost authority because the removed internal route cannot remain a parallel gateway contract.
+
+## Retention Reason
+
+This document preserves the original internal route, SSE forwarding, provider selection, and error-envelope behavior so maintainers can interpret historical tests and migrations without extending the retired internal surface.
 
 ## Historical Scope
 

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 
-const snapshotRoot = new URL('../snapshots/2026-07-05/', import.meta.url);
+const snapshotRoot = new URL('../snapshots/2026-07-11/', import.meta.url);
 const metadata = readSnapshotJson<OpenShellSnapshotMetadata>('metadata.json');
 const providerProfileSurface = readSnapshotJson<OpenShellProviderProfileSurfaceFile>(
   'provider-profile-surface.json'
@@ -18,10 +18,18 @@ export const OPEN_SHELL_MAPPING_VERSION = metadata.mappingVersion;
 export const OPEN_SHELL_SCHEMA_SNAPSHOT = metadata;
 
 /** Provider profile surface pinned by the snapshot. */
-export const OPEN_SHELL_PROVIDER_PROFILE_SURFACE = providerProfileSurface.providerProfile;
+export const OPEN_SHELL_PROVIDER_PROFILE_SURFACE =
+  providerProfileSurface.openKitProviderProfileMapping;
+
+/** Full upstream provider profile surface recorded from the pinned OpenShell release. */
+export const OPEN_SHELL_UPSTREAM_PROVIDER_PROFILE_SURFACE =
+  providerProfileSurface.upstreamProviderProfile;
 
 /** Sandbox policy surface pinned by the snapshot. */
-export const OPEN_SHELL_POLICY_SURFACE = policySurface.sandboxPolicy;
+export const OPEN_SHELL_POLICY_SURFACE = policySurface.openKitSandboxPolicyMapping;
+
+/** Full upstream sandbox policy surface recorded from the pinned OpenShell release. */
+export const OPEN_SHELL_UPSTREAM_POLICY_SURFACE = policySurface.upstreamSandboxPolicy;
 
 /** CLI surface pinned by the snapshot. */
 export const OPEN_SHELL_CLI_SURFACE = cliSurface.cli;
@@ -37,11 +45,17 @@ interface OpenShellSnapshotMetadata {
   readonly refreshedAt: string;
   readonly snapshotId: string;
   readonly sourceBoundary: string;
+  readonly sourceCommit: string;
+  readonly sourcePaths: string[];
+  readonly sourceProject: string;
+  readonly sourceRelease: string;
+  readonly sourceTag: string;
+  readonly sourceVersion: string;
 }
 
 /** Provider profile snapshot file shape. */
 interface OpenShellProviderProfileSurfaceFile {
-  readonly providerProfile: {
+  readonly openKitProviderProfileMapping: {
     readonly authStyles: string[];
     readonly categories: string[];
     readonly credentialFields: string[];
@@ -50,14 +64,20 @@ interface OpenShellProviderProfileSurfaceFile {
     readonly refreshStrategies: string[];
     readonly requiredFields: string[];
     readonly reservedEnvPrefixPattern: string;
-    readonly reservedProfileIds: string[];
   };
   readonly schemaVersion: number;
+  readonly upstreamProviderProfile: {
+    readonly authStyles: string[];
+    readonly builtInProfileIds: string[];
+    readonly categories: string[];
+    readonly gatewayRefreshMaterialKeys: string[];
+    readonly refreshStrategies: string[];
+  };
 }
 
 /** Policy snapshot file shape. */
 interface OpenShellPolicySurfaceFile {
-  readonly sandboxPolicy: {
+  readonly openKitSandboxPolicyMapping: {
     readonly accessModes: string[];
     readonly endpointKeys: string[];
     readonly enforcements: string[];
@@ -70,6 +90,11 @@ interface OpenShellPolicySurfaceFile {
     readonly version: number;
   };
   readonly schemaVersion: number;
+  readonly upstreamSandboxPolicy: {
+    readonly accessModes: string[];
+    readonly enforcements: string[];
+    readonly protocols: string[];
+  };
 }
 
 /** CLI snapshot file shape. */
@@ -124,7 +149,7 @@ export function assertOpenShellProviderProfileConformant(
 ): void {
   assertIdentifier(profile.id, 'OpenShell provider profile id');
 
-  if (OPEN_SHELL_PROVIDER_PROFILE_SURFACE.reservedProfileIds.includes(profile.id)) {
+  if (OPEN_SHELL_UPSTREAM_PROVIDER_PROFILE_SURFACE.builtInProfileIds.includes(profile.id)) {
     throw new Error(`OpenShell provider profile id is reserved: ${profile.id}`);
   }
   if (!OPEN_SHELL_PROVIDER_PROFILE_SURFACE.categories.includes(profile.category)) {

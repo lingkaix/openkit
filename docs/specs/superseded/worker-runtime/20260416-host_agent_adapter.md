@@ -1,10 +1,18 @@
 # Host Agent Adapter For NanoCore
 
 Status: Superseded
+Implementation: N/A
+Status Changed: 2026-07-03
+Current Guidance: `docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260703-runtime_scheduling_scale.md`, `docs/specs/20260703-agent_manifest_aep_resolution.md`
+Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
-Superseded by `docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260703-runtime_scheduling_scale.md`, and `docs/specs/20260703-agent_manifest_aep_resolution.md`.
+## Lifecycle Reason
 
-This document is retained only as historical context for the early host-adapter design. Host execution is no longer a current Worker Agent runtime target.
+The Worker Runtime Communication Model, Runtime Scheduling And Scale, and Agent Manifest AEP Resolution specifications absorbed the durable adapter, scheduling, and executable-resolution contracts. This host-process design lost authority when host execution ceased to be a current Worker Agent target.
+
+## Retention Reason
+
+This document preserves the first concrete Core-to-agent adapter design and its process-supervision assumptions so maintainers can interpret early implementation history without reviving the removed host runtime as a supported execution contract.
 
 This document is an implementation-layer spec for the first host agent adapter in `apps/nanocore`.
 
@@ -279,7 +287,7 @@ These are constraints fixed in design discussion and supported by external sourc
 
 ### D1. Adapter shape: structured only, no PTY+classifier
 
-The first-class adapter shape is **structured**: the adapter speaks the agent's native typed protocol (JSON-RPC over stdio for Codex, ACP JSON-RPC for ACP-native runtimes such as Hermes/Kimi/Kiro, vendor SDK or `--output-format stream-json` for runtimes that ship one). PTY screen-scraping and output-classifier adapters (the emdash/tday shape) are explicitly rejected as the default because approval/interrupt/handoff control events recovered from screen text are too lossy to satisfy the four-plane separation in [20260507-codex_agent_communication_modes.md](../../retired/worker-runtime/20260507-codex_agent_communication_modes.md). Manifest validation rejects any agent runtime that does not declare a structured control surface; we do not fall back to keystroke injection.
+The first-class adapter shape is **structured**: the adapter speaks the agent's native typed protocol (JSON-RPC over stdio for Codex, ACP JSON-RPC for ACP-native runtimes such as Hermes/Kimi/Kiro, vendor SDK or `--output-format stream-json` for runtimes that ship one). PTY screen-scraping and output-classifier adapters (the emdash/tday shape) are explicitly rejected as the default because approval/interrupt/handoff control events recovered from screen text are too lossy to satisfy the four-plane separation in [20260507-codex_agent_communication_modes.md](./20260507-codex_agent_communication_modes.md). Manifest validation rejects any agent runtime that does not declare a structured control surface; we do not fall back to keystroke injection.
 
 ### D2. Internal adapter event contract
 
@@ -309,7 +317,7 @@ type AgentResult = {
 
 ### D3. Adapter-owned `FrozenArg` contract
 
-Each runtime adapter declares a static array of arguments it owns: subcommands that must appear, flags that must appear with a required value, and flags users must not set. The current [Agent Setup And Runtime Supply Contract](./20260628-agent_setup_runtime_supply_contract.md) keeps the same resolver rule: config resolution errors when user `custom_args` conflicts with the frozen set; never silently merges. Frozen list lives in adapter code; the resolved package may mirror it for diagnostics only.
+Each runtime adapter declares a static array of arguments it owns: subcommands that must appear, flags that must appear with a required value, and flags users must not set. The current [Agent Setup And Runtime Supply Contract](../../20260628-agent_setup_runtime_supply_contract.md) keeps the same resolver rule: config resolution errors when user `custom_args` conflicts with the frozen set; never silently merges. Frozen list lives in adapter code; the resolved package may mirror it for diagnostics only.
 
 ```ts
 type FrozenArg =

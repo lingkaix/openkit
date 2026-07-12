@@ -416,7 +416,7 @@ The current implementation has a first shared schema and planner slice in `@open
 
 Current AEP docs classify image, base command, initial process environment, static filesystem mounts, user/group identity, and working directory as static fields, and the session workspace planner now makes the strict compatibility key the center of V1 reuse. The durable scheduler dispatch loop uses the strict V1 continuity selector from the agent-session continuity spec when callers provide live, resume, or snapshot candidates; without valid candidates it intentionally selects a fresh session.
 
-The current workspace synchronization implementation can stage Git patches and filesystem changes, persists first-slice `BackendWorkspaceHandle`, `WorkerOutputManifest`, `WorkspaceApplyPlan`, `WorkspaceReconciliationRecord`, `WorkspaceQuarantineRecord`, and `WorkspaceSyncEvidenceBundle` rows as first-class records, and promotes product-safe evidence through the general `EvidenceBundle` ledger. Non-host-dir read-only coverage currently supports NanoCore-prepared `materialized-dir` directory inputs for OpenShell. Local-container materialization, remote-container materialization, external provider/object-store/gateway read-source adapters, superset-compatible reuse, and broader backend-native mount support remain deferred future work rather than V1 blockers.
+The current workspace synchronization implementation can stage Git patches and filesystem changes, persists first-slice `BackendWorkspaceHandle`, `WorkerOutputManifest`, `WorkspaceApplyPlan`, `WorkspaceReconciliationRecord`, and `WorkspaceQuarantineRecord` rows as first-class records, and promotes product-safe evidence through the general `EvidenceBundle` ledger. The accepted workspace synchronization contract removes the redundant `WorkspaceSyncEvidenceBundle` record family under the [Evidence Surface Simplification](../changes/202607111848520001-evidence_surface_simplification.md) change plan; this does not change session-static layout or materialization semantics owned by this spec. Non-host-dir read-only coverage currently supports NanoCore-prepared `materialized-dir` directory inputs for OpenShell. Local-container materialization, remote-container materialization, external provider/object-store/gateway read-source adapters, superset-compatible reuse, and broader backend-native mount support remain deferred future work rather than V1 blockers.
 
 ## Alternatives Considered
 
@@ -503,6 +503,8 @@ Previously open questions are resolved by accepted V1 defaults: `SessionCompatib
 - A UI or MCP diagnostic surface that explains why a session was reused, replaced, stale, degraded, or blocked.
 
 ## Links
+
+- [Evidence Surface Simplification](../changes/202607111848520001-evidence_surface_simplification.md)
 
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260703-workspace_synchronization.md`

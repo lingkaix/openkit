@@ -133,8 +133,8 @@ describe('OpenShellWorkerGovernanceBackend', () => {
         from: 'ghcr.io/openkit/codex-worker:test',
         gateway: 'openshell',
         labels: expect.objectContaining({
-          'openkit.openshellMappingVersion': 'openshell-v1',
-          'openkit.openshellSnapshotId': 'openshell-0.0.63-2026-07-05',
+          'openkit.openshellMappingVersion': 'openshell-v2',
+          'openkit.openshellSnapshotId': 'openshell-0.0.80-2026-07-11',
         }),
         name: `openkit-${environmentPackage.scope.agentSessionId}`,
         policyPath: expect.stringMatching(/policy\.yaml$/),

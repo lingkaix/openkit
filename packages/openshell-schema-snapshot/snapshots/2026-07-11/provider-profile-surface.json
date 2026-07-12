@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 2,
+  "upstreamProviderProfile": {
+    "categories": [
+      "other",
+      "inference",
+      "agent",
+      "source_control",
+      "messaging",
+      "data",
+      "knowledge"
+    ],
+    "builtInProfileIds": [
+      "aws-bedrock",
+      "claude-code",
+      "codex",
+      "copilot",
+      "cursor",
+      "deepinfra",
+      "github",
+      "google-cloud",
+      "google-vertex-ai",
+      "nvidia",
+      "pypi"
+    ],
+    "authStyles": ["basic", "bearer", "header", "query", "path"],
+    "refreshStrategies": [
+      "static",
+      "external",
+      "oauth2_refresh_token",
+      "oauth2_client_credentials",
+      "google_service_account_jwt"
+    ],
+    "gatewayRefreshMaterialKeys": [
+      "client_id",
+      "refresh_token",
+      "client_secret",
+      "client_email",
+      "private_key",
+      "subject",
+      "sub"
+    ]
+  },
+  "openKitProviderProfileMapping": {
+    "requiredFields": ["id", "category", "displayName", "credentials", "endpoints"],
+    "categories": ["agent", "mcp", "model", "repository", "custom"],
+    "credentialFields": ["envVar", "authStyle", "headerName", "queryParam", "pathTemplate"],
+    "authStyles": ["bearer", "header", "query", "path", "none"],
+    "refreshStrategies": [
+      "static",
+      "external",
+      "oauth2_refresh_token",
+      "oauth2_client_credentials",
+      "google_service_account_jwt"
+    ],
+    "gatewayDelegatedRefreshStrategies": [
+      "oauth2_refresh_token",
+      "oauth2_client_credentials",
+      "google_service_account_jwt"
+    ],
+    "refreshMaterialKeys": ["refresh_token", "client_secret", "private_key"],
+    "reservedEnvPrefixPattern": "^v[0-9]+_[A-Za-z0-9_]+$"
+  }
+}

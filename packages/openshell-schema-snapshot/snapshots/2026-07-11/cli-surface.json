@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 2,
+  "cli": {
+    "binary": "openshell",
+    "compatibleVersionRange": {
+      "min": "0.0.80",
+      "maxExclusive": "0.1.0"
+    },
+    "commands": [
+      ["status"],
+      ["doctor", "check"],
+      ["gateway", "info"],
+      ["provider", "get"],
+      ["provider", "create"],
+      ["provider", "update"],
+      ["provider", "refresh", "status"],
+      ["sandbox", "create"],
+      ["sandbox", "delete"],
+      ["sandbox", "download"],
+      ["sandbox", "provider", "detach"]
+    ]
+  }
+}

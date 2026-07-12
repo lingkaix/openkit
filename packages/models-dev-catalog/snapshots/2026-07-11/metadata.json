@@ -1,0 +1,60 @@
+{
+  "sourceUrl": "https://models.dev/api.json",
+  "sourceProject": "https://github.com/anomalyco/models.dev",
+  "version": "2026-07-11",
+  "refreshedAt": "2026-07-11",
+  "fetchedAt": "2026-07-11T06:40:44Z",
+  "responseEtag": "d00f7569cfe9619e64ed2de4be1a98c7",
+  "rawChecksumSha256": "d00f7569cfe9619e64ed2de4be1a98c77428c07d0bc88c35fb9c9ae199bb668d",
+  "observedSourceRevision": "5e9e9ac0bbce465a3aa4c90aac20fdacddc0e6e9",
+  "observedSourceRevisionAt": "2026-07-11T02:45:16Z",
+  "checksumSha256": "41661afc7178a74c4cce1963fa0386f688c1b97b4888b855ba16e5479510a680",
+  "maintenanceNote": "Vendored for OpenKit provider-template traceability. The observed source revision records repository state at fetch time and is not claimed as deployment provenance for the rolling API response.",
+  "piAiReconciliation": {
+    "piAiVersion": "0.80.3",
+    "priceToleranceRatio": 0.05,
+    "providers": [
+      {
+        "modelsDevProviderId": "anthropic",
+        "piAiProviderId": "anthropic"
+      },
+      {
+        "modelsDevProviderId": "google",
+        "piAiProviderId": "google",
+        "modelIds": ["gemini-2.5-pro"]
+      },
+      {
+        "modelsDevProviderId": "openrouter",
+        "piAiProviderId": "openrouter",
+        "modelIds": ["openai/gpt-5.1"]
+      }
+    ]
+  },
+  "providerMappings": {
+    "openai": {
+      "templateFile": "apps/nanocore/data-templates/config/providers/openai-default.provider.jsonc",
+      "templateProviderId": "openai",
+      "modelsDevProviderId": "openai"
+    },
+    "openrouter": {
+      "templateFile": "apps/nanocore/data-templates/config/providers/openrouter-default.provider.jsonc",
+      "templateProviderId": "openrouter",
+      "modelsDevProviderId": "openrouter"
+    },
+    "xai": {
+      "templateFile": "apps/nanocore/data-templates/config/providers/xai-grok-default.provider.jsonc",
+      "templateProviderId": "xai",
+      "modelsDevProviderId": "xai"
+    },
+    "google": {
+      "templateFile": "apps/nanocore/data-templates/config/providers/google-gemini-default.provider.jsonc",
+      "templateProviderId": "google",
+      "modelsDevProviderId": "google"
+    },
+    "openai-compatible-custom": {
+      "templateFile": "apps/nanocore/data-templates/config/providers/openai-compatible-custom.provider.jsonc",
+      "templateProviderId": "openai-compatible-custom",
+      "modelsDevProviderId": null
+    }
+  }
+}

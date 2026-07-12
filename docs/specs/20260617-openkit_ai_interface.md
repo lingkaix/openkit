@@ -1,7 +1,7 @@
 # OpenKit AI Interface: Skill And MCP Control Surface
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Diverged
 
 ## Owns
 
@@ -55,11 +55,11 @@ Human
 
 The current implementation projects this channel through the `@openkit/mcp` package in `mcp/`, the `openkit-mcp` binary, and the four Skills `openkit-setup`, `openkit-setup-dev`, `openkit-loop`, and `openkit-loop-dev`.
 
-The current MCP surface is a thin facade over public NanoCore behavior. It exposes product-level tools and resources for status, storage diagnostics, runtime diagnostics, auth bootstrap consumption, workspace lifecycle, runtime config, repository readiness, Git push approvals and records, threads, Chat Mode, Task Mode, Goal Mode, Action Center, artifacts, evidence bundles, capability usage evidence, Knowledge Manager operations, workspace portability, and workspace synchronization reviews/apply results.
+The current MCP surface is a thin facade over public NanoCore behavior. The accepted surface exposes product-level tools and resources for status, storage diagnostics, runtime diagnostics, auth bootstrap consumption, workspace lifecycle, runtime config, repository readiness, Git push approvals and records, threads, Chat Mode, Task Mode, Goal Mode, Action Center, artifacts, read-only evidence bundles, capability usage evidence, Knowledge Manager operations, workspace portability, and workspace synchronization reviews/apply results. Evidence bundles are produced by NanoCore-owned domain boundaries rather than by a user-facing manual creation command.
 
 Current dogfooding treats this MCP channel as the primary coordinator interface for AI-native operation. The Web UI remains a product surface, but the MCP channel is the first-class dogfood path for coordinator-led work.
 
-No MCP-internal V1 implementation gap remains for this spec. Managed sign-in UX, local or remote NanoCore discovery, install and supervision, richer desktop credential UX, richer permission UX, full audit-record linkage beyond bearer last-used labels, and multi-user workspace administration are deferred product surfaces that require their own NanoCore public contracts or installer designs before the AI Interface should expose them.
+The remaining MCP-internal implementation-alignment gap is removal of the legacy `openkit.create_evidence_bundle` tool and its NanoCore/Core Client command path under the [Evidence Surface Simplification](../changes/202607111848520001-evidence_surface_simplification.md) change plan. Managed sign-in UX, local or remote NanoCore discovery, install and supervision, richer desktop credential UX, richer permission UX, full audit-record linkage beyond bearer last-used labels, and multi-user workspace administration are deferred product surfaces that require their own NanoCore public contracts or installer designs before the AI Interface should expose them.
 
 ## Goals / Non-goals
 
@@ -782,27 +782,6 @@ Returns:
 
 Large artifacts should be summarized unless the AI application asks for exact content.
 
-#### `openkit.create_evidence_bundle`
-
-Creates a compact evidence summary for a thread, goal, or worker step.
-
-Inputs:
-
-- `workspaceId`
-- optional `threadId`
-- optional `goalId`
-- optional `turnId`
-
-Returns:
-
-- item refs
-- artifact refs
-- command/test summaries when present
-- pending attention summary
-- recommended next review action
-
-This tool can be deferred if existing read tools are enough for the first implementation.
-
 ### MCP Resources
 
 Resources should provide read-only state snapshots.
@@ -1231,7 +1210,7 @@ Keep self-improvement dogfood support covered:
 - `self_improve_openkit` prompt
 - `review_openkit_goal_result` prompt
 - artifact read support required by the dogfood story
-- evidence bundle if needed
+- read automatically produced evidence bundles when needed
 
 Success criteria:
 
@@ -1305,7 +1284,7 @@ Current MCP setup coverage:
 - Status discovery: `openkit.read_status` checks NanoCore readiness and selected workspace/thread context.
 - Workspace lifecycle: `openkit.list_workspaces`, `openkit.create_workspace`, `openkit.update_workspace`, and `openkit.read_workspace_resources` map to public Core workspace routes.
 - Runtime config setup: `openkit.list_runtime_config_files`, `openkit.read_runtime_config_file`, `openkit.validate_runtime_config`, `openkit.update_runtime_config_file`, and `openkit.reload_runtime_config` map to public NanoCore runtime config routes.
-- Repository and loop setup: repository linking, thread creation, Chat Mode, Task Mode, Goal Mode, Action Center, workspace sync reviews, artifacts, and evidence bundles are exposed as product-level MCP tools and resources.
+- Repository and loop setup: repository linking, thread creation, Chat Mode, Task Mode, Goal Mode, Action Center, workspace sync reviews, and artifacts are exposed as product-level MCP tools, while evidence bundles remain read-only MCP resources over NanoCore-owned automatic producers.
 
 Remaining product gaps are not MCP-internal implementation gaps. They require stable NanoCore public contracts first and are deferred out of the accepted V1 AI Interface boundary:
 
@@ -1369,7 +1348,7 @@ Keep startup outside the MCP layer except for diagnostic status. The user or dep
 
 Mitigation:
 
-Require human review, bounded steps, evidence bundles, and normal repository verification. Capture lessons through specs and tests, not unreviewed Knowledge Store writes.
+Require human review, bounded steps, automatically produced evidence bundles, and normal repository verification. Capture lessons through specs and tests, not unreviewed Knowledge Store writes.
 
 ## Resolved Decisions
 
@@ -1404,5 +1383,6 @@ Require human review, bounded steps, evidence bundles, and normal repository ver
 - [Chat Mode And Core Assistant](./20260704-chat_mode_assistant.md)
 - [Task Mode Worker Delegation](./20260704-task_mode_worker_delegation.md)
 - [Goal Mode Coordination](./20260704-goal_mode_coordination.md)
-- [Codex Agent Communication Modes](./retired/worker-runtime/20260507-codex_agent_communication_modes.md)
+- [Evidence Surface Simplification](../changes/202607111848520001-evidence_surface_simplification.md)
+- [Codex Agent Communication Modes](./superseded/worker-runtime/20260507-codex_agent_communication_modes.md)
 - [Change Tracking](../change-tracking.md)

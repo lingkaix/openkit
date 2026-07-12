@@ -1,11 +1,20 @@
 # Remove Historical Compatibility Layers
 
 Status: Superseded
+Implementation: N/A
+Status Changed: 2026-06-28
+Current Guidance: `docs/specs/README.md`, `docs/specs/AGENTS.md`
+Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 Date: 2026-05-29
 
-Superseded by the internal development compatibility rule in `docs/specs/README.md`, `docs/specs/AGENTS.md`, and current active specs that own the affected contracts.
 
-This document is retained as historical cleanup evidence. It is not an active compatibility spec.
+## Lifecycle Reason
+
+The canonical internal-development compatibility rule and each active owning spec absorbed the durable prohibition on repository-owned compatibility layers. This cleanup campaign lost authority because completed removals and current invariants must live with their permanent owners rather than a one-time remediation spec.
+
+## Retention Reason
+
+This document preserves the original compatibility debt inventory, breaking cleanup scope, and migration evidence so future audits can explain removed aliases and defaults without using the campaign as an active contract.
 
 Completion amendment: The cleanup scope includes `scripts/docker/**`, staging UI e2e fixtures, NanoCore data templates, accepted-spec amendments, `ApiErrorSchema.protocolVersion`, and scan allowlists. Staging authored config must use `secretRef`; inline provider credentials in existing staging config fail clearly instead of being repaired.
 

@@ -45,7 +45,17 @@ function validateSnapshot() {
     throw new Error('metadata.requiredFiles must be a non-empty array');
   }
 
-  for (const key of ['sourceBoundary', 'generatorCommand', 'generatorVersion', 'refreshedAt']) {
+  for (const key of [
+    'sourceBoundary',
+    'sourceProject',
+    'sourcePackage',
+    'sourceRelease',
+    'sourceTag',
+    'sourceCommit',
+    'generatorCommand',
+    'generatorVersion',
+    'refreshedAt',
+  ]) {
     if (typeof metadata[key] !== 'string' || metadata[key].length === 0) {
       throw new Error(`metadata.${key} must be a non-empty string`);
     }

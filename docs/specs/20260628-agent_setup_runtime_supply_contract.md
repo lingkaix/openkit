@@ -105,7 +105,7 @@ Remote container placement is currently implemented through a remote OpenShell g
 
 ## Reference Specs
 
-The detailed historical specs have been moved under `docs/specs/retired/agent-setup-runtime-supply/`.
+The detailed historical specs have been moved under `docs/specs/superseded/agent-setup-runtime-supply/`.
 
 They remain useful for field-level background, but new work should start from:
 
