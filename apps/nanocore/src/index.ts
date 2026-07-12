@@ -5,6 +5,7 @@ import {
   createDefaultVaultUnlockState,
   createDefaultWorkerControlGateway,
 } from './app.js';
+import { createBetterAuth, resolveBetterAuthSecret } from './auth/better-auth.js';
 import {
   ensureServerBootstrapToken,
   writeServerBootstrapTokenEmission,
@@ -21,7 +22,7 @@ import { loadBootPolicyKernel } from './bootstrap/policy.js';
 import { createBootId, createShutdownReadinessSnapshot } from './bootstrap/readiness.js';
 import { closeWithDeadline } from './bootstrap/shutdown.js';
 import { checkBootVaultBackend } from './bootstrap/vault.js';
-import { resolveBindHost } from './config/bind-host.js';
+import { resolveBindHost, resolveBindPort } from './config/bind-host.js';
 import { resolveDataRoot } from './config/data-root.js';
 import { resolveMode } from './config/mode.js';
 import {
@@ -87,6 +88,7 @@ let schedulerLeaseMaintenance: SchedulerLeaseMaintenanceService | null = null;
 let schedulerEpoch = 1;
 let runtimeConfigSnapshot: RuntimeConfigSnapshot | undefined;
 let mode: ReturnType<typeof resolveMode> | undefined;
+let bindPort: number | undefined;
 let coreDb: CoreDb | undefined;
 let vaultUnlockState: VaultUnlockState | undefined;
 
@@ -100,9 +102,12 @@ const bootResult = await runBootPhases({
       subsystem: 'config',
       critical: true,
       run: () => {
-        ensureConfigTemplateSurface(dataRoot);
         runtimeConfigSnapshot = loadRuntimeConfig(dataRoot, { version: 1 });
         mode = resolveMode(process.env, runtimeConfigSnapshot.openKitConfig);
+        bindPort = resolveBindPort(process.env, runtimeConfigSnapshot.openKitConfig);
+        resolveBetterAuthSecret(process.env, mode);
+        ensureConfigTemplateSurface(dataRoot);
+        runtimeConfigSnapshot = loadRuntimeConfig(dataRoot, { version: 1 });
 
         for (const diagnostic of runtimeConfigSnapshot.diagnostics) {
           console.warn(diagnostic.message);
@@ -299,8 +304,16 @@ const turnExecutor = createConfiguredTurnExecutor({
 });
 const refreshStatusCollector = maybeOpenShellRefreshStatusCollector(turnExecutor);
 const schedulerStoresByUserId = new Map<string, FsStore>();
+const auth =
+  mode === 'server'
+    ? createBetterAuth(coreDb, {
+        mode,
+        openKitConfig: runtimeConfigSnapshot.openKitConfig,
+      })
+    : undefined;
 
 const app = createApp({
+  ...(auth ? { auth } : {}),
   bootReadiness,
   coreDb,
   dataRoot,
@@ -312,8 +325,8 @@ const app = createApp({
   vaultUnlockState: activeVaultUnlockState,
   workerControlGateway,
 });
-const hostname = resolveBindHost(process.env, mode);
-const port = Number(process.env.PORT ?? 3000);
+const hostname = resolveBindHost(process.env, mode, runtimeConfigSnapshot.openKitConfig);
+const port = requireBootValue(bindPort, 'HTTP bind port was not resolved.');
 
 const server = serve(
   {

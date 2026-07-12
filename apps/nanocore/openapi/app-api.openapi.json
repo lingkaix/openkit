@@ -17,9 +17,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "responses": {
@@ -56,9 +53,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "responses": {
@@ -95,9 +89,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "responses": {
@@ -134,9 +125,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "responses": {
@@ -171,9 +159,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "requestBody": {
@@ -262,9 +247,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "parameters": [
@@ -312,9 +294,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "parameters": [
@@ -372,9 +351,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "requestBody": {
@@ -421,9 +397,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "responses": {
@@ -460,9 +433,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "parameters": [
@@ -508,9 +478,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "requestBody": {
@@ -555,9 +522,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "requestBody": {
@@ -604,9 +568,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "responses": {
@@ -643,9 +604,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "requestBody": {
@@ -1074,9 +1032,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "responses": {
@@ -1111,9 +1066,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "requestBody": {
@@ -1160,9 +1112,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "parameters": [
@@ -1218,9 +1167,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "parameters": [
@@ -1261,9 +1207,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "parameters": [
@@ -1311,9 +1254,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "parameters": [
@@ -1371,9 +1311,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "parameters": [
@@ -1431,9 +1368,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "parameters": [
@@ -4825,9 +4759,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "responses": {
@@ -4913,9 +4844,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "responses": {
@@ -6119,9 +6047,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "responses": {
@@ -6158,9 +6083,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "parameters": [
@@ -6365,9 +6287,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "responses": {
@@ -6404,9 +6323,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "requestBody": {
@@ -6453,9 +6369,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "responses": {
@@ -6492,9 +6405,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "requestBody": {
@@ -6854,9 +6764,6 @@
         "security": [
           {
             "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
           }
         ],
         "responses": {
@@ -9352,6 +9259,25 @@
                     },
                     "occurredAt": {
                       "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "completed",
+                        "error",
+                        "aborted"
+                      ]
+                    },
+                    "stopReason": {
+                      "type": "string",
+                      "enum": [
+                        "completed",
+                        "error",
+                        "aborted",
+                        "length",
+                        "ask_user",
+                        "budget_exhausted"
+                      ]
                     }
                   },
                   "required": [
@@ -9359,7 +9285,50 @@
                     "code",
                     "details",
                     "message",
-                    "occurredAt"
+                    "occurredAt",
+                    "status",
+                    "stopReason"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "recentHookFailures": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "eventType": {
+                      "type": "string",
+                      "enum": [
+                        "agent_start",
+                        "turn_start",
+                        "message_start",
+                        "message_update",
+                        "message_end",
+                        "turn_end",
+                        "agent_end"
+                      ]
+                    },
+                    "hookId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "observational",
+                        "critical"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "eventType",
+                    "hookId",
+                    "message",
+                    "mode"
                   ],
                   "additionalProperties": false
                 }
@@ -9367,7 +9336,8 @@
             },
             "required": [
               "agents",
-              "recentFailures"
+              "recentFailures",
+              "recentHookFailures"
             ],
             "additionalProperties": false
           }
@@ -59201,7 +59171,8 @@
               "dataRoot": {
                 "anyOf": [
                   {
-                    "type": "string"
+                    "type": "string",
+                    "const": "configured"
                   },
                   {
                     "type": "null"
@@ -59257,58 +59228,6 @@
                       "openaiCompatible": {
                         "type": "object",
                         "properties": {
-                          "auth": {
-                            "type": "object",
-                            "properties": {
-                              "configured": {
-                                "type": "boolean"
-                              },
-                              "marker": {
-                                "type": "string",
-                                "enum": [
-                                  "none",
-                                  "redacted",
-                                  "secret-ref"
-                                ]
-                              },
-                              "ref": {
-                                "anyOf": [
-                                  {
-                                    "type": "string"
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              }
-                            },
-                            "required": [
-                              "configured",
-                              "marker",
-                              "ref"
-                            ],
-                            "additionalProperties": false
-                          },
-                          "defaultModel": {
-                            "anyOf": [
-                              {
-                                "type": "string"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ]
-                          },
-                          "defaultProviderId": {
-                            "anyOf": [
-                              {
-                                "type": "string"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ]
-                          },
                           "enabled": {
                             "anyOf": [
                               {
@@ -59318,24 +59237,10 @@
                                 "type": "null"
                               }
                             ]
-                          },
-                          "route": {
-                            "anyOf": [
-                              {
-                                "type": "string"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ]
                           }
                         },
                         "required": [
-                          "auth",
-                          "defaultModel",
-                          "defaultProviderId",
-                          "enabled",
-                          "route"
+                          "enabled"
                         ],
                         "additionalProperties": false
                       }
@@ -105429,5 +105334,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:84f9bd9cfd6789404245882a3e44f3a39c1141eb6e351a301588961712a21aa4"
+  "x-openkit-source-digest": "sha256:0f59201fa16db2a5af8c3022b2f88dd35254b366c590e9d15c841f7ea8f52be0"
 }

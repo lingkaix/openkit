@@ -65,6 +65,7 @@ import {
   recordServerAuditEvent,
   recordWorkspaceAuditEvent,
 } from './audit-events.js';
+import { ensureLocalUser } from './auth/identity.js';
 import {
   computeBootReadinessSnapshot,
   createShutdownReadinessSnapshot,
@@ -151,7 +152,11 @@ import {
   listQueuedSchedulerAdmissionEntries,
 } from './scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
-import { LOCAL_USER_ID, recordDataRootDeploymentMove } from './storage/fs-layout.js';
+import {
+  LOCAL_USER_ID,
+  readDataRootLayoutMarker,
+  recordDataRootDeploymentMove,
+} from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createVaultGrant, listVaultGrants } from './vault/vault-grants.js';
 import {
@@ -238,6 +243,10 @@ function createDemoStore(options: FsStoreOptions = {}): FsStore {
  * @returns Test app.
  */
 function createApp(options: CreateAppOptions = {}): ReturnType<typeof createNanoCoreApp> {
+  if (options.coreDb) {
+    ensureLocalUser(options.coreDb);
+  }
+
   const store = options.store ?? createDemoStore();
 
   seedDemoWorkspace(store);
@@ -1098,6 +1107,7 @@ describe('nanocore server', () => {
       content: 'Import this knowledge.',
     });
     const app = createApp({ coreDb, dataRoot, store });
+    const sourceDeploymentId = readDataRootLayoutMarker(dataRoot).deploymentId;
     const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
@@ -1124,7 +1134,7 @@ describe('nanocore server', () => {
         id: 'ws_imported_ws_demo',
         counts: { threadCount: 2, knowledgeEntryCount: 2 },
         importedFrom: {
-          sourceDeploymentId: 'dep_local',
+          sourceDeploymentId,
           sourceWorkspaceId: 'ws_demo',
           exportCreatedAt: exported.manifest.exportCreatedAt,
         },
@@ -1139,6 +1149,15 @@ describe('nanocore server', () => {
     expect(store.listKnowledge('ws_imported_ws_demo').map((entry) => entry.title)).toContain(
       'Import source knowledge'
     );
+    expect(
+      coreDb.sqlite
+        .prepare(
+          `SELECT user_id, status
+           FROM workspace_members
+           WHERE workspace_id = ?`
+        )
+        .get(body.importedWorkspaceId)
+    ).toEqual({ status: 'active', user_id: 'user_local' });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_imported_ws_demo');
     try {
       const audit = workspaceDb.sqlite

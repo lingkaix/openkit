@@ -61,6 +61,8 @@ Server-mode authentication establishes the request actor. It does not by itself 
 
 Runtime config is managed through NanoCore-owned routes and schemas. MCP may expose product-level tools for listing, validating, updating, and reloading runtime config, but it must not become a raw file editor or secret browser.
 
+The authored schema accepts only fields with a current runtime owner. Startup networking owns `server.bind`, `server.publicBaseUrl`, and `server.cors.origins`; Better Auth owns `auth.signup.enabled`; central defaults own the Core and Gateway provider/model selections; Gateway policy owns its enabled flag and provider allowlist. Environment variables may explicitly override deployment values. Unsupported proxy trust, configurable route/auth markers, duplicate Gateway defaults, unused workspace/agent defaults, data-root metadata, diagnostic toggles, the old duplicate feature-flag block, and a consumer-free server extension bag are rejected rather than silently accepted.
+
 MCP server-mode dogfooding uses the `OPENKIT_NANOCORE_TOKEN` bearer-token contract owned by `docs/specs/20260704-remote_auth_credential_bootstrap.md`. Historical raw `OPENKIT_NANOCORE_COOKIE` and `OPENKIT_NANOCORE_AUTHORIZATION` passthrough are implementation debt to remove in the token-bootstrap change, not current target design. Token values are credential material and must not be printed, logged, persisted in change records, or exposed in artifacts.
 
 ## Current Implementation Projection
@@ -73,9 +75,12 @@ The current implementation satisfies the accepted V1 contract:
 - `apps/nanocore/src/auth/middleware.ts` attaches actor context and enforces server-mode authentication for protected APIs.
 - Server-mode bearer-token authentication, first-boot bootstrap, scoped token administration, desktop credential storage, and MCP token forwarding are implemented by `docs/specs/20260704-remote_auth_credential_bootstrap.md`.
 - `mcp/` reads `OPENKIT_NANOCORE_TOKEN` or the desktop credential store and ignores the removed raw `OPENKIT_NANOCORE_COOKIE` and `OPENKIT_NANOCORE_AUTHORIZATION` passthrough variables.
-- `apps/nanocore/src/config/bind-host.ts` resolves local mode to loopback by default and server mode to a server bind address by default, with explicit override support.
-- `apps/nanocore/src/config/runtime-config.ts` loads provider registry, agent configs, agent manifests, workspace configs, gateway defaults, diagnostics policy, and runtime config status from the data root or supplied in-memory inputs.
+- `apps/nanocore/src/config/bind-host.ts` resolves host and port from explicit environment overrides, then the startup server config, then mode-safe defaults.
+- Server mode constructs Better Auth explicitly from the startup config, requires a deployment-specific secret of at least 32 characters, applies `server.publicBaseUrl`, shares `server.cors.origins` with browser CORS, and enforces `auth.signup.enabled` through Better Auth's sign-up policy.
+- `apps/nanocore/src/config/runtime-config.ts` loads provider registry, agent configs, agent manifests, workspace configs, gateway defaults, and runtime config status from the data root or supplied in-memory inputs.
+- Server browser CORS admits only exact configured origins and returns `403 Forbidden` before route work for every rejected origin; local mode additionally permits exact loopback browser origins.
 - Runtime config reload planning distinguishes hot-swappable, session-scoped, restart-required, and rejected changes.
+- Provider registries and authored agent configuration are restart-required because production scheduler services capture those dependencies at startup; reload never claims that a newer snapshot has changed an already constructed dispatcher.
 - Runtime config stale-session diagnostics expose typed `inspect`, `restart_session`, and `request_human` choices through the public diagnostics read model, and the App API, Core Client, and MCP expose a restart action that retires the stale session record so the next worker launch uses the current runtime config version.
 - `apps/nanocore/src/config/runtime-config-files.ts` owns safe runtime config file reads, writes, validation, schema lookup, optimistic revision checks, and path containment.
 - Provider and agent config loaders reject unknown or unsafe fields, inline raw secret shapes, unsafe workspace paths, and unsupported runtime setup shapes.
@@ -86,7 +91,7 @@ The target data-root ownership layout is defined by `docs/specs/20260703-storage
 
 The following items remain outside this V1 contract:
 
-- stable workspace membership and permission checks
+- richer workspace roles and shared-tenancy permission policy beyond active membership
 - deeper audit labels for non-auth policy and workflow records
 - secret-slot and vault-backed config editing
 - data-root migration and backup policy

@@ -12,7 +12,7 @@ import { ProviderRegistry } from './registry.js';
 /**
  * Provider registry state loaded from one NanoCore data root.
  */
-export interface DataRootProviderRegistry {
+interface DataRootProviderRegistry {
   /** Redacted provider diagnostics derived from the loaded profiles. */
   providerDiagnostics: ProviderDiagnosticsSnapshot;
   /** Registry containing every valid provider profile loaded from disk. */
@@ -49,7 +49,7 @@ function mergeProviderProfiles(
   loadResult: ProviderProfileLoadResult,
   config: OpenKitConfig
 ): ProviderProfileLoadResult {
-  const serverProfiles = (config.providers ?? []).map(serverProviderToProfile);
+  const serverProfiles: ProviderProfile[] = config.providers ?? [];
   const profiles = [...serverProfiles, ...loadResult.profiles];
   const duplicateIds = findDuplicateIds(profiles);
   const duplicateDiagnostics: ProviderProfileDiagnostic[] = [...duplicateIds].map((id) => ({
@@ -110,30 +110,6 @@ function applyCodexOAuthSlotDiagnostics(
       message,
       status: 'blocked',
     },
-  };
-}
-
-/**
- * Converts a server config provider instance into a provider profile.
- *
- * @param provider Server config provider instance.
- * @returns Provider profile compatible with the existing registry.
- */
-function serverProviderToProfile(
-  provider: NonNullable<OpenKitConfig['providers']>[number]
-): ProviderProfile {
-  const profile: ProviderProfile = {
-    ...provider,
-    displayName: provider.displayName,
-    id: provider.id,
-    kind: provider.kind,
-    models: [...provider.models],
-  };
-
-  return {
-    ...profile,
-    ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}),
-    ...(provider.defaultModel ? { defaultModel: provider.defaultModel } : {}),
   };
 }
 

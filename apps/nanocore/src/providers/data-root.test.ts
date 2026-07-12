@@ -46,6 +46,8 @@ function createServerConfig(): OpenKitConfig {
 describe('loadProviderRegistryFromDataRoot', () => {
   it('merges server config providers and provider profile files into an id registry', () => {
     const { dataRoot, providersRoot } = createProviderRoot();
+    const serverConfig = createServerConfig();
+    const serverProvider = serverConfig.providers?.[0];
     writeFileSync(
       join(providersRoot, 'agent-openrouter.provider.jsonc'),
       JSON.stringify({
@@ -59,7 +61,7 @@ describe('loadProviderRegistryFromDataRoot', () => {
       })
     );
 
-    const result = loadProviderRegistryFromDataRoot(dataRoot, createServerConfig());
+    const result = loadProviderRegistryFromDataRoot(dataRoot, serverConfig);
 
     expect(result.providerDiagnostics.summaries).toEqual([]);
     expect(result.providerRegistry.get('core-openrouter')).toEqual(
@@ -68,6 +70,7 @@ describe('loadProviderRegistryFromDataRoot', () => {
         vendor: 'openrouter',
       })
     );
+    expect(result.providerRegistry.get('core-openrouter')).toBe(serverProvider);
     expect(result.providerRegistry.get('agent-openrouter')).toEqual(
       expect.objectContaining({ id: 'agent-openrouter' })
     );

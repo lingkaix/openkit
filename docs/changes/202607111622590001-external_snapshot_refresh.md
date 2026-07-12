@@ -50,7 +50,7 @@ The accepted vendor-snapshot spec and `packages/README.md` define exactly three 
 
 ## Current Evidence Baseline
 
-- Snapshot implementation started from plan commit `06860dc2c42b2a3fab0a140415ca18c8c0a70e4e` on branch `chore/update-external-snapshots-20260711`.
+- Snapshot implementation started from the committed plan in an isolated worktree and was later integrated into the maintainability branch's consolidated foundation phase.
 - The main worktree contains unrelated uncommitted NanoCore work; this change must remain isolated in `/Users/m5pro/Documents/AI/openkit-update-external-snapshots`.
 - The installed Codex CLI is `0.144.1`, matching the latest stable upstream release verified through the GitHub Releases API.
 - The installed OpenShell CLI is `0.0.63`, so the OpenShell refresh must use a separately pinned `0.0.80` binary or source checkout rather than the ambient executable.
@@ -185,18 +185,18 @@ No credentialed provider call, remote gateway mutation, release publication, or 
 
 ### 2026-07-11: Snapshots Refreshed
 
-- Refreshed Codex app-server JSON Schema from stable `@openai/codex@0.144.1`, removed six stale `DeviceKey*` files omitted by the clean generator output, added thirteen current schema files, recorded release provenance, and committed the isolated package update as `fb8c940`.
-- Captured the rolling models.dev API response at `2026-07-11T06:40:44Z`, committed the deterministically formatted 158-provider snapshot with raw and formatted digests and observed source revision, preserved prior dated snapshots, and committed the package plus provider-template traceability update as `744a61f`.
-- Refreshed the OpenShell boundary from stable `v0.0.80`, set the minimum compatible version to `0.0.80`, bumped the mapping to `openshell-v2`, separated tagged upstream provider/policy capabilities from OpenKit's narrower emitted mapping, updated the owning spec, and committed the package update as `e573a4f`.
-- Updated the NanoCore sandbox-label expectation in the separate package-first consumer commit `2bba905`; no NanoCore runtime behavior change was required.
+- Refreshed Codex app-server JSON Schema from stable `@openai/codex@0.144.1`, removed six stale `DeviceKey*` files omitted by the clean generator output, added thirteen current schema files, and recorded release provenance.
+- Captured the rolling models.dev API response at `2026-07-11T06:40:44Z`, committed the deterministically formatted 158-provider snapshot with raw and formatted digests and observed source revision, and preserved prior dated snapshots.
+- Refreshed the OpenShell boundary from stable `v0.0.80`, set the minimum compatible version to `0.0.80`, bumped the mapping to `openshell-v2`, separated tagged upstream provider and policy capabilities from OpenKit's narrower emitted mapping, and updated the owning spec.
+- Updated the NanoCore sandbox-label expectation as the only package-first consumer adaptation; no NanoCore runtime behavior change was required.
 
 ### 2026-07-11: Verification Complete
 
 - All three snapshot package test and lint gates passed; the OpenShell package also passed typecheck and build.
 - Codex adapter-focused NanoCore verification passed with 6 files and 26 tests.
 - OpenShell-focused NanoCore verification passed with 3 files passed, 1 skipped, 59 tests passed, and 7 skipped.
-- The snapshot branch's full NanoCore run reported 5 workspace-review failures from the active maintainability TDD baseline; the same 5 failures were reproduced at pre-snapshot commit `06860dc`, proving they were not introduced by this change.
-- A detached prospective integration combined target commit `2b584af`, the target worktree's current uncommitted implementation snapshot, and all snapshot commits. NanoCore then passed with 199 test files passed, 1 skipped, 1,268 tests passed, and 7 skipped; NanoCore build also passed.
+- The snapshot branch's full NanoCore run reported 5 workspace-review failures from the active maintainability TDD baseline; the same 5 failures were reproduced before the snapshot changes, proving they were not introduced by this change.
+- A detached prospective integration combined the target worktree's current implementation snapshot with all snapshot changes. NanoCore then passed with 199 test files passed, 1 skipped, 1,268 tests passed, and 7 skipped; NanoCore build also passed.
 - Repository format-check and governance checks passed across 728 checked files, and `git diff --check` passed.
 
 ## Implementation Summary

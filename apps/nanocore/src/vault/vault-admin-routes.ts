@@ -16,6 +16,7 @@ import {
 import type { Context, Hono } from 'hono';
 
 import { asApiError, asInvalidRequestError } from '../api-errors.js';
+import { isDeploymentAdminActor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import type { FsStore } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
@@ -189,12 +190,7 @@ export function registerVaultAdminRoutes({
    * @returns Error response when the actor lacks deployment-admin authority.
    */
   function requireVaultAdminActor(c: Context<{ Variables: AuthVariables }>): Response | null {
-    const actor = c.get('actor');
-
-    if (
-      actor?.kind === 'local' ||
-      (actor?.kind === 'token' && actor.tokenScope === 'server-admin')
-    ) {
+    if (isDeploymentAdminActor(c.get('actor'))) {
       return null;
     }
 

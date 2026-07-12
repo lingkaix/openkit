@@ -1,3 +1,5 @@
+import { isIP } from 'node:net';
+
 import { ApiErrorSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import type { MiddlewareHandler } from 'hono';
 import type { CoreMode } from '../config/mode.js';
@@ -32,7 +34,7 @@ export interface AuthVariables {
 /**
  * Verified bearer access token result.
  */
-export interface AccessTokenVerification {
+interface AccessTokenVerification {
   /** Durable token id. */
   tokenId: string;
   /** Request actor resolved from the token owner. */
@@ -42,7 +44,7 @@ export interface AccessTokenVerification {
 /**
  * Verifies a presented bearer token secret.
  */
-export type AccessTokenVerifier = (
+type AccessTokenVerifier = (
   secret: string,
   request: Request
 ) => AccessTokenVerification | null | Promise<AccessTokenVerification | null>;
@@ -50,7 +52,7 @@ export type AccessTokenVerifier = (
 /**
  * Checks whether one authenticated actor is an active workspace member.
  */
-export type WorkspaceMembershipVerifier = (
+type WorkspaceMembershipVerifier = (
   actor: Actor,
   workspaceId: string
 ) => boolean | Promise<boolean>;
@@ -58,7 +60,7 @@ export type WorkspaceMembershipVerifier = (
 /**
  * Optional auth middleware dependencies.
  */
-export interface AuthMiddlewareOptions {
+interface AuthMiddlewareOptions {
   /** Verifier for OpenKit `okt_` bearer tokens. */
   accessTokenVerifier?: AccessTokenVerifier;
   /** Verifier for authenticated-actor workspace membership. */
@@ -80,6 +82,15 @@ export function createAuthMiddleware(
 ): MiddlewareHandler<{ Variables: AuthVariables }> {
   return async (c, next) => {
     if (isPublicRoute(c.req.method, c.req.path)) {
+      if (
+        mode === 'server' &&
+        c.req.method === 'POST' &&
+        c.req.path === '/api/app/auth/bootstrap/consume' &&
+        !acceptsSecretTransport(c)
+      ) {
+        return insecureTransport(c);
+      }
+
       await next();
       return;
     }
@@ -92,7 +103,7 @@ export function createAuthMiddleware(
 
     const bearerToken = readBearerToken(c.req.raw);
     if (bearerToken) {
-      if (!acceptsBearerTransport(c.req.raw)) {
+      if (!acceptsSecretTransport(c)) {
         return insecureTransport(c);
       }
 
@@ -172,18 +183,47 @@ function readBearerToken(request: Request): string | null {
 }
 
 /**
- * Checks whether one request may carry a bearer token.
+ * Checks whether one request may carry a plaintext secret credential.
  *
- * @param request HTTP request being authenticated.
+ * @param context Hono request context carrying Node connection bindings in production.
  * @returns True when HTTPS is used or plaintext is loopback-only.
  */
-function acceptsBearerTransport(request: Request): boolean {
-  const url = new URL(request.url);
+function acceptsSecretTransport(context: Parameters<MiddlewareHandler>[0]): boolean {
+  const env = context.env as
+    | {
+        incoming?: unknown;
+        server?: { incoming?: unknown };
+      }
+    | undefined;
+  const incoming = env?.incoming ?? env?.server?.incoming;
+
+  if (incoming !== undefined) {
+    const socket = (
+      incoming as {
+        socket?: {
+          encrypted?: boolean;
+          remoteAddress?: string;
+        };
+      } | null
+    )?.socket;
+
+    if (!socket) {
+      return false;
+    }
+
+    return socket.encrypted === true || isLoopbackHost(socket.remoteAddress ?? '');
+  }
+
+  const url = new URL(context.req.url);
   if (url.protocol === 'https:') {
     return true;
   }
 
-  return url.protocol === 'http:' && isLoopbackHost(url.hostname);
+  if (url.protocol !== 'http:') {
+    return false;
+  }
+
+  return isLoopbackHost(url.hostname);
 }
 
 /**
@@ -192,9 +232,18 @@ function acceptsBearerTransport(request: Request): boolean {
  * @param hostname URL hostname.
  * @returns True for localhost, IPv4 127/8, or IPv6 loopback.
  */
-function isLoopbackHost(hostname: string): boolean {
-  const normalized = hostname.toLowerCase();
-  return normalized === 'localhost' || normalized.startsWith('127.') || normalized === '[::1]';
+export function isLoopbackHost(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[(.*)\]$/, '$1');
+
+  if (normalized === 'localhost' || normalized === '::1') {
+    return true;
+  }
+
+  if (normalized.startsWith('::ffff:')) {
+    return isLoopbackHost(normalized.slice('::ffff:'.length));
+  }
+
+  return isIP(normalized) === 4 && normalized.split('.')[0] === '127';
 }
 
 /**
@@ -246,14 +295,13 @@ function workspaceIdFromPath(path: string): string | null {
 }
 
 /**
- * Extracts a top-level workspace id from a JSON request body without consuming it.
+ * Extracts a route-owned workspace id from a JSON request body without consuming it.
  *
  * @param request HTTP request.
  * @returns Workspace id when the body names one.
  */
 async function workspaceIdFromJsonBody(request: Request): Promise<string | null> {
-  const contentType = request.headers.get('content-type') ?? '';
-  if (!contentType.includes('application/json')) {
+  if (!request.body) {
     return null;
   }
 
@@ -266,7 +314,27 @@ async function workspaceIdFromJsonBody(request: Request): Promise<string | null>
     return null;
   }
 
-  const workspaceId = (payload as Record<string, unknown>).workspaceId;
+  const record = payload as Record<string, unknown>;
+  const workspaceId = record.workspaceId;
+
+  if (!new URL(request.url).pathname.startsWith('/v1/')) {
+    return typeof workspaceId === 'string' && workspaceId.length > 0 ? workspaceId : null;
+  }
+
+  const metadata = record.metadata;
+  const openkit =
+    metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+      ? (metadata as Record<string, unknown>).openkit
+      : null;
+  const gatewayWorkspaceId =
+    openkit && typeof openkit === 'object' && !Array.isArray(openkit)
+      ? (openkit as Record<string, unknown>).workspaceId
+      : null;
+
+  if (typeof gatewayWorkspaceId === 'string' && gatewayWorkspaceId.length > 0) {
+    return gatewayWorkspaceId;
+  }
+
   return typeof workspaceId === 'string' && workspaceId.length > 0 ? workspaceId : null;
 }
 

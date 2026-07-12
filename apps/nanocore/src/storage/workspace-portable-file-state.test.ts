@@ -22,6 +22,7 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import { createApp } from '../app.js';
+import { ensureLocalUser } from '../auth/identity.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
@@ -80,6 +81,7 @@ describe('workspace portable file state', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-portable-files-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
     const sourceWorkspaceId = 'ws_demo';
     const sourceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', sourceWorkspaceId);

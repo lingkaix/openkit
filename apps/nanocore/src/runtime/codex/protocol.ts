@@ -126,13 +126,6 @@ export type LoginAccountResponse =
     };
 
 /**
- * Request payload used to cancel one pending Codex account login.
- */
-export interface CancelLoginAccountParams {
-  loginId: string;
-}
-
-/**
  * Status returned after cancelling a Codex account login.
  */
 export type CancelLoginAccountStatus = 'canceled' | 'notFound';
@@ -172,18 +165,6 @@ export interface AccountLoginCompletedNotification {
 }
 
 /**
- * Minimal thread-start request used to create a bound Codex thread.
- */
-export interface ThreadStartParams {
-  cwd: string;
-  approvalPolicy: 'never' | 'on-request';
-  sandbox: 'danger-full-access';
-  model?: string | null;
-  experimentalRawEvents: false;
-  persistExtendedHistory: false;
-}
-
-/**
  * Minimal Codex thread object returned by `thread/start`.
  */
 export interface CodexThread {
@@ -193,28 +174,12 @@ export interface CodexThread {
 }
 
 /**
- * Minimal thread-start response.
- */
-export interface ThreadStartResponse {
-  thread: CodexThread;
-  cwd: string;
-}
-
-/**
  * Minimal text user input item accepted by `turn/start`.
  */
 export interface TurnTextInput {
   type: 'text';
   text: string;
   text_elements: [];
-}
-
-/**
- * Minimal turn-start request used by nanocore.
- */
-export interface TurnStartParams {
-  threadId: string;
-  input: TurnTextInput[];
 }
 
 /**
@@ -230,63 +195,6 @@ export interface CodexTurn {
   startedAt: number | null;
   completedAt: number | null;
   durationMs: number | null;
-}
-
-/**
- * Minimal turn-start response.
- */
-export interface TurnStartResponse {
-  turn: CodexTurn;
-}
-
-/**
- * Minimal turn-interrupt request.
- */
-export interface TurnInterruptParams {
-  threadId: string;
-  turnId: string;
-}
-
-/**
- * Minimal payload for Codex app-server's exec approval request.
- */
-export interface ExecCommandApprovalParams {
-  approvalId?: string | null;
-  callId: string;
-  command: string[];
-  conversationId: string;
-  cwd: string;
-  reason?: string | null;
-}
-
-/**
- * Minimal payload for Codex app-server's apply-patch approval request.
- */
-export interface ApplyPatchApprovalParams {
-  callId: string;
-  conversationId: string;
-  fileChanges: Record<string, unknown>;
-  reason?: string | null;
-}
-
-/**
- * Minimal item-scoped command approval request payload.
- */
-export interface CommandExecutionRequestApprovalParams {
-  approvalId?: string | null;
-  itemId: string;
-  threadId: string;
-  turnId: string;
-  command?: string | null;
-  cwd?: string | null;
-  reason?: string | null;
-}
-
-/**
- * Minimal approval response payload accepted by Codex app-server.
- */
-export interface CodexApprovalResponse {
-  decision: 'approved' | 'denied' | 'accept' | 'decline';
 }
 
 /**
@@ -307,23 +215,6 @@ export interface ToolRequestUserInputQuestion {
   options?: ToolRequestUserInputOption[] | null;
   isOther?: boolean;
   isSecret?: boolean;
-}
-
-/**
- * Minimal Codex request_user_input params.
- */
-export interface ToolRequestUserInputParams {
-  itemId: string;
-  questions: ToolRequestUserInputQuestion[];
-  threadId: string;
-  turnId: string;
-}
-
-/**
- * Minimal Codex request_user_input response payload.
- */
-export interface ToolRequestUserInputResponse {
-  answers: Record<string, { answers: string[] }>;
 }
 
 /**
@@ -397,16 +288,3 @@ export interface ItemCompletedNotification {
   turnId: string;
   item: CodexThreadItem;
 }
-
-/**
- * Subset of server notifications used by nanocore.
- */
-export type CodexNotification =
-  | JsonRpcNotification<TurnStartedNotification>
-  | JsonRpcNotification<TurnCompletedNotification>
-  | JsonRpcNotification<AgentMessageDeltaNotification>
-  | JsonRpcNotification<CommandExecutionOutputDeltaNotification>
-  | JsonRpcNotification<ItemStartedNotification>
-  | JsonRpcNotification<ItemCompletedNotification>
-  | JsonRpcNotification<AccountUpdatedNotification>
-  | JsonRpcNotification<AccountLoginCompletedNotification>;

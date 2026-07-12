@@ -17,8 +17,3 @@ export const AgentProfileShapeSchema = z
     tools: z.array(z.string().min(1)).optional(),
   })
   .passthrough();
-
-/**
- * Agent profile shape.
- */
-export type AgentProfileShape = z.infer<typeof AgentProfileShapeSchema>;

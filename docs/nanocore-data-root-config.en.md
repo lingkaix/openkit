@@ -18,11 +18,11 @@ DATA_ROOT/
       *.agent.jsonc
 ```
 
-`server.jsonc` owns server-wide mode, auth, networking, Vault startup, provider instances, defaults, gateway settings, diagnostics, and extensions.
+`server.jsonc` owns server-wide mode, sign-up policy, networking, Vault startup, provider instances, provider defaults, gateway settings, and internal endpoints.
 
 `providers/*.provider.jsonc` defines reusable provider profiles that are merged with provider instances from `server.jsonc`.
 
-`agents/*.agent.jsonc` defines agents that NanoCore can expose to workspaces and use as the default agent.
+`agents/*.agent.jsonc` defines agents that NanoCore can expose to workspaces.
 
 All files are JSONC, so comments and trailing commas are allowed.
 
@@ -34,28 +34,11 @@ Minimal example:
 {
   "schemaVersion": 1,
   "mode": "local",
-  "auth": {
-    "enabled": false,
-    "provider": "better-auth",
-    "localModeUserId": "user_local"
-  },
-  "data": {
-    "layoutVersion": 1
-  },
-  "defaults": {
-    "agentId": "agent_codex_host"
-  },
   "gateway": {
     "openaiCompatible": {
-      "enabled": true,
-      "route": "/v1"
+      "enabled": true
     }
-  },
-  "diagnostics": {
-    "redactSecrets": true,
-    "emitConfigOrigins": true
-  },
-  "extensions": {}
+  }
 }
 ```
 
@@ -66,18 +49,14 @@ Minimal example:
 | `schemaVersion` | `1` | No | Config schema marker. Current supported value is `1`. |
 | `mode` | `"local"` or `"server"` | No | Runtime mode. `OPENKIT_CORE_MODE` overrides this value. Missing mode defaults to `local`. |
 | `server` | object | No | Public network settings. |
-| `auth` | object | No | Authentication settings. |
-| `data` | object | No | Data-root metadata. |
+| `auth` | object | No | Server sign-up policy. Authentication is always enforced in server mode. |
 | `vault` | object | No | Vault backend selection and encrypted-file key source. |
 | `providers` | array | No | Server-owned provider instances. |
-| `defaults` | object | No | Default provider, model, workspace, and agent IDs. |
+| `defaults` | object | No | Core and gateway provider/model defaults. |
 | `gateway` | object | No | OpenAI-compatible gateway settings. |
-| `features` | object | No | Feature flags. |
 | `internal` | object | No | Internal NanoCore endpoints. |
-| `diagnostics` | object | No | Diagnostic output policy. |
-| `extensions` | object | No | Namespaced experimental or deployment-specific config. |
 
-Unknown top-level keys are rejected. User-authored experimental data should live under `extensions`.
+Unknown top-level keys are rejected. Add a schema field only when NanoCore has a current runtime owner for it.
 
 ### `mode`
 
@@ -95,27 +74,18 @@ Resolution order is:
 
 | Option | Type | Description |
 | --- | --- | --- |
-| `publicBaseUrl` | URL string | External base URL used by deployments and diagnostics. |
-| `bind.host` | string | HTTP bind host. `OPENKIT_BIND_HOST` overrides runtime bind host selection. Local mode defaults to `127.0.0.1`; server mode defaults to `0.0.0.0`. |
-| `bind.port` | integer `1..65535` | HTTP port. |
-| `trustedProxies` | string array | Trusted reverse proxy identifiers. |
-| `cors.origins` | string array | Allowed CORS origins. |
+| `publicBaseUrl` | exact HTTP or HTTPS origin | External origin used by Better Auth. `BETTER_AUTH_URL` overrides this value. |
+| `bind.host` | string | HTTP bind host. `OPENKIT_BIND_HOST` overrides this value. Local mode defaults to `127.0.0.1`; server mode defaults to `0.0.0.0`. |
+| `bind.port` | integer `1..65535` | HTTP port. `PORT` overrides this value; the default is `3000`. |
+| `cors.origins` | exact URL origins | Browser origins allowed to send credentialed requests. Server mode rejects every unlisted origin; local mode additionally allows loopback browser origins. `BETTER_AUTH_TRUSTED_ORIGINS` explicitly overrides this list for Better Auth only. |
 
 ### `auth`
 
 | Option | Type | Description |
 | --- | --- | --- |
-| `enabled` | boolean | Enables auth enforcement for user-facing server routes. |
-| `provider` | `"better-auth"` | Auth implementation. |
-| `localModeUserId` | string | User ID used by local mode. The default template uses `user_local`. |
 | `signup.enabled` | boolean | Enables or disables email/password sign-up. |
 
-### `data`
-
-| Option | Type | Description |
-| --- | --- | --- |
-| `root` | string | Human-authored data-root path metadata. Use `OPENKIT_DATA_ROOT` to select the actual process data root. |
-| `layoutVersion` | positive integer | Data-root layout version. Current templates use `1`. |
+Server mode always requires Better Auth and rejects startup unless `BETTER_AUTH_SECRET` contains at least 32 characters. Use `OPENKIT_DATA_ROOT` to select the data root; `server.jsonc` does not declare its own location or layout version.
 
 ### `vault`
 
@@ -166,9 +136,8 @@ Each entry is a configured provider instance.
 | `secretRef` | string | No | Secret reference such as `vault://provider_openai`. |
 | `extraHeaders` | object | No | Extra upstream HTTP headers. |
 | `extraBody` | object | No | Extra upstream request body fields. |
-| `metadata` | object | No | Non-secret metadata, such as a models.dev provider ID. |
 
-Provider instance entries reject inline credential fields such as `apiKey`, `token`, `secret`, and `clientSecret`. Use `secretRef` for secret material and keep provider-specific non-secret settings in typed fields or `metadata`.
+Provider instance entries reject inline credential fields such as `apiKey`, `token`, `secret`, and `clientSecret`. Use `secretRef` for secret material; unknown or consumer-free provider settings are rejected.
 
 ### Provider Kind Decision Guide
 
@@ -277,8 +246,6 @@ DATA_ROOT/server/files/oauth/openai-codex/accounts/<account-slot-id>/
 | `coreModel` | string | Model used by NanoCore's own LLM tasks. |
 | `gatewayProviderId` | string | Provider instance used by the OpenAI-compatible gateway when a request does not select one. |
 | `gatewayModel` | string | Gateway default model. |
-| `workspaceId` | string | Default workspace ID. |
-| `agentId` | string | Default agent ID. The shipped template uses `agent_codex_host`. |
 
 Unset provider defaults are allowed and are not boot errors.
 
@@ -287,74 +254,9 @@ Unset provider defaults are allowed and are not boot errors.
 | Option | Type | Description |
 | --- | --- | --- |
 | `enabled` | boolean | Enables the OpenAI-compatible agent gateway. |
-| `route` | string | Gateway route prefix, such as `/v1`. |
-| `defaultProviderId` | string | Provider instance used by default for gateway requests. |
-| `defaultModel` | string | Model used by default for gateway requests. |
 | `allowedProviderIds` | string array | Provider allowlist for gateway routing. |
-| `auth` | string | Gateway auth policy marker. |
 
-### `features`
-
-| Option | Type | Description |
-| --- | --- | --- |
-| `internalOpenAICompatFacade.enabled` | boolean | Feature flag for the internal OpenAI-compatible facade. |
-
-### `internal.openaiCompatFacade`
-
-| Option | Type | Description |
-| --- | --- | --- |
-| `enabled` | boolean | Enables `POST /internal/v1/chat/completions`. Local mode enables this facade by default; server mode disables it by default. |
-| `defaultProviderId` | string | Default provider profile ID for the internal facade. |
-| `defaultModel` | string | Default model for the internal facade. |
-
-`openaiCompatFacade` is an internal OpenAI-compatible HTTP boundary, not the only or preferred way for in-process NanoCore code to call an LLM.
-
-If a feature runs inside the NanoCore process and can call the provider service directly, an internal function call is usually simpler and more type-safe.
-
-Enable and configure `internal.openaiCompatFacade` when an internal tool, admin script, background job, sidecar, or diagnostics helper needs an OpenAI-compatible HTTP endpoint instead of importing NanoCore internals.
-
-It is also useful when you want a quick local debugging surface for provider registry, `secretRef`, model selection, and request forwarding without running a full agent turn.
-
-Keep it disabled in server deployments unless a trusted internal consumer explicitly needs it. When enabled in server mode, treat `/internal/*` as an authenticated internal surface, not as a public OpenAI-compatible API for external users or agents.
-
-Use `gateway.openaiCompatible` for agent/runtime LLM traffic. Use `internal.openaiCompatFacade` only for trusted Core/internal consumers that need the OpenAI Chat Completions protocol boundary.
-
-Example server-mode opt-in:
-
-```jsonc
-{
-  "internal": {
-    "openaiCompatFacade": {
-      "enabled": true,
-      "defaultProviderId": "core-openai",
-      "defaultModel": "gpt-5.1"
-    }
-  }
-}
-```
-
-### `diagnostics`
-
-| Option | Type | Description |
-| --- | --- | --- |
-| `redactSecrets` | boolean | Controls whether diagnostics redact secret-bearing values. Keep this enabled for normal use. |
-| `emitConfigOrigins` | boolean | Controls whether diagnostics include config origin information. |
-
-### `extensions`
-
-Use `extensions` for deployment-specific settings that are not part of the stable schema yet.
-
-Recommended shape:
-
-```jsonc
-{
-  "extensions": {
-    "com.example.myDeployment": {
-      "enabled": true
-    }
-  }
-}
-```
+The public gateway route is fixed at `/v1`. It uses the same authenticated actor boundary as product APIs in server mode and the implicit local actor in local mode.
 
 ## Provider Profile Files
 
@@ -388,9 +290,6 @@ Options:
 | `baseUrl` | URL string | No | Provider API base URL. |
 | `defaultModel` | string | No | Default model for this profile. |
 | `secretRef` | string | No | Secret reference. Provider credentials should use `vault://<referenceId>`. |
-| `timeoutMs` | positive integer | No | Provider request timeout in milliseconds. |
-| `retry.attempts` | integer `>= 0` | No | Retry attempts. |
-| `retry.backoffMs` | integer `>= 0` | No | Retry backoff in milliseconds. |
 | `readiness.status` | `"ready"`, `"degraded"`, `"blocked"`, `"disabled"`, or `"unknown"` | No | Operator-authored readiness status. |
 | `readiness.message` | string | No | Human-readable readiness explanation. |
 | `extensions` | object | No | Provider-specific extension config. |
@@ -572,11 +471,6 @@ This example uses a local NanoCore server, an OpenAI provider for Core tasks, Op
 {
   "schemaVersion": 1,
   "mode": "local",
-  "auth": {
-    "enabled": false,
-    "provider": "better-auth",
-    "localModeUserId": "user_local"
-  },
   "providers": [
     {
       "id": "core-openai",
@@ -603,23 +497,14 @@ This example uses a local NanoCore server, an OpenAI provider for Core tasks, Op
     "coreProviderId": "core-openai",
     "coreModel": "gpt-5.1",
     "gatewayProviderId": "agent-openrouter",
-    "gatewayModel": "openai/gpt-5.1",
-    "agentId": "agent_codex_host"
+    "gatewayModel": "openai/gpt-5.1"
   },
   "gateway": {
     "openaiCompatible": {
       "enabled": true,
-      "route": "/v1",
-      "defaultProviderId": "agent-openrouter",
-      "defaultModel": "openai/gpt-5.1",
       "allowedProviderIds": ["agent-openrouter"]
     }
-  },
-  "diagnostics": {
-    "redactSecrets": true,
-    "emitConfigOrigins": true
-  },
-  "extensions": {}
+  }
 }
 ```
 
@@ -675,26 +560,11 @@ Use `kind: "custom"` when the endpoint is OpenAI-compatible but not one of the b
   "baseUrl": "https://llm.example.com/v1",
   "models": ["company-chat-large", "company-chat-small"],
   "defaultModel": "company-chat-large",
-  "secretRef": "vault://provider_company_gateway",
-  "timeoutMs": 60000,
-  "retry": {
-    "attempts": 2,
-    "backoffMs": 500
-  }
+  "secretRef": "vault://provider_company_gateway"
 }
 ```
 
 Then set `defaults.coreProviderId`, `defaults.gatewayProviderId`, or an agent `provider.ref` to `company-gateway`.
-
-Set the default agent:
-
-```jsonc
-{
-  "defaults": {
-    "agentId": "agent_codex_host"
-  }
-}
-```
 
 Set separate Core and gateway providers:
 
@@ -715,8 +585,6 @@ Enable server mode with Better Auth:
 {
   "mode": "server",
   "auth": {
-    "enabled": true,
-    "provider": "better-auth",
     "signup": {
       "enabled": false
     }

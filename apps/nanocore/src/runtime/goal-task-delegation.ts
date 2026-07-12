@@ -6,7 +6,6 @@ import {
   LLM_PROJECTION_POLICY_VERSION,
   type LlmProjectionPolicy,
 } from '../context/projection-policy.js';
-import type { StructuredWorkerDelegationRequestInput } from '../internal-agents/delegation.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { getGoalRecord, listGoalTasks } from './goal-store.js';
 import {
@@ -119,15 +118,3 @@ export function prepareGoalTaskDelegation(
     followUpInputs: input.followUpInputs,
   });
 }
-
-/**
- * Structured delegation request hint type used by callers that already have plan details.
- */
-export type GoalTaskDelegationExpectedArtifact =
-  StructuredWorkerDelegationRequestInput['expectedArtifacts'][number];
-
-/**
- * Structured delegation verification hint type used by callers that already have plan details.
- */
-export type GoalTaskDelegationVerification =
-  StructuredWorkerDelegationRequestInput['verification'][number];

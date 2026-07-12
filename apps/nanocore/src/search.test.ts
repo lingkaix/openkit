@@ -11,6 +11,7 @@ import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 describe('search app API', () => {
   it('searches workspaces, threads, knowledge, artifacts, and items', async () => {
@@ -49,6 +50,14 @@ describe('search app API', () => {
     const store = new FsStore({ dataRoot, userId: 'user_local' });
     const allowedWorkspace = store.createWorkspace('Allowed visibility needle');
     const deniedWorkspace = store.createWorkspace('Denied visibility needle');
+
+    for (const workspace of [allowedWorkspace, deniedWorkspace]) {
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'user_local',
+        workspaceId: workspace.id,
+      });
+    }
 
     for (const [workspace, prefix] of [
       [allowedWorkspace, 'allowed'],

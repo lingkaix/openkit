@@ -28,4 +28,3 @@ Run the nearest focused tests first, followed by NanoCore typecheck, lint, build
 - [Agent Session](../../../../docs/core/agent-session.md)
 - [Storage Layout And Record Ownership](../../../../docs/specs/20260703-storage_layout_record_ownership.md)
 - [Worker Context Package](../../../../docs/specs/20260703-worker_context_package.md)
-

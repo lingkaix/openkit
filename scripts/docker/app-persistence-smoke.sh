@@ -140,19 +140,7 @@ seed_server_config() {
   cat >"${config_path}" <<'JSON'
 {
   "schemaVersion": 1,
-  "mode": "local",
-  "auth": {
-    "enabled": false,
-    "provider": "better-auth",
-    "localModeUserId": "user_local"
-  },
-  "data": {
-    "layoutVersion": 1
-  },
-  "diagnostics": {
-    "redactSecrets": true,
-    "emitConfigOrigins": true
-  }
+  "mode": "local"
 }
 JSON
 }

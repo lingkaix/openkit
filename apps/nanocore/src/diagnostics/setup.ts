@@ -1,139 +1,22 @@
-import type { RuntimeConfigStatus } from '@openkit/app-api-schemas';
+import type { RuntimeConfigStatus, SetupDiagnosticsResponse } from '@openkit/app-api-schemas';
 import type { AgentManifest, AuthoredAgentConfig } from '../agents/manifest.js';
 import { type AgentReadinessStatus, computeReadiness } from '../agents/readiness.js';
-import { type AgentSetupDiagnostic, resolveAgentSetup } from '../agents/setup-resolver.js';
+import { resolveAgentSetup } from '../agents/setup-resolver.js';
 import type { CoreMode } from '../config/mode.js';
 import type { OpenKitConfig } from '../config/openkit-config.js';
 import type { ProviderCredentialResolver, ProviderRegistry } from '../providers/registry.js';
 
-/**
- * Provider role exposed through setup diagnostics.
- */
-export type SetupDiagnosticsProviderRole = 'core' | 'gateway' | 'core+gateway' | 'available';
-
-/**
- * Agent readiness status exposed through setup diagnostics.
- */
-export type SetupDiagnosticsAgentStatus = 'ready' | 'degraded' | 'blocked' | 'disabled';
-
-/**
- * Secret marker safe for diagnostics responses.
- */
-export interface SetupDiagnosticsSecretMarker {
-  /** Whether a secret-bearing field is configured. */
-  configured: boolean;
-  /** Redacted marker describing the secret source. */
-  marker: 'none' | 'redacted' | 'secret-ref';
-  /** Secret reference name when it is safe to expose. */
-  ref: string | null;
-}
-
-/**
- * Server config summary safe for setup diagnostics.
- */
-export interface SetupDiagnosticsServerConfig {
-  /** Default provider and model ids from server config. */
-  defaults: {
-    /** Core provider id, when configured. */
-    coreProviderId: string | null;
-    /** Gateway provider id, when configured. */
-    gatewayProviderId: string | null;
-  };
-  /** OpenAI-compatible gateway summary. */
-  gateway: {
-    /** Gateway route summary. */
-    openaiCompatible: {
-      /** Gateway auth marker. */
-      auth: SetupDiagnosticsSecretMarker;
-      /** Gateway default model id, when configured. */
-      defaultModel: string | null;
-      /** Gateway default provider id, when configured. */
-      defaultProviderId: string | null;
-      /** Whether the gateway is enabled in config. */
-      enabled: boolean | null;
-      /** Gateway route path, when configured. */
-      route: string | null;
-    };
-  };
-  /** Server config schema version. */
-  schemaVersion: number | null;
-}
-
-/**
- * Provider setup diagnostics summary.
- */
-export interface SetupDiagnosticsProvider {
-  /** Default model id, when configured. */
-  defaultModel: string | null;
-  /** Human-readable provider name. */
-  displayName: string;
-  /** Stable provider id. */
-  id: string;
-  /** Provider kind. */
-  kind: string;
-  /** Provider role inferred from server defaults. */
-  role: SetupDiagnosticsProviderRole;
-  /** Redacted secret marker. */
-  secret: SetupDiagnosticsSecretMarker;
-  /** Provider vendor when known, otherwise provider kind. */
-  vendor: string;
-}
-
-/**
- * Agent setup diagnostics summary.
- */
-export interface SetupDiagnosticsAgent {
-  /** Agent display name. */
-  displayName: string;
-  /** Stable agent id. */
-  id: string;
-  /** Agent readiness summary. */
-  readiness: {
-    /** Readiness status. */
-    status: SetupDiagnosticsAgentStatus;
-    /** Readiness reasons. */
-    reasons: string[];
-  };
-  /** Resolved setup summary. */
-  setup: {
-    /** Active deployment mode when resolved. */
-    deploymentMode: string | null;
-    /** Setup diagnostics. */
-    diagnostics: AgentSetupDiagnostic[];
-    /** Resolved provider id when configured. */
-    providerId: string | null;
-    /** Setup resolution status. */
-    status: SetupDiagnosticsAgentStatus;
-  };
-}
-
-/**
- * Setup diagnostics response.
- */
-export interface SetupDiagnosticsSnapshot {
-  /** NanoCore service name. */
-  service: 'nanocore';
-  /** Server config summary. */
-  server: {
-    /** Data root used by the app, when known. */
-    dataRoot: string | null;
-    /** Current NanoCore mode. */
-    mode: CoreMode;
-    /** Redacted server config summary. */
-    config: SetupDiagnosticsServerConfig;
-  };
-  /** Provider summaries. */
-  providers: SetupDiagnosticsProvider[];
-  /** Agent setup summaries. */
-  agents: SetupDiagnosticsAgent[];
-  /** Runtime config reload status. */
-  runtimeConfig: RuntimeConfigStatus;
-}
+type SetupDiagnosticsProviderRole = SetupDiagnosticsResponse['providers'][number]['role'];
+type SetupDiagnosticsAgentStatus =
+  SetupDiagnosticsResponse['agents'][number]['readiness']['status'];
+type SetupDiagnosticsSecretMarker = SetupDiagnosticsResponse['providers'][number]['secret'];
+type SetupDiagnosticsServerConfig = SetupDiagnosticsResponse['server']['config'];
+type SetupDiagnosticsAgent = SetupDiagnosticsResponse['agents'][number];
 
 /**
  * Input for creating setup diagnostics.
  */
-export interface CreateSetupDiagnosticsInput {
+interface CreateSetupDiagnosticsInput {
   /** Data root used by the app, when known. */
   dataRoot: string | null;
   /** Current NanoCore mode. */
@@ -160,7 +43,7 @@ export interface CreateSetupDiagnosticsInput {
  */
 export function createSetupDiagnostics(
   input: CreateSetupDiagnosticsInput
-): SetupDiagnosticsSnapshot {
+): SetupDiagnosticsResponse {
   const readinessDependencies = input.providerCredentialResolver
     ? {
         providerCredentialResolver: safeProviderCredentialResolver(
@@ -172,7 +55,7 @@ export function createSetupDiagnostics(
   return {
     service: 'nanocore',
     server: {
-      dataRoot: input.dataRoot,
+      dataRoot: input.dataRoot ? 'configured' : null,
       mode: input.mode,
       config: summarizeServerConfig(input.openKitConfig),
     },
@@ -231,28 +114,10 @@ function summarizeServerConfig(config: OpenKitConfig): SetupDiagnosticsServerCon
     },
     gateway: {
       openaiCompatible: {
-        auth: rawSecretMarker(gatewayConfig?.auth),
-        defaultModel: gatewayConfig?.defaultModel ?? null,
-        defaultProviderId: gatewayConfig?.defaultProviderId ?? null,
         enabled: gatewayConfig?.enabled ?? null,
-        route: gatewayConfig?.route ?? null,
       },
     },
     schemaVersion: config.schemaVersion ?? null,
-  };
-}
-
-/**
- * Creates a redacted marker for a raw secret-bearing config value.
- *
- * @param value Raw config value.
- * @returns Secret marker.
- */
-function rawSecretMarker(value: unknown): SetupDiagnosticsSecretMarker {
-  return {
-    configured: typeof value === 'string' && value.length > 0,
-    marker: typeof value === 'string' && value.length > 0 ? 'redacted' : 'none',
-    ref: null,
   };
 }
 
@@ -283,10 +148,7 @@ function providerSecretMarker(
  */
 function providerRole(providerId: string, config: OpenKitConfig): SetupDiagnosticsProviderRole {
   const coreProviderId = config.defaults?.coreProviderId ?? null;
-  const gatewayProviderId =
-    config.defaults?.gatewayProviderId ??
-    config.gateway?.openaiCompatible?.defaultProviderId ??
-    null;
+  const gatewayProviderId = config.defaults?.gatewayProviderId ?? null;
   const isCore = providerId === coreProviderId;
   const isGateway = providerId === gatewayProviderId;
 

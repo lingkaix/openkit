@@ -243,7 +243,7 @@ Completed. `docs/specs/README.md` now separates document authority from implemen
 
 All 60 active and 55 archived specs were audited. Thirty-four replacement-backed documents moved from the formerly inverted `retired/` tree to `superseded/`; eight existing Superseded documents received complete evidence; two ended release/triage records and 11 deliberately removed pre-rebuild Web UI slices moved to `retired/`. No rejected proposal had sufficient evidence to justify a directory. All affected links, indexes, and directory guides now match the final tree, and the temporary migration exception file has been removed.
 
-Implementation commits: `5822ff2`, `1268d20`, `d6e7cca`, `9e7f713`, `f684403`, `e083fc5`, `0f07484`, and `bbe8790`.
+The implementation was later consolidated into the maintainability branch's foundation phase after all lifecycle checks passed; this record preserves the evidence and outcome rather than obsolete pre-consolidation short SHAs.
 
 ## Final Verification
 

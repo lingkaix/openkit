@@ -115,10 +115,10 @@ Eliminate the current split-key risk, key-file time-of-check/time-of-use gap, an
 
 ## Implementation Summary
 
-- `6139800` and `84c7b4c` added the strict optional config field after its schema tests. No watcher, compatibility reader, parallel config interface, or environment key source was added.
-- `2e7ccff` and `42d399b` replaced path-stat-then-read with one bounded no-follow descriptor read that validates absolute path, platform support, regular-file type, effective-user ownership, exact `0600` mode, and exact 32-byte length while redacting every failure.
-- `f817c5a`, `f2c5a74`, `031bd35`, and `24315f3` made the encrypted-file header a runtime authentication boundary, authenticated its creation timestamp and fixed metadata, rejected wrong keys and unsafe store states before mutation, removed speculative KDF shapes, preserved business clock semantics, and made the unlock state own and zero one shared key buffer.
-- `0b4782a` and `dde829b` created one Vault state inside the existing non-critical boot phase, optionally unlocked only encrypted-file from the configured key, reused the same state for runtime callers, zeroed key-file and admin-request buffers, and locked owned material on critical boot failure, orderly shutdown, and process exit.
+- Schema tests preceded the strict optional config field. No watcher, compatibility reader, parallel config interface, or environment key source was added.
+- Security regressions preceded replacement of path-stat-then-read with one bounded no-follow descriptor read that validates absolute path, platform support, regular-file type, effective-user ownership, exact `0600` mode, and exact 32-byte length while redacting every failure.
+- Header and clock regressions made the encrypted-file header a runtime authentication boundary, authenticated its creation timestamp and fixed metadata, rejected wrong keys and unsafe store states before mutation, removed speculative KDF shapes, preserved business clock semantics, and made the unlock state own and zero one shared key buffer.
+- Boot lifecycle regressions created one Vault state inside the existing non-critical boot phase, optionally unlocked only encrypted-file from the configured key, reused the same state for runtime callers, zeroed key-file and admin-request buffers, and locked owned material on critical boot failure, orderly shutdown, and process exit.
 - The accepted spec, DATA_ROOT config guide, deployment guide, NanoCore guide, and Vault source guide now describe only the implemented raw-key-file path. Passphrase, environment, KMS, recovery, watcher, registry, compatibility, and export implementations remain absent rather than represented by placeholder entities.
 
 ## Verification Evidence

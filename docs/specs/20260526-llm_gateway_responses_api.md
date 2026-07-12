@@ -21,11 +21,13 @@ This spec does not own the broader Agent Capability model, worker-side capabilit
 
 ## Summary
 
-NanoCore exposes the agent-facing LLM Gateway as two first-class OpenAI-compatible entry points: `POST /v1/chat/completions` and `POST /v1/responses`. The gateway keeps route handling thin and delegates provider-specific native calls, bridge conversion, and unsupported-feature decisions to a capability-aware provider dispatcher.
+NanoCore exposes the agent-facing LLM Gateway at the fixed `/v1` boundary through `GET /v1/models`, `POST /v1/chat/completions`, and `POST /v1/responses`. The gateway keeps route handling thin and delegates provider-specific native calls, bridge conversion, and unsupported-feature decisions to a capability-aware provider dispatcher.
 
 ## Current Implementation Projection
 
 NanoCore implements `/v1/chat/completions`, `/v1/responses`, `/v1/models`, and `/health` as the current OpenAI-compatible Gateway surface.
+
+In server mode, every `/v1/*` route uses the same authenticated actor middleware as product APIs before route parsing or provider dispatch. A request that names `metadata.openkit.workspaceId` must pass active membership and token binding checks for that workspace. Local mode keeps the implicit local actor. The Gateway enabled policy applies to model discovery as well as inference routes.
 
 Gateway provider dispatch uses the provider registry capability matrix, prompt-cache key resolution, OpenAI-compatible error envelopes, streaming terminal error normalization, durable capability usage records, and process-local usage observation for diagnostics.
 
@@ -50,6 +52,7 @@ If this legacy route is touched, prefer removal or folding into the Gateway over
 - Keep token material out of app APIs, diagnostics, logs, and UI state.
 - Keep Codex subscription account storage aligned with the existing `DATA_ROOT` server, user, and workspace ownership boundaries.
 - Preserve `/v1/models` and `/health`.
+- Fail closed before model discovery, body parsing, provider credential resolution, or dispatch when server-mode actor authentication or workspace scope is invalid.
 
 ## Non-Goals
 
@@ -72,6 +75,8 @@ If this legacy route is touched, prefer removal or folding into the Gateway over
 Both endpoints use OpenAI-compatible error envelopes for Gateway policy failures, missing defaults, disallowed providers, provider failures, and unsupported bridge features.
 
 `POST /v1/completions` is intentionally outside the Gateway surface. NanoCore supports the modern Chat Completions and Responses entry points used by agent clients.
+
+`GET /v1/models` returns configured provider models only while the Gateway is enabled. Server-mode authentication is required even though the response is OpenAI-compatible, because model supply and the sibling inference routes are deployment-owned capabilities.
 
 ## Provider Capabilities
 
@@ -190,7 +195,7 @@ When the user request omits `store`, `openai_codex` sets `store: false` by defau
 
 ## Diagnostics
 
-`GET /api/app/diagnostics` reports:
+Deployment-admin `GET /api/app/diagnostics` reports:
 
 - Gateway endpoints: `/health`, `/v1/models`, `/v1/chat/completions`, `/v1/responses`
 - provider capability chips such as `chat native`, `responses native`, and `responses bridged`
@@ -201,7 +206,7 @@ Diagnostics never include bearer tokens, refresh tokens, account IDs, authorizat
 
 ## Implementation Evidence
 
-NanoCore implements the accepted Gateway surface through `/v1/chat/completions`, `/v1/responses`, `/v1/models`, and `/health`, with no `/v1/completions` route. The provider dispatcher routes every non-Codex-OAuth provider through the Pi AI backend, keeps Codex OAuth on the dedicated Codex subscription Responses client, owns native and bridged Chat Completions and Responses routing, propagates prompt-cache keys, rejects unsupported features, and records durable public Gateway usage. Route, dispatcher, provider-registry, prompt-cache, Pi AI client, Codex Responses client, diagnostics, and capability usage tests cover the accepted behavior. `apps/nanocore/src/llm-gateway.test.ts` also guards the public route surface and prevents the historical internal facade from expanding into a second Gateway extension surface.
+NanoCore implements the accepted Gateway surface through `/v1/chat/completions`, `/v1/responses`, `/v1/models`, and `/health`, with no `/v1/completions` or historical `/internal/v1/chat/completions` route. Server-mode `/v1/*` requests authenticate before route work, nested OpenKit workspace metadata enters the existing workspace-scope policy, request storage fails closed without an actor, and disabled Gateway policy hides model supply as well as blocking inference. The provider dispatcher routes every non-Codex-OAuth provider through the Pi AI backend, keeps Codex OAuth on the dedicated Codex subscription Responses client, owns native and bridged Chat Completions and Responses routing, propagates prompt-cache keys, rejects unsupported features, and records durable public Gateway usage. Route, auth, dispatcher, provider-registry, prompt-cache, Pi AI client, Codex Responses client, diagnostics, and capability usage tests cover the accepted behavior. `apps/nanocore/src/llm-gateway.test.ts` guards the public route surface and asserts that the superseded internal facade remains absent.
 
 ## Verification
 

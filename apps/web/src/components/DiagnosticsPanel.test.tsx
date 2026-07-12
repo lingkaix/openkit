@@ -149,7 +149,7 @@ function appDiagnostics(_removedDefaultProvider?: unknown): AppDiagnostics {
     },
     capabilities: meta.capabilities,
     runtimeConfig: runtimeConfigStatus(),
-    internalAgents: { agents: [], recentFailures: [] },
+    internalAgents: { agents: [], recentFailures: [], recentHookFailures: [] },
   };
 }
 
@@ -161,7 +161,7 @@ function setupDiagnostics(): SetupDiagnostics {
     service: 'nanocore',
     server: {
       mode: 'local',
-      dataRoot: '/private/tmp/openkit-web-test-data-root',
+      dataRoot: 'configured',
       config: {
         schemaVersion: 1,
         defaults: {
@@ -170,11 +170,7 @@ function setupDiagnostics(): SetupDiagnostics {
         },
         gateway: {
           openaiCompatible: {
-            auth: { configured: true, marker: 'redacted', ref: null },
-            defaultModel: 'openai/gpt-5.4',
-            defaultProviderId: 'gateway-openai',
             enabled: true,
-            route: '/v1',
           },
         },
       },
@@ -726,7 +722,7 @@ describe('DiagnosticsPanel', () => {
 
     expect(screen.getByText(/Server summary/i)).toBeInTheDocument();
     expect(screen.getByText(/^local$/i)).toBeInTheDocument();
-    expect(screen.getByText(/openkit-web-test-data-root/i)).toBeInTheDocument();
+    expect(screen.getByText(/data configured/i)).toBeInTheDocument();
     expect(screen.getByText(/agent-openrouter/i)).toBeInTheDocument();
     expect(screen.getByText(/gateway-openai/i)).toBeInTheDocument();
     expect(screen.getByText(/gateway enabled/i)).toBeInTheDocument();

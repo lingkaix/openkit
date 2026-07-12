@@ -26,6 +26,9 @@ import {
   resolveDataRootPath,
 } from './fs-layout.js';
 
+const DEPLOYMENT_ID_PATTERN =
+  /^dep_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
 /**
  * Asserts that a path exists and is a directory.
  *
@@ -136,17 +139,21 @@ describe('ensureLayout', () => {
     ]);
   });
 
-  it('creates and reads the data-root layout marker', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
+  it('creates stable distinct deployment identities for fresh data roots', async () => {
+    const firstRoot = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
+    const secondRoot = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
 
-    ensureLayout(root);
+    ensureLayout(firstRoot);
+    ensureLayout(secondRoot);
+    const firstMarker = readDataRootLayoutMarker(firstRoot);
+    const secondMarker = readDataRootLayoutMarker(secondRoot);
 
-    expect(readDataRootLayoutMarker(root)).toEqual({
-      schemaVersion: 1,
-      layoutVersion: 1,
-      deploymentId: 'dep_local',
-    });
-    expect(readFileSync(join(root, 'server', 'layout.json'), 'utf8')).toContain(
+    expect(firstMarker.deploymentId).toMatch(DEPLOYMENT_ID_PATTERN);
+    expect(secondMarker.deploymentId).toMatch(DEPLOYMENT_ID_PATTERN);
+    expect(secondMarker.deploymentId).not.toBe(firstMarker.deploymentId);
+    ensureLayout(firstRoot);
+    expect(readDataRootLayoutMarker(firstRoot)).toEqual(firstMarker);
+    expect(readFileSync(join(firstRoot, 'server', 'layout.json'), 'utf8')).toContain(
       '"layoutVersion": 1'
     );
   });
@@ -155,13 +162,14 @@ describe('ensureLayout', () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
 
     ensureLayout(root);
+    const originalDeploymentId = readDataRootLayoutMarker(root).deploymentId;
     const marker = recordDataRootDeploymentMove(root, 'dep_moved');
 
     expect(marker).toEqual({
       schemaVersion: 1,
       layoutVersion: 1,
       deploymentId: 'dep_moved',
-      predecessorDeploymentId: 'dep_local',
+      predecessorDeploymentId: originalDeploymentId,
     });
     expect(readDataRootLayoutMarker(root)).toEqual(marker);
   });
@@ -177,7 +185,11 @@ describe('ensureLayout', () => {
 
     ensureLayout(root);
 
-    expect(readDataRootLayoutMarker(root).deploymentId).toBe('dep_local');
+    const marker = readDataRootLayoutMarker(root);
+
+    expect(marker.deploymentId).toMatch(DEPLOYMENT_ID_PATTERN);
+    ensureLayout(root);
+    expect(readDataRootLayoutMarker(root)).toEqual(marker);
   });
 
   it('fails closed on an incompatible data-root layout marker', async () => {

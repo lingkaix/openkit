@@ -66,6 +66,8 @@ describe('createSetupDiagnostics', () => {
       reasons: ['Provider hosted is missing credentials.'],
       status: 'degraded',
     });
+    expect(diagnostics.server.dataRoot).toBe('configured');
+    expect(JSON.stringify(diagnostics)).not.toContain('/tmp/openkit-test');
     expect(JSON.stringify(diagnostics)).not.toContain('sk-secret');
   });
 });

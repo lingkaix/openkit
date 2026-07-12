@@ -1,8 +1,6 @@
 import { relations, sql } from 'drizzle-orm';
 import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
-export type UserKind = 'local' | 'human';
-
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
   displayName: text('display_name').notNull(),

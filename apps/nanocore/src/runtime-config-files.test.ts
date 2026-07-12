@@ -350,12 +350,16 @@ describe('runtime config file API', () => {
       valid: boolean;
       diagnostics: Array<{ range: { startLine: number } | null }>;
     };
-    const changed = (await changedRes.json()) as { valid: boolean; plan: { applied: unknown[] } };
+    const changed = (await changedRes.json()) as {
+      valid: boolean;
+      plan: { applied: unknown[]; requiresRestart: Array<{ path: string }> };
+    };
 
     expect(invalid.valid).toBe(false);
     expect(invalid.diagnostics[0]?.range?.startLine).toBe(1);
     expect(changed.valid).toBe(true);
-    expect(changed.plan.applied.length).toBeGreaterThan(0);
+    expect(changed.plan.applied).toEqual([]);
+    expect(changed.plan.requiresRestart).toEqual([expect.objectContaining({ path: 'providers' })]);
     expect(readFileSync(join(dataRoot, 'config', 'server.jsonc'), 'utf8')).toBe(original);
   });
 

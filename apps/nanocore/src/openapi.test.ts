@@ -49,6 +49,39 @@ const CANONICAL_PATH_PARAMETER_REFS: Record<string, string> = {
   turnId: '#/components/schemas/TurnId',
   workspaceId: '#/components/schemas/WorkspaceId',
 };
+const DEPLOYMENT_ADMIN_ROUTES = new Set([
+  'GET /api/app/storage/layout-report',
+  'GET /api/app/diagnostics',
+  'GET /api/setup/diagnostics',
+  'GET /api/app/auth/tokens',
+  'POST /api/app/auth/tokens',
+  'POST /api/app/auth/tokens/{tokenId}/revoke',
+  'POST /api/app/auth/tokens/{tokenId}/rotate',
+  'POST /api/admin/config/reload',
+  'GET /api/admin/config/files',
+  'GET /api/admin/config/file',
+  'POST /api/admin/config/file',
+  'PUT /api/admin/config/file',
+  'GET /api/admin/config/schemas',
+  'POST /api/admin/config/validate',
+  'GET /api/app/oauth/openai-codex/accounts',
+  'POST /api/app/oauth/openai-codex/accounts',
+  'PATCH /api/app/oauth/openai-codex/accounts/{accountSlotId}',
+  'DELETE /api/app/oauth/openai-codex/accounts/{accountSlotId}',
+  'GET /api/app/oauth/openai-codex/accounts/{accountSlotId}/status',
+  'POST /api/app/oauth/openai-codex/accounts/{accountSlotId}/start',
+  'POST /api/app/oauth/openai-codex/accounts/{accountSlotId}/cancel',
+  'POST /api/app/oauth/openai-codex/accounts/{accountSlotId}/logout',
+  'GET /api/app/audit/events',
+  'GET /api/app/permission-decisions',
+  'POST /api/app/data-root/backups',
+  'POST /api/app/data-root/backups/{backupId}/verify',
+  'GET /api/app/vault/status',
+  'POST /api/app/vault/unlock',
+  'POST /api/app/vault/lock',
+  'POST /api/app/vault/bootstrap/codex-auth-json',
+  'GET /api/app/vault/use-records',
+]);
 const FIRST_PARTY_CONSUMER_ROOTS = [
   '../../../apps/web/src/',
   '../../../mcp/src/',
@@ -91,7 +124,7 @@ describe('app api openapi projection', () => {
     expect(document.paths['/api/app/storage/layout-report']?.get).toMatchObject({
       operationId: 'getStorageLayoutReport',
       tags: ['storage'],
-      security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+      security: [{ bearerAuth: [] }],
       responses: {
         '200': {
           content: {
@@ -107,7 +140,7 @@ describe('app api openapi projection', () => {
     expect(document.paths['/api/app/diagnostics']?.get).toMatchObject({
       operationId: 'getAppDiagnostics',
       tags: ['diagnostics'],
-      security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+      security: [{ bearerAuth: [] }],
       responses: {
         '200': {
           content: {
@@ -123,7 +156,7 @@ describe('app api openapi projection', () => {
     expect(document.paths['/api/setup/diagnostics']?.get).toMatchObject({
       operationId: 'getSetupDiagnostics',
       tags: ['diagnostics'],
-      security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+      security: [{ bearerAuth: [] }],
       responses: {
         '200': {
           content: {
@@ -2517,7 +2550,9 @@ describe('app api openapi projection', () => {
         const expected =
           route === 'POST /api/app/auth/bootstrap/consume'
             ? []
-            : [{ bearerAuth: [] }, { sessionCookie: [] }];
+            : DEPLOYMENT_ADMIN_ROUTES.has(route)
+              ? [{ bearerAuth: [] }]
+              : [{ bearerAuth: [] }, { sessionCookie: [] }];
         return JSON.stringify(operation.security) !== JSON.stringify(expected);
       })
       .map(({ route }) => route);

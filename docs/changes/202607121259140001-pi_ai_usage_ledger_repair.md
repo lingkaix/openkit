@@ -106,11 +106,11 @@ Preserve the public OpenAI-compatible response and error vocabulary, current pro
 
 ## Implementation Checkpoints
 
-- `7162b28` and `1f37084` added the failing shared-contract coverage and the single `usd` usage-unit enum value; `bd19b8b` verified the App API projection.
-- `4fbb127` captured missing raw Pi observation, cache-write, estimated cost, and durable five-row behavior. `18bab13` then captured the diagnostics regression that would have produced a cache-hit ratio greater than one from raw Pi input semantics.
-- `2a19bd8` made the Pi client report one raw terminal usage observation on success, provider error, or abort; made the dispatcher the single diagnostics and external-observer owner; preserved the Codex public-payload path; recorded positive input, output, cache-read, cache-write, and estimated-USD rows through the existing ledger; deleted error-carried usage and public-response reparsing; and removed the unreachable `pi-ai-usage.ts` module and duplicate test owner.
+- Failing shared-contract coverage preceded the single `usd` usage-unit enum value, and App API projection coverage verified the shared contract.
+- NanoCore regressions captured missing raw Pi observation, cache-write, estimated cost, durable five-row behavior, and the diagnostics ratio failure before implementation.
+- The Pi client now reports one raw terminal usage observation on success, provider error, or abort; the dispatcher is the single diagnostics and external-observer owner; the Codex public-payload path remains unchanged; positive input, output, cache-read, cache-write, and estimated-USD rows use the existing ledger; and error-carried usage, public-response reparsing, the unreachable `pi-ai-usage.ts` module, and its duplicate test owner are gone.
 - The post-TDD Ponytail review removed the single-use `PiAiGatewayProviderError` wrapper, inlined the moved exact-pin package read, and retained no new table, service, normalizer, storage migration, or billing abstraction. The implementation commit removed 70 net production lines while adding the terminal observer and complete accounting behavior.
-- `2b43432` aligned the NanoCore README, three accepted usage specs, and generated App API OpenAPI. Full verification then exposed unrelated stale `quick-chat` workspace enum projections; `33c197f` refreshed only the two deterministic protocol JSON Schema files, and regeneration became clean.
+- The NanoCore README, three accepted usage specs, and generated App API OpenAPI were aligned. Full verification then exposed unrelated stale `quick-chat` workspace enum projections; only the two deterministic protocol JSON Schema files changed, and regeneration became clean.
 
 ## Verification Evidence
 

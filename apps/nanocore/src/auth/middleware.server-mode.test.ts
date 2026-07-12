@@ -76,6 +76,38 @@ describe('server-mode auth middleware', () => {
     expect(res.status).toBe(200);
   });
 
+  it('protects every public LLM Gateway route before request parsing', async () => {
+    const app = createApp({ auth: createAuthStub(null), mode: 'server' });
+
+    for (const request of [
+      { path: '/v1/models' },
+      {
+        path: '/v1/chat/completions',
+        init: { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{' },
+      },
+      {
+        path: '/v1/responses',
+        init: { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{' },
+      },
+    ]) {
+      const res = await app.request(request.path, request.init);
+
+      expect(res.status).toBe(401);
+      await expect(res.json()).resolves.toMatchObject({ code: 'core.auth.unauthenticated' });
+    }
+  });
+
+  it('keeps LLM Gateway routes usable for authenticated server actors and local mode', async () => {
+    const serverApp = createApp({
+      auth: createAuthStub({ session: { id: 'session_1' }, user: { id: 'user_1' } }),
+      mode: 'server',
+    });
+    const localApp = createApp({ mode: 'local' });
+
+    expect((await serverApp.request('/v1/models')).status).toBe(200);
+    expect((await localApp.request('/v1/models')).status).toBe(200);
+  });
+
   it('keeps reduced public meta, health, and Better Auth routes open', async () => {
     const app = createApp({ auth: createAuthStub(null), mode: 'server' });
 

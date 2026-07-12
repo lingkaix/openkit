@@ -17,7 +17,7 @@ export interface RuntimeConfigReloadInput {
 /**
  * Props for the setup readiness diagnostics panel.
  */
-export interface SetupReadinessPanelProps {
+interface SetupReadinessPanelProps {
   /** Whether setup diagnostics are currently refreshing. */
   isRefreshing?: boolean;
   /** Whether NanoCore is currently processing a runtime config reload request. */
@@ -41,20 +41,6 @@ function formatSecretMarker(marker: SetupDiagnostics['providers'][number]['secre
   }
 
   return marker.marker === 'secret-ref' ? 'secret ref configured' : 'redacted';
-}
-
-/**
- * Formats the server data root without exposing an oversized local path.
- */
-function formatDataRoot(dataRoot: string | null): string {
-  if (!dataRoot) {
-    return 'none';
-  }
-
-  const parts = dataRoot.split('/').filter(Boolean);
-  const tail = parts.at(-1) ?? dataRoot;
-
-  return tail.length > 48 ? `${tail.slice(0, 45)}...` : tail;
 }
 
 /**
@@ -143,7 +129,7 @@ export function SetupReadinessPanel(props: SetupReadinessPanelProps) {
           <span class="badge badge-outline">{formatGatewayStatus(props.setupDiagnostics)}</span>
         </div>
         <p class="text-xs opacity-70">
-          data {formatDataRoot(props.setupDiagnostics?.server.dataRoot ?? null)} - core{' '}
+          data {props.setupDiagnostics?.server.dataRoot ?? 'none'} - core{' '}
           {props.setupDiagnostics?.server.config.defaults.coreProviderId ?? 'unset'} - gateway{' '}
           {props.setupDiagnostics?.server.config.defaults.gatewayProviderId ?? 'unset'}
         </p>

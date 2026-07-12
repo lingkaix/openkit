@@ -43,4 +43,30 @@ describe('NanoCore boot phase order', () => {
       "onDeadline: () => finishShutdown(signal, [...stepsCompleted, 'shutdown.deadline'], true, 1)"
     );
   });
+
+  it('validates listener and server-auth inputs before activating copied templates', () => {
+    const source = readEntrypointSource();
+    const configPhase = source.indexOf("name: 'config'");
+    const initialConfigLoad = source.indexOf(
+      'runtimeConfigSnapshot = loadRuntimeConfig(dataRoot, { version: 1 })',
+      configPhase
+    );
+    const bindValidation = source.indexOf('resolveBindPort(process.env', configPhase);
+    const secretValidation = source.indexOf('resolveBetterAuthSecret(process.env', configPhase);
+    const templateWrite = source.indexOf('ensureConfigTemplateSurface(dataRoot)', configPhase);
+    const finalConfigLoad = source.indexOf(
+      'runtimeConfigSnapshot = loadRuntimeConfig(dataRoot, { version: 1 })',
+      initialConfigLoad + 1
+    );
+    const layoutPhase = source.indexOf("name: 'data-root-layout'", configPhase);
+
+    expect(initialConfigLoad).toBeGreaterThan(configPhase);
+    expect(bindValidation).toBeGreaterThan(configPhase);
+    expect(secretValidation).toBeGreaterThan(configPhase);
+    expect(initialConfigLoad).toBeLessThan(bindValidation);
+    expect(bindValidation).toBeLessThan(templateWrite);
+    expect(secretValidation).toBeLessThan(templateWrite);
+    expect(templateWrite).toBeLessThan(finalConfigLoad);
+    expect(finalConfigLoad).toBeLessThan(layoutPhase);
+  });
 });

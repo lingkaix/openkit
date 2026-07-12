@@ -19,11 +19,20 @@ export interface RecordWorkspaceOwnerMembershipInput {
  * Membership removal must retain its row with `status = 'removed'`; deleting the row discards the tombstone.
  *
  * @param input Workspace owner membership input.
+ * @throws Error when another user already owns the workspace id.
  */
 export function recordWorkspaceOwnerMembership(input: RecordWorkspaceOwnerMembershipInput): void {
   const now = (input.now ?? new Date()).toISOString();
 
   input.coreDb.sqlite.transaction(() => {
+    const existing = input.coreDb.sqlite
+      .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
+      .get(input.workspaceId) as { owner_user_id: string } | undefined;
+
+    if (existing && existing.owner_user_id !== input.ownerUserId) {
+      throw new Error('Workspace is already owned by another user.');
+    }
+
     input.coreDb.sqlite
       .prepare(
         `INSERT INTO workspace_registry (

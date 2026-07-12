@@ -24,11 +24,12 @@ import { registerArtifactRoutes } from './artifact-routes.js';
 import { recordWorkspaceAuditEvent } from './audit-events.js';
 import { registerAccessTokenRoutes } from './auth/access-token-routes.js';
 import { verifyOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { createBetterAuth } from './auth/better-auth.js';
+import { isDeploymentAdminActor } from './auth/identity.js';
 import {
   type AuthVariables,
   type BetterAuthServer,
   createAuthMiddleware,
+  isLoopbackHost,
 } from './auth/middleware.js';
 import { registerAutomationRoutes } from './automation-routes.js';
 import { createBootReadinessSnapshot } from './bootstrap/readiness.js';
@@ -62,7 +63,6 @@ import {
   registerCodexOAuthLoginRoutes,
 } from './llm/codex-oauth-routes.js';
 import { CodexAuthTokenResolver, CodexResponsesClient } from './llm/codex-responses-client.js';
-import { GatewayPolicyStore } from './llm/gateway-policy.js';
 import { registerLlmGatewayRoutes } from './llm/gateway-routes.js';
 import { GatewayUsageTracker } from './llm/gateway-usage.js';
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
@@ -73,10 +73,6 @@ import { readCodexOAuthAccountSlotId } from './providers/codex-oauth-profile.js'
 import { resolveDefaultProviderStates } from './providers/default-provider.js';
 import type { ProviderDiagnosticsSnapshot } from './providers/diagnostics.js';
 import { resolveProviderProfileToLLMConfig } from './providers/llm-config.js';
-import {
-  type OpenAICompatFacadeOptions,
-  registerOpenAICompatFacade,
-} from './providers/openai-compat-facade.js';
 import {
   type ProviderCredentialResolver,
   type ProviderRegistry,
@@ -135,15 +131,62 @@ import type { OsKeychainVaultAdapter } from './vault/vault-os-keychain-backend.j
 import { createVaultUnlockState, type VaultUnlockState } from './vault/vault-unlock-state.js';
 import { backfillRepositoryDataSourceCatalogs } from './workspace/repository-data-source-catalog.js';
 import type { WorkspaceRepositoryResourceRecord } from './workspace/repository-store.js';
-import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { registerWorkspaceRoutes } from './workspace-routes.js';
 
 type WorkspaceRecord = z.infer<typeof WorkspaceRecordSchema>;
 
-const browserCors = cors({
-  credentials: true,
-  origin: (origin) => origin,
-});
+/**
+ * Creates credentialed browser CORS middleware for configured origins.
+ *
+ * @param mode Resolved Core mode.
+ * @param configuredOrigins Exact operator-configured browser origins.
+ * @returns Browser CORS middleware that rejects disallowed origins before route handling.
+ */
+function createBrowserCors(
+  mode: CoreMode,
+  configuredOrigins: readonly string[]
+): ReturnType<typeof cors> {
+  const allowedCors = cors({ credentials: true, origin: (origin) => origin });
+
+  return async (context, next) => {
+    const origin = context.req.header('origin') ?? '';
+    let allowed = configuredOrigins.includes(origin);
+
+    if (!allowed && mode === 'local') {
+      try {
+        const url = new URL(origin);
+        allowed =
+          url.origin === origin &&
+          (url.protocol === 'http:' || url.protocol === 'https:') &&
+          isLoopbackHost(url.hostname);
+      } catch {
+        allowed = false;
+      }
+    }
+
+    if (origin && !allowed) {
+      return asApiError('Browser origin is not allowed.', 'cors_origin_forbidden', 403);
+    }
+
+    if (!origin) {
+      return next();
+    }
+
+    return allowedCors(context, next);
+  };
+}
+
+/**
+ * Requires deployment-admin authority before collecting deployment diagnostics.
+ *
+ * @param actor Authenticated request actor.
+ * @returns Forbidden response for non-admin actors, otherwise null.
+ */
+function requireDiagnosticsAdminActor(actor: AuthVariables['actor'] | undefined): Response | null {
+  return isDeploymentAdminActor(actor)
+    ? null
+    : asApiError('Server-admin authority is required.', 'diagnostics_admin_forbidden', 403);
+}
 
 /**
  * Checks whether a request would admit new product work.
@@ -157,7 +200,6 @@ function isProductWorkAdmissionRequest(method: string, path: string): boolean {
     method === 'POST' &&
     (path === '/api/app/quick-chat' ||
       path === '/api/turns' ||
-      path === '/internal/v1/chat/completions' ||
       path === '/v1/chat/completions' ||
       path === '/v1/responses')
   ) {
@@ -274,10 +316,8 @@ export interface CreateAppOptions {
   providerCredentialResolver?: ProviderCredentialResolver;
   providerDiagnostics?: ProviderDiagnosticsSnapshot;
   runtimeConfigManager?: RuntimeConfigManager;
-  internalOpenAICompatFacade?: Partial<OpenAICompatFacadeOptions>;
   codexOAuthAccountManager?: CodexOAuthAccountManager;
   codexOAuthStore?: CodexOAuthStore;
-  gatewayPolicyStore?: GatewayPolicyStore;
   automationStore?: AutomationStore;
   /** Process-local worker control gateway used by sandbox-local `control.local` relays. */
   workerControlGateway?: WorkerControlGateway;
@@ -359,7 +399,7 @@ export function createDefaultWorkerControlGateway(coreDb?: CoreDb): WorkerContro
 }
 
 /** Input used to create the default process vault backend for an app instance. */
-export interface CreateDefaultVaultUnlockStateInput {
+interface CreateDefaultVaultUnlockStateInput {
   /** Data root used by encrypted-file vault storage. */
   readonly dataRoot: string;
   /** Local-mode vault backend selected from operator config. */
@@ -394,41 +434,24 @@ export function createDefaultVaultUnlockState(
 }
 
 /**
- * Resolves the local-mode vault backend default from startup config.
- *
- * @param input App options and data root.
- * @returns Configured local backend default, when present.
- */
-function resolveLocalDefaultVaultBackend(input: {
-  dataRoot: string | null;
-  openKitConfig?: OpenKitConfig;
-  runtimeConfigManager?: RuntimeConfigManager;
-}): 'os-keychain' | 'encrypted-file' | undefined {
-  if (input.openKitConfig?.vault?.localDefaultBackend) {
-    return input.openKitConfig.vault.localDefaultBackend;
-  }
-
-  if (input.runtimeConfigManager) {
-    return input.runtimeConfigManager.current().openKitConfig.vault?.localDefaultBackend;
-  }
-
-  return input.dataRoot ? loadOpenKitConfig(input.dataRoot).vault?.localDefaultBackend : undefined;
-}
-
-/**
  * Creates the Hono app for tests and runtime startup.
  */
 export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: AuthVariables }> {
   const mode = options.mode ?? 'local';
-  const auth = options.auth ?? (mode === 'server' ? createBetterAuth() : undefined);
+  const auth = options.auth;
   const dataRoot = options.dataRoot ?? null;
+  const startupOpenKitConfig =
+    options.runtimeConfigManager?.current().openKitConfig ??
+    options.openKitConfig ??
+    (dataRoot ? loadOpenKitConfig(dataRoot) : {});
+  const publicBaseUrl = startupOpenKitConfig.server?.publicBaseUrl;
+  const browserCors = createBrowserCors(mode, [
+    ...(startupOpenKitConfig.server?.cors?.origins ?? []),
+    ...(publicBaseUrl ? [new URL(publicBaseUrl).origin] : []),
+  ]);
   const bootReadiness = options.bootReadiness ?? createBootReadinessSnapshot();
   const getBootReadiness = options.getBootReadiness ?? (() => bootReadiness);
-  const localDefaultBackend = resolveLocalDefaultVaultBackend({
-    dataRoot,
-    ...(options.openKitConfig ? { openKitConfig: options.openKitConfig } : {}),
-    ...(options.runtimeConfigManager ? { runtimeConfigManager: options.runtimeConfigManager } : {}),
-  });
+  const localDefaultBackend = startupOpenKitConfig.vault?.localDefaultBackend;
   const vaultUnlockState =
     options.vaultUnlockState ??
     (dataRoot
@@ -565,7 +588,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     options.openKitConfig ??
       options.providerRegistry ??
       options.providerDiagnostics ??
-      options.internalOpenAICompatFacade ??
       options.agentConfigs ??
       options.agentManifests
   );
@@ -577,27 +599,17 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         ? {
             initialSnapshot: createInMemoryRuntimeConfigSnapshot({
               dataRoot,
-              openKitConfig: options.openKitConfig ?? {},
+              openKitConfig: startupOpenKitConfig,
               ...(options.providerRegistry ? { providerRegistry: options.providerRegistry } : {}),
               ...(options.providerDiagnostics
                 ? { providerDiagnostics: options.providerDiagnostics }
                 : {}),
-              internalOpenAICompatFacade: {
-                enabled: options.internalOpenAICompatFacade?.enabled ?? mode === 'local',
-                ...(options.internalOpenAICompatFacade?.defaultProviderId
-                  ? { defaultProviderId: options.internalOpenAICompatFacade.defaultProviderId }
-                  : {}),
-                ...(options.internalOpenAICompatFacade?.defaultModel
-                  ? { defaultModel: options.internalOpenAICompatFacade.defaultModel }
-                  : {}),
-              },
               agentConfigs: options.agentConfigs ?? [],
               agentManifests: options.agentManifests ?? DEFAULT_AGENT_MANIFESTS,
             }),
           }
         : {}),
     });
-  const gatewayPolicyStore = options.gatewayPolicyStore ?? new GatewayPolicyStore();
   const automationStore = options.automationStore ?? new AutomationStore();
   const workerControlGateway =
     options.workerControlGateway ?? createDefaultWorkerControlGateway(options.coreDb);
@@ -657,16 +669,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       );
     }
 
-    if (options.coreDb) {
-      for (const workspace of nextStore.listWorkspaces()) {
-        recordWorkspaceOwnerMembership({
-          coreDb: options.coreDb,
-          ownerUserId: userId,
-          workspaceId: workspace.id,
-        });
-      }
-    }
-
     storesByUserId.set(userId, nextStore);
 
     return nextStore;
@@ -677,9 +679,15 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
    *
    * @param c Hono context carrying the actor variable after auth middleware.
    * @returns Actor-scoped store.
+   * @throws Error when server-mode routing reaches storage without an authenticated actor.
    */
   function requestStore(c: { get: (key: 'actor') => AuthVariables['actor'] | undefined }): FsStore {
     const actor = c.get('actor');
+
+    if (!actor && mode === 'server') {
+      throw new Error('Authenticated actor is unavailable for the request store.');
+    }
+
     return storeForUserId(actor?.userId ?? 'user_local');
   }
 
@@ -719,7 +727,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   }
 
   /**
-   * Filters workspace collection reads for scoped token actors.
+   * Filters workspace collection reads by active membership and token binding.
    *
    * @param actor Authenticated actor.
    * @param items Workspace records from the actor-scoped store.
@@ -729,15 +737,26 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     actor: AuthVariables['actor'] | undefined,
     items: ReturnType<FsStore['listWorkspaces']>
   ): ReturnType<FsStore['listWorkspaces']> {
-    if (actor?.kind !== 'token' || actor.tokenScope === 'server-admin') {
+    if (
+      mode === 'local' ||
+      actor?.kind === 'local' ||
+      (actor?.kind === 'token' && actor.tokenScope === 'server-admin')
+    ) {
       return items;
     }
 
+    if (!actor) {
+      return [];
+    }
+
+    const active = items.filter((workspace) => isActiveWorkspaceMember(actor.userId, workspace.id));
+
+    if (actor.kind === 'session') {
+      return active;
+    }
+
     const allowed = new Set(actor.tokenWorkspaceIds ?? []);
-    return items.filter(
-      (workspace) =>
-        allowed.has(workspace.id) && isActiveWorkspaceMember(actor.userId, workspace.id)
-    );
+    return active.filter((workspace) => allowed.has(workspace.id));
   }
 
   /**
@@ -910,34 +929,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   }
 
   /**
-   * Resolves internal OpenAI-compatible facade options for the active app mode.
-   */
-  function internalFacadeOptions(): OpenAICompatFacadeOptions {
-    const snapshot = runtimeConfig();
-    const config = snapshot.openKitConfig.internal?.openaiCompatFacade;
-    const configuredOptions =
-      config || options.internalOpenAICompatFacade ? snapshot.internalOpenAICompatFacade : null;
-
-    return {
-      enabled: configuredOptions?.enabled ?? mode === 'local',
-      ...(configuredOptions?.defaultProviderId
-        ? { defaultProviderId: configuredOptions.defaultProviderId }
-        : {}),
-      ...(configuredOptions?.defaultModel ? { defaultModel: configuredOptions.defaultModel } : {}),
-    };
-  }
-
-  /**
    * Resolves the Gateway default provider id from runtime config and provider defaults.
    *
    * @returns Gateway provider id or null.
    */
   function gatewayDefaultProviderId(): string | null {
-    return (
-      runtimeConfig().openKitConfig.defaults?.gatewayProviderId ??
-      runtimeConfig().openKitConfig.gateway?.openaiCompatible?.defaultProviderId ??
-      null
-    );
+    return runtimeConfig().openKitConfig.defaults?.gatewayProviderId ?? null;
   }
 
   /**
@@ -950,10 +947,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     const runtimeProfile = providerId ? runtimeConfig().providerRegistry.get(providerId) : null;
 
     return (
-      runtimeConfig().openKitConfig.defaults?.gatewayModel ??
-      runtimeConfig().openKitConfig.gateway?.openaiCompatible?.defaultModel ??
-      runtimeProfile?.defaultModel ??
-      null
+      runtimeConfig().openKitConfig.defaults?.gatewayModel ?? runtimeProfile?.defaultModel ?? null
     );
   }
 
@@ -1089,27 +1083,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   app.use('/api/*', browserCors);
   app.use('/api/*', createAuthMiddleware(mode, auth, authMiddlewareOptions));
-
-  if (internalFacadeOptions().enabled) {
-    app.use('/internal/*', browserCors);
-
-    if (mode === 'server') {
-      app.use('/internal/*', createAuthMiddleware(mode, auth, authMiddlewareOptions));
-    }
-
-    registerOpenAICompatFacade({
-      app,
-      llmClient: {
-        createChatCompletion: (provider, request) =>
-          llmGatewayDispatcher.createChatCompletion(provider, request),
-        createChatCompletionStream: (provider, request) =>
-          llmGatewayDispatcher.createChatCompletionStream(provider, request),
-      },
-      options: internalFacadeOptions,
-      providerCredentialResolver,
-      providerRegistry: () => runtimeConfig().providerRegistry,
-    });
-  }
+  app.use('/v1/*', browserCors);
+  app.use('/v1/*', createAuthMiddleware(mode, auth, authMiddlewareOptions));
 
   if (auth) {
     app.all('/api/auth/*', (c) => auth.handler(c.req.raw));
@@ -1133,8 +1108,13 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
   registerCodexOAuthAccountRoutes(app, codexOAuthAccountManager);
 
-  app.get('/api/diagnostics', (c) =>
-    c.json(
+  app.get('/api/diagnostics', (c) => {
+    const adminError = requireDiagnosticsAdminActor(c.get('actor'));
+    if (adminError) {
+      return adminError;
+    }
+
+    return c.json(
       createDiagnosticsSnapshot({
         actor: c.get('actor'),
         dataRoot,
@@ -1143,12 +1123,17 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         agentManifests: runtimeConfig().agentManifests,
         ...(options.coreDb ? { coreDb: options.coreDb } : {}),
       })
-    )
-  );
+    );
+  });
 
   registerCodexOAuthLoginRoutes(app, codexOAuthAccountManager);
 
   registerAppApiRoute(app, 'getAppDiagnostics', async (c) => {
+    const adminError = requireDiagnosticsAdminActor(c.get('actor'));
+    if (adminError) {
+      return adminError;
+    }
+
     const openaiCodexAccounts = await codexOAuthAccountManager.listAccounts();
 
     return c.json(
@@ -1188,8 +1173,13 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     );
   });
 
-  registerAppApiRoute(app, 'getSetupDiagnostics', (c) =>
-    c.json(
+  registerAppApiRoute(app, 'getSetupDiagnostics', (c) => {
+    const adminError = requireDiagnosticsAdminActor(c.get('actor'));
+    if (adminError) {
+      return adminError;
+    }
+
+    return c.json(
       SetupDiagnosticsResponseSchema.parse(
         createSetupDiagnostics({
           dataRoot,
@@ -1209,8 +1199,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           ),
         })
       )
-    )
-  );
+    );
+  });
 
   registerDataRootAdminRoutes({
     app,
@@ -1221,6 +1211,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     app,
     coreDb: options.coreDb,
     dataRoot,
+    ...(mode === 'server' ? { isActiveWorkspaceMember } : {}),
     repositoryWorkspaceDb,
     requestStore,
   });
@@ -1237,7 +1228,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     app,
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     gatewayDefaultProviderId,
-    gatewayPolicyStore,
     llmGatewayDispatcher,
     requestStore,
     resolveGatewayProvider,
@@ -1260,7 +1250,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerThreadRoutes({ app, inflightCommands, requestStore });
 
-  registerAutomationRoutes({ app, automationStore, requestStore });
+  registerAutomationRoutes({ app, automationStore, requestStore, visibleWorkspacesForActor });
 
   registerSearchRoutes({ app, requestStore, visibleWorkspacesForActor });
 

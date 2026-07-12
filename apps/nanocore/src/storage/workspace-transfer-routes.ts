@@ -122,6 +122,7 @@ import {
   importWorkspaceRepositoryResources,
   listExportableWorkspaceRepositoryResources,
 } from '../workspace/repository-store.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
 import { openWorkspaceDbAtRoot } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
@@ -162,13 +163,27 @@ function nextImportedWorkspaceId(baseId: string, exists: (workspaceId: string) =
 /**
  * Returns whether an imported workspace id is occupied in memory or on disk.
  *
+ * @param coreDb Optional Core database carrying the deployment-wide workspace registry.
  * @param store Current user Store.
  * @param dataRoot Canonical data root.
  * @param workspaceId Candidate workspace id.
  * @returns True when either owner already has the id.
  */
-function importedWorkspaceExists(store: FsStore, dataRoot: string, workspaceId: string): boolean {
+function importedWorkspaceExists(
+  coreDb: CoreDb | undefined,
+  store: FsStore,
+  dataRoot: string,
+  workspaceId: string
+): boolean {
   assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
+  if (
+    coreDb?.sqlite
+      .prepare('SELECT 1 FROM workspace_registry WHERE workspace_id = ? LIMIT 1')
+      .get(workspaceId)
+  ) {
+    return true;
+  }
+
   try {
     store.getWorkspace(workspaceId);
     return true;
@@ -179,6 +194,41 @@ function importedWorkspaceExists(store: FsStore, dataRoot: string, workspaceId: 
       })
     );
   }
+}
+
+/**
+ * Checks whether the current store may consume a same-deployment export.
+ *
+ * Exports originating from another deployment are portable input. Exports from the current or
+ * predecessor deployment remain private to the source owner and require active server membership.
+ *
+ * @param dataRoot Canonical data root carrying the current deployment marker.
+ * @param store Current user Store.
+ * @param report Verified export preview.
+ * @param isActiveWorkspaceMember Optional server membership predicate.
+ * @returns True when the export may be previewed or imported by this store.
+ */
+function canReadWorkspaceExport(
+  dataRoot: string,
+  store: FsStore,
+  report: WorkspaceImportDryRunReport,
+  isActiveWorkspaceMember: ((userId: string, workspaceId: string) => boolean) | undefined
+): boolean {
+  const marker = readDataRootLayoutMarker(dataRoot);
+  if (
+    report.manifest.sourceDeploymentId !== marker.deploymentId &&
+    report.manifest.sourceDeploymentId !== marker.predecessorDeploymentId
+  ) {
+    return true;
+  }
+
+  try {
+    store.getWorkspace(report.exportedWorkspaceId);
+  } catch {
+    return false;
+  }
+
+  return isActiveWorkspaceMember?.(store.getUserId(), report.exportedWorkspaceId) ?? true;
 }
 
 /**
@@ -484,6 +534,11 @@ function publishImportedWorkspace(
     return coreDb.sqlite.transaction(() => {
       const imported = importWorkspaceState();
       publishedWorkspaceId = imported.id;
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: store.getUserId(),
+        workspaceId: imported.id,
+      });
       for (const reference of snapshot.vaultReferences) {
         importUnboundWorkspaceVaultReference(coreDb, reference);
       }
@@ -509,12 +564,15 @@ export function registerWorkspaceTransferRoutes({
   app,
   coreDb,
   dataRoot,
+  isActiveWorkspaceMember,
   repositoryWorkspaceDb,
   requestStore,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
   readonly dataRoot: string | null;
+  /** Optional server-mode active membership check for same-deployment exports. */
+  readonly isActiveWorkspaceMember?: (userId: string, workspaceId: string) => boolean;
   readonly repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
 }): void {
@@ -725,14 +783,21 @@ export function registerWorkspaceTransferRoutes({
       });
       const report = dryRunWorkspaceImport({
         verified,
-        workspaceExists: (workspaceId) => importedWorkspaceExists(store, dataRoot, workspaceId),
+        workspaceExists: (workspaceId) =>
+          importedWorkspaceExists(coreDb, store, dataRoot, workspaceId),
       });
       assertRequestedExportHandles(report, parsed.data.sourceWorkspaceId, parsed.data.exportId);
+      if (!canReadWorkspaceExport(dataRoot, store, report, isActiveWorkspaceMember)) {
+        return asApiError('Workspace export is unavailable.', 'workspace_import_forbidden', 403);
+      }
 
       return c.json(WorkspaceImportDryRunResponseSchema.parse(report));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return asApiError(message, 'workspace_import_dry_run_failed', 400);
+    } catch {
+      return asApiError(
+        'Workspace import dry-run could not verify the requested export.',
+        'workspace_import_dry_run_failed',
+        400
+      );
     }
   });
 
@@ -750,7 +815,7 @@ export function registerWorkspaceTransferRoutes({
 
     try {
       const workspaceExists = (workspaceId: string) =>
-        importedWorkspaceExists(store, dataRoot, workspaceId);
+        importedWorkspaceExists(coreDb, store, dataRoot, workspaceId);
       const verified = verifyWorkspaceExportTree({
         exportRoot: existingWorkspaceExportRoot(
           dataRoot,
@@ -760,6 +825,9 @@ export function registerWorkspaceTransferRoutes({
       });
       const report = dryRunWorkspaceImport({ verified, workspaceExists });
       assertRequestedExportHandles(report, parsed.data.sourceWorkspaceId, parsed.data.exportId);
+      if (!canReadWorkspaceExport(dataRoot, store, report, isActiveWorkspaceMember)) {
+        return asApiError('Workspace export is unavailable.', 'workspace_import_forbidden', 403);
+      }
       const importedWorkspaceId =
         report.collision.status === 'available'
           ? report.collision.workspaceId
@@ -803,9 +871,12 @@ export function registerWorkspaceTransferRoutes({
           workspace,
         })
       );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return asApiError(message, 'workspace_import_failed', 400);
+    } catch {
+      return asApiError(
+        'Workspace import could not verify or publish the requested export.',
+        'workspace_import_failed',
+        400
+      );
     }
   });
 }

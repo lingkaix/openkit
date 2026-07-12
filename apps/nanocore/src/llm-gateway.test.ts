@@ -180,9 +180,10 @@ describe('OpenAI-compatible agent gateway', () => {
   it('keeps the public Gateway surface on Chat Completions and Responses only', () => {
     const appSource = readFileSync('./src/app.ts', 'utf8');
     const gatewaySource = readFileSync('./src/llm/gateway-routes.ts', 'utf8');
-    const facadeSource = readFileSync('./src/providers/openai-compat-facade.ts', 'utf8');
 
     expect(appSource).toContain('registerLlmGatewayRoutes({');
+    expect(appSource).not.toContain('registerOpenAICompatFacade');
+    expect(appSource).not.toContain('/internal/v1/chat/completions');
     expect(appSource).not.toContain("app.get('/v1/models'");
     expect(appSource).not.toContain("app.post('/v1/chat/completions'");
     expect(appSource).not.toContain("app.post('/v1/responses'");
@@ -190,8 +191,18 @@ describe('OpenAI-compatible agent gateway', () => {
     expect(gatewaySource).toContain("app.post('/v1/chat/completions'");
     expect(gatewaySource).toContain("app.post('/v1/responses'");
     expect(gatewaySource).not.toContain("app.post('/v1/completions'");
-    expect(facadeSource.match(/app\.post\('\/internal\/v1\//g)).toHaveLength(1);
-    expect(facadeSource).toContain("app.post('/internal/v1/chat/completions'");
+  });
+
+  it('does not expose the historical internal Chat Completions facade', async () => {
+    const app = createApp();
+
+    const res = await app.request('/internal/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'llama3.2', messages: [] }),
+    });
+
+    expect(res.status).toBe(404);
   });
 
   it('returns process health for gateway clients', async () => {

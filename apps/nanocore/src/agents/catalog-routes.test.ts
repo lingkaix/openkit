@@ -10,6 +10,7 @@ import { ensureLocalUser } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 
 describe('agent catalog routes', () => {
   it('limits global catalog reads to workspaces visible to scoped tokens', async () => {
@@ -20,6 +21,14 @@ describe('agent catalog routes', () => {
     const store = new FsStore({ dataRoot, userId: 'user_local' });
     const allowedWorkspace = store.createWorkspace('Allowed agents');
     const deniedWorkspace = store.createWorkspace('Denied agents');
+
+    for (const workspace of [allowedWorkspace, deniedWorkspace]) {
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'user_local',
+        workspaceId: workspace.id,
+      });
+    }
     store.upsertAgent(allowedWorkspace.id, {
       ...store.getAgent(allowedWorkspace.id, 'agent_codex_host'),
       id: 'agent_allowed_only',

@@ -7,6 +7,7 @@ import {
 import type { Context, Hono } from 'hono';
 
 import { asApiError, asInvalidRequestError } from '../api-errors.js';
+import { isDeploymentAdminActor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import type { FsStore } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
@@ -32,6 +33,18 @@ function asRuntimeConfigFileError(error: unknown): Response {
 }
 
 /**
+ * Requires deployment-admin authority for global runtime configuration.
+ *
+ * @param c Hono context carrying the authenticated actor.
+ * @returns Error response when the actor lacks deployment-admin authority.
+ */
+function requireRuntimeConfigAdminActor(c: Context<{ Variables: AuthVariables }>): Response | null {
+  return isDeploymentAdminActor(c.get('actor'))
+    ? null
+    : asApiError('Server-admin authority is required.', 'runtime_config_admin_forbidden', 403);
+}
+
+/**
  * Registers runtime configuration reload, file, validation, and stale-session routes.
  *
  * @param dependencies Hono app and runtime configuration dependencies.
@@ -50,6 +63,11 @@ export function registerRuntimeConfigRoutes({
   readonly runtimeConfigManager: RuntimeConfigManager;
 }): void {
   registerAppApiRoute(app, 'reloadRuntimeConfig', async (c) => {
+    const adminError = requireRuntimeConfigAdminActor(c);
+    if (adminError) {
+      return adminError;
+    }
+
     const parsed = RuntimeConfigReloadRequestSchema.safeParse(await c.req.json().catch(() => ({})));
 
     if (!parsed.success) {
@@ -60,6 +78,11 @@ export function registerRuntimeConfigRoutes({
   });
 
   registerAppApiRoute(app, 'listRuntimeConfigFiles', (c) => {
+    const adminError = requireRuntimeConfigAdminActor(c);
+    if (adminError) {
+      return adminError;
+    }
+
     try {
       return c.json(runtimeConfigFileService(c).listFiles());
     } catch (error) {
@@ -68,6 +91,11 @@ export function registerRuntimeConfigRoutes({
   });
 
   registerAppApiRoute(app, 'getRuntimeConfigFile', (c) => {
+    const adminError = requireRuntimeConfigAdminActor(c);
+    if (adminError) {
+      return adminError;
+    }
+
     const id = c.req.query('id');
 
     if (!id) {
@@ -82,6 +110,11 @@ export function registerRuntimeConfigRoutes({
   });
 
   registerAppApiRoute(app, 'createRuntimeConfigFile', async (c) => {
+    const adminError = requireRuntimeConfigAdminActor(c);
+    if (adminError) {
+      return adminError;
+    }
+
     const parsed = RuntimeConfigFileWriteRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -98,6 +131,11 @@ export function registerRuntimeConfigRoutes({
   });
 
   registerAppApiRoute(app, 'updateRuntimeConfigFile', async (c) => {
+    const adminError = requireRuntimeConfigAdminActor(c);
+    if (adminError) {
+      return adminError;
+    }
+
     const parsed = RuntimeConfigFileWriteRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -114,6 +152,11 @@ export function registerRuntimeConfigRoutes({
   });
 
   registerAppApiRoute(app, 'getRuntimeConfigSchemas', (c) => {
+    const adminError = requireRuntimeConfigAdminActor(c);
+    if (adminError) {
+      return adminError;
+    }
+
     try {
       return c.json(runtimeConfigFileService(c).schemaCatalog());
     } catch (error) {
@@ -122,6 +165,11 @@ export function registerRuntimeConfigRoutes({
   });
 
   registerAppApiRoute(app, 'validateRuntimeConfig', async (c) => {
+    const adminError = requireRuntimeConfigAdminActor(c);
+    if (adminError) {
+      return adminError;
+    }
+
     const parsed = RuntimeConfigValidationRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );

@@ -52,12 +52,13 @@ describe('createDiagnosticsSnapshot', () => {
 
     expect(snapshot).toMatchObject({
       auth: { mode: 'local' },
-      dataRoot,
+      dataRoot: 'configured',
       migrations: { applied: expect.arrayContaining(['core_0000_baseline']) },
       mode: 'local',
       providers: [{ baseUrl: 'https://example.com/v1', id: 'provider' }],
       agents: [{ id: 'agent_self_check', readiness: 'ready', reasons: [] }],
     });
+    expect(JSON.stringify(snapshot)).not.toContain(dataRoot);
     expect(JSON.stringify(snapshot)).not.toContain('SECRET_TOKEN');
     expect(JSON.stringify(snapshot)).not.toContain('user:password');
 

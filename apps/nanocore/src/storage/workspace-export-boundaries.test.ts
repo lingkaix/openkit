@@ -14,6 +14,9 @@ import { describe, expect, it } from 'vitest';
 
 import { createApp } from '../app.js';
 import { createDemoWorkspaceForUser, FsStore } from '../lib/store.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { openCoreDb } from './db.js';
+import { applyMigrations } from './migrate.js';
 import {
   verifyWorkspaceExportTree,
   WORKSPACE_EXPORT_MANIFEST_FILE,
@@ -336,5 +339,58 @@ describe('workspace import route handles', () => {
     expect(response.status, await response.clone().text()).toBe(200);
     expect(await response.json()).toMatchObject({ importedWorkspaceId: 'ws_imported_ws_demo_2' });
     expect(readFileSync(join(orphanRoot, 'orphan.txt'), 'utf8')).toBe('keep');
+  });
+
+  it('skips a workspace id owned anywhere else in the deployment', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-registry-'));
+    const store = createBoundaryStore(dataRoot);
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      const now = Date.now();
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO users (
+            id,
+            display_name,
+            email,
+            email_verified,
+            created_at,
+            updated_at,
+            kind
+          )
+           VALUES
+             ('user_local', 'Local', 'local@example.com', false, ?, ?, 'human'),
+             ('user_other', 'Other', 'other@example.com', false, ?, ?, 'human')`
+        )
+        .run(now, now, now, now);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'user_other',
+        workspaceId: 'ws_imported_ws_demo',
+      });
+      const app = createApp({ coreDb, dataRoot, store });
+      const exportResponse = await app.request('/api/app/workspaces/ws_demo/export', {
+        method: 'POST',
+      });
+      const exported = (await exportResponse.json()) as { exportId: string };
+
+      const response = await app.request('/api/app/workspace-imports', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sourceWorkspaceId: 'ws_demo', exportId: exported.exportId }),
+      });
+
+      expect(response.status, await response.clone().text()).toBe(200);
+      expect(await response.json()).toMatchObject({ importedWorkspaceId: 'ws_imported_ws_demo_2' });
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
+          .get('ws_imported_ws_demo')
+      ).toEqual({ owner_user_id: 'user_other' });
+    } finally {
+      coreDb.sqlite.close();
+    }
   });
 });

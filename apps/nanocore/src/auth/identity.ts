@@ -21,6 +21,18 @@ export interface Actor {
 }
 
 /**
+ * Checks whether one actor may administer deployment-wide state.
+ *
+ * @param actor Authenticated or implicit request actor.
+ * @returns True for the local actor or a server-admin bearer token.
+ */
+export function isDeploymentAdminActor(actor: Actor | undefined): boolean {
+  return (
+    actor?.kind === 'local' || (actor?.kind === 'token' && actor.tokenScope === 'server-admin')
+  );
+}
+
+/**
  * Resolves the request actor for the current auth mode.
  *
  * @param _request HTTP request being authenticated.

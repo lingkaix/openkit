@@ -106,8 +106,6 @@ describe('loadOpenKitConfig', () => {
         // Explicit mode from file-backed config.
         "mode": "server",
         "defaults": {
-          "workspaceId": "ws_demo",
-          "agentId": "agent_codex_host",
           "coreModel": "model_codex",
         },
       }`
@@ -116,8 +114,6 @@ describe('loadOpenKitConfig', () => {
     expect(loadOpenKitConfig(dataRoot)).toEqual({
       mode: 'server',
       defaults: {
-        workspaceId: 'ws_demo',
-        agentId: 'agent_codex_host',
         coreModel: 'model_codex',
       },
     });
@@ -137,22 +133,14 @@ describe('loadOpenKitConfig', () => {
             "host": "127.0.0.1",
             "port": 3000
           },
-          "trustedProxies": [],
           "cors": {
-            "origins": []
+            "origins": ["https://console.openkit.example.com"]
           }
         },
         "auth": {
-          "enabled": true,
-          "provider": "better-auth",
-          "localModeUserId": "user_local",
           "signup": {
             "enabled": false
           }
-        },
-        "data": {
-          "root": "/data/openkit",
-          "layoutVersion": 1
         },
         "providers": [
           {
@@ -165,10 +153,7 @@ describe('loadOpenKitConfig', () => {
             "defaultModel": "openai/gpt-5.1",
             "secretRef": "env:CORE_OPENROUTER_API_KEY",
             "extraHeaders": {},
-            "extraBody": {},
-            "metadata": {
-              "modelsDevProviderId": "openrouter"
-            }
+            "extraBody": {}
           },
           {
             "id": "agent-openrouter",
@@ -178,39 +163,21 @@ describe('loadOpenKitConfig', () => {
             "baseUrl": "https://openrouter.ai/api/v1",
             "models": ["openai/gpt-5.1"],
             "defaultModel": "openai/gpt-5.1",
-            "secretRef": "env:AGENT_OPENROUTER_API_KEY",
-            "metadata": {
-              "modelsDevProviderId": "openrouter"
-            }
+            "secretRef": "env:AGENT_OPENROUTER_API_KEY"
           }
         ],
         "defaults": {
           "coreProviderId": "core-openrouter",
           "coreModel": "openai/gpt-5.1",
           "gatewayProviderId": "agent-openrouter",
-          "gatewayModel": "openai/gpt-5.1",
-          "agentId": "agent_codex_host"
+          "gatewayModel": "openai/gpt-5.1"
         },
         "gateway": {
           "openaiCompatible": {
             "enabled": true,
-            "route": "/v1",
-            "defaultProviderId": "agent-openrouter",
-            "defaultModel": "openai/gpt-5.1",
-            "allowedProviderIds": ["agent-openrouter"],
-            "auth": "agent-session"
+            "allowedProviderIds": ["agent-openrouter"]
           }
-        },
-        "features": {
-          "internalOpenAICompatFacade": {
-            "enabled": false
-          }
-        },
-        "diagnostics": {
-          "redactSecrets": true,
-          "emitConfigOrigins": true
-        },
-        "extensions": {}
+        }
       }`
     );
 
@@ -293,10 +260,10 @@ describe('loadOpenKitConfig', () => {
       })
     );
 
-    expect(() => loadOpenKitConfig(dataRoot)).toThrow(/apiKey is not supported/);
+    expect(() => loadOpenKitConfig(dataRoot)).toThrow();
   });
 
-  it('loads internal OpenAI-compatible facade settings', () => {
+  it('rejects removed internal OpenAI-compatible facade settings', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-config-'));
     mkdirSync(join(dataRoot, 'config'), { recursive: true });
     writeFileSync(
@@ -312,15 +279,7 @@ describe('loadOpenKitConfig', () => {
       })
     );
 
-    expect(loadOpenKitConfig(dataRoot)).toEqual({
-      internal: {
-        openaiCompatFacade: {
-          defaultModel: 'gpt-5.1',
-          defaultProviderId: 'openai',
-          enabled: true,
-        },
-      },
-    });
+    expect(() => loadOpenKitConfig(dataRoot)).toThrow();
   });
 
   it('rejects invalid config values with a boot error', () => {

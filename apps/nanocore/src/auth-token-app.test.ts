@@ -8,6 +8,7 @@ import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureServerBootstrapToken } from './auth/bootstrap-token.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
  * Inserts the canonical owner user used by direct access-token fixtures.
@@ -51,16 +52,34 @@ describe('server-mode access-token auth', () => {
         dataRoot,
         mode: 'server',
       });
+      const consumeBody = JSON.stringify({
+        displayName: 'Owner',
+        ownerUserId: 'user_owner',
+        token: bootstrap.token,
+        tokenExpiresAt: '2999-01-01T00:00:00.000Z',
+      });
+      const remotePlaintext = await app.request(
+        new Request('http://public.example/api/app/auth/bootstrap/consume', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: consumeBody,
+        }),
+        undefined,
+        {
+          incoming: {
+            socket: {
+              remoteAddress: '203.0.113.10',
+              remoteFamily: 'IPv4',
+              remotePort: 43123,
+            },
+          },
+        }
+      );
 
       const consumed = await app.request('/api/app/auth/bootstrap/consume', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          displayName: 'Owner',
-          ownerUserId: 'user_owner',
-          token: bootstrap.token,
-          tokenExpiresAt: '2999-01-01T00:00:00.000Z',
-        }),
+        body: consumeBody,
       });
       const consumedBody = (await consumed.json()) as {
         record: { ownerUserId: string; scope: string };
@@ -72,14 +91,13 @@ describe('server-mode access-token auth', () => {
       const secondConsume = await app.request('/api/app/auth/bootstrap/consume', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          displayName: 'Owner',
-          ownerUserId: 'user_owner',
-          token: bootstrap.token,
-          tokenExpiresAt: '2999-01-01T00:00:00.000Z',
-        }),
+        body: consumeBody,
       });
 
+      expect(remotePlaintext.status).toBe(400);
+      await expect(remotePlaintext.json()).resolves.toMatchObject({
+        code: 'core.auth.insecure_transport',
+      });
       expect(consumed.status).toBe(201);
       expect(consumedBody.record).toMatchObject({
         ownerUserId: 'user_owner',
@@ -180,6 +198,15 @@ describe('server-mode access-token auth', () => {
       const listedBody = (await listed.json()) as {
         items: Array<{ id: string; kind: string }>;
       };
+      const seededWorkspaceId = listedBody.items[0]?.id;
+      if (!seededWorkspaceId) {
+        throw new Error('Expected a seeded workspace.');
+      }
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'user_owner',
+        workspaceId: seededWorkspaceId,
+      });
       const created = await app.request('/api/app/auth/tokens', {
         method: 'POST',
         headers: {
@@ -188,7 +215,7 @@ describe('server-mode access-token auth', () => {
         },
         body: JSON.stringify({
           scope: 'workspace-readonly',
-          workspaceIds: [listedBody.items[0]?.id],
+          workspaceIds: [seededWorkspaceId],
           expiresAt: '2999-01-01T00:00:00.000Z',
         }),
       });

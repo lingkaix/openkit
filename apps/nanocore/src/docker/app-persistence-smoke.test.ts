@@ -1,10 +1,11 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { OpenKitConfigSchema } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
@@ -87,6 +88,14 @@ function runAssertOnlySmoke(dataRoot: string, workspaceId: string): ReturnType<t
 }
 
 describe('app persistence smoke script', () => {
+  it('seeds a server config accepted by the current strict schema', () => {
+    const source = readFileSync(smokeScript, 'utf8');
+    const seededConfig = source.match(/cat >"\$\{config_path\}" <<'JSON'\n([\s\S]*?)\nJSON/);
+
+    expect(seededConfig?.[1]).toBeDefined();
+    expect(() => OpenKitConfigSchema.parse(JSON.parse(seededConfig?.[1] ?? ''))).not.toThrow();
+  });
+
   it('passes when the mounted data root contains the canonical layout', async () => {
     const workspaceId = 'ws_1';
     const dataRoot = await createMountedDataRootFixture(workspaceId);

@@ -8,6 +8,7 @@ import type {
 } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 import { createApp } from './app.js';
+import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import type { FsStore } from './lib/store.js';
@@ -59,20 +60,41 @@ describe('NanoCore deployment mode matrix', () => {
     runtimePlacement,
   }) => {
     const turnExecutor = createMatrixTurnExecutor(runtimePlacement);
-    const app = createApp({
-      ...(coreMode === 'server' ? { auth: createSignedInAuthStub(), mode: 'server' } : {}),
-      agentManifests: [],
-      turnExecutor,
-    });
-    const diagnostics = await app.request('/api/diagnostics');
-    const payload = await diagnostics.json();
+    const coreDb = coreMode === 'server' ? createCoreDb() : null;
 
-    expect(diagnostics.status).toBe(200);
-    expect(payload).toMatchObject({
-      auth: coreMode === 'server' ? { mode: 'server', signedIn: true } : { mode: 'local' },
-      mode: coreMode,
-    });
-    expect(describeTurnExecutorPlacement(turnExecutor)).toEqual(runtimePlacement);
+    try {
+      let authorization: string | undefined;
+      if (coreDb) {
+        ensureLocalUser(coreDb);
+        const serverAdmin = createOpenKitAccessTokenRecord(coreDb, {
+          expiresAt: '2999-01-01T00:00:00.000Z',
+          ownerUserId: LOCAL_USER_ID,
+          scope: 'server-admin',
+          workspaceIds: [],
+        });
+        authorization = `Bearer ${serverAdmin.secret}`;
+      }
+      const app = createApp({
+        ...(coreMode === 'server'
+          ? { auth: createSignedInAuthStub(), coreDb: coreDb!, mode: 'server' }
+          : {}),
+        agentManifests: [],
+        turnExecutor,
+      });
+      const diagnostics = await app.request('/api/diagnostics', {
+        ...(authorization ? { headers: { authorization } } : {}),
+      });
+      const payload = await diagnostics.json();
+
+      expect(diagnostics.status).toBe(200);
+      expect(payload).toMatchObject({
+        auth: coreMode === 'server' ? { mode: 'server', signedIn: false } : { mode: 'local' },
+        mode: coreMode,
+      });
+      expect(describeTurnExecutorPlacement(turnExecutor)).toEqual(runtimePlacement);
+    } finally {
+      coreDb?.sqlite.close();
+    }
   });
 
   it.each(

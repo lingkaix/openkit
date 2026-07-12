@@ -202,7 +202,7 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 /** Minimal OpenAPI document shape emitted by NanoCore. */
-export interface AppOpenApiDocument {
+interface AppOpenApiDocument {
   openapi: '3.1.0';
   info: {
     title: string;
@@ -220,6 +220,7 @@ export interface AppOpenApiDocument {
 
 const JSON_CONTENT_TYPE = 'application/json';
 const APP_API_VERSION = '0.1.0';
+const DEPLOYMENT_ADMIN_SECURITY = [{ bearerAuth: [] }];
 const THREAD_ID_PARAMETER = {
   name: 'threadId',
   in: 'path',
@@ -404,7 +405,7 @@ export function createAppOpenApiDocument() {
           operationId: 'getStorageLayoutReport',
           tags: ['storage'],
           summary: 'Read the NanoCore storage layout report.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           responses: {
             '200': {
               description: 'Storage layout report.',
@@ -430,7 +431,7 @@ export function createAppOpenApiDocument() {
           operationId: 'getAppDiagnostics',
           tags: ['diagnostics'],
           summary: 'Read NanoCore app diagnostics and readiness.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           responses: {
             '200': {
               description: 'App diagnostics and readiness report.',
@@ -456,7 +457,7 @@ export function createAppOpenApiDocument() {
           operationId: 'getSetupDiagnostics',
           tags: ['diagnostics'],
           summary: 'Read NanoCore setup diagnostics.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           responses: {
             '200': {
               description: 'Setup diagnostics report.',
@@ -482,7 +483,7 @@ export function createAppOpenApiDocument() {
           operationId: 'listOpenKitAccessTokens',
           tags: ['auth'],
           summary: 'List redacted OpenKit access-token records.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           responses: {
             '200': {
               description: 'Redacted access-token records.',
@@ -506,7 +507,7 @@ export function createAppOpenApiDocument() {
           operationId: 'createOpenKitAccessToken',
           tags: ['auth'],
           summary: 'Issue an OpenKit access token and return the secret once.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           requestBody: {
             required: true,
             content: {
@@ -574,7 +575,7 @@ export function createAppOpenApiDocument() {
           operationId: 'revokeOpenKitAccessToken',
           tags: ['auth'],
           summary: 'Revoke an OpenKit access token immediately.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           parameters: [
             {
               name: 'tokenId',
@@ -608,7 +609,7 @@ export function createAppOpenApiDocument() {
           operationId: 'rotateOpenKitAccessToken',
           tags: ['auth'],
           summary: 'Rotate an OpenKit access token and return the new secret once.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           parameters: [
             {
               name: 'tokenId',
@@ -650,7 +651,7 @@ export function createAppOpenApiDocument() {
           operationId: 'reloadRuntimeConfig',
           tags: ['runtime-config'],
           summary: 'Reload NanoCore runtime config.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           requestBody: {
             required: true,
             content: {
@@ -684,7 +685,7 @@ export function createAppOpenApiDocument() {
           operationId: 'listRuntimeConfigFiles',
           tags: ['runtime-config'],
           summary: 'List editable runtime config files.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           responses: {
             '200': {
               description: 'Runtime config file summaries.',
@@ -710,7 +711,7 @@ export function createAppOpenApiDocument() {
           operationId: 'getRuntimeConfigFile',
           tags: ['runtime-config'],
           summary: 'Read one runtime config file.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           parameters: [
             {
               name: 'id',
@@ -742,7 +743,7 @@ export function createAppOpenApiDocument() {
           operationId: 'createRuntimeConfigFile',
           tags: ['runtime-config'],
           summary: 'Create one runtime config file.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           requestBody: {
             required: true,
             content: {
@@ -774,7 +775,7 @@ export function createAppOpenApiDocument() {
           operationId: 'updateRuntimeConfigFile',
           tags: ['runtime-config'],
           summary: 'Update one runtime config file.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           requestBody: {
             required: true,
             content: {
@@ -808,7 +809,7 @@ export function createAppOpenApiDocument() {
           operationId: 'getRuntimeConfigSchemas',
           tags: ['runtime-config'],
           summary: 'Read runtime config JSON Schema catalog.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           responses: {
             '200': {
               description: 'Runtime config schema catalog.',
@@ -834,7 +835,7 @@ export function createAppOpenApiDocument() {
           operationId: 'validateRuntimeConfig',
           tags: ['runtime-config'],
           summary: 'Validate draft runtime config source.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           requestBody: {
             required: true,
             content: {
@@ -1119,7 +1120,7 @@ export function createAppOpenApiDocument() {
           operationId: 'listOpenAICodexOAuthAccounts',
           tags: ['oauth'],
           summary: 'List server-owned OpenAI Codex OAuth account slots.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           responses: {
             '200': {
               description: 'Sanitized OpenAI Codex OAuth account slots.',
@@ -1143,7 +1144,7 @@ export function createAppOpenApiDocument() {
           operationId: 'createOpenAICodexOAuthAccount',
           tags: ['oauth'],
           summary: 'Create one server-owned OpenAI Codex OAuth account slot.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           requestBody: {
             required: true,
             content: {
@@ -1177,7 +1178,7 @@ export function createAppOpenApiDocument() {
           operationId: 'updateOpenAICodexOAuthAccount',
           tags: ['oauth'],
           summary: 'Update one server-owned OpenAI Codex OAuth account slot.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           parameters: [
             {
               name: 'accountSlotId',
@@ -1217,7 +1218,7 @@ export function createAppOpenApiDocument() {
           operationId: 'deleteOpenAICodexOAuthAccount',
           tags: ['oauth'],
           summary: 'Delete one server-owned OpenAI Codex OAuth account slot.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           parameters: [
             {
               name: 'accountSlotId',
@@ -1246,7 +1247,7 @@ export function createAppOpenApiDocument() {
           operationId: 'getOpenAICodexOAuthAccountStatus',
           tags: ['oauth'],
           summary: 'Read one OpenAI Codex OAuth account login status.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           parameters: [
             {
               name: 'accountSlotId',
@@ -1280,7 +1281,7 @@ export function createAppOpenApiDocument() {
           operationId: 'startOpenAICodexOAuthAccountLogin',
           tags: ['oauth'],
           summary: 'Start one OpenAI Codex OAuth login.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           parameters: [
             {
               name: 'accountSlotId',
@@ -1322,7 +1323,7 @@ export function createAppOpenApiDocument() {
           operationId: 'cancelOpenAICodexOAuthAccountLogin',
           tags: ['oauth'],
           summary: 'Cancel one pending OpenAI Codex OAuth login.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           parameters: [
             {
               name: 'accountSlotId',
@@ -1364,7 +1365,7 @@ export function createAppOpenApiDocument() {
           operationId: 'logoutOpenAICodexOAuthAccount',
           tags: ['oauth'],
           summary: 'Log out one OpenAI Codex OAuth account.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           parameters: [
             {
               name: 'accountSlotId',
@@ -3316,7 +3317,7 @@ export function createAppOpenApiDocument() {
           operationId: 'listServerAuditEvents',
           tags: ['diagnostics'],
           summary: 'Read server audit events.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           responses: {
             '200': {
               description: 'Server audit events.',
@@ -3371,7 +3372,7 @@ export function createAppOpenApiDocument() {
           operationId: 'listServerPermissionDecisions',
           tags: ['diagnostics'],
           summary: 'Read server permission decisions.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           responses: {
             '200': {
               description: 'Server permission decisions.',
@@ -4097,7 +4098,7 @@ export function createAppOpenApiDocument() {
           operationId: 'createDataRootBackup',
           tags: ['storage'],
           summary: 'Create and verify one server-managed hot data-root backup.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           responses: {
             '200': {
               description: 'Data-root backup manifest and verification summary.',
@@ -4123,7 +4124,7 @@ export function createAppOpenApiDocument() {
           operationId: 'verifyDataRootBackup',
           tags: ['storage'],
           summary: 'Verify one server-managed data-root backup.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           parameters: [
             {
               name: 'backupId',
@@ -4260,7 +4261,7 @@ export function createAppOpenApiDocument() {
           operationId: 'getVaultAdminStatus',
           tags: ['vault'],
           summary: 'Read redacted vault backend status.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           responses: {
             '200': {
               description: 'Redacted vault backend status.',
@@ -4286,7 +4287,7 @@ export function createAppOpenApiDocument() {
           operationId: 'unlockVaultAdminBackend',
           tags: ['vault'],
           summary: 'Unlock the configured vault backend.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           requestBody: {
             required: true,
             content: {
@@ -4320,7 +4321,7 @@ export function createAppOpenApiDocument() {
           operationId: 'lockVaultAdminBackend',
           tags: ['vault'],
           summary: 'Lock the configured vault backend.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           responses: {
             '200': {
               description: 'Redacted vault backend status after lock.',
@@ -4346,7 +4347,7 @@ export function createAppOpenApiDocument() {
           operationId: 'bootstrapCodexAuthJsonVaultReference',
           tags: ['vault'],
           summary: 'Store Codex auth JSON in the vault and create its runtime-file grant.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           requestBody: {
             required: true,
             content: {
@@ -4576,7 +4577,7 @@ export function createAppOpenApiDocument() {
           operationId: 'listServerVaultUseRecords',
           tags: ['vault'],
           summary: 'List redacted server vault use records.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          security: DEPLOYMENT_ADMIN_SECURITY,
           responses: {
             '200': {
               description: 'Redacted server vault use records.',

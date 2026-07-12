@@ -392,30 +392,6 @@ export function clearWorkerCheckpoint(
 }
 
 /**
- * Deletes one worker checkpoint when the stage is terminal.
- *
- * @param workspaceDb Open workspace-scope database handle.
- * @param workspaceId Workspace id.
- * @param threadId Thread id.
- * @param turnId Turn id.
- * @returns True when a checkpoint row was deleted.
- */
-export function clearTerminalWorkerCheckpoint(
-  workspaceDb: WorkspaceDb,
-  workspaceId: string,
-  threadId: string,
-  turnId: string
-): boolean {
-  const checkpoint = getWorkerCheckpoint(workspaceDb, workspaceId, threadId, turnId);
-
-  if (!checkpoint || !isTerminalWorkerTurnStage(checkpoint.stage)) {
-    return false;
-  }
-
-  return clearWorkerCheckpoint(workspaceDb, workspaceId, threadId, turnId);
-}
-
-/**
  * Lists worker checkpoints that still need recovery materialization for one workspace.
  *
  * @param workspaceDb Open workspace-scope database handle.

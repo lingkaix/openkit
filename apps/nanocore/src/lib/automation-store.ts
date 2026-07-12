@@ -1,95 +1,82 @@
-/**
- * Automation definition stored by nanocore.
- */
-export interface AutomationRecord {
-  /** Stable automation identifier. */
-  readonly id: string;
-  /** User-facing automation name. */
-  readonly name: string;
-  /** Workspace the automation will target when enabled. */
-  readonly workspaceId: string;
-  /** Cron expression supplied by the UI. */
-  readonly cron: string;
-  /** Prompt that will be sent when the automation executes. */
-  readonly prompt: string;
-  /** Current automation state. */
-  readonly status: 'paused' | 'enabled';
-  /** ISO timestamp for creation. */
-  readonly createdAt: string;
-  /** ISO timestamp for last update. */
-  readonly updatedAt: string;
-}
+import { randomUUID } from 'node:crypto';
 
-/**
- * Input for creating one automation definition.
- */
-export interface CreateAutomationInput {
-  /** User-facing automation name. */
-  readonly name: string;
-  /** Target workspace ID. */
-  readonly workspaceId: string;
-  /** Cron expression supplied by the UI. */
-  readonly cron: string;
-  /** Prompt to send during execution. */
-  readonly prompt: string;
-}
-
-/**
- * Input for updating one automation definition.
- */
-export interface UpdateAutomationInput {
-  /** New automation status. */
-  readonly status: AutomationRecord['status'];
-}
+import type {
+  AutomationRecord,
+  CreateAutomationRequest,
+  UpdateAutomationRequest,
+} from '@openkit/app-api-schemas';
 
 /**
  * App-local automation definition store.
  */
 export class AutomationStore {
-  private readonly automations = new Map<string, AutomationRecord>();
+  private readonly automationsByUserId = new Map<string, Map<string, AutomationRecord>>();
 
   /**
    * Return all automation definitions.
    *
-   * @returns Automation records.
+   * @param userId User who owns the returned records.
+   * @returns User-owned automation records.
    */
-  public listAutomations(): AutomationRecord[] {
-    return [...this.automations.values()];
+  public listAutomations(userId: string): AutomationRecord[] {
+    return [...(this.automationsByUserId.get(userId)?.values() ?? [])];
+  }
+
+  /**
+   * Return one user-owned automation definition.
+   *
+   * @param userId User who must own the record.
+   * @param automationId Automation identifier.
+   * @returns User-owned automation record.
+   * @throws When the record does not exist in the user's private collection.
+   */
+  public getAutomation(userId: string, automationId: string): AutomationRecord {
+    const automation = this.automationsByUserId.get(userId)?.get(automationId);
+
+    if (!automation) {
+      throw new Error(`Automation not found: ${automationId}`);
+    }
+
+    return automation;
   }
 
   /**
    * Create a paused automation definition.
    *
+   * @param userId User who owns the automation.
    * @param input Automation creation input.
    * @returns Created automation record.
    */
-  public createAutomation(input: CreateAutomationInput): AutomationRecord {
+  public createAutomation(userId: string, input: CreateAutomationRequest): AutomationRecord {
     const timestamp = new Date().toISOString();
     const automation: AutomationRecord = {
-      id: `auto_${this.automations.size + 1}`,
+      id: `auto_${randomUUID()}`,
       ...input,
       status: 'paused',
       createdAt: timestamp,
       updatedAt: timestamp,
     };
+    const automations = this.automationsByUserId.get(userId) ?? new Map();
 
-    this.automations.set(automation.id, automation);
+    automations.set(automation.id, automation);
+    this.automationsByUserId.set(userId, automations);
     return automation;
   }
 
   /**
    * Update one automation definition.
    *
+   * @param userId User who must own the automation.
    * @param automationId Automation identifier.
    * @param input Automation update input.
    * @returns Updated automation record.
    */
-  public updateAutomation(automationId: string, input: UpdateAutomationInput): AutomationRecord {
-    const automation = this.automations.get(automationId);
-
-    if (!automation) {
-      throw new Error(`Automation not found: ${automationId}`);
-    }
+  public updateAutomation(
+    userId: string,
+    automationId: string,
+    input: UpdateAutomationRequest
+  ): AutomationRecord {
+    const automation = this.getAutomation(userId, automationId);
 
     const updatedAutomation: AutomationRecord = {
       ...automation,
@@ -97,18 +84,26 @@ export class AutomationStore {
       updatedAt: new Date().toISOString(),
     };
 
-    this.automations.set(automationId, updatedAutomation);
+    this.automationsByUserId.get(userId)?.set(automationId, updatedAutomation);
     return updatedAutomation;
   }
 
   /**
    * Delete one automation definition.
    *
+   * @param userId User who must own the automation.
    * @param automationId Automation identifier.
+   * @throws When the record does not exist in the user's private collection.
    */
-  public deleteAutomation(automationId: string): void {
-    if (!this.automations.delete(automationId)) {
+  public deleteAutomation(userId: string, automationId: string): void {
+    const automations = this.automationsByUserId.get(userId);
+
+    if (!automations?.delete(automationId)) {
       throw new Error(`Automation not found: ${automationId}`);
+    }
+
+    if (automations.size === 0) {
+      this.automationsByUserId.delete(userId);
     }
   }
 }

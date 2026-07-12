@@ -9,7 +9,7 @@ import { listAppliedMigrationIds } from '../storage/migrate.js';
 /**
  * Auth diagnostics snapshot.
  */
-export interface DiagnosticsAuthSnapshot {
+interface DiagnosticsAuthSnapshot {
   /** Runtime auth mode. */
   mode: CoreMode;
   /** Whether the request has a server-mode session. */
@@ -19,7 +19,7 @@ export interface DiagnosticsAuthSnapshot {
 /**
  * Agent diagnostics snapshot.
  */
-export interface DiagnosticsAgentSnapshot {
+interface DiagnosticsAgentSnapshot {
   /** Agent id. */
   id: string;
   /** Agent display name. */
@@ -33,11 +33,11 @@ export interface DiagnosticsAgentSnapshot {
 /**
  * Aggregate NanoCore diagnostics snapshot.
  */
-export interface DiagnosticsSnapshot {
+interface DiagnosticsSnapshot {
   /** Auth state. */
   auth: DiagnosticsAuthSnapshot;
-  /** Data root used by NanoCore. */
-  dataRoot: string | null;
+  /** Whether NanoCore has a configured data root. */
+  dataRoot: 'configured' | null;
   /** Applied storage migrations. */
   migrations: { applied: string[] };
   /** Runtime mode. */
@@ -51,7 +51,7 @@ export interface DiagnosticsSnapshot {
 /**
  * Input for creating an aggregate diagnostics snapshot.
  */
-export interface CreateDiagnosticsSnapshotInput {
+interface CreateDiagnosticsSnapshotInput {
   /** Request actor, when auth middleware has resolved one. */
   actor?: Actor;
   /** Core database handle used to inspect migrations. */
@@ -77,7 +77,7 @@ export function createDiagnosticsSnapshot(
 ): DiagnosticsSnapshot {
   return {
     auth: createAuthSnapshot(input.mode, input.actor),
-    dataRoot: input.dataRoot ?? null,
+    dataRoot: input.dataRoot ? 'configured' : null,
     migrations: {
       applied: input.coreDb ? listAppliedMigrationIds(input.coreDb) : [],
     },

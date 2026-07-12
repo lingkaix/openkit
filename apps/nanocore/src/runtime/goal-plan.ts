@@ -156,14 +156,8 @@ function truncateForGoalPlan(value: string, maxLength: number): string {
   return `${value.slice(0, maxLength - 3).trimEnd()}...`;
 }
 
-/** Resource reference selected by the planner for one task. */
-export type GoalPlanTaskResource = z.infer<typeof GoalPlanTaskResourceSchema>;
-/** Expected artifact or output from one planned task. */
-export type GoalPlanExpectedArtifact = z.infer<typeof GoalPlanExpectedArtifactSchema>;
 /** Verification check expected after one planned task. */
 export type GoalPlanVerificationCheck = z.infer<typeof GoalPlanVerificationCheckSchema>;
-/** Review policy attached to one planned task. */
-export type GoalPlanReviewPolicy = z.infer<typeof GoalPlanReviewPolicySchema>;
 /** One bounded worker task proposed by Plan Mode. */
 export type GoalPlanTask = z.infer<typeof GoalPlanTaskSchema>;
 /** Bounded Plan Mode output that can be reviewed before worker execution. */

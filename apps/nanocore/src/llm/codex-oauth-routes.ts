@@ -7,12 +7,25 @@ import {
   StartOpenAICodexOAuthRequestSchema,
   UpdateOpenAICodexOAuthAccountRequestSchema,
 } from '@openkit/app-api-schemas';
-import type { Hono } from 'hono';
+import type { Context, Hono } from 'hono';
 
 import { asApiError, asInvalidRequestError } from '../api-errors.js';
+import { isDeploymentAdminActor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { registerAppApiRoute } from '../openapi.js';
 import type { CodexOAuthAccountManager } from './codex-oauth-accounts.js';
+
+/**
+ * Requires deployment-admin authority for server-owned Codex OAuth state.
+ *
+ * @param c Hono context carrying the authenticated actor.
+ * @returns Error response when the actor lacks deployment-admin authority.
+ */
+function requireCodexOAuthAdminActor(c: Context<{ Variables: AuthVariables }>): Response | null {
+  return isDeploymentAdminActor(c.get('actor'))
+    ? null
+    : asApiError('Server-admin authority is required.', 'codex_oauth_admin_forbidden', 403);
+}
 
 /**
  * Registers Codex OAuth account inventory and metadata routes.
@@ -24,11 +37,21 @@ export function registerCodexOAuthAccountRoutes(
   app: Hono<{ Variables: AuthVariables }>,
   codexOAuthAccountManager: CodexOAuthAccountManager
 ): void {
-  registerAppApiRoute(app, 'listOpenAICodexOAuthAccounts', async (c) =>
-    c.json(CodexOAuthAccountsPayloadSchema.parse(await codexOAuthAccountManager.listAccounts()))
-  );
+  registerAppApiRoute(app, 'listOpenAICodexOAuthAccounts', async (c) => {
+    const adminError = requireCodexOAuthAdminActor(c);
+
+    return (
+      adminError ??
+      c.json(CodexOAuthAccountsPayloadSchema.parse(await codexOAuthAccountManager.listAccounts()))
+    );
+  });
 
   registerAppApiRoute(app, 'createOpenAICodexOAuthAccount', async (c) => {
+    const adminError = requireCodexOAuthAdminActor(c);
+    if (adminError) {
+      return adminError;
+    }
+
     const parsed = CreateOpenAICodexOAuthAccountRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -58,6 +81,11 @@ export function registerCodexOAuthAccountRoutes(
   });
 
   registerAppApiRoute(app, 'updateOpenAICodexOAuthAccount', async (c) => {
+    const adminError = requireCodexOAuthAdminActor(c);
+    if (adminError) {
+      return adminError;
+    }
+
     const parsed = UpdateOpenAICodexOAuthAccountRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -78,6 +106,11 @@ export function registerCodexOAuthAccountRoutes(
   });
 
   registerAppApiRoute(app, 'deleteOpenAICodexOAuthAccount', async (c) => {
+    const adminError = requireCodexOAuthAdminActor(c);
+    if (adminError) {
+      return adminError;
+    }
+
     try {
       await codexOAuthAccountManager.deleteAccount(c.req.param('accountSlotId'));
       return c.body(null, 204);
@@ -86,13 +119,18 @@ export function registerCodexOAuthAccountRoutes(
     }
   });
 
-  registerAppApiRoute(app, 'getOpenAICodexOAuthAccountStatus', async (c) =>
-    c.json(
-      CodexOAuthStatusPayloadSchema.parse(
-        await codexOAuthAccountManager.getStatus(c.req.param('accountSlotId'))
+  registerAppApiRoute(app, 'getOpenAICodexOAuthAccountStatus', async (c) => {
+    const adminError = requireCodexOAuthAdminActor(c);
+
+    return (
+      adminError ??
+      c.json(
+        CodexOAuthStatusPayloadSchema.parse(
+          await codexOAuthAccountManager.getStatus(c.req.param('accountSlotId'))
+        )
       )
-    )
-  );
+    );
+  });
 }
 
 /**
@@ -106,6 +144,11 @@ export function registerCodexOAuthLoginRoutes(
   codexOAuthAccountManager: CodexOAuthAccountManager
 ): void {
   registerAppApiRoute(app, 'startOpenAICodexOAuthAccountLogin', async (c) => {
+    const adminError = requireCodexOAuthAdminActor(c);
+    if (adminError) {
+      return adminError;
+    }
+
     const parsed = StartOpenAICodexOAuthRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -125,6 +168,11 @@ export function registerCodexOAuthLoginRoutes(
   });
 
   registerAppApiRoute(app, 'cancelOpenAICodexOAuthAccountLogin', async (c) => {
+    const adminError = requireCodexOAuthAdminActor(c);
+    if (adminError) {
+      return adminError;
+    }
+
     const parsed = CancelOpenAICodexOAuthRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -140,11 +188,16 @@ export function registerCodexOAuthLoginRoutes(
     );
   });
 
-  registerAppApiRoute(app, 'logoutOpenAICodexOAuthAccount', async (c) =>
-    c.json(
-      CodexOAuthStatusPayloadSchema.parse(
-        await codexOAuthAccountManager.logout(c.req.param('accountSlotId'))
+  registerAppApiRoute(app, 'logoutOpenAICodexOAuthAccount', async (c) => {
+    const adminError = requireCodexOAuthAdminActor(c);
+
+    return (
+      adminError ??
+      c.json(
+        CodexOAuthStatusPayloadSchema.parse(
+          await codexOAuthAccountManager.logout(c.req.param('accountSlotId'))
+        )
       )
-    )
-  );
+    );
+  });
 }

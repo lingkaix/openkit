@@ -1,4 +1,4 @@
-import { MetaResponseSchema } from '@openkit/protocol';
+import { MetaResponseSchema, StopReasonSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { CodexOAuthAccountsPayloadSchema } from './oauth.js';
 import { addRawSecretIssues } from './raw-secrets.js';
@@ -133,7 +133,7 @@ export const SetupDiagnosticsResponseSchema = z
     service: z.literal('nanocore'),
     server: z.object({
       mode: z.enum(['local', 'server']),
-      dataRoot: z.string().nullable(),
+      dataRoot: z.literal('configured').nullable(),
       config: z.object({
         schemaVersion: z.number().nullable(),
         defaults: z.object({
@@ -142,11 +142,7 @@ export const SetupDiagnosticsResponseSchema = z
         }),
         gateway: z.object({
           openaiCompatible: z.object({
-            auth: SetupSecretMarkerSchema,
-            defaultModel: z.string().nullable(),
-            defaultProviderId: z.string().nullable(),
             enabled: z.boolean().nullable(),
-            route: z.string().nullable(),
           }),
         }),
       }),
@@ -250,6 +246,24 @@ export const InternalAgentDiagnosticsSchema = z.object({
       details: z.unknown(),
       message: z.string(),
       occurredAt: z.string(),
+      status: z.enum(['completed', 'error', 'aborted']),
+      stopReason: StopReasonSchema,
+    })
+  ),
+  recentHookFailures: z.array(
+    z.object({
+      eventType: z.enum([
+        'agent_start',
+        'turn_start',
+        'message_start',
+        'message_update',
+        'message_end',
+        'turn_end',
+        'agent_end',
+      ]),
+      hookId: z.string().min(1),
+      message: z.string(),
+      mode: z.enum(['observational', 'critical']),
     })
   ),
 });

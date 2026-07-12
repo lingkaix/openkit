@@ -23,7 +23,6 @@ import type { AgentManifest, AuthoredAgentConfig } from '../agents/manifest.js';
 import { loadProviderRegistryFromDataRoot } from '../providers/data-root.js';
 import type { ProviderDiagnosticsSnapshot } from '../providers/diagnostics.js';
 import { createProviderDiagnostics } from '../providers/diagnostics.js';
-import type { OpenAICompatFacadeOptions } from '../providers/openai-compat-facade.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { loadAgentManifests } from './agents-loader.js';
 import { parseJsoncObject } from './jsonc.js';
@@ -53,14 +52,13 @@ interface RuntimeConfigSnapshotConstructionInput {
   agentManifests: AgentManifest[];
   workspaceConfigs: LoadedWorkspaceConfig[];
   workspaceDataSourceCatalogs: LoadedWorkspaceDataSourceCatalog[];
-  internalOpenAICompatFacade?: OpenAICompatFacadeOptions;
   diagnostics: RuntimeConfigDiagnostic[];
 }
 
 /**
  * Runtime config source input loaded from disk.
  */
-export interface RuntimeConfigSource {
+interface RuntimeConfigSource {
   /** Source kind. */
   kind:
     | 'server-config'
@@ -75,7 +73,7 @@ export interface RuntimeConfigSource {
 /**
  * Parsed workspace config loaded from a user-owned workspace path.
  */
-export interface LoadedWorkspaceConfig {
+interface LoadedWorkspaceConfig {
   /** User id that owns this workspace tree. */
   userId: string;
   /** Workspace id that owns this config. */
@@ -89,7 +87,7 @@ export interface LoadedWorkspaceConfig {
 /**
  * Parsed workspace data source catalog loaded from a user-owned workspace path.
  */
-export interface LoadedWorkspaceDataSourceCatalog {
+interface LoadedWorkspaceDataSourceCatalog {
   /** User id that owns this workspace tree. */
   userId: string;
   /** Workspace id that owns this catalog. */
@@ -103,7 +101,7 @@ export interface LoadedWorkspaceDataSourceCatalog {
 /**
  * Runtime config diagnostic collected while loading a snapshot.
  */
-export interface RuntimeConfigDiagnostic {
+interface RuntimeConfigDiagnostic {
   /** Stable diagnostic code. */
   code: string;
   /** Redacted source path or source kind. */
@@ -140,8 +138,6 @@ export interface RuntimeConfigSnapshot {
   workspaceConfigs: LoadedWorkspaceConfig[];
   /** Parsed workspace data source catalogs discovered under DATA_ROOT/users. */
   workspaceDataSourceCatalogs: LoadedWorkspaceDataSourceCatalog[];
-  /** Internal OpenAI-compatible facade options. */
-  internalOpenAICompatFacade: OpenAICompatFacadeOptions;
   /** Runtime config diagnostics. */
   diagnostics: RuntimeConfigDiagnostic[];
 }
@@ -149,7 +145,7 @@ export interface RuntimeConfigSnapshot {
 /**
  * Options used when loading a runtime config snapshot from disk.
  */
-export interface LoadRuntimeConfigOptions {
+interface LoadRuntimeConfigOptions {
   /** Snapshot version to assign. */
   version?: number;
   /** Timestamp to assign for deterministic tests. */
@@ -159,7 +155,7 @@ export interface LoadRuntimeConfigOptions {
 /**
  * Runtime config manager construction input.
  */
-export interface RuntimeConfigManagerOptions {
+interface RuntimeConfigManagerOptions {
   /** Data root to reload from. */
   dataRoot: string | null;
   /** Optional initial snapshot for tests or already-loaded startup state. */
@@ -169,7 +165,7 @@ export interface RuntimeConfigManagerOptions {
 /**
  * Runtime config fields for constructing an in-memory snapshot.
  */
-export interface RuntimeConfigSnapshotInput {
+interface RuntimeConfigSnapshotInput {
   /** Data root represented by this snapshot. */
   dataRoot: string | null;
   /** Parsed OpenKit config. */
@@ -178,8 +174,6 @@ export interface RuntimeConfigSnapshotInput {
   providerRegistry?: ProviderRegistry;
   /** Provider diagnostics. */
   providerDiagnostics?: ProviderDiagnosticsSnapshot;
-  /** Internal facade options. */
-  internalOpenAICompatFacade?: Partial<OpenAICompatFacadeOptions>;
   /** Authored agent configs. */
   agentConfigs?: AuthoredAgentConfig[];
   /** Runtime agent manifests. */
@@ -208,12 +202,7 @@ const RESTART_REQUIRED_CONFIG_PATHS = [
   'mode',
   'auth',
   'server',
-  'data',
-  'dataRoot',
-  'internal.openaiCompatFacade.enabled',
   'gateway.openaiCompatible.enabled',
-  'gateway.openaiCompatible.route',
-  'gateway.openaiCompatible.auth',
   'vault',
 ] as const;
 
@@ -356,7 +345,8 @@ export function createRuntimeConfigManager(
           plan,
         };
       } catch (error) {
-        const plan = failedReloadPlan(current.version, nextVersion, error);
+        const message = redactRuntimeConfigReloadError(error, options.dataRoot);
+        const plan = failedReloadPlan(current.version, nextVersion, message);
 
         lastFailedReload = reloadSummary(
           startedAt,
@@ -364,7 +354,7 @@ export function createRuntimeConfigManager(
           current.version,
           current.version,
           'failed',
-          (error as Error).message
+          message
         );
 
         return {
@@ -418,6 +408,7 @@ function applySafeRuntimeConfigReload(
   }
 
   const openKitConfig = cloneJsonValue(next.openKitConfig);
+  const restartPaths = new Set(plan.requiresRestart.map((change) => change.path));
 
   for (const restartChange of plan.requiresRestart) {
     restorePath(openKitConfig, previous.openKitConfig, restartChange.path);
@@ -430,10 +421,14 @@ function applySafeRuntimeConfigReload(
       loadedAt: next.loadedAt,
       dataRoot: null,
       openKitConfig,
-      providerRegistry: next.providerRegistry,
-      providerDiagnostics: next.providerDiagnostics,
-      agentConfigs: next.agentConfigs,
-      agentManifests: next.agentManifests,
+      providerRegistry: restartPaths.has('providers')
+        ? previous.providerRegistry
+        : next.providerRegistry,
+      providerDiagnostics: restartPaths.has('providers')
+        ? previous.providerDiagnostics
+        : next.providerDiagnostics,
+      agentConfigs: restartPaths.has('agents') ? previous.agentConfigs : next.agentConfigs,
+      agentManifests: restartPaths.has('agents') ? previous.agentManifests : next.agentManifests,
       workspaceConfigs: next.workspaceConfigs,
       workspaceDataSourceCatalogs: next.workspaceDataSourceCatalogs,
       diagnostics: next.diagnostics,
@@ -575,15 +570,6 @@ export function createInMemoryRuntimeConfigSnapshot(
       input.providerDiagnostics ??
       providerState?.providerDiagnostics ??
       createProviderDiagnostics({ profiles: [], diagnostics: [] }),
-    internalOpenAICompatFacade: {
-      enabled: input.internalOpenAICompatFacade?.enabled ?? true,
-      ...(input.internalOpenAICompatFacade?.defaultProviderId
-        ? { defaultProviderId: input.internalOpenAICompatFacade.defaultProviderId }
-        : {}),
-      ...(input.internalOpenAICompatFacade?.defaultModel
-        ? { defaultModel: input.internalOpenAICompatFacade.defaultModel }
-        : {}),
-    },
     agentConfigs: input.agentConfigs ?? agentState?.configs ?? [],
     agentManifests: input.agentManifests ?? agentState?.manifests ?? [],
     workspaceConfigs: input.workspaceConfigs ?? [],
@@ -611,29 +597,36 @@ export function diffRuntimeConfig(
   const rejected: RuntimeConfigChange[] = [];
 
   if (!equalSemantic(providerSummary(previous), providerSummary(next))) {
-    applied.push(change('providers', 'hot-swappable', 'applied', 'Provider registry changed.'));
+    requiresRestart.push(
+      change(
+        'providers',
+        'restart-required',
+        'requires-restart',
+        'Provider registry changes require restart.'
+      )
+    );
   }
   if (!equalSemantic(previous.openKitConfig.defaults ?? {}, next.openKitConfig.defaults ?? {})) {
     applied.push(change('defaults', 'hot-swappable', 'applied', 'Runtime defaults changed.'));
   }
-  if (
-    !equalSemantic(previous.openKitConfig.diagnostics ?? {}, next.openKitConfig.diagnostics ?? {})
-  ) {
-    applied.push(change('diagnostics', 'hot-swappable', 'applied', 'Diagnostics policy changed.'));
-  }
   if (!equalSemantic(gatewayHotSummary(previous), gatewayHotSummary(next))) {
     applied.push(
       change(
-        'gateway.openaiCompatible.defaults',
+        'gateway.openaiCompatible.allowedProviderIds',
         'hot-swappable',
         'applied',
-        'Gateway provider policy changed.'
+        'Gateway provider allowlist changed.'
       )
     );
   }
   if (!equalSemantic(agentSummary(previous), agentSummary(next))) {
-    deferred.push(
-      change('agents', 'session-scoped', 'deferred', 'Agent config changed for future sessions.')
+    requiresRestart.push(
+      change(
+        'agents',
+        'restart-required',
+        'requires-restart',
+        'Agent config changes require restart.'
+      )
     );
   }
   if (!equalSemantic(workspaceConfigSummary(previous), workspaceConfigSummary(next))) {
@@ -771,20 +764,10 @@ function assertNoBlockingDiagnostics(snapshot: RuntimeConfigSnapshot): void {
 function createRuntimeConfigSnapshot(
   input: RuntimeConfigSnapshotConstructionInput
 ): RuntimeConfigSnapshot {
-  const internalOpenAICompatFacade = input.internalOpenAICompatFacade ?? {
-    enabled: input.openKitConfig.internal?.openaiCompatFacade?.enabled ?? true,
-    ...(input.openKitConfig.internal?.openaiCompatFacade?.defaultProviderId
-      ? { defaultProviderId: input.openKitConfig.internal.openaiCompatFacade.defaultProviderId }
-      : {}),
-    ...(input.openKitConfig.internal?.openaiCompatFacade?.defaultModel
-      ? { defaultModel: input.openKitConfig.internal.openaiCompatFacade.defaultModel }
-      : {}),
-  };
   const loadedAt = input.loadedAt ?? new Date().toISOString();
   const snapshot = {
     ...input,
     loadedAt,
-    internalOpenAICompatFacade,
     contentHash: '',
   };
 
@@ -834,7 +817,7 @@ function reloadSummary(
 function failedReloadPlan(
   previousVersion: number,
   nextVersion: number,
-  error: unknown
+  message: string
 ): RuntimeConfigReloadPlan {
   return {
     previousVersion,
@@ -843,15 +826,23 @@ function failedReloadPlan(
     deferred: [],
     requiresRestart: [],
     rejected: [
-      change(
-        'config',
-        'rejected',
-        'rejected',
-        `Runtime config reload failed: ${(error as Error).message}`
-      ),
+      change('config', 'rejected', 'rejected', `Runtime config reload failed: ${message}`),
     ],
     warnings: [],
   };
+}
+
+/**
+ * Redacts the configured data root from one reload failure.
+ *
+ * @param error Reload failure to project.
+ * @param dataRoot Configured data root that must not enter public errors.
+ * @returns Product-safe reload failure message.
+ */
+function redactRuntimeConfigReloadError(error: unknown, dataRoot: string | null): string {
+  const message = error instanceof Error ? error.message : String(error);
+
+  return dataRoot ? message.replaceAll(dataRoot, 'DATA_ROOT') : message;
 }
 
 /**
@@ -915,8 +906,6 @@ function gatewayHotSummary(snapshot: RuntimeConfigSnapshot): unknown {
 
   return {
     allowedProviderIds: gateway?.allowedProviderIds ?? [],
-    defaultModel: gateway?.defaultModel ?? null,
-    defaultProviderId: gateway?.defaultProviderId ?? null,
   };
 }
 
@@ -933,7 +922,6 @@ function snapshotSemanticSummary(snapshot: Omit<RuntimeConfigSnapshot, 'contentH
     workspaceDataSourceCatalogs: workspaceDataSourceCatalogSummary(
       snapshot as RuntimeConfigSnapshot
     ),
-    internalOpenAICompatFacade: snapshot.internalOpenAICompatFacade,
   };
 }
 

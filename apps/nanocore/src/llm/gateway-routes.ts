@@ -17,7 +17,6 @@ import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { GatewayUnsupportedFeatureError } from './gateway-converters.js';
-import type { GatewayPolicyStore } from './gateway-policy.js';
 import { parseUsage } from './gateway-usage.js';
 import {
   type OpenAICompatibleChatCompletionResponse,
@@ -540,7 +539,6 @@ export function registerLlmGatewayRoutes({
   app,
   coreDb,
   gatewayDefaultProviderId,
-  gatewayPolicyStore,
   llmGatewayDispatcher,
   requestStore,
   resolveGatewayProvider,
@@ -549,26 +547,22 @@ export function registerLlmGatewayRoutes({
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb?: CoreDb;
   readonly gatewayDefaultProviderId: () => string | null;
-  readonly gatewayPolicyStore: GatewayPolicyStore;
   readonly llmGatewayDispatcher: LLMGatewayProviderDispatcher;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
   readonly resolveGatewayProvider: (providerId: string) => ResolvedLLMProviderConfig;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
 }): void {
   /**
-   * Checks whether the Gateway is enabled by runtime config and policy store.
+   * Checks whether the Gateway is enabled by runtime config.
    *
    * @returns True when Gateway routes are enabled.
    */
   function isGatewayEnabled(): boolean {
-    return (
-      gatewayPolicyStore.getPolicy().enabled &&
-      runtimeConfig().openKitConfig.gateway?.openaiCompatible?.enabled !== false
-    );
+    return runtimeConfig().openKitConfig.gateway?.openaiCompatible?.enabled !== false;
   }
 
   /**
-   * Checks whether a provider id is allowed by runtime config and policy store.
+   * Checks whether a provider id is allowed by runtime config.
    *
    * @param providerId Provider id to check.
    * @returns True when Gateway routing is allowed.
@@ -577,10 +571,7 @@ export function registerLlmGatewayRoutes({
     const runtimeAllowlist =
       runtimeConfig().openKitConfig.gateway?.openaiCompatible?.allowedProviderIds;
 
-    return (
-      gatewayPolicyStore.allowsProvider(providerId) &&
-      (!runtimeAllowlist || runtimeAllowlist.includes(providerId))
-    );
+    return !runtimeAllowlist || runtimeAllowlist.includes(providerId);
   }
 
   /**
@@ -609,6 +600,19 @@ export function registerLlmGatewayRoutes({
   }
 
   app.get('/v1/models', (c) => {
+    if (!isGatewayEnabled()) {
+      return c.json(
+        {
+          error: {
+            message: 'Gateway is disabled by policy.',
+            type: 'invalid_request_error',
+            code: 'gateway_disabled',
+          },
+        },
+        403
+      );
+    }
+
     return c.json({
       object: 'list',
       data: runtimeConfig()

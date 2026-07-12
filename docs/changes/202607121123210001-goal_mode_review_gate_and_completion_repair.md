@@ -187,11 +187,11 @@ Record final commits, focused and full verification results, generated OpenAPI s
 
 ### 2026-07-12: Goal Review Progression and Verification Semantics Repaired
 
-- `ff98d7c` and `72b3c60` captured and removed the unimplemented `auto` policy so the App API exposes only `human | none`.
-- `6b9a5e0` and `4d8b411` captured and repaired the live task-graph failures: human-reviewed steps now create one actionable review with matching reviewing state, `none` advances through the same accept path, and Goal Review acceptance unlocks dependencies or completes only a terminal task graph.
-- `77a1bb1`, `e82fd09`, `617c150`, and `1ac2996` captured delayed replay drift and added the accepted single-column immutable resolution snapshot with workspace migration, transaction ownership, public-response stripping, and export/import remapping.
-- `c5e99d9` and `711235d` removed the fabricated final-verification risk while preserving stored task evidence, and `6e87265` deleted the unused verification runner and closeout implementation with their isolated tests.
-- `99235fe` refreshed the generated OpenAPI projection, `b41d413` made MCP reuse the canonical Goal review schema and type without `as never`, and `0901fee` aligned the full-suite storage migration inventory assertions.
+- Failing shared-contract coverage preceded removal of the unimplemented `auto` policy, so the App API exposes only `human | none`.
+- Failing NanoCore coverage preceded the task-graph repair: human-reviewed steps now create one actionable review with matching reviewing state, `none` advances through the same accept path, and Goal Review acceptance unlocks dependencies or completes only a terminal task graph.
+- Delayed-replay regressions preceded the accepted single-column immutable resolution snapshot with workspace migration, transaction ownership, public-response stripping, and export/import remapping.
+- The repair removed the fabricated final-verification risk while preserving stored task evidence, then deleted the unused verification runner and closeout implementation with their isolated tests.
+- The generated OpenAPI projection, canonical MCP Goal review schema and type, and full-suite storage migration inventory assertions were aligned before closeout.
 - Full verification passed with 188 NanoCore test files and 1,384 tests, 7 skipped tests, all 54 App API schema tests, all 22 Core Client tests, and all 140 MCP tests. NanoCore, App API schemas, Core Client, and MCP typecheck, lint, and build gates passed; the committed OpenAPI generation, official-schema validation, and drift check passed; and the repository lifecycle, formatting, and models-catalog checks passed across 742 files.
 - The Goal repair adds no evaluator, state-machine class, policy abstraction, service, wrapper, or table. Durable approved-plan review-policy ownership and command-level `/goal/step` idempotency remain explicit follow-ups.
 

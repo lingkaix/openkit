@@ -180,7 +180,7 @@ export function resolveEnvSecretRef(secretRef: string): string | null {
  * @param baseUrl Provider base URL.
  * @returns Redacted URL, or the original value when parsing fails.
  */
-export function redactBaseUrl(baseUrl: string): string {
+function redactBaseUrl(baseUrl: string): string {
   try {
     const url = new URL(baseUrl);
     url.username = '';

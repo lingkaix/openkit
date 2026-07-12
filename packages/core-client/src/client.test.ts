@@ -403,7 +403,7 @@ function appDiagnostics() {
     },
     capabilities: ['core.questions'],
     runtimeConfig: runtimeConfigStatus(),
-    internalAgents: { agents: [], recentFailures: [] },
+    internalAgents: { agents: [], recentFailures: [], recentHookFailures: [] },
   };
 }
 
@@ -786,7 +786,7 @@ function setupDiagnostics() {
     service: 'nanocore',
     server: {
       mode: 'local',
-      dataRoot: '/tmp/openkit-test',
+      dataRoot: 'configured',
       config: {
         schemaVersion: 1,
         defaults: {
@@ -795,11 +795,7 @@ function setupDiagnostics() {
         },
         gateway: {
           openaiCompatible: {
-            auth: { configured: false, marker: 'none', ref: null },
-            defaultModel: null,
-            defaultProviderId: null,
             enabled: null,
-            route: null,
           },
         },
       },

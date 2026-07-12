@@ -88,36 +88,6 @@ interface DefaultProviderSelection {
 }
 
 /**
- * Resolves PRD v0.0.3 Section 5 default-provider app diagnostics state.
- *
- * @param config Loaded OpenKit operator config.
- * @param providerRegistry Provider registry loaded from config/provider profiles.
- * @param credentialResolver Resolver used to check provider credential references.
- * @returns Default provider diagnostics state for /api/app/diagnostics.
- */
-export function resolveDefaultProviderState(
-  config: OpenKitConfig,
-  providerRegistry: ProviderRegistry,
-  credentialResolver?: ProviderCredentialResolver
-): DefaultProviderState {
-  const providerId = config.defaults?.coreProviderId;
-
-  if (!providerId) {
-    return { configured: false, reason: 'unset' };
-  }
-
-  if (!providerRegistry.get(providerId)) {
-    return { configured: false, providerId, reason: 'unknown-id' };
-  }
-
-  if (!providerRegistry.hasResolvableCredentials(providerId, credentialResolver)) {
-    return { configured: false, providerId, reason: 'credentials-missing' };
-  }
-
-  return { configured: true, providerId };
-}
-
-/**
  * Resolves role-specific Core and gateway default-provider diagnostics state.
  *
  * @param config Loaded OpenKit operator config.

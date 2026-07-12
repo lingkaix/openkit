@@ -6,13 +6,42 @@ import { describe, expect, it } from 'vitest';
 
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { actorFromRequest, ensureLocalUser } from './identity.js';
+import { actorFromRequest, ensureLocalUser, isDeploymentAdminActor } from './identity.js';
 
 describe('actorFromRequest', () => {
   it('returns the implicit local actor in local mode', () => {
     const actor = actorFromRequest(new Request('http://localhost/api/meta'), 'local');
 
     expect(actor).toEqual({ userId: 'user_local', kind: 'local' });
+  });
+});
+
+describe('isDeploymentAdminActor', () => {
+  it('allows only the local actor and server-admin bearer tokens', () => {
+    expect(isDeploymentAdminActor({ userId: 'user_local', kind: 'local' })).toBe(true);
+    expect(
+      isDeploymentAdminActor({
+        userId: 'user_owner',
+        kind: 'token',
+        tokenScope: 'server-admin',
+      })
+    ).toBe(true);
+    expect(isDeploymentAdminActor({ userId: 'user_member', kind: 'session' })).toBe(false);
+    expect(
+      isDeploymentAdminActor({
+        userId: 'user_member',
+        kind: 'token',
+        tokenScope: 'workspace',
+      })
+    ).toBe(false);
+    expect(
+      isDeploymentAdminActor({
+        userId: 'user_member',
+        kind: 'token',
+        tokenScope: 'workspace-readonly',
+      })
+    ).toBe(false);
+    expect(isDeploymentAdminActor(undefined)).toBe(false);
   });
 });
 

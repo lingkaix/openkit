@@ -54,7 +54,7 @@ function writeServerConfig(dataRoot: string, model: string): void {
 }
 
 describe('runtime config reload API', () => {
-  it('reloads config without restart and exposes runtime status through diagnostics', async () => {
+  it('keeps provider changes pending restart and exposes the live runtime status', async () => {
     const dataRoot = createConfiguredDataRoot('openai/gpt-5.1');
     const app = createApp({ dataRoot, turnExecutor: new SimulatedTurnExecutor() });
 
@@ -67,12 +67,16 @@ describe('runtime config reload API', () => {
 
     expect(reloadRes.status).toBe(200);
     const reload = (await reloadRes.json()) as {
-      runtimeConfig: { currentVersion: number };
-      plan: { applied: Array<{ path: string }> };
+      runtimeConfig: { currentVersion: number; pendingRestart: Array<{ path: string }> };
+      plan: { applied: Array<{ path: string }>; requiresRestart: Array<{ path: string }> };
     };
 
     expect(reload.runtimeConfig.currentVersion).toBe(2);
-    expect(reload.plan.applied).toEqual([expect.objectContaining({ path: 'providers' })]);
+    expect(reload.plan.applied).toEqual([]);
+    expect(reload.plan.requiresRestart).toEqual([expect.objectContaining({ path: 'providers' })]);
+    expect(reload.runtimeConfig.pendingRestart).toEqual([
+      expect.objectContaining({ path: 'providers' }),
+    ]);
 
     const diagnosticsRes = await app.request('/api/app/diagnostics');
     const diagnostics = (await diagnosticsRes.json()) as {
@@ -81,7 +85,7 @@ describe('runtime config reload API', () => {
     };
 
     expect(diagnostics.runtimeConfig.currentVersion).toBe(2);
-    expect(diagnostics.providers.registry[0]?.models).toContain('openai/gpt-5.2');
+    expect(diagnostics.providers.registry[0]?.models).toContain('openai/gpt-5.1');
   });
 
   it('marks active sessions stale after reload without interrupting them', async () => {

@@ -323,7 +323,7 @@ The current implementation is the accepted V1 projection of this target:
 - `apps/nanocore/src/agents/setup-resolver.ts` also preserves typed authored backend requirements from `sandbox.backend`, including allowed backend kinds, preferred backend kind, and required backend capabilities.
 - `apps/nanocore/src/agents/setup-ledger.ts` and the workspace-scoped `resolved_agent_setups` table provide the first durable storage shape for redacted `ResolvedAgentSetup` records, and `startTurn` plus scheduler dispatch write the record when an authored setup is resolved for launch.
 - `/api/setup/diagnostics` projects resolver blockers into the product-visible agent readiness summary: when setup resolution is blocked by unsupported required features, missing providers, missing deployment, or invalid transport, the agent readiness status becomes `blocked` and its reasons include the redacted resolver diagnostic messages.
-- `apps/nanocore/src/config/runtime-config.ts` treats agent config changes as session-scoped deferred reload changes, so existing sessions are not silently mutated.
+- `apps/nanocore/src/config/runtime-config.ts` treats agent config changes as restart-required because the production scheduler captures authored agent inputs at startup; reload never claims that future sessions use a snapshot which the active dispatcher has not adopted.
 - `packages/config-schema/src/agent-environment.ts` defines a strict `AgentEnvironmentPackageSchema` with `scope`, `agent`, `runtime`, `workspace`, `supply`, `control`, `capabilities`, `providers`, `vault`, `policy`, `llm`, `resources`, `observability`, `backend`, and extension sections. It also rejects raw-secret-shaped values.
 - `apps/nanocore/src/runtime/agent-environment.ts` currently resolves only OpenShell container-backed AEP snapshots and rejects host AEP backends.
 - Current OpenShell AEP resolution derives package and snapshot IDs from turn and agent-session lineage, binds the policy block to the worker-launch policy snapshot id, projects workspace roots, generates `/openkit/config/package.json`, provides `control.local`, `capability.local`, and `inference.local` endpoint projections, and declares worker-visible transcript, artifact, policy, provider, vault, LLM, observability, and backend sections.
@@ -410,7 +410,7 @@ Rejected for the first stable design. Workspace config may restrict and select w
 - Readiness tests for missing provider, missing vault grant, missing MCP catalog entry, and missing backend capability.
 - Snapshot tests proving AEP identity changes when material inputs change.
 - Materializer tests proving runtime-native files are generated from AEP, not hand-authored as product contracts.
-- Reload tests proving agent config changes affect future sessions and do not mutate live session snapshots.
+- Reload tests proving agent config changes require restart and do not mutate the active dispatcher or live session snapshots.
 - Redaction tests proving readiness diagnostics, AEP snapshots, generated files, and backend extensions do not expose secrets, host paths, or backend-private tokens.
 - Fail-closed tests proving unsupported mount kinds, provider attachment modes, vault injection modes, and capability families block launch when required.
 

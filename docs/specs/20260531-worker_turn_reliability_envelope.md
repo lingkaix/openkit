@@ -218,7 +218,7 @@ Observational hooks are isolated by default.
 
 When a hook throws, the composite hook records a hook failure diagnostic and continues to the next hook.
 
-Critical hooks may opt into `reraise: true`.
+Critical hooks opt into fail-fast behavior with `mode: 'critical'`.
 
 `InternalAgentRunner` dispatches loop events into the composite hook chain and retains recent redacted observational hook failures in diagnostics.
 

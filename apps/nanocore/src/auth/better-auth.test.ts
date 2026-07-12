@@ -6,9 +6,111 @@ import { describe, expect, it } from 'vitest';
 
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { createBetterAuth } from './better-auth.js';
+import { createBetterAuth, resolveBetterAuthSecret } from './better-auth.js';
 
 describe('createBetterAuth', () => {
+  it('resolves the local fallback and validates server secrets without opening storage', () => {
+    expect(resolveBetterAuthSecret({}, 'local')).toContain('local-development-secret');
+    expect(() => resolveBetterAuthSecret({}, 'server')).toThrow('BETTER_AUTH_SECRET');
+    expect(
+      resolveBetterAuthSecret(
+        { BETTER_AUTH_SECRET: 'server-secret-that-is-at-least-32-characters' },
+        'server'
+      )
+    ).toBe('server-secret-that-is-at-least-32-characters');
+  });
+
+  it('uses listener port validation for the local fallback URL', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-better-auth-port-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+
+      expect(() => createBetterAuth(coreDb, { env: { PORT: 'invalid' } })).toThrow('PORT');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('requires an explicit strong secret in server mode', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-better-auth-secret-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+
+      expect(() => createBetterAuth(coreDb, { env: {}, mode: 'server' })).toThrow(
+        'BETTER_AUTH_SECRET'
+      );
+      expect(() =>
+        createBetterAuth(coreDb, {
+          env: { BETTER_AUTH_SECRET: 'too-short' },
+          mode: 'server',
+        })
+      ).toThrow('BETTER_AUTH_SECRET');
+      expect(() =>
+        createBetterAuth(coreDb, {
+          env: { BETTER_AUTH_SECRET: '                                        ' },
+          mode: 'server',
+        })
+      ).toThrow('BETTER_AUTH_SECRET');
+      const auth = createBetterAuth(coreDb, {
+        env: { BETTER_AUTH_SECRET: 'server-secret-that-is-at-least-32-characters' },
+        mode: 'server',
+        openKitConfig: { server: { bind: { host: '10.0.0.8', port: 4310 } } },
+      });
+
+      expect(auth.options.baseURL).toBe('http://10.0.0.8:4310');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('derives base URL, trusted origins, and sign-up policy from server config', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-better-auth-config-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      const auth = createBetterAuth(coreDb, {
+        env: { BETTER_AUTH_SECRET: 'server-secret-that-is-at-least-32-characters' },
+        mode: 'server',
+        openKitConfig: {
+          auth: { signup: { enabled: false } },
+          server: {
+            cors: { origins: ['https://console.openkit.example'] },
+            publicBaseUrl: 'https://core.openkit.example',
+          },
+        },
+      });
+      const response = await auth.handler(
+        new Request('https://core.openkit.example/api/auth/sign-up/email', {
+          body: JSON.stringify({
+            email: 'disabled@example.com',
+            name: 'Disabled User',
+            password: 'password123456',
+          }),
+          headers: {
+            'content-type': 'application/json',
+            origin: 'https://console.openkit.example',
+          },
+          method: 'POST',
+        })
+      );
+
+      expect(auth.options.baseURL).toBe('https://core.openkit.example');
+      expect(auth.options.trustedOrigins).toEqual(['https://console.openkit.example']);
+      expect(auth.options.emailAndPassword?.disableSignUp).toBe(true);
+      expect(response.status).toBe(400);
+      expect(
+        coreDb.sqlite.prepare('SELECT id FROM users WHERE email = ?').get('disabled@example.com')
+      ).toBeUndefined();
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('boots against migrated server-scope Core SQLite with Better Auth tables', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-better-auth-'));
     const coreDb = openCoreDb(dataRoot);

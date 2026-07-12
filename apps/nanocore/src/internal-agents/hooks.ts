@@ -1,3 +1,5 @@
+import type { AppDiagnosticsResponse } from '@openkit/app-api-schemas';
+
 import { redactInternalAgentText } from './redaction.js';
 import type { InternalAgentStreamEvent } from './types.js';
 
@@ -22,19 +24,9 @@ export interface InternalAgentHook {
   readonly handleEvent: (event: InternalAgentStreamEvent) => void | Promise<void>;
 }
 
-/**
- * Redacted hook failure diagnostic safe for app-local diagnostics.
- */
-export interface InternalAgentHookFailureDiagnostic {
-  /** Stable hook id that failed. */
-  readonly hookId: string;
-  /** Event type being dispatched when the hook failed. */
-  readonly eventType: InternalAgentStreamEvent['eventType'];
-  /** Failure behavior configured for the hook. */
-  readonly mode: InternalAgentHookMode;
-  /** Redacted hook error message. */
-  readonly message: string;
-}
+/** Redacted hook failure diagnostic safe for app-local diagnostics. */
+export type InternalAgentHookFailureDiagnostic =
+  AppDiagnosticsResponse['internalAgents']['recentHookFailures'][number];
 
 /**
  * Dispatcher for one composed internal-agent hook chain.

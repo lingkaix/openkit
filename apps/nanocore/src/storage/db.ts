@@ -241,14 +241,6 @@ export function getCoreDb(env: NodeJS.ProcessEnv = process.env): CoreDb {
 }
 
 /**
- * Closes and clears the process singleton database.
- */
-export function resetCoreDb(): void {
-  singleton?.sqlite.close();
-  singleton = undefined;
-}
-
-/**
  * Recovers one user database and applies user-scope migrations.
  *
  * @param dataRoot Data root that owns the database.

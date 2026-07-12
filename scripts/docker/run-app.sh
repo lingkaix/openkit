@@ -177,16 +177,11 @@ function serverConfig() {
     {
       schemaVersion: 1,
       mode: 'local',
-      data: {
-        layoutVersion: 1,
-        root: '/data/openkit',
-      },
       defaults: {
         coreProviderId: 'nanocore-openrouter',
         coreModel: defaultModel,
         gatewayProviderId: 'nano-agent-openrouter',
         gatewayModel: defaultModel,
-        agentId: 'agent_codex_host',
       },
       providers: [
         {
@@ -213,20 +208,8 @@ function serverConfig() {
       gateway: {
         openaiCompatible: {
           enabled: true,
-          defaultProviderId: 'nano-agent-openrouter',
-          defaultModel,
           allowedProviderIds: ['nano-agent-openrouter'],
         },
-      },
-      internal: {
-        openaiCompatFacade: {
-          enabled: true,
-          defaultProviderId: 'nano-agent-openrouter',
-          defaultModel,
-        },
-      },
-      diagnostics: {
-        redactSecrets: true,
       },
     },
     null,

@@ -1,25 +1,5 @@
 import { z } from 'zod';
 
-const INLINE_SECRET_FIELDS = ['apiKey', 'clientSecret', 'secret', 'token'] as const;
-
-/**
- * Rejects raw provider secret fields in otherwise extensible provider objects.
- *
- * @param value Provider object being parsed.
- * @param ctx Zod refinement context used to report field-specific issues.
- */
-function rejectInlineSecretFields(value: Record<string, unknown>, ctx: z.RefinementCtx): void {
-  for (const field of INLINE_SECRET_FIELDS) {
-    if (Object.hasOwn(value, field)) {
-      ctx.addIssue({
-        code: 'custom',
-        path: [field],
-        message: `${field} is not supported; use secretRef instead.`,
-      });
-    }
-  }
-}
-
 /**
  * Supported provider profile kinds.
  */
@@ -84,34 +64,25 @@ export const ProviderReadinessSchema = z
   .strict();
 
 /**
- * Provider retry policy.
- */
-export const ProviderRetrySchema = z
-  .object({
-    attempts: z.number().int().min(0).optional(),
-    backoffMs: z.number().int().min(0).optional(),
-  })
-  .strict();
-
-/**
  * File-backed provider profile schema.
  */
 export const ProviderProfileSchema = z
   .object({
     baseUrl: z.string().url().optional(),
+    category: z.string().min(1).optional(),
     defaultModel: z.string().min(1).optional(),
     displayName: z.string().min(1),
     extensions: ProviderExtensionsSchema.optional(),
+    extraBody: z.record(z.string().min(1), z.unknown()).optional(),
+    extraHeaders: z.record(z.string().min(1), z.unknown()).optional(),
     id: z.string().min(1),
     kind: ProviderKindSchema,
     models: z.array(z.string().min(1)).min(1),
     readiness: ProviderReadinessSchema.optional(),
-    retry: ProviderRetrySchema.optional(),
     secretRef: z.string().min(1).optional(),
-    timeoutMs: z.number().int().positive().optional(),
+    vendor: z.string().min(1).optional(),
   })
-  .passthrough()
-  .superRefine(rejectInlineSecretFields);
+  .strict();
 
 /**
  * File-backed provider profile.

@@ -4,16 +4,18 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { createApp } from './app.js';
-import { GatewayPolicyStore } from './llm/gateway-policy.js';
 import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 
-function createConfiguredProviderOptions() {
+function createConfiguredProviderOptions(
+  gateway: { allowedProviderIds?: string[]; enabled?: boolean } = {}
+) {
   return {
     openKitConfig: {
       defaults: { gatewayProviderId: 'ollama', gatewayModel: 'llama3.2' },
+      gateway: { openaiCompatible: gateway },
     },
     providerRegistry: new ProviderRegistry([
       {
@@ -29,12 +31,24 @@ function createConfiguredProviderOptions() {
 }
 
 describe('LLM gateway policy controls', () => {
+  it('does not list models while the agent gateway is disabled', async () => {
+    const app = createApp({
+      ...createConfiguredProviderOptions({ enabled: false }),
+    });
+
+    const res = await app.request('/v1/models');
+
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toMatchObject({
+      error: { code: 'gateway_disabled' },
+    });
+  });
+
   it('can disable agent gateway chat completions', async () => {
     const coreDb = createTestCoreDb();
     const app = createApp({
-      ...createConfiguredProviderOptions(),
+      ...createConfiguredProviderOptions({ enabled: false }),
       coreDb,
-      gatewayPolicyStore: new GatewayPolicyStore({ enabled: false }),
     });
 
     try {
@@ -65,9 +79,8 @@ describe('LLM gateway policy controls', () => {
   it('can restrict gateway routing to approved providers', async () => {
     const coreDb = createTestCoreDb();
     const app = createApp({
-      ...createConfiguredProviderOptions(),
+      ...createConfiguredProviderOptions({ allowedProviderIds: ['openai'] }),
       coreDb,
-      gatewayPolicyStore: new GatewayPolicyStore({ allowedProviderIds: ['openai'] }),
       llmPiAiClient: {
         createChatCompletion: async () => {
           throw new Error('Policy should block before provider call');

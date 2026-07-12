@@ -18,6 +18,7 @@ import type { Context, Hono } from 'hono';
 
 import { asApiError } from './api-errors.js';
 import { listServerAuditEvents, listWorkspaceAuditEvents } from './audit-events.js';
+import { isDeploymentAdminActor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import {
   listWorkspaceCapabilityCalls,
@@ -35,6 +36,22 @@ import {
 import { listWorkspaceRuntimeEvidence } from './runtime/runtime-evidence.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { listExportableWorkspaceVaultGrants } from './vault/vault-grants.js';
+
+/**
+ * Requires deployment-admin authority for a server-owned governance projection.
+ *
+ * @param c Hono context carrying the authenticated actor.
+ * @param code Stable route-specific authorization error code.
+ * @returns Error response when the actor lacks deployment-admin authority.
+ */
+function requireServerGovernanceAdminActor(
+  c: Context<{ Variables: AuthVariables }>,
+  code: string
+): Response | null {
+  return isDeploymentAdminActor(c.get('actor'))
+    ? null
+    : asApiError('Server-admin authority is required.', code, 403);
+}
 
 /**
  * Registers product-safe capability, evidence, audit, permission, and vault governance routes.
@@ -165,6 +182,11 @@ export function registerGovernanceRoutes({
   });
 
   registerAppApiRoute(app, 'listServerAuditEvents', (c) => {
+    const adminError = requireServerGovernanceAdminActor(c, 'server_audit_admin_forbidden');
+    if (adminError) {
+      return adminError;
+    }
+
     try {
       if (!coreDb) {
         return asApiError(
@@ -276,6 +298,14 @@ export function registerGovernanceRoutes({
   });
 
   registerAppApiRoute(app, 'listServerPermissionDecisions', (c) => {
+    const adminError = requireServerGovernanceAdminActor(
+      c,
+      'server_permission_decisions_admin_forbidden'
+    );
+    if (adminError) {
+      return adminError;
+    }
+
     try {
       if (!coreDb) {
         return asApiError('Core DB is not available.');

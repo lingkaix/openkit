@@ -32,6 +32,37 @@ function writeServerConfig(dataRoot: string, body: string): void {
 }
 
 /**
+ * Writes one authored agent config whose display name can drive semantic reload tests.
+ *
+ * @param dataRoot Data root that owns the agent config directory.
+ * @param displayName Agent display name to write.
+ */
+function writeAgentConfig(dataRoot: string, displayName: string): void {
+  const configRoot = join(dataRoot, 'config', 'agents');
+
+  mkdirSync(configRoot, { recursive: true });
+  writeFileSync(
+    join(configRoot, 'runtime.agent.jsonc'),
+    `{
+      "schemaVersion": 1,
+      "id": "agent_runtime",
+      "displayName": "${displayName}",
+      "mode": "local",
+      "runtime": { "kind": "codex", "adapter": "codex-app-server" },
+      "deployment": {
+        "local": { "command": "codex", "args": ["app-server"], "cwdPolicy": "workspace" }
+      },
+      "provider": { "ref": "agent-openrouter", "model": "openai/gpt-5.1" },
+      "profiles": [{ "id": "default", "instructionsRef": "codex", "skills": [] }],
+      "defaultProfileId": "default",
+      "skills": [],
+      "workspace": { "root": "." },
+      "extensions": {}
+    }`
+  );
+}
+
+/**
  * Writes one workspace config file to the canonical user-owned workspace path.
  *
  * @param dataRoot Data root that owns the user workspace tree.
@@ -274,7 +305,7 @@ describe('runtime config loading and reload planning', () => {
     expect(plan.rejected).toEqual([]);
   });
 
-  it('classifies provider updates as applied and server bind changes as restart-required', () => {
+  it('classifies provider updates and server process changes as restart-required', () => {
     const baseRoot = createDataRoot();
     const nextRoot = createDataRoot();
     writeServerConfig(baseRoot, serverConfig('openai/gpt-5.1'));
@@ -293,10 +324,13 @@ describe('runtime config loading and reload planning', () => {
       loadRuntimeConfig(nextRoot, { version: 2 })
     );
 
-    expect(plan.applied).toEqual([
-      expect.objectContaining({ action: 'applied', category: 'hot-swappable', path: 'providers' }),
-    ]);
+    expect(plan.applied).toEqual([]);
     expect(plan.requiresRestart).toEqual([
+      expect.objectContaining({
+        action: 'requires-restart',
+        category: 'restart-required',
+        path: 'providers',
+      }),
       expect.objectContaining({
         action: 'requires-restart',
         category: 'restart-required',
@@ -306,6 +340,29 @@ describe('runtime config loading and reload planning', () => {
         action: 'requires-restart',
         category: 'restart-required',
         path: 'vault',
+      }),
+    ]);
+  });
+
+  it('classifies agent config changes as restart-required', () => {
+    const baseRoot = createDataRoot();
+    const nextRoot = createDataRoot();
+    writeServerConfig(baseRoot, serverConfig('openai/gpt-5.1'));
+    writeServerConfig(nextRoot, serverConfig('openai/gpt-5.1'));
+    writeAgentConfig(baseRoot, 'Runtime Agent One');
+    writeAgentConfig(nextRoot, 'Runtime Agent Two');
+
+    const plan = diffRuntimeConfig(
+      loadRuntimeConfig(baseRoot, { version: 1 }),
+      loadRuntimeConfig(nextRoot, { version: 2 })
+    );
+
+    expect(plan.deferred).toEqual([]);
+    expect(plan.requiresRestart).toEqual([
+      expect.objectContaining({
+        action: 'requires-restart',
+        category: 'restart-required',
+        path: 'agents',
       }),
     ]);
   });
@@ -321,6 +378,9 @@ describe('runtime config loading and reload planning', () => {
     expect(failed.status).toBe('failed');
     expect(manager.current().version).toBe(1);
     expect(manager.status().lastFailedReload?.status).toBe('failed');
+    expect(JSON.stringify(failed)).not.toContain(dataRoot);
+    expect(failed.plan.rejected[0]?.summary).toContain('DATA_ROOT/config/server.jsonc');
+    expect(manager.status().lastFailedReload?.message).toContain('DATA_ROOT/config/server.jsonc');
 
     writeServerConfig(
       dataRoot,
@@ -337,7 +397,7 @@ describe('runtime config loading and reload planning', () => {
     expect(manager.status().pendingRestart).toHaveLength(1);
   });
 
-  it('safe reload applies hot-swappable changes without exposing restart-required changes', () => {
+  it('safe reload preserves provider and server state until restart', () => {
     const dataRoot = createDataRoot();
     writeServerConfig(dataRoot, serverConfig('openai/gpt-5.1'));
     const manager = createRuntimeConfigManager({ dataRoot });
@@ -356,10 +416,15 @@ describe('runtime config loading and reload planning', () => {
     expect(applied.status).toBe('applied');
     expect(manager.current().version).toBe(2);
     expect(manager.current().providerRegistry.get('agent-openrouter')?.models).toEqual([
-      'openai/gpt-5.2',
+      'openai/gpt-5.1',
     ]);
     expect(manager.current().openKitConfig.server).toBeUndefined();
     expect(manager.status().pendingRestart).toEqual([
+      expect.objectContaining({
+        action: 'requires-restart',
+        category: 'restart-required',
+        path: 'providers',
+      }),
       expect.objectContaining({
         action: 'requires-restart',
         category: 'restart-required',

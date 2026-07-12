@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   copyFileSync,
   existsSync,
@@ -20,7 +21,6 @@ const CONFIG_TEMPLATE_SUFFIXES = {
   agents: '.agent.jsonc',
 } as const;
 const DATA_ROOT_LAYOUT_VERSION = 1;
-const DEFAULT_DATA_ROOT_DEPLOYMENT_ID = 'dep_local';
 const DATA_ROOT_TEXT_RECORD_EXTENSIONS = new Set([
   '.json',
   '.jsonc',
@@ -456,7 +456,7 @@ function ensureDataRootLayoutMarker(root: string): void {
     writeJson(markerPath, {
       schemaVersion: 1,
       layoutVersion: DATA_ROOT_LAYOUT_VERSION,
-      deploymentId: DEFAULT_DATA_ROOT_DEPLOYMENT_ID,
+      deploymentId: createDataRootDeploymentId(),
     });
     return;
   }
@@ -475,12 +475,21 @@ function ensureDataRootLayoutMarker(root: string): void {
     writeJson(markerPath, {
       schemaVersion: 1,
       layoutVersion: DATA_ROOT_LAYOUT_VERSION,
-      deploymentId: DEFAULT_DATA_ROOT_DEPLOYMENT_ID,
+      deploymentId: createDataRootDeploymentId(),
     });
     return;
   }
 
   readDataRootLayoutMarker(root);
+}
+
+/**
+ * Creates one unique data-root deployment identity.
+ *
+ * @returns Deployment id with the stable OpenKit prefix and a random UUID.
+ */
+function createDataRootDeploymentId(): string {
+  return `dep_${randomUUID()}`;
 }
 
 /**

@@ -310,7 +310,7 @@ function appDiagnosticsPayload(): Record<string, unknown> {
     },
     capabilities: ['core.stream.replay'],
     runtimeConfig: runtimeConfigStatus(),
-    internalAgents: { agents: [], recentFailures: [] },
+    internalAgents: { agents: [], recentFailures: [], recentHookFailures: [] },
   };
 }
 
@@ -336,7 +336,7 @@ function setupDiagnosticsPayload(): Record<string, unknown> {
     service: 'nanocore',
     server: {
       mode: 'local',
-      dataRoot: '/tmp/openkit',
+      dataRoot: 'configured',
       config: {
         schemaVersion: 1,
         defaults: { coreProviderId: null, gatewayProviderId: null },
@@ -1771,6 +1771,38 @@ describe('app api schemas', () => {
     });
   });
 
+  it('preserves internal-agent failure and hook diagnostics', () => {
+    const internalAgents = {
+      agents: [],
+      recentFailures: [
+        {
+          agentId: 'quick-chat',
+          code: 'internal_agent_budget_exhausted',
+          details: { source: 'loop' },
+          message: 'Internal agent budget was exhausted.',
+          occurredAt: timestamp,
+          status: 'aborted' as const,
+          stopReason: 'budget_exhausted' as const,
+        },
+      ],
+      recentHookFailures: [
+        {
+          eventType: 'message_update' as const,
+          hookId: 'diagnostics-observer',
+          message: 'Diagnostics observer failed.',
+          mode: 'observational' as const,
+        },
+      ],
+    };
+
+    expect(
+      AppDiagnosticsResponseSchema.parse({
+        ...appDiagnosticsPayload(),
+        internalAgents,
+      }).internalAgents
+    ).toEqual(internalAgents);
+  });
+
   it('accepts capability usage read models', () => {
     const requestId = '00000000-0000-4000-8000-000000000001';
     const parsed = CapabilityUsageResponseSchema.parse({
@@ -2780,8 +2812,11 @@ describe('app api schemas', () => {
                 details: {},
                 message: `Upstream failed with ${rawSecret}`,
                 occurredAt: timestamp,
+                status: 'error',
+                stopReason: 'error',
               },
             ],
+            recentHookFailures: [],
           },
         }).success
       ).toBe(false);
@@ -3389,6 +3424,19 @@ describe('app api schemas', () => {
     }
   });
 
+  it('rejects absolute data-root paths from setup diagnostics responses', () => {
+    const payload = setupDiagnosticsPayload();
+    const server = payload.server as Record<string, unknown>;
+
+    expect(
+      SetupDiagnosticsResponseSchema.safeParse({
+        ...payload,
+        server: { ...server, dataRoot: '/private/var/openkit' },
+      }).success
+    ).toBe(false);
+    expect(SetupDiagnosticsResponseSchema.parse(payload).server.dataRoot).toBe('configured');
+  });
+
   it('rejects raw-secret-shaped strings from runtime reload and validation responses', () => {
     for (const rawSecret of rawSecretShapes) {
       expect(
@@ -3538,8 +3586,11 @@ describe('app api schemas', () => {
               details: {},
               message: 'Upstream failed with [redacted].',
               occurredAt: timestamp,
+              status: 'error',
+              stopReason: 'error',
             },
           ],
+          recentHookFailures: [],
         },
       }).providers.diagnostics[0]?.message
     ).toBe('redacted secret-ref env:OPENAI_API_KEY');

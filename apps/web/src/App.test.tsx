@@ -2114,6 +2114,7 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
       internalAgents: options.appDiagnosticsInternalAgents ?? {
         agents: [],
         recentFailures: [],
+        recentHookFailures: [],
       },
     }),
     oauthAccounts: async () =>
@@ -2199,7 +2200,7 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
           service: 'nanocore',
           server: {
             mode: 'local',
-            dataRoot: '/tmp/openkit-web-test',
+            dataRoot: 'configured',
             config: {
               schemaVersion: 1,
               defaults: {
@@ -3987,8 +3988,11 @@ describe('App', () => {
                 },
                 message: 'upstream Authorization: Bearer [redacted]',
                 occurredAt: '2026-05-26T00:00:00.000Z',
+                status: 'error',
+                stopReason: 'error',
               },
             ],
+            recentHookFailures: [],
           },
         })}
       />

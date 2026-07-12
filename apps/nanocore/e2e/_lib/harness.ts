@@ -39,14 +39,17 @@ export async function startNanoCoreHarness(
 ): Promise<NanoCoreHarness> {
   const port = await findOpenPort();
   const dataRoot = options.dataRoot ?? (await mkdtemp(join(tmpdir(), 'openkit-nanocore-e2e-')));
+  const coreMode = options.coreMode ?? 'local';
   const env: NodeJS.ProcessEnv = {
     ...processEnv(),
+    ...(coreMode === 'server'
+      ? { BETTER_AUTH_SECRET: 'openkit-nanocore-e2e-server-secret-at-least-32-characters' }
+      : {}),
     ...options.env,
-    OPENKIT_CORE_MODE: options.coreMode ?? 'local',
+    OPENKIT_CORE_MODE: coreMode,
     OPENKIT_DATA_ROOT: dataRoot,
     PORT: String(port),
   };
-  const coreMode = options.coreMode ?? 'local';
 
   if (options.seedDemoWorkspace ?? coreMode === 'local') {
     seedSharedDemoWorkspaceDataRoot(dataRoot);

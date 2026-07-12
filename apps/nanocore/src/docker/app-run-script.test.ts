@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { OpenKitConfigSchema } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
@@ -89,6 +90,7 @@ describe('app run script', () => {
     expect(serverConfig).not.toContain('"apiKey"');
     expect(serverConfig).toContain('"secretRef": "env:OPENROUTER_API_KEY"');
     expect(serverConfig).toContain('"defaultModel": "z-ai/glm-4.5-air:free"');
+    expect(() => OpenKitConfigSchema.parse(JSON.parse(serverConfig))).not.toThrow();
   });
 
   it('does not copy a process-env provider secret into workspace-owned state', async () => {

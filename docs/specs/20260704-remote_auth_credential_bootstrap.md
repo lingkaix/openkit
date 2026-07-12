@@ -67,7 +67,7 @@ NanoCore owns opaque access-token issuance and verification as the remote channe
 - Server mode self-bootstraps: an empty deployment mints exactly one owner bootstrap token through the operator channel, consumed exactly once.
 - The MCP channel and remote coordinators authenticate with `Authorization: Bearer` carrying a scoped token supplied via `OPENKIT_NANOCORE_TOKEN`. The raw cookie/authorization passthrough is removed in the same change, per the internal development compatibility rule.
 - Clients store tokens in the OS keychain when available, an encrypted file fallback otherwise, and never in plaintext config files.
-- Bearer authentication over non-loopback plaintext HTTP is refused; server mode MUST present TLS on non-loopback interfaces before tokens are accepted there.
+- Bearer authentication and bootstrap-token consumption over non-loopback plaintext HTTP are refused; server mode MUST present TLS on non-loopback interfaces before either secret is accepted there.
 - Rotation is overlap-based, revocation is immediate, and `AuthSession` and `Token` revocation are independent.
 
 ## Contract / Expected Behavior
@@ -93,7 +93,7 @@ Rules:
 - Scope checks are authentication-layer gates. Passing a scope check MUST NOT be treated as a permission decision; policy evaluation still applies downstream, per `docs/core/permissions.md`.
 - Requests outside a token's scope MUST fail with a typed authorization error that does not reveal whether the target resource exists.
 - Better Auth session actors and workspace-scoped token actors MUST be checked against active workspace membership on every workspace-addressed request. A missing membership verifier MUST fail closed, workspace tokens MUST also be bound to the addressed workspace, and `server-admin` tokens remain exempt from workspace bindings.
-- Membership revocation MUST retain the membership edge with `status = "removed"`; hard deletion is not a supported revocation mechanism because it discards the tombstone. Workspace-owner backfill MAY add a missing membership for a user-scoped workspace, including a second user that legitimately retains the same imported workspace id, but MUST NOT overwrite an existing `removed` membership or replace the first workspace registry owner.
+- Membership revocation MUST retain the membership edge with `status = "removed"`; hard deletion is not a supported revocation mechanism because it discards the tombstone. Workspace creation and workspace import MUST record the owner membership transactionally. Request-time filesystem discovery MUST NOT synthesize missing membership, revive an existing `removed` edge, or replace the first workspace registry owner.
 - Global App Search requests made by `workspace` or `workspace-readonly` tokens MUST search only token-bound workspaces with active membership. The same visible workspace set MUST constrain workspace, thread, knowledge, artifact, and item results; removing active membership MUST remove that workspace from subsequent search results and the removal MUST survive NanoCore restart.
 - Deployment-wide data-root administration routes MUST accept only the implicit local actor in local mode or a `server-admin` token in server mode. A Better Auth session, `workspace` token, or `workspace-readonly` token MUST NOT confer data-root administration authority.
 
@@ -137,7 +137,7 @@ Rules:
 
 ## Accepted Design
 
-Token verification is a NanoCore auth-middleware concern beside the existing Better Auth session resolution: the middleware extracts the bearer value, rejects non-`okt_` shapes early, hashes and looks up the token, checks status, expiry, rotation grace, transport class, and scope-to-route class, then attaches the actor context used by downstream policy enforcement and audit producers. The last-used summary is updated after successful verification and remains a redacted read model.
+Token verification is a NanoCore auth-middleware concern beside the existing Better Auth session resolution: the middleware extracts the bearer value, rejects non-`okt_` shapes early, hashes and looks up the token, checks status, expiry, rotation grace, transport class, and scope-to-route class, then attaches the actor context used by downstream policy enforcement and audit producers. The same socket-derived transport gate runs before the public bootstrap-consumption handler reads its request body. The last-used summary is updated after successful verification and remains a redacted read model.
 
 Bootstrap is a startup hook: on server-mode boot with zero users, mint the bootstrap secret, store its hash with a `bootstrap` marker distinct from the public scope set, and emit the plaintext once. A single public consumption endpoint accepts the bootstrap token and the owner profile payload and performs the atomic owner-creation transaction.
 

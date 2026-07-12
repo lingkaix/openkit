@@ -1,3 +1,4 @@
+import type { AppDiagnosticsResponse } from '@openkit/app-api-schemas';
 import type { z } from 'zod';
 import type {
   OpenAICompatibleChatCompletionRequest,
@@ -6,7 +7,6 @@ import type {
 } from '../llm/openai-compatible-client.js';
 import type { LLMGatewayDispatchContext } from '../llm/provider-dispatcher.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
-import type { InternalAgentHookFailureDiagnostic } from './hooks.js';
 
 /**
  * Stable identifier for a NanoCore internal lightweight agent.
@@ -432,66 +432,17 @@ export interface InternalAgentLLMClient {
   ): Promise<ReadableStream<Uint8Array>>;
 }
 
-/**
- * Provider/model selection shown in safe internal-agent diagnostics.
- */
-export interface InternalAgentProviderDiagnostic {
-  /** Whether a provider and model are currently selected. */
-  readonly configured: boolean;
-  /** Provider id when selected. */
-  readonly providerId?: string;
-  /** Model when selected. */
-  readonly model?: string;
-  /** Reason selection is not usable. */
-  readonly reason?: 'provider-missing' | 'model-missing';
-}
+/** Provider/model selection shown in safe internal-agent diagnostics. */
+export type InternalAgentProviderDiagnostic =
+  AppDiagnosticsResponse['internalAgents']['agents'][number]['provider'];
 
-/**
- * Safe diagnostics summary for one internal agent definition.
- */
-export interface InternalAgentDefinitionDiagnostic {
-  /** Stable agent id. */
-  readonly id: InternalAgentId;
-  /** Human-readable agent name. */
-  readonly displayName: string;
-  /** Product modes supported by this definition. */
-  readonly supportedModes: readonly InternalAgentMode[];
-  /** Existing provider default slot used by this definition. */
-  readonly defaultProviderUse: InternalAgentDefaultProviderUse;
-  /** Fixed Core tool allowlist. */
-  readonly allowedTools: readonly InternalCoreToolId[];
-  /** Provider/model selection without secrets. */
-  readonly provider: InternalAgentProviderDiagnostic;
-}
+/** Safe diagnostics summary for one internal agent definition. */
+export type InternalAgentDefinitionDiagnostic =
+  AppDiagnosticsResponse['internalAgents']['agents'][number];
 
-/**
- * Redacted failure record retained by the internal agent runner.
- */
-export interface InternalAgentFailureDiagnostic {
-  /** Stable failure code. */
-  readonly code: string;
-  /** Terminal status reported by the loop or runner. */
-  readonly status: InternalAgentEventStatus;
-  /** Stable stop reason reported by the loop or runner. */
-  readonly stopReason: InternalAgentStopReason;
-  /** Agent id associated with the failure. */
-  readonly agentId: InternalAgentId;
-  /** Redacted message safe for diagnostics. */
-  readonly message: string;
-  /** ISO timestamp for the failed invocation. */
-  readonly occurredAt: string;
-  /** Redacted structured details for troubleshooting. */
-  readonly details: unknown;
-}
+/** Redacted failure record retained by the internal agent runner. */
+export type InternalAgentFailureDiagnostic =
+  AppDiagnosticsResponse['internalAgents']['recentFailures'][number];
 
-/**
- * Safe diagnostics snapshot for the internal-agent subsystem.
- */
-export interface InternalAgentDiagnosticsSnapshot {
-  /** Registered internal agents and current provider/model selection. */
-  readonly agents: InternalAgentDefinitionDiagnostic[];
-  /** Recent redacted internal-agent failures. */
-  readonly recentFailures: InternalAgentFailureDiagnostic[];
-  /** Recent redacted observational hook failures. */
-  readonly recentHookFailures: readonly InternalAgentHookFailureDiagnostic[];
-}
+/** Safe diagnostics snapshot for the internal-agent subsystem. */
+export type InternalAgentDiagnosticsSnapshot = AppDiagnosticsResponse['internalAgents'];

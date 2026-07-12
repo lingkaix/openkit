@@ -655,15 +655,16 @@ describe('Settings diagnostics app API', () => {
     expect(res.status).toBe(200);
     expect(body).toMatchObject({
       auth: { mode: 'local' },
-      dataRoot,
+      dataRoot: 'configured',
       migrations: { applied: [] },
       mode: 'local',
       providers: [],
       agents: [],
     });
+    expect(JSON.stringify(body)).not.toContain(dataRoot);
   });
 
-  it('exposes signed-in server diagnostics without leaking session tokens', async () => {
+  it('rejects signed-in sessions from deployment diagnostics without leaking session tokens', async () => {
     const app = createApp({
       auth: createAuthStub({
         session: { id: 'session_secret_value' },
@@ -677,17 +678,14 @@ describe('Settings diagnostics app API', () => {
     const res = await app.request('/api/diagnostics');
     const body = await res.json();
 
-    expect(res.status).toBe(200);
-    expect(body).toMatchObject({
-      auth: { mode: 'server', signedIn: true },
-      mode: 'server',
-    });
+    expect(res.status).toBe(403);
+    expect(body).toMatchObject({ code: 'diagnostics_admin_forbidden' });
     expect(JSON.stringify(body)).not.toContain('session_secret_value');
   });
 
   it('exposes redacted setup diagnostics for server config, providers, and agent setup', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-setup-diagnostics-'));
-    const rawSecrets = ['sk-openkit-secret', 'hf_openkit_secret', 'ghp_openkit_secret'];
+    const rawSecrets = ['sk-openkit-secret', 'ghp_openkit_secret'];
     const providerRegistry = new ProviderRegistry([
       {
         baseUrl: `https://user:${rawSecrets[0]}@openrouter.ai/api/v1`,
@@ -709,14 +707,13 @@ describe('Settings diagnostics app API', () => {
         },
         gateway: {
           openaiCompatible: {
-            auth: rawSecrets[1],
-            defaultProviderId: 'agent-openrouter',
+            enabled: true,
           },
         },
       },
       providerRegistry,
       providerCredentialResolver: (secretRef) =>
-        secretRef === 'env:OPENROUTER_API_KEY' ? rawSecrets[2] : null,
+        secretRef === 'env:OPENROUTER_API_KEY' ? rawSecrets[1] : null,
       agentConfigs: [createAgentConfig()],
       agentManifests: [createAgentManifest()],
     });
@@ -730,7 +727,7 @@ describe('Settings diagnostics app API', () => {
       service: 'nanocore',
       server: {
         mode: 'local',
-        dataRoot,
+        dataRoot: 'configured',
         config: {
           defaults: {
             coreProviderId: 'agent-openrouter',
@@ -738,8 +735,7 @@ describe('Settings diagnostics app API', () => {
           },
           gateway: {
             openaiCompatible: {
-              auth: { configured: true, marker: 'redacted' },
-              defaultProviderId: 'agent-openrouter',
+              enabled: true,
             },
           },
         },
@@ -774,6 +770,7 @@ describe('Settings diagnostics app API', () => {
     expect(serialized).not.toMatch(/sk-[A-Za-z0-9_-]+/);
     expect(serialized).not.toMatch(/hf_[A-Za-z0-9_-]+/);
     expect(serialized).not.toMatch(/ghp_[A-Za-z0-9_-]+/);
+    expect(serialized).not.toContain(dataRoot);
   });
 
   it('projects setup resolver blockers into agent readiness reasons', async () => {

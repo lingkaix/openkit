@@ -22,7 +22,8 @@ One record family must have one durable authority. Do not add aggregate workspac
 - `command-request-records.ts` owns scope-homed SQLite command idempotency; process-local duplicate collapse remains in `../runtime/idempotent-command.ts`.
 - `workspace-export.ts` owns the V2 export tree, manifest, exact-byte inventory, and offline verification.
 - `workspace-import.ts` parses only verified bytes, validates and remints the import graph, and reconstructs importable records.
-- `workspace-portable-file-state.ts` owns portable knowledge ledgers, workspace config and schema, native OKF pages, and context materialization I/O.
+- `workspace-portable-file-state.ts` owns portable knowledge ledgers, workspace config and schema, native OKF pages, and export/import capture and publication of context materializations.
+- `../lib/store.ts` currently owns live context-materialization reads and writes; do not duplicate that path protocol or add another durable owner while the broad store boundary remains.
 - `workspace-transfer-routes.ts` coordinates public requests, staged workspace publication, the Core database transaction, and synchronous compensation when Core replay fails.
 - `index-rebuild.ts` consumes canonical records and authoritative ledgers but must never become their source of truth.
 - Secret material belongs to `../vault/` backends and credential consumers; storage may retain only explicitly allowed non-secret metadata and redacted evidence.
