@@ -4,7 +4,7 @@ import {
   ListHumanAttentionResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { StopReason } from '@openkit/protocol';
-import type { FsStore } from './lib/store.js';
+import type { ArtifactReviewStatus, FsStore } from './lib/store.js';
 import { POLICY_ESCALATION_CAUSATION_PREFIX } from './policy/approval-gates.js';
 import { listGoalReviewRecordsForTask } from './runtime/goal-review-records.js';
 import { type GoalRecord, listGoalRecordsForThread, listGoalTasks } from './runtime/goal-store.js';
@@ -63,7 +63,7 @@ export function buildHumanAttentionResponse(input: BuildHumanAttentionRowsInput)
 export function buildHumanAttentionRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] {
   input.store.getWorkspace(input.workspaceId);
 
-  const artifactRows = artifactReviewRows(input.store, input.workspaceId);
+  const artifactRows = artifactReviewRows(input);
   const rows = [
     ...approvalRows(input.store, input.workspaceId),
     ...questionRows(input.store, input.workspaceId),
@@ -115,7 +115,7 @@ function durableWorkspaceReviewRows(
       summary: item.review.riskSummary,
       severity: 'needs_input',
       createdAt: item.review.updatedAt,
-      recommendedAction: 'Inspect, accept, refine, redo, reject, or defer these workspace changes.',
+      recommendedAction: 'Inspect, accept, refine, reject, or block these workspace changes.',
       source: {
         type: 'workspace_review',
         reviewId: item.review.id,
@@ -881,21 +881,37 @@ function agentReadinessRows(store: FsStore, workspaceId: string): HumanAttention
 /**
  * Projects pending artifact review records into rows.
  *
- * @param store Request-scoped workspace store.
- * @param workspaceId Workspace id to inspect.
+ * @param input Projection dependencies and workspace scope.
  * @returns Artifact review rows.
  */
-function artifactReviewRows(store: FsStore, workspaceId: string): HumanAttentionRow[] {
+function artifactReviewRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] {
+  const { store, workspaceId } = input;
+  const reviews = store.listArtifactReviewDecisions(workspaceId);
   const decided = new Set(
-    store.listArtifactReviewDecisions(workspaceId).map((review) => review.artifactId)
+    reviews.filter((review) => review.lifecycle === 'completed').map((review) => review.artifactId)
+  );
+  const pendingClaims = new Map(
+    reviews
+      .filter((review) => review.lifecycle === 'pending')
+      .map((review) => [review.artifactId, review.status] as const)
+  );
+  const terminalWorkspaceReviewArtifacts = new Set(
+    (input.workspaceDb ? listWorkspaceSyncReviews(input.workspaceDb, workspaceId) : [])
+      .filter((item) => item.review.status !== 'pending')
+      .map((item) => item.artifactId)
   );
 
   return store
     .listArtifacts(workspaceId)
     .filter((artifact) => artifact.status === 'ready')
     .filter((artifact) => !decided.has(artifact.id))
+    .filter(
+      (artifact) =>
+        !terminalWorkspaceReviewArtifacts.has(artifact.id) || pendingClaims.has(artifact.id)
+    )
     .map((artifact) => {
       const isWorkspaceReview = artifact.id.startsWith('ar_workspace_changes_');
+      const pendingClaim = pendingClaims.get(artifact.id);
 
       return {
         id: `artifact:${artifact.id}`,
@@ -908,9 +924,11 @@ function artifactReviewRows(store: FsStore, workspaceId: string): HumanAttention
         summary: artifact.summary ?? 'The artifact is ready for review.',
         severity: 'needs_input',
         createdAt: artifact.updatedAt,
-        recommendedAction: isWorkspaceReview
-          ? 'Accept, refine, redo, reject, or defer these workspace changes.'
-          : 'Accept, refine, redo, reject, or defer this artifact.',
+        recommendedAction: pendingClaim
+          ? `Resume the pending ${pendingClaim} decision.`
+          : isWorkspaceReview
+            ? 'Accept, refine, redo, reject, or defer these workspace changes.'
+            : 'Accept, refine, redo, reject, or defer this artifact.',
         source: {
           type: 'artifact',
           artifactId: artifact.id,
@@ -919,7 +937,12 @@ function artifactReviewRows(store: FsStore, workspaceId: string): HumanAttention
           turnId: artifact.turnId ?? undefined,
           reviewStatus: 'pending',
         },
-        actions: artifactReviewActions(workspaceId, artifact.id, artifact.threadId ?? undefined),
+        actions: artifactReviewActions(
+          workspaceId,
+          artifact.id,
+          artifact.threadId ?? undefined,
+          pendingClaim
+        ),
       };
     });
 }
@@ -1000,23 +1023,47 @@ function openThreadAction(threadId: string): HumanAttentionAction {
  * @param workspaceId Workspace id.
  * @param artifactId Artifact id.
  * @param threadId Optional thread id.
+ * @param pendingStatus Claimed decision that must be resumed before another decision.
  * @returns Artifact review actions.
  */
 function artifactReviewActions(
   workspaceId: string,
   artifactId: string,
-  threadId?: string
+  threadId?: string,
+  pendingStatus?: ArtifactReviewStatus
 ): HumanAttentionAction[] {
   const href = `/api/app/workspaces/${workspaceId}/artifacts/${artifactId}/review`;
+  const pendingActionKind =
+    pendingStatus === 'accepted'
+      ? 'accept_review'
+      : pendingStatus === 'needs_refinement'
+        ? 'request_refinement'
+        : pendingStatus === 'redo'
+          ? 'retry_work'
+          : pendingStatus === 'rejected'
+            ? 'mark_blocked'
+            : pendingStatus === 'deferred'
+              ? 'defer'
+              : null;
 
-  return [
-    { kind: 'accept_review', label: 'Accept', method: 'POST', href },
-    { kind: 'request_refinement', label: 'Refine', method: 'POST', href },
-    { kind: 'retry_work', label: 'Redo', method: 'POST', href },
-    { kind: 'mark_blocked', label: 'Reject', method: 'POST', href },
-    { kind: 'defer', label: 'Defer', method: 'POST', href },
-    ...(threadId ? [openThreadAction(threadId)] : []),
-  ];
+  return (
+    [
+      { kind: 'accept_review', label: 'Accept', method: 'POST', href },
+      { kind: 'request_refinement', label: 'Refine', method: 'POST', href },
+      { kind: 'retry_work', label: 'Redo', method: 'POST', href },
+      { kind: 'mark_blocked', label: 'Reject', method: 'POST', href },
+      { kind: 'defer', label: 'Defer', method: 'POST', href },
+      ...(threadId ? [openThreadAction(threadId)] : []),
+    ] satisfies HumanAttentionAction[]
+  ).map((action) =>
+    pendingActionKind && action.kind !== pendingActionKind && action.kind !== 'open_thread'
+      ? {
+          ...action,
+          disabled: true,
+          reason: 'Resume the pending review decision before choosing another action.',
+        }
+      : action
+  );
 }
 
 /**

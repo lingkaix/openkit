@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -81,6 +82,8 @@ describe('Git push linkage', () => {
 
   it('allows commits linked to staged review branches', () => {
     const workspaceDb = createWorkspaceDb();
+    const patchText = 'diff --git a/README.md b/README.md\n';
+    const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
 
     try {
       recordWorkspaceSyncReview(workspaceDb, {
@@ -97,17 +100,21 @@ describe('Git push linkage', () => {
             id: 'wcs_branch',
             inputSnapshotId: 'wis_branch',
             materializationRecordId: 'wmr_branch',
-            patch: { bytes: 42, digest: 'sha256:patch', ref: 'artifact://patch' },
+            patch: {
+              bytes: Buffer.byteLength(patchText, 'utf8'),
+              digest: patchDigest,
+              ref: 'artifact://patch',
+            },
             redaction: { notes: [], status: 'redacted' },
             resourceId: 'repo_default',
             strategy: 'git',
             workspaceId: 'ws_demo',
           },
           patchPayload: {
-            bytes: 42,
-            digest: 'sha256:patch',
+            bytes: Buffer.byteLength(patchText, 'utf8'),
+            digest: patchDigest,
             mediaType: 'text/x-diff',
-            text: 'diff --git a/README.md b/README.md\n',
+            text: patchText,
           },
           review: {
             actionCenterRowId: 'workspace-review:swr_branch',

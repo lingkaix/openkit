@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,7 +10,10 @@ import { createGoalRecord, createGoalTask, updateGoalStatus } from './runtime/go
 import { enqueuePendingUserTurn } from './runtime/pending-user-turns.js';
 import { upsertWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import { recordWorkspaceReconciliationRecord } from './runtime/workspace-reconciliation-records.js';
-import { recordWorkspaceSyncReview } from './runtime/workspace-sync-records.js';
+import {
+  recordWorkspaceSyncReview,
+  updateWorkspaceSyncReviewDecision,
+} from './runtime/workspace-sync-records.js';
 import { createSchedulerAdmissionEntry, denySchedulerAdmissionEntry } from './scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
@@ -341,6 +345,7 @@ describe('action center app API', () => {
         message: 'Review later.',
         decidedAt: timestamp,
         followUpTurnId: null,
+        lifecycle: 'completed',
       });
       store.createArtifact({
         id: 'artifact_deferred',
@@ -854,6 +859,8 @@ describe('action center app API', () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
     const workspace = store.createWorkspace('Durable workspace review');
+    const patchText = 'diff --git a/docs/loop.md b/docs/loop.md\n';
+    const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
 
     try {
       const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
@@ -871,7 +878,11 @@ describe('action center app API', () => {
               base: { commit: 'abc123', contentDigest: null },
               head: { commit: 'def456', contentDigest: null },
               changedPaths: [{ path: 'docs/loop.md', status: 'modified', binary: false }],
-              patch: { ref: 'artifact://patch', digest: 'sha256:patch', bytes: 42 },
+              patch: {
+                ref: 'artifact://patch',
+                digest: patchDigest,
+                bytes: Buffer.byteLength(patchText, 'utf8'),
+              },
               bundle: null,
               artifactIds: ['ar_missing_workspace_review'],
               evidenceRefs: [{ kind: 'worker', ref: 'turn_durable_review' }],
@@ -880,9 +891,9 @@ describe('action center app API', () => {
             },
             patchPayload: {
               mediaType: 'text/x-diff',
-              text: 'diff --git a/docs/loop.md b/docs/loop.md\n',
-              digest: 'sha256:patch',
-              bytes: 42,
+              text: patchText,
+              digest: patchDigest,
+              bytes: Buffer.byteLength(patchText, 'utf8'),
             },
             review: {
               id: 'swr_durable_review',
@@ -943,6 +954,101 @@ describe('action center app API', () => {
       );
       expect(row?.actions.some((action) => action.disabled)).toBe(false);
     } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('omits backing artifact rows after a durable workspace review is resolved', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore();
+    const workspace = store.createWorkspace('Resolved durable workspace review');
+    const artifactId = 'ar_workspace_changes_turn_resolved_swr_resolved';
+    const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
+    const patchText = 'diff --git a/docs/resolved.md b/docs/resolved.md\n';
+    const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
+
+    try {
+      store.createArtifact({
+        id: artifactId,
+        workspaceId: workspace.id,
+        threadId: null,
+        turnId: null,
+        kind: 'diff',
+        title: 'Workspace changes ready for review',
+        status: 'ready',
+        summary: 'Resolved workspace changes.',
+        version: 1,
+        content: { format: 'json', body: '{}' },
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+      recordWorkspaceSyncReview(workspaceDb, {
+        item: {
+          artifactId,
+          changeSet: {
+            id: 'wcs_resolved_workspace_review',
+            materializationRecordId: 'wmr_resolved_workspace_review',
+            inputSnapshotId: 'wis_resolved_workspace_review',
+            workspaceId: workspace.id,
+            resourceId: 'repo_default',
+            strategy: 'git',
+            base: { commit: 'abc123', contentDigest: null },
+            head: { commit: 'def456', contentDigest: null },
+            changedPaths: [{ path: 'docs/resolved.md', status: 'modified', binary: false }],
+            patch: {
+              ref: 'artifact://patch',
+              digest: patchDigest,
+              bytes: Buffer.byteLength(patchText, 'utf8'),
+            },
+            bundle: null,
+            artifactIds: [artifactId],
+            evidenceRefs: [{ kind: 'worker', ref: 'turn_resolved' }],
+            redaction: { status: 'redacted', notes: [] },
+            createdAt: timestamp,
+          },
+          patchPayload: {
+            mediaType: 'text/x-diff',
+            text: patchText,
+            digest: patchDigest,
+            bytes: Buffer.byteLength(patchText, 'utf8'),
+          },
+          review: {
+            id: 'swr_resolved',
+            changeSetId: 'wcs_resolved_workspace_review',
+            workspaceId: workspace.id,
+            status: 'pending',
+            staging: {
+              strategy: 'git_worktree',
+              ref: 'staging://workspace/wcs_resolved_workspace_review',
+              branch: 'openkit/review/swr_resolved',
+            },
+            diffSummary: { filesChanged: 1, additions: 0, deletions: 0 },
+            riskSummary: 'Resolved workspace changes.',
+            validation: [],
+            actionCenterRowId: 'workspace-review:swr_resolved',
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          },
+        },
+      });
+      updateWorkspaceSyncReviewDecision(workspaceDb, {
+        requestId: 'resolve-backing-artifact',
+        reviewId: 'swr_resolved',
+        status: 'rejected',
+        updatedAt: '2026-05-31T00:01:00.000Z',
+        workspaceId: workspace.id,
+      });
+
+      const app = createApp({ coreDb, store });
+      const response = await app.request(`/api/app/workspaces/${workspace.id}/action-center`);
+      const rowIds = ListHumanAttentionResponseSchema.parse(await response.json()).items.map(
+        (row) => row.id
+      );
+
+      expect(rowIds).not.toContain(`artifact:${artifactId}`);
+      expect(rowIds).not.toContain('workspace-review:swr_resolved');
+    } finally {
+      workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
   });

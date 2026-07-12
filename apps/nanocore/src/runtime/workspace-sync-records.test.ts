@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,14 +8,24 @@ import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
 import {
+  getWorkspaceSyncReview,
+  importWorkspaceSyncRecords,
   listBackendWorkspaceHandles,
+  listExportableWorkspaceSyncRecords,
   listWorkerOutputManifests,
+  listWorkspaceChangeSets,
+  listWorkspaceInputSnapshots,
+  listWorkspaceMaterializationRecords,
+  recordWorkspaceInputSnapshots,
   recordWorkspaceMaterializationRecords,
   recordWorkspaceSyncReview,
   updateBackendWorkspaceHandleCleanupStatus,
+  updateWorkspaceSyncReviewDecision,
 } from './workspace-sync-records.js';
 
 const timestamp = '2026-07-05T00:00:00.000Z';
+const workspacePatchText = 'diff --git a/docs/loop.md b/docs/loop.md\n';
+const workspacePatchDigest = `sha256:${createHash('sha256').update(workspacePatchText).digest('hex')}`;
 
 describe('workspace sync records', () => {
   it('records one linked audit event when a staged review is first stored', () => {
@@ -69,10 +80,81 @@ describe('workspace sync records', () => {
             { kind: 'worker', ref: 'turn_1' },
             { kind: 'workspace-sync-patch', ref: 'artifact://patch' },
           ]),
-          content_digests_json: JSON.stringify(['sha256:patch']),
+          content_digests_json: JSON.stringify([workspacePatchDigest]),
           import_status: 'promoted',
         }),
       ]);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    {
+      field: 'terminal status',
+      invalid: () => {
+        const item = workspaceReviewItem();
+        return { ...item, review: { ...item.review, status: 'accepted' as const } };
+      },
+    },
+    {
+      field: 'review workspace',
+      invalid: () => {
+        const item = workspaceReviewItem();
+        return { ...item, review: { ...item.review, workspaceId: 'ws_other' } };
+      },
+    },
+    {
+      field: 'review change-set id',
+      invalid: () => {
+        const item = workspaceReviewItem();
+        return { ...item, review: { ...item.review, changeSetId: 'wcs_other' } };
+      },
+    },
+    {
+      field: 'patch digest',
+      invalid: () => {
+        const item = workspaceReviewItem();
+        return {
+          ...item,
+          patchPayload: item.patchPayload
+            ? { ...item.patchPayload, digest: `sha256:${'0'.repeat(64)}` }
+            : null,
+        };
+      },
+    },
+    {
+      field: 'patch byte count',
+      invalid: () => {
+        const item = workspaceReviewItem();
+        return {
+          ...item,
+          patchPayload: item.patchPayload
+            ? { ...item.patchPayload, bytes: item.patchPayload.bytes + 1 }
+            : null,
+        };
+      },
+    },
+  ])('rejects invalid initial workspace review $field before persistence', ({ invalid }) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-review-ingress-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+
+      expect(() => recordWorkspaceSyncReview(workspaceDb, { item: invalid() })).toThrow();
+      for (const table of [
+        'workspace_input_snapshots',
+        'workspace_materialization_records',
+        'backend_workspace_handles',
+        'worker_output_manifests',
+        'workspace_change_sets',
+        'staged_workspace_reviews',
+      ]) {
+        expect(workspaceDb.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()).toEqual({
+          count: 0,
+        });
+      }
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -89,6 +171,181 @@ describe('workspace sync records', () => {
       const item = recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
 
       expect(item.changeSet.sourceId).toBe('repo_default');
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('treats an identical workspace change set replay as a no-op', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-change-set-replay-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      const item = workspaceReviewItem();
+      recordWorkspaceSyncReview(workspaceDb, { item });
+      const stored = workspaceDb.sqlite
+        .prepare('SELECT * FROM workspace_change_sets WHERE change_set_id = ?')
+        .get(item.changeSet.id);
+
+      recordWorkspaceSyncReview(workspaceDb, { item });
+
+      expect(
+        workspaceDb.sqlite
+          .prepare('SELECT * FROM workspace_change_sets WHERE change_set_id = ?')
+          .all(item.changeSet.id)
+      ).toEqual([stored]);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('treats an identical staged workspace review replay as a no-op', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-review-replay-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      const original = recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
+      const stored = workspaceDb.sqlite
+        .prepare('SELECT * FROM staged_workspace_reviews WHERE review_id = ?')
+        .get(original.review.id);
+
+      const replayed = recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
+
+      expect(replayed).toEqual(original);
+      expect(
+        workspaceDb.sqlite
+          .prepare('SELECT * FROM staged_workspace_reviews WHERE review_id = ?')
+          .all(original.review.id)
+      ).toEqual([stored]);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    {
+      field: 'artifactId',
+      replay: () => ({ ...workspaceReviewItem(), artifactId: 'ar_other' }),
+    },
+    {
+      field: 'patchPayload',
+      replay: () => {
+        const item = workspaceReviewItem();
+
+        return {
+          ...item,
+          patchPayload: item.patchPayload
+            ? { ...item.patchPayload, digest: 'sha256:other-patch' }
+            : null,
+        };
+      },
+    },
+    {
+      field: 'review.riskSummary',
+      replay: () => {
+        const item = workspaceReviewItem();
+
+        return {
+          ...item,
+          review: { ...item.review, riskSummary: 'Different immutable risk summary.' },
+        };
+      },
+    },
+    {
+      field: 'review.changeSetId',
+      replay: () => {
+        const item = workspaceReviewItem();
+
+        return {
+          ...item,
+          changeSet: { ...item.changeSet, id: 'wcs_2' },
+          review: { ...item.review, changeSetId: 'wcs_2' },
+        };
+      },
+    },
+  ])('rejects a same-id staged workspace review replay that changes $field', ({ replay }) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-review-conflict-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      const original = recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
+      const originalChangeSets = listWorkspaceChangeSets(workspaceDb, 'ws_demo');
+      const originalManifests = listWorkerOutputManifests(workspaceDb, 'ws_demo');
+
+      expect(() => recordWorkspaceSyncReview(workspaceDb, { item: replay() })).toThrow(/conflict/i);
+      expect(getWorkspaceSyncReview(workspaceDb, 'ws_demo', original.review.id)).toEqual(original);
+      expect(listWorkspaceChangeSets(workspaceDb, 'ws_demo')).toEqual(originalChangeSets);
+      expect(listWorkerOutputManifests(workspaceDb, 'ws_demo')).toEqual(originalManifests);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    {
+      field: 'resourceId',
+      replay: () => {
+        const item = workspaceReviewItem();
+        return { ...item, changeSet: { ...item.changeSet, resourceId: 'repo_other' } };
+      },
+    },
+    {
+      field: 'head.commit',
+      replay: () => {
+        const item = workspaceReviewItem();
+        return {
+          ...item,
+          changeSet: { ...item.changeSet, head: { ...item.changeSet.head, commit: 'fedcba' } },
+        };
+      },
+    },
+  ])('rejects a same-id workspace change set replay that changes $field', ({ replay }) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-change-set-conflict-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
+
+      expect(() => recordWorkspaceSyncReview(workspaceDb, { item: replay() })).toThrow(/conflict/i);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('preserves a terminal review decision when staging evidence is replayed', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-terminal-review-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
+      updateWorkspaceSyncReviewDecision(workspaceDb, {
+        requestId: '00000000-0000-4000-8000-000000000001',
+        reviewId: 'swr_1',
+        status: 'accepted',
+        updatedAt: '2026-07-05T00:01:00.000Z',
+        workspaceId: 'ws_demo',
+      });
+
+      const replayed = recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
+
+      expect(replayed.review).toMatchObject({
+        id: 'swr_1',
+        status: 'accepted',
+        updatedAt: '2026-07-05T00:01:00.000Z',
+      });
+      expect(getWorkspaceSyncReview(workspaceDb, 'ws_demo', 'swr_1')?.review.status).toBe(
+        'accepted'
+      );
+      expect(
+        workspaceDb.sqlite
+          .prepare("SELECT request_id FROM audit_events WHERE action = 'workspace.review.decide'")
+          .get()
+      ).toEqual({ request_id: '00000000-0000-4000-8000-000000000001' });
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -260,6 +517,153 @@ describe('workspace sync records', () => {
       workspaceDb.sqlite.close();
     }
   });
+
+  it('returns the stored input snapshots and materialization records on exact replay', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-record-return-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
+      const snapshots = listWorkspaceInputSnapshots(workspaceDb, 'ws_demo');
+      const materializations = listWorkspaceMaterializationRecords(workspaceDb, 'ws_demo');
+
+      expect(recordWorkspaceInputSnapshots(workspaceDb, snapshots)).toEqual(snapshots);
+      expect(recordWorkspaceMaterializationRecords(workspaceDb, materializations)).toEqual(
+        materializations
+      );
+      expect(listWorkspaceInputSnapshots(workspaceDb, 'ws_demo')).toEqual(snapshots);
+      expect(listWorkspaceMaterializationRecords(workspaceDb, 'ws_demo')).toEqual(materializations);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('treats an identical workspace sync import as a no-op', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-import-replay-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
+      const stored = listExportableWorkspaceSyncRecords(workspaceDb, 'ws_demo');
+
+      importWorkspaceSyncRecords(workspaceDb, stored);
+
+      expect(listExportableWorkspaceSyncRecords(workspaceDb, 'ws_demo')).toEqual(stored);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('rejects imported review lineage that does not match its change set before writing', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-import-lineage-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      const input = workspaceSyncImportFixture();
+      const stagedReview = input.stagedReviews[0];
+      expect(stagedReview).toBeDefined();
+
+      expect(() =>
+        importWorkspaceSyncRecords(workspaceDb, {
+          ...input,
+          stagedReviews: stagedReview
+            ? [
+                {
+                  ...stagedReview,
+                  review: { ...stagedReview.review, changeSetId: 'wcs_other' },
+                },
+              ]
+            : [],
+        })
+      ).toThrow(/lineage|mismatch|conflict/i);
+      expect(listExportableWorkspaceSyncRecords(workspaceDb, 'ws_demo')).toEqual({
+        backendWorkspaceHandles: [],
+        changeSets: [],
+        inputSnapshots: [],
+        materializationRecords: [],
+        stagedReviews: [],
+        workerOutputManifests: [],
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    {
+      field: 'input snapshot',
+      replay: () => {
+        const input = workspaceSyncImportFixture();
+
+        return {
+          ...input,
+          inputSnapshots: input.inputSnapshots.map((snapshot) => ({
+            ...snapshot,
+            ignoredPaths: ['temp/private'],
+          })),
+        };
+      },
+    },
+    {
+      field: 'materialization record',
+      replay: () => {
+        const input = workspaceSyncImportFixture();
+
+        return {
+          ...input,
+          materializationRecords: input.materializationRecords.map((record) => ({
+            ...record,
+            policyDigest: 'sha256:different-policy',
+          })),
+        };
+      },
+    },
+    {
+      field: 'worker output manifest',
+      replay: () => {
+        const input = workspaceSyncImportFixture();
+
+        return {
+          ...input,
+          workerOutputManifests: input.workerOutputManifests.map((manifest) => ({
+            ...manifest,
+            artifactIds: ['ar_other'],
+          })),
+        };
+      },
+    },
+    {
+      field: 'staged workspace review',
+      replay: () => {
+        const input = workspaceSyncImportFixture();
+
+        return {
+          ...input,
+          stagedReviews: input.stagedReviews.map((review) => ({
+            ...review,
+            artifactId: 'ar_other',
+          })),
+        };
+      },
+    },
+  ])('rejects a conflicting $field during workspace sync import', ({ replay }) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-import-conflict-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      const original = workspaceSyncImportFixture();
+      importWorkspaceSyncRecords(workspaceDb, original);
+
+      expect(() => importWorkspaceSyncRecords(workspaceDb, replay())).toThrow(/conflict/i);
+      expect(listExportableWorkspaceSyncRecords(workspaceDb, 'ws_demo')).toEqual(original);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
 });
 
 /**
@@ -281,17 +685,21 @@ function workspaceReviewItem(): Parameters<typeof recordWorkspaceSyncReview>[1][
       id: 'wcs_1',
       inputSnapshotId: 'wis_1',
       materializationRecordId: 'wmr_1',
-      patch: { bytes: 42, digest: 'sha256:patch', ref: 'artifact://patch' },
+      patch: {
+        bytes: Buffer.byteLength(workspacePatchText, 'utf8'),
+        digest: workspacePatchDigest,
+        ref: 'artifact://patch',
+      },
       redaction: { notes: [], status: 'redacted' },
       resourceId: 'repo_default',
       strategy: 'git',
       workspaceId: 'ws_demo',
     },
     patchPayload: {
-      bytes: 42,
-      digest: 'sha256:patch',
+      bytes: Buffer.byteLength(workspacePatchText, 'utf8'),
+      digest: workspacePatchDigest,
       mediaType: 'text/x-diff',
-      text: 'diff --git a/docs/loop.md b/docs/loop.md\n',
+      text: workspacePatchText,
     },
     review: {
       actionCenterRowId: 'workspace-review:swr_1',
@@ -334,5 +742,82 @@ function workspaceMaterializationRecord(): Parameters<
     strategy: 'git',
     workerSessionId: 'session_1',
     workspaceId: 'ws_demo',
+  };
+}
+
+/**
+ * Builds a complete schema-valid workspace synchronization import fixture.
+ *
+ * @returns Workspace synchronization import fixture.
+ */
+function workspaceSyncImportFixture(): Parameters<typeof importWorkspaceSyncRecords>[1] {
+  const item = workspaceReviewItem();
+  const materializationRecord = workspaceMaterializationRecord();
+
+  return {
+    backendWorkspaceHandles: [
+      {
+        backendKind: 'openshell',
+        cleanupStatus: 'pending',
+        createdAt: timestamp,
+        id: 'bwh_wmr_1',
+        materializationRecordId: materializationRecord.id,
+        retention: 'until-reconciliation',
+        transportRefs: [
+          { kind: 'materialized-root', ref: materializationRecord.materializedRootRef },
+        ],
+        updatedAt: timestamp,
+        workerSessionId: materializationRecord.workerSessionId,
+        workspaceId: 'ws_demo',
+      },
+    ],
+    changeSets: [item.changeSet],
+    inputSnapshots: [
+      {
+        backend: {
+          capabilitySummary: [],
+          kind: 'openshell',
+          label: 'test backend',
+        },
+        base: item.changeSet.base,
+        createdAt: timestamp,
+        generatedFiles: [],
+        id: 'wis_1',
+        ignoredPaths: [],
+        pathScope: ['repo_default'],
+        resourceId: 'repo_default',
+        resourceKind: 'git_repository',
+        sourceId: 'repo_default',
+        strategy: 'git',
+        workspaceId: 'ws_demo',
+        writableRoots: ['repo_default'],
+      },
+    ],
+    materializationRecords: [materializationRecord],
+    stagedReviews: [
+      {
+        artifactId: item.artifactId,
+        patchPayload: item.patchPayload,
+        review: item.review,
+      },
+    ],
+    workerOutputManifests: [
+      {
+        artifactIds: item.changeSet.artifactIds,
+        backendKind: materializationRecord.backendKind,
+        changedPaths: item.changeSet.changedPaths,
+        collectedAt: timestamp,
+        evidenceRefs: item.changeSet.evidenceRefs,
+        id: 'wom_wcs_1',
+        ignoredOutputs: [],
+        inputSnapshotId: 'wis_1',
+        logRefs: [],
+        materializationRecordId: 'wmr_1',
+        strategy: 'git',
+        testOutputRefs: [],
+        workerSessionId: materializationRecord.workerSessionId,
+        workspaceId: 'ws_demo',
+      },
+    ],
   };
 }

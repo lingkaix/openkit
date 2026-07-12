@@ -1,6 +1,14 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -43,7 +51,7 @@ import {
   parseWorkspaceDataSourceCatalog,
 } from '@openkit/config-schema';
 import { MetaResponseSchema, SseEventEnvelopeSchema, ThreadSchema } from '@openkit/protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { type CreateAppOptions, createApp as createNanoCoreApp } from './app.js';
 import {
@@ -109,6 +117,7 @@ import {
   upsertWorkerCheckpoint,
 } from './runtime/worker-checkpoints.js';
 import { WorkerControlGateway } from './runtime/worker-control-gateway.js';
+import { listWorkspaceApplyPlans } from './runtime/workspace-apply-plans.js';
 import {
   listWorkspaceApplyResults,
   recordWorkspaceApplyResult,
@@ -125,6 +134,7 @@ import {
   listWorkspaceMaterializationRecords,
   listWorkspaceSyncReviews,
   recordWorkspaceSyncReview,
+  updateWorkspaceSyncReviewDecision,
 } from './runtime/workspace-sync-records.js';
 import {
   createSchedulerAdmissionEntry,
@@ -273,6 +283,7 @@ function createOpenShellWorkerControlPackage(
     resolveAgentEnvironmentPackage({
       agent,
       agentSessionId: 'as_dashboard_control_1',
+      userId: 'user_local',
       backend: {
         controlRelayUpstream: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
@@ -590,6 +601,9 @@ class BrokenWorkspaceListStore extends FsStore {
  * @returns Schema-valid workspace sync review item.
  */
 function workspaceSyncReviewRouteItem(): Parameters<typeof recordWorkspaceSyncReview>[1]['item'] {
+  const patchText = 'diff --git a/docs/sync.md b/docs/sync.md\n';
+  const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
+
   return {
     artifactId: 'ar_workspace_review_route',
     changeSet: {
@@ -603,17 +617,21 @@ function workspaceSyncReviewRouteItem(): Parameters<typeof recordWorkspaceSyncRe
       id: 'wcs_route_1',
       inputSnapshotId: 'wis_route_1',
       materializationRecordId: 'wmr_route_1',
-      patch: { bytes: 48, digest: 'sha256:route-patch', ref: 'artifact://route-patch' },
+      patch: {
+        bytes: Buffer.byteLength(patchText, 'utf8'),
+        digest: patchDigest,
+        ref: 'artifact://route-patch',
+      },
       redaction: { notes: [], status: 'redacted' },
       resourceId: 'repo_default',
       strategy: 'git',
       workspaceId: 'ws_demo',
     },
     patchPayload: {
-      bytes: 48,
-      digest: 'sha256:route-patch',
+      bytes: Buffer.byteLength(patchText, 'utf8'),
+      digest: patchDigest,
       mediaType: 'text/x-diff',
-      text: 'diff --git a/docs/sync.md b/docs/sync.md\n',
+      text: patchText,
     },
     review: {
       actionCenterRowId: 'workspace-review:swr_route_1',
@@ -623,7 +641,7 @@ function workspaceSyncReviewRouteItem(): Parameters<typeof recordWorkspaceSyncRe
       id: 'swr_route_1',
       riskSummary: '1 changed path staged for route import coverage.',
       staging: {
-        branch: 'openkit/review/swr_route_1',
+        branch: null,
         ref: 'staging://workspace/wcs_route_1',
         strategy: 'git_worktree',
       },
@@ -633,6 +651,163 @@ function workspaceSyncReviewRouteItem(): Parameters<typeof recordWorkspaceSyncRe
       workspaceId: 'ws_demo',
     },
   };
+}
+
+/**
+ * Creates one linked Git repository and artifact-backed workspace review for route safety tests.
+ *
+ * @param input Review identity, patch, manifest, and repository behavior overrides.
+ * @returns App, storage, repository, and review handles owned by the fixture.
+ */
+async function createGitWorkspaceReviewFixture(input: {
+  readonly changedPaths?: readonly {
+    readonly binary: boolean;
+    readonly path: string;
+    readonly status: 'added' | 'modified' | 'deleted' | 'renamed' | 'mode_changed';
+  }[];
+  readonly patchText?: string;
+  readonly reviewId: string;
+  readonly stagingStrategy?: 'review-branch' | 'staging-root';
+}): Promise<{
+  readonly app: ReturnType<typeof createApp>;
+  readonly artifactId: string;
+  readonly baseCommit: string;
+  readonly coreDb: CoreDb;
+  readonly repoDir: string;
+  readonly review: Parameters<typeof recordWorkspaceSyncReview>[1]['item'];
+  readonly store: FsStore;
+  readonly workspaceId: string;
+}> {
+  const coreDb = createCoreDb();
+  const store = createDemoStore();
+  const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+  const workspace = store.createWorkspace(`Git review ${input.reviewId}`);
+  const thread = store.createThread(workspace.id, `Review ${input.reviewId}`);
+  const turn = store.createTurn(workspace.id, thread.id, `Produce ${input.reviewId}`);
+  const repoDir = mkdtempSync(join(tmpdir(), `openkit-${input.reviewId}-`));
+  const timestamp = new Date().toISOString();
+
+  execFileSync('git', ['init'], { cwd: repoDir, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.email', 'repository-local@example.invalid'], {
+    cwd: repoDir,
+    stdio: 'ignore',
+  });
+  execFileSync('git', ['config', 'user.name', 'Repository Local'], {
+    cwd: repoDir,
+    stdio: 'ignore',
+  });
+  writeFileSync(join(repoDir, 'README.md'), '# Demo\n', 'utf8');
+  execFileSync('git', ['add', 'README.md'], { cwd: repoDir, stdio: 'ignore' });
+  execFileSync('git', ['commit', '-m', 'initial'], { cwd: repoDir, stdio: 'ignore' });
+  const baseCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: repoDir,
+    encoding: 'utf8',
+  }).trim();
+  const link = await app.request(`/api/app/workspaces/${workspace.id}/repositories/default`, {
+    method: 'POST',
+    body: JSON.stringify({
+      displayName: `Repository ${input.reviewId}`,
+      git: {
+        authorEmail: 'approver@example.invalid',
+        authorName: 'Approving Human',
+        commitOnApply: true,
+        stagingStrategy: input.stagingStrategy ?? 'staging-root',
+      },
+      localPath: repoDir,
+    }),
+    headers: { 'content-type': 'application/json' },
+  });
+
+  if (link.status !== 200) {
+    throw new Error(`Failed to link Git review fixture: ${await link.text()}`);
+  }
+
+  const artifactId = `ar_${input.reviewId}`;
+  const patchText =
+    input.patchText ??
+    'diff --git a/README.md b/README.md\n' +
+      '--- a/README.md\n' +
+      '+++ b/README.md\n' +
+      '@@ -1 +1,3 @@\n' +
+      ' # Demo\n' +
+      '+\n' +
+      `+Applied by ${input.reviewId}.`;
+  const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
+  const review = {
+    artifactId,
+    changeSet: {
+      artifactIds: [artifactId],
+      base: { commit: baseCommit, contentDigest: null },
+      bundle: null,
+      changedPaths: [
+        ...(input.changedPaths ?? [
+          { binary: false, path: 'README.md', status: 'modified' as const },
+        ]),
+      ],
+      createdAt: timestamp,
+      evidenceRefs: [{ kind: 'worker', ref: turn.id }],
+      head: { commit: 'worker-head', contentDigest: null },
+      id: `wcs_${input.reviewId}`,
+      inputSnapshotId: `wis_${input.reviewId}`,
+      materializationRecordId: `wmr_${input.reviewId}`,
+      patch: {
+        bytes: Buffer.byteLength(patchText, 'utf8'),
+        digest: patchDigest,
+        ref: 'worker-session://workspace.patch',
+      },
+      redaction: { notes: [], status: 'redacted' as const },
+      resourceId: 'repo_default',
+      strategy: 'git' as const,
+      workspaceId: workspace.id,
+    },
+    patchPayload: {
+      bytes: Buffer.byteLength(patchText, 'utf8'),
+      digest: patchDigest,
+      mediaType: 'text/x-diff' as const,
+      text: patchText,
+    },
+    review: {
+      actionCenterRowId: `workspace-review:${input.reviewId}`,
+      changeSetId: `wcs_${input.reviewId}`,
+      createdAt: timestamp,
+      diffSummary: {
+        additions: 2,
+        deletions: 0,
+        filesChanged: input.changedPaths?.length ?? 1,
+      },
+      id: input.reviewId,
+      riskSummary: 'Workspace changes require review.',
+      staging: {
+        branch:
+          (input.stagingStrategy ?? 'staging-root') === 'review-branch'
+            ? `openkit/review/${input.reviewId}`
+            : null,
+        ref: `staging://workspace/${input.reviewId}`,
+        strategy: 'git_worktree' as const,
+      },
+      status: 'pending' as const,
+      updatedAt: timestamp,
+      validation: [],
+      workspaceId: workspace.id,
+    },
+  };
+
+  store.createArtifact({
+    id: artifactId,
+    workspaceId: workspace.id,
+    threadId: thread.id,
+    turnId: turn.id,
+    kind: 'diff',
+    title: 'Workspace changes ready for review',
+    status: 'ready',
+    summary: review.review.riskSummary,
+    version: 1,
+    content: { format: 'json', body: JSON.stringify(review) },
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  });
+
+  return { app, artifactId, baseCommit, coreDb, repoDir, review, store, workspaceId: workspace.id };
 }
 
 describe('nanocore server', () => {
@@ -2221,8 +2396,9 @@ describe('nanocore server', () => {
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const sourceReview = workspaceSyncReviewRouteItem();
     try {
-      recordWorkspaceSyncReview(sourceDb, { item: workspaceSyncReviewRouteItem() });
+      recordWorkspaceSyncReview(sourceDb, { item: sourceReview });
     } finally {
       sourceDb.sqlite.close();
     }
@@ -2292,7 +2468,7 @@ describe('nanocore server', () => {
             id: 'wcs_route_1',
             workspaceId: body.importedWorkspaceId,
           }),
-          patchPayload: expect.objectContaining({ digest: 'sha256:route-patch' }),
+          patchPayload: expect.objectContaining({ digest: sourceReview.patchPayload?.digest }),
           review: expect.objectContaining({
             id: 'swr_route_1',
             changeSetId: 'wcs_route_1',
@@ -4261,6 +4437,8 @@ describe('nanocore server', () => {
 
         const turn = store.getTurnById(turnId);
         const timestamp = turn.completedAt ?? new Date().toISOString();
+        const patchText = 'diff --git a/docs/task.md b/docs/task.md\n';
+        const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
         const artifact = store.createArtifact({
           id: `ar_task_review_${turnId}`,
           workspaceId: turn.workspaceId,
@@ -4271,7 +4449,7 @@ describe('nanocore server', () => {
           status: 'ready',
           summary: 'Task Mode workspace changes ready for review.',
           version: 1,
-          content: { format: 'text', body: 'diff --git a/docs/task.md b/docs/task.md\n' },
+          content: { format: 'text', body: patchText },
           createdAt: timestamp,
           updatedAt: timestamp,
         });
@@ -4293,17 +4471,21 @@ describe('nanocore server', () => {
                 id: `wcs_${turnId}`,
                 inputSnapshotId: `wis_${turnId}`,
                 materializationRecordId: `wmr_${turnId}`,
-                patch: { bytes: 40, digest: `sha256:${turnId}`, ref: `artifact://${artifact.id}` },
+                patch: {
+                  bytes: Buffer.byteLength(patchText, 'utf8'),
+                  digest: patchDigest,
+                  ref: `artifact://${artifact.id}`,
+                },
                 redaction: { notes: [], status: 'redacted' },
                 resourceId: 'repo_default',
                 strategy: 'git',
                 workspaceId: turn.workspaceId,
               },
               patchPayload: {
-                bytes: 40,
-                digest: `sha256:${turnId}`,
+                bytes: Buffer.byteLength(patchText, 'utf8'),
+                digest: patchDigest,
                 mediaType: 'text/x-diff',
-                text: 'diff --git a/docs/task.md b/docs/task.md\n',
+                text: patchText,
               },
               review: {
                 actionCenterRowId: `workspace-review:${reviewId}`,
@@ -6042,6 +6224,8 @@ describe('nanocore server', () => {
     const store = createDemoStore();
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const timestamp = new Date().toISOString();
+    const patchText = 'diff --git a/docs/spec.md b/docs/spec.md\n';
+    const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
     const workspaceReview = {
       changeSet: {
         id: 'wcs_1',
@@ -6053,7 +6237,11 @@ describe('nanocore server', () => {
         base: { commit: 'abc123', contentDigest: null },
         head: { commit: 'def456', contentDigest: null },
         changedPaths: [{ path: 'docs/spec.md', status: 'modified', binary: false }],
-        patch: { ref: 'artifact://patch', digest: 'sha256:patch', bytes: 1200 },
+        patch: {
+          ref: 'artifact://patch',
+          digest: patchDigest,
+          bytes: Buffer.byteLength(patchText, 'utf8'),
+        },
         bundle: null,
         artifactIds: ['ar_workspace_changes_1'],
         evidenceRefs: [{ kind: 'worker', ref: 'turn_demo' }],
@@ -6062,9 +6250,9 @@ describe('nanocore server', () => {
       },
       patchPayload: {
         mediaType: 'text/x-diff',
-        text: 'diff --git a/docs/spec.md b/docs/spec.md\n',
-        digest: 'sha256:patch',
-        bytes: 41,
+        text: patchText,
+        digest: patchDigest,
+        bytes: Buffer.byteLength(patchText, 'utf8'),
       },
       review: {
         id: 'swr_1',
@@ -6113,6 +6301,14 @@ describe('nanocore server', () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     });
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    try {
+      recordWorkspaceSyncReview(workspaceDb, {
+        item: { artifactId: 'ar_workspace_changes_1', ...workspaceReview },
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
 
     const list = await app.request('/api/app/workspaces/ws_demo/workspace-sync/reviews');
     const detail = await app.request('/api/app/workspaces/ws_demo/workspace-sync/reviews/swr_1');
@@ -6186,12 +6382,199 @@ describe('nanocore server', () => {
     });
   });
 
+  it('keeps artifact-only workspace review reads free of durable side effects', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore();
+    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const item = workspaceSyncReviewRouteItem();
+
+    store.createArtifact({
+      id: item.artifactId,
+      workspaceId: item.review.workspaceId,
+      threadId: 'th_demo',
+      turnId: 'turn_demo',
+      kind: 'diff',
+      title: 'Workspace changes ready for review',
+      status: 'ready',
+      summary: item.review.riskSummary,
+      version: 1,
+      content: { format: 'json', body: JSON.stringify(item) },
+      createdAt: item.review.createdAt,
+      updatedAt: item.review.updatedAt,
+    });
+
+    const observerDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const beforeDataVersion = (
+      observerDb.sqlite.prepare('PRAGMA data_version').get() as { data_version: number }
+    ).data_version;
+
+    try {
+      const list = await app.request('/api/app/workspaces/ws_demo/workspace-sync/reviews');
+      const detail = await app.request(
+        '/api/app/workspaces/ws_demo/workspace-sync/reviews/swr_route_1'
+      );
+      const afterDataVersion = (
+        observerDb.sqlite.prepare('PRAGMA data_version').get() as { data_version: number }
+      ).data_version;
+
+      expect(getWorkspaceSyncReview(observerDb, 'ws_demo', 'swr_route_1')).toBeNull();
+      expect(afterDataVersion).toBe(beforeDataVersion);
+
+      expect(list.status).toBe(200);
+      await expect(list.json()).resolves.toMatchObject({
+        items: [{ review: { id: 'swr_route_1', status: 'pending' } }],
+      });
+      expect(detail.status).toBe(200);
+      await expect(detail.json()).resolves.toMatchObject({
+        review: { id: 'swr_route_1', status: 'pending' },
+      });
+    } finally {
+      observerDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('routes workspace artifact refinement through the durable review lifecycle', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore();
+    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const item = workspaceSyncReviewRouteItem();
+
+    store.createArtifact({
+      id: item.artifactId,
+      workspaceId: item.review.workspaceId,
+      threadId: null,
+      turnId: null,
+      kind: 'diff',
+      title: 'Workspace changes ready for review',
+      status: 'ready',
+      summary: item.review.riskSummary,
+      version: 1,
+      content: { format: 'json', body: JSON.stringify(item) },
+      createdAt: item.review.createdAt,
+      updatedAt: item.review.updatedAt,
+    });
+
+    const workspaceDb = openTestWorkspaceDb(coreDb, item.review.workspaceId);
+    try {
+      recordWorkspaceSyncReview(workspaceDb, { item });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+
+    try {
+      const response = await app.request(
+        `/api/app/workspaces/${item.review.workspaceId}/artifacts/${item.artifactId}/review`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: 'workspace-artifact-refinement-1',
+            decision: 'needs_refinement',
+            message: 'Narrow the workspace patch.',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+      const body = (await response.json()) as { review: { decidedAt: string; status: string } };
+      const actionCenter = await app.request(
+        `/api/app/workspaces/${item.review.workspaceId}/action-center`
+      );
+      const persistedDb = openTestWorkspaceDb(coreDb, item.review.workspaceId);
+      try {
+        const durableReview = getWorkspaceSyncReview(
+          persistedDb,
+          item.review.workspaceId,
+          item.review.id
+        );
+        const decisionEvents = listWorkspaceAuditEvents(
+          persistedDb,
+          item.review.workspaceId
+        ).filter((event) => event.action === 'workspace.review.decide');
+
+        expect(response.status).toBe(200);
+        expect(body.review.status).toBe('needs_refinement');
+        expect(durableReview?.review).toMatchObject({
+          status: 'needs_refinement',
+          updatedAt: body.review.decidedAt,
+        });
+        expect(decisionEvents).toHaveLength(1);
+        expect(listWorkspaceApplyPlans(persistedDb, item.review.workspaceId)).toEqual([]);
+        expect(listWorkspaceApplyResults(persistedDb, item.review.workspaceId)).toEqual([]);
+      } finally {
+        persistedDb.sqlite.close();
+      }
+      expect(
+        ListHumanAttentionResponseSchema.parse(await actionCenter.json()).items.some(
+          (row) => row.id === item.review.actionCenterRowId
+        )
+      ).toBe(false);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('prefers durable workspace review decisions over older artifact snapshots', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore();
+    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const item = workspaceSyncReviewRouteItem();
+
+    store.createArtifact({
+      id: item.artifactId,
+      workspaceId: item.review.workspaceId,
+      threadId: 'th_demo',
+      turnId: 'turn_demo',
+      kind: 'diff',
+      title: 'Workspace changes ready for review',
+      status: 'ready',
+      summary: item.review.riskSummary,
+      version: 1,
+      content: { format: 'json', body: JSON.stringify(item) },
+      createdAt: item.review.createdAt,
+      updatedAt: item.review.updatedAt,
+    });
+
+    try {
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      try {
+        recordWorkspaceSyncReview(workspaceDb, { item });
+        updateWorkspaceSyncReviewDecision(workspaceDb, {
+          requestId: 'durable-review-read-precedence',
+          reviewId: item.review.id,
+          status: 'needs_refinement',
+          updatedAt: '2026-07-06T00:01:00.000Z',
+          workspaceId: item.review.workspaceId,
+        });
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+
+      const list = await app.request('/api/app/workspaces/ws_demo/workspace-sync/reviews');
+      const detail = await app.request(
+        '/api/app/workspaces/ws_demo/workspace-sync/reviews/swr_route_1'
+      );
+
+      expect(list.status).toBe(200);
+      await expect(list.json()).resolves.toMatchObject({
+        items: [{ review: { id: 'swr_route_1', status: 'needs_refinement' } }],
+      });
+      expect(detail.status).toBe(200);
+      await expect(detail.json()).resolves.toMatchObject({
+        review: { id: 'swr_route_1', status: 'needs_refinement' },
+      });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('records durable workspace synchronization review decisions idempotently', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const workspace = store.createWorkspace('Durable workspace review decision');
     const timestamp = new Date().toISOString();
+    const patchText = 'diff --git a/docs/decision.md b/docs/decision.md\n';
+    const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
 
     try {
       const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
@@ -6209,7 +6592,11 @@ describe('nanocore server', () => {
               base: { commit: 'abc123', contentDigest: null },
               head: { commit: 'def456', contentDigest: null },
               changedPaths: [{ path: 'docs/decision.md', status: 'modified', binary: false }],
-              patch: { ref: 'artifact://patch', digest: 'sha256:patch', bytes: 42 },
+              patch: {
+                ref: 'artifact://patch',
+                digest: patchDigest,
+                bytes: Buffer.byteLength(patchText, 'utf8'),
+              },
               bundle: null,
               artifactIds: ['ar_missing_workspace_review_decision'],
               evidenceRefs: [{ kind: 'worker', ref: 'turn_durable_review_decision' }],
@@ -6218,9 +6605,9 @@ describe('nanocore server', () => {
             },
             patchPayload: {
               mediaType: 'text/x-diff',
-              text: 'diff --git a/docs/decision.md b/docs/decision.md\n',
-              digest: 'sha256:patch',
-              bytes: 42,
+              text: patchText,
+              digest: patchDigest,
+              bytes: Buffer.byteLength(patchText, 'utf8'),
             },
             review: {
               id: 'swr_durable_review_decision',
@@ -6230,7 +6617,7 @@ describe('nanocore server', () => {
               staging: {
                 strategy: 'git_worktree',
                 ref: 'staging://workspace/wcs_durable_review_decision',
-                branch: 'openkit/review/swr_durable_review_decision',
+                branch: null,
               },
               diffSummary: { filesChanged: 1, additions: 0, deletions: 0 },
               riskSummary: '1 changed path staged for human review.',
@@ -6533,6 +6920,7 @@ describe('nanocore server', () => {
           },
         },
         agentSessionId: 'as_aep_readback',
+        userId: 'user_local',
         backend: {
           controlRelayUpstream: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
@@ -6658,10 +7046,26 @@ describe('nanocore server', () => {
         headers: { 'content-type': 'application/json' },
       }
     );
+    const replacementRequestRes = await app.request(
+      '/api/app/workspaces/ws_demo/artifacts/artifact_review_idempotent/review',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          requestId: 'artifact-review-request-2',
+          decision: 'redo',
+          message: 'Redo the summary.',
+        }),
+        headers: { 'content-type': 'application/json' },
+      }
+    );
 
     expect(firstRes.status).toBe(200);
     expect(secondRes.status).toBe(200);
     expect(await secondRes.json()).toEqual(await firstRes.json());
+    expect(replacementRequestRes.status).toBe(409);
+    await expect(replacementRequestRes.json()).resolves.toMatchObject({
+      code: 'idempotency_key_conflict',
+    });
     expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(2);
     expect(store.getArtifactReviewDecision('artifact_review_idempotent')).toMatchObject({
       status: 'needs_refinement',
@@ -6671,6 +7075,459 @@ describe('nanocore server', () => {
     await expect(conflictRes.json()).resolves.toMatchObject({
       code: 'idempotency_key_conflict',
     });
+  });
+
+  it.each([
+    ['follow-up item', null],
+    ['artifact decision', 'needs_refinement'],
+    ['artifact decision', 'redo'],
+  ] as const)('recovers the same workspace artifact review after a %s persistence failure while rejecting a %s replacement', async (failurePoint, replacementDecision) => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', `Workspace review ${failurePoint} recovery`);
+    const sourceTurn = store.createTurn('ws_demo', thread.id, 'Produce workspace changes');
+    const item = workspaceSyncReviewRouteItem();
+    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+
+    store.createArtifact({
+      id: item.artifactId,
+      workspaceId: item.review.workspaceId,
+      threadId: thread.id,
+      turnId: sourceTurn.id,
+      kind: 'diff',
+      title: 'Workspace changes ready for review',
+      status: 'ready',
+      summary: item.review.riskSummary,
+      version: 1,
+      content: { format: 'json', body: JSON.stringify(item) },
+      createdAt: item.review.createdAt,
+      updatedAt: item.review.updatedAt,
+    });
+
+    const workspaceDb = openTestWorkspaceDb(coreDb, item.review.workspaceId);
+    try {
+      recordWorkspaceSyncReview(workspaceDb, { item });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+
+    if (failurePoint === 'follow-up item') {
+      vi.spyOn(store, 'createItem').mockImplementationOnce(() => {
+        throw new Error('Injected follow-up item persistence failure.');
+      });
+    } else {
+      const recordArtifactReviewDecision = store.recordArtifactReviewDecision.bind(store);
+      let completionFailed = false;
+      vi.spyOn(store, 'recordArtifactReviewDecision').mockImplementation((review) => {
+        if (review.lifecycle === 'completed' && !completionFailed) {
+          completionFailed = true;
+          throw new Error('Injected artifact decision persistence failure.');
+        }
+        return recordArtifactReviewDecision(review);
+      });
+    }
+
+    try {
+      const request = {
+        method: 'POST',
+        body: JSON.stringify({
+          requestId: `workspace-artifact-${failurePoint}-recovery`,
+          decision: 'needs_refinement',
+          message: 'Narrow the workspace patch.',
+        }),
+        headers: jsonHeaders(),
+      };
+      const first = await app.request(
+        `/api/app/workspaces/ws_demo/artifacts/${item.artifactId}/review`,
+        request
+      );
+      const turnsAfterFailure = store.listThreadTurns('ws_demo', thread.id);
+      const replacement = replacementDecision
+        ? await app.request(`/api/app/workspaces/ws_demo/artifacts/${item.artifactId}/review`, {
+            method: 'POST',
+            body: JSON.stringify({
+              requestId: `workspace-artifact-${failurePoint}-replacement`,
+              decision: replacementDecision,
+              message: 'Replace the original workspace review decision.',
+            }),
+            headers: jsonHeaders(),
+          })
+        : null;
+      const turnsAfterReplacement = store.listThreadTurns('ws_demo', thread.id);
+      const retry = await app.request(
+        `/api/app/workspaces/ws_demo/artifacts/${item.artifactId}/review`,
+        request
+      );
+      const review = store.getArtifactReviewDecision(item.artifactId);
+      const followUpTurns = store
+        .listThreadTurns('ws_demo', thread.id)
+        .filter((turn) => turn.id !== sourceTurn.id);
+      const followUpItems = store
+        .listThreadItems('ws_demo', thread.id)
+        .filter((candidate) => candidate.turnId !== sourceTurn.id);
+
+      expect(turnsAfterFailure).toHaveLength(2);
+      if (replacement) {
+        expect(replacement.status).toBe(409);
+        await expect(replacement.json()).resolves.toMatchObject({
+          code: 'idempotency_key_conflict',
+        });
+      }
+      expect(turnsAfterReplacement).toHaveLength(2);
+      expect(retry.status).toBe(200);
+      expect(followUpTurns).toHaveLength(1);
+      expect(followUpItems).toHaveLength(1);
+      expect(review).toMatchObject({
+        requestId: `workspace-artifact-${failurePoint}-recovery`,
+        status: 'needs_refinement',
+        followUpTurnId: followUpTurns[0]?.id,
+      });
+      expect(first.status).toBe(500);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('serializes competing workspace artifact review decisions before creating follow-ups', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Concurrent workspace artifact review');
+    const sourceTurn = store.createTurn('ws_demo', thread.id, 'Produce workspace changes');
+    const item = workspaceSyncReviewRouteItem();
+    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+
+    store.createArtifact({
+      id: item.artifactId,
+      workspaceId: item.review.workspaceId,
+      threadId: thread.id,
+      turnId: sourceTurn.id,
+      kind: 'diff',
+      title: 'Workspace changes ready for review',
+      status: 'ready',
+      summary: item.review.riskSummary,
+      version: 1,
+      content: { format: 'json', body: JSON.stringify(item) },
+      createdAt: item.review.createdAt,
+      updatedAt: item.review.updatedAt,
+    });
+
+    const workspaceDb = openTestWorkspaceDb(coreDb, item.review.workspaceId);
+    try {
+      recordWorkspaceSyncReview(workspaceDb, { item });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+
+    try {
+      const href = `/api/app/workspaces/ws_demo/artifacts/${item.artifactId}/review`;
+      const [first, second] = await Promise.all([
+        app.request(href, {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: 'workspace-artifact-concurrent-1',
+            decision: 'needs_refinement',
+            message: 'Narrow the workspace patch.',
+          }),
+          headers: jsonHeaders(),
+        }),
+        app.request(href, {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: 'workspace-artifact-concurrent-2',
+            decision: 'redo',
+            message: 'Redo the workspace patch.',
+          }),
+          headers: jsonHeaders(),
+        }),
+      ]);
+      const followUpTurns = store
+        .listThreadTurns('ws_demo', thread.id)
+        .filter((turn) => turn.id !== sourceTurn.id);
+      const followUpItems = store
+        .listThreadItems('ws_demo', thread.id)
+        .filter((candidate) => candidate.turnId !== sourceTurn.id);
+
+      expect([first.status, second.status].sort()).toEqual([200, 409]);
+      expect(followUpTurns).toHaveLength(1);
+      expect(followUpItems).toHaveLength(1);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('recovers an incomplete workspace artifact review through a fresh file-backed app', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-artifact-review-restart-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const thread = store.createThread('ws_demo', 'Restarted workspace artifact review');
+    const sourceTurn = store.createTurn('ws_demo', thread.id, 'Produce workspace changes');
+    const item = workspaceSyncReviewRouteItem();
+    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    let restartedCoreDb: CoreDb | null = null;
+
+    store.createArtifact({
+      id: item.artifactId,
+      workspaceId: item.review.workspaceId,
+      threadId: thread.id,
+      turnId: sourceTurn.id,
+      kind: 'diff',
+      title: 'Workspace changes ready for review',
+      status: 'ready',
+      summary: item.review.riskSummary,
+      version: 1,
+      content: { format: 'json', body: JSON.stringify(item) },
+      createdAt: item.review.createdAt,
+      updatedAt: item.review.updatedAt,
+    });
+
+    const workspaceDb = openTestWorkspaceDb(coreDb, item.review.workspaceId);
+    try {
+      recordWorkspaceSyncReview(workspaceDb, { item });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+    const recordArtifactReviewDecision = store.recordArtifactReviewDecision.bind(store);
+    vi.spyOn(store, 'recordArtifactReviewDecision').mockImplementation((review) => {
+      if (review.lifecycle === 'completed') {
+        throw new Error('Injected artifact decision persistence failure.');
+      }
+      return recordArtifactReviewDecision(review);
+    });
+
+    try {
+      const href = `/api/app/workspaces/ws_demo/artifacts/${item.artifactId}/review`;
+      const request = {
+        method: 'POST',
+        body: JSON.stringify({
+          requestId: 'workspace-artifact-restart-recovery',
+          decision: 'needs_refinement',
+          message: 'Narrow the workspace patch.',
+        }),
+        headers: jsonHeaders(),
+      };
+      const first = await app.request(href, request);
+      const restartedStore = createDemoStore({ dataRoot });
+      restartedCoreDb = openCoreDb(dataRoot);
+      applyMigrations(restartedCoreDb);
+      const restartedApp = createApp({
+        coreDb: restartedCoreDb,
+        store: restartedStore,
+        turnExecutor: new FakeTurnExecutor(),
+      });
+      const retry = await restartedApp.request(href, request);
+      const followUpTurns = restartedStore
+        .listThreadTurns('ws_demo', thread.id)
+        .filter((turn) => turn.id !== sourceTurn.id);
+      const followUpItems = restartedStore
+        .listThreadItems('ws_demo', thread.id)
+        .filter((candidate) => candidate.turnId !== sourceTurn.id);
+
+      expect(retry.status).toBe(200);
+      expect(followUpTurns).toHaveLength(1);
+      expect(followUpItems).toHaveLength(1);
+      expect(restartedStore.getArtifactReviewDecision(item.artifactId)).toMatchObject({
+        requestId: 'workspace-artifact-restart-recovery',
+        status: 'needs_refinement',
+        followUpTurnId: followUpTurns[0]?.id,
+      });
+      expect(first.status).toBe(500);
+    } finally {
+      restartedCoreDb?.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('releases a generic artifact claim that loses to a dedicated workspace decision', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Cross-route workspace artifact review');
+    const sourceTurn = store.createTurn('ws_demo', thread.id, 'Produce workspace changes');
+    const item = workspaceSyncReviewRouteItem();
+    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+
+    store.createArtifact({
+      id: item.artifactId,
+      workspaceId: item.review.workspaceId,
+      threadId: thread.id,
+      turnId: sourceTurn.id,
+      kind: 'diff',
+      title: 'Workspace changes ready for review',
+      status: 'ready',
+      summary: item.review.riskSummary,
+      version: 1,
+      content: { format: 'json', body: JSON.stringify(item) },
+      createdAt: item.review.createdAt,
+      updatedAt: item.review.updatedAt,
+    });
+
+    const workspaceDb = openTestWorkspaceDb(coreDb, item.review.workspaceId);
+    try {
+      recordWorkspaceSyncReview(workspaceDb, { item });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+
+    try {
+      const dedicated = await app.request(
+        `/api/app/workspaces/ws_demo/workspace-sync/reviews/${item.review.id}/decision`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: 'workspace-dedicated-rejection',
+            decision: 'rejected',
+          }),
+          headers: jsonHeaders(),
+        }
+      );
+      const conflicting = await app.request(
+        `/api/app/workspaces/ws_demo/artifacts/${item.artifactId}/review`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: 'workspace-generic-conflicting-refinement',
+            decision: 'needs_refinement',
+            message: 'Refine instead.',
+          }),
+          headers: jsonHeaders(),
+        }
+      );
+
+      expect(dedicated.status).toBe(200);
+      expect(conflicting.status).toBe(409);
+      expect(store.getArtifactReviewDecision(item.artifactId)).toMatchObject({
+        lifecycle: 'failed',
+        requestId: 'workspace-generic-conflicting-refinement',
+        status: 'needs_refinement',
+      });
+
+      const matching = await app.request(
+        `/api/app/workspaces/ws_demo/artifacts/${item.artifactId}/review`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: 'workspace-generic-matching-rejection',
+            decision: 'rejected',
+          }),
+          headers: jsonHeaders(),
+        }
+      );
+
+      expect(matching.status).toBe(200);
+      await expect(matching.json()).resolves.toMatchObject({
+        review: { status: 'rejected' },
+      });
+      expect(store.getArtifactReviewDecision(item.artifactId)).toMatchObject({
+        lifecycle: 'completed',
+        requestId: 'workspace-generic-matching-rejection',
+        status: 'rejected',
+      });
+      expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(1);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('recovers a pending workspace artifact claim from its Action Center decision', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Action Center artifact review recovery');
+    const sourceTurn = store.createTurn('ws_demo', thread.id, 'Produce workspace changes');
+    const item = workspaceSyncReviewRouteItem();
+    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+
+    store.createArtifact({
+      id: item.artifactId,
+      workspaceId: item.review.workspaceId,
+      threadId: thread.id,
+      turnId: sourceTurn.id,
+      kind: 'diff',
+      title: 'Workspace changes ready for review',
+      status: 'ready',
+      summary: item.review.riskSummary,
+      version: 1,
+      content: { format: 'json', body: JSON.stringify(item) },
+      createdAt: item.review.createdAt,
+      updatedAt: item.review.updatedAt,
+    });
+
+    const workspaceDb = openTestWorkspaceDb(coreDb, item.review.workspaceId);
+    try {
+      recordWorkspaceSyncReview(workspaceDb, { item });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+    const recordArtifactReviewDecision = store.recordArtifactReviewDecision.bind(store);
+    let completionFailed = false;
+    vi.spyOn(store, 'recordArtifactReviewDecision').mockImplementation((review) => {
+      if (review.lifecycle === 'completed' && !completionFailed) {
+        completionFailed = true;
+        throw new Error('Injected artifact decision persistence failure.');
+      }
+      return recordArtifactReviewDecision(review);
+    });
+
+    try {
+      const href = `/api/app/workspaces/ws_demo/artifacts/${item.artifactId}/review`;
+      const first = await app.request(href, {
+        method: 'POST',
+        body: JSON.stringify({
+          requestId: 'workspace-action-center-original-claim',
+          decision: 'needs_refinement',
+          message: 'Narrow the workspace patch.',
+        }),
+        headers: jsonHeaders(),
+      });
+      const actionCenterResponse = await app.request('/api/app/workspaces/ws_demo/action-center');
+      const actionCenter = ListHumanAttentionResponseSchema.parse(
+        await actionCenterResponse.json()
+      );
+      const recoveryRow = actionCenter.items.find((row) => row.artifactId === item.artifactId);
+      const reviewActionKinds = new Set([
+        'accept_review',
+        'request_refinement',
+        'retry_work',
+        'mark_blocked',
+        'defer',
+      ]);
+
+      expect(first.status).toBe(500);
+      expect(store.getArtifactReviewDecision(item.artifactId)).toMatchObject({
+        lifecycle: 'pending',
+        message: 'Narrow the workspace patch.',
+        requestId: 'workspace-action-center-original-claim',
+        status: 'needs_refinement',
+      });
+      expect(recoveryRow).toBeDefined();
+      expect(
+        recoveryRow?.actions
+          .filter((action) => reviewActionKinds.has(action.kind) && !action.disabled)
+          .map((action) => action.kind)
+      ).toEqual(['request_refinement']);
+
+      const recovered = await app.request(href, {
+        method: 'POST',
+        body: JSON.stringify({
+          requestId: 'workspace-action-center-recovery',
+          decision: 'needs_refinement',
+        }),
+        headers: jsonHeaders(),
+      });
+
+      expect(recovered.status).toBe(200);
+      expect(store.getArtifactReviewDecision(item.artifactId)).toMatchObject({
+        lifecycle: 'completed',
+        message: 'Narrow the workspace patch.',
+        requestId: 'workspace-action-center-original-claim',
+        status: 'needs_refinement',
+      });
+      expect(
+        store.listThreadTurns('ws_demo', thread.id).filter((turn) => turn.id !== sourceTurn.id)
+      ).toHaveLength(1);
+    } finally {
+      coreDb.sqlite.close();
+    }
   });
 
   it('records knowledge proposal review decisions idempotently', async () => {
@@ -6816,6 +7673,12 @@ describe('nanocore server', () => {
     writeFileSync(join(repoDir, 'README.md'), '# Demo\n', 'utf8');
     execFileSync('git', ['add', 'README.md'], { cwd: repoDir, stdio: 'ignore' });
     execFileSync('git', ['commit', '-m', 'initial'], { cwd: repoDir, stdio: 'ignore' });
+    const baseCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: repoDir,
+      encoding: 'utf8',
+    }).trim();
+    writeFileSync(join(repoDir, 'unrelated.txt'), 'Keep staged for the user.\n', 'utf8');
+    execFileSync('git', ['add', 'unrelated.txt'], { cwd: repoDir, stdio: 'ignore' });
 
     const linkRes = await app.request(`/api/app/workspaces/${workspace.id}/repositories/default`, {
       method: 'POST',
@@ -6848,7 +7711,7 @@ describe('nanocore server', () => {
         workspaceId: workspace.id,
         resourceId: 'repo_default',
         strategy: 'git',
-        base: { commit: 'abc123', contentDigest: null },
+        base: { commit: baseCommit, contentDigest: null },
         head: { commit: 'def456', contentDigest: null },
         changedPaths: [{ path: 'README.md', status: 'modified', binary: false }],
         patch: {
@@ -6876,7 +7739,7 @@ describe('nanocore server', () => {
         staging: {
           strategy: 'git_worktree',
           ref: 'staging://workspace/wcs_apply_1',
-          branch: 'openkit/review/swr_apply_1',
+          branch: null,
         },
         diffSummary: { filesChanged: 1, additions: 2, deletions: 0 },
         riskSummary: '1 changed path staged for human review.',
@@ -6945,7 +7808,27 @@ describe('nanocore server', () => {
     expect(commitMessage).toContain(
       'Co-Authored-By: Codex Host Agent <agent_codex_host@agents.openkit.invalid>'
     );
-    expect(execFileSync('git', ['status', '--short'], { cwd: repoDir, encoding: 'utf8' })).toBe('');
+    expect(
+      execFileSync('git', ['show', '--pretty=', '--name-only', 'HEAD'], {
+        cwd: repoDir,
+        encoding: 'utf8',
+      }).trim()
+    ).toBe('README.md');
+    expect(
+      execFileSync('git', ['diff', '--cached', '--name-only'], {
+        cwd: repoDir,
+        encoding: 'utf8',
+      }).trim()
+    ).toBe('unrelated.txt');
+
+    const reviewDb = openTestWorkspaceDb(coreDb, workspace.id);
+    try {
+      expect(getWorkspaceSyncReview(reviewDb, workspace.id, 'swr_apply_1')?.review.status).toBe(
+        'accepted'
+      );
+    } finally {
+      reviewDb.sqlite.close();
+    }
 
     const listApplyResults = await app.request(
       `/api/app/workspaces/${workspace.id}/workspace-sync/apply-results`
@@ -7100,7 +7983,7 @@ describe('nanocore server', () => {
     });
   });
 
-  it('materializes and deletes accepted workspace review branches', async () => {
+  it('does not materialize workspace review branches during read requests', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
@@ -7213,23 +8096,26 @@ describe('nanocore server', () => {
       updatedAt: timestamp,
     });
 
+    const initialBranch = execFileSync('git', ['branch', '--show-current'], {
+      cwd: repoDir,
+      encoding: 'utf8',
+    }).trim();
+
     const reviewsRes = await app.request(
       `/api/app/workspaces/${workspace.id}/workspace-sync/reviews`
     );
 
     expect(reviewsRes.status).toBe(200);
     expect(
-      execFileSync('git', ['show', 'openkit/review/swr_review_branch_1:README.md'], {
-        cwd: repoDir,
-        encoding: 'utf8',
-      })
-    ).toBe('# Demo\n\nStaged on a review branch.\n');
-    expect(
-      execFileSync('git', ['log', '-1', '--format=%B', 'openkit/review/swr_review_branch_1'], {
-        cwd: repoDir,
-        encoding: 'utf8',
-      })
-    ).toContain('Staged-By: OpenKit');
+      execFileSync('git', ['branch', '--show-current'], { cwd: repoDir, encoding: 'utf8' }).trim()
+    ).toBe(initialBranch);
+    expect(() =>
+      execFileSync(
+        'git',
+        ['rev-parse', '--verify', 'refs/heads/openkit/review/swr_review_branch_1'],
+        { cwd: repoDir, stdio: 'ignore' }
+      )
+    ).toThrow();
 
     const acceptRes = await app.request(
       `/api/app/workspaces/${workspace.id}/artifacts/ar_workspace_review_branch_1/review`,
@@ -7256,6 +8142,191 @@ describe('nanocore server', () => {
     ).toThrow();
   });
 
+  it('rejects a workspace review when the repository head drifted from its base', async () => {
+    const fixture = await createGitWorkspaceReviewFixture({ reviewId: 'swr_base_drift' });
+
+    try {
+      writeFileSync(join(fixture.repoDir, 'drift.txt'), 'Repository advanced.\n', 'utf8');
+      execFileSync('git', ['add', 'drift.txt'], { cwd: fixture.repoDir, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'advance repository'], {
+        cwd: fixture.repoDir,
+        stdio: 'ignore',
+      });
+      const headBefore = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: fixture.repoDir,
+        encoding: 'utf8',
+      }).trim();
+      const statusBefore = execFileSync('git', ['status', '--short'], {
+        cwd: fixture.repoDir,
+        encoding: 'utf8',
+      });
+
+      const response = await fixture.app.request(
+        `/api/app/workspaces/${fixture.workspaceId}/artifacts/${fixture.artifactId}/review`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ requestId: 'base-drift-1', decision: 'accepted' }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+
+      expect(response.status).not.toBe(200);
+      expect(
+        execFileSync('git', ['rev-parse', 'HEAD'], {
+          cwd: fixture.repoDir,
+          encoding: 'utf8',
+        }).trim()
+      ).toBe(headBefore);
+      expect(
+        execFileSync('git', ['status', '--short'], {
+          cwd: fixture.repoDir,
+          encoding: 'utf8',
+        })
+      ).toBe(statusBefore);
+      expect(readFileSync(join(fixture.repoDir, 'README.md'), 'utf8')).toBe('# Demo\n');
+      const workspaceDb = openTestWorkspaceDb(fixture.coreDb, fixture.workspaceId);
+      try {
+        expect(
+          getWorkspaceSyncReview(workspaceDb, fixture.workspaceId, fixture.review.review.id)?.review
+            .status
+        ).toBe('pending');
+        expect(listWorkspaceApplyPlans(workspaceDb, fixture.workspaceId)).toHaveLength(1);
+        expect(listWorkspaceApplyResults(workspaceDb, fixture.workspaceId)).toEqual([]);
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects a workspace patch whose paths differ from its declared manifest', async () => {
+    const patchText =
+      'diff --git a/README.md b/README.md\n' +
+      '--- a/README.md\n' +
+      '+++ b/README.md\n' +
+      '@@ -1 +1,3 @@\n' +
+      ' # Demo\n' +
+      '+\n' +
+      '+Declared change.\n' +
+      'diff --git a/extra.txt b/extra.txt\n' +
+      'new file mode 100644\n' +
+      '--- /dev/null\n' +
+      '+++ b/extra.txt\n' +
+      '@@ -0,0 +1 @@\n' +
+      '+Undeclared change.';
+    const fixture = await createGitWorkspaceReviewFixture({
+      patchText,
+      reviewId: 'swr_path_mismatch',
+    });
+
+    try {
+      const response = await fixture.app.request(
+        `/api/app/workspaces/${fixture.workspaceId}/artifacts/${fixture.artifactId}/review`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ requestId: 'path-mismatch-1', decision: 'accepted' }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+
+      expect(response.status).not.toBe(200);
+      expect(readFileSync(join(fixture.repoDir, 'README.md'), 'utf8')).toBe('# Demo\n');
+      expect(() => readFileSync(join(fixture.repoDir, 'extra.txt'), 'utf8')).toThrow();
+      expect(
+        execFileSync('git', ['rev-parse', 'HEAD'], {
+          cwd: fixture.repoDir,
+          encoding: 'utf8',
+        }).trim()
+      ).toBe(fixture.baseCommit);
+      expect(
+        execFileSync('git', ['status', '--short'], {
+          cwd: fixture.repoDir,
+          encoding: 'utf8',
+        })
+      ).toBe('');
+      const workspaceDb = openTestWorkspaceDb(fixture.coreDb, fixture.workspaceId);
+      try {
+        expect(
+          getWorkspaceSyncReview(workspaceDb, fixture.workspaceId, fixture.review.review.id)?.review
+            .status
+        ).toBe('pending');
+        expect(listWorkspaceApplyPlans(workspaceDb, fixture.workspaceId)).toHaveLength(1);
+        expect(listWorkspaceApplyResults(workspaceDb, fixture.workspaceId)).toEqual([]);
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('restores Git state when accepted review persistence fails', async () => {
+    const fixture = await createGitWorkspaceReviewFixture({ reviewId: 'swr_persist_rollback' });
+    writeFileSync(join(fixture.repoDir, 'unrelated.txt'), 'Keep staged.\n', 'utf8');
+    execFileSync('git', ['add', 'unrelated.txt'], { cwd: fixture.repoDir, stdio: 'ignore' });
+    const statusBefore = execFileSync('git', ['status', '--short'], {
+      cwd: fixture.repoDir,
+      encoding: 'utf8',
+    });
+    const workspaceDb = openTestWorkspaceDb(fixture.coreDb, fixture.workspaceId);
+    try {
+      recordWorkspaceSyncReview(workspaceDb, { item: fixture.review });
+      workspaceDb.sqlite.exec(`CREATE TRIGGER fail_workspace_apply_result
+        BEFORE INSERT ON workspace_apply_results
+        BEGIN
+          SELECT RAISE(FAIL, 'apply result persistence failed');
+        END;`);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+
+    try {
+      const response = await fixture.app.request(
+        `/api/app/workspaces/${fixture.workspaceId}/artifacts/${fixture.artifactId}/review`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ requestId: 'persist-rollback-1', decision: 'accepted' }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+
+      expect(response.status).not.toBe(200);
+      expect(
+        execFileSync('git', ['rev-parse', 'HEAD'], {
+          cwd: fixture.repoDir,
+          encoding: 'utf8',
+        }).trim()
+      ).toBe(fixture.baseCommit);
+      expect(readFileSync(join(fixture.repoDir, 'README.md'), 'utf8')).toBe('# Demo\n');
+      expect(
+        execFileSync('git', ['status', '--short'], {
+          cwd: fixture.repoDir,
+          encoding: 'utf8',
+        })
+      ).toBe(statusBefore);
+      expect(
+        execFileSync('git', ['diff', '--cached', '--name-only'], {
+          cwd: fixture.repoDir,
+          encoding: 'utf8',
+        }).trim()
+      ).toBe('unrelated.txt');
+      const persistedDb = openTestWorkspaceDb(fixture.coreDb, fixture.workspaceId);
+      try {
+        expect(
+          getWorkspaceSyncReview(persistedDb, fixture.workspaceId, fixture.review.review.id)?.review
+            .status
+        ).toBe('pending');
+        expect(listWorkspaceApplyPlans(persistedDb, fixture.workspaceId)).toHaveLength(1);
+        expect(listWorkspaceApplyResults(persistedDb, fixture.workspaceId)).toEqual([]);
+      } finally {
+        persistedDb.sqlite.close();
+      }
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
   it('rolls back accepted workspace synchronization review patches when commit identity is missing', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
@@ -7278,6 +8349,10 @@ describe('nanocore server', () => {
     writeFileSync(join(repoDir, 'README.md'), '# Demo\n', 'utf8');
     execFileSync('git', ['add', 'README.md'], { cwd: repoDir, stdio: 'ignore' });
     execFileSync('git', ['commit', '-m', 'initial'], { cwd: repoDir, stdio: 'ignore' });
+    const baseCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: repoDir,
+      encoding: 'utf8',
+    }).trim();
 
     await app.request(`/api/app/workspaces/${workspace.id}/repositories/default`, {
       method: 'POST',
@@ -7306,7 +8381,7 @@ describe('nanocore server', () => {
         workspaceId: workspace.id,
         resourceId: 'repo_default',
         strategy: 'git',
-        base: { commit: 'abc123', contentDigest: null },
+        base: { commit: baseCommit, contentDigest: null },
         head: { commit: 'def456', contentDigest: null },
         changedPaths: [{ path: 'README.md', status: 'modified', binary: false }],
         patch: {
@@ -7334,7 +8409,7 @@ describe('nanocore server', () => {
         staging: {
           strategy: 'git_worktree',
           ref: 'staging://workspace/wcs_rollback_1',
-          branch: 'openkit/review/swr_rollback_1',
+          branch: null,
         },
         diffSummary: { filesChanged: 1, additions: 2, deletions: 0 },
         riskSummary: '1 changed path staged for human review.',
@@ -7372,7 +8447,7 @@ describe('nanocore server', () => {
       }
     );
 
-    expect(acceptRes.status).toBe(404);
+    expect(acceptRes.status).toBe(500);
     await expect(acceptRes.json()).resolves.toMatchObject({
       message: 'Workspace repository has no Git identity: swr_rollback_1',
     });
@@ -7534,6 +8609,147 @@ describe('nanocore server', () => {
         },
       ],
     });
+  });
+
+  it('restores filesystem state when accepted review persistence fails', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore();
+    const workspace = store.createWorkspace('Filesystem apply persistence rollback');
+    const thread = store.createThread(workspace.id, 'Rollback filesystem workspace review');
+    const turn = store.createTurn(workspace.id, thread.id, 'Produce filesystem changes');
+    const targetRoot = mkdtempSync(join(tmpdir(), 'openkit-filesystem-rollback-target-'));
+    const workerRoot = mkdtempSync(join(tmpdir(), 'openkit-filesystem-rollback-worker-'));
+    const stagingRoot = mkdtempSync(join(tmpdir(), 'openkit-filesystem-rollback-staging-'));
+    const timestamp = new Date().toISOString();
+
+    try {
+      mkdirSync(join(targetRoot, 'docs'), { recursive: true });
+      mkdirSync(join(workerRoot, 'docs'), { recursive: true });
+      writeFileSync(join(targetRoot, 'docs', 'guide.md'), '# Guide\n', 'utf8');
+      writeFileSync(join(targetRoot, 'old.txt'), 'restore deleted file\n', 'utf8');
+      writeFileSync(join(targetRoot, 'script.sh'), '#!/bin/sh\necho demo\n', 'utf8');
+      writeFileSync(join(workerRoot, 'docs', 'guide.md'), '# Guide\n\nApplied.\n', 'utf8');
+      writeFileSync(join(workerRoot, 'new.txt'), 'remove added file\n', 'utf8');
+      writeFileSync(join(workerRoot, 'script.sh'), '#!/bin/sh\necho demo\n', 'utf8');
+      chmodSync(join(targetRoot, 'script.sh'), 0o644);
+      chmodSync(join(workerRoot, 'script.sh'), 0o755);
+
+      const before = await createFilesystemSnapshotManifest({
+        createdAt: timestamp,
+        resourceId: 'fs_default',
+        rootPath: targetRoot,
+        workspaceId: workspace.id,
+      });
+      const after = await createFilesystemSnapshotManifest({
+        createdAt: timestamp,
+        resourceId: 'fs_default',
+        rootPath: workerRoot,
+        workspaceId: workspace.id,
+      });
+      const changeSet = buildFilesystemWorkspaceChangeSet({
+        after,
+        before,
+        changeSetId: 'wcs_filesystem_persist_rollback',
+        createdAt: timestamp,
+        inputSnapshotId: 'wis_filesystem_persist_rollback',
+        materializationRecordId: 'wmr_filesystem_persist_rollback',
+      });
+      await stageFilesystemWorkspaceChanges({ changeSet, sourceRoot: workerRoot, stagingRoot });
+
+      const workspaceReview = {
+        artifactId: 'ar_filesystem_persist_rollback',
+        changeSet,
+        patchPayload: null,
+        review: {
+          id: 'swr_filesystem_persist_rollback',
+          changeSetId: changeSet.id,
+          workspaceId: workspace.id,
+          status: 'pending',
+          staging: {
+            strategy: 'filesystem_staging',
+            ref: 'filesystem-staging://swr_filesystem_persist_rollback',
+            branch: null,
+          },
+          diffSummary: { filesChanged: 4, additions: 0, deletions: 0 },
+          riskSummary: '4 changed paths staged for human review.',
+          validation: [],
+          actionCenterRowId: 'workspace-review:swr_filesystem_persist_rollback',
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+      };
+      const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
+      try {
+        recordWorkspaceSyncReview(workspaceDb, { item: workspaceReview });
+        recordFilesystemWorkspaceStagingRoot(workspaceDb, {
+          before,
+          changeSetId: changeSet.id,
+          createdAt: timestamp,
+          reviewId: workspaceReview.review.id,
+          stagingRootPath: stagingRoot,
+          targetRootPath: targetRoot,
+          workspaceId: workspace.id,
+        });
+        workspaceDb.sqlite.exec(`CREATE TRIGGER fail_filesystem_workspace_apply_result
+          BEFORE INSERT ON workspace_apply_results
+          BEGIN
+            SELECT RAISE(FAIL, 'filesystem apply result persistence failed');
+          END;`);
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+      store.createArtifact({
+        id: 'ar_filesystem_persist_rollback',
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        turnId: turn.id,
+        kind: 'diff',
+        title: 'Filesystem workspace changes ready for review',
+        status: 'ready',
+        summary: workspaceReview.review.riskSummary,
+        version: 1,
+        content: { format: 'json', body: JSON.stringify(workspaceReview) },
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+
+      const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+      const response = await app.request(
+        `/api/app/workspaces/${workspace.id}/artifacts/ar_filesystem_persist_rollback/review`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: 'filesystem-persist-rollback-request-1',
+            decision: 'accepted',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+
+      expect(response.status).not.toBe(200);
+      expect(readFileSync(join(targetRoot, 'docs', 'guide.md'), 'utf8')).toBe('# Guide\n');
+      expect(() => readFileSync(join(targetRoot, 'new.txt'), 'utf8')).toThrow();
+      expect(readFileSync(join(targetRoot, 'old.txt'), 'utf8')).toBe('restore deleted file\n');
+      expect(readFileSync(join(targetRoot, 'script.sh'), 'utf8')).toBe('#!/bin/sh\necho demo\n');
+      expect(statSync(join(targetRoot, 'script.sh')).mode & 0o777).toBe(0o644);
+
+      const persistedDb = openTestWorkspaceDb(coreDb, workspace.id);
+      try {
+        expect(
+          getWorkspaceSyncReview(persistedDb, workspace.id, workspaceReview.review.id)?.review
+            .status
+        ).toBe('pending');
+        expect(listWorkspaceApplyPlans(persistedDb, workspace.id)).toHaveLength(1);
+        expect(listWorkspaceApplyResults(persistedDb, workspace.id)).toEqual([]);
+      } finally {
+        persistedDb.sqlite.close();
+      }
+    } finally {
+      coreDb.sqlite.close();
+      rmSync(targetRoot, { force: true, recursive: true });
+      rmSync(workerRoot, { force: true, recursive: true });
+      rmSync(stagingRoot, { force: true, recursive: true });
+    }
   });
 
   it('resolves goal review decisions idempotently', async () => {

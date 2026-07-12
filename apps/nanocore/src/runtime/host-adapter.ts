@@ -1034,6 +1034,7 @@ export class CodexHostAdapter implements TurnExecutor {
       requestId,
       turn,
       turnInput,
+      userId: store.getUserId(),
       ...(workspaceDataSourceCatalog ? { workspaceDataSourceCatalog } : {}),
       workspaceCwd,
       workspaceRoots,

@@ -1,5 +1,15 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -558,6 +568,546 @@ describe('worker shim CLI parsing', () => {
     expect(patch.endsWith('\n')).toBe(true);
   });
 
+  it('writes exact binary blob and chmod metadata for NanoCore review staging', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-shim-git-metadata-'));
+    const repoDir = join(sessionDir, 'repo');
+    const packagePath = join(sessionDir, 'package.json');
+    const nextBinary = Buffer.from([0, 1, 2, 3, 255, 254, 253, 0]);
+    mkdirSync(repoDir);
+    execFileSync('git', ['init'], { cwd: repoDir, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'worker@example.com'], {
+      cwd: repoDir,
+      stdio: 'ignore',
+    });
+    execFileSync('git', ['config', 'user.name', 'Worker'], { cwd: repoDir, stdio: 'ignore' });
+    writeFileSync(join(repoDir, 'artifact.bin'), Buffer.from([0, 1, 2, 3]));
+    writeFileSync(join(repoDir, 'content.sh'), '#!/bin/sh\necho before\n', 'utf8');
+    writeFileSync(join(repoDir, 'deleted.txt'), 'Delete me.\n', 'utf8');
+    writeFileSync(join(repoDir, 'rename-before.txt'), 'Rename me.\n', 'utf8');
+    writeFileSync(join(repoDir, 'run.sh'), '#!/bin/sh\nexit 0\n', 'utf8');
+    chmodSync(join(repoDir, 'content.sh'), 0o644);
+    chmodSync(join(repoDir, 'run.sh'), 0o644);
+    execFileSync('git', ['add', '.'], { cwd: repoDir, stdio: 'ignore' });
+    execFileSync('git', ['commit', '-m', 'initial'], { cwd: repoDir, stdio: 'ignore' });
+    const runner = new FakeCodexProcessRunner(
+      {
+        exitCode: 0,
+        signal: null,
+        stderr: '',
+        stdout: '',
+      },
+      () => {
+        writeFileSync(join(repoDir, 'artifact.bin'), nextBinary);
+        writeFileSync(join(repoDir, 'content.sh'), '#!/bin/sh\necho after\n', 'utf8');
+        chmodSync(join(repoDir, 'content.sh'), 0o755);
+        unlinkSync(join(repoDir, 'deleted.txt'));
+        renameSync(join(repoDir, 'rename-before.txt'), join(repoDir, 'rename-after.txt'));
+        chmodSync(join(repoDir, 'run.sh'), 0o755);
+      }
+    );
+    writeFileSync(
+      packagePath,
+      JSON.stringify({
+        runtime: { command: { workingDirectory: repoDir } },
+        workspace: {
+          inputs: [
+            {
+              access: 'read-write',
+              id: 'repo',
+              kind: 'directory',
+              materialization: {
+                changeSetManifestPath: '/openkit/session/workspace-changes.json',
+                strategy: 'git',
+              },
+              source: { kind: 'host-dir', pathRef: 'workspace-root://repo' },
+              target: repoDir,
+            },
+          ],
+          root: repoDir,
+        },
+      }),
+      'utf8'
+    );
+
+    await runCodexShim({
+      args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+      environment: codexShimEnvironment(),
+      runner,
+    });
+
+    const manifest = JSON.parse(readFileSync(join(sessionDir, 'workspace-changes.json'), 'utf8'));
+    const digest = `sha256:${createHash('sha256').update(nextBinary).digest('hex')}`;
+    expect(manifest.changedPaths).toHaveLength(5);
+    expect(manifest.changedPaths).toEqual(
+      expect.arrayContaining([
+        {
+          binary: true,
+          binaryReview: {
+            bytes: nextBinary.byteLength,
+            digest,
+            mediaType: 'application/octet-stream',
+            mode: 'artifact-only',
+            reason: 'binary-path',
+            summary: expect.any(String),
+          },
+          digest,
+          path: 'artifact.bin',
+          size: nextBinary.byteLength,
+          status: 'modified',
+        },
+        {
+          binary: false,
+          newPermissions: '0755',
+          oldPermissions: '0644',
+          path: 'content.sh',
+          status: 'modified',
+        },
+        { binary: false, path: 'deleted.txt', status: 'deleted' },
+        {
+          binary: false,
+          oldPath: 'rename-before.txt',
+          path: 'rename-after.txt',
+          status: 'renamed',
+        },
+        {
+          binary: false,
+          newPermissions: '0755',
+          oldPermissions: '0644',
+          path: 'run.sh',
+          status: 'mode_changed',
+        },
+      ])
+    );
+  });
+
+  it('collects worker commits as a complete patch against the captured base', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-shim-committed-workspace-'));
+    const repoDir = join(sessionDir, 'repo');
+    const packagePath = join(sessionDir, 'package.json');
+    const baseCommit = initializeGitRepository(repoDir, { 'README.md': '# Before\n' });
+    let workerCommit = '';
+    const runner = new FakeCodexProcessRunner(
+      { exitCode: 0, signal: null, stderr: '', stdout: '' },
+      () => {
+        writeFileSync(join(repoDir, 'README.md'), '# After worker commit\n', 'utf8');
+        execFileSync('git', ['add', 'README.md'], { cwd: repoDir, stdio: 'ignore' });
+        execFileSync('git', ['commit', '-m', 'worker change'], { cwd: repoDir, stdio: 'ignore' });
+        workerCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+          cwd: repoDir,
+          encoding: 'utf8',
+        }).trim();
+      }
+    );
+    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
+
+    await runCodexShim({
+      args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+      environment: codexShimEnvironment(),
+      runner,
+    });
+
+    const manifest = JSON.parse(readFileSync(join(sessionDir, 'workspace-changes.json'), 'utf8'));
+    const patch = readFileSync(join(sessionDir, 'workspace.patch'), 'utf8');
+    const verificationDir = join(sessionDir, 'verification');
+    expect(manifest).toMatchObject({
+      base: { commit: baseCommit },
+      changedPaths: [{ binary: false, path: 'README.md', status: 'modified' }],
+      head: { commit: workerCommit },
+    });
+    execFileSync('git', ['worktree', 'add', '--detach', verificationDir, baseCommit], {
+      cwd: repoDir,
+      stdio: 'ignore',
+    });
+    execFileSync('git', ['apply', '--check', '-'], {
+      cwd: verificationDir,
+      input: patch,
+      stdio: ['pipe', 'ignore', 'pipe'],
+    });
+  });
+
+  it('preserves trailing spaces on the final changed patch line', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-shim-trailing-spaces-'));
+    const repoDir = join(sessionDir, 'repo');
+    const packagePath = join(sessionDir, 'package.json');
+    initializeGitRepository(repoDir, { 'README.md': '# Before\n' });
+    const runner = new FakeCodexProcessRunner(
+      { exitCode: 0, signal: null, stderr: '', stdout: '' },
+      () => writeFileSync(join(repoDir, 'README.md'), '# After   \n', 'utf8')
+    );
+    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
+
+    await runCodexShim({
+      args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+      environment: codexShimEnvironment(),
+      runner,
+    });
+
+    expect(readFileSync(join(sessionDir, 'workspace.patch'), 'utf8')).toContain('+# After   \n');
+  });
+
+  it('describes binary changes with canonical Git blob bytes after EOL conversion', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-shim-canonical-binary-'));
+    const repoDir = join(sessionDir, 'repo');
+    const packagePath = join(sessionDir, 'package.json');
+    const nextBinary = Buffer.from([0, 98, 13, 10]);
+    initializeGitRepository(repoDir, {
+      '.gitattributes': 'artifact.bin text eol=lf\n',
+      'artifact.bin': Buffer.from([0, 97, 10]),
+    });
+    const runner = new FakeCodexProcessRunner(
+      { exitCode: 0, signal: null, stderr: '', stdout: '' },
+      () => writeFileSync(join(repoDir, 'artifact.bin'), nextBinary)
+    );
+    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
+
+    await runCodexShim({
+      args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+      environment: codexShimEnvironment(),
+      runner,
+    });
+
+    const objectId = execFileSync(
+      'git',
+      ['hash-object', '-w', '--path=artifact.bin', 'artifact.bin'],
+      { cwd: repoDir, encoding: 'utf8' }
+    ).trim();
+    const canonicalBlob = execFileSync('git', ['cat-file', 'blob', objectId], { cwd: repoDir });
+    const digest = `sha256:${createHash('sha256').update(canonicalBlob).digest('hex')}`;
+    const manifest = JSON.parse(readFileSync(join(sessionDir, 'workspace-changes.json'), 'utf8'));
+    expect(canonicalBlob.equals(nextBinary)).toBe(false);
+    expect(manifest.changedPaths).toEqual([
+      expect.objectContaining({
+        binary: true,
+        binaryReview: expect.objectContaining({ bytes: canonicalBlob.byteLength, digest }),
+        digest,
+        path: 'artifact.bin',
+        size: canonicalBlob.byteLength,
+        status: 'modified',
+      }),
+    ]);
+  });
+
+  it('fails closed when a changed path uses a custom Git clean filter', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-shim-clean-filter-'));
+    const repoDir = join(sessionDir, 'repo');
+    const packagePath = join(sessionDir, 'package.json');
+    initializeGitRepository(repoDir, {
+      '.gitattributes': 'artifact.bin filter=openkit-review -text\n',
+      'artifact.bin': Buffer.from([0, 1]),
+    });
+    execFileSync('git', ['config', 'filter.openkit-review.clean', 'cat'], {
+      cwd: repoDir,
+      stdio: 'ignore',
+    });
+    execFileSync('git', ['config', 'filter.openkit-review.smudge', 'cat'], {
+      cwd: repoDir,
+      stdio: 'ignore',
+    });
+    execFileSync('git', ['config', 'filter.openkit-review.required', 'true'], {
+      cwd: repoDir,
+      stdio: 'ignore',
+    });
+    const runner = new FakeCodexProcessRunner(
+      { exitCode: 0, signal: null, stderr: '', stdout: '' },
+      () => writeFileSync(join(repoDir, 'artifact.bin'), Buffer.from([0, 2]))
+    );
+    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
+
+    await expect(
+      runCodexShim({
+        args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: codexShimEnvironment(),
+        runner,
+      })
+    ).rejects.toThrow(/filter/i);
+  });
+
+  it('rejects a custom clean filter without executing it', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-shim-filter-side-effect-'));
+    const repoDir = join(sessionDir, 'repo');
+    const packagePath = join(sessionDir, 'package.json');
+    const markerPath = join(sessionDir, 'filter-ran');
+    initializeGitRepository(repoDir, {
+      '.gitattributes': 'artifact.bin filter=openkit-review -text\n',
+      'artifact.bin': Buffer.from([0, 1]),
+    });
+    const runner = new FakeCodexProcessRunner(
+      { exitCode: 0, signal: null, stderr: '', stdout: '' },
+      () => {
+        execFileSync('git', ['config', 'filter.openkit-review.clean', 'tee ../filter-ran'], {
+          cwd: repoDir,
+          stdio: 'ignore',
+        });
+        execFileSync('git', ['config', 'filter.openkit-review.required', 'true'], {
+          cwd: repoDir,
+          stdio: 'ignore',
+        });
+        writeFileSync(join(repoDir, 'artifact.bin'), Buffer.from([0, 2]));
+      }
+    );
+    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
+
+    await expect(
+      runCodexShim({
+        args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: codexShimEnvironment(),
+        runner,
+      })
+    ).rejects.toThrow(/filter/i);
+    expect(runner.calls).toHaveLength(1);
+    expect(existsSync(markerPath)).toBe(false);
+  });
+
+  it('does not execute a clean filter on an unchanged path while collecting another change', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-shim-unchanged-filter-'));
+    const repoDir = join(sessionDir, 'repo');
+    const packagePath = join(sessionDir, 'package.json');
+    const markerPath = join(sessionDir, 'filter-ran');
+    initializeGitRepository(repoDir, {
+      '.gitattributes': 'unchanged.bin filter=openkit-review -text\n',
+      'changed.txt': 'Before\n',
+      'unchanged.bin': Buffer.from([0, 1]),
+    });
+    const runner = new FakeCodexProcessRunner(
+      { exitCode: 0, signal: null, stderr: '', stdout: '' },
+      () => {
+        execFileSync('git', ['config', 'filter.openkit-review.clean', 'tee ../filter-ran'], {
+          cwd: repoDir,
+          stdio: 'ignore',
+        });
+        execFileSync('git', ['config', 'filter.openkit-review.required', 'true'], {
+          cwd: repoDir,
+          stdio: 'ignore',
+        });
+        writeFileSync(join(repoDir, 'changed.txt'), 'After\n', 'utf8');
+      }
+    );
+    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
+
+    await expect(
+      runCodexShim({
+        args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: codexShimEnvironment(),
+        runner,
+      })
+    ).resolves.toMatchObject({ status: 'completed' });
+    expect(existsSync(markerPath)).toBe(false);
+  });
+
+  it('rejects multiple writable Git workspace inputs before starting the worker', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-shim-multiple-git-inputs-'));
+    const firstRepoDir = join(sessionDir, 'first');
+    const secondRepoDir = join(sessionDir, 'second');
+    const packagePath = join(sessionDir, 'package.json');
+    initializeGitRepository(firstRepoDir, { 'README.md': '# First\n' });
+    initializeGitRepository(secondRepoDir, { 'README.md': '# Second\n' });
+    const runner = new FakeCodexProcessRunner({
+      exitCode: 0,
+      signal: null,
+      stderr: '',
+      stdout: '',
+    });
+    writeGitWorkspacePackage(packagePath, firstRepoDir, [
+      { id: 'first', target: firstRepoDir },
+      { id: 'second', target: secondRepoDir },
+    ]);
+
+    await expect(
+      runCodexShim({
+        args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: codexShimEnvironment(),
+        runner,
+      })
+    ).rejects.toThrow(/Git.*input|input.*Git/i);
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it('rejects an unavailable Git base before starting the worker', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-shim-missing-base-'));
+    const repoDir = join(sessionDir, 'repo');
+    const packagePath = join(sessionDir, 'package.json');
+    mkdirSync(repoDir);
+    execFileSync('git', ['init'], { cwd: repoDir, stdio: 'ignore' });
+    const runner = new FakeCodexProcessRunner({
+      exitCode: 0,
+      signal: null,
+      stderr: '',
+      stdout: '',
+    });
+    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
+
+    await expect(
+      runCodexShim({
+        args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: codexShimEnvironment(),
+        runner,
+      })
+    ).rejects.toThrow(/base|commit|HEAD/i);
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it('rejects a dirty writable Git workspace before starting the worker', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-shim-dirty-workspace-'));
+    const repoDir = join(sessionDir, 'repo');
+    const packagePath = join(sessionDir, 'package.json');
+    initializeGitRepository(repoDir, { 'README.md': '# Before\n' });
+    writeFileSync(join(repoDir, 'README.md'), '# Preexisting change\n', 'utf8');
+    const runner = new FakeCodexProcessRunner({
+      exitCode: 0,
+      signal: null,
+      stderr: '',
+      stdout: '',
+    });
+    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
+
+    await expect(
+      runCodexShim({
+        args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: codexShimEnvironment(),
+        runner,
+      })
+    ).rejects.toThrow(/clean|dirty|preexisting|uncommitted/i);
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it.each([
+    '--assume-unchanged',
+    '--skip-worktree',
+  ] as const)('rejects dirty workspace state hidden by %s before starting the worker', async (flag) => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-shim-hidden-dirty-'));
+    const repoDir = join(sessionDir, 'repo');
+    const packagePath = join(sessionDir, 'package.json');
+    initializeGitRepository(repoDir, { 'README.md': '# Before\n' });
+    execFileSync('git', ['update-index', flag, 'README.md'], {
+      cwd: repoDir,
+      stdio: 'ignore',
+    });
+    writeFileSync(join(repoDir, 'README.md'), '# Hidden preexisting change\n', 'utf8');
+    const runner = new FakeCodexProcessRunner({
+      exitCode: 0,
+      signal: null,
+      stderr: '',
+      stdout: '',
+    });
+    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
+
+    await expect(
+      runCodexShim({
+        args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: codexShimEnvironment(),
+        runner,
+      })
+    ).rejects.toThrow(/clean|hide|index|lineage/i);
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it('ignores ambient GIT_DIR when inspecting a writable workspace', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-shim-ambient-git-dir-'));
+    const repoDir = join(sessionDir, 'repo');
+    const redirectRepoDir = join(sessionDir, 'redirect-repo');
+    const packagePath = join(sessionDir, 'package.json');
+    const baseCommit = initializeGitRepository(repoDir, { 'README.md': '# Before\n' });
+    initializeGitRepository(redirectRepoDir, { 'DECOY.md': '# Wrong repository\n' });
+    const runner = new FakeCodexProcessRunner(
+      { exitCode: 0, signal: null, stderr: '', stdout: '' },
+      () => writeFileSync(join(repoDir, 'README.md'), '# After\n', 'utf8')
+    );
+    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
+    const previousGitDir = process.env.GIT_DIR;
+    process.env.GIT_DIR = join(redirectRepoDir, '.git');
+
+    try {
+      await runCodexShim({
+        args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: codexShimEnvironment(),
+        runner,
+      });
+    } finally {
+      if (previousGitDir === undefined) {
+        delete process.env.GIT_DIR;
+      } else {
+        process.env.GIT_DIR = previousGitDir;
+      }
+    }
+
+    const manifest = JSON.parse(readFileSync(join(sessionDir, 'workspace-changes.json'), 'utf8'));
+    expect(manifest.base.commit).toBe(baseCommit);
+    expect(runner.calls).toHaveLength(1);
+  });
+
+  it('fails closed when the worker changes .gitattributes', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-shim-attributes-change-'));
+    const repoDir = join(sessionDir, 'repo');
+    const packagePath = join(sessionDir, 'package.json');
+    initializeGitRepository(repoDir, { 'README.md': '# Before\n' });
+    const runner = new FakeCodexProcessRunner(
+      { exitCode: 0, signal: null, stderr: '', stdout: '' },
+      () => writeFileSync(join(repoDir, '.gitattributes'), '*.txt text eol=lf\n', 'utf8')
+    );
+    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
+
+    await expect(
+      runCodexShim({
+        args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: codexShimEnvironment(),
+        runner,
+      })
+    ).rejects.toThrow(/gitattributes|attribute/i);
+    expect(runner.calls).toHaveLength(1);
+  });
+
+  it('removes stale review outputs when a reused session has no changes', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-shim-reused-session-'));
+    const repoDir = join(sessionDir, 'repo');
+    const packagePath = join(sessionDir, 'package.json');
+    const patchPath = join(sessionDir, 'workspace.patch');
+    const manifestPath = join(sessionDir, 'workspace-changes.json');
+    initializeGitRepository(repoDir, { 'README.md': '# Unchanged\n' });
+    writeFileSync(patchPath, 'stale patch\n', 'utf8');
+    writeFileSync(manifestPath, '{"stale":true}\n', 'utf8');
+    const runner = new FakeCodexProcessRunner({
+      exitCode: 0,
+      signal: null,
+      stderr: '',
+      stdout: '',
+    });
+    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
+
+    await runCodexShim({
+      args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+      environment: codexShimEnvironment(),
+      runner,
+    });
+
+    expect([existsSync(patchPath), existsSync(manifestPath)]).toEqual([false, false]);
+  });
+
+  it('removes review outputs when manifest publication fails', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-shim-manifest-failure-'));
+    const repoDir = join(sessionDir, 'repo');
+    const packagePath = join(sessionDir, 'package.json');
+    const patchPath = join(sessionDir, 'workspace.patch');
+    const manifestPath = join(sessionDir, 'workspace-changes.json');
+    initializeGitRepository(repoDir, { 'README.md': '# Before\n' });
+    const runner = new FakeCodexProcessRunner(
+      { exitCode: 0, signal: null, stderr: '', stdout: '' },
+      () => {
+        writeFileSync(join(repoDir, 'README.md'), '# After\n', 'utf8');
+        mkdirSync(manifestPath);
+      }
+    );
+    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
+
+    await expect(
+      runCodexShim({
+        args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: codexShimEnvironment(),
+        runner,
+      })
+    ).rejects.toThrow();
+    expect([existsSync(patchPath), existsSync(manifestPath)]).toEqual([false, false]);
+  });
+
   it('uses OPENKIT_CODEX_COMMAND and records failed Codex exits', async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-shim-failed-'));
     const packagePath = join(sessionDir, 'package.json');
@@ -667,6 +1217,67 @@ class FakeSidecarCommandRunner implements WorkerSidecarCommandRunner {
 
     return this.result;
   }
+}
+
+/**
+ * Creates one committed Git repository for worker workspace tests.
+ *
+ * @param repoDir Repository directory.
+ * @param files Initial file contents keyed by repository-relative path.
+ * @returns Initial commit id.
+ */
+function initializeGitRepository(
+  repoDir: string,
+  files: Readonly<Record<string, string | Buffer>>
+): string {
+  mkdirSync(repoDir, { recursive: true });
+  execFileSync('git', ['init'], { cwd: repoDir, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.email', 'worker@example.com'], {
+    cwd: repoDir,
+    stdio: 'ignore',
+  });
+  execFileSync('git', ['config', 'user.name', 'Worker'], { cwd: repoDir, stdio: 'ignore' });
+  for (const [path, content] of Object.entries(files)) {
+    writeFileSync(join(repoDir, path), content);
+  }
+  execFileSync('git', ['add', '.'], { cwd: repoDir, stdio: 'ignore' });
+  execFileSync('git', ['commit', '-m', 'initial'], { cwd: repoDir, stdio: 'ignore' });
+  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir, encoding: 'utf8' }).trim();
+}
+
+/**
+ * Writes the minimal package manifest used by Git workspace tests.
+ *
+ * @param packagePath Package manifest path.
+ * @param workspaceRoot Worker working directory.
+ * @param inputs Writable Git workspace inputs.
+ */
+function writeGitWorkspacePackage(
+  packagePath: string,
+  workspaceRoot: string,
+  inputs: ReadonlyArray<{ readonly id: string; readonly target: string }>
+): void {
+  writeFileSync(
+    packagePath,
+    JSON.stringify({
+      runtime: { command: { workingDirectory: workspaceRoot } },
+      workspace: {
+        inputs: inputs.map((input) => ({
+          access: 'read-write',
+          id: input.id,
+          kind: 'directory',
+          materialization: {
+            changeSetManifestPath: '/openkit/session/workspace-changes.json',
+            strategy: 'git',
+          },
+          source: { kind: 'host-dir', pathRef: `workspace-root://${input.id}` },
+          target: input.target,
+        })),
+        root: workspaceRoot,
+      },
+    }),
+    'utf8'
+  );
 }
 
 /**

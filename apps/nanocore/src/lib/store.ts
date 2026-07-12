@@ -268,6 +268,8 @@ export interface ArtifactReviewRecord {
   decidedAt: string;
   /** Optional follow-up turn created for refinement or redo decisions. */
   followUpTurnId: string | null;
+  /** Whether the claimed decision is pending, completed, or released after a conflict. */
+  lifecycle: 'pending' | 'completed' | 'failed';
 }
 
 /**
@@ -2401,6 +2403,27 @@ export class FsStore {
     return input;
   }
 
+  /**
+   * Deletes one artifact as an idempotent compensation action.
+   *
+   * @param workspaceId Workspace that owns the artifact.
+   * @param artifactId Artifact to delete when present.
+   * @throws Error when the artifact id belongs to another workspace.
+   */
+  public deleteArtifact(workspaceId: string, artifactId: string): void {
+    const artifact = this.artifacts.get(artifactId);
+    if (!artifact) {
+      return;
+    }
+    if (artifact.workspaceId !== workspaceId) {
+      throw new Error(`Artifact not found: ${artifactId}`);
+    }
+
+    this.artifacts.delete(artifactId);
+    this.refreshWorkspaceCounts(workspaceId);
+    this.persist();
+  }
+
   public updateArtifact(artifactId: string, input: Partial<Artifact>): Artifact {
     const artifact = this.artifacts.get(artifactId);
 
@@ -2436,6 +2459,27 @@ export class FsStore {
    */
   public recordArtifactReviewDecision(input: ArtifactReviewRecord): ArtifactReviewRecord {
     this.getWorkspace(input.workspaceId);
+    const existing = this.artifactReviews.get(input.artifactId);
+    if (existing) {
+      const sameLineage =
+        existing.workspaceId === input.workspaceId &&
+        existing.threadId === input.threadId &&
+        existing.turnId === input.turnId;
+      const sameClaim =
+        sameLineage &&
+        existing.status === input.status &&
+        existing.requestId === input.requestId &&
+        existing.message === input.message &&
+        existing.decidedAt === input.decidedAt &&
+        existing.followUpTurnId === input.followUpTurnId;
+      const startsReplacementClaim =
+        sameLineage && existing.lifecycle === 'failed' && input.lifecycle === 'pending';
+      const finishesPendingClaim =
+        sameClaim && existing.lifecycle === 'pending' && input.lifecycle !== 'pending';
+      if (!startsReplacementClaim && !finishesPendingClaim) {
+        return existing;
+      }
+    }
     this.artifactReviews.set(input.artifactId, input);
     this.persist();
     return input;

@@ -1,3 +1,4 @@
+import { realpathSync, statSync } from 'node:fs';
 import type { WorkspaceDb } from '../storage/db.js';
 import type { FilesystemSnapshotManifest } from './filesystem-workspace-sync.js';
 
@@ -29,8 +30,12 @@ export interface FilesystemWorkspaceStagingRootRecord {
   readonly changeSetId: string;
   /** Internal host staging root path. */
   readonly stagingRootPath: string;
+  /** Stable device and inode identity for the staging root. */
+  readonly stagingRootIdentity: string;
   /** Internal host target root path. */
   readonly targetRootPath: string;
+  /** Stable device and inode identity for the target root. */
+  readonly targetRootIdentity: string;
   /** Snapshot captured before worker execution. */
   readonly before: FilesystemSnapshotManifest;
   /** Record creation timestamp. */
@@ -61,6 +66,32 @@ export function recordFilesystemWorkspaceStagingRoot(
   workspaceDb: WorkspaceDb,
   input: RecordFilesystemWorkspaceStagingRootInput
 ): FilesystemWorkspaceStagingRootRecord {
+  const stagingRoot = canonicalFilesystemRoot(input.stagingRootPath);
+  const targetRoot = canonicalFilesystemRoot(input.targetRootPath);
+  const existing = getFilesystemWorkspaceStagingRoot(
+    workspaceDb,
+    input.workspaceId,
+    input.reviewId
+  );
+  if (existing) {
+    const replay = {
+      before: input.before,
+      changeSetId: input.changeSetId,
+      createdAt: input.createdAt,
+      reviewId: input.reviewId,
+      stagingRootIdentity: stagingRoot.identity,
+      stagingRootPath: stagingRoot.path,
+      targetRootIdentity: targetRoot.identity,
+      targetRootPath: targetRoot.path,
+      updatedAt: input.createdAt,
+      workspaceId: input.workspaceId,
+    } satisfies FilesystemWorkspaceStagingRootRecord;
+    if (JSON.stringify(existing) !== JSON.stringify(replay)) {
+      throw new Error(`Filesystem workspace staging replay conflict: ${input.reviewId}`);
+    }
+    return existing;
+  }
+
   workspaceDb.sqlite
     .prepare(
       `INSERT INTO workspace_filesystem_staging_roots (
@@ -72,21 +103,19 @@ export function recordFilesystemWorkspaceStagingRoot(
         before_manifest_json,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(workspace_id, review_id) DO UPDATE SET
-        change_set_id = excluded.change_set_id,
-        staging_root_path = excluded.staging_root_path,
-        target_root_path = excluded.target_root_path,
-        before_manifest_json = excluded.before_manifest_json,
-        updated_at = excluded.updated_at`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.workspaceId,
       input.reviewId,
       input.changeSetId,
-      input.stagingRootPath,
-      input.targetRootPath,
-      JSON.stringify(input.before),
+      stagingRoot.path,
+      targetRoot.path,
+      JSON.stringify({
+        before: input.before,
+        stagingRootIdentity: stagingRoot.identity,
+        targetRootIdentity: targetRoot.identity,
+      }),
       input.createdAt,
       input.createdAt
     );
@@ -133,12 +162,15 @@ export function getFilesystemWorkspaceStagingRoot(
     return null;
   }
 
+  const payload = createFilesystemStagingPayloadFromJson(row.before_manifest_json);
   return {
-    before: createFilesystemSnapshotManifestFromJson(row.before_manifest_json),
+    before: payload.before,
     changeSetId: row.change_set_id,
     createdAt: row.created_at,
     reviewId: row.review_id,
+    stagingRootIdentity: payload.stagingRootIdentity,
     stagingRootPath: row.staging_root_path,
+    targetRootIdentity: payload.targetRootIdentity,
     targetRootPath: row.target_root_path,
     updatedAt: row.updated_at,
     workspaceId: row.workspace_id,
@@ -146,11 +178,50 @@ export function getFilesystemWorkspaceStagingRoot(
 }
 
 /**
- * Parses a stored filesystem manifest JSON payload.
+ * Resolves one filesystem root and captures its stable directory identity.
+ *
+ * @param path Configured staging or target root path.
+ * @returns Canonical root path plus device and inode identity.
+ */
+function canonicalFilesystemRoot(path: string): {
+  readonly identity: string;
+  readonly path: string;
+} {
+  const canonicalPath = realpathSync(path);
+  const stats = statSync(canonicalPath, { bigint: true });
+  if (!stats.isDirectory()) {
+    throw new Error(`Filesystem workspace root is not a directory: ${path}`);
+  }
+  return { identity: `${stats.dev}:${stats.ino}`, path: canonicalPath };
+}
+
+/**
+ * Parses a stored filesystem staging payload.
  *
  * @param json Stored manifest JSON.
- * @returns Filesystem snapshot manifest.
+ * @returns Filesystem snapshot plus root identities.
  */
-function createFilesystemSnapshotManifestFromJson(json: string): FilesystemSnapshotManifest {
-  return JSON.parse(json) as FilesystemSnapshotManifest;
+function createFilesystemStagingPayloadFromJson(json: string): {
+  readonly before: FilesystemSnapshotManifest;
+  readonly stagingRootIdentity: string;
+  readonly targetRootIdentity: string;
+} {
+  const payload = JSON.parse(json) as {
+    before?: unknown;
+    stagingRootIdentity?: unknown;
+    targetRootIdentity?: unknown;
+  };
+  if (
+    !payload.before ||
+    typeof payload.before !== 'object' ||
+    typeof payload.stagingRootIdentity !== 'string' ||
+    typeof payload.targetRootIdentity !== 'string'
+  ) {
+    throw new Error('Stored filesystem staging payload is invalid.');
+  }
+  return {
+    before: payload.before as FilesystemSnapshotManifest,
+    stagingRootIdentity: payload.stagingRootIdentity,
+    targetRootIdentity: payload.targetRootIdentity,
+  };
 }

@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import {
@@ -10,6 +9,11 @@ import {
   type WorkerControlRelayFetch,
 } from './control-client.js';
 import { type WorkerLineage, WorkerTranscriptWriter } from './transcript.js';
+import {
+  prepareWorkspaceGitSnapshots,
+  publishWorkspaceGitSnapshots,
+  type WorkspaceGitInput,
+} from './workspace-git.js';
 
 /**
  * Parsed `openkit-codex-shim` arguments.
@@ -213,16 +217,6 @@ interface CodexShimPackageManifest {
   };
 }
 
-interface WorkspaceInputManifest {
-  id: string;
-  target: string;
-  access: 'read-only' | 'read-write';
-  materialization?: {
-    strategy?: unknown;
-    changeSetManifestPath?: unknown;
-  };
-}
-
 interface RuntimeSupplyMaterialization {
   kind: string;
   targetPath: string;
@@ -347,7 +341,10 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
   const resultMessagePath = resolveCodexResultMessagePath(packageManifest, options.args.sessionDir);
   const command = resolveCodexCommand(packageManifest, environment, cwd, resultMessagePath);
   const workspaceInputs = resolveWorkspaceInputs(packageManifest);
-  const workspaceBases = await captureWorkspaceBases(workspaceInputs);
+  const workspaceBases = await prepareWorkspaceGitSnapshots(
+    workspaceInputs,
+    options.args.sessionDir
+  );
   const writer = new WorkerTranscriptWriter({
     lineage: workerLineageFromEnvironment(environment),
     sessionDir: options.args.sessionDir,
@@ -365,7 +362,7 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
     cwd,
     env: stringEnvironment(environment),
   });
-  await writeWorkspaceChangeManifests({
+  await publishWorkspaceGitSnapshots({
     bases: workspaceBases,
     inputs: workspaceInputs,
     lineage: workerLineageFromEnvironment(environment),
@@ -852,9 +849,7 @@ function resolveCodexWorkingDirectory(packageManifest: CodexShimPackageManifest)
  * @param packageManifest Worker-visible package manifest.
  * @returns Workspace inputs with Git materialization enabled.
  */
-function resolveWorkspaceInputs(
-  packageManifest: CodexShimPackageManifest
-): WorkspaceInputManifest[] {
+function resolveWorkspaceInputs(packageManifest: CodexShimPackageManifest): WorkspaceGitInput[] {
   const inputs = packageManifest.workspace?.inputs;
 
   if (!Array.isArray(inputs)) {
@@ -863,7 +858,7 @@ function resolveWorkspaceInputs(
 
   return inputs
     .map((input) => readWorkspaceInput(input))
-    .filter((input): input is WorkspaceInputManifest => input !== null)
+    .filter((input): input is WorkspaceGitInput => input !== null)
     .filter((input) => input.access === 'read-write' && input.materialization?.strategy === 'git');
 }
 
@@ -873,7 +868,7 @@ function resolveWorkspaceInputs(
  * @param value Candidate package workspace input.
  * @returns Parsed workspace input or null when unsupported.
  */
-function readWorkspaceInput(value: unknown): WorkspaceInputManifest | null {
+function readWorkspaceInput(value: unknown): WorkspaceGitInput | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
   }
@@ -903,200 +898,6 @@ function readWorkspaceInput(value: unknown): WorkspaceInputManifest | null {
     },
     target: record.target,
   };
-}
-
-/**
- * Captures base Git commits for worker-visible workspace inputs before Codex runs.
- *
- * @param inputs Workspace inputs to inspect.
- * @returns Map from input id to base commit.
- */
-async function captureWorkspaceBases(
-  inputs: readonly WorkspaceInputManifest[]
-): Promise<Map<string, string | null>> {
-  const bases = new Map<string, string | null>();
-
-  for (const input of inputs) {
-    bases.set(input.id, await gitOutput(input.target, ['rev-parse', 'HEAD']));
-  }
-
-  return bases;
-}
-
-/**
- * Writes workspace change manifests for changed Git workspaces.
- *
- * @param input Workspace inputs, base refs, session directory, and lineage.
- */
-async function writeWorkspaceChangeManifests(input: {
-  bases: ReadonlyMap<string, string | null>;
-  inputs: readonly WorkspaceInputManifest[];
-  lineage: WorkerLineage;
-  sessionDir: string;
-}): Promise<void> {
-  for (const workspaceInput of input.inputs) {
-    await gitOutput(workspaceInput.target, ['add', '-N', '.']);
-    const status = await gitOutput(workspaceInput.target, ['status', '--porcelain=v1']);
-
-    if (!status?.trim()) {
-      continue;
-    }
-
-    const patch = ensureTrailingNewline(
-      (await gitOutput(workspaceInput.target, ['diff', '--binary', 'HEAD', '--', '.'])) ?? ''
-    );
-    const patchPath = join(input.sessionDir, 'workspace.patch');
-    await writeFile(patchPath, patch, 'utf8');
-    const patchBytes = Buffer.byteLength(patch, 'utf8');
-    const patchDigest = `sha256:${createHash('sha256').update(patch).digest('hex')}`;
-    const manifestPath = resolveWorkerSessionPath(
-      workspaceInput.materialization?.changeSetManifestPath,
-      input.sessionDir,
-      'workspace-changes.json'
-    );
-    const baseCommit = input.bases.get(workspaceInput.id) ?? null;
-    const headCommit =
-      (await gitOutput(workspaceInput.target, ['rev-parse', 'HEAD'])) ?? baseCommit;
-
-    await writeFile(
-      manifestPath,
-      `${JSON.stringify(
-        {
-          artifactIds: [],
-          base: { commit: baseCommit, contentDigest: null },
-          bundle: null,
-          changedPaths: parseGitStatus(status),
-          createdAt: new Date().toISOString(),
-          evidenceRefs: [],
-          head: { commit: headCommit, contentDigest: null },
-          id: `wcs_${input.lineage.packageSnapshotId}_${workspaceInput.id}`,
-          inputSnapshotId: `wis_${input.lineage.packageSnapshotId}_${workspaceInput.id}`,
-          materializationRecordId: `wmr_${input.lineage.packageSnapshotId}_${workspaceInput.id}`,
-          patch: {
-            bytes: patchBytes,
-            digest: patchDigest,
-            ref: 'worker-session://workspace.patch',
-          },
-          redaction: { notes: [], status: 'redacted' },
-          resourceId: workspaceInput.id,
-          strategy: 'git',
-          workspaceId: input.lineage.workspaceId,
-        },
-        null,
-        2
-      )}\n`,
-      'utf8'
-    );
-  }
-}
-
-/**
- * Ensures line-oriented patch text is terminated for `git apply`.
- *
- * @param text Patch text.
- * @returns Patch text with a trailing newline when non-empty.
- */
-function ensureTrailingNewline(text: string): string {
-  return text.length > 0 && !text.endsWith('\n') ? `${text}\n` : text;
-}
-
-/**
- * Maps a worker-visible session path to the local session directory used by tests and containers.
- *
- * @param configured Worker-visible configured path.
- * @param sessionDir Local session directory.
- * @param fallbackName Fallback file name.
- * @returns Local writable path.
- */
-function resolveWorkerSessionPath(
-  configured: unknown,
-  sessionDir: string,
-  fallbackName: string
-): string {
-  if (typeof configured === 'string' && configured.startsWith('/openkit/session/')) {
-    return join(sessionDir, basename(configured));
-  }
-
-  return join(sessionDir, fallbackName);
-}
-
-/**
- * Runs one Git command and returns stdout, or null when Git rejects the command.
- *
- * @param cwd Git repository path.
- * @param argv Git arguments.
- * @returns Trimmed stdout, preserving non-empty multiline output.
- */
-async function gitOutput(cwd: string, argv: readonly string[]): Promise<string | null> {
-  const [command, ...args] = ['git', ...argv];
-
-  return new Promise((resolve) => {
-    const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'ignore'] });
-    const stdoutChunks: Buffer[] = [];
-
-    child.stdout?.on('data', (chunk: Buffer) => {
-      stdoutChunks.push(chunk);
-    });
-    child.on('error', () => resolve(null));
-    child.on('close', (exitCode) => {
-      resolve(exitCode === 0 ? Buffer.concat(stdoutChunks).toString('utf8').trimEnd() : null);
-    });
-  });
-}
-
-/**
- * Parses porcelain Git status into workspace changed path records.
- *
- * @param statusText `git status --porcelain=v1` output.
- * @returns Workspace changed path records.
- */
-function parseGitStatus(statusText: string): Array<{
-  binary: boolean;
-  oldPath?: string;
-  path: string;
-  status: 'added' | 'modified' | 'deleted' | 'renamed' | 'mode_changed';
-}> {
-  return statusText
-    .split('\n')
-    .filter((line) => line.trim().length > 0)
-    .map((line) => {
-      const code = line.slice(0, 2);
-      const rawPath = line.slice(3);
-      const renameParts = rawPath.split(' -> ');
-
-      if (code.includes('R') && renameParts.length === 2) {
-        return {
-          binary: false,
-          oldPath: renameParts[0] ?? rawPath,
-          path: renameParts[1] ?? rawPath,
-          status: 'renamed',
-        };
-      }
-
-      return {
-        binary: false,
-        path: rawPath,
-        status: gitStatusKind(code),
-      };
-    });
-}
-
-/**
- * Maps porcelain status codes to OpenKit change statuses.
- *
- * @param code Two-character Git porcelain status code.
- * @returns Workspace change status.
- */
-function gitStatusKind(code: string): 'added' | 'modified' | 'deleted' | 'mode_changed' {
-  if (code === '??' || code.includes('A')) {
-    return 'added';
-  }
-
-  if (code.includes('D')) {
-    return 'deleted';
-  }
-
-  return 'modified';
 }
 
 /**

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   type BackendWorkspaceHandle,
   BackendWorkspaceHandleSchema,
@@ -13,6 +14,7 @@ import {
   type WorkspaceMaterializationRecord,
   WorkspaceMaterializationRecordSchema,
   type WorkspaceSyncReviewItem,
+  WorkspaceSyncReviewItemSchema,
   type WorkspaceSyncReviewPatchPayload,
   WorkspaceSyncReviewPatchPayloadSchema,
 } from '@openkit/app-api-schemas';
@@ -35,6 +37,8 @@ export interface UpdateWorkspaceSyncReviewDecisionInput {
   readonly reviewId: string;
   /** Terminal status selected by the human reviewer. */
   readonly status: Exclude<StagedWorkspaceReviewStatus, 'pending'>;
+  /** Idempotent command request associated with the decision. */
+  readonly requestId: string;
   /** Decision timestamp. */
   readonly updatedAt: string;
 }
@@ -97,6 +101,44 @@ interface RecordWorkspaceMaterializationRecordOptions {
 }
 
 /**
+ * Parses one workspace review item and enforces its cross-record integrity.
+ *
+ * @param item Candidate joined review item.
+ * @param pendingOnly Whether the caller accepts only newly staged pending reviews.
+ * @returns Parsed review item with verified lineage and patch bytes.
+ * @throws Error when status, lineage, or patch integrity is invalid.
+ */
+export function parseWorkspaceSyncReviewItem(
+  item: WorkspaceSyncReviewItem,
+  pendingOnly: boolean
+): WorkspaceSyncReviewItem {
+  const parsed = WorkspaceSyncReviewItemSchema.parse(item);
+  const { changeSet, patchPayload, review } = parsed;
+  if (pendingOnly && review.status !== 'pending') {
+    throw new Error(`Workspace synchronization review is not pending: ${review.id}`);
+  }
+  if (review.workspaceId !== changeSet.workspaceId || review.changeSetId !== changeSet.id) {
+    throw new Error(`Workspace synchronization review lineage mismatch: ${review.id}`);
+  }
+  if (Boolean(changeSet.patch) !== Boolean(patchPayload)) {
+    throw new Error(`Workspace synchronization review patch conflict: ${review.id}`);
+  }
+  if (changeSet.patch && patchPayload) {
+    const digest = `sha256:${createHash('sha256').update(patchPayload.text).digest('hex')}`;
+    const bytes = Buffer.byteLength(patchPayload.text, 'utf8');
+    if (
+      changeSet.patch.digest !== patchPayload.digest ||
+      changeSet.patch.bytes !== patchPayload.bytes ||
+      patchPayload.digest !== digest ||
+      patchPayload.bytes !== bytes
+    ) {
+      throw new Error(`Workspace synchronization review patch integrity conflict: ${review.id}`);
+    }
+  }
+  return parsed;
+}
+
+/**
  * Persists one staged workspace review and its backing change-set lineage records.
  *
  * @param workspaceDb Open workspace-scope database handle.
@@ -107,21 +149,57 @@ export function recordWorkspaceSyncReview(
   workspaceDb: WorkspaceDb,
   input: RecordWorkspaceSyncReviewInput
 ): WorkspaceSyncReviewItem {
-  const item = input.item;
-  const parsedChangeSet = WorkspaceChangeSetSchema.parse(item.changeSet);
-  const changeSet = withMaterializationSourceId(workspaceDb, parsedChangeSet);
-  const review = StagedWorkspaceReviewSchema.parse(item.review);
-  const patchPayload = item.patchPayload
-    ? WorkspaceSyncReviewPatchPayloadSchema.parse(item.patchPayload)
-    : null;
-  const inputSnapshot = inferWorkspaceInputSnapshot(changeSet);
-  const materializationRecord = inferWorkspaceMaterializationRecord(changeSet);
-  const reviewAlreadyExists = Boolean(
-    getWorkspaceSyncReview(workspaceDb, review.workspaceId, review.id)
+  const item = parseWorkspaceSyncReviewItem(input.item, true);
+  const changeSet = withMaterializationSourceId(workspaceDb, item.changeSet);
+  const review = item.review;
+  const patchPayload = item.patchPayload;
+  const existingInputSnapshot = getWorkspaceInputSnapshot(
+    workspaceDb,
+    changeSet.workspaceId,
+    changeSet.inputSnapshotId
   );
+  const inputSnapshot = existingInputSnapshot ?? inferWorkspaceInputSnapshot(changeSet);
+  const existingMaterializationRecord = getWorkspaceMaterializationRecord(
+    workspaceDb,
+    changeSet.workspaceId,
+    changeSet.materializationRecordId
+  );
+  const materializationRecord =
+    existingMaterializationRecord ?? inferWorkspaceMaterializationRecord(changeSet);
+  if (
+    inputSnapshot.workspaceId !== changeSet.workspaceId ||
+    inputSnapshot.resourceId !== changeSet.resourceId ||
+    inputSnapshot.strategy !== changeSet.strategy ||
+    materializationRecord.workspaceId !== changeSet.workspaceId ||
+    materializationRecord.inputSnapshotId !== changeSet.inputSnapshotId ||
+    materializationRecord.strategy !== changeSet.strategy
+  ) {
+    throw new Error(`Workspace synchronization lineage conflict: ${changeSet.id}`);
+  }
+  const existingReview = getWorkspaceSyncReview(workspaceDb, review.workspaceId, review.id);
+  if (existingReview) {
+    const replayedReview = StagedWorkspaceReviewSchema.parse({
+      ...review,
+      status: existingReview.review.status,
+      updatedAt: existingReview.review.updatedAt,
+    });
+    if (
+      existingReview.artifactId !== item.artifactId ||
+      JSON.stringify(existingReview.changeSet) !== JSON.stringify(changeSet) ||
+      JSON.stringify(existingReview.patchPayload) !== JSON.stringify(patchPayload) ||
+      JSON.stringify(existingReview.review) !== JSON.stringify(replayedReview)
+    ) {
+      throw new Error(`Workspace synchronization review replay conflict: ${review.id}`);
+    }
+    return existingReview;
+  }
 
-  recordWorkspaceInputSnapshot(workspaceDb, inputSnapshot);
-  recordWorkspaceMaterializationRecord(workspaceDb, materializationRecord);
+  if (!existingInputSnapshot) {
+    recordWorkspaceInputSnapshot(workspaceDb, inputSnapshot);
+  }
+  if (!existingMaterializationRecord) {
+    recordWorkspaceMaterializationRecord(workspaceDb, materializationRecord);
+  }
   recordWorkerOutputManifest(workspaceDb, inferWorkerOutputManifest(workspaceDb, changeSet));
   recordWorkspaceChangeSet(workspaceDb, changeSet);
   workspaceDb.sqlite
@@ -136,13 +214,7 @@ export function recordWorkspaceSyncReview(
         patch_payload_json,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(workspace_id, review_id) DO UPDATE SET
-        artifact_id = excluded.artifact_id,
-        patch_payload_json = excluded.patch_payload_json,
-        payload_json = excluded.payload_json,
-        status = excluded.status,
-        updated_at = excluded.updated_at`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       review.id,
@@ -156,41 +228,39 @@ export function recordWorkspaceSyncReview(
       review.updatedAt
     );
 
-  if (!reviewAlreadyExists) {
-    recordWorkspaceAuditEvent({
-      action: 'workspace.review.stage',
-      category: 'artifact',
-      now: new Date(review.createdAt),
-      outcome: 'succeeded',
-      resource: `workspace-review:${review.id}`,
-      severity: 'info',
-      summary: workspaceReviewAuditSummary(changeSet),
-      workspaceDb,
-      workspaceId: review.workspaceId,
-    });
-    recordWorkspaceEvidenceBundle(workspaceDb, {
-      id: `evb_workspace_review_${review.id}`,
-      workspaceId: review.workspaceId,
-      threadId: null,
-      goalId: null,
-      turnId: null,
-      agentSessionId: null,
-      backendType: null,
-      sourceKind: 'workspace-sync-review',
-      summary: workspaceReviewAuditSummary(changeSet),
-      rawEvidenceRefs: [],
-      redactedEvidenceRefs: [
-        ...changeSet.evidenceRefs,
-        ...(changeSet.patch ? [{ kind: 'workspace-sync-patch', ref: changeSet.patch.ref }] : []),
-      ],
-      contentDigests: changeSet.patch ? [changeSet.patch.digest] : [],
-      retentionClass: 'workspace-audit',
-      sensitivityClass: 'product-safe',
-      importStatus: 'promoted',
-      requiredFeatures: ['evidence.bundle.v1'],
-      createdAt: review.createdAt,
-    });
-  }
+  recordWorkspaceAuditEvent({
+    action: 'workspace.review.stage',
+    category: 'artifact',
+    now: new Date(review.createdAt),
+    outcome: 'succeeded',
+    resource: `workspace-review:${review.id}`,
+    severity: 'info',
+    summary: workspaceReviewAuditSummary(changeSet),
+    workspaceDb,
+    workspaceId: review.workspaceId,
+  });
+  recordWorkspaceEvidenceBundle(workspaceDb, {
+    id: `evb_workspace_review_${review.id}`,
+    workspaceId: review.workspaceId,
+    threadId: null,
+    goalId: null,
+    turnId: null,
+    agentSessionId: null,
+    backendType: null,
+    sourceKind: 'workspace-sync-review',
+    summary: workspaceReviewAuditSummary(changeSet),
+    rawEvidenceRefs: [],
+    redactedEvidenceRefs: [
+      ...changeSet.evidenceRefs,
+      ...(changeSet.patch ? [{ kind: 'workspace-sync-patch', ref: changeSet.patch.ref }] : []),
+    ],
+    contentDigests: changeSet.patch ? [changeSet.patch.digest] : [],
+    retentionClass: 'workspace-audit',
+    sensitivityClass: 'product-safe',
+    importStatus: 'promoted',
+    requiredFeatures: ['evidence.bundle.v1'],
+    createdAt: review.createdAt,
+  });
 
   return requireWorkspaceSyncReview(workspaceDb, review.workspaceId, review.id);
 }
@@ -216,11 +286,7 @@ export function recordWorkspaceInputSnapshots(
   workspaceDb: WorkspaceDb,
   snapshots: readonly WorkspaceInputSnapshot[]
 ): WorkspaceInputSnapshot[] {
-  for (const snapshot of snapshots) {
-    recordWorkspaceInputSnapshot(workspaceDb, snapshot);
-  }
-
-  return snapshots.map((snapshot) => WorkspaceInputSnapshotSchema.parse(snapshot));
+  return snapshots.map((snapshot) => recordWorkspaceInputSnapshot(workspaceDb, snapshot));
 }
 
 /**
@@ -234,11 +300,7 @@ export function recordWorkspaceMaterializationRecords(
   workspaceDb: WorkspaceDb,
   records: readonly WorkspaceMaterializationRecord[]
 ): WorkspaceMaterializationRecord[] {
-  for (const record of records) {
-    recordWorkspaceMaterializationRecord(workspaceDb, record);
-  }
-
-  return records.map((record) => WorkspaceMaterializationRecordSchema.parse(record));
+  return records.map((record) => recordWorkspaceMaterializationRecord(workspaceDb, record));
 }
 
 /**
@@ -351,6 +413,7 @@ export function updateWorkspaceSyncReviewDecision(
     category: 'artifact',
     now: new Date(input.updatedAt),
     outcome: 'succeeded',
+    requestId: input.requestId,
     resource: `workspace-review:${review.id}`,
     severity: 'info',
     summary: `Workspace review ${review.id} resolved as ${review.status}.`,
@@ -476,6 +539,27 @@ export function importWorkspaceSyncRecords(
   workspaceDb: WorkspaceDb,
   input: ImportWorkspaceSyncRecordsInput
 ): void {
+  const changeSets = input.changeSets.map((changeSet) => WorkspaceChangeSetSchema.parse(changeSet));
+  const stagedReviews = input.stagedReviews.map((stagedReview) => {
+    const review = StagedWorkspaceReviewSchema.parse(stagedReview.review);
+    const changeSet = changeSets.find(
+      (candidate) =>
+        candidate.workspaceId === review.workspaceId && candidate.id === review.changeSetId
+    );
+    if (!changeSet) {
+      throw new Error(`Workspace synchronization review import lineage mismatch: ${review.id}`);
+    }
+    return parseWorkspaceSyncReviewItem(
+      {
+        artifactId: stagedReview.artifactId,
+        changeSet,
+        patchPayload: stagedReview.patchPayload,
+        review,
+      },
+      false
+    );
+  });
+
   for (const snapshot of input.inputSnapshots) {
     recordWorkspaceInputSnapshot(workspaceDb, WorkspaceInputSnapshotSchema.parse(snapshot));
   }
@@ -492,18 +576,26 @@ export function importWorkspaceSyncRecords(
   for (const manifest of input.workerOutputManifests) {
     recordWorkerOutputManifest(workspaceDb, WorkerOutputManifestSchema.parse(manifest));
   }
-  for (const changeSet of input.changeSets) {
-    recordWorkspaceChangeSet(workspaceDb, WorkspaceChangeSetSchema.parse(changeSet));
+  for (const changeSet of changeSets) {
+    recordWorkspaceChangeSet(workspaceDb, changeSet);
   }
-  for (const stagedReview of input.stagedReviews) {
-    const review = StagedWorkspaceReviewSchema.parse(stagedReview.review);
-    const patchPayload = stagedReview.patchPayload
-      ? WorkspaceSyncReviewPatchPayloadSchema.parse(stagedReview.patchPayload)
-      : null;
+  for (const stagedReview of stagedReviews) {
+    const { artifactId, patchPayload, review } = stagedReview;
+    const existing = getWorkspaceSyncReview(workspaceDb, review.workspaceId, review.id);
+    if (existing) {
+      if (
+        existing.artifactId !== artifactId ||
+        JSON.stringify(existing.patchPayload) !== JSON.stringify(patchPayload) ||
+        JSON.stringify(existing.review) !== JSON.stringify(review)
+      ) {
+        throw new Error(`Workspace synchronization review import conflict: ${review.id}`);
+      }
+      continue;
+    }
 
     workspaceDb.sqlite
       .prepare(
-        `INSERT OR IGNORE INTO staged_workspace_reviews (
+        `INSERT INTO staged_workspace_reviews (
           review_id,
           workspace_id,
           change_set_id,
@@ -519,7 +611,7 @@ export function importWorkspaceSyncRecords(
         review.id,
         review.workspaceId,
         review.changeSetId,
-        stagedReview.artifactId,
+        artifactId,
         review.status,
         JSON.stringify(review),
         patchPayload ? JSON.stringify(patchPayload) : null,
@@ -538,10 +630,25 @@ export function importWorkspaceSyncRecords(
 function recordWorkspaceInputSnapshot(
   workspaceDb: WorkspaceDb,
   snapshot: WorkspaceInputSnapshot
-): void {
+): WorkspaceInputSnapshot {
+  const parsed = WorkspaceInputSnapshotSchema.parse(snapshot);
+  const existing = workspaceDb.sqlite
+    .prepare(
+      `SELECT payload_json
+       FROM workspace_input_snapshots
+       WHERE workspace_id = ? AND input_snapshot_id = ?`
+    )
+    .get(parsed.workspaceId, parsed.id) as { payload_json: string } | undefined;
+  if (existing) {
+    const stored = WorkspaceInputSnapshotSchema.parse(JSON.parse(existing.payload_json) as unknown);
+    if (JSON.stringify(stored) !== JSON.stringify(parsed)) {
+      throw new Error(`Workspace input snapshot replay conflict: ${parsed.id}`);
+    }
+    return stored;
+  }
   workspaceDb.sqlite
     .prepare(
-      `INSERT OR IGNORE INTO workspace_input_snapshots (
+      `INSERT INTO workspace_input_snapshots (
         input_snapshot_id,
         workspace_id,
         resource_id,
@@ -552,14 +659,15 @@ function recordWorkspaceInputSnapshot(
       ) VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
-      snapshot.id,
-      snapshot.workspaceId,
-      snapshot.resourceId,
-      snapshot.strategy,
-      JSON.stringify(snapshot),
-      snapshot.createdAt,
-      snapshot.createdAt
+      parsed.id,
+      parsed.workspaceId,
+      parsed.resourceId,
+      parsed.strategy,
+      JSON.stringify(parsed),
+      parsed.createdAt,
+      parsed.createdAt
     );
+  return parsed;
 }
 
 /**
@@ -572,10 +680,27 @@ function recordWorkspaceMaterializationRecord(
   workspaceDb: WorkspaceDb,
   record: WorkspaceMaterializationRecord,
   options: RecordWorkspaceMaterializationRecordOptions = {}
-): void {
+): WorkspaceMaterializationRecord {
+  const parsed = WorkspaceMaterializationRecordSchema.parse(record);
+  const existing = workspaceDb.sqlite
+    .prepare(
+      `SELECT payload_json
+       FROM workspace_materialization_records
+       WHERE workspace_id = ? AND materialization_record_id = ?`
+    )
+    .get(parsed.workspaceId, parsed.id) as { payload_json: string } | undefined;
+  if (existing) {
+    const stored = WorkspaceMaterializationRecordSchema.parse(
+      JSON.parse(existing.payload_json) as unknown
+    );
+    if (JSON.stringify(stored) !== JSON.stringify(parsed)) {
+      throw new Error(`Workspace materialization replay conflict: ${parsed.id}`);
+    }
+    return stored;
+  }
   const inserted = workspaceDb.sqlite
     .prepare(
-      `INSERT OR IGNORE INTO workspace_materialization_records (
+      `INSERT INTO workspace_materialization_records (
         materialization_record_id,
         workspace_id,
         input_snapshot_id,
@@ -587,40 +712,44 @@ function recordWorkspaceMaterializationRecord(
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
-      record.id,
-      record.workspaceId,
-      record.inputSnapshotId,
-      record.workerSessionId,
-      record.strategy,
-      JSON.stringify(record),
-      record.createdAt,
-      record.createdAt
+      parsed.id,
+      parsed.workspaceId,
+      parsed.inputSnapshotId,
+      parsed.workerSessionId,
+      parsed.strategy,
+      JSON.stringify(parsed),
+      parsed.createdAt,
+      parsed.createdAt
     );
-  if (inserted.changes === 0 || options.promoteEvidence === false) {
-    return;
+  if (inserted.changes === 0) {
+    throw new Error(`Workspace materialization was not recorded: ${parsed.id}`);
+  }
+  if (options.promoteEvidence === false) {
+    return parsed;
   }
 
-  recordBackendWorkspaceHandle(workspaceDb, inferBackendWorkspaceHandle(record));
+  recordBackendWorkspaceHandle(workspaceDb, inferBackendWorkspaceHandle(parsed));
   recordWorkspaceEvidenceBundle(workspaceDb, {
-    id: `evb_workspace_materialization_${record.id}`,
-    workspaceId: record.workspaceId,
+    id: `evb_workspace_materialization_${parsed.id}`,
+    workspaceId: parsed.workspaceId,
     threadId: null,
     goalId: null,
     turnId: null,
     agentSessionId: null,
-    backendType: record.backendKind,
+    backendType: parsed.backendKind,
     sourceKind: 'workspace-materialization',
-    summary: `Workspace materialization recorded: strategy ${record.strategy}, backend ${record.backendKind}`,
+    summary: `Workspace materialization recorded: strategy ${parsed.strategy}, backend ${parsed.backendKind}`,
     rawEvidenceRefs: [],
-    redactedEvidenceRefs: record.readinessEvidence,
-    contentDigests: [record.policyDigest],
+    redactedEvidenceRefs: parsed.readinessEvidence,
+    contentDigests: [parsed.policyDigest],
     retentionClass: 'workspace-audit',
     sensitivityClass: 'product-safe',
     importStatus: 'promoted',
     requiredFeatures: ['evidence.bundle.v1'],
-    createdAt: record.createdAt,
+    createdAt: parsed.createdAt,
   });
-  recordMaterializationRuntimeEvidence(workspaceDb, record);
+  recordMaterializationRuntimeEvidence(workspaceDb, parsed);
+  return parsed;
 }
 
 /**
@@ -704,9 +833,24 @@ function recordBackendWorkspaceHandle(
   workspaceDb: WorkspaceDb,
   handle: BackendWorkspaceHandle
 ): void {
+  const parsed = BackendWorkspaceHandleSchema.parse(handle);
+  const existing = workspaceDb.sqlite
+    .prepare(
+      `SELECT payload_json
+       FROM backend_workspace_handles
+       WHERE workspace_id = ? AND backend_workspace_handle_id = ?`
+    )
+    .get(parsed.workspaceId, parsed.id) as { payload_json: string } | undefined;
+  if (existing) {
+    const stored = BackendWorkspaceHandleSchema.parse(JSON.parse(existing.payload_json) as unknown);
+    if (JSON.stringify(stored) !== JSON.stringify(parsed)) {
+      throw new Error(`Backend workspace handle replay conflict: ${parsed.id}`);
+    }
+    return;
+  }
   workspaceDb.sqlite
     .prepare(
-      `INSERT OR IGNORE INTO backend_workspace_handles (
+      `INSERT INTO backend_workspace_handles (
         backend_workspace_handle_id,
         workspace_id,
         materialization_record_id,
@@ -718,14 +862,14 @@ function recordBackendWorkspaceHandle(
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
-      handle.id,
-      handle.workspaceId,
-      handle.materializationRecordId,
-      handle.backendKind,
-      handle.workerSessionId,
-      JSON.stringify(handle),
-      handle.createdAt,
-      handle.updatedAt
+      parsed.id,
+      parsed.workspaceId,
+      parsed.materializationRecordId,
+      parsed.backendKind,
+      parsed.workerSessionId,
+      JSON.stringify(parsed),
+      parsed.createdAt,
+      parsed.updatedAt
     );
 }
 
@@ -739,9 +883,24 @@ function recordWorkerOutputManifest(
   workspaceDb: WorkspaceDb,
   manifest: WorkerOutputManifest
 ): void {
+  const parsed = WorkerOutputManifestSchema.parse(manifest);
+  const existing = workspaceDb.sqlite
+    .prepare(
+      `SELECT payload_json
+       FROM worker_output_manifests
+       WHERE workspace_id = ? AND worker_output_manifest_id = ?`
+    )
+    .get(parsed.workspaceId, parsed.id) as { payload_json: string } | undefined;
+  if (existing) {
+    const stored = WorkerOutputManifestSchema.parse(JSON.parse(existing.payload_json) as unknown);
+    if (JSON.stringify(stored) !== JSON.stringify(parsed)) {
+      throw new Error(`Worker output manifest replay conflict: ${parsed.id}`);
+    }
+    return;
+  }
   workspaceDb.sqlite
     .prepare(
-      `INSERT OR IGNORE INTO worker_output_manifests (
+      `INSERT INTO worker_output_manifests (
         worker_output_manifest_id,
         workspace_id,
         materialization_record_id,
@@ -755,16 +914,16 @@ function recordWorkerOutputManifest(
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
-      manifest.id,
-      manifest.workspaceId,
-      manifest.materializationRecordId,
-      manifest.inputSnapshotId,
-      manifest.workerSessionId,
-      manifest.backendKind,
-      manifest.strategy,
-      JSON.stringify(manifest),
-      manifest.collectedAt,
-      manifest.collectedAt
+      parsed.id,
+      parsed.workspaceId,
+      parsed.materializationRecordId,
+      parsed.inputSnapshotId,
+      parsed.workerSessionId,
+      parsed.backendKind,
+      parsed.strategy,
+      JSON.stringify(parsed),
+      parsed.collectedAt,
+      parsed.collectedAt
     );
 }
 
@@ -827,6 +986,30 @@ function inferWorkerOutputManifest(
 }
 
 /**
+ * Reads one input snapshot if it exists.
+ *
+ * @param workspaceDb Open workspace-scope database handle.
+ * @param workspaceId Workspace id.
+ * @param inputSnapshotId Input snapshot id.
+ * @returns Stored input snapshot, or null.
+ */
+function getWorkspaceInputSnapshot(
+  workspaceDb: WorkspaceDb,
+  workspaceId: string,
+  inputSnapshotId: string
+): WorkspaceInputSnapshot | null {
+  const row = workspaceDb.sqlite
+    .prepare(
+      `SELECT payload_json
+       FROM workspace_input_snapshots
+       WHERE workspace_id = ? AND input_snapshot_id = ?`
+    )
+    .get(workspaceId, inputSnapshotId) as { payload_json: string } | undefined;
+
+  return row ? WorkspaceInputSnapshotSchema.parse(JSON.parse(row.payload_json) as unknown) : null;
+}
+
+/**
  * Reads one materialization record if it exists.
  *
  * @param workspaceDb Open workspace-scope database handle.
@@ -859,9 +1042,27 @@ function getWorkspaceMaterializationRecord(
  * @param changeSet Change set to persist.
  */
 function recordWorkspaceChangeSet(workspaceDb: WorkspaceDb, changeSet: WorkspaceChangeSet): void {
+  const payloadJson = JSON.stringify(WorkspaceChangeSetSchema.parse(changeSet));
+  const existing = workspaceDb.sqlite
+    .prepare(
+      `SELECT payload_json
+       FROM workspace_change_sets
+       WHERE workspace_id = ? AND change_set_id = ?`
+    )
+    .get(changeSet.workspaceId, changeSet.id) as { payload_json: string } | undefined;
+  if (existing) {
+    const existingPayloadJson = JSON.stringify(
+      WorkspaceChangeSetSchema.parse(JSON.parse(existing.payload_json) as unknown)
+    );
+    if (existingPayloadJson !== payloadJson) {
+      throw new Error(`Workspace change set replay conflict: ${changeSet.id}`);
+    }
+    return;
+  }
+
   workspaceDb.sqlite
     .prepare(
-      `INSERT OR IGNORE INTO workspace_change_sets (
+      `INSERT INTO workspace_change_sets (
         change_set_id,
         workspace_id,
         input_snapshot_id,
@@ -880,7 +1081,7 @@ function recordWorkspaceChangeSet(workspaceDb: WorkspaceDb, changeSet: Workspace
       changeSet.materializationRecordId,
       changeSet.resourceId,
       changeSet.strategy,
-      JSON.stringify(changeSet),
+      payloadJson,
       changeSet.createdAt,
       changeSet.createdAt
     );

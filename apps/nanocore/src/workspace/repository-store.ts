@@ -357,7 +357,7 @@ export function getDefaultWorkspaceRepositoryResource(
  * @param resourceId Repository resource id to read.
  * @returns Stored repository resource, or null when no matching row exists.
  */
-function getWorkspaceRepositoryResource(
+export function getWorkspaceRepositoryResource(
   workspaceDb: WorkspaceDb,
   workspaceId: string,
   resourceId: string

@@ -1,5 +1,4 @@
 import { Buffer } from 'node:buffer';
-import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { extname, join, relative, resolve, sep } from 'node:path';
@@ -11,6 +10,7 @@ import {
   ApproveThreadGoalPlanRequestSchema,
   ApproveThreadGoalPlanResponseSchema,
   AppSearchResponseSchema,
+  type ArtifactReviewDecision,
   AutomationRecordSchema,
   type BootReadinessSnapshot,
   CancelRecoveryPendingUserTurnResponseSchema,
@@ -183,8 +183,7 @@ import {
   VaultAdminStatusResponseSchema,
   VaultAdminUnlockRequestSchema,
   VaultAdminUnlockResponseSchema,
-  WorkspaceApplyPlanSchema,
-  WorkspaceApplyResultSchema,
+  type WorkspaceApplyResult,
   WorkspaceDashboardResponseSchema,
   WorkspaceExportResponseSchema,
   WorkspaceImportDryRunRequestSchema,
@@ -193,6 +192,7 @@ import {
   WorkspaceImportResponseSchema,
   WorkspaceRepositoryDiagnosticsResponseSchema,
   WorkspaceRepositoryResourceSchema,
+  type WorkspaceSyncReviewDecision,
 } from '@openkit/app-api-schemas';
 import {
   type AgentEnvironmentPackage,
@@ -388,7 +388,6 @@ import {
   requireAgentEnvironmentPackageSnapshot,
 } from './runtime/aep-snapshot-ledger.js';
 import { UpdateTurnFeedbackRequestSchema, updateTurnFeedback } from './runtime/feedback.js';
-import { applyStagedFilesystemChanges } from './runtime/filesystem-workspace-sync.js';
 import { executeGitPushAttempt, runGitPushCommand } from './runtime/git-push-executor.js';
 import {
   getGitPushRecord,
@@ -491,16 +490,14 @@ import {
   importWorkspaceApplyPlans,
   listExportableWorkspaceApplyPlans,
   listWorkspaceApplyPlans,
-  recordWorkspaceApplyPlan,
 } from './runtime/workspace-apply-plans.js';
 import {
   getWorkspaceApplyResult,
   importWorkspaceApplyResults,
   listExportableWorkspaceApplyResults,
   listWorkspaceApplyResults,
-  recordWorkspaceApplyResult,
+  requireWorkspaceApplyResult,
 } from './runtime/workspace-apply-results.js';
-import { getFilesystemWorkspaceStagingRoot } from './runtime/workspace-filesystem-staging.js';
 import {
   importWorkspaceQuarantineRecords,
   listExportableWorkspaceQuarantineRecords,
@@ -512,6 +509,7 @@ import {
   listWorkspaceReconciliationRecords,
   resolveWorkspaceReconciliationRecord,
 } from './runtime/workspace-reconciliation-records.js';
+import { decideWorkspaceSyncReview } from './runtime/workspace-review-application.js';
 import {
   importWorkspaceSyncEvidenceBundles,
   listExportableWorkspaceSyncEvidenceBundles,
@@ -527,9 +525,7 @@ import {
   listWorkspaceInputSnapshots,
   listWorkspaceMaterializationRecords,
   listWorkspaceSyncReviews,
-  recordWorkspaceSyncReview,
   updateBackendWorkspaceHandleCleanupStatus,
-  updateWorkspaceSyncReviewDecision,
 } from './runtime/workspace-sync-records.js';
 import {
   cancelSchedulerAdmissionEntry,
@@ -624,8 +620,6 @@ const CODEX_AUTH_JSON_TARGET_PATH = '/sandbox/.codex/auth.json';
 
 type ArtifactReadModel = z.infer<typeof ArtifactSchema>;
 type WorkspaceSyncReviewItem = z.infer<typeof GetWorkspaceSyncReviewResponseSchema>;
-type WorkspaceApplyPlan = z.infer<typeof WorkspaceApplyPlanSchema>;
-type WorkspaceApplyResult = z.infer<typeof WorkspaceApplyResultSchema>;
 type WorkspaceRecord = z.infer<typeof WorkspaceRecordSchema>;
 
 /**
@@ -669,619 +663,48 @@ function listWorkspaceSyncReviewArtifacts(
 }
 
 /**
- * Records artifact-backed workspace synchronization reviews into durable product records.
+ * Lists workspace reviews without mutating artifact or durable state.
+ *
+ * Durable review lifecycle state takes precedence over immutable artifact snapshots.
  *
  * @param artifacts Workspace artifact candidates.
  * @param workspaceDb Open workspace-scope database handle.
- * @returns Durable workspace synchronization review items.
+ * @param workspaceId Workspace whose reviews should be listed.
+ * @returns Durable and artifact-only reviews in stable newest-first order.
  */
-function materializeWorkspaceSyncReviewArtifacts(
+function listWorkspaceSyncReviewsForRead(
   artifacts: readonly ArtifactReadModel[],
-  workspaceDb: WorkspaceDb
-): WorkspaceSyncReviewItem[] {
-  return listWorkspaceSyncReviewArtifacts(artifacts).map((item) =>
-    recordWorkspaceSyncReview(workspaceDb, { item })
-  );
-}
-
-/**
- * Materializes pending workspace reviews as local Git review branches when configured.
- *
- * @param input Review branch materialization input.
- */
-async function materializeWorkspaceReviewBranches(input: {
-  readonly repository: WorkspaceRepositoryResourceRecord | null;
-  readonly reviews: readonly WorkspaceSyncReviewItem[];
-  readonly store: FsStore;
-  readonly workspaceDb: WorkspaceDb;
-}): Promise<void> {
-  if (!input.repository || input.repository.git.stagingStrategy !== 'review-branch') {
-    return;
-  }
-
-  const appliedReviewIds = new Set(
-    listWorkspaceApplyResults(input.workspaceDb, input.repository.workspaceId).map(
-      (result) => result.reviewId
-    )
-  );
-
-  for (const review of input.reviews) {
-    if (
-      review.changeSet.strategy === 'git' &&
-      review.review.status === 'pending' &&
-      !appliedReviewIds.has(review.review.id)
-    ) {
-      const commitId = await materializeWorkspaceReviewBranch(
-        input.repository,
-        review,
-        input.store
-      );
-      recordWorkspaceSyncReview(input.workspaceDb, {
-        item: {
-          ...review,
-          changeSet: {
-            ...review.changeSet,
-            head: { ...review.changeSet.head, commit: commitId },
-          },
-        },
-      });
-    }
-  }
-}
-
-/**
- * Creates or refreshes one local Git review branch for a staged review.
- *
- * @param repository Linked repository resource.
- * @param review Workspace synchronization review item.
- * @param store App-local store used for worker attribution.
- */
-async function materializeWorkspaceReviewBranch(
-  repository: WorkspaceRepositoryResourceRecord,
-  review: WorkspaceSyncReviewItem,
-  store: FsStore
-): Promise<string> {
-  if (
-    review.changeSet.strategy !== 'git' ||
-    review.changeSet.resourceId !== repository.resourceId
-  ) {
-    return review.changeSet.head.commit ?? '';
-  }
-
-  const branch = requireWorkspaceReviewBranch(review);
-  const turnId = review.changeSet.evidenceRefs.find((ref) => ref.kind === 'worker')?.ref;
-
-  if (!turnId) {
-    throw new Error(`Workspace review has no worker turn lineage: ${review.review.id}`);
-  }
-
-  if (!repository.git.authorName || !repository.git.authorEmail) {
-    throw new Error(`Workspace repository has no Git identity: ${review.review.id}`);
-  }
-
-  if (!review.changeSet.base.commit) {
-    throw new Error(`Workspace review has no base commit: ${review.review.id}`);
-  }
-
-  const patchText = workspaceReviewPatchTextForGitApply(review);
-  const stagedPaths = review.changeSet.changedPaths.map((path) => path.path);
-  const currentBranch = (await runGit(repository.localPath, ['branch', '--show-current'])).trim();
-  const restoreRef =
-    currentBranch || (await runGit(repository.localPath, ['rev-parse', 'HEAD'])).trim();
-
-  try {
-    await runGit(repository.localPath, ['checkout', '-B', branch, review.changeSet.base.commit]);
-    await runGitWithPatch(
-      repository.localPath,
-      ['apply', '--check', '--whitespace=nowarn', '-'],
-      patchText
-    );
-    await runGitWithPatch(repository.localPath, ['apply', '--whitespace=nowarn', '-'], patchText);
-    await runGit(repository.localPath, ['add', '-A', '--', ...stagedPaths]);
-    await runGit(
-      repository.localPath,
-      ['commit', '--file', '-'],
-      workspaceReviewStagingCommitMessage(
-        review,
-        turnId,
-        resolveWorkerGitAttribution(store, review, turnId)
-      ),
-      {
-        GIT_AUTHOR_EMAIL: repository.git.authorEmail,
-        GIT_AUTHOR_NAME: repository.git.authorName,
-        GIT_COMMITTER_EMAIL: repository.git.authorEmail,
-        GIT_COMMITTER_NAME: repository.git.authorName,
-      }
-    );
-    return (await runGit(repository.localPath, ['rev-parse', 'HEAD'])).trim();
-  } finally {
-    await runGit(repository.localPath, ['checkout', restoreRef]);
-  }
-}
-
-/**
- * Deletes a terminal local Git review branch when present.
- *
- * @param repository Linked repository resource.
- * @param review Workspace synchronization review item.
- */
-async function deleteWorkspaceReviewBranch(
-  repository: WorkspaceRepositoryResourceRecord,
-  review: WorkspaceSyncReviewItem
-): Promise<void> {
-  if (repository.git.stagingStrategy !== 'review-branch' || review.changeSet.strategy !== 'git') {
-    return;
-  }
-
-  const branch = requireWorkspaceReviewBranch(review);
-
-  try {
-    await runGit(repository.localPath, ['branch', '-D', branch]);
-  } catch {
-    return;
-  }
-}
-
-/**
- * Reads the reserved local Git branch name for one workspace review.
- *
- * @param review Workspace synchronization review item.
- * @returns Reserved branch name.
- */
-function requireWorkspaceReviewBranch(review: WorkspaceSyncReviewItem): string {
-  const branch = review.review.staging.branch;
-  const expected = `openkit/review/${review.review.id}`;
-
-  if (branch !== expected || !/^openkit\/review\/[A-Za-z0-9._-]+$/.test(branch)) {
-    throw new Error(`Workspace review branch is not safe: ${review.review.id}`);
-  }
-
-  return branch;
-}
-
-/**
- * Applies one accepted workspace synchronization review patch to a linked Git repository.
- *
- * @param review Workspace synchronization review item parsed from the artifact.
- * @param repository Linked repository resource that should receive the patch.
- * @param appliedAt Application timestamp.
- * @returns Product-safe apply result.
- */
-async function applyWorkspaceSyncReviewPatch(input: {
-  review: WorkspaceSyncReviewItem;
-  repository: WorkspaceRepositoryResourceRecord;
-  store: FsStore;
-  appliedAt: string;
-}): Promise<WorkspaceApplyResult> {
-  const { review, repository, store, appliedAt } = input;
-
-  if (review.changeSet.resourceId !== repository.resourceId) {
-    throw new Error(
-      `Workspace review resource ${review.changeSet.resourceId} does not match linked repository ${repository.resourceId}.`
-    );
-  }
-
-  const patchForGitApply = workspaceReviewPatchTextForGitApply(review);
-
-  await runGitWithPatch(
-    repository.localPath,
-    ['apply', '--check', '--whitespace=nowarn', '-'],
-    patchForGitApply
-  );
-  await runGitWithPatch(
-    repository.localPath,
-    ['apply', '--whitespace=nowarn', '-'],
-    patchForGitApply
-  );
-  const appliedPaths = review.changeSet.changedPaths.map((path) => path.path);
-  const commitIds = repository.git.commitOnApply
-    ? [
-        await commitAppliedWorkspaceSyncReview({
-          patchText: patchForGitApply,
-          repositoryGit: repository.git,
-          repositoryPath: repository.localPath,
-          review,
-          stagedPaths: appliedPaths,
-          store,
-        }),
-      ]
-    : [];
-
-  return WorkspaceApplyResultSchema.parse({
-    id: `war_${review.review.id}`,
-    workspaceId: review.review.workspaceId,
-    reviewId: review.review.id,
-    changeSetId: review.changeSet.id,
-    status: 'applied',
-    appliedPaths,
-    skippedPaths: [],
-    conflictRecords: [],
-    verification: [{ command: 'git apply --check', status: 'passed', ref: null }],
-    commitIds,
-    appliedAt,
-  });
-}
-
-/**
- * Commits an already-applied workspace review patch in the linked repository.
- *
- * @param input Applied review commit input.
- * @returns New commit id.
- * @throws Error when staging or commit creation fails.
- */
-async function commitAppliedWorkspaceSyncReview(input: {
-  readonly repositoryPath: string;
-  readonly repositoryGit: WorkspaceRepositoryResourceRecord['git'];
-  readonly review: WorkspaceSyncReviewItem;
-  readonly stagedPaths: readonly string[];
-  readonly patchText: string;
-  readonly store: FsStore;
-}): Promise<string> {
-  const turnId = input.review.changeSet.evidenceRefs.find((ref) => ref.kind === 'worker')?.ref;
-
-  if (!turnId) {
-    await revertAppliedWorkspaceSyncReview(
-      input.repositoryPath,
-      input.stagedPaths,
-      input.patchText
-    );
-    throw new Error(`Workspace review has no worker turn lineage: ${input.review.review.id}`);
-  }
-
-  if (!input.repositoryGit.authorName || !input.repositoryGit.authorEmail) {
-    await revertAppliedWorkspaceSyncReview(
-      input.repositoryPath,
-      input.stagedPaths,
-      input.patchText
-    );
-    throw new Error(`Workspace repository has no Git identity: ${input.review.review.id}`);
-  }
-
-  let committed = false;
-  try {
-    await runGit(input.repositoryPath, ['add', '-A', '--', ...input.stagedPaths]);
-    await runGit(
-      input.repositoryPath,
-      ['commit', '--file', '-'],
-      workspaceReviewCommitMessage(
-        input.review,
-        turnId,
-        resolveWorkerGitAttribution(input.store, input.review, turnId)
-      ),
-      {
-        GIT_AUTHOR_EMAIL: input.repositoryGit.authorEmail,
-        GIT_AUTHOR_NAME: input.repositoryGit.authorName,
-        GIT_COMMITTER_EMAIL: input.repositoryGit.authorEmail,
-        GIT_COMMITTER_NAME: input.repositoryGit.authorName,
-      }
-    );
-    committed = true;
-    return (await runGit(input.repositoryPath, ['rev-parse', 'HEAD'])).trim();
-  } catch (error) {
-    if (!committed) {
-      await revertAppliedWorkspaceSyncReview(
-        input.repositoryPath,
-        input.stagedPaths,
-        input.patchText
-      );
-    }
-    throw error;
-  }
-}
-
-/**
- * Resolves product-safe worker attribution for Git commit trailers.
- *
- * @param store App-local store that owns turns and agents.
- * @param review Applied workspace review.
- * @param turnId Worker turn id associated with the change set.
- * @returns Co-author identity for the worker agent.
- */
-function resolveWorkerGitAttribution(
-  store: FsStore,
-  review: WorkspaceSyncReviewItem,
-  turnId: string
-): { readonly email: string; readonly name: string } {
-  const turn = store.getTurnById(turnId);
-  const agentId = turn.agentId ?? store.resolveTurnAgentId(turn);
-  const agent = agentId ? store.getAgent(review.review.workspaceId, agentId) : null;
-  const safeAgentId = (agent?.id ?? 'unknown-agent').replace(/[^A-Za-z0-9._+-]/g, '-');
-
-  return {
-    email: `${safeAgentId}@agents.openkit.invalid`,
-    name: sanitizeGitTrailerName(agent?.name ?? 'Unknown OpenKit Agent'),
-  };
-}
-
-/**
- * Removes Git-trailer delimiters from a display name.
- *
- * @param name Candidate display name.
- * @returns Trailer-safe display name.
- */
-function sanitizeGitTrailerName(name: string): string {
-  const sanitized = name
-    .replace(/[<>\r\n]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  return sanitized || 'Unknown OpenKit Agent';
-}
-
-/**
- * Restores a repository after commit-on-apply fails.
- *
- * @param repositoryPath Repository working directory.
- * @param stagedPaths Paths staged by the failed commit attempt.
- * @param patchText Applied patch text to reverse.
- */
-async function revertAppliedWorkspaceSyncReview(
-  repositoryPath: string,
-  stagedPaths: readonly string[],
-  patchText: string
-): Promise<void> {
-  await runGit(repositoryPath, ['reset', '--', ...stagedPaths]);
-  await runGitWithPatch(
-    repositoryPath,
-    ['apply', '--reverse', '--whitespace=nowarn', '-'],
-    patchText
-  );
-}
-
-/**
- * Builds the lineage-bearing commit message for an applied workspace review.
- *
- * @param review Applied workspace review.
- * @param turnId Worker turn id associated with the change set.
- * @returns Git commit message.
- */
-function workspaceReviewCommitMessage(
-  review: WorkspaceSyncReviewItem,
-  turnId: string,
-  worker: { readonly email: string; readonly name: string }
-): string {
-  return [
-    `Apply workspace review ${review.review.id}`,
-    '',
-    review.review.riskSummary,
-    '',
-    `OpenKit-Review-Id: ${review.review.id}`,
-    `OpenKit-Turn-Id: ${turnId}`,
-    `OpenKit-Workspace-Id: ${review.review.workspaceId}`,
-    `Co-Authored-By: ${worker.name} <${worker.email}>`,
-    '',
-  ].join('\n');
-}
-
-/**
- * Builds the lineage-bearing commit message for a staged local review branch.
- *
- * @param review Staged workspace review.
- * @param turnId Worker turn id associated with the change set.
- * @param worker Product-safe worker attribution.
- * @returns Git commit message.
- */
-function workspaceReviewStagingCommitMessage(
-  review: WorkspaceSyncReviewItem,
-  turnId: string,
-  worker: { readonly email: string; readonly name: string }
-): string {
-  return [
-    `Stage workspace review ${review.review.id}`,
-    '',
-    review.review.riskSummary,
-    '',
-    `OpenKit-Review-Id: ${review.review.id}`,
-    `OpenKit-Turn-Id: ${turnId}`,
-    `OpenKit-Workspace-Id: ${review.review.workspaceId}`,
-    'Staged-By: OpenKit',
-    `Co-Authored-By: ${worker.name} <${worker.email}>`,
-    '',
-  ].join('\n');
-}
-
-/**
- * Applies one accepted filesystem workspace synchronization review through an internal staging root.
- *
- * @param input Filesystem workspace review and storage context.
- * @returns Product-safe apply result.
- */
-async function applyWorkspaceSyncReviewFilesystem(input: {
-  workspaceDb: WorkspaceDb;
-  review: WorkspaceSyncReviewItem;
-  appliedAt: string;
-}): Promise<WorkspaceApplyResult> {
-  const { workspaceDb, review, appliedAt } = input;
-
-  if (review.changeSet.strategy !== 'filesystem') {
-    throw new Error(`Workspace review is not filesystem-backed: ${review.review.id}`);
-  }
-
-  const staging = getFilesystemWorkspaceStagingRoot(
-    workspaceDb,
-    review.review.workspaceId,
-    review.review.id
-  );
-
-  if (!staging) {
-    throw new Error(`Filesystem workspace staging root is not available: ${review.review.id}`);
-  }
-
-  if (staging.changeSetId !== review.changeSet.id) {
-    throw new Error(`Filesystem workspace staging change set mismatch: ${review.review.id}`);
-  }
-
-  return applyStagedFilesystemChanges({
-    appliedAt,
-    before: staging.before,
-    changeSet: review.changeSet,
-    reviewId: review.review.id,
-    stagingRoot: staging.stagingRootPath,
-    targetRoot: staging.targetRootPath,
-    workspaceId: review.review.workspaceId,
-  });
-}
-
-/**
- * Records a product-safe apply plan before applying a workspace review.
- *
- * @param workspaceDb Open workspace-scope database handle.
- * @param review Workspace synchronization review item.
- * @param createdAt Plan timestamp.
- * @returns Stored workspace apply plan.
- */
-function recordWorkspaceApplyPlanForReview(
   workspaceDb: WorkspaceDb,
-  review: WorkspaceSyncReviewItem,
-  createdAt: string
-): WorkspaceApplyPlan {
-  return recordWorkspaceApplyPlan(
-    workspaceDb,
-    WorkspaceApplyPlanSchema.parse({
-      approvalState: 'approved',
-      baselineChecks: review.review.validation,
-      binaryRisks: review.changeSet.changedPaths
-        .filter((path) => path.binary)
-        .map((path) => path.path),
-      changeSetId: review.changeSet.id,
-      createdAt,
-      id: `wap_${review.review.id}`,
-      pathConflicts: [],
-      permissionChanges: review.changeSet.changedPaths
-        .filter((path) => path.status === 'mode_changed')
-        .map((path) => path.path),
-      plannedWrites: review.changeSet.changedPaths.map((path) => path.path),
-      policyChecks: [{ command: 'workspace review accepted', status: 'passed', ref: null }],
-      reviewId: review.review.id,
-      strategy: review.changeSet.strategy,
-      workspaceId: review.review.workspaceId,
-    })
-  );
+  workspaceId: string
+): WorkspaceSyncReviewItem[] {
+  const durableReviews = listWorkspaceSyncReviews(workspaceDb, workspaceId);
+  const durableReviewIds = new Set(durableReviews.map((item) => item.review.id));
+
+  return [
+    ...durableReviews,
+    ...listWorkspaceSyncReviewArtifacts(artifacts).filter(
+      (item) => !durableReviewIds.has(item.review.id)
+    ),
+  ].sort((left, right) => right.review.updatedAt.localeCompare(left.review.updatedAt));
 }
 
 /**
- * Normalizes text patch framing for `git apply` without changing stored integrity checks.
+ * Maps the generic artifact decision vocabulary to the durable workspace-review vocabulary.
  *
- * @param patchText Patch payload text after digest and byte validation.
- * @returns Patch text terminated with a newline when non-empty.
+ * @param decision Artifact review decision selected by the user.
+ * @returns Equivalent durable workspace review decision.
  */
-function normalizeGitPatchTextForApply(patchText: string): string {
-  return patchText.length > 0 && !patchText.endsWith('\n') ? `${patchText}\n` : patchText;
-}
-
-/**
- * Validates a workspace review patch payload and returns Git-apply-ready text.
- *
- * @param review Workspace synchronization review item.
- * @returns Normalized patch text.
- */
-function workspaceReviewPatchTextForGitApply(review: WorkspaceSyncReviewItem): string {
-  const patchPayload = review.patchPayload;
-
-  if (!patchPayload) {
-    throw new Error(`Workspace review has no patch payload: ${review.review.id}`);
+function workspaceSyncDecisionFromArtifact(
+  decision: ArtifactReviewDecision
+): WorkspaceSyncReviewDecision {
+  if (decision === 'redo') {
+    return 'needs_refinement';
+  }
+  if (decision === 'deferred') {
+    return 'blocked';
   }
 
-  if (!review.changeSet.patch) {
-    throw new Error(`Workspace review has no patch reference: ${review.review.id}`);
-  }
-
-  if (review.changeSet.patch.digest !== patchPayload.digest) {
-    throw new Error(`Workspace review patch digest mismatch: ${review.review.id}`);
-  }
-
-  if (review.changeSet.patch.bytes !== patchPayload.bytes) {
-    throw new Error(`Workspace review patch byte count mismatch: ${review.review.id}`);
-  }
-
-  const actualDigest = `sha256:${createHash('sha256').update(patchPayload.text).digest('hex')}`;
-  const actualBytes = Buffer.byteLength(patchPayload.text, 'utf8');
-
-  if (actualDigest !== patchPayload.digest || actualBytes !== patchPayload.bytes) {
-    throw new Error(
-      `Workspace review patch payload failed integrity validation: ${review.review.id}`
-    );
-  }
-
-  return normalizeGitPatchTextForApply(patchPayload.text);
-}
-
-/**
- * Runs one fixed Git patch command with the patch supplied on stdin.
- *
- * @param cwd Repository working directory.
- * @param args Git arguments.
- * @param patchText Patch text to stream to stdin.
- * @returns Resolves after Git exits successfully.
- */
-async function runGitWithPatch(
-  cwd: string,
-  args: readonly string[],
-  patchText: string
-): Promise<void> {
-  await runGit(cwd, args, patchText);
-}
-
-/**
- * Runs one fixed Git command with optional stdin and captured diagnostics.
- *
- * @param cwd Repository working directory.
- * @param args Git arguments.
- * @param stdin Optional text to stream to stdin.
- * @param env Optional extra environment variables.
- * @returns Captured stdout.
- */
-async function runGit(
-  cwd: string,
-  args: readonly string[],
-  stdin = '',
-  env: NodeJS.ProcessEnv = {}
-): Promise<string> {
-  return await new Promise<string>((resolve, reject) => {
-    const child = spawn('git', args, {
-      cwd,
-      env: { ...process.env, ...env },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    const stderrChunks: Buffer[] = [];
-    const stdoutChunks: Buffer[] = [];
-    let finished = false;
-    const finish = (callback: () => void) => {
-      if (finished) {
-        return;
-      }
-      finished = true;
-      callback();
-    };
-
-    child.stdout?.on('data', (chunk: Buffer) => {
-      stdoutChunks.push(chunk);
-    });
-    child.stderr?.on('data', (chunk: Buffer) => {
-      stderrChunks.push(chunk);
-    });
-    child.stdin?.on('error', (error: NodeJS.ErrnoException) => {
-      if (error.code === 'EPIPE') {
-        return;
-      }
-      finish(() => reject(error));
-    });
-    child.on('error', (error) => {
-      finish(() => reject(error));
-    });
-    child.on('close', (exitCode) => {
-      if (exitCode === 0) {
-        finish(() => resolve(Buffer.concat(stdoutChunks).toString('utf8')));
-        return;
-      }
-
-      const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
-      finish(() =>
-        reject(new Error(stderr || `git ${args.join(' ')} failed with exit code ${exitCode}.`))
-      );
-    });
-    child.stdin.end(stdin);
-  });
+  return decision;
 }
 
 /**
@@ -14567,14 +13990,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       const workspaceId = c.req.param('workspaceId');
       const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
       try {
-        materializeWorkspaceSyncReviewArtifacts(store.listArtifacts(workspaceId), workspaceDb);
-        const items = listWorkspaceSyncReviews(workspaceDb, workspaceId);
-        await materializeWorkspaceReviewBranches({
-          repository: getDefaultWorkspaceRepositoryResource(workspaceDb, workspaceId),
-          reviews: items,
-          store,
+        const items = listWorkspaceSyncReviewsForRead(
+          store.listArtifacts(workspaceId),
           workspaceDb,
-        });
+          workspaceId
+        );
 
         return c.json(ListWorkspaceSyncReviewsResponseSchema.parse({ items }));
       } finally {
@@ -14593,14 +14013,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
       let review: WorkspaceSyncReviewItem | null;
       try {
-        materializeWorkspaceSyncReviewArtifacts(store.listArtifacts(workspaceId), workspaceDb);
-        review = getWorkspaceSyncReview(workspaceDb, workspaceId, reviewId);
-        await materializeWorkspaceReviewBranches({
-          repository: getDefaultWorkspaceRepositoryResource(workspaceDb, workspaceId),
-          reviews: review ? [review] : [],
-          store,
-          workspaceDb,
-        });
+        review =
+          listWorkspaceSyncReviewsForRead(
+            store.listArtifacts(workspaceId),
+            workspaceDb,
+            workspaceId
+          ).find((item) => item.review.id === reviewId) ?? null;
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -14648,94 +14066,22 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           execute: async () => {
             const decidedAt = new Date().toISOString();
             const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-            let review: WorkspaceSyncReviewItem | null;
             try {
-              materializeWorkspaceSyncReviewArtifacts(
-                store.listArtifacts(workspaceId),
-                workspaceDb
-              );
-              review = getWorkspaceSyncReview(workspaceDb, workspaceId, reviewId);
+              return await decideWorkspaceSyncReview({
+                decidedAt,
+                decision: input.decision,
+                fallbackReview:
+                  listWorkspaceSyncReviewArtifacts(store.listArtifacts(workspaceId)).find(
+                    (item) => item.review.id === reviewId
+                  ) ?? null,
+                requestId,
+                reviewId,
+                store,
+                workspaceDb,
+                workspaceId,
+              });
             } finally {
               workspaceDb.sqlite.close();
-            }
-
-            if (!review) {
-              throw new Error(`Workspace synchronization review not found: ${reviewId}`);
-            }
-            if (review.review.status !== 'pending') {
-              throw new Error(`Workspace synchronization review is already resolved: ${reviewId}`);
-            }
-
-            let workspaceApplyResult: WorkspaceApplyResult | null = null;
-
-            if (input.decision === 'accepted') {
-              const applyPlanDb = repositoryWorkspaceDb(store, workspaceId);
-              try {
-                recordWorkspaceApplyPlanForReview(applyPlanDb, review, decidedAt);
-              } finally {
-                applyPlanDb.sqlite.close();
-              }
-
-              if (review.changeSet.strategy === 'filesystem') {
-                const stagingDb = repositoryWorkspaceDb(store, workspaceId);
-                try {
-                  workspaceApplyResult = await applyWorkspaceSyncReviewFilesystem({
-                    appliedAt: decidedAt,
-                    workspaceDb: stagingDb,
-                    review,
-                  });
-                } finally {
-                  stagingDb.sqlite.close();
-                }
-              } else {
-                const repositoryDb = repositoryWorkspaceDb(store, workspaceId);
-                let repository: WorkspaceRepositoryResourceRecord | null;
-                try {
-                  repository = getDefaultWorkspaceRepositoryResource(repositoryDb, workspaceId);
-                } finally {
-                  repositoryDb.sqlite.close();
-                }
-
-                if (!repository) {
-                  throw new Error('Workspace repository is not configured.');
-                }
-
-                if (repository.git.stagingStrategy === 'review-branch') {
-                  await materializeWorkspaceReviewBranch(repository, review, store);
-                }
-
-                workspaceApplyResult = await applyWorkspaceSyncReviewPatch({
-                  appliedAt: decidedAt,
-                  repository,
-                  review,
-                  store,
-                });
-                await deleteWorkspaceReviewBranch(repository, review);
-              }
-
-              const applyResultDb = repositoryWorkspaceDb(store, workspaceId);
-              try {
-                workspaceApplyResult = recordWorkspaceApplyResult(applyResultDb, {
-                  requestId,
-                  result: workspaceApplyResult,
-                });
-              } finally {
-                applyResultDb.sqlite.close();
-              }
-            }
-
-            const updateDb = repositoryWorkspaceDb(store, workspaceId);
-            try {
-              const updated = updateWorkspaceSyncReviewDecision(updateDb, {
-                workspaceId,
-                reviewId,
-                status: input.decision,
-                updatedAt: decidedAt,
-              });
-
-              return { review: updated.review, workspaceApplyResult };
-            } finally {
-              updateDb.sqlite.close();
             }
           },
           replay: (record) => {
@@ -14751,7 +14097,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
                 review: review.review,
                 workspaceApplyResult:
                   review.review.status === 'accepted'
-                    ? getWorkspaceApplyResult(workspaceDb, workspaceId, `war_${review.review.id}`)
+                    ? requireWorkspaceApplyResult(
+                        workspaceDb,
+                        workspaceId,
+                        `war_${review.review.id}`
+                      )
                     : null,
               };
             } finally {
@@ -15169,121 +14519,151 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         responseKind: 'artifact_review',
         execute: async () => {
           const message = input.message ?? null;
-          const decidedAt = new Date().toISOString();
-          let followUpTurnId: string | null = null;
-          let workspaceApplyResult: WorkspaceApplyResult | null = null;
-
-          if (
-            artifact.threadId &&
-            (input.decision === 'needs_refinement' || input.decision === 'redo')
-          ) {
-            const followUpText =
-              message ??
-              (input.decision === 'redo'
-                ? `Redo artifact ${artifact.title}.`
-                : `Refine artifact ${artifact.title}.`);
-            const followUpTurn = store.createTurn(workspaceId, artifact.threadId, followUpText);
-
-            store.createItem({
-              id: `it_artifact_review_${followUpTurn.id}`,
-              workspaceId,
-              threadId: artifact.threadId,
-              turnId: followUpTurn.id,
-              type: 'user-message',
-              status: 'completed',
-              text: followUpText,
-              createdAt: decidedAt,
-              completedAt: decidedAt,
-            });
-            followUpTurnId = followUpTurn.id;
-          }
-
-          const workspaceReview = parseWorkspaceSyncReviewArtifact(artifact);
-
-          if (workspaceReview && input.decision === 'accepted') {
-            const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-            let durableWorkspaceReview: WorkspaceSyncReviewItem;
-            try {
-              durableWorkspaceReview = recordWorkspaceSyncReview(workspaceDb, {
-                item: workspaceReview,
-              });
-            } finally {
-              workspaceDb.sqlite.close();
-            }
-
-            if (durableWorkspaceReview.changeSet.strategy === 'filesystem') {
-              const applyPlanDb = repositoryWorkspaceDb(store, workspaceId);
-              try {
-                recordWorkspaceApplyPlanForReview(applyPlanDb, durableWorkspaceReview, decidedAt);
-              } finally {
-                applyPlanDb.sqlite.close();
-              }
-
-              const stagingDb = repositoryWorkspaceDb(store, workspaceId);
-              try {
-                workspaceApplyResult = await applyWorkspaceSyncReviewFilesystem({
-                  appliedAt: decidedAt,
-                  workspaceDb: stagingDb,
-                  review: durableWorkspaceReview,
-                });
-              } finally {
-                stagingDb.sqlite.close();
-              }
-            } else {
-              const repositoryDb = repositoryWorkspaceDb(store, workspaceId);
-              let repository: WorkspaceRepositoryResourceRecord | null;
-              try {
-                repository = getDefaultWorkspaceRepositoryResource(repositoryDb, workspaceId);
-              } finally {
-                repositoryDb.sqlite.close();
-              }
-
-              if (!repository) {
-                throw new Error('Workspace repository is not configured.');
-              }
-
-              const applyPlanDb = repositoryWorkspaceDb(store, workspaceId);
-              try {
-                recordWorkspaceApplyPlanForReview(applyPlanDb, durableWorkspaceReview, decidedAt);
-              } finally {
-                applyPlanDb.sqlite.close();
-              }
-
-              if (repository.git.stagingStrategy === 'review-branch') {
-                await materializeWorkspaceReviewBranch(repository, durableWorkspaceReview, store);
-              }
-
-              workspaceApplyResult = await applyWorkspaceSyncReviewPatch({
-                appliedAt: decidedAt,
-                repository,
-                review: durableWorkspaceReview,
-                store,
-              });
-              await deleteWorkspaceReviewBranch(repository, durableWorkspaceReview);
-            }
-
-            const applyResultDb = repositoryWorkspaceDb(store, workspaceId);
-            try {
-              workspaceApplyResult = recordWorkspaceApplyResult(applyResultDb, {
-                requestId,
-                result: workspaceApplyResult,
-              });
-            } finally {
-              applyResultDb.sqlite.close();
-            }
-          }
-
-          const review = store.recordArtifactReviewDecision({
+          const existingReview = store.getArtifactReviewDecision(artifact.id);
+          const resumesPendingClaim =
+            existingReview?.lifecycle === 'pending' &&
+            existingReview.status === input.decision &&
+            (input.message === undefined || existingReview.message === message);
+          const claimStatus = resumesPendingClaim ? existingReview.status : input.decision;
+          const claimRequestId = resumesPendingClaim ? existingReview.requestId : requestId;
+          const claimMessage = resumesPendingClaim ? existingReview.message : message;
+          const decidedAt =
+            existingReview && existingReview.lifecycle !== 'failed'
+              ? existingReview.decidedAt
+              : new Date().toISOString();
+          const followUpText =
+            claimStatus === 'needs_refinement' || claimStatus === 'redo'
+              ? (claimMessage ??
+                (claimStatus === 'redo'
+                  ? `Redo artifact ${artifact.title}.`
+                  : `Refine artifact ${artifact.title}.`))
+              : null;
+          const followUpTurnId = resumesPendingClaim
+            ? existingReview.followUpTurnId
+            : artifact.threadId && followUpText
+              ? `tu_artifact_review_${commandInputHash({
+                  artifactId: artifact.id,
+                  input,
+                  workspaceId,
+                }).slice(7, 31)}`
+              : null;
+          const claimedReview = store.recordArtifactReviewDecision({
             artifactId: artifact.id,
             workspaceId,
             threadId: artifact.threadId,
             turnId: artifact.turnId,
-            status: input.decision,
-            requestId: input.requestId ?? null,
-            message,
+            status: claimStatus,
+            requestId: claimRequestId,
+            message: claimMessage,
             decidedAt,
             followUpTurnId,
+            lifecycle: 'pending',
           });
+          let workspaceApplyResult: WorkspaceApplyResult | null = null;
+
+          if (
+            claimedReview.workspaceId !== workspaceId ||
+            claimedReview.threadId !== artifact.threadId ||
+            claimedReview.turnId !== artifact.turnId ||
+            claimedReview.requestId !== claimRequestId ||
+            claimedReview.status !== claimStatus ||
+            claimedReview.message !== claimMessage ||
+            claimedReview.followUpTurnId !== followUpTurnId
+          ) {
+            throw new IdempotencyKeyConflictError();
+          }
+
+          const workspaceReview = parseWorkspaceSyncReviewArtifact(artifact);
+
+          if (workspaceReview) {
+            const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+            try {
+              const result = await decideWorkspaceSyncReview({
+                decidedAt: claimedReview.decidedAt,
+                decision: workspaceSyncDecisionFromArtifact(claimedReview.status),
+                fallbackReview: workspaceReview,
+                requestId: claimedReview.requestId ?? requestId,
+                reviewId: workspaceReview.review.id,
+                store,
+                workspaceDb,
+                workspaceId,
+              });
+              workspaceApplyResult = result.workspaceApplyResult ?? null;
+            } catch (error) {
+              const durableReview = getWorkspaceSyncReview(
+                workspaceDb,
+                workspaceId,
+                workspaceReview.review.id
+              );
+              if (
+                durableReview &&
+                durableReview.review.status !== 'pending' &&
+                durableReview.review.status !==
+                  workspaceSyncDecisionFromArtifact(claimedReview.status)
+              ) {
+                store.recordArtifactReviewDecision({
+                  ...claimedReview,
+                  lifecycle: 'failed',
+                });
+                throw new IdempotencyKeyConflictError();
+              }
+              throw error;
+            } finally {
+              workspaceDb.sqlite.close();
+            }
+          }
+
+          if (claimedReview.lifecycle === 'completed') {
+            return { review: claimedReview, workspaceApplyResult };
+          }
+
+          if (artifact.threadId && followUpText && followUpTurnId) {
+            const followUpTurn =
+              store
+                .listThreadTurns(workspaceId, artifact.threadId)
+                .find((turn) => turn.id === followUpTurnId) ??
+              store.createTurn(workspaceId, artifact.threadId, followUpText, null, {
+                turnId: followUpTurnId,
+              });
+            const itemId = `it_artifact_review_${followUpTurn.id}`;
+            const existingItems = store
+              .listThreadItems(workspaceId, artifact.threadId)
+              .filter((item) => item.turnId === followUpTurn.id);
+            const existingItem = existingItems.find((item) => item.id === itemId);
+
+            if (
+              existingItem &&
+              (existingItem.type !== 'user-message' ||
+                existingItem.status !== 'completed' ||
+                existingItem.text !== followUpText)
+            ) {
+              throw new IdempotencyKeyConflictError();
+            }
+            if (!existingItem && existingItems.length > 0) {
+              throw new IdempotencyKeyConflictError();
+            }
+            if (!existingItem) {
+              store.createItem({
+                id: itemId,
+                workspaceId,
+                threadId: artifact.threadId,
+                turnId: followUpTurn.id,
+                type: 'user-message',
+                status: 'completed',
+                text: followUpText,
+                createdAt: claimedReview.decidedAt,
+                completedAt: claimedReview.decidedAt,
+              });
+            }
+          }
+
+          const review = store.recordArtifactReviewDecision({
+            ...claimedReview,
+            lifecycle: 'completed',
+          });
+          if (review.lifecycle !== 'completed') {
+            throw new IdempotencyKeyConflictError();
+          }
 
           return { review, workspaceApplyResult };
         },
@@ -15299,7 +14679,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           if (workspaceReview && replayed.status === 'accepted') {
             const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
             try {
-              workspaceApplyResult = getWorkspaceApplyResult(
+              workspaceApplyResult = requireWorkspaceApplyResult(
                 workspaceDb,
                 workspaceId,
                 `war_${workspaceReview.review.id}`
@@ -15321,7 +14701,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         })
       );
     } catch (error) {
-      return asCommandError(error, 'artifact_review_failed');
+      return asCommandError(
+        error,
+        'artifact_review_failed',
+        (error as Error).message.startsWith('Artifact not found:') ? 404 : 500
+      );
     }
   });
 

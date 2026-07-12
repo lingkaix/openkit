@@ -20,9 +20,25 @@ export function recordWorkspaceApplyPlan(
   plan: WorkspaceApplyPlan
 ): WorkspaceApplyPlan {
   const parsed = WorkspaceApplyPlanSchema.parse(plan);
+  const existingRow = workspaceDb.sqlite
+    .prepare(
+      `SELECT payload_json
+       FROM workspace_apply_plans
+       WHERE workspace_id = ? AND apply_plan_id = ?`
+    )
+    .get(parsed.workspaceId, parsed.id) as WorkspaceApplyPlanRow | undefined;
+  if (existingRow) {
+    const existing = WorkspaceApplyPlanSchema.parse(
+      JSON.parse(existingRow.payload_json) as unknown
+    );
+    if (JSON.stringify(existing) !== JSON.stringify({ ...parsed, createdAt: existing.createdAt })) {
+      throw new Error(`Workspace apply plan replay conflict: ${parsed.id}`);
+    }
+    return existing;
+  }
   workspaceDb.sqlite
     .prepare(
-      `INSERT OR IGNORE INTO workspace_apply_plans (
+      `INSERT INTO workspace_apply_plans (
         apply_plan_id,
         workspace_id,
         review_id,

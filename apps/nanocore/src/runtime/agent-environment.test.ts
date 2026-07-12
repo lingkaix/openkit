@@ -25,6 +25,7 @@ describe('agent environment package resolver', () => {
       resolveAgentEnvironmentPackage({
         agent,
         agentSessionId: 'session_1',
+        userId: 'user_local',
         createdAt: '2026-06-16T00:00:00.000Z',
         requestId: 'req_1',
         turn,
@@ -43,6 +44,7 @@ describe('agent environment package resolver', () => {
       resolveAgentEnvironmentPackage({
         agent,
         agentSessionId: 'session_1',
+        userId: 'user_local',
         backend: { kind: 'host' } as never,
         createdAt: '2026-06-16T00:00:00.000Z',
         requestId: null,
@@ -61,6 +63,7 @@ describe('agent environment package resolver', () => {
       resolveAgentEnvironmentPackage({
         agent,
         agentSessionId: 'session_openshell_1',
+        userId: 'user_local',
         backend: {
           controlRelayUpstream: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
@@ -232,6 +235,7 @@ describe('agent environment package resolver', () => {
       resolveAgentEnvironmentPackage({
         agent,
         agentSessionId: 'session_catalog_source_1',
+        userId: 'user_local',
         backend: {
           controlRelayUpstream: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
@@ -288,6 +292,7 @@ describe('agent environment package resolver', () => {
     const resolved = resolveAgentEnvironmentPackage({
       agent,
       agentSessionId: 'session_sandbox_policy_1',
+      userId: 'user_local',
       backend: {
         controlRelayUpstream: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
@@ -373,6 +378,7 @@ describe('agent environment package resolver', () => {
       resolveAgentEnvironmentPackage({
         agent,
         agentSessionId: 'session_supply_catalog_1',
+        userId: 'user_local',
         backend: {
           controlRelayUpstream: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
@@ -519,6 +525,7 @@ describe('agent environment package resolver', () => {
         resolveAgentEnvironmentPackage({
           agent,
           agentSessionId: 'session_supply_catalog_1',
+          userId: 'user_local',
           backend: {
             controlRelayUpstream: 'https://nanocore.local/api/worker-control',
             kind: 'openshell',
@@ -669,6 +676,7 @@ describe('agent environment package resolver', () => {
         resolveAgentEnvironmentPackage({
           agent,
           agentSessionId: 'session_supply_catalog_1',
+          userId: 'user_local',
           backend: {
             controlRelayUpstream: 'https://nanocore.local/api/worker-control',
             kind: 'openshell',
@@ -740,6 +748,7 @@ describe('agent environment package resolver', () => {
         resolveAgentEnvironmentPackage({
           agent,
           agentSessionId: 'session_supply_catalog_1',
+          userId: 'user_local',
           backend: {
             controlRelayUpstream: 'https://nanocore.local/api/worker-control',
             kind: 'openshell',
@@ -804,6 +813,7 @@ describe('agent environment package resolver', () => {
       const resolved = resolveAgentEnvironmentPackage({
         agent,
         agentSessionId: 'session_private_repo_1',
+        userId: 'user_local',
         backend: {
           controlRelayUpstream: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
@@ -908,6 +918,7 @@ describe('agent environment package resolver', () => {
         resolveAgentEnvironmentPackage({
           agent,
           agentSessionId: 'session_runtime_file_1',
+          userId: 'user_local',
           backend: {
             controlRelayUpstream: 'https://nanocore.local/api/worker-control',
             kind: 'openshell',
@@ -1030,6 +1041,7 @@ describe('agent environment package resolver', () => {
         resolveAgentEnvironmentPackage({
           agent,
           agentSessionId: 'session_generic_credentials_1',
+          userId: 'user_local',
           backend: {
             controlRelayUpstream: 'https://nanocore.local/api/worker-control',
             kind: 'openshell',
@@ -1169,6 +1181,7 @@ describe('agent environment package resolver', () => {
         resolveAgentEnvironmentPackage({
           agent,
           agentSessionId: 'session_missing_sink_1',
+          userId: 'user_local',
           backend: {
             controlRelayUpstream: 'https://nanocore.local/api/worker-control',
             kind: 'openshell',
@@ -1216,6 +1229,7 @@ describe('agent environment package resolver', () => {
       resolveAgentEnvironmentPackage({
         agent,
         agentSessionId: 'session_supply_catalog_reject_1',
+        userId: 'user_local',
         backend: {
           controlRelayUpstream: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
@@ -1238,6 +1252,7 @@ describe('agent environment package resolver', () => {
       resolveAgentEnvironmentPackage({
         agent,
         agentSessionId: 'session_openshell_model_1',
+        userId: 'user_local',
         backend: {
           codexModel: 'gpt-5-codex',
           controlRelayUpstream: 'https://nanocore.local/api/worker-control',
@@ -1278,6 +1293,7 @@ describe('agent environment package resolver', () => {
       resolveAgentEnvironmentPackage({
         agent,
         agentSessionId: 'session_remote_openshell_1',
+        userId: 'user_local',
         backend: {
           controlRelayUpstream: 'https://nanocore.example.com/api/worker-control',
           gatewayUrl: 'https://a1.example.com:17670',
@@ -1332,6 +1348,7 @@ describe('agent environment package resolver', () => {
     const resolved = resolveAgentEnvironmentPackage({
       agent,
       agentSessionId: 'as_backend_requirements',
+      userId: 'user_local',
       backend: {
         controlRelayUpstream: 'https://nanocore.example.com/api/worker-control',
         kind: 'openshell',

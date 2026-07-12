@@ -162,6 +162,7 @@ describeOpenShell('real OpenShell CLI preflight', () => {
       resolveAgentEnvironmentPackage({
         agent,
         agentSessionId: 'as_e2e_sidecar',
+        userId: 'user_local',
         backend: {
           controlRelayUpstream: `${server.workerRelayBaseUrl}/api/worker-control`,
           kind: 'openshell',
@@ -272,6 +273,7 @@ describeOpenShell('real OpenShell CLI preflight', () => {
     const resolvedPackage = resolveAgentEnvironmentPackage({
       agent,
       agentSessionId: sessionId,
+      userId: 'user_local',
       backend: {
         controlRelayUpstream: 'http://127.0.0.1:9/api/worker-control',
         kind: 'openshell',
@@ -365,6 +367,7 @@ describeOpenShell('real OpenShell CLI preflight', () => {
       ...resolveAgentEnvironmentPackage({
         agent,
         agentSessionId: sessionId,
+        userId: 'user_local',
         backend: {
           controlRelayUpstream: 'http://127.0.0.1:9/api/worker-control',
           kind: 'openshell',
@@ -492,6 +495,7 @@ describeRemoteOpenShell('real remote OpenShell backend lifecycle', () => {
       ...resolveAgentEnvironmentPackage({
         agent,
         agentSessionId: sessionId,
+        userId: 'user_local',
         backend: {
           controlRelayUpstream,
           gatewayUrl,

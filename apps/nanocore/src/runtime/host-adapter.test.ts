@@ -116,6 +116,28 @@ function testOpenShellBackend(): ResolveAgentEnvironmentBackendInput {
 }
 
 describe('CodexHostAdapter', () => {
+  it('scopes newly created session packages to the store actor', async () => {
+    const store = createDemoStore({ userId: 'user_host_actor' });
+    const workspace = store.listWorkspaces().find((candidate) => candidate.kind === 'code');
+    if (!workspace) {
+      throw new Error('Actor-scoped demo workspace was not created.');
+    }
+    const thread = store.listThreads(workspace.id)[0];
+    if (!thread) {
+      throw new Error('Actor-scoped demo thread was not created.');
+    }
+    const sessionFactory = new FakeAgentSessionFactory();
+    const adapter = new CodexHostAdapter({
+      environmentBackend: testOpenShellBackend(),
+      sessionFactories: { codex: sessionFactory },
+    });
+    const turn = store.createTurn(workspace.id, thread.id, 'Use actor-scoped package');
+
+    await adapter.startTurn(store, turn.id, 'Use actor-scoped package');
+
+    expect(sessionFactory.inputs[0]?.environmentPackage.scope.userId).toBe(store.getUserId());
+  });
+
   it('reuses the same session for repeated turns on one thread', async () => {
     const store = createDemoStore();
     const sessionFactory = new FakeAgentSessionFactory();

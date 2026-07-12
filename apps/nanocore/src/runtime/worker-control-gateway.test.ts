@@ -30,6 +30,7 @@ function createWorkerControlFixture(): {
   const environmentPackage = resolveAgentEnvironmentPackage({
     agent,
     agentSessionId: 'as_control_1',
+    userId: 'user_local',
     backend: {
       controlRelayUpstream: 'https://nanocore.local/api/worker-control',
       kind: 'openshell',

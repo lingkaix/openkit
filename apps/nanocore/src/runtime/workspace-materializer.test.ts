@@ -16,6 +16,7 @@ describe('workspace materializer records', () => {
     const environmentPackage = resolveAgentEnvironmentPackage({
       agent,
       agentSessionId: 'session_1',
+      userId: 'user_local',
       backend: {
         controlRelayUpstream: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
@@ -68,6 +69,7 @@ describe('workspace materializer records', () => {
     const environmentPackage = resolveAgentEnvironmentPackage({
       agent,
       agentSessionId: 'session_source_1',
+      userId: 'user_local',
       backend: {
         controlRelayUpstream: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',

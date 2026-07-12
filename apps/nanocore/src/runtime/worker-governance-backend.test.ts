@@ -1590,6 +1590,7 @@ function createOpenShellPackage(
     resolveAgentEnvironmentPackage({
       agent,
       agentSessionId: 'as_openshell_1',
+      userId: 'user_local',
       backend: {
         controlRelayUpstream: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',

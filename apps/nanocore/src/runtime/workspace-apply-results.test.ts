@@ -5,7 +5,10 @@ import { describe, expect, it } from 'vitest';
 
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
-import { recordWorkspaceApplyResult } from './workspace-apply-results.js';
+import {
+  type RecordWorkspaceApplyResultInput,
+  recordWorkspaceApplyResult,
+} from './workspace-apply-results.js';
 
 describe('workspace apply results', () => {
   it('records one linked audit event when an apply result is stored', () => {
@@ -95,6 +98,57 @@ describe('workspace apply results', () => {
           import_status: 'promoted',
         }),
       ]);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('rejects a replay when an existing apply result id has any different payload', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-apply-result-conflict-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const baseline = {
+      requestId: '00000000-0000-4000-8000-000000000021',
+      result: {
+        appliedAt: '2026-07-05T00:00:00.000Z',
+        appliedPaths: ['src/file.ts'],
+        changeSetId: 'wcs_1',
+        commitIds: [],
+        conflictRecords: [],
+        id: 'war_1',
+        reviewId: 'swr_1',
+        skippedPaths: [],
+        status: 'applied',
+        verification: [],
+        workspaceId: 'ws_demo',
+      },
+    } satisfies RecordWorkspaceApplyResultInput;
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      recordWorkspaceApplyResult(workspaceDb, baseline);
+
+      const conflicts: readonly RecordWorkspaceApplyResultInput[] = [
+        { ...baseline, requestId: '00000000-0000-4000-8000-000000000022' },
+        { ...baseline, result: { ...baseline.result, appliedAt: '2026-07-05T00:00:01.000Z' } },
+        { ...baseline, result: { ...baseline.result, appliedPaths: ['src/other.ts'] } },
+        { ...baseline, result: { ...baseline.result, changeSetId: 'wcs_2' } },
+        { ...baseline, result: { ...baseline.result, commitIds: ['abc123'] } },
+        { ...baseline, result: { ...baseline.result, conflictRecords: ['conflict'] } },
+        { ...baseline, result: { ...baseline.result, reviewId: 'swr_2' } },
+        { ...baseline, result: { ...baseline.result, skippedPaths: ['src/file.ts'] } },
+        { ...baseline, result: { ...baseline.result, status: 'blocked' } },
+        {
+          ...baseline,
+          result: {
+            ...baseline.result,
+            verification: [{ command: 'pnpm test', ref: null, status: 'passed' }],
+          },
+        },
+      ];
+
+      for (const conflict of conflicts) {
+        expect(() => recordWorkspaceApplyResult(workspaceDb, conflict)).toThrow(/conflict/i);
+      }
     } finally {
       workspaceDb.sqlite.close();
     }

@@ -17,7 +17,6 @@ import { createInjectionPlan } from '../injection-plans.js';
 import { createInjectionReceipt } from '../injection-receipts.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import type { CoreDb } from '../storage/db.js';
-import { LOCAL_USER_ID } from '../storage/fs-layout.js';
 import type { VaultBackend } from '../vault-backend.js';
 import { getVaultGrant, type VaultGrantRecord } from '../vault-grants.js';
 import { getVaultReference, type VaultReferenceRecord } from '../vault-references.js';
@@ -252,6 +251,8 @@ export interface ResolveAgentEnvironmentPackageInput {
   turn: Turn;
   /** User-facing turn input that the worker should execute. */
   turnInput?: string;
+  /** Store owner that governs the package and its durable workspace scope. */
+  userId: string;
   /** Host-local cwd selected for this turn. */
   workspaceCwd?: string | null;
   /** Materialized workspace roots captured for this turn. */
@@ -390,7 +391,7 @@ function resolveOpenShellAgentEnvironmentPackage(
       threadId: input.turn.threadId,
       turnId: input.turn.id,
       agentSessionId: input.agentSessionId,
-      userId: LOCAL_USER_ID,
+      userId: input.userId,
       requestId: input.requestId ?? null,
     },
     agent: {

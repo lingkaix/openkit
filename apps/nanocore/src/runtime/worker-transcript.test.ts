@@ -15,6 +15,7 @@ function createTranscriptFixture() {
   const environmentPackage = resolveAgentEnvironmentPackage({
     agent,
     agentSessionId: 'as_transcript_1',
+    userId: 'user_local',
     backend: {
       controlRelayUpstream: 'https://nanocore.local/api/worker-control',
       kind: 'openshell',

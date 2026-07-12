@@ -61,6 +61,7 @@ describe('AEP snapshot ledger', () => {
           },
         },
         agentSessionId: 'as_1',
+        userId: 'user_local',
         backend: {
           controlRelayUpstream: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',

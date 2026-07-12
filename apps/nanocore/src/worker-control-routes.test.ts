@@ -53,6 +53,7 @@ function createWorkerControlRouteFixture(): {
     resolveAgentEnvironmentPackage({
       agent,
       agentSessionId: 'as_control_route_1',
+      userId: 'user_local',
       backend: {
         controlRelayUpstream: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
@@ -99,6 +100,7 @@ describe('worker control routes', () => {
       resolveAgentEnvironmentPackage({
         agent,
         agentSessionId: 'session_durable_sequence',
+        userId: 'user_local',
         backend: {
           controlRelayUpstream: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
@@ -197,6 +199,7 @@ describe('worker control routes', () => {
       resolveAgentEnvironmentPackage({
         agent,
         agentSessionId: 'session_durable_records',
+        userId: 'user_local',
         backend: {
           controlRelayUpstream: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
@@ -304,6 +307,7 @@ describe('worker control routes', () => {
       resolveAgentEnvironmentPackage({
         agent,
         agentSessionId: 'session_rejected_records',
+        userId: 'user_local',
         backend: {
           controlRelayUpstream: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
@@ -400,6 +404,7 @@ describe('worker control routes', () => {
       resolveAgentEnvironmentPackage({
         agent,
         agentSessionId: 'session_default_binding',
+        userId: 'user_local',
         backend: {
           controlRelayUpstream: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
@@ -524,6 +529,7 @@ describe('worker control routes', () => {
       resolveAgentEnvironmentPackage({
         agent,
         agentSessionId: 'session_final_status',
+        userId: 'user_local',
         backend: {
           controlRelayUpstream: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
@@ -732,6 +738,7 @@ describe('worker control routes', () => {
       resolveAgentEnvironmentPackage({
         agent,
         agentSessionId: 'session_supply_refresh',
+        userId: 'user_local',
         backend: {
           controlRelayUpstream: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
@@ -1027,6 +1034,7 @@ describe('worker control routes', () => {
       resolveAgentEnvironmentPackage({
         agent,
         agentSessionId: 'session_durable_command',
+        userId: 'user_local',
         backend: {
           controlRelayUpstream: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
@@ -1139,6 +1147,7 @@ describe('worker control routes', () => {
       resolveAgentEnvironmentPackage({
         agent,
         agentSessionId: 'session_durable_command_ack',
+        userId: 'user_local',
         backend: {
           controlRelayUpstream: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
@@ -1214,6 +1223,7 @@ describe('worker control routes', () => {
       resolveAgentEnvironmentPackage({
         agent,
         agentSessionId: 'session_rebuild',
+        userId: 'user_local',
         backend: {
           controlRelayUpstream: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',

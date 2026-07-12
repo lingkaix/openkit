@@ -68,6 +68,7 @@ function createWorkerCapabilityRouteFixtureWithOptions(options: { durable?: bool
     resolveAgentEnvironmentPackage({
       agent,
       agentSessionId: 'as_capability_route_1',
+      userId: 'user_local',
       backend: {
         controlRelayUpstream: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
@@ -164,6 +165,7 @@ function createMcpWorkerCapabilityRouteFixture(
     resolveAgentEnvironmentPackage({
       agent,
       agentSessionId: 'as_mcp_route_1',
+      userId: 'user_local',
       backend: {
         controlRelayUpstream: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',

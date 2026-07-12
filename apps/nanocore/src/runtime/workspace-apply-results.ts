@@ -48,10 +48,14 @@ export function recordWorkspaceApplyResult(
   input: RecordWorkspaceApplyResultInput
 ): WorkspaceApplyResult {
   const result = WorkspaceApplyResultSchema.parse(input.result);
+  const existing = getWorkspaceApplyResultRow(workspaceDb, result.workspaceId, result.id);
+  if (existing) {
+    return requireMatchingWorkspaceApplyResultReplay(existing, result, input.requestId);
+  }
 
   const inserted = workspaceDb.sqlite
     .prepare(
-      `INSERT OR IGNORE INTO workspace_apply_results (
+      `INSERT INTO workspace_apply_results (
         apply_result_id,
         workspace_id,
         review_id,
@@ -172,27 +176,7 @@ export function getWorkspaceApplyResult(
   workspaceId: string,
   applyResultId: string
 ): WorkspaceApplyResult | null {
-  const row = workspaceDb.sqlite
-    .prepare(
-      `SELECT
-        apply_result_id,
-        workspace_id,
-        review_id,
-        change_set_id,
-        status,
-        applied_paths_json,
-        skipped_paths_json,
-        conflict_records_json,
-        verification_json,
-        commit_ids_json,
-        applied_at,
-        request_id,
-        created_at,
-        updated_at
-      FROM workspace_apply_results
-      WHERE workspace_id = ? AND apply_result_id = ?`
-    )
-    .get(workspaceId, applyResultId) as WorkspaceApplyResultRow | undefined;
+  const row = getWorkspaceApplyResultRow(workspaceDb, workspaceId, applyResultId);
 
   return row ? mapWorkspaceApplyResultRow(row) : null;
 }
@@ -289,10 +273,15 @@ export function importWorkspaceApplyResults(
     if (typeof requestId !== 'string' || requestId.length === 0) {
       throw new Error('Workspace apply result import record is missing requestId.');
     }
+    const existing = getWorkspaceApplyResultRow(workspaceDb, result.workspaceId, result.id);
+    if (existing) {
+      requireMatchingWorkspaceApplyResultReplay(existing, result, requestId);
+      continue;
+    }
 
     workspaceDb.sqlite
       .prepare(
-        `INSERT OR IGNORE INTO workspace_apply_results (
+        `INSERT INTO workspace_apply_results (
           apply_result_id,
           workspace_id,
           review_id,
@@ -337,7 +326,7 @@ export function importWorkspaceApplyResults(
  * @returns Stored workspace apply result.
  * @throws Error when the result does not exist.
  */
-function requireWorkspaceApplyResult(
+export function requireWorkspaceApplyResult(
   workspaceDb: WorkspaceDb,
   workspaceId: string,
   applyResultId: string
@@ -349,6 +338,63 @@ function requireWorkspaceApplyResult(
   }
 
   return result;
+}
+
+/**
+ * Reads one apply-result row by its globally unique storage id.
+ *
+ * @param workspaceDb Open workspace-scope database handle.
+ * @param workspaceId Workspace that owns the result.
+ * @param applyResultId Apply result id.
+ * @returns Stored row, or undefined when absent.
+ */
+function getWorkspaceApplyResultRow(
+  workspaceDb: WorkspaceDb,
+  workspaceId: string,
+  applyResultId: string
+): WorkspaceApplyResultRow | undefined {
+  return workspaceDb.sqlite
+    .prepare(
+      `SELECT
+        apply_result_id,
+        workspace_id,
+        review_id,
+        change_set_id,
+        status,
+        applied_paths_json,
+        skipped_paths_json,
+        conflict_records_json,
+        verification_json,
+        commit_ids_json,
+        applied_at,
+        request_id,
+        created_at,
+        updated_at
+      FROM workspace_apply_results
+      WHERE workspace_id = ? AND apply_result_id = ?`
+    )
+    .get(workspaceId, applyResultId) as WorkspaceApplyResultRow | undefined;
+}
+
+/**
+ * Requires a same-id apply-result replay to match every durable field.
+ *
+ * @param row Existing durable row.
+ * @param result Replayed public result.
+ * @param requestId Replayed command request id.
+ * @returns Existing public result when the replay is exact.
+ * @throws Error when any durable field differs.
+ */
+function requireMatchingWorkspaceApplyResultReplay(
+  row: WorkspaceApplyResultRow,
+  result: WorkspaceApplyResult,
+  requestId: string
+): WorkspaceApplyResult {
+  const existing = mapWorkspaceApplyResultRow(row);
+  if (row.request_id !== requestId || JSON.stringify(existing) !== JSON.stringify(result)) {
+    throw new Error(`Workspace apply result replay conflict: ${result.id}`);
+  }
+  return existing;
 }
 
 /**
