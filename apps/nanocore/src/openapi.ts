@@ -10,6 +10,7 @@ import {
   CancelOpenAICodexOAuthRequestSchema,
   CancelRecoveryPendingUserTurnResponseSchema,
   CancelSchedulerAdmissionResponseSchema,
+  CapabilityUsageResponseSchema,
   ClearInterruptedWorkerCheckpointRequestSchema,
   ClearInterruptedWorkerCheckpointResponseSchema,
   CodexOAuthAccountSummarySchema,
@@ -178,7 +179,17 @@ import {
   WorkspaceImportResponseSchema,
   WorkspaceRepositoryDiagnosticsResponseSchema,
 } from '@openkit/app-api-schemas';
-import { ApiErrorSchema, PROTOCOL_VERSION } from '@openkit/protocol';
+import {
+  AgentIdSchema,
+  AgentSessionIdSchema,
+  ApiErrorSchema,
+  ArtifactIdSchema,
+  PROTOCOL_VERSION,
+  ThreadIdSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
+import type { Env, Handler, Hono } from 'hono';
 import { z } from 'zod';
 
 /** JSON value used by the OpenAPI document projection. */
@@ -198,6 +209,7 @@ export interface AppOpenApiDocument {
     version: string;
     description: string;
   };
+  'x-openkit-protocol-version': string;
   'x-openkit-source-digest': string;
   paths: Record<string, Record<string, JsonValue>>;
   components: {
@@ -207,6 +219,69 @@ export interface AppOpenApiDocument {
 }
 
 const JSON_CONTENT_TYPE = 'application/json';
+const APP_API_VERSION = '0.1.0';
+const THREAD_ID_PARAMETER = {
+  name: 'threadId',
+  in: 'path',
+  required: true,
+  schema: { $ref: '#/components/schemas/ThreadId' },
+} as const;
+const TURN_ID_PARAMETER = {
+  name: 'turnId',
+  in: 'path',
+  required: true,
+  schema: { $ref: '#/components/schemas/TurnId' },
+} as const;
+const WORKSPACE_ID_PARAMETER = {
+  name: 'workspaceId',
+  in: 'path',
+  required: true,
+  schema: { $ref: '#/components/schemas/WorkspaceId' },
+} as const;
+/** HTTP methods supported by the App API route catalog. */
+export const APP_OPENAPI_ROUTE_METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
+const registeredAppApiOperationIds = new WeakMap<object, string[]>();
+
+/** Hono path literal projected from one OpenAPI path literal. */
+type HonoPath<Path extends string> = Path extends `${infer Head}{${infer Parameter}}${infer Tail}`
+  ? `${Head}:${Parameter}${HonoPath<Tail>}`
+  : Path;
+
+/** Canonical OpenAPI path catalog inferred from the document builder. */
+type AppOpenApiPaths = ReturnType<typeof createAppOpenApiDocument>['paths'];
+
+/** Method, path, and operation id union derived from the canonical route catalog. */
+type AppApiRouteDefinition = {
+  [Path in keyof AppOpenApiPaths]: {
+    [Method in (typeof APP_OPENAPI_ROUTE_METHODS)[number]]: Method extends keyof AppOpenApiPaths[Path]
+      ? AppOpenApiPaths[Path][Method] extends {
+          readonly operationId: infer OperationId extends string;
+        }
+        ? {
+            method: Method;
+            operationId: OperationId;
+            path: HonoPath<Path & string>;
+          }
+        : never
+      : never;
+  }[(typeof APP_OPENAPI_ROUTE_METHODS)[number]];
+}[keyof AppOpenApiPaths];
+
+/** One catalog route selected by its stable operation id. */
+type AppApiRouteDefinitionFor<OperationId extends AppApiRouteDefinition['operationId']> = Pick<
+  Extract<AppApiRouteDefinition, { operationId: OperationId }>,
+  'method' | 'path'
+>;
+
+/** Runtime route lookup entry built once from the typed catalog. */
+interface RuntimeAppApiRouteDefinition {
+  /** Lowercase HTTP method accepted by Hono. */
+  method: (typeof APP_OPENAPI_ROUTE_METHODS)[number];
+  /** Hono path with colon-prefixed parameters. */
+  path: string;
+}
+
+let appApiRouteDefinitions: Map<string, RuntimeAppApiRouteDefinition> | null = null;
 
 /** App route operations intentionally excluded from the public OpenAPI projection. */
 export const APP_OPENAPI_ROUTE_COVERAGE_EXCLUSIONS = [
@@ -214,19 +289,115 @@ export const APP_OPENAPI_ROUTE_COVERAGE_EXCLUSIONS = [
 ] as const;
 
 /**
+ * Registers one Hono handler from the route definition owned by its OpenAPI operation.
+ *
+ * @param app Hono application receiving the route.
+ * @param operationId Stable OpenAPI operation identifier.
+ * @param handler Runtime route handler.
+ * @throws When the operation is unknown, already registered, or conflicts with a live route.
+ */
+export function registerAppApiRoute<
+  E extends Env,
+  OperationId extends AppApiRouteDefinition['operationId'],
+>(
+  app: Hono<E>,
+  operationId: OperationId,
+  handler: Handler<E, AppApiRouteDefinitionFor<OperationId>['path']>
+): void {
+  const definition = getAppApiRouteDefinition(operationId);
+  const registeredOperationIds = registeredAppApiOperationIds.get(app) ?? [];
+
+  if (registeredOperationIds.includes(operationId)) {
+    throw new Error(`App API operation is already registered: ${operationId}`);
+  }
+
+  const runtimeMethod = definition.method.toUpperCase();
+  if (app.routes.some(({ method, path }) => method === runtimeMethod && path === definition.path)) {
+    throw new Error(`Hono route is already registered: ${runtimeMethod} ${definition.path}`);
+  }
+
+  app.on(definition.method, definition.path, handler);
+  registeredOperationIds.push(operationId);
+  registeredAppApiOperationIds.set(app, registeredOperationIds);
+}
+
+/**
+ * Lists the OpenAPI operations registered through the shared runtime route path.
+ *
+ * @param app Hono application to inspect.
+ * @returns Operation identifiers in runtime registration order.
+ */
+export function getRegisteredAppApiOperationIds<E extends Env>(app: Hono<E>): string[] {
+  return [...(registeredAppApiOperationIds.get(app) ?? [])];
+}
+
+/**
+ * Resolves one runtime route definition from the OpenAPI operation catalog.
+ *
+ * @param operationId Stable OpenAPI operation identifier.
+ * @returns Runtime method and Hono path.
+ * @throws When the document contains duplicate operation ids or the requested id is unknown.
+ */
+function getAppApiRouteDefinition<OperationId extends AppApiRouteDefinition['operationId']>(
+  operationId: OperationId
+): AppApiRouteDefinitionFor<OperationId> {
+  if (!appApiRouteDefinitions) {
+    const definitions = new Map<string, RuntimeAppApiRouteDefinition>();
+
+    for (const [openApiPath, pathItem] of Object.entries(APP_OPENAPI_DOCUMENT.paths)) {
+      for (const method of APP_OPENAPI_ROUTE_METHODS) {
+        const operation = (pathItem as Readonly<Record<string, unknown>>)[method];
+
+        if (!operation || typeof operation !== 'object' || Array.isArray(operation)) {
+          continue;
+        }
+
+        const candidateOperationId = (operation as Readonly<Record<string, unknown>>).operationId;
+        if (typeof candidateOperationId !== 'string' || candidateOperationId.length === 0) {
+          throw new Error(`OpenAPI operation is missing operationId: ${method} ${openApiPath}`);
+        }
+        if (definitions.has(candidateOperationId)) {
+          throw new Error(`Duplicate OpenAPI operationId: ${candidateOperationId}`);
+        }
+
+        const path = openApiPath.replace(/\{([A-Za-z0-9_]+)\}/g, ':$1');
+        if (path.includes('{') || path.includes('}')) {
+          throw new Error(`Unsupported OpenAPI route path: ${openApiPath}`);
+        }
+
+        definitions.set(candidateOperationId, {
+          method,
+          path,
+        });
+      }
+    }
+
+    appApiRouteDefinitions = definitions;
+  }
+
+  const definition = appApiRouteDefinitions.get(operationId);
+  if (!definition) {
+    throw new Error(`Unknown App API operationId: ${operationId}`);
+  }
+
+  return definition as AppApiRouteDefinitionFor<OperationId>;
+}
+
+/**
  * Creates the current App API OpenAPI projection from shared Zod schemas.
  *
  * @returns OpenAPI 3.1 JSON for the implemented App API projection slice.
  */
-export function createAppOpenApiDocument(): AppOpenApiDocument {
-  const document: Omit<AppOpenApiDocument, 'x-openkit-source-digest'> = {
+export function createAppOpenApiDocument() {
+  const document = {
     openapi: '3.1.0',
     info: {
       title: 'OpenKit App API',
-      version: PROTOCOL_VERSION,
+      version: APP_API_VERSION,
       description:
         'Generated projection from OpenKit Zod schemas. Zod schemas in shared packages remain the source of truth.',
     },
+    'x-openkit-protocol-version': PROTOCOL_VERSION,
     paths: {
       '/api/app/storage/layout-report': {
         get: {
@@ -369,6 +540,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           operationId: 'consumeOpenKitBootstrapToken',
           tags: ['auth'],
           summary: 'Consume the one-time server bootstrap token.',
+          security: [],
           requestBody: {
             required: true,
             content: {
@@ -698,12 +870,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           summary: 'Retire a stale runtime config worker session.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
+            WORKSPACE_ID_PARAMETER,
             {
               name: 'sessionId',
               in: 'path',
@@ -866,14 +1033,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['app-utils'],
           summary: 'Refresh agent health for one workspace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Agent health and session summaries.',
@@ -931,7 +1091,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
               name: 'agentId',
               in: 'path',
               required: true,
-              schema: { type: 'string', minLength: 1 },
+              schema: { $ref: '#/components/schemas/AgentId' },
             },
           ],
           responses: {
@@ -1273,20 +1433,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['app-utils'],
           summary: 'Create deterministic interrupted worker recovery state.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-            {
-              name: 'threadId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Created deterministic interrupted worker recovery state.',
@@ -1344,26 +1491,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
             tags: ['app-utils'],
             summary: 'Clear one interrupted worker checkpoint after terminal state is saved.',
             security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-            parameters: [
-              {
-                name: 'workspaceId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
-              {
-                name: 'threadId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
-              {
-                name: 'turnId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
-            ],
+            parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER, TURN_ID_PARAMETER],
             requestBody: {
               required: true,
               content: {
@@ -1403,26 +1531,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
             tags: ['app-utils'],
             summary: 'Queue one interrupted worker checkpoint for retry.',
             security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-            parameters: [
-              {
-                name: 'workspaceId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
-              {
-                name: 'threadId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
-              {
-                name: 'turnId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
-            ],
+            parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER, TURN_ID_PARAMETER],
             responses: {
               '200': {
                 description: 'Checkpoint retry result.',
@@ -1451,14 +1560,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['app-utils'],
           summary: 'List workspace scheduler admissions with public queue state.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Workspace scheduler admission read model.',
@@ -1486,12 +1588,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           summary: 'Requeue one denied scheduler admission.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
+            WORKSPACE_ID_PARAMETER,
             {
               name: 'queueEntryId',
               in: 'path',
@@ -1526,12 +1623,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           summary: 'Cancel one scheduler admission.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
+            WORKSPACE_ID_PARAMETER,
             {
               name: 'queueEntryId',
               in: 'path',
@@ -1565,20 +1657,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['app-utils'],
           summary: 'List pending user turns for one thread recovery state.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-            {
-              name: 'threadId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Pending user turns for the thread recovery state.',
@@ -1609,18 +1688,8 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
             summary: 'Cancel one pending user turn for one thread recovery state.',
             security: [{ bearerAuth: [] }, { sessionCookie: [] }],
             parameters: [
-              {
-                name: 'workspaceId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
-              {
-                name: 'threadId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
+              WORKSPACE_ID_PARAMETER,
+              THREAD_ID_PARAMETER,
               {
                 name: 'requestId',
                 in: 'path',
@@ -1658,18 +1727,8 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
             summary: 'Edit one pending user turn for one thread recovery state.',
             security: [{ bearerAuth: [] }, { sessionCookie: [] }],
             parameters: [
-              {
-                name: 'workspaceId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
-              {
-                name: 'threadId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
+              WORKSPACE_ID_PARAMETER,
+              THREAD_ID_PARAMETER,
               {
                 name: 'requestId',
                 in: 'path',
@@ -1717,18 +1776,8 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
             summary: 'Convert one pending user turn to follow-up delivery.',
             security: [{ bearerAuth: [] }, { sessionCookie: [] }],
             parameters: [
-              {
-                name: 'workspaceId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
-              {
-                name: 'threadId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
+              WORKSPACE_ID_PARAMETER,
+              THREAD_ID_PARAMETER,
               {
                 name: 'requestId',
                 in: 'path',
@@ -1766,18 +1815,8 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
             summary: 'Promote one pending user turn to an active-turn interrupt.',
             security: [{ bearerAuth: [] }, { sessionCookie: [] }],
             parameters: [
-              {
-                name: 'workspaceId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
-              {
-                name: 'threadId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
+              WORKSPACE_ID_PARAMETER,
+              THREAD_ID_PARAMETER,
               {
                 name: 'requestId',
                 in: 'path',
@@ -1847,14 +1886,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['app-utils'],
           summary: 'Submit feedback for one turn.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'turnId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [TURN_ID_PARAMETER],
           requestBody: {
             required: true,
             content: {
@@ -1891,23 +1923,13 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
             summary: 'Queue one terminal command for an active agent session.',
             security: [{ bearerAuth: [] }, { sessionCookie: [] }],
             parameters: [
-              {
-                name: 'workspaceId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
-              {
-                name: 'threadId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
+              WORKSPACE_ID_PARAMETER,
+              THREAD_ID_PARAMETER,
               {
                 name: 'agentSessionId',
                 in: 'path',
                 required: true,
-                schema: { type: 'string', minLength: 1 },
+                schema: { $ref: '#/components/schemas/AgentSessionId' },
               },
             ],
             requestBody: {
@@ -1948,20 +1970,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['modes'],
           summary: 'Start one thread-scoped Chat Mode Assistant turn.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-            {
-              name: 'threadId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
           requestBody: {
             required: true,
             content: {
@@ -2004,20 +2013,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['modes'],
           summary: 'Start one bounded Task Mode worker delegation.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-            {
-              name: 'threadId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
           requestBody: {
             required: true,
             content: {
@@ -2052,20 +2048,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['modes'],
           summary: 'Read one thread Goal Mode summary.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-            {
-              name: 'threadId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Thread Goal Mode summary.',
@@ -2090,20 +2073,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['modes'],
           summary: 'Start Goal Mode for one thread.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-            {
-              name: 'threadId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
           requestBody: {
             required: true,
             content: {
@@ -2138,20 +2108,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['modes'],
           summary: 'Submit active steering to Goal Mode.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-            {
-              name: 'threadId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
           requestBody: {
             required: true,
             content: {
@@ -2186,20 +2143,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['modes'],
           summary: 'Draft one Goal Mode plan.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-            {
-              name: 'threadId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Drafted Goal Mode plan.',
@@ -2226,20 +2170,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['modes'],
           summary: 'Approve one Goal Mode plan.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-            {
-              name: 'threadId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
           requestBody: {
             required: true,
             content: {
@@ -2274,20 +2205,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['modes'],
           summary: 'Request revision for one Goal Mode plan.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-            {
-              name: 'threadId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
           requestBody: {
             required: true,
             content: {
@@ -2322,20 +2240,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['modes'],
           summary: 'Pause one active Goal Mode workflow.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-            {
-              name: 'threadId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Paused Goal Mode workflow.',
@@ -2362,20 +2267,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['modes'],
           summary: 'Resume one paused Goal Mode workflow.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-            {
-              name: 'threadId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Resumed Goal Mode workflow.',
@@ -2402,20 +2294,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['modes'],
           summary: 'Run one bounded Goal Mode worker step.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-            {
-              name: 'threadId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
           requestBody: {
             required: true,
             content: {
@@ -2450,14 +2329,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['knowledge'],
           summary: 'Answer a question from workspace knowledge.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           requestBody: {
             required: true,
             content: {
@@ -2492,14 +2364,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['knowledge'],
           summary: 'List registered workspace knowledge sources.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Registered knowledge sources.',
@@ -2524,14 +2389,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['knowledge'],
           summary: 'Register one workspace knowledge source.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           requestBody: {
             required: true,
             content: {
@@ -2567,12 +2425,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           summary: 'Read one registered workspace knowledge source.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
+            WORKSPACE_ID_PARAMETER,
             {
               name: 'sourceId',
               in: 'path',
@@ -2606,14 +2459,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['knowledge'],
           summary: 'List workspace Knowledge Store observations.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Knowledge Store observations.',
@@ -2638,14 +2484,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['knowledge'],
           summary: 'Record one workspace Knowledge Store observation.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           requestBody: {
             required: true,
             content: {
@@ -2680,14 +2519,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['knowledge'],
           summary: 'List workspace Knowledge Store claims.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Knowledge Store claims.',
@@ -2712,14 +2544,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['knowledge'],
           summary: 'Record one workspace Knowledge Store claim.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           requestBody: {
             required: true,
             content: {
@@ -2755,12 +2580,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           summary: 'Promote one accepted Knowledge Store claim into review.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
+            WORKSPACE_ID_PARAMETER,
             {
               name: 'claimId',
               in: 'path',
@@ -2802,14 +2622,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['knowledge'],
           summary: 'List workspace Knowledge Store conflicts.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Knowledge Store conflicts.',
@@ -2834,14 +2647,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['knowledge'],
           summary: 'Record one workspace Knowledge Store conflict.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           requestBody: {
             required: true,
             content: {
@@ -2877,12 +2683,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           summary: 'Resolve one workspace Knowledge Store conflict.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
+            WORKSPACE_ID_PARAMETER,
             {
               name: 'conflictId',
               in: 'path',
@@ -2924,14 +2725,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['knowledge'],
           summary: 'Read fresh derived Knowledge Store indexes.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Derived Knowledge Store indexes.',
@@ -2958,14 +2752,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['knowledge'],
           summary: 'Retrieve ranked Knowledge Store candidates and persist the trace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           requestBody: {
             required: true,
             content: {
@@ -3000,14 +2787,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['knowledge'],
           summary: 'Prepare source-traceable knowledge context material.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           requestBody: {
             required: true,
             content: {
@@ -3047,12 +2827,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           summary: 'Read one persisted Knowledge Manager context package trace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
+            WORKSPACE_ID_PARAMETER,
             {
               name: 'contextPackageId',
               in: 'path',
@@ -3090,12 +2865,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
             summary: 'Read one materialized Knowledge Manager context package.',
             security: [{ bearerAuth: [] }, { sessionCookie: [] }],
             parameters: [
-              {
-                name: 'workspaceId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
+              WORKSPACE_ID_PARAMETER,
               {
                 name: 'contextPackageId',
                 in: 'path',
@@ -3130,12 +2900,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
             summary: 'Materialize one Knowledge Manager context package for worker-visible files.',
             security: [{ bearerAuth: [] }, { sessionCookie: [] }],
             parameters: [
-              {
-                name: 'workspaceId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
+              WORKSPACE_ID_PARAMETER,
               {
                 name: 'contextPackageId',
                 in: 'path',
@@ -3171,14 +2936,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['knowledge'],
           summary: 'Draft one review-required knowledge proposal.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           requestBody: {
             required: true,
             content: {
@@ -3217,14 +2975,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['knowledge'],
           summary: 'Suggest review-required knowledge repairs.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           requestBody: {
             required: true,
             content: {
@@ -3263,14 +3014,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['knowledge'],
           summary: 'Read one bounded Knowledge Manager health report.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           requestBody: {
             required: true,
             content: {
@@ -3309,14 +3053,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['dashboards'],
           summary: 'Read one workspace dashboard read model.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Workspace dashboard read model.',
@@ -3343,20 +3080,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['dashboards'],
           summary: 'Read one thread dashboard read model.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-            {
-              name: 'threadId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Thread dashboard read model.',
@@ -3384,18 +3108,8 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           summary: 'List durable item log entries for one thread.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-            {
-              name: 'threadId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
+            WORKSPACE_ID_PARAMETER,
+            THREAD_ID_PARAMETER,
             {
               name: 'since',
               in: 'query',
@@ -3435,14 +3149,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['dashboards'],
           summary: 'List unified human attention rows for one workspace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Unified human attention rows.',
@@ -3469,14 +3176,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['diagnostics'],
           summary: 'Read capability-call and usage evidence for one workspace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Workspace capability-call and usage evidence.',
@@ -3503,14 +3203,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['diagnostics'],
           summary: 'Read workspace audit events.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Workspace audit events.',
@@ -3537,14 +3230,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['diagnostics'],
           summary: 'Create one workspace evidence bundle.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           requestBody: {
             required: true,
             content: {
@@ -3577,14 +3263,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['diagnostics'],
           summary: 'Read workspace evidence bundles.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Workspace evidence bundles.',
@@ -3611,14 +3290,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['diagnostics'],
           summary: 'Read workspace runtime evidence.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Workspace runtime evidence.',
@@ -3671,14 +3343,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['diagnostics'],
           summary: 'Read workspace permission decisions.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Workspace permission decisions.',
@@ -3734,17 +3399,12 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           summary: 'Record one artifact review decision.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
+            WORKSPACE_ID_PARAMETER,
             {
               name: 'artifactId',
               in: 'path',
               required: true,
-              schema: { type: 'string', minLength: 1 },
+              schema: { $ref: '#/components/schemas/ArtifactId' },
             },
           ],
           requestBody: {
@@ -3782,12 +3442,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           summary: 'Record one knowledge proposal review decision.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
+            WORKSPACE_ID_PARAMETER,
             {
               name: 'proposalId',
               in: 'path',
@@ -3833,18 +3488,8 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
             summary: 'Resolve one Goal Review attention row.',
             security: [{ bearerAuth: [] }, { sessionCookie: [] }],
             parameters: [
-              {
-                name: 'workspaceId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
-              {
-                name: 'threadId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
+              WORKSPACE_ID_PARAMETER,
+              THREAD_ID_PARAMETER,
               {
                 name: 'goalId',
                 in: 'path',
@@ -3892,14 +3537,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['workspace-sync'],
           summary: 'List workspace synchronization reviews for one workspace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Workspace synchronization reviews.',
@@ -3927,12 +3565,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           summary: 'Read one workspace synchronization review.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
+            WORKSPACE_ID_PARAMETER,
             {
               name: 'reviewId',
               in: 'path',
@@ -3967,12 +3600,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           summary: 'Record one durable workspace synchronization review decision.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
+            WORKSPACE_ID_PARAMETER,
             {
               name: 'reviewId',
               in: 'path',
@@ -4016,14 +3644,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['workspace-sync'],
           summary: 'List durable workspace input snapshots for one workspace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Workspace input snapshots.',
@@ -4050,14 +3671,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['workspace-sync'],
           summary: 'List durable workspace materialization records for one workspace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Workspace materialization records.',
@@ -4086,14 +3700,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['workspace-sync'],
           summary: 'List durable backend workspace handles for one workspace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Backend workspace handles.',
@@ -4120,14 +3727,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['workspace-sync'],
           summary: 'List durable worker output manifests for one workspace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Worker output manifests.',
@@ -4154,14 +3754,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['workspace-sync'],
           summary: 'List durable workspace change sets for one workspace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Workspace change sets.',
@@ -4188,14 +3781,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['workspace-sync'],
           summary: 'List durable staged workspace reviews for one workspace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Staged workspace reviews.',
@@ -4222,14 +3808,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['workspace-sync'],
           summary: 'List durable workspace apply results for one workspace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Workspace apply results.',
@@ -4256,14 +3835,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['workspace-sync'],
           summary: 'List durable workspace apply plans for one workspace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Workspace apply plans.',
@@ -4290,14 +3862,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['workspace-sync'],
           summary: 'List durable workspace reconciliation records for one workspace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Workspace reconciliation records.',
@@ -4328,12 +3893,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
             summary: 'Record one workspace recovery decision.',
             security: [{ bearerAuth: [] }, { sessionCookie: [] }],
             parameters: [
-              {
-                name: 'workspaceId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
+              WORKSPACE_ID_PARAMETER,
               {
                 name: 'reconciliationRecordId',
                 in: 'path',
@@ -4379,14 +3939,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['workspace-sync'],
           summary: 'List durable workspace quarantine records for one workspace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Workspace quarantine records.',
@@ -4415,14 +3968,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['workspace-sync'],
           summary: 'List durable workspace synchronization evidence bundles for one workspace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Workspace synchronization evidence bundles.',
@@ -4452,12 +3998,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           summary: 'Read one durable workspace apply result.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
+            WORKSPACE_ID_PARAMETER,
             {
               name: 'applyResultId',
               in: 'path',
@@ -4491,14 +4032,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['agent-environment'],
           summary: 'List durable Agent Environment Package snapshots for one workspace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Agent Environment Package snapshots.',
@@ -4528,12 +4062,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           summary: 'Read one durable Agent Environment Package snapshot.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
+            WORKSPACE_ID_PARAMETER,
             {
               name: 'snapshotId',
               in: 'path',
@@ -4637,14 +4166,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['storage'],
           summary: 'Create and verify one workspace export.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Workspace export manifest and verification summary.',
@@ -4864,12 +4386,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           summary: 'Rebind one imported workspace vault reference to local secret material.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
+            WORKSPACE_ID_PARAMETER,
             {
               name: 'referenceId',
               in: 'path',
@@ -4915,14 +4432,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['vault'],
           summary: 'List redacted workspace vault references.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Redacted workspace vault references.',
@@ -4951,14 +4461,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['vault'],
           summary: 'List non-secret workspace vault grants.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Non-secret workspace vault grants.',
@@ -4987,14 +4490,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['vault'],
           summary: 'List non-secret workspace injection plans.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Non-secret workspace injection plans.',
@@ -5023,14 +4519,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['vault'],
           summary: 'List non-secret workspace injection receipts.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Non-secret workspace injection receipts.',
@@ -5059,14 +4548,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['vault'],
           summary: 'List redacted workspace vault use records.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Redacted workspace vault use records.',
@@ -5123,14 +4605,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['repositories'],
           summary: 'List redacted repository resources for one workspace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Redacted repository resources and default repository.',
@@ -5157,14 +4632,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['repositories'],
           summary: 'Read redacted repository diagnostics for one workspace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Redacted repository readiness diagnostics.',
@@ -5193,14 +4661,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['repositories'],
           summary: 'Create or update the default repository resource for one workspace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           requestBody: {
             required: true,
             content: {
@@ -5233,14 +4694,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['repositories'],
           summary: 'Create or update the default repository resource for one workspace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           requestBody: {
             required: true,
             content: {
@@ -5275,14 +4729,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           tags: ['repositories'],
           summary: 'List durable Git push records for one workspace.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [WORKSPACE_ID_PARAMETER],
           responses: {
             '200': {
               description: 'Redacted Git push records.',
@@ -5310,12 +4757,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           summary: 'Read one durable Git push record.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
+            WORKSPACE_ID_PARAMETER,
             {
               name: 'pushRecordId',
               in: 'path',
@@ -5350,12 +4792,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           summary: 'Open one approval gate for a repository Git push.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
+            WORKSPACE_ID_PARAMETER,
             {
               name: 'resourceId',
               in: 'path',
@@ -5398,12 +4835,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           summary: 'Execute one approved repository Git push.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [
-            {
-              name: 'workspaceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
+            WORKSPACE_ID_PARAMETER,
             {
               name: 'resourceId',
               in: 'path',
@@ -5439,7 +4871,7 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
           },
         },
       },
-    },
+    } as const,
     components: {
       securitySchemes: {
         bearerAuth: {
@@ -5454,15 +4886,18 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
         },
       },
       schemas: {
+        AgentId: toJsonSchema(AgentIdSchema),
+        AgentSessionId: toJsonSchema(AgentSessionIdSchema),
         ApiError: toJsonSchema(ApiErrorSchema),
         AgentHealthRefreshResponse: toJsonSchema(AgentHealthRefreshResponseSchema),
+        ArtifactId: toJsonSchema(ArtifactIdSchema),
         AppDiagnosticsResponse: toJsonSchema(AppDiagnosticsResponseSchema),
         AppSearchResponse: toJsonSchema(AppSearchResponseSchema),
         ApproveThreadGoalPlanRequest: toJsonSchema(ApproveThreadGoalPlanRequestSchema),
         ApproveThreadGoalPlanResponse: toJsonSchema(ApproveThreadGoalPlanResponseSchema),
         AutomationRecord: toJsonSchema(AutomationRecordSchema),
         CancelOpenAICodexOAuthRequest: toJsonSchema(CancelOpenAICodexOAuthRequestSchema),
-        CapabilityUsageResponse: capabilityUsageResponseJsonSchema(),
+        CapabilityUsageResponse: toJsonSchema(CapabilityUsageResponseSchema),
         ClearInterruptedWorkerCheckpointRequest: toJsonSchema(
           ClearInterruptedWorkerCheckpointRequestSchema
         ),
@@ -5708,7 +5143,9 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
         SubmitThreadGoalSteeringResponse: toJsonSchema(SubmitThreadGoalSteeringResponseSchema),
         SubmitTurnFeedbackRequest: toJsonSchema(SubmitTurnFeedbackRequestSchema),
         ThreadDashboardResponse: toJsonSchema(ThreadDashboardResponseSchema),
+        ThreadId: toJsonSchema(ThreadIdSchema),
         ThreadGoalSummaryResponse: toJsonSchema(ThreadGoalSummaryResponseSchema),
+        TurnId: toJsonSchema(TurnIdSchema),
         TurnFeedbackResponse: toJsonSchema(TurnFeedbackResponseSchema),
         UpdateAutomationRequest: toJsonSchema(UpdateAutomationRequestSchema),
         UpdateOpenAICodexOAuthAccountRequest: toJsonSchema(
@@ -5739,18 +5176,22 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
         WorkspaceImportRequest: toJsonSchema(WorkspaceImportRequestSchema),
         WorkspaceImportResponse: toJsonSchema(WorkspaceImportResponseSchema),
         WorkspaceDashboardResponse: toJsonSchema(WorkspaceDashboardResponseSchema),
+        WorkspaceId: toJsonSchema(WorkspaceIdSchema),
         WorkspaceRepositoryDiagnosticsResponse: toJsonSchema(
           WorkspaceRepositoryDiagnosticsResponseSchema
         ),
       },
     },
-  };
+  } satisfies Omit<AppOpenApiDocument, 'x-openkit-source-digest'>;
 
   return {
     ...document,
     'x-openkit-source-digest': digestOpenApiSource(document),
   };
 }
+
+/** Process-wide OpenAPI projection reused by runtime registration and document serving. */
+export const APP_OPENAPI_DOCUMENT = createAppOpenApiDocument();
 
 /**
  * Converts a Zod schema into the JSON Schema fragment embedded in OpenAPI.
@@ -5760,36 +5201,6 @@ export function createAppOpenApiDocument(): AppOpenApiDocument {
  */
 function toJsonSchema(schema: z.ZodType): JsonValue {
   return z.toJSONSchema(schema) as JsonValue;
-}
-
-/**
- * Builds the capability usage evidence response schema without crossing package-local Zod graphs.
- *
- * @returns OpenAPI JSON Schema projection for capability usage evidence.
- */
-function capabilityUsageResponseJsonSchema(): JsonValue {
-  return {
-    type: 'object',
-    additionalProperties: false,
-    required: ['workspaceId', 'capabilityCalls', 'usageRecords'],
-    properties: {
-      workspaceId: { type: 'string', minLength: 1 },
-      capabilityCalls: {
-        type: 'array',
-        items: {
-          type: 'object',
-          additionalProperties: true,
-        },
-      },
-      usageRecords: {
-        type: 'array',
-        items: {
-          type: 'object',
-          additionalProperties: true,
-        },
-      },
-    },
-  };
 }
 
 /**
@@ -5808,6 +5219,7 @@ function digestOpenApiSource(
         info: document.info,
         openapi: document.openapi,
         paths: document.paths,
+        protocolVersion: document['x-openkit-protocol-version'],
       })
     )
     .digest('hex')}`;

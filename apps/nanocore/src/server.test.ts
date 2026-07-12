@@ -50,7 +50,12 @@ import {
   AgentEnvironmentPackageSchema,
   parseWorkspaceDataSourceCatalog,
 } from '@openkit/config-schema';
-import { MetaResponseSchema, SseEventEnvelopeSchema, ThreadSchema } from '@openkit/protocol';
+import {
+  MetaResponseSchema,
+  PROTOCOL_VERSION,
+  SseEventEnvelopeSchema,
+  ThreadSchema,
+} from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
 import { type CreateAppOptions, createApp as createNanoCoreApp } from './app.js';
@@ -4080,7 +4085,11 @@ describe('nanocore server', () => {
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({
+      info: {
+        version: '0.1.0',
+      },
       openapi: '3.1.0',
+      'x-openkit-protocol-version': PROTOCOL_VERSION,
       paths: {
         '/api/app/storage/layout-report': {
           get: {

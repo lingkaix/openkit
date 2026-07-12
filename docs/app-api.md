@@ -2,7 +2,7 @@
 
 Status: Accepted
 Date: 2026-05-31
-Updated: 2026-07-04
+Updated: 2026-07-11
 
 ## Purpose
 
@@ -82,7 +82,7 @@ The App API must not redefine:
 - Keep App API route behavior and read-model construction in `apps/nanocore`.
 - Keep typed request helpers and response parsing in `@openkit/core-client`.
 - Keep OpenAI-compatible gateway endpoints under `/v1/*` so agents can use standard SDKs.
-- Generate OpenAPI from shared schemas and route registrations; do not hand-edit the generated document or generate first-party types from it.
+- Generate OpenAPI from shared schemas and the canonical operation catalog used by runtime registrations; do not hand-edit the generated document or generate first-party types from it.
 - Return server-composed read models that reduce Web round trips, but derive them from Core records where possible.
 - Treat App API payloads as replaceable product projections over Core records.
 - Do not expose raw provider API keys, OAuth tokens, authorization headers, account IDs, full prompt cache keys, host paths, worker launch commands, environment variables, or adapter-native runtime config.
@@ -97,6 +97,8 @@ These routes are transport projections over Core semantics, not App API ownershi
 Their record, request, response, error, and SSE envelope schemas come from `@openkit/protocol`.
 
 The typed client surface is `client.core` in `@openkit/core-client`.
+
+The Core HTTP/SSE projection is deliberately outside the App API OpenAPI document. Its route schemas, event contract, coverage, and client behavior remain governed by `@openkit/protocol`, the Core documents, NanoCore Core-route tests, and `client.core`; serving both surfaces from NanoCore does not merge their ownership.
 
 Current Core projection route families include the following.
 
@@ -130,6 +132,8 @@ Idempotency records retain only command name, request ID, non-secret scope IDs, 
 They are retained for seven days and must not contain prompts, knowledge content, context package content, provider config, OAuth state, secrets, full request bodies, or full response bodies.
 
 The live event stream is turn-scoped SSE.
+
+Because this stream belongs to the Core projection, it is not registered as an App API OpenAPI operation. A future App API-owned streaming route would follow the conditional projection rule in `docs/specs/20260704-app_api_openapi_projection.md` without changing ownership of this Core stream.
 
 Every SSE message uses the event envelope defined by `docs/core/protocol.md`.
 

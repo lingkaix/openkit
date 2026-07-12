@@ -2,9 +2,10 @@
   "openapi": "3.1.0",
   "info": {
     "title": "OpenKit App API",
-    "version": "0.3.0",
+    "version": "0.1.0",
     "description": "Generated projection from OpenKit Zod schemas. Zod schemas in shared packages remain the source of truth."
   },
+  "x-openkit-protocol-version": "0.3.0",
   "paths": {
     "/api/app/storage/layout-report": {
       "get": {
@@ -216,6 +217,7 @@
           "auth"
         ],
         "summary": "Consume the one-time server bootstrap token.",
+        "security": [],
         "requestBody": {
           "required": true,
           "content": {
@@ -701,8 +703,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -947,8 +948,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -1036,8 +1036,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/AgentId"
             }
           }
         ],
@@ -1542,8 +1541,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -1551,8 +1549,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           }
         ],
@@ -1640,8 +1637,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -1649,8 +1645,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           },
           {
@@ -1658,8 +1653,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/TurnId"
             }
           }
         ],
@@ -1718,8 +1712,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -1727,8 +1720,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           },
           {
@@ -1736,8 +1728,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/TurnId"
             }
           }
         ],
@@ -1786,8 +1777,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -1836,8 +1826,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -1895,8 +1884,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -1954,8 +1942,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -1963,8 +1950,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           }
         ],
@@ -2013,8 +1999,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -2022,8 +2007,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           },
           {
@@ -2081,8 +2065,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -2090,8 +2073,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           },
           {
@@ -2159,8 +2141,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -2168,8 +2149,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           },
           {
@@ -2227,8 +2207,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -2236,8 +2215,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           },
           {
@@ -2344,8 +2322,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/TurnId"
             }
           }
         ],
@@ -2404,8 +2381,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -2413,8 +2389,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           },
           {
@@ -2422,8 +2397,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/AgentSessionId"
             }
           }
         ],
@@ -2482,8 +2456,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -2491,8 +2464,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           }
         ],
@@ -2561,8 +2533,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -2570,8 +2541,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           }
         ],
@@ -2630,8 +2600,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -2639,8 +2608,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           }
         ],
@@ -2687,8 +2655,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -2696,8 +2663,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           }
         ],
@@ -2756,8 +2722,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -2765,8 +2730,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           }
         ],
@@ -2825,8 +2789,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -2834,8 +2797,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           }
         ],
@@ -2884,8 +2846,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -2893,8 +2854,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           }
         ],
@@ -2953,8 +2913,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -2962,8 +2921,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           }
         ],
@@ -3022,8 +2980,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -3031,8 +2988,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           }
         ],
@@ -3081,8 +3037,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -3090,8 +3045,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           }
         ],
@@ -3140,8 +3094,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -3149,8 +3102,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           }
         ],
@@ -3209,8 +3161,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -3269,8 +3220,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -3317,8 +3267,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -3377,8 +3326,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -3436,8 +3384,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -3484,8 +3431,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -3544,8 +3490,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -3592,8 +3537,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -3652,8 +3596,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -3721,8 +3664,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -3769,8 +3711,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -3829,8 +3770,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -3898,8 +3838,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -3948,8 +3887,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -4008,8 +3946,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -4068,8 +4005,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -4127,8 +4063,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -4184,8 +4119,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -4243,8 +4177,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -4303,8 +4236,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -4363,8 +4295,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -4423,8 +4354,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -4473,8 +4403,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -4482,8 +4411,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           }
         ],
@@ -4532,8 +4460,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -4541,8 +4468,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           },
           {
@@ -4608,8 +4534,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -4658,8 +4583,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -4708,8 +4632,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -4758,8 +4681,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -4816,8 +4738,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -4866,8 +4787,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -4955,8 +4875,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -5044,8 +4963,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -5053,8 +4971,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ArtifactId"
             }
           }
         ],
@@ -5113,8 +5030,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -5182,8 +5098,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -5191,8 +5106,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/ThreadId"
             }
           },
           {
@@ -5269,8 +5183,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -5319,8 +5232,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -5378,8 +5290,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -5447,8 +5358,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -5497,8 +5407,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -5547,8 +5456,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -5597,8 +5505,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -5647,8 +5554,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -5697,8 +5603,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -5747,8 +5652,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -5797,8 +5701,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -5847,8 +5750,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -5897,8 +5799,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -5966,8 +5867,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -6016,8 +5916,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -6066,8 +5965,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -6125,8 +6023,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -6175,8 +6072,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -6333,8 +6229,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -6657,8 +6552,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -6726,8 +6620,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -6776,8 +6669,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -6826,8 +6718,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -6876,8 +6767,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -6926,8 +6816,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -7015,8 +6904,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -7065,8 +6953,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -7115,8 +7002,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -7173,8 +7059,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -7233,8 +7118,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           }
         ],
@@ -7283,8 +7167,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -7342,8 +7225,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -7411,8 +7293,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "minLength": 1
+              "$ref": "#/components/schemas/WorkspaceId"
             }
           },
           {
@@ -7474,6 +7355,16 @@
       }
     },
     "schemas": {
+      "AgentId": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "string",
+        "minLength": 1
+      },
+      "AgentSessionId": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "string",
+        "minLength": 1
+      },
       "ApiError": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -7928,6 +7819,11 @@
           "sessions"
         ],
         "additionalProperties": false
+      },
+      "ArtifactId": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "string",
+        "minLength": 1
       },
       "AppDiagnosticsResponse": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -10301,13 +10197,8 @@
         "additionalProperties": false
       },
       "CapabilityUsageResponse": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "workspaceId",
-          "capabilityCalls",
-          "usageRecords"
-        ],
         "properties": {
           "workspaceId": {
             "type": "string",
@@ -10317,17 +10208,423 @@
             "type": "array",
             "items": {
               "type": "object",
-              "additionalProperties": true
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "workspaceId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "threadId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "turnId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "itemId": {
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "agentId": {
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "agentSessionId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "requestId": {
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "sourceIds": {
+                  "default": [],
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "capabilityId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "queued",
+                    "running",
+                    "succeeded",
+                    "failed",
+                    "cancelled"
+                  ]
+                },
+                "summary": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "errorCode": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "startedAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "completedAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "family": {
+                  "type": "string",
+                  "enum": [
+                    "llm",
+                    "mcp",
+                    "knowledge",
+                    "runtime",
+                    "storage",
+                    "workspace"
+                  ]
+                },
+                "operation": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "providerRef": {
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "serviceRef": {
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "redactionClass": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "id",
+                "workspaceId",
+                "threadId",
+                "turnId",
+                "itemId",
+                "agentId",
+                "agentSessionId",
+                "requestId",
+                "sourceIds",
+                "capabilityId",
+                "status",
+                "summary",
+                "errorCode",
+                "startedAt",
+                "completedAt",
+                "family",
+                "operation",
+                "providerRef",
+                "serviceRef",
+                "redactionClass"
+              ],
+              "additionalProperties": false
             }
           },
           "usageRecords": {
             "type": "array",
             "items": {
               "type": "object",
-              "additionalProperties": true
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "workspaceId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "threadId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "turnId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "itemId": {
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "capabilityCallId": {
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "requestId": {
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "agentId": {
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "agentSessionId": {
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "sourceIds": {
+                  "default": [],
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "category": {
+                  "default": "runtime",
+                  "type": "string",
+                  "enum": [
+                    "llm",
+                    "tool",
+                    "runtime",
+                    "storage",
+                    "network"
+                  ]
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "tokens",
+                    "requests",
+                    "seconds",
+                    "bytes",
+                    "files",
+                    "artifacts",
+                    "tool_calls",
+                    "capability_calls",
+                    "sandbox_sessions"
+                  ]
+                },
+                "quantity": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "modelId": {
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "providerRef": {
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "source": {
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "recordedAt": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "id",
+                "workspaceId",
+                "threadId",
+                "turnId",
+                "itemId",
+                "capabilityCallId",
+                "requestId",
+                "agentId",
+                "agentSessionId",
+                "sourceIds",
+                "category",
+                "unit",
+                "quantity",
+                "modelId",
+                "providerRef",
+                "source",
+                "recordedAt"
+              ],
+              "additionalProperties": false
             }
           }
-        }
+        },
+        "required": [
+          "workspaceId",
+          "capabilityCalls",
+          "usageRecords"
+        ],
+        "additionalProperties": false
       },
       "ClearInterruptedWorkerCheckpointRequest": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -102789,6 +103086,11 @@
         ],
         "additionalProperties": false
       },
+      "ThreadId": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "string",
+        "minLength": 1
+      },
       "ThreadGoalSummaryResponse": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -103193,6 +103495,11 @@
           "goal"
         ],
         "additionalProperties": false
+      },
+      "TurnId": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "string",
+        "minLength": 1
       },
       "TurnFeedbackResponse": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -104997,6 +105304,11 @@
         ],
         "additionalProperties": false
       },
+      "WorkspaceId": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "string",
+        "minLength": 1
+      },
       "WorkspaceRepositoryDiagnosticsResponse": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -105153,5 +105465,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:3b3414c2b9aaa05a5e27a54f842306e379241da27fd153bce9e5ad7dc8111838"
+  "x-openkit-source-digest": "sha256:6ba8e6b3e2d1650ea871c71d5b434748f2ec106c9b4f4bd7b5c598f8fa6e5442"
 }

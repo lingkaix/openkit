@@ -358,7 +358,7 @@ import {
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { LLMProviderConfigStore, type ResolvedLLMProviderConfig } from './llm/provider-config.js';
 import { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
-import { createAppOpenApiDocument } from './openapi.js';
+import { APP_OPENAPI_DOCUMENT, registerAppApiRoute } from './openapi.js';
 import { createPolicyApprovalGate } from './policy/approval-gates.js';
 import {
   importWorkspacePermissionDecisions,
@@ -7328,7 +7328,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     app.all('/api/auth/*', (c) => auth.handler(c.req.raw));
   }
 
-  app.post('/api/app/auth/bootstrap/consume', async (c) => {
+  registerAppApiRoute(app, 'consumeOpenKitBootstrapToken', async (c) => {
     if (mode !== 'server') {
       return asApiError('Server bootstrap is only available in server mode.', 'not_found', 404);
     }
@@ -7373,7 +7373,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     );
   });
 
-  app.get('/api/app/auth/tokens', (c) => {
+  registerAppApiRoute(app, 'listOpenKitAccessTokens', (c) => {
     const adminError = requireAccessTokenAdmin(c);
     if (adminError) {
       return adminError;
@@ -7386,7 +7386,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     );
   });
 
-  app.post('/api/app/auth/tokens', async (c) => {
+  registerAppApiRoute(app, 'createOpenKitAccessToken', async (c) => {
     const adminError = requireAccessTokenAdmin(c);
     if (adminError) {
       return adminError;
@@ -7439,7 +7439,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/auth/tokens/:tokenId/revoke', (c) => {
+  registerAppApiRoute(app, 'revokeOpenKitAccessToken', (c) => {
     const adminError = requireAccessTokenAdmin(c);
     if (adminError) {
       return adminError;
@@ -7460,7 +7460,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     return c.json(RevokeOpenKitAccessTokenResponseSchema.parse({ record }));
   });
 
-  app.post('/api/app/auth/tokens/:tokenId/rotate', async (c) => {
+  registerAppApiRoute(app, 'rotateOpenKitAccessToken', async (c) => {
     const adminError = requireAccessTokenAdmin(c);
     if (adminError) {
       return adminError;
@@ -7532,9 +7532,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     })
   );
 
-  app.get('/api/app/vault/status', (c) => c.json(vaultAdminStatus()));
+  registerAppApiRoute(app, 'getVaultAdminStatus', (c) => c.json(vaultAdminStatus()));
 
-  app.post('/api/app/vault/unlock', async (c) => {
+  registerAppApiRoute(app, 'unlockVaultAdminBackend', async (c) => {
     const unlockState = vaultUnlockState;
 
     if (!unlockState) {
@@ -7583,7 +7583,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/vault/bootstrap/codex-auth-json', async (c) => {
+  registerAppApiRoute(app, 'bootstrapCodexAuthJsonVaultReference', async (c) => {
     const unlockState = vaultUnlockState;
 
     if (!unlockState) {
@@ -7692,7 +7692,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/vault/references/:referenceId/rebind', async (c) => {
+  registerAppApiRoute(app, 'rebindWorkspaceVaultReference', async (c) => {
     const unlockState = vaultUnlockState;
 
     if (!unlockState) {
@@ -7791,7 +7791,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/vault/references', (c) => {
+  registerAppApiRoute(app, 'listWorkspaceVaultReferences', (c) => {
     if (!options.coreDb) {
       return asApiError('Vault storage is not configured.', 'vault_storage_unavailable', 503);
     }
@@ -7815,7 +7815,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     );
   });
 
-  app.get('/api/app/workspaces/:workspaceId/vault/use-records', (c) => {
+  registerAppApiRoute(app, 'listWorkspaceVaultUseRecords', (c) => {
     try {
       const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
@@ -7836,7 +7836,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/vault/lock', (c) => {
+  registerAppApiRoute(app, 'lockVaultAdminBackend', (c) => {
     const unlockState = vaultUnlockState;
 
     if (!unlockState) {
@@ -7853,11 +7853,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     return c.json(VaultAdminLockResponseSchema.parse(vaultAdminStatus()));
   });
 
-  app.get('/api/app/oauth/openai-codex/accounts', async (c) =>
+  registerAppApiRoute(app, 'listOpenAICodexOAuthAccounts', async (c) =>
     c.json(CodexOAuthAccountsPayloadSchema.parse(await codexOAuthAccountManager.listAccounts()))
   );
 
-  app.post('/api/app/oauth/openai-codex/accounts', async (c) => {
+  registerAppApiRoute(app, 'createOpenAICodexOAuthAccount', async (c) => {
     const parsed = CodexOAuthAccountCreateRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -7882,7 +7882,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.patch('/api/app/oauth/openai-codex/accounts/:accountSlotId', async (c) => {
+  registerAppApiRoute(app, 'updateOpenAICodexOAuthAccount', async (c) => {
     const parsed = CodexOAuthAccountUpdateRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -7902,7 +7902,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.delete('/api/app/oauth/openai-codex/accounts/:accountSlotId', async (c) => {
+  registerAppApiRoute(app, 'deleteOpenAICodexOAuthAccount', async (c) => {
     try {
       await codexOAuthAccountManager.deleteAccount(c.req.param('accountSlotId'));
       return c.body(null, 204);
@@ -7911,7 +7911,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/oauth/openai-codex/accounts/:accountSlotId/status', async (c) =>
+  registerAppApiRoute(app, 'getOpenAICodexOAuthAccountStatus', async (c) =>
     c.json(
       CodexOAuthStatusPayloadSchema.parse(
         await codexOAuthAccountManager.getStatus(c.req.param('accountSlotId'))
@@ -7932,7 +7932,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     )
   );
 
-  app.post('/api/app/oauth/openai-codex/accounts/:accountSlotId/start', async (c) => {
+  registerAppApiRoute(app, 'startOpenAICodexOAuthAccountLogin', async (c) => {
     const parsed = CodexOAuthStartRequestSchema.safeParse(await c.req.json().catch(() => ({})));
 
     if (!parsed.success) {
@@ -7949,7 +7949,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     );
   });
 
-  app.post('/api/app/oauth/openai-codex/accounts/:accountSlotId/cancel', async (c) => {
+  registerAppApiRoute(app, 'cancelOpenAICodexOAuthAccountLogin', async (c) => {
     const parsed = CodexOAuthCancelRequestSchema.safeParse(await c.req.json().catch(() => ({})));
 
     if (!parsed.success) {
@@ -7963,7 +7963,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     );
   });
 
-  app.post('/api/app/oauth/openai-codex/accounts/:accountSlotId/logout', async (c) =>
+  registerAppApiRoute(app, 'logoutOpenAICodexOAuthAccount', async (c) =>
     c.json(
       CodexOAuthStatusPayloadSchema.parse(
         await codexOAuthAccountManager.logout(c.req.param('accountSlotId'))
@@ -7971,7 +7971,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     )
   );
 
-  app.get('/api/app/diagnostics', async (c) => {
+  registerAppApiRoute(app, 'getAppDiagnostics', async (c) => {
     const openaiCodexAccounts = await codexOAuthAccountManager.listAccounts();
 
     return c.json(
@@ -8011,7 +8011,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     );
   });
 
-  app.get('/api/setup/diagnostics', (c) =>
+  registerAppApiRoute(app, 'getSetupDiagnostics', (c) =>
     c.json(
       SetupDiagnosticsResponseSchema.parse(
         createSetupDiagnostics({
@@ -8035,7 +8035,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     )
   );
 
-  app.get('/api/app/storage/layout-report', (c) => {
+  registerAppApiRoute(app, 'getStorageLayoutReport', (c) => {
     if (!dataRoot) {
       return asApiError('Storage layout report is unavailable.', 'storage_layout_unavailable', 503);
     }
@@ -8043,7 +8043,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     return c.json(StorageLayoutReportResponseSchema.parse(createStorageLayoutReport(dataRoot)));
   });
 
-  app.post('/api/app/data-root/backups', async (c) => {
+  registerAppApiRoute(app, 'createDataRootBackup', async (c) => {
     if (!dataRoot) {
       return asApiError('Data-root backup is unavailable.', 'data_root_backup_unavailable', 503);
     }
@@ -8070,7 +8070,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/data-root/backups/:backupId/verify', (c) => {
+  registerAppApiRoute(app, 'verifyDataRootBackup', (c) => {
     if (!dataRoot) {
       return asApiError(
         'Data-root backup verification is unavailable.',
@@ -8101,7 +8101,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/export', (c) => {
+  registerAppApiRoute(app, 'exportWorkspace', (c) => {
     if (!dataRoot) {
       return asApiError('Workspace export is unavailable.', 'workspace_export_unavailable', 503);
     }
@@ -8359,7 +8359,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     );
   });
 
-  app.post('/api/app/workspace-imports/dry-run', async (c) => {
+  registerAppApiRoute(app, 'dryRunWorkspaceImport', async (c) => {
     if (!dataRoot) {
       return asApiError(
         'Workspace import dry-run is unavailable.',
@@ -8402,7 +8402,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspace-imports', async (c) => {
+  registerAppApiRoute(app, 'importWorkspace', async (c) => {
     if (!dataRoot) {
       return asApiError('Workspace import is unavailable.', 'workspace_import_unavailable', 503);
     }
@@ -8598,9 +8598,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/openapi.json', (c) => c.json(createAppOpenApiDocument()));
+  app.get('/api/openapi.json', (c) => c.json(APP_OPENAPI_DOCUMENT));
 
-  app.post('/api/admin/config/reload', async (c) => {
+  registerAppApiRoute(app, 'reloadRuntimeConfig', async (c) => {
     const parsed = RuntimeConfigReloadRequestSchema.safeParse(await c.req.json().catch(() => ({})));
 
     if (!parsed.success) {
@@ -8610,7 +8610,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     return c.json(runtimeConfigManager.reload(parsed.data));
   });
 
-  app.get('/api/admin/config/files', (c) => {
+  registerAppApiRoute(app, 'listRuntimeConfigFiles', (c) => {
     try {
       return c.json(runtimeConfigFileService(c).listFiles());
     } catch (error) {
@@ -8618,7 +8618,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/admin/config/file', (c) => {
+  registerAppApiRoute(app, 'getRuntimeConfigFile', (c) => {
     const id = c.req.query('id');
 
     if (!id) {
@@ -8632,7 +8632,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/admin/config/file', async (c) => {
+  registerAppApiRoute(app, 'createRuntimeConfigFile', async (c) => {
     const parsed = RuntimeConfigFileWriteRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -8648,7 +8648,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.put('/api/admin/config/file', async (c) => {
+  registerAppApiRoute(app, 'updateRuntimeConfigFile', async (c) => {
     const parsed = RuntimeConfigFileWriteRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -8664,7 +8664,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/admin/config/schemas', (c) => {
+  registerAppApiRoute(app, 'getRuntimeConfigSchemas', (c) => {
     try {
       return c.json(runtimeConfigFileService(c).schemaCatalog());
     } catch (error) {
@@ -8672,7 +8672,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/admin/config/validate', async (c) => {
+  registerAppApiRoute(app, 'validateRuntimeConfig', async (c) => {
     const parsed = RuntimeConfigValidationRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -8688,53 +8688,50 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post(
-    '/api/app/workspaces/:workspaceId/runtime-config/stale-sessions/:sessionId/restart',
-    (c) => {
-      try {
-        const workspaceId = c.req.param('workspaceId');
-        const sessionId = c.req.param('sessionId');
-        const store = requestStore(c);
+  registerAppApiRoute(app, 'restartRuntimeConfigStaleSession', (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId');
+      const sessionId = c.req.param('sessionId');
+      const store = requestStore(c);
 
-        store.getWorkspace(workspaceId);
+      store.getWorkspace(workspaceId);
 
-        const session = findStoredAgentSessionById(store, workspaceId, sessionId);
+      const session = findStoredAgentSessionById(store, workspaceId, sessionId);
 
-        if (!session) {
-          return c.json(
-            RestartRuntimeConfigStaleSessionResponseSchema.parse({
-              restarted: false,
-              session: null,
-            })
-          );
-        }
-
-        const updated = store.updateAgentSession(sessionId, {
-          configVersion: runtimeConfig().version,
-          message: 'Runtime config stale session retired; start a new worker session.',
-          stale: false,
-          status: 'interrupted',
-        });
-
+      if (!session) {
         return c.json(
           RestartRuntimeConfigStaleSessionResponseSchema.parse({
-            restarted: true,
-            session: {
-              id: updated.id,
-              status: updated.status,
-              message: updated.message,
-              configVersion: updated.configVersion,
-              workspaceRoots: updated.workspaceRoots,
-              stale: false,
-              sandboxSummary: updated.sandboxSummary,
-            },
+            restarted: false,
+            session: null,
           })
         );
-      } catch (error) {
-        return asApiError((error as Error).message, 'runtime_config_stale_session_restart_failed');
       }
+
+      const updated = store.updateAgentSession(sessionId, {
+        configVersion: runtimeConfig().version,
+        message: 'Runtime config stale session retired; start a new worker session.',
+        stale: false,
+        status: 'interrupted',
+      });
+
+      return c.json(
+        RestartRuntimeConfigStaleSessionResponseSchema.parse({
+          restarted: true,
+          session: {
+            id: updated.id,
+            status: updated.status,
+            message: updated.message,
+            configVersion: updated.configVersion,
+            workspaceRoots: updated.workspaceRoots,
+            stale: false,
+            sandboxSummary: updated.sandboxSummary,
+          },
+        })
+      );
+    } catch (error) {
+      return asApiError((error as Error).message, 'runtime_config_stale_session_restart_failed');
     }
-  );
+  });
 
   app.get('/v1/models', async (c) => {
     const models: Record<string, unknown>[] = [];
@@ -9094,7 +9091,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/quick-chat', async (c) => {
+  registerAppApiRoute(app, 'quickChat', async (c) => {
     try {
       const input = QuickChatRequestSchema.parse(await c.req.json());
       const { model, providerId } = quickChatSelection(input.providerId, input.model);
@@ -9164,7 +9161,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/threads/:threadId/chat', async (c) => {
+  registerAppApiRoute(app, 'startChatMode', async (c) => {
     const parsed = StartChatModeRequestSchema.safeParse(await c.req.json().catch(() => ({})));
 
     if (!parsed.success) {
@@ -9618,7 +9615,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/threads/:threadId/items', (c) => {
+  registerAppApiRoute(app, 'listThreadItems', (c) => {
     try {
       return c.json(
         ListThreadItemsResponseSchema.parse({
@@ -9634,17 +9631,17 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/automations', (c) =>
+  registerAppApiRoute(app, 'listAutomations', (c) =>
     c.json(ListAutomationsResponseSchema.parse({ items: automationStore.listAutomations() }))
   );
 
-  app.post('/api/app/automations', async (c) => {
+  registerAppApiRoute(app, 'createAutomation', async (c) => {
     const input = CreateAutomationRequestSchema.parse(await c.req.json());
     requestStore(c).getWorkspace(input.workspaceId);
     return c.json(AutomationRecordSchema.parse(automationStore.createAutomation(input)), 201);
   });
 
-  app.patch('/api/app/automations/:automationId', async (c) => {
+  registerAppApiRoute(app, 'updateAutomation', async (c) => {
     try {
       const input = UpdateAutomationRequestSchema.parse(await c.req.json());
 
@@ -9658,7 +9655,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.delete('/api/app/automations/:automationId', (c) => {
+  registerAppApiRoute(app, 'deleteAutomation', (c) => {
     try {
       automationStore.deleteAutomation(c.req.param('automationId'));
 
@@ -9668,7 +9665,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/search', (c) => {
+  registerAppApiRoute(app, 'searchApp', (c) => {
     const query = (c.req.query('q') ?? '').trim().toLowerCase();
 
     if (!query) {
@@ -9742,7 +9739,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     return c.json(AppSearchResponseSchema.parse({ items }));
   });
 
-  app.get('/api/app/agents', (c) => {
+  registerAppApiRoute(app, 'listAgentCatalog', (c) => {
     try {
       return c.json(listAgentCatalog(requestStore(c)));
     } catch (error) {
@@ -9750,7 +9747,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/agents/:agentId', (c) => {
+  registerAppApiRoute(app, 'getAgentCatalogEntry', (c) => {
     try {
       return c.json(getAgentCatalogEntry(requestStore(c), c.req.param('agentId')));
     } catch (error) {
@@ -9758,7 +9755,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/repositories', (c) => {
+  registerAppApiRoute(app, 'listWorkspaceRepositories', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId') ?? '';
       const store = requestStore(c);
@@ -9787,7 +9784,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/repositories/diagnostics', (c) => {
+  registerAppApiRoute(app, 'getWorkspaceRepositoryDiagnostics', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId') ?? '';
       const store = requestStore(c);
@@ -9819,7 +9816,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/repositories/git-push-records', (c) => {
+  registerAppApiRoute(app, 'listGitPushRecords', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId') ?? '';
       const store = requestStore(c);
@@ -9838,115 +9835,112 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post(
-    '/api/app/workspaces/:workspaceId/repositories/:resourceId/git-push/approval',
-    async (c) => {
-      const parsed = RequestGitPushApprovalRequestSchema.safeParse(
-        await c.req.json().catch(() => ({}))
-      );
+  registerAppApiRoute(app, 'requestGitPushApproval', async (c) => {
+    const parsed = RequestGitPushApprovalRequestSchema.safeParse(
+      await c.req.json().catch(() => ({}))
+    );
 
-      if (!parsed.success) {
-        return asInvalidRequestError(parsed.error);
-      }
-
-      try {
-        const workspaceId = c.req.param('workspaceId') ?? '';
-        const resourceId = c.req.param('resourceId') ?? '';
-        const store = requestStore(c);
-        const input = parsed.data;
-        const workspace = store.getWorkspace(workspaceId);
-
-        assertProjectWorkspace(workspace, 'request Git push approval');
-        store.getTurn(workspaceId, input.threadId, input.turnId);
-
-        const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-        try {
-          requireWorkspaceRepositoryResource(workspaceDb, workspaceId, resourceId);
-
-          const response = await runIdempotentCommand({
-            store,
-            inflightCommands,
-            command: 'git_push.approval.request',
-            requestId: input.requestId,
-            scope: {
-              workspaceId,
-              repositoryResourceId: resourceId,
-              threadId: input.threadId,
-              turnId: input.turnId,
-            },
-            input,
-            responseKind: 'approval',
-            execute: () => {
-              const gate = createPolicyApprovalGate({
-                workspaceDb,
-                store,
-                workspaceId,
-                turnId: input.turnId,
-                action: 'repo.push',
-                reasonCode: 'repo_push_requires_human_approval',
-                title: `Approve Git push to ${input.targetBranch}`,
-                description: `Publish ${input.commitIds.join(', ')} from ${input.sourceRef} to ${input.targetBranch} on ${input.remoteSummary}.`,
-                subjectSummary: { kind: 'user', userId: store.getUserId() },
-                resourceSummary: {
-                  kind: 'git-push-target',
-                  workspaceId,
-                  repositoryResourceId: resourceId,
-                  sourceRef: input.sourceRef,
-                  targetBranch: input.targetBranch,
-                  commitIds: input.commitIds,
-                  remoteSummary: input.remoteSummary,
-                },
-                contextSummary: {
-                  requestId: input.requestId,
-                  workspaceId,
-                  threadId: input.threadId,
-                  turnId: input.turnId,
-                },
-              });
-              const approval = store.getApproval(gate.approvalId);
-
-              return RequestGitPushApprovalResponseSchema.parse({
-                approval,
-                approvalItemId: gate.approvalItemId,
-                policyDecisionId: gate.decisionId,
-              });
-            },
-            replay: (record) => {
-              const approval = store.getApproval(record.response.id);
-              const decision = readRepoPushApprovalDecision(workspaceDb, workspaceId, approval.id);
-              const approvalItem = store
-                .listAllItems()
-                .find(
-                  (item) =>
-                    item.workspaceId === workspaceId &&
-                    item.type === 'approval-request' &&
-                    item.approvalRequestId === approval.id
-                );
-
-              if (!decision || !approvalItem) {
-                throw new Error(`Git push approval request cannot be replayed: ${approval.id}`);
-              }
-
-              return RequestGitPushApprovalResponseSchema.parse({
-                approval,
-                approvalItemId: approvalItem.id,
-                policyDecisionId: decision.decisionId,
-              });
-            },
-            responseId: (result) => result.approval.id,
-          });
-
-          return c.json(response);
-        } finally {
-          workspaceDb.sqlite.close();
-        }
-      } catch (error) {
-        return asCommandError(error, 'git_push_approval_request_failed');
-      }
+    if (!parsed.success) {
+      return asInvalidRequestError(parsed.error);
     }
-  );
 
-  app.post('/api/app/workspaces/:workspaceId/repositories/:resourceId/git-push', async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId') ?? '';
+      const resourceId = c.req.param('resourceId') ?? '';
+      const store = requestStore(c);
+      const input = parsed.data;
+      const workspace = store.getWorkspace(workspaceId);
+
+      assertProjectWorkspace(workspace, 'request Git push approval');
+      store.getTurn(workspaceId, input.threadId, input.turnId);
+
+      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      try {
+        requireWorkspaceRepositoryResource(workspaceDb, workspaceId, resourceId);
+
+        const response = await runIdempotentCommand({
+          store,
+          inflightCommands,
+          command: 'git_push.approval.request',
+          requestId: input.requestId,
+          scope: {
+            workspaceId,
+            repositoryResourceId: resourceId,
+            threadId: input.threadId,
+            turnId: input.turnId,
+          },
+          input,
+          responseKind: 'approval',
+          execute: () => {
+            const gate = createPolicyApprovalGate({
+              workspaceDb,
+              store,
+              workspaceId,
+              turnId: input.turnId,
+              action: 'repo.push',
+              reasonCode: 'repo_push_requires_human_approval',
+              title: `Approve Git push to ${input.targetBranch}`,
+              description: `Publish ${input.commitIds.join(', ')} from ${input.sourceRef} to ${input.targetBranch} on ${input.remoteSummary}.`,
+              subjectSummary: { kind: 'user', userId: store.getUserId() },
+              resourceSummary: {
+                kind: 'git-push-target',
+                workspaceId,
+                repositoryResourceId: resourceId,
+                sourceRef: input.sourceRef,
+                targetBranch: input.targetBranch,
+                commitIds: input.commitIds,
+                remoteSummary: input.remoteSummary,
+              },
+              contextSummary: {
+                requestId: input.requestId,
+                workspaceId,
+                threadId: input.threadId,
+                turnId: input.turnId,
+              },
+            });
+            const approval = store.getApproval(gate.approvalId);
+
+            return RequestGitPushApprovalResponseSchema.parse({
+              approval,
+              approvalItemId: gate.approvalItemId,
+              policyDecisionId: gate.decisionId,
+            });
+          },
+          replay: (record) => {
+            const approval = store.getApproval(record.response.id);
+            const decision = readRepoPushApprovalDecision(workspaceDb, workspaceId, approval.id);
+            const approvalItem = store
+              .listAllItems()
+              .find(
+                (item) =>
+                  item.workspaceId === workspaceId &&
+                  item.type === 'approval-request' &&
+                  item.approvalRequestId === approval.id
+              );
+
+            if (!decision || !approvalItem) {
+              throw new Error(`Git push approval request cannot be replayed: ${approval.id}`);
+            }
+
+            return RequestGitPushApprovalResponseSchema.parse({
+              approval,
+              approvalItemId: approvalItem.id,
+              policyDecisionId: decision.decisionId,
+            });
+          },
+          responseId: (result) => result.approval.id,
+        });
+
+        return c.json(response);
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    } catch (error) {
+      return asCommandError(error, 'git_push_approval_request_failed');
+    }
+  });
+
+  registerAppApiRoute(app, 'executeGitPush', async (c) => {
     const parsed = ExecuteGitPushRequestSchema.safeParse(await c.req.json().catch(() => ({})));
 
     if (!parsed.success) {
@@ -10043,7 +10037,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/repositories/git-push-records/:pushRecordId', (c) => {
+  registerAppApiRoute(app, 'getGitPushRecord', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId') ?? '';
       const pushRecordId = c.req.param('pushRecordId') ?? '';
@@ -10130,10 +10124,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   }
 
-  app.put('/api/app/workspaces/:workspaceId/repositories/default', setDefaultWorkspaceRepository);
-  app.post('/api/app/workspaces/:workspaceId/repositories/default', setDefaultWorkspaceRepository);
+  registerAppApiRoute(app, 'setDefaultWorkspaceRepository', setDefaultWorkspaceRepository);
+  registerAppApiRoute(app, 'createDefaultWorkspaceRepository', setDefaultWorkspaceRepository);
 
-  app.get('/api/app/workspaces/:workspaceId/action-center', (c) => {
+  registerAppApiRoute(app, 'listHumanAttention', (c) => {
     try {
       const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
@@ -10157,7 +10151,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/scheduler/admissions', (c) => {
+  registerAppApiRoute(app, 'listSchedulerAdmissions', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
 
@@ -10199,7 +10193,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/scheduler/admissions/:queueEntryId/retry', (c) => {
+  registerAppApiRoute(app, 'retrySchedulerAdmission', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const queueEntryId = c.req.param('queueEntryId');
@@ -10238,7 +10232,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/scheduler/admissions/:queueEntryId/cancel', (c) => {
+  registerAppApiRoute(app, 'cancelSchedulerAdmission', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const queueEntryId = c.req.param('queueEntryId');
@@ -10277,7 +10271,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/capability-usage', (c) => {
+  registerAppApiRoute(app, 'getCapabilityUsage', (c) => {
     try {
       const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
@@ -10299,7 +10293,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/evidence-bundles', async (c) => {
+  registerAppApiRoute(app, 'createEvidenceBundle', async (c) => {
     try {
       const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
@@ -10326,7 +10320,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/evidence-bundles', (c) => {
+  registerAppApiRoute(app, 'listWorkspaceEvidenceBundles', (c) => {
     try {
       const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
@@ -10347,7 +10341,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/runtime-evidence', (c) => {
+  registerAppApiRoute(app, 'listWorkspaceRuntimeEvidence', (c) => {
     try {
       const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
@@ -10368,7 +10362,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/audit/events', (c) => {
+  registerAppApiRoute(app, 'listWorkspaceAuditEvents', (c) => {
     try {
       const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
@@ -10389,7 +10383,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/audit/events', (c) => {
+  registerAppApiRoute(app, 'listServerAuditEvents', (c) => {
     try {
       if (!options.coreDb) {
         return asApiError(
@@ -10409,7 +10403,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/permission-decisions', (c) => {
+  registerAppApiRoute(app, 'listWorkspacePermissionDecisions', (c) => {
     try {
       const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
@@ -10433,7 +10427,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/vault/grants', (c) => {
+  registerAppApiRoute(app, 'listWorkspaceVaultGrants', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       requestStore(c).getWorkspace(workspaceId);
@@ -10453,7 +10447,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/vault/injection-plans', (c) => {
+  registerAppApiRoute(app, 'listWorkspaceInjectionPlans', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       requestStore(c).getWorkspace(workspaceId);
@@ -10476,7 +10470,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/vault/injection-receipts', (c) => {
+  registerAppApiRoute(app, 'listWorkspaceInjectionReceipts', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       requestStore(c).getWorkspace(workspaceId);
@@ -10502,7 +10496,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/permission-decisions', (c) => {
+  registerAppApiRoute(app, 'listServerPermissionDecisions', (c) => {
     try {
       if (!options.coreDb) {
         return asApiError('Core DB is not available.');
@@ -10518,7 +10512,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/vault/use-records', (c) => {
+  registerAppApiRoute(app, 'listServerVaultUseRecords', (c) => {
     try {
       if (!options.coreDb) {
         return asApiError('Core DB is not available.');
@@ -10534,7 +10528,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/dashboard', (c) => {
+  registerAppApiRoute(app, 'getWorkspaceDashboard', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const workspace = requestStore(c).getWorkspace(workspaceId);
@@ -10581,7 +10575,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/threads/:threadId/dashboard', (c) => {
+  registerAppApiRoute(app, 'getThreadDashboard', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const threadId = c.req.param('threadId');
@@ -10632,59 +10626,56 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post(
-    '/api/app/workspaces/:workspaceId/threads/:threadId/agent-sessions/:agentSessionId/terminal-commands',
-    async (c) => {
-      try {
-        const workspaceId = c.req.param('workspaceId');
-        const threadId = c.req.param('threadId');
-        const agentSessionId = c.req.param('agentSessionId');
-        const request = QueueAgentSessionTerminalCommandRequestSchema.parse(await c.req.json());
-        const activeSession = getThreadAgentSession(
-          turnExecutor,
-          requestStore(c),
-          workspaceId,
-          threadId,
-          runtimeConfig().version,
-          workerControlGateway
+  registerAppApiRoute(app, 'queueAgentSessionTerminalCommand', async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId');
+      const threadId = c.req.param('threadId');
+      const agentSessionId = c.req.param('agentSessionId');
+      const request = QueueAgentSessionTerminalCommandRequestSchema.parse(await c.req.json());
+      const activeSession = getThreadAgentSession(
+        turnExecutor,
+        requestStore(c),
+        workspaceId,
+        threadId,
+        runtimeConfig().version,
+        workerControlGateway
+      );
+
+      if (!activeSession || activeSession.id !== agentSessionId) {
+        return asApiError(
+          `Active agent session not found: ${agentSessionId}`,
+          'agent_session_not_found',
+          404
         );
-
-        if (!activeSession || activeSession.id !== agentSessionId) {
-          return asApiError(
-            `Active agent session not found: ${agentSessionId}`,
-            'agent_session_not_found',
-            404
-          );
-        }
-
-        const snapshot = workerControlGateway.getSessionSnapshotByAgentSessionId(agentSessionId);
-
-        if (!snapshot || snapshot.workspaceId !== workspaceId || snapshot.threadId !== threadId) {
-          return asApiError(
-            `Worker control session not found: ${agentSessionId}`,
-            'worker_control_session_not_found',
-            404
-          );
-        }
-
-        const command = workerControlGateway.enqueueTerminalCommand(snapshot.packageSnapshotId, {
-          argv: request.argv,
-          commandId: request.requestId,
-          cwd: request.cwd,
-        });
-
-        return c.json(
-          QueueAgentSessionTerminalCommandResponseSchema.parse({
-            command,
-          })
-        );
-      } catch (error) {
-        return asApiError((error as Error).message, 'terminal_command_queue_failed', 400);
       }
-    }
-  );
 
-  app.post('/api/app/workspaces/:workspaceId/threads/:threadId/task', async (c) => {
+      const snapshot = workerControlGateway.getSessionSnapshotByAgentSessionId(agentSessionId);
+
+      if (!snapshot || snapshot.workspaceId !== workspaceId || snapshot.threadId !== threadId) {
+        return asApiError(
+          `Worker control session not found: ${agentSessionId}`,
+          'worker_control_session_not_found',
+          404
+        );
+      }
+
+      const command = workerControlGateway.enqueueTerminalCommand(snapshot.packageSnapshotId, {
+        argv: request.argv,
+        commandId: request.requestId,
+        cwd: request.cwd,
+      });
+
+      return c.json(
+        QueueAgentSessionTerminalCommandResponseSchema.parse({
+          command,
+        })
+      );
+    } catch (error) {
+      return asApiError((error as Error).message, 'terminal_command_queue_failed', 400);
+    }
+  });
+
+  registerAppApiRoute(app, 'startTaskMode', async (c) => {
     const parsed = StartTaskModeRequestSchema.safeParse(await c.req.json().catch(() => ({})));
 
     if (!parsed.success) {
@@ -10804,7 +10795,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/threads/:threadId/goal', (c) => {
+  registerAppApiRoute(app, 'getThreadGoalSummary', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const threadId = c.req.param('threadId');
@@ -10837,7 +10828,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/threads/:threadId/goal', async (c) => {
+  registerAppApiRoute(app, 'startThreadGoal', async (c) => {
     const parsed = StartThreadGoalRequestSchema.safeParse(await c.req.json().catch(() => ({})));
 
     if (!parsed.success) {
@@ -10871,7 +10862,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/threads/:threadId/goal/steering', async (c) => {
+  registerAppApiRoute(app, 'submitThreadGoalSteering', async (c) => {
     const parsed = SubmitThreadGoalSteeringRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -10952,7 +10943,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/threads/:threadId/goal/plan', async (c) => {
+  registerAppApiRoute(app, 'createThreadGoalPlan', async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const threadId = c.req.param('threadId');
@@ -11028,7 +11019,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/threads/:threadId/goal/plan/approve', async (c) => {
+  registerAppApiRoute(app, 'approveThreadGoalPlan', async (c) => {
     const parsed = ApproveThreadGoalPlanRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -11111,7 +11102,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/threads/:threadId/goal/plan/revise', async (c) => {
+  registerAppApiRoute(app, 'reviseThreadGoalPlan', async (c) => {
     const parsed = ReviseThreadGoalPlanRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -11184,7 +11175,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/threads/:threadId/goal/pause', async (c) => {
+  registerAppApiRoute(app, 'pauseThreadGoal', async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const threadId = c.req.param('threadId');
@@ -11250,7 +11241,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/threads/:threadId/goal/resume', async (c) => {
+  registerAppApiRoute(app, 'resumeThreadGoal', async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const threadId = c.req.param('threadId');
@@ -11302,7 +11293,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/threads/:threadId/goal/step', async (c) => {
+  registerAppApiRoute(app, 'runThreadGoalStep', async (c) => {
     const parsed = RunThreadGoalStepRequestSchema.safeParse(await c.req.json().catch(() => ({})));
 
     if (!parsed.success) {
@@ -11774,82 +11765,79 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     );
   }
 
-  app.post(
-    '/api/app/workspaces/:workspaceId/threads/:threadId/recovery/interrupted-worker',
-    (c) => {
+  registerAppApiRoute(app, 'createInterruptedRecoveryState', (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId');
+      const threadId = c.req.param('threadId');
+      const store = requestStore(c);
+
+      store.getWorkspace(workspaceId);
+      store.getThread(workspaceId, threadId);
+
+      if (!options.coreDb) {
+        return asApiError(
+          'Recovery storage is unavailable for this NanoCore instance.',
+          'recovery_storage_unavailable',
+          503
+        );
+      }
+
+      const turn = store.createTurn(workspaceId, threadId, 'Deterministic interrupted worker');
+      const timestamp = turn.startedAt ?? new Date().toISOString();
+      const pendingItem = store.createItem({
+        id: `it_recovery_pending_${turn.id}`,
+        workspaceId,
+        threadId,
+        turnId: turn.id,
+        type: 'user-message',
+        status: 'completed',
+        text: 'Pending input preserved across restart.',
+        createdAt: timestamp,
+        completedAt: timestamp,
+      });
+      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      let checkpoint: ReturnType<typeof upsertWorkerCheckpoint>;
+      let pendingUserTurn: ReturnType<typeof enqueuePendingUserTurn>;
       try {
-        const workspaceId = c.req.param('workspaceId');
-        const threadId = c.req.param('threadId');
-        const store = requestStore(c);
-
-        store.getWorkspace(workspaceId);
-        store.getThread(workspaceId, threadId);
-
-        if (!options.coreDb) {
-          return asApiError(
-            'Recovery storage is unavailable for this NanoCore instance.',
-            'recovery_storage_unavailable',
-            503
-          );
-        }
-
-        const turn = store.createTurn(workspaceId, threadId, 'Deterministic interrupted worker');
-        const timestamp = turn.startedAt ?? new Date().toISOString();
-        const pendingItem = store.createItem({
-          id: `it_recovery_pending_${turn.id}`,
+        checkpoint = upsertWorkerCheckpoint(workspaceDb, {
           workspaceId,
           threadId,
           turnId: turn.id,
-          type: 'user-message',
-          status: 'completed',
-          text: 'Pending input preserved across restart.',
-          createdAt: timestamp,
-          completedAt: timestamp,
+          stage: 'running_worker',
+          iteration: 1,
+          workerSessionId: 'deterministic-worker',
+          contextDigest: `deterministic:${turn.id}`,
+          diagnosticsSummary: 'Deterministic worker interrupted before terminal save.',
+          now: () => timestamp,
         });
-        const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-        let checkpoint: ReturnType<typeof upsertWorkerCheckpoint>;
-        let pendingUserTurn: ReturnType<typeof enqueuePendingUserTurn>;
-        try {
-          checkpoint = upsertWorkerCheckpoint(workspaceDb, {
-            workspaceId,
-            threadId,
-            turnId: turn.id,
-            stage: 'running_worker',
-            iteration: 1,
-            workerSessionId: 'deterministic-worker',
-            contextDigest: `deterministic:${turn.id}`,
-            diagnosticsSummary: 'Deterministic worker interrupted before terminal save.',
-            now: () => timestamp,
-          });
-          pendingUserTurn = enqueuePendingUserTurn(workspaceDb, {
-            workspaceId,
-            threadId,
-            requestId: `req_${turn.id}`,
-            contentItemId: pendingItem.id,
-            queueMode: 'safe_point_steering',
-            receivedAt: timestamp,
-          });
-        } finally {
-          workspaceDb.sqlite.close();
-        }
-
-        return c.json(
-          CreateInterruptedRecoveryStateResponseSchema.parse({
-            checkpoint: {
-              checkpointId: checkpoint.checkpointId,
-              turnId: checkpoint.turnId,
-              stage: checkpoint.stage,
-            },
-            pendingUserTurn,
-          })
-        );
-      } catch (error) {
-        return asApiError((error as Error).message, 'recovery_seed_failed', 400);
+        pendingUserTurn = enqueuePendingUserTurn(workspaceDb, {
+          workspaceId,
+          threadId,
+          requestId: `req_${turn.id}`,
+          contentItemId: pendingItem.id,
+          queueMode: 'safe_point_steering',
+          receivedAt: timestamp,
+        });
+      } finally {
+        workspaceDb.sqlite.close();
       }
-    }
-  );
 
-  app.get('/api/app/recovery/interrupted-workers', (c) => {
+      return c.json(
+        CreateInterruptedRecoveryStateResponseSchema.parse({
+          checkpoint: {
+            checkpointId: checkpoint.checkpointId,
+            turnId: checkpoint.turnId,
+            stage: checkpoint.stage,
+          },
+          pendingUserTurn,
+        })
+      );
+    } catch (error) {
+      return asApiError((error as Error).message, 'recovery_seed_failed', 400);
+    }
+  });
+
+  registerAppApiRoute(app, 'listInterruptedWorkers', (c) => {
     try {
       if (!options.coreDb) {
         return asApiError(
@@ -11878,7 +11866,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/threads/:threadId/recovery/pending-user-turns', (c) => {
+  registerAppApiRoute(app, 'listRecoveryPendingUserTurns', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const threadId = c.req.param('threadId');
@@ -11910,406 +11898,384 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post(
-    '/api/app/workspaces/:workspaceId/threads/:threadId/recovery/pending-user-turns/:requestId/edit',
-    async (c) => {
-      const parsed = EditRecoveryPendingUserTurnRequestSchema.safeParse(
-        await c.req.json().catch(() => ({}))
-      );
+  registerAppApiRoute(app, 'editRecoveryPendingUserTurn', async (c) => {
+    const parsed = EditRecoveryPendingUserTurnRequestSchema.safeParse(
+      await c.req.json().catch(() => ({}))
+    );
 
-      if (!parsed.success) {
-        return asInvalidRequestError(parsed.error);
-      }
-
-      try {
-        const workspaceId = c.req.param('workspaceId');
-        const threadId = c.req.param('threadId');
-        const requestId = c.req.param('requestId');
-        const store = requestStore(c);
-
-        store.getWorkspace(workspaceId);
-        store.getThread(workspaceId, threadId);
-
-        if (!options.coreDb) {
-          return asApiError(
-            'Recovery storage is unavailable for this NanoCore instance.',
-            'recovery_storage_unavailable',
-            503
-          );
-        }
-
-        const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-        try {
-          const pendingTurn =
-            listPendingUserTurns(workspaceDb, { workspaceId, threadId }).find(
-              (turn) => turn.requestId === requestId
-            ) ?? null;
-
-          if (!pendingTurn) {
-            return c.json(
-              EditRecoveryPendingUserTurnResponseSchema.parse({ edited: false, item: null })
-            );
-          }
-
-          if (!pendingTurn.contentItemId) {
-            return asApiError(
-              'Pending user turn does not reference an editable item.',
-              'recovery_pending_user_turn_edit_unsupported',
-              409
-            );
-          }
-
-          const item = store
-            .listThreadItems(workspaceId, threadId)
-            .find((candidate) => candidate.id === pendingTurn.contentItemId);
-
-          if (!item || item.type !== 'user-message') {
-            return asApiError(
-              'Pending user turn does not reference an editable user message.',
-              'recovery_pending_user_turn_edit_unsupported',
-              409
-            );
-          }
-
-          const updated = store.updateItem(item.id, {
-            text: parsed.data.text,
-          });
-          recordPendingUserTurnEditedAuditEvent(workspaceDb, pendingTurn);
-
-          return c.json(
-            EditRecoveryPendingUserTurnResponseSchema.parse({ edited: true, item: updated })
-          );
-        } finally {
-          workspaceDb.sqlite.close();
-        }
-      } catch (error) {
-        return asApiError((error as Error).message, 'recovery_pending_user_turn_edit_failed', 400);
-      }
+    if (!parsed.success) {
+      return asInvalidRequestError(parsed.error);
     }
-  );
 
-  app.post(
-    '/api/app/workspaces/:workspaceId/threads/:threadId/recovery/pending-user-turns/:requestId/follow-up',
-    (c) => {
-      try {
-        const workspaceId = c.req.param('workspaceId');
-        const threadId = c.req.param('threadId');
-        const requestId = c.req.param('requestId');
-        const store = requestStore(c);
+    try {
+      const workspaceId = c.req.param('workspaceId');
+      const threadId = c.req.param('threadId');
+      const requestId = c.req.param('requestId');
+      const store = requestStore(c);
 
-        store.getWorkspace(workspaceId);
-        store.getThread(workspaceId, threadId);
+      store.getWorkspace(workspaceId);
+      store.getThread(workspaceId, threadId);
 
-        if (!options.coreDb) {
-          return asApiError(
-            'Recovery storage is unavailable for this NanoCore instance.',
-            'recovery_storage_unavailable',
-            503
-          );
-        }
-
-        const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-        try {
-          const pendingUserTurn = convertPendingUserTurnToFollowUp(workspaceDb, {
-            requestId,
-            threadId,
-            workspaceId,
-          });
-
-          return c.json(
-            ConvertRecoveryPendingUserTurnToFollowUpResponseSchema.parse({
-              converted: Boolean(pendingUserTurn),
-              pendingUserTurn,
-            })
-          );
-        } finally {
-          workspaceDb.sqlite.close();
-        }
-      } catch (error) {
+      if (!options.coreDb) {
         return asApiError(
-          (error as Error).message,
-          'recovery_pending_user_turn_follow_up_failed',
-          400
+          'Recovery storage is unavailable for this NanoCore instance.',
+          'recovery_storage_unavailable',
+          503
         );
       }
-    }
-  );
 
-  app.post(
-    '/api/app/workspaces/:workspaceId/threads/:threadId/recovery/pending-user-turns/:requestId/interrupt',
-    async (c) => {
+      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
       try {
-        const workspaceId = c.req.param('workspaceId');
-        const threadId = c.req.param('threadId');
-        const requestId = c.req.param('requestId');
-        const store = requestStore(c);
+        const pendingTurn =
+          listPendingUserTurns(workspaceDb, { workspaceId, threadId }).find(
+            (turn) => turn.requestId === requestId
+          ) ?? null;
 
-        store.getWorkspace(workspaceId);
-        store.getThread(workspaceId, threadId);
-
-        if (!options.coreDb) {
-          return asApiError(
-            'Recovery storage is unavailable for this NanoCore instance.',
-            'recovery_storage_unavailable',
-            503
+        if (!pendingTurn) {
+          return c.json(
+            EditRecoveryPendingUserTurnResponseSchema.parse({ edited: false, item: null })
           );
         }
 
-        const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-        try {
-          const pendingTurn =
-            listPendingUserTurns(workspaceDb, { workspaceId, threadId }).find(
-              (turn) => turn.requestId === requestId
-            ) ?? null;
+        if (!pendingTurn.contentItemId) {
+          return asApiError(
+            'Pending user turn does not reference an editable item.',
+            'recovery_pending_user_turn_edit_unsupported',
+            409
+          );
+        }
 
-          if (!pendingTurn) {
-            return c.json(
-              PromoteRecoveryPendingUserTurnToInterruptResponseSchema.parse({
-                promoted: false,
-                turn: null,
-              })
-            );
-          }
+        const item = store
+          .listThreadItems(workspaceId, threadId)
+          .find((candidate) => candidate.id === pendingTurn.contentItemId);
 
-          const activeTurn =
-            [...store.listThreadTurns(workspaceId, threadId)]
-              .reverse()
-              .find((turn) => turn.status === 'pending' || turn.status === 'running') ?? null;
+        if (!item || item.type !== 'user-message') {
+          return asApiError(
+            'Pending user turn does not reference an editable user message.',
+            'recovery_pending_user_turn_edit_unsupported',
+            409
+          );
+        }
 
-          if (!activeTurn) {
-            return asApiError(
-              'Thread has no active turn to interrupt.',
-              'recovery_pending_user_turn_interrupt_unavailable',
-              409
-            );
-          }
+        const updated = store.updateItem(item.id, {
+          text: parsed.data.text,
+        });
+        recordPendingUserTurnEditedAuditEvent(workspaceDb, pendingTurn);
 
-          await turnExecutor.interruptTurn(store, activeTurn.id, { requestId });
-          const promoted = promotePendingUserTurnToInterrupt(workspaceDb, {
-            requestId,
-            threadId,
-            workspaceId,
-          });
+        return c.json(
+          EditRecoveryPendingUserTurnResponseSchema.parse({ edited: true, item: updated })
+        );
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    } catch (error) {
+      return asApiError((error as Error).message, 'recovery_pending_user_turn_edit_failed', 400);
+    }
+  });
 
+  registerAppApiRoute(app, 'convertRecoveryPendingUserTurnToFollowUp', (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId');
+      const threadId = c.req.param('threadId');
+      const requestId = c.req.param('requestId');
+      const store = requestStore(c);
+
+      store.getWorkspace(workspaceId);
+      store.getThread(workspaceId, threadId);
+
+      if (!options.coreDb) {
+        return asApiError(
+          'Recovery storage is unavailable for this NanoCore instance.',
+          'recovery_storage_unavailable',
+          503
+        );
+      }
+
+      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      try {
+        const pendingUserTurn = convertPendingUserTurnToFollowUp(workspaceDb, {
+          requestId,
+          threadId,
+          workspaceId,
+        });
+
+        return c.json(
+          ConvertRecoveryPendingUserTurnToFollowUpResponseSchema.parse({
+            converted: Boolean(pendingUserTurn),
+            pendingUserTurn,
+          })
+        );
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    } catch (error) {
+      return asApiError(
+        (error as Error).message,
+        'recovery_pending_user_turn_follow_up_failed',
+        400
+      );
+    }
+  });
+
+  registerAppApiRoute(app, 'promoteRecoveryPendingUserTurnToInterrupt', async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId');
+      const threadId = c.req.param('threadId');
+      const requestId = c.req.param('requestId');
+      const store = requestStore(c);
+
+      store.getWorkspace(workspaceId);
+      store.getThread(workspaceId, threadId);
+
+      if (!options.coreDb) {
+        return asApiError(
+          'Recovery storage is unavailable for this NanoCore instance.',
+          'recovery_storage_unavailable',
+          503
+        );
+      }
+
+      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      try {
+        const pendingTurn =
+          listPendingUserTurns(workspaceDb, { workspaceId, threadId }).find(
+            (turn) => turn.requestId === requestId
+          ) ?? null;
+
+        if (!pendingTurn) {
           return c.json(
             PromoteRecoveryPendingUserTurnToInterruptResponseSchema.parse({
-              promoted: Boolean(promoted),
-              turn: store.getTurn(workspaceId, threadId, activeTurn.id),
+              promoted: false,
+              turn: null,
             })
           );
-        } finally {
-          workspaceDb.sqlite.close();
         }
-      } catch (error) {
+
+        const activeTurn =
+          [...store.listThreadTurns(workspaceId, threadId)]
+            .reverse()
+            .find((turn) => turn.status === 'pending' || turn.status === 'running') ?? null;
+
+        if (!activeTurn) {
+          return asApiError(
+            'Thread has no active turn to interrupt.',
+            'recovery_pending_user_turn_interrupt_unavailable',
+            409
+          );
+        }
+
+        await turnExecutor.interruptTurn(store, activeTurn.id, { requestId });
+        const promoted = promotePendingUserTurnToInterrupt(workspaceDb, {
+          requestId,
+          threadId,
+          workspaceId,
+        });
+
+        return c.json(
+          PromoteRecoveryPendingUserTurnToInterruptResponseSchema.parse({
+            promoted: Boolean(promoted),
+            turn: store.getTurn(workspaceId, threadId, activeTurn.id),
+          })
+        );
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    } catch (error) {
+      return asApiError(
+        (error as Error).message,
+        'recovery_pending_user_turn_interrupt_failed',
+        400
+      );
+    }
+  });
+
+  registerAppApiRoute(app, 'cancelRecoveryPendingUserTurn', (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId');
+      const threadId = c.req.param('threadId');
+      const requestId = c.req.param('requestId');
+      const store = requestStore(c);
+
+      store.getWorkspace(workspaceId);
+      store.getThread(workspaceId, threadId);
+
+      if (!options.coreDb) {
         return asApiError(
-          (error as Error).message,
-          'recovery_pending_user_turn_interrupt_failed',
-          400
+          'Recovery storage is unavailable for this NanoCore instance.',
+          'recovery_storage_unavailable',
+          503
         );
       }
-    }
-  );
 
-  app.post(
-    '/api/app/workspaces/:workspaceId/threads/:threadId/recovery/pending-user-turns/:requestId/cancel',
-    (c) => {
+      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
       try {
-        const workspaceId = c.req.param('workspaceId');
-        const threadId = c.req.param('threadId');
-        const requestId = c.req.param('requestId');
-        const store = requestStore(c);
+        return c.json(
+          CancelRecoveryPendingUserTurnResponseSchema.parse({
+            cancelled: Boolean(
+              cancelPendingUserTurn(workspaceDb, { requestId, threadId, workspaceId })
+            ),
+          })
+        );
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    } catch (error) {
+      return asApiError((error as Error).message, 'recovery_pending_user_turn_cancel_failed', 400);
+    }
+  });
 
-        store.getWorkspace(workspaceId);
-        store.getThread(workspaceId, threadId);
+  registerAppApiRoute(app, 'retryInterruptedWorkerCheckpoint', (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId');
+      const threadId = c.req.param('threadId');
+      const turnId = c.req.param('turnId');
+      const store = requestStore(c);
 
-        if (!options.coreDb) {
-          return asApiError(
-            'Recovery storage is unavailable for this NanoCore instance.',
-            'recovery_storage_unavailable',
-            503
-          );
-        }
+      store.getWorkspace(workspaceId);
+      store.getThread(workspaceId, threadId);
 
-        const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-        try {
-          return c.json(
-            CancelRecoveryPendingUserTurnResponseSchema.parse({
-              cancelled: Boolean(
-                cancelPendingUserTurn(workspaceDb, { requestId, threadId, workspaceId })
-              ),
-            })
-          );
-        } finally {
-          workspaceDb.sqlite.close();
-        }
-      } catch (error) {
+      if (!options.coreDb) {
         return asApiError(
-          (error as Error).message,
-          'recovery_pending_user_turn_cancel_failed',
-          400
+          'Recovery storage is unavailable for this NanoCore instance.',
+          'recovery_storage_unavailable',
+          503
         );
       }
-    }
-  );
 
-  app.post(
-    '/api/app/workspaces/:workspaceId/threads/:threadId/recovery/interrupted-worker/:turnId/retry',
-    (c) => {
+      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
       try {
-        const workspaceId = c.req.param('workspaceId');
-        const threadId = c.req.param('threadId');
-        const turnId = c.req.param('turnId');
-        const store = requestStore(c);
+        const checkpoint = getWorkerCheckpoint(workspaceDb, workspaceId, threadId, turnId);
 
-        store.getWorkspace(workspaceId);
-        store.getThread(workspaceId, threadId);
-
-        if (!options.coreDb) {
-          return asApiError(
-            'Recovery storage is unavailable for this NanoCore instance.',
-            'recovery_storage_unavailable',
-            503
-          );
-        }
-
-        const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-        try {
-          const checkpoint = getWorkerCheckpoint(workspaceDb, workspaceId, threadId, turnId);
-
-          if (!checkpoint) {
-            return c.json(
-              RetryInterruptedWorkerCheckpointResponseSchema.parse({
-                retried: false,
-                turn: null,
-              })
-            );
-          }
-
-          if (
-            checkpoint.goalId &&
-            checkpoint.taskId &&
-            (!getGoalRecord(workspaceDb, workspaceId, threadId, checkpoint.goalId) ||
-              !listGoalTasks(workspaceDb, {
-                goalId: checkpoint.goalId,
-                threadId,
-                workspaceId,
-              }).some((task) => task.taskId === checkpoint.taskId))
-          ) {
-            return asApiError(
-              'Interrupted worker checkpoint has missing goal task lineage.',
-              'recovery_retry_lineage_unavailable',
-              409
-            );
-          }
-
-          const now = new Date().toISOString();
-          const turn = store.updateTurn(turnId, {
-            completedAt: now,
-            error: {
-              code: 'worker_checkpoint_retry',
-              message: 'Interrupted worker checkpoint was queued for retry.',
-            },
-            status: 'interrupted',
-          });
-
-          updateWorkerCheckpoint(workspaceDb, {
-            diagnosticsSummary: 'Interrupted worker checkpoint queued for retry.',
-            stage: 'aborted',
-            stopReason: 'aborted',
-            threadId,
-            turnId,
-            workspaceId,
-          });
-
-          if (checkpoint.goalId && checkpoint.taskId) {
-            updateGoalTask(workspaceDb, {
-              goalId: checkpoint.goalId,
-              status: 'ready',
-              taskId: checkpoint.taskId,
-              threadId,
-              workspaceId,
-            });
-            updateGoalStatus(workspaceDb, {
-              currentTaskId: checkpoint.taskId,
-              goalId: checkpoint.goalId,
-              status: 'running',
-              threadId,
-              workspaceId,
-            });
-          }
-
-          clearWorkerCheckpointAfterTerminalState(workspaceDb, {
-            terminalStage: 'aborted',
-            threadId,
-            turnId,
-            workspaceId,
-          });
-
+        if (!checkpoint) {
           return c.json(
             RetryInterruptedWorkerCheckpointResponseSchema.parse({
-              retried: true,
-              turn,
+              retried: false,
+              turn: null,
             })
           );
-        } finally {
-          workspaceDb.sqlite.close();
         }
-      } catch (error) {
-        return asApiError((error as Error).message, 'recovery_retry_failed', 400);
-      }
-    }
-  );
 
-  app.post(
-    '/api/app/workspaces/:workspaceId/threads/:threadId/recovery/interrupted-worker/:turnId/terminal',
-    async (c) => {
-      const parsed = ClearInterruptedWorkerCheckpointRequestSchema.safeParse(
-        await c.req.json().catch(() => ({}))
-      );
-
-      if (!parsed.success) {
-        return asInvalidRequestError(parsed.error);
-      }
-
-      try {
-        const workspaceId = c.req.param('workspaceId');
-        const threadId = c.req.param('threadId');
-        const turnId = c.req.param('turnId');
-        const store = requestStore(c);
-
-        store.getWorkspace(workspaceId);
-        store.getThread(workspaceId, threadId);
-
-        if (!options.coreDb) {
+        if (
+          checkpoint.goalId &&
+          checkpoint.taskId &&
+          (!getGoalRecord(workspaceDb, workspaceId, threadId, checkpoint.goalId) ||
+            !listGoalTasks(workspaceDb, {
+              goalId: checkpoint.goalId,
+              threadId,
+              workspaceId,
+            }).some((task) => task.taskId === checkpoint.taskId))
+        ) {
           return asApiError(
-            'Recovery storage is unavailable for this NanoCore instance.',
-            'recovery_storage_unavailable',
-            503
+            'Interrupted worker checkpoint has missing goal task lineage.',
+            'recovery_retry_lineage_unavailable',
+            409
           );
         }
 
-        const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-        try {
-          return c.json(
-            ClearInterruptedWorkerCheckpointResponseSchema.parse({
-              cleared: clearWorkerCheckpointAfterTerminalState(workspaceDb, {
-                workspaceId,
-                threadId,
-                turnId,
-                terminalStage: parsed.data.terminalStage,
-              }),
-            })
-          );
-        } finally {
-          workspaceDb.sqlite.close();
+        const now = new Date().toISOString();
+        const turn = store.updateTurn(turnId, {
+          completedAt: now,
+          error: {
+            code: 'worker_checkpoint_retry',
+            message: 'Interrupted worker checkpoint was queued for retry.',
+          },
+          status: 'interrupted',
+        });
+
+        updateWorkerCheckpoint(workspaceDb, {
+          diagnosticsSummary: 'Interrupted worker checkpoint queued for retry.',
+          stage: 'aborted',
+          stopReason: 'aborted',
+          threadId,
+          turnId,
+          workspaceId,
+        });
+
+        if (checkpoint.goalId && checkpoint.taskId) {
+          updateGoalTask(workspaceDb, {
+            goalId: checkpoint.goalId,
+            status: 'ready',
+            taskId: checkpoint.taskId,
+            threadId,
+            workspaceId,
+          });
+          updateGoalStatus(workspaceDb, {
+            currentTaskId: checkpoint.taskId,
+            goalId: checkpoint.goalId,
+            status: 'running',
+            threadId,
+            workspaceId,
+          });
         }
-      } catch (error) {
-        return asApiError((error as Error).message, 'recovery_clear_failed', 400);
+
+        clearWorkerCheckpointAfterTerminalState(workspaceDb, {
+          terminalStage: 'aborted',
+          threadId,
+          turnId,
+          workspaceId,
+        });
+
+        return c.json(
+          RetryInterruptedWorkerCheckpointResponseSchema.parse({
+            retried: true,
+            turn,
+          })
+        );
+      } finally {
+        workspaceDb.sqlite.close();
       }
+    } catch (error) {
+      return asApiError((error as Error).message, 'recovery_retry_failed', 400);
     }
-  );
+  });
 
-  app.post('/api/app/workspaces/:workspaceId/agents/health/refresh', (c) => {
+  registerAppApiRoute(app, 'clearInterruptedWorkerCheckpoint', async (c) => {
+    const parsed = ClearInterruptedWorkerCheckpointRequestSchema.safeParse(
+      await c.req.json().catch(() => ({}))
+    );
+
+    if (!parsed.success) {
+      return asInvalidRequestError(parsed.error);
+    }
+
+    try {
+      const workspaceId = c.req.param('workspaceId');
+      const threadId = c.req.param('threadId');
+      const turnId = c.req.param('turnId');
+      const store = requestStore(c);
+
+      store.getWorkspace(workspaceId);
+      store.getThread(workspaceId, threadId);
+
+      if (!options.coreDb) {
+        return asApiError(
+          'Recovery storage is unavailable for this NanoCore instance.',
+          'recovery_storage_unavailable',
+          503
+        );
+      }
+
+      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      try {
+        return c.json(
+          ClearInterruptedWorkerCheckpointResponseSchema.parse({
+            cleared: clearWorkerCheckpointAfterTerminalState(workspaceDb, {
+              workspaceId,
+              threadId,
+              turnId,
+              terminalStage: parsed.data.terminalStage,
+            }),
+          })
+        );
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    } catch (error) {
+      return asApiError((error as Error).message, 'recovery_clear_failed', 400);
+    }
+  });
+
+  registerAppApiRoute(app, 'refreshAgentHealth', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
 
@@ -12593,7 +12559,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/knowledge/sources', async (c) => {
+  registerAppApiRoute(app, 'registerKnowledgeSource', async (c) => {
     const parsed = RegisterKnowledgeSourceRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -12664,7 +12630,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/knowledge/sources', (c) => {
+  registerAppApiRoute(app, 'listKnowledgeSources', (c) => {
     try {
       return c.json(
         ListKnowledgeSourcesResponseSchema.parse({
@@ -12676,7 +12642,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/knowledge/observations', async (c) => {
+  registerAppApiRoute(app, 'recordKnowledgeObservation', async (c) => {
     const parsed = RecordKnowledgeObservationRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -12734,7 +12700,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/knowledge/observations', (c) => {
+  registerAppApiRoute(app, 'listKnowledgeObservations', (c) => {
     try {
       return c.json(
         ListKnowledgeObservationsResponseSchema.parse({
@@ -12746,7 +12712,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/knowledge/claims', async (c) => {
+  registerAppApiRoute(app, 'recordKnowledgeClaim', async (c) => {
     const parsed = RecordKnowledgeClaimRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -12803,7 +12769,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/knowledge/claims', (c) => {
+  registerAppApiRoute(app, 'listKnowledgeClaims', (c) => {
     try {
       return c.json(
         ListKnowledgeClaimsResponseSchema.parse({
@@ -12815,7 +12781,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/knowledge/claims/:claimId/promotion', async (c) => {
+  registerAppApiRoute(app, 'promoteKnowledgeClaim', async (c) => {
     const parsed = PromoteKnowledgeClaimRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -12900,7 +12866,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/knowledge/conflicts', async (c) => {
+  registerAppApiRoute(app, 'recordKnowledgeConflict', async (c) => {
     const parsed = RecordKnowledgeConflictRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -12955,7 +12921,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/knowledge/conflicts', (c) => {
+  registerAppApiRoute(app, 'listKnowledgeConflicts', (c) => {
     try {
       return c.json(
         ListKnowledgeConflictsResponseSchema.parse({
@@ -12967,62 +12933,59 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post(
-    '/api/app/workspaces/:workspaceId/knowledge/conflicts/:conflictId/resolution',
-    async (c) => {
-      const parsed = ResolveKnowledgeConflictRequestSchema.safeParse(
-        await c.req.json().catch(() => ({}))
-      );
+  registerAppApiRoute(app, 'resolveKnowledgeConflict', async (c) => {
+    const parsed = ResolveKnowledgeConflictRequestSchema.safeParse(
+      await c.req.json().catch(() => ({}))
+    );
 
-      if (!parsed.success) {
-        return asInvalidRequestError(parsed.error);
-      }
-
-      try {
-        const store = requestStore(c);
-        const workspaceId = c.req.param('workspaceId');
-        const conflictId = c.req.param('conflictId');
-        const now = new Date().toISOString();
-        const conflict = await runIdempotentCommand({
-          store,
-          inflightCommands,
-          command: 'knowledge.conflict.resolve',
-          requestId: parsed.data.requestId,
-          scope: { workspaceId, conflictId },
-          input: { ...parsed.data, workspaceId, conflictId },
-          responseKind: 'knowledge_conflict',
-          execute: () =>
-            store.resolveKnowledgeConflict({
-              workspaceId,
-              conflictId,
-              status: parsed.data.status,
-              resolution: parsed.data.resolution,
-              resolvedBy: parsed.data.resolvedBy,
-              resolvedAt: now,
-            }),
-          replay: (record) => store.getKnowledgeConflict(workspaceId, record.response.id),
-          responseId: (result) => result.id,
-        });
-        recordKnowledgeGatewayUsage({
-          capabilityId: 'knowledge.conflict.resolve',
-          operation: 'knowledge.conflict.resolve',
-          requestId: parsed.data.requestId,
-          serviceRef: 'knowledge-store',
-          store,
-          summary: `Knowledge conflict ${conflict.id} resolved.`,
-          usageSource: 'knowledge-conflict-resolve',
-          workspaceId,
-          ...(options.coreDb ? { coreDb: options.coreDb } : {}),
-        });
-
-        return c.json(ResolveKnowledgeConflictResponseSchema.parse({ conflict }));
-      } catch (error) {
-        return asCommandError(error, 'knowledge_conflict_resolve_failed');
-      }
+    if (!parsed.success) {
+      return asInvalidRequestError(parsed.error);
     }
-  );
 
-  app.get('/api/app/workspaces/:workspaceId/knowledge/indexes', (c) => {
+    try {
+      const store = requestStore(c);
+      const workspaceId = c.req.param('workspaceId');
+      const conflictId = c.req.param('conflictId');
+      const now = new Date().toISOString();
+      const conflict = await runIdempotentCommand({
+        store,
+        inflightCommands,
+        command: 'knowledge.conflict.resolve',
+        requestId: parsed.data.requestId,
+        scope: { workspaceId, conflictId },
+        input: { ...parsed.data, workspaceId, conflictId },
+        responseKind: 'knowledge_conflict',
+        execute: () =>
+          store.resolveKnowledgeConflict({
+            workspaceId,
+            conflictId,
+            status: parsed.data.status,
+            resolution: parsed.data.resolution,
+            resolvedBy: parsed.data.resolvedBy,
+            resolvedAt: now,
+          }),
+        replay: (record) => store.getKnowledgeConflict(workspaceId, record.response.id),
+        responseId: (result) => result.id,
+      });
+      recordKnowledgeGatewayUsage({
+        capabilityId: 'knowledge.conflict.resolve',
+        operation: 'knowledge.conflict.resolve',
+        requestId: parsed.data.requestId,
+        serviceRef: 'knowledge-store',
+        store,
+        summary: `Knowledge conflict ${conflict.id} resolved.`,
+        usageSource: 'knowledge-conflict-resolve',
+        workspaceId,
+        ...(options.coreDb ? { coreDb: options.coreDb } : {}),
+      });
+
+      return c.json(ResolveKnowledgeConflictResponseSchema.parse({ conflict }));
+    } catch (error) {
+      return asCommandError(error, 'knowledge_conflict_resolve_failed');
+    }
+  });
+
+  registerAppApiRoute(app, 'readKnowledgeIndexes', (c) => {
     try {
       const store = requestStore(c);
       const dataRoot = store.getDataRoot();
@@ -13049,7 +13012,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/knowledge/retrievals', async (c) => {
+  registerAppApiRoute(app, 'retrieveKnowledge', async (c) => {
     const parsed = RetrieveKnowledgeRequestSchema.safeParse(await c.req.json().catch(() => ({})));
 
     if (!parsed.success) {
@@ -13097,7 +13060,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/knowledge/sources/:sourceId', (c) => {
+  registerAppApiRoute(app, 'readKnowledgeSource', (c) => {
     try {
       const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
@@ -13126,7 +13089,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/knowledge/manager/answer', async (c) => {
+  registerAppApiRoute(app, 'answerKnowledgeManager', async (c) => {
     const parsed = KnowledgeManagerAnswerRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -13163,7 +13126,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/knowledge/manager/context', async (c) => {
+  registerAppApiRoute(app, 'prepareKnowledgeContext', async (c) => {
     const parsed = KnowledgeManagerPrepareContextRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -13241,101 +13204,92 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get(
-    '/api/app/workspaces/:workspaceId/knowledge/manager/context/:contextPackageId',
-    async (c) => {
-      try {
-        const trace = requestStore(c).readKnowledgeContextPackageTrace(
-          c.req.param('workspaceId'),
-          c.req.param('contextPackageId')
-        );
+  registerAppApiRoute(app, 'readKnowledgeContextPackageTrace', async (c) => {
+    try {
+      const trace = requestStore(c).readKnowledgeContextPackageTrace(
+        c.req.param('workspaceId'),
+        c.req.param('contextPackageId')
+      );
 
-        if (!trace) {
-          return asApiError(
-            'Knowledge context package trace not found.',
-            'knowledge_context_package_trace_not_found',
-            404
-          );
-        }
-
-        return c.json(ReadKnowledgeManagerContextPackageTraceResponseSchema.parse({ trace }));
-      } catch (error) {
+      if (!trace) {
         return asApiError(
-          (error as Error).message,
-          'knowledge_context_package_trace_read_failed',
-          500
+          'Knowledge context package trace not found.',
+          'knowledge_context_package_trace_not_found',
+          404
         );
       }
+
+      return c.json(ReadKnowledgeManagerContextPackageTraceResponseSchema.parse({ trace }));
+    } catch (error) {
+      return asApiError(
+        (error as Error).message,
+        'knowledge_context_package_trace_read_failed',
+        500
+      );
     }
-  );
+  });
 
-  app.post(
-    '/api/app/workspaces/:workspaceId/knowledge/manager/context/:contextPackageId/materialization',
-    async (c) => {
-      try {
-        const store = requestStore(c);
-        const trace = store.readKnowledgeContextPackageTrace(
-          c.req.param('workspaceId'),
-          c.req.param('contextPackageId')
-        );
+  registerAppApiRoute(app, 'materializeKnowledgeContextPackage', async (c) => {
+    try {
+      const store = requestStore(c);
+      const trace = store.readKnowledgeContextPackageTrace(
+        c.req.param('workspaceId'),
+        c.req.param('contextPackageId')
+      );
 
-        if (!trace) {
-          return asApiError(
-            'Knowledge context package trace not found.',
-            'knowledge_context_package_trace_not_found',
-            404
-          );
-        }
-
-        const workspaceRoots =
-          (trace.response.workspaceRootFiles ?? []).length > 0
-            ? workspaceRootsForContextPackage(store, trace.workspaceId)
-            : [];
-
-        return c.json(
-          MaterializeKnowledgeContextPackageResponseSchema.parse(
-            store.materializeKnowledgeContextPackageTrace(trace, { workspaceRoots })
-          )
-        );
-      } catch (error) {
+      if (!trace) {
         return asApiError(
-          (error as Error).message,
-          'knowledge_context_package_materialization_failed',
-          500
+          'Knowledge context package trace not found.',
+          'knowledge_context_package_trace_not_found',
+          404
         );
       }
+
+      const workspaceRoots =
+        (trace.response.workspaceRootFiles ?? []).length > 0
+          ? workspaceRootsForContextPackage(store, trace.workspaceId)
+          : [];
+
+      return c.json(
+        MaterializeKnowledgeContextPackageResponseSchema.parse(
+          store.materializeKnowledgeContextPackageTrace(trace, { workspaceRoots })
+        )
+      );
+    } catch (error) {
+      return asApiError(
+        (error as Error).message,
+        'knowledge_context_package_materialization_failed',
+        500
+      );
     }
-  );
+  });
 
-  app.get(
-    '/api/app/workspaces/:workspaceId/knowledge/manager/context/:contextPackageId/materialization',
-    async (c) => {
-      try {
-        const materialization = requestStore(c).readKnowledgeContextPackageMaterialization(
-          c.req.param('workspaceId'),
-          c.req.param('contextPackageId')
-        );
+  registerAppApiRoute(app, 'readKnowledgeContextPackageMaterialization', async (c) => {
+    try {
+      const materialization = requestStore(c).readKnowledgeContextPackageMaterialization(
+        c.req.param('workspaceId'),
+        c.req.param('contextPackageId')
+      );
 
-        if (!materialization) {
-          return asApiError(
-            'Knowledge context package materialization not found.',
-            'knowledge_context_package_materialization_not_found',
-            404
-          );
-        }
-
-        return c.json(MaterializeKnowledgeContextPackageResponseSchema.parse(materialization));
-      } catch (error) {
+      if (!materialization) {
         return asApiError(
-          (error as Error).message,
-          'knowledge_context_package_materialization_read_failed',
-          500
+          'Knowledge context package materialization not found.',
+          'knowledge_context_package_materialization_not_found',
+          404
         );
       }
-    }
-  );
 
-  app.post('/api/app/workspaces/:workspaceId/knowledge/manager/proposals', async (c) => {
+      return c.json(MaterializeKnowledgeContextPackageResponseSchema.parse(materialization));
+    } catch (error) {
+      return asApiError(
+        (error as Error).message,
+        'knowledge_context_package_materialization_read_failed',
+        500
+      );
+    }
+  });
+
+  registerAppApiRoute(app, 'draftKnowledgeProposal', async (c) => {
     const parsed = KnowledgeManagerDraftProposalRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -13406,7 +13360,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/knowledge/manager/repairs', async (c) => {
+  registerAppApiRoute(app, 'suggestKnowledgeRepairs', async (c) => {
     const parsed = KnowledgeManagerSuggestRepairRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -13442,7 +13396,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/knowledge/manager/health', async (c) => {
+  registerAppApiRoute(app, 'checkKnowledgeHealth', async (c) => {
     const parsed = KnowledgeManagerHealthCheckRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
@@ -13725,7 +13679,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/turns/:turnId/feedback', async (c) => {
+  registerAppApiRoute(app, 'submitTurnFeedback', async (c) => {
     const parsed = UpdateTurnFeedbackRequestSchema.safeParse(await c.req.json().catch(() => ({})));
 
     if (!parsed.success) {
@@ -13984,7 +13938,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/workspace-sync/reviews', async (c) => {
+  registerAppApiRoute(app, 'listWorkspaceSyncReviews', async (c) => {
     try {
       const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
@@ -14005,7 +13959,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/workspace-sync/reviews/:reviewId', async (c) => {
+  registerAppApiRoute(app, 'getWorkspaceSyncReview', async (c) => {
     try {
       const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
@@ -14033,92 +13987,85 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post(
-    '/api/app/workspaces/:workspaceId/workspace-sync/reviews/:reviewId/decision',
-    async (c) => {
-      try {
-        const parsed = SubmitWorkspaceSyncReviewDecisionRequestSchema.safeParse(
-          await c.req.json().catch(() => ({}))
-        );
+  registerAppApiRoute(app, 'submitWorkspaceSyncReviewDecision', async (c) => {
+    try {
+      const parsed = SubmitWorkspaceSyncReviewDecisionRequestSchema.safeParse(
+        await c.req.json().catch(() => ({}))
+      );
 
-        if (!parsed.success) {
-          return asInvalidRequestError(parsed.error);
-        }
-
-        const store = requestStore(c);
-        const workspaceId = c.req.param('workspaceId');
-        const reviewId = c.req.param('reviewId');
-        const input = parsed.data;
-
-        if (!input.requestId) {
-          return asApiError('requestId is required.', 'invalid_request', 400);
-        }
-
-        const requestId = input.requestId;
-        const response = await runIdempotentCommand({
-          store,
-          inflightCommands,
-          command: 'workspace_sync.review.decide',
-          requestId,
-          scope: { workspaceId, reviewId },
-          input,
-          responseKind: 'workspace_sync_review',
-          execute: async () => {
-            const decidedAt = new Date().toISOString();
-            const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-            try {
-              return await decideWorkspaceSyncReview({
-                decidedAt,
-                decision: input.decision,
-                fallbackReview:
-                  listWorkspaceSyncReviewArtifacts(store.listArtifacts(workspaceId)).find(
-                    (item) => item.review.id === reviewId
-                  ) ?? null,
-                requestId,
-                reviewId,
-                store,
-                workspaceDb,
-                workspaceId,
-              });
-            } finally {
-              workspaceDb.sqlite.close();
-            }
-          },
-          replay: (record) => {
-            const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-            try {
-              const review = getWorkspaceSyncReview(workspaceDb, workspaceId, record.response.id);
-
-              if (!review) {
-                throw new Error(`Workspace synchronization review not found: ${reviewId}`);
-              }
-
-              return {
-                review: review.review,
-                workspaceApplyResult:
-                  review.review.status === 'accepted'
-                    ? requireWorkspaceApplyResult(
-                        workspaceDb,
-                        workspaceId,
-                        `war_${review.review.id}`
-                      )
-                    : null,
-              };
-            } finally {
-              workspaceDb.sqlite.close();
-            }
-          },
-          responseId: (result) => result.review.id,
-        });
-
-        return c.json(SubmitWorkspaceSyncReviewDecisionResponseSchema.parse(response));
-      } catch (error) {
-        return asCommandError(error, 'workspace_sync_review_failed');
+      if (!parsed.success) {
+        return asInvalidRequestError(parsed.error);
       }
-    }
-  );
 
-  app.get('/api/app/workspaces/:workspaceId/workspace-sync/input-snapshots', (c) => {
+      const store = requestStore(c);
+      const workspaceId = c.req.param('workspaceId');
+      const reviewId = c.req.param('reviewId');
+      const input = parsed.data;
+
+      if (!input.requestId) {
+        return asApiError('requestId is required.', 'invalid_request', 400);
+      }
+
+      const requestId = input.requestId;
+      const response = await runIdempotentCommand({
+        store,
+        inflightCommands,
+        command: 'workspace_sync.review.decide',
+        requestId,
+        scope: { workspaceId, reviewId },
+        input,
+        responseKind: 'workspace_sync_review',
+        execute: async () => {
+          const decidedAt = new Date().toISOString();
+          const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+          try {
+            return await decideWorkspaceSyncReview({
+              decidedAt,
+              decision: input.decision,
+              fallbackReview:
+                listWorkspaceSyncReviewArtifacts(store.listArtifacts(workspaceId)).find(
+                  (item) => item.review.id === reviewId
+                ) ?? null,
+              requestId,
+              reviewId,
+              store,
+              workspaceDb,
+              workspaceId,
+            });
+          } finally {
+            workspaceDb.sqlite.close();
+          }
+        },
+        replay: (record) => {
+          const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+          try {
+            const review = getWorkspaceSyncReview(workspaceDb, workspaceId, record.response.id);
+
+            if (!review) {
+              throw new Error(`Workspace synchronization review not found: ${reviewId}`);
+            }
+
+            return {
+              review: review.review,
+              workspaceApplyResult:
+                review.review.status === 'accepted'
+                  ? requireWorkspaceApplyResult(workspaceDb, workspaceId, `war_${review.review.id}`)
+                  : null,
+            };
+          } finally {
+            workspaceDb.sqlite.close();
+          }
+        },
+        responseId: (result) => result.review.id,
+      });
+
+      return c.json(SubmitWorkspaceSyncReviewDecisionResponseSchema.parse(response));
+    } catch (error) {
+      return asCommandError(error, 'workspace_sync_review_failed');
+    }
+  });
+
+  registerAppApiRoute(app, 'listWorkspaceInputSnapshots', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const store = requestStore(c);
@@ -14135,7 +14082,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/workspace-sync/materialization-records', (c) => {
+  registerAppApiRoute(app, 'listWorkspaceMaterializationRecords', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const store = requestStore(c);
@@ -14152,7 +14099,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/workspace-sync/backend-handles', (c) => {
+  registerAppApiRoute(app, 'listBackendWorkspaceHandles', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const store = requestStore(c);
@@ -14169,7 +14116,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/workspace-sync/output-manifests', (c) => {
+  registerAppApiRoute(app, 'listWorkerOutputManifests', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const store = requestStore(c);
@@ -14186,7 +14133,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/workspace-sync/change-sets', (c) => {
+  registerAppApiRoute(app, 'listWorkspaceChangeSets', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const store = requestStore(c);
@@ -14203,7 +14150,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/workspace-sync/staged-reviews', (c) => {
+  registerAppApiRoute(app, 'listStagedWorkspaceReviews', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const store = requestStore(c);
@@ -14220,7 +14167,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/workspace-sync/apply-plans', (c) => {
+  registerAppApiRoute(app, 'listWorkspaceApplyPlans', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const store = requestStore(c);
@@ -14237,7 +14184,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/workspace-sync/reconciliation-records', (c) => {
+  registerAppApiRoute(app, 'listWorkspaceReconciliationRecords', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const store = requestStore(c);
@@ -14254,87 +14201,84 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post(
-    '/api/app/workspaces/:workspaceId/workspace-sync/reconciliation-records/:reconciliationRecordId/decision',
-    async (c) => {
-      try {
-        const parsed = SubmitWorkspaceRecoveryDecisionRequestSchema.safeParse(
-          await c.req.json().catch(() => ({}))
-        );
+  registerAppApiRoute(app, 'submitWorkspaceRecoveryDecision', async (c) => {
+    try {
+      const parsed = SubmitWorkspaceRecoveryDecisionRequestSchema.safeParse(
+        await c.req.json().catch(() => ({}))
+      );
 
-        if (!parsed.success) {
-          return asInvalidRequestError(parsed.error);
-        }
-
-        const store = requestStore(c);
-        const workspaceId = c.req.param('workspaceId');
-        const reconciliationRecordId = c.req.param('reconciliationRecordId');
-        const input = parsed.data;
-
-        if (!input.requestId) {
-          return asApiError('requestId is required.', 'invalid_request', 400);
-        }
-
-        const response = await runIdempotentCommand({
-          store,
-          inflightCommands,
-          command: 'workspace_sync.recovery.decide',
-          requestId: input.requestId,
-          scope: { reconciliationRecordId, workspaceId },
-          input,
-          responseKind: 'workspace_sync_review',
-          execute: () => {
-            const decidedAt = new Date().toISOString();
-            const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-            try {
-              return {
-                reconciliationRecord: resolveWorkspaceReconciliationRecord({
-                  workspaceDb,
-                  workspaceId,
-                  reconciliationRecordId,
-                  decision: input.decision,
-                  decidedAt,
-                  workerOutputManifests: listWorkerOutputManifests(workspaceDb, workspaceId),
-                  workspaceSyncEvidenceBundles: listWorkspaceSyncEvidenceBundles(
-                    workspaceDb,
-                    workspaceId
-                  ),
-                }),
-              };
-            } finally {
-              workspaceDb.sqlite.close();
-            }
-          },
-          replay: (record) => {
-            const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-            try {
-              const reconciliationRecord = listWorkspaceReconciliationRecords(
-                workspaceDb,
-                workspaceId
-              ).find((candidate) => candidate.id === record.response.id);
-
-              if (!reconciliationRecord) {
-                throw new Error(
-                  `Workspace reconciliation record not found: ${reconciliationRecordId}`
-                );
-              }
-
-              return { reconciliationRecord };
-            } finally {
-              workspaceDb.sqlite.close();
-            }
-          },
-          responseId: (result) => result.reconciliationRecord.id,
-        });
-
-        return c.json(SubmitWorkspaceRecoveryDecisionResponseSchema.parse(response));
-      } catch (error) {
-        return asCommandError(error, 'workspace_recovery_decision_failed');
+      if (!parsed.success) {
+        return asInvalidRequestError(parsed.error);
       }
-    }
-  );
 
-  app.get('/api/app/workspaces/:workspaceId/workspace-sync/quarantine-records', (c) => {
+      const store = requestStore(c);
+      const workspaceId = c.req.param('workspaceId');
+      const reconciliationRecordId = c.req.param('reconciliationRecordId');
+      const input = parsed.data;
+
+      if (!input.requestId) {
+        return asApiError('requestId is required.', 'invalid_request', 400);
+      }
+
+      const response = await runIdempotentCommand({
+        store,
+        inflightCommands,
+        command: 'workspace_sync.recovery.decide',
+        requestId: input.requestId,
+        scope: { reconciliationRecordId, workspaceId },
+        input,
+        responseKind: 'workspace_sync_review',
+        execute: () => {
+          const decidedAt = new Date().toISOString();
+          const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+          try {
+            return {
+              reconciliationRecord: resolveWorkspaceReconciliationRecord({
+                workspaceDb,
+                workspaceId,
+                reconciliationRecordId,
+                decision: input.decision,
+                decidedAt,
+                workerOutputManifests: listWorkerOutputManifests(workspaceDb, workspaceId),
+                workspaceSyncEvidenceBundles: listWorkspaceSyncEvidenceBundles(
+                  workspaceDb,
+                  workspaceId
+                ),
+              }),
+            };
+          } finally {
+            workspaceDb.sqlite.close();
+          }
+        },
+        replay: (record) => {
+          const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+          try {
+            const reconciliationRecord = listWorkspaceReconciliationRecords(
+              workspaceDb,
+              workspaceId
+            ).find((candidate) => candidate.id === record.response.id);
+
+            if (!reconciliationRecord) {
+              throw new Error(
+                `Workspace reconciliation record not found: ${reconciliationRecordId}`
+              );
+            }
+
+            return { reconciliationRecord };
+          } finally {
+            workspaceDb.sqlite.close();
+          }
+        },
+        responseId: (result) => result.reconciliationRecord.id,
+      });
+
+      return c.json(SubmitWorkspaceRecoveryDecisionResponseSchema.parse(response));
+    } catch (error) {
+      return asCommandError(error, 'workspace_recovery_decision_failed');
+    }
+  });
+
+  registerAppApiRoute(app, 'listWorkspaceQuarantineRecords', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const store = requestStore(c);
@@ -14351,7 +14295,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/workspace-sync/evidence-bundles', (c) => {
+  registerAppApiRoute(app, 'listWorkspaceSyncEvidenceBundles', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const store = requestStore(c);
@@ -14368,7 +14312,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/workspace-sync/apply-results', (c) => {
+  registerAppApiRoute(app, 'listWorkspaceApplyResults', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const store = requestStore(c);
@@ -14385,7 +14329,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/workspace-sync/apply-results/:applyResultId', (c) => {
+  registerAppApiRoute(app, 'getWorkspaceApplyResult', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const applyResultId = c.req.param('applyResultId');
@@ -14408,7 +14352,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/agent-environment/snapshots', (c) => {
+  registerAppApiRoute(app, 'listAgentEnvironmentPackageSnapshots', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const store = requestStore(c);
@@ -14425,7 +14369,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.get('/api/app/workspaces/:workspaceId/agent-environment/snapshots/:snapshotId', (c) => {
+  registerAppApiRoute(app, 'getAgentEnvironmentPackageSnapshot', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const snapshotId = c.req.param('snapshotId');
@@ -14489,7 +14433,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post('/api/app/workspaces/:workspaceId/artifacts/:artifactId/review', async (c) => {
+  registerAppApiRoute(app, 'submitArtifactReviewDecision', async (c) => {
     try {
       const parsed = SubmitArtifactReviewDecisionRequestSchema.safeParse(
         await c.req.json().catch(() => ({}))
@@ -14709,213 +14653,205 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
   });
 
-  app.post(
-    '/api/app/workspaces/:workspaceId/knowledge/proposals/:proposalId/decision',
-    async (c) => {
-      try {
-        const parsed = SubmitKnowledgeProposalDecisionRequestSchema.safeParse(
-          await c.req.json().catch(() => ({}))
-        );
+  registerAppApiRoute(app, 'submitKnowledgeProposalDecision', async (c) => {
+    try {
+      const parsed = SubmitKnowledgeProposalDecisionRequestSchema.safeParse(
+        await c.req.json().catch(() => ({}))
+      );
 
-        if (!parsed.success) {
-          return asInvalidRequestError(parsed.error);
-        }
-
-        const store = requestStore(c);
-        const workspaceId = c.req.param('workspaceId');
-        const proposalId = c.req.param('proposalId');
-        const input = parsed.data;
-
-        if (!input.requestId) {
-          return asApiError('requestId is required.', 'invalid_request', 400);
-        }
-
-        const requestId = input.requestId;
-        const message = input.message ?? null;
-        const decidedAt = new Date().toISOString();
-        const review = await runIdempotentCommand({
-          store,
-          inflightCommands,
-          command: 'knowledge.proposal.decide',
-          requestId,
-          scope: { workspaceId, proposalId },
-          input,
-          responseKind: 'knowledge_proposal_review',
-          execute: () => {
-            const proposal = store.getKnowledgeProposal(proposalId);
-            const sourceClaimId =
-              proposal && proposal.status !== 'accepted' ? proposal.sourceClaimId : undefined;
-            const shouldApplyClaim = input.decision === 'accepted' && sourceClaimId !== undefined;
-            if (input.decision === 'edited') {
-              const updates: { title?: string; summary?: string; updatedAt: string } = {
-                updatedAt: decidedAt,
-              };
-              if (input.title !== undefined) {
-                updates.title = input.title;
-              }
-              if (input.summary !== undefined) {
-                updates.summary = input.summary;
-              }
-              store.updateKnowledgeProposalContent(proposalId, {
-                ...updates,
-              });
-            }
-            const review = store.recordKnowledgeProposalReviewDecision({
-              proposalId,
-              workspaceId,
-              status: input.decision,
-              requestId,
-              message,
-              decidedAt,
-            });
-
-            if (shouldApplyClaim) {
-              const claim = store.getKnowledgeClaim(workspaceId, sourceClaimId);
-              store.createKnowledgeEntry(workspaceId, {
-                kind: 'project-context',
-                title: claim.statement,
-                content: claim.statement,
-                sourceReferences: claim.sourceReferences,
-              });
-            }
-
-            return review;
-          },
-          replay: (record) => {
-            const replayed = store.getKnowledgeProposalReviewDecision(record.response.id);
-
-            if (!replayed) {
-              throw new Error(
-                `Knowledge proposal review decision not found: ${record.response.id}`
-              );
-            }
-
-            return replayed;
-          },
-          responseId: (result) => result.proposalId,
-        });
-
-        return c.json(
-          SubmitKnowledgeProposalDecisionResponseSchema.parse({
-            review,
-          })
-        );
-      } catch (error) {
-        return asCommandError(error, 'knowledge_proposal_review_failed');
+      if (!parsed.success) {
+        return asInvalidRequestError(parsed.error);
       }
-    }
-  );
 
-  app.post(
-    '/api/app/workspaces/:workspaceId/threads/:threadId/goals/:goalId/reviews/:reviewId/decision',
-    async (c) => {
-      try {
-        const parsed = SubmitGoalReviewDecisionRequestSchema.safeParse(
-          await c.req.json().catch(() => ({}))
-        );
+      const store = requestStore(c);
+      const workspaceId = c.req.param('workspaceId');
+      const proposalId = c.req.param('proposalId');
+      const input = parsed.data;
 
-        if (!parsed.success) {
-          return asInvalidRequestError(parsed.error);
-        }
+      if (!input.requestId) {
+        return asApiError('requestId is required.', 'invalid_request', 400);
+      }
 
-        if (!options.coreDb) {
-          return asApiError(
-            'Goal storage is unavailable for this NanoCore instance.',
-            'goal_storage_unavailable',
-            503
-          );
-        }
-
-        const input = parsed.data;
-
-        if (!input.requestId) {
-          return asApiError('requestId is required.', 'invalid_request', 400);
-        }
-
-        const store = requestStore(c);
-        const workspaceId = c.req.param('workspaceId');
-        const threadId = c.req.param('threadId');
-        const goalId = c.req.param('goalId');
-        const reviewId = c.req.param('reviewId');
-
-        store.getWorkspace(workspaceId);
-        store.getThread(workspaceId, threadId);
-
-        const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-        try {
-          const response = await runIdempotentCommand({
-            store,
-            inflightCommands,
-            command: 'goal.review.decide',
-            requestId: input.requestId,
-            scope: { workspaceId, threadId, goalId, reviewId },
-            input,
-            responseKind: 'goal_review',
-            execute: () => {
-              const review = getGoalReviewRecord(
-                workspaceDb,
-                workspaceId,
-                threadId,
-                goalId,
-                reviewId
-              );
-
-              if (!review) {
-                throw new Error(
-                  `Goal review record not found: ${workspaceId}/${threadId}/${goalId}/${reviewId}`
-                );
-              }
-
-              if (!review.resolvedAt) {
-                advanceGoalAfterReview(workspaceDb, {
-                  workspaceId,
-                  threadId,
-                  goalId,
-                  taskId: review.taskId,
-                  verdict: review.verdict,
-                });
-              }
-
-              const resolved = resolveGoalReviewRecord(workspaceDb, {
-                workspaceId,
-                threadId,
-                goalId,
-                reviewId,
-                requestId: input.requestId as string,
-              });
-
-              return buildGoalReviewDecisionResponse(workspaceDb, resolved);
-            },
-            replay: (record) => {
-              const review = getGoalReviewRecord(
-                workspaceDb,
-                workspaceId,
-                threadId,
-                goalId,
-                record.response.id
-              );
-
-              if (!review) {
-                throw new Error(
-                  `Goal review record not found: ${workspaceId}/${threadId}/${goalId}/${record.response.id}`
-                );
-              }
-
-              return buildGoalReviewDecisionResponse(workspaceDb, review);
-            },
-            responseId: (result) =>
-              SubmitGoalReviewDecisionResponseSchema.parse(result).review.reviewId,
+      const requestId = input.requestId;
+      const message = input.message ?? null;
+      const decidedAt = new Date().toISOString();
+      const review = await runIdempotentCommand({
+        store,
+        inflightCommands,
+        command: 'knowledge.proposal.decide',
+        requestId,
+        scope: { workspaceId, proposalId },
+        input,
+        responseKind: 'knowledge_proposal_review',
+        execute: () => {
+          const proposal = store.getKnowledgeProposal(proposalId);
+          const sourceClaimId =
+            proposal && proposal.status !== 'accepted' ? proposal.sourceClaimId : undefined;
+          const shouldApplyClaim = input.decision === 'accepted' && sourceClaimId !== undefined;
+          if (input.decision === 'edited') {
+            const updates: { title?: string; summary?: string; updatedAt: string } = {
+              updatedAt: decidedAt,
+            };
+            if (input.title !== undefined) {
+              updates.title = input.title;
+            }
+            if (input.summary !== undefined) {
+              updates.summary = input.summary;
+            }
+            store.updateKnowledgeProposalContent(proposalId, {
+              ...updates,
+            });
+          }
+          const review = store.recordKnowledgeProposalReviewDecision({
+            proposalId,
+            workspaceId,
+            status: input.decision,
+            requestId,
+            message,
+            decidedAt,
           });
 
-          return c.json(response);
-        } finally {
-          workspaceDb.sqlite.close();
-        }
-      } catch (error) {
-        return asCommandError(error, 'goal_review_decision_failed');
-      }
+          if (shouldApplyClaim) {
+            const claim = store.getKnowledgeClaim(workspaceId, sourceClaimId);
+            store.createKnowledgeEntry(workspaceId, {
+              kind: 'project-context',
+              title: claim.statement,
+              content: claim.statement,
+              sourceReferences: claim.sourceReferences,
+            });
+          }
+
+          return review;
+        },
+        replay: (record) => {
+          const replayed = store.getKnowledgeProposalReviewDecision(record.response.id);
+
+          if (!replayed) {
+            throw new Error(`Knowledge proposal review decision not found: ${record.response.id}`);
+          }
+
+          return replayed;
+        },
+        responseId: (result) => result.proposalId,
+      });
+
+      return c.json(
+        SubmitKnowledgeProposalDecisionResponseSchema.parse({
+          review,
+        })
+      );
+    } catch (error) {
+      return asCommandError(error, 'knowledge_proposal_review_failed');
     }
-  );
+  });
+
+  registerAppApiRoute(app, 'submitGoalReviewDecision', async (c) => {
+    try {
+      const parsed = SubmitGoalReviewDecisionRequestSchema.safeParse(
+        await c.req.json().catch(() => ({}))
+      );
+
+      if (!parsed.success) {
+        return asInvalidRequestError(parsed.error);
+      }
+
+      if (!options.coreDb) {
+        return asApiError(
+          'Goal storage is unavailable for this NanoCore instance.',
+          'goal_storage_unavailable',
+          503
+        );
+      }
+
+      const input = parsed.data;
+
+      if (!input.requestId) {
+        return asApiError('requestId is required.', 'invalid_request', 400);
+      }
+
+      const store = requestStore(c);
+      const workspaceId = c.req.param('workspaceId');
+      const threadId = c.req.param('threadId');
+      const goalId = c.req.param('goalId');
+      const reviewId = c.req.param('reviewId');
+
+      store.getWorkspace(workspaceId);
+      store.getThread(workspaceId, threadId);
+
+      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      try {
+        const response = await runIdempotentCommand({
+          store,
+          inflightCommands,
+          command: 'goal.review.decide',
+          requestId: input.requestId,
+          scope: { workspaceId, threadId, goalId, reviewId },
+          input,
+          responseKind: 'goal_review',
+          execute: () => {
+            const review = getGoalReviewRecord(
+              workspaceDb,
+              workspaceId,
+              threadId,
+              goalId,
+              reviewId
+            );
+
+            if (!review) {
+              throw new Error(
+                `Goal review record not found: ${workspaceId}/${threadId}/${goalId}/${reviewId}`
+              );
+            }
+
+            if (!review.resolvedAt) {
+              advanceGoalAfterReview(workspaceDb, {
+                workspaceId,
+                threadId,
+                goalId,
+                taskId: review.taskId,
+                verdict: review.verdict,
+              });
+            }
+
+            const resolved = resolveGoalReviewRecord(workspaceDb, {
+              workspaceId,
+              threadId,
+              goalId,
+              reviewId,
+              requestId: input.requestId as string,
+            });
+
+            return buildGoalReviewDecisionResponse(workspaceDb, resolved);
+          },
+          replay: (record) => {
+            const review = getGoalReviewRecord(
+              workspaceDb,
+              workspaceId,
+              threadId,
+              goalId,
+              record.response.id
+            );
+
+            if (!review) {
+              throw new Error(
+                `Goal review record not found: ${workspaceId}/${threadId}/${goalId}/${record.response.id}`
+              );
+            }
+
+            return buildGoalReviewDecisionResponse(workspaceDb, review);
+          },
+          responseId: (result) =>
+            SubmitGoalReviewDecisionResponseSchema.parse(result).review.reviewId,
+        });
+
+        return c.json(response);
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    } catch (error) {
+      return asCommandError(error, 'goal_review_decision_failed');
+    }
+  });
 
   app.get('/api/workspaces/:workspaceId/artifacts/:artifactId/content', (c) => {
     try {

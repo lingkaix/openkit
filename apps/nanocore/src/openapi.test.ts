@@ -1,14 +1,54 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { PROTOCOL_VERSION } from '@openkit/protocol';
+import { CapabilityUsageResponseSchema } from '@openkit/app-api-schemas';
+import {
+  AgentIdSchema,
+  AgentSessionIdSchema,
+  ArtifactIdSchema,
+  PROTOCOL_VERSION,
+  ThreadIdSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
+import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
-import { APP_OPENAPI_ROUTE_COVERAGE_EXCLUSIONS, createAppOpenApiDocument } from './openapi.js';
+import { createApp } from './app.js';
+import {
+  APP_OPENAPI_ROUTE_COVERAGE_EXCLUSIONS,
+  APP_OPENAPI_ROUTE_METHODS,
+  createAppOpenApiDocument,
+  getRegisteredAppApiOperationIds,
+  registerAppApiRoute,
+} from './openapi.js';
 import { validateAppOpenApiDocument } from './openapi-validation.js';
 
-const ROUTE_METHOD_PATTERN =
-  /app\.(get|post|put|patch|delete)\s*\(\s*['"](\/api\/(?:(?:app|setup|admin|turns)(?:\/|$))[^'"]+)['"]/g;
+const OPENAPI_ROUTE_METHOD_SET = new Set<string>(
+  APP_OPENAPI_ROUTE_METHODS.map((method) => method.toUpperCase())
+);
+const PROJECTED_APP_API_ROUTE_PATTERN = /^\/api\/(?:app|setup|admin)(?:\/|$)/;
+const TURN_FEEDBACK_ROUTE = '/api/turns/:turnId/feedback';
+const NON_APP_API_ROUTE_PATTERNS = [
+  /^\/v1(?:\/|$)/,
+  /^\/internal(?:\/|$)/,
+  /^\/api\/worker-control(?:\/|$)/,
+  /^\/api\/worker-capabilities(?:\/|$)/,
+  /^\/api\/workspaces(?:\/|$)/,
+  /^\/api\/approvals(?:\/|$)/,
+  /^\/(?:api\/)?health$/,
+  /^\/api\/(?:meta|diagnostics|openapi\.json)$/,
+  /^\/api\/turns$/,
+];
+const CANONICAL_PATH_PARAMETER_REFS: Record<string, string> = {
+  agentId: '#/components/schemas/AgentId',
+  agentSessionId: '#/components/schemas/AgentSessionId',
+  artifactId: '#/components/schemas/ArtifactId',
+  threadId: '#/components/schemas/ThreadId',
+  turnId: '#/components/schemas/TurnId',
+  workspaceId: '#/components/schemas/WorkspaceId',
+};
 const FIRST_PARTY_CONSUMER_ROOTS = [
   '../../../apps/web/src/',
   '../../../mcp/src/',
@@ -19,12 +59,29 @@ function normalizeHonoRoutePath(path: string): string {
   return path.replace(/:([A-Za-z0-9_]+)/g, '{$1}');
 }
 
+/**
+ * Checks whether one runtime route belongs to the projected public App API.
+ *
+ * @param method Uppercase HTTP method from Hono.
+ * @param path Hono route path.
+ * @returns True when the route must have an OpenAPI operation.
+ */
+function isProjectedAppApiRoute(method: string, path: string): boolean {
+  return (
+    PROJECTED_APP_API_ROUTE_PATTERN.test(path) ||
+    (method === 'POST' && path === TURN_FEEDBACK_ROUTE)
+  );
+}
+
 describe('app api openapi projection', () => {
   it('projects the storage layout report route from shared schemas', () => {
     const document = createAppOpenApiDocument();
 
     expect(document.openapi).toBe('3.1.0');
-    expect(document.info.version).toBe(PROTOCOL_VERSION);
+    expect(document.info.version).toBe('0.1.0');
+    expect((document as Record<string, unknown>)['x-openkit-protocol-version']).toBe(
+      PROTOCOL_VERSION
+    );
     expect(document.info.description).toContain('Generated projection from OpenKit Zod schemas');
     expect(document['x-openkit-source-digest']).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(document.components.schemas.StorageLayoutReportResponse).toMatchObject({
@@ -1535,6 +1592,9 @@ describe('app api openapi projection', () => {
         },
       }
     );
+    expect(document.components.schemas.CapabilityUsageResponse).toEqual(
+      z.toJSONSchema(CapabilityUsageResponseSchema)
+    );
     expect(document.paths['/api/app/workspaces/{workspaceId}/audit/events']?.get).toMatchObject({
       operationId: 'listWorkspaceAuditEvents',
       tags: ['diagnostics'],
@@ -2348,23 +2408,345 @@ describe('app api openapi projection', () => {
     });
   });
 
-  it('registers every public app api route in the openapi projection', () => {
-    const appSource = readFileSync(new URL('./app.ts', import.meta.url), 'utf8');
+  it('keeps live public app api routes and openapi operations aligned', () => {
+    const app = createApp();
+    const unsupportedMethodRoutes = app.routes
+      .filter(
+        ({ method, path }) =>
+          (method === 'ALL' && isProjectedAppApiRoute(method, path)) ||
+          (method !== 'ALL' && !OPENAPI_ROUTE_METHOD_SET.has(method))
+      )
+      .map(({ method, path }) => `${method} ${path}`);
+    const explicitRoutes = app.routes.filter(({ method }) => OPENAPI_ROUTE_METHOD_SET.has(method));
+    const unclassifiedRoutes = explicitRoutes
+      .filter(
+        ({ method, path }) =>
+          !isProjectedAppApiRoute(method, path) &&
+          !NON_APP_API_ROUTE_PATTERNS.some((pattern) => pattern.test(path))
+      )
+      .map(({ method, path }) => `${method} ${path}`);
+    const liveRoutes = explicitRoutes.filter(({ method, path }) =>
+      isProjectedAppApiRoute(method, path)
+    );
     const document = createAppOpenApiDocument();
-    const excludedOperations = new Set<string>(APP_OPENAPI_ROUTE_COVERAGE_EXCLUSIONS);
-    const missingOperations: string[] = [];
+    const unsupportedRoutes = liveRoutes
+      .filter(
+        ({ path }) => path.includes('?') || path.includes('*') || /:[A-Za-z0-9_]+\{/.test(path)
+      )
+      .map(({ method, path }) => `${method} ${path}`);
+    const rawLiveOperations = liveRoutes.map(
+      ({ method, path }) => `${method} ${normalizeHonoRoutePath(path)}`
+    );
+    const sortedRawLiveOperations = [...rawLiveOperations].sort();
+    const duplicateLiveOperations = sortedRawLiveOperations.filter(
+      (operation, index) => operation === sortedRawLiveOperations[index - 1]
+    );
+    const staleExclusions = APP_OPENAPI_ROUTE_COVERAGE_EXCLUSIONS.filter(
+      (operation) => !rawLiveOperations.includes(operation)
+    );
+    const exclusions = new Set<string>(APP_OPENAPI_ROUTE_COVERAGE_EXCLUSIONS);
+    const projectedLiveOperations = rawLiveOperations
+      .filter((operation) => !exclusions.has(operation))
+      .sort();
+    const documentedOperations = Object.entries(document.paths)
+      .flatMap(([path, pathItem]) =>
+        APP_OPENAPI_ROUTE_METHODS.flatMap((method) =>
+          method in pathItem ? [`${method.toUpperCase()} ${path}`] : []
+        )
+      )
+      .sort();
 
-    for (const match of appSource.matchAll(ROUTE_METHOD_PATTERN)) {
-      const [, method, path] = match;
-      const normalizedPath = normalizeHonoRoutePath(path);
-      const operation = `${method.toUpperCase()} ${normalizedPath}`;
+    expect(unsupportedMethodRoutes).toEqual([]);
+    expect(unclassifiedRoutes).toEqual([]);
+    expect(unsupportedRoutes).toEqual([]);
+    expect(duplicateLiveOperations).toEqual([]);
+    expect(staleExclusions).toEqual([]);
+    expect(projectedLiveOperations).toEqual(documentedOperations);
+  });
 
-      if (!excludedOperations.has(operation) && !document.paths[normalizedPath]?.[method]) {
-        missingOperations.push(operation);
+  it('enforces semantic invariants for every documented operation', () => {
+    const document = createAppOpenApiDocument();
+    const operations: Array<{
+      operation: Readonly<Record<string, unknown>>;
+      route: string;
+    }> = [];
+
+    for (const [name, schema] of Object.entries({
+      AgentId: AgentIdSchema,
+      AgentSessionId: AgentSessionIdSchema,
+      ArtifactId: ArtifactIdSchema,
+      ThreadId: ThreadIdSchema,
+      TurnId: TurnIdSchema,
+      WorkspaceId: WorkspaceIdSchema,
+    })) {
+      expect(document.components.schemas[name]).toEqual(z.toJSONSchema(schema));
+    }
+
+    for (const [path, pathItem] of Object.entries(document.paths)) {
+      for (const method of APP_OPENAPI_ROUTE_METHODS) {
+        const operation = jsonObject((pathItem as Readonly<Record<string, unknown>>)[method]);
+        if (operation) {
+          operations.push({ operation, route: `${method.toUpperCase()} ${path}` });
+        }
       }
     }
 
-    expect(missingOperations).toEqual([]);
+    const operationIds = operations.map(({ operation }) => operation.operationId);
+    const invalidOperationIds = operations
+      .filter(
+        ({ operation }) =>
+          typeof operation.operationId !== 'string' ||
+          !/^[a-z][A-Za-z0-9]*$/.test(operation.operationId)
+      )
+      .map(({ route }) => route);
+    const duplicateOperationIds = operationIds.filter(
+      (operationId, index) => operationIds.indexOf(operationId) !== index
+    );
+    const missingDefaultErrors = operations
+      .filter(({ operation }) => {
+        const responses = jsonObject(operation.responses);
+        const fallback = jsonObject(responses?.default);
+        const content = jsonObject(fallback?.content);
+        const json = jsonObject(content?.['application/json']);
+        const schema = jsonObject(json?.schema);
+        return schema?.$ref !== '#/components/schemas/ApiError';
+      })
+      .map(({ route }) => route);
+    const invalidSecurity = operations
+      .filter(({ operation, route }) => {
+        const expected =
+          route === 'POST /api/app/auth/bootstrap/consume'
+            ? []
+            : [{ bearerAuth: [] }, { sessionCookie: [] }];
+        return JSON.stringify(operation.security) !== JSON.stringify(expected);
+      })
+      .map(({ route }) => route);
+    const nonCanonicalPathParameters = operations.flatMap(({ operation, route }) => {
+      const parameters = Array.isArray(operation.parameters) ? operation.parameters : [];
+
+      return parameters.flatMap((value) => {
+        const parameter = jsonObject(value);
+        const name = typeof parameter?.name === 'string' ? parameter.name : '';
+        const expectedRef = CANONICAL_PATH_PARAMETER_REFS[name];
+        const schema = jsonObject(parameter?.schema);
+
+        return expectedRef && schema?.$ref !== expectedRef ? [`${route} ${name}`] : [];
+      });
+    });
+    const schemaNames = new Set(Object.keys(document.components.schemas));
+    const unresolvedSchemaRefs = [
+      ...JSON.stringify(document).matchAll(/"#\/components\/schemas\/([^"]+)"/g),
+    ]
+      .map((match) => match[1])
+      .filter((schemaName) => !schemaNames.has(schemaName));
+
+    expect({
+      duplicateOperationIds,
+      invalidOperationIds,
+      invalidSecurity,
+      missingDefaultErrors,
+      nonCanonicalPathParameters,
+      unresolvedSchemaRefs,
+    }).toEqual({
+      duplicateOperationIds: [],
+      invalidOperationIds: [],
+      invalidSecurity: [],
+      missingDefaultErrors: [],
+      nonCanonicalPathParameters: [],
+      unresolvedSchemaRefs: [],
+    });
+  });
+
+  it('registers runtime handlers from shared openapi route definitions', async () => {
+    const app = new Hono();
+
+    registerAppApiRoute(app, 'getStorageLayoutReport', (c) => c.json({ ok: true }));
+
+    expect(app.routes.map(({ method, path }) => ({ method, path }))).toEqual([
+      { method: 'GET', path: '/api/app/storage/layout-report' },
+    ]);
+    expect(getRegisteredAppApiOperationIds(app)).toEqual(['getStorageLayoutReport']);
+    const response = await app.request('/api/app/storage/layout-report');
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    expect(() =>
+      registerAppApiRoute(app, 'getStorageLayoutReport', (c) => c.json({ ok: true }))
+    ).toThrow('App API operation is already registered: getStorageLayoutReport');
+    expect(() =>
+      registerAppApiRoute(app, 'missingOperation' as never, (c) => c.json({ ok: true }))
+    ).toThrow('Unknown App API operationId: missingOperation');
+  });
+
+  it('binds every registered handler to its documented operation route', () => {
+    const app = createApp();
+    const document = createAppOpenApiDocument();
+    const documentedRouteByOperationId = new Map<string, string>();
+
+    for (const [path, pathItem] of Object.entries(document.paths)) {
+      for (const method of APP_OPENAPI_ROUTE_METHODS) {
+        const operation = (pathItem as Readonly<Record<string, unknown>>)[method];
+
+        if (!operation || typeof operation !== 'object' || Array.isArray(operation)) {
+          continue;
+        }
+
+        const operationId = (operation as Readonly<Record<string, unknown>>).operationId;
+        if (typeof operationId === 'string') {
+          documentedRouteByOperationId.set(operationId, `${method.toUpperCase()} ${path}`);
+        }
+      }
+    }
+
+    const exclusions = new Set<string>(APP_OPENAPI_ROUTE_COVERAGE_EXCLUSIONS);
+    const liveOperations = app.routes
+      .filter(({ method, path }) => isProjectedAppApiRoute(method, path))
+      .map(({ method, path }) => `${method} ${normalizeHonoRoutePath(path)}`)
+      .filter((operation) => !exclusions.has(operation));
+    const registeredOperations = getRegisteredAppApiOperationIds(app).map((operationId) =>
+      documentedRouteByOperationId.get(operationId)
+    );
+
+    expect(registeredOperations).toEqual(liveOperations);
+  });
+
+  it('preserves the characterized handler registration order', () => {
+    expect(getRegisteredAppApiOperationIds(createApp())).toEqual([
+      'consumeOpenKitBootstrapToken',
+      'listOpenKitAccessTokens',
+      'createOpenKitAccessToken',
+      'revokeOpenKitAccessToken',
+      'rotateOpenKitAccessToken',
+      'getVaultAdminStatus',
+      'unlockVaultAdminBackend',
+      'bootstrapCodexAuthJsonVaultReference',
+      'rebindWorkspaceVaultReference',
+      'listWorkspaceVaultReferences',
+      'listWorkspaceVaultUseRecords',
+      'lockVaultAdminBackend',
+      'listOpenAICodexOAuthAccounts',
+      'createOpenAICodexOAuthAccount',
+      'updateOpenAICodexOAuthAccount',
+      'deleteOpenAICodexOAuthAccount',
+      'getOpenAICodexOAuthAccountStatus',
+      'startOpenAICodexOAuthAccountLogin',
+      'cancelOpenAICodexOAuthAccountLogin',
+      'logoutOpenAICodexOAuthAccount',
+      'getAppDiagnostics',
+      'getSetupDiagnostics',
+      'getStorageLayoutReport',
+      'createDataRootBackup',
+      'verifyDataRootBackup',
+      'exportWorkspace',
+      'dryRunWorkspaceImport',
+      'importWorkspace',
+      'reloadRuntimeConfig',
+      'listRuntimeConfigFiles',
+      'getRuntimeConfigFile',
+      'createRuntimeConfigFile',
+      'updateRuntimeConfigFile',
+      'getRuntimeConfigSchemas',
+      'validateRuntimeConfig',
+      'restartRuntimeConfigStaleSession',
+      'quickChat',
+      'startChatMode',
+      'listThreadItems',
+      'listAutomations',
+      'createAutomation',
+      'updateAutomation',
+      'deleteAutomation',
+      'searchApp',
+      'listAgentCatalog',
+      'getAgentCatalogEntry',
+      'listWorkspaceRepositories',
+      'getWorkspaceRepositoryDiagnostics',
+      'listGitPushRecords',
+      'requestGitPushApproval',
+      'executeGitPush',
+      'getGitPushRecord',
+      'setDefaultWorkspaceRepository',
+      'createDefaultWorkspaceRepository',
+      'listHumanAttention',
+      'listSchedulerAdmissions',
+      'retrySchedulerAdmission',
+      'cancelSchedulerAdmission',
+      'getCapabilityUsage',
+      'createEvidenceBundle',
+      'listWorkspaceEvidenceBundles',
+      'listWorkspaceRuntimeEvidence',
+      'listWorkspaceAuditEvents',
+      'listServerAuditEvents',
+      'listWorkspacePermissionDecisions',
+      'listWorkspaceVaultGrants',
+      'listWorkspaceInjectionPlans',
+      'listWorkspaceInjectionReceipts',
+      'listServerPermissionDecisions',
+      'listServerVaultUseRecords',
+      'getWorkspaceDashboard',
+      'getThreadDashboard',
+      'queueAgentSessionTerminalCommand',
+      'startTaskMode',
+      'getThreadGoalSummary',
+      'startThreadGoal',
+      'submitThreadGoalSteering',
+      'createThreadGoalPlan',
+      'approveThreadGoalPlan',
+      'reviseThreadGoalPlan',
+      'pauseThreadGoal',
+      'resumeThreadGoal',
+      'runThreadGoalStep',
+      'createInterruptedRecoveryState',
+      'listInterruptedWorkers',
+      'listRecoveryPendingUserTurns',
+      'editRecoveryPendingUserTurn',
+      'convertRecoveryPendingUserTurnToFollowUp',
+      'promoteRecoveryPendingUserTurnToInterrupt',
+      'cancelRecoveryPendingUserTurn',
+      'retryInterruptedWorkerCheckpoint',
+      'clearInterruptedWorkerCheckpoint',
+      'refreshAgentHealth',
+      'registerKnowledgeSource',
+      'listKnowledgeSources',
+      'recordKnowledgeObservation',
+      'listKnowledgeObservations',
+      'recordKnowledgeClaim',
+      'listKnowledgeClaims',
+      'promoteKnowledgeClaim',
+      'recordKnowledgeConflict',
+      'listKnowledgeConflicts',
+      'resolveKnowledgeConflict',
+      'readKnowledgeIndexes',
+      'retrieveKnowledge',
+      'readKnowledgeSource',
+      'answerKnowledgeManager',
+      'prepareKnowledgeContext',
+      'readKnowledgeContextPackageTrace',
+      'materializeKnowledgeContextPackage',
+      'readKnowledgeContextPackageMaterialization',
+      'draftKnowledgeProposal',
+      'suggestKnowledgeRepairs',
+      'checkKnowledgeHealth',
+      'submitTurnFeedback',
+      'listWorkspaceSyncReviews',
+      'getWorkspaceSyncReview',
+      'submitWorkspaceSyncReviewDecision',
+      'listWorkspaceInputSnapshots',
+      'listWorkspaceMaterializationRecords',
+      'listBackendWorkspaceHandles',
+      'listWorkerOutputManifests',
+      'listWorkspaceChangeSets',
+      'listStagedWorkspaceReviews',
+      'listWorkspaceApplyPlans',
+      'listWorkspaceReconciliationRecords',
+      'submitWorkspaceRecoveryDecision',
+      'listWorkspaceQuarantineRecords',
+      'listWorkspaceSyncEvidenceBundles',
+      'listWorkspaceApplyResults',
+      'getWorkspaceApplyResult',
+      'listAgentEnvironmentPackageSnapshots',
+      'getAgentEnvironmentPackageSnapshot',
+      'submitArtifactReviewDecision',
+      'submitKnowledgeProposalDecision',
+      'submitGoalReviewDecision',
+    ]);
   });
 
   it('keeps the committed openapi artifact in sync with the projection', () => {
@@ -2401,6 +2783,18 @@ describe('app api openapi projection', () => {
     expect(offenders).toEqual([]);
   });
 });
+
+/**
+ * Narrows one unknown JSON value to a non-array object.
+ *
+ * @param value Candidate JSON value.
+ * @returns Object value, or null for primitives, arrays, and null.
+ */
+function jsonObject(value: unknown): Readonly<Record<string, unknown>> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Readonly<Record<string, unknown>>)
+    : null;
+}
 
 function listSourceFiles(root: URL): string[] {
   const rootPath = root.pathname;

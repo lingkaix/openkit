@@ -6,7 +6,7 @@ Implementation: Implemented
 ## Owns
 
 - The rule that the shared Zod schema packages remain the single contract source for the App API, and that OpenAPI is a generated projection, never a source.
-- The binding contract between App API routes and shared-package schemas: every public route registers its request, response, and error shapes from the shared packages.
+- The projection association between App API routes and shared-package schemas: every public route selects one catalog operation whose documented request, response, and error shapes reference the shared packages, while handler runtime validation remains owned by the handler's shared-schema imports and behavior tests.
 - The generated OpenAPI document: generation discipline, versioning, serving route, and drift control.
 - The SSE documentation rule: how streaming routes appear in the OpenAPI projection without OpenAPI becoming the streaming contract owner.
 - Consumption rules: what the OpenAPI document may and may not be used for, including the one-first-party-SDK rule.
@@ -16,6 +16,7 @@ Implementation: Implemented
 
 - Schema contents and their package boundaries. `packages/protocol` and `packages/app-api-schemas` own their schemas; `docs/specs/20260628-protocol_contract_consolidation.md` and `docs/specs/20260528-core_client_boundary.md` own the layering.
 - The `@openkit/core-client` SDK design and sub-client composition (`docs/specs/20260528-core_client_boundary.md`).
+- The Core HTTP/SSE projection under `/api/workspaces`, `/api/turns`, `/api/approvals`, and related Core routes. `@openkit/protocol`, `@openkit/core-client`, `docs/core/protocol.md`, and `docs/core/communication.md` own that transport projection.
 - Protocol event envelope, SSE semantics, stream cursors, and replay (`docs/core/protocol.md`, `docs/core/communication.md`).
 - Route behavior, auth semantics (`docs/specs/20260704-remote_auth_credential_bootstrap.md`), or any endpoint's business contract.
 - The gateway's OpenAI-compatible `/v1/*` surface, which follows external OpenAI compatibility (`docs/specs/20260526-llm_gateway_responses_api.md`), not this projection.
@@ -29,16 +30,16 @@ Implementation: Implemented
 
 ## Summary
 
-The App API contract already lives in shared Zod schema packages consumed by NanoCore, the Web SPA, and the MCP channel through `@openkit/core-client`. What is missing is a machine-readable, framework-neutral description of the HTTP surface for everything that is not a first-party TypeScript consumer: external integrators, contract fixtures, documentation, and future non-TypeScript SDKs.
+The App API contract already lives in shared Zod schema packages consumed by NanoCore, the Web SPA, and the MCP channel through `@openkit/core-client`. What is missing is a machine-readable, framework-neutral description of the public App API surface for external integrators, contract fixtures, documentation, and future non-TypeScript SDKs.
 
-This spec adds an OpenAPI document as a generated projection with the direction fixed: Zod schemas in the shared packages define the contract; App API routes bind to those schemas through an OpenAPI-aware route registry; the OpenAPI document is generated from that registry at build time, checked for drift in CI, and served as a diagnostic artifact. The projection direction is never inverted — no code, type, or client is generated from the OpenAPI document into first-party packages, and `@openkit/core-client` remains the only first-party SDK.
+This spec adds an OpenAPI document as a generated projection with the direction fixed: Zod schemas in the shared packages define payload contracts; one canonical operation catalog owns documented route identity and metadata; runtime route registration selects the same operation by id; and build/CI commands reproducibly emit and check the document. Handler runtime parsing still imports the shared schemas directly rather than running through OpenAPI. The projection direction is never inverted — no code, type, or client is generated from the OpenAPI document into first-party packages, and `@openkit/core-client` remains the only first-party SDK.
 
 ## Goals / Non-goals
 
 ### Goals
 
 - Produce a complete, always-current OpenAPI description of the public App API without introducing a second contract source.
-- Make route registration carry its schemas from the shared packages so runtime validation, static types, and documentation derive from one definition.
+- Make runtime route identity and documented operation metadata select the same catalog entry while keeping payload schemas canonical in the shared packages.
 - Detect contract drift and route-coverage gaps mechanically in CI.
 - Give external consumers and future non-TS SDK generation a stable artifact.
 - Document authentication schemes and the shared error envelope once, referenced everywhere.
@@ -48,8 +49,9 @@ This spec adds an OpenAPI document as a generated projection with the direction 
 - Do not adopt OpenAPI-first design or generate first-party TypeScript types or clients from the document.
 - Do not replace or wrap `@openkit/core-client`; no second first-party SDK.
 - Do not make OpenAPI the owner of streaming semantics; the protocol docs own the event envelope.
+- Do not pull the separate Core HTTP/SSE projection into the App API document merely because NanoCore serves both surfaces.
 - Do not cover the OpenAI-compatible gateway `/v1/*` surface or the worker-visible `control.local` and `capability.local` planes; those follow their own external or worker-facing contracts.
-- Do not commit to one specific binding library as contract; the library is an implementation projection.
+- Do not add an OpenAPI binding dependency or runtime validation layer without a concrete need that justifies its behavior and maintenance cost.
 
 ## Background
 
@@ -57,13 +59,13 @@ The current stack is Hono in `apps/nanocore/src/app.ts`, Zod schemas in `package
 
 Two alternatives were considered and rejected for the consumer-facing question this spec answers. OpenAPI-first (define the API in OpenAPI, generate Zod and types) inverts the source-of-truth direction, loses Zod expressiveness (discriminated unions, refinements, brands), and produces worse generated types than hand-owned schemas. Hono RPC (`hc` type inference) couples clients to server internals across the core/client boundary that `docs/specs/20260528-core_client_boundary.md` explicitly forbids crossing, and serves no non-TypeScript consumer.
 
-What remains valuable from the OpenAPI ecosystem is the document itself — as an output. Zod v4 ships native JSON Schema conversion, and Hono has OpenAPI-aware route layers, so the projection can be generated from the schemas the repository already owns.
+What remains valuable from the OpenAPI ecosystem is the document itself — as an output. Zod v4 ships native JSON Schema conversion, and Hono exposes the registered route table needed for coverage checks, so a small local projection can reuse the schemas and runtime framework the repository already owns.
 
 ## Decision
 
 - The shared Zod schema packages (`packages/app-api-schemas`, `packages/protocol`) remain the single contract source for the App API. This spec changes nothing about their authority.
-- Every public App API route is registered through an OpenAPI-aware route registry that binds the route to request, response, and error schemas imported from the shared packages.
-- An OpenAPI 3.1 document is generated from the registry at build time, committed or reproducibly built, drift-checked in CI, and served by NanoCore as a diagnostic artifact.
+- Every public App API route is registered by a catalog operation id. The catalog owns the documented method, path, request and response schema references, error envelope, security posture, and tags; handler runtime validation continues to import the owning shared schemas directly.
+- An OpenAPI 3.1 document is reproducibly generated from the catalog by build and CI commands, committed for review, drift-checked, and also instantiated once at server module load for diagnostic serving.
 - The document is a projection: read-only, never hand-edited, never a codegen source for first-party TypeScript packages.
 - `@openkit/core-client` remains the only first-party SDK; MCP and the Web SPA continue to consume it.
 
@@ -71,31 +73,31 @@ What remains valuable from the OpenAPI ecosystem is the document itself — as a
 
 ### Source-of-truth direction
 
-- Zod schemas in the shared packages MUST remain the canonical App API contract. The OpenAPI document MUST be fully derivable from route registrations plus those schemas.
-- The OpenAPI document MUST NOT be hand-edited. Every change to it MUST originate from a schema or route-registration change.
+- Zod schemas in the shared packages MUST remain the canonical App API payload contracts. The OpenAPI document MUST be fully derivable from the canonical operation catalog plus those schemas.
+- The OpenAPI document MUST NOT be hand-edited. Every change to it MUST originate from a shared-schema or canonical-catalog change.
 - First-party TypeScript packages MUST NOT consume the OpenAPI document for types, validation, or client generation. `@openkit/core-client` imports schemas from the shared packages directly, as it does today.
 - The document MAY be consumed by: external integrators, L2 contract fixtures, API documentation surfaces, and future non-TypeScript SDK generation. A generated non-TS SDK is an external consumer artifact, not a first-party contract owner.
 
 ### Route registration
 
 - Every public App API route MUST be registered with: path, method, operation id, request schema references (params, query, body), response schema references per status code, error envelope reference, required auth scheme, and tags.
-- Schema references in registrations MUST import from the shared packages. Inline anonymous schemas in route registrations are prohibited for anything that appears in a public payload; a shape needed by a route belongs in `packages/app-api-schemas` first.
+- Reusable structured request and response shapes MUST import from the shared packages. A route-local primitive path or query constraint MAY remain inline when no shared semantic schema exists and extracting one would create a speculative contract entity; when a shared id or value schema already exists, the registration MUST reference it instead of duplicating the constraint.
 - Operation ids MUST be stable, unique, lowercase-camel identifiers; they become anchor points for fixtures and external SDKs, and renaming one is a contract change.
-- Routes explicitly outside the projection are a closed list: the OpenAI-compatible `/v1/*` gateway surface, worker-plane relay routes (`/api/worker-control/*`), deterministic local-mode test-support routes, and internal diagnostics explicitly marked non-public. Everything else public MUST be registered.
+- Routes explicitly outside the projection are a closed list: the Core HTTP/SSE projection, browser-auth implementation routes, the OpenAI-compatible `/v1/*` gateway surface, worker-plane relay routes (`/api/worker-control/*`), deterministic local-mode test-support routes, and internal diagnostics explicitly marked non-public. Every public App API route outside that list MUST be registered.
 
 ### Generated document
 
-- The document MUST target OpenAPI 3.1 (JSON Schema aligned), generated at build time — never assembled by runtime reflection on demand and never live-fetched from anywhere.
-- The document MUST carry: the App API version identifier, the protocol version it corresponds to (per `docs/core/protocol.md` versioning), and a generation source digest so any copy can be traced to the schema state that produced it.
+- The document MUST target OpenAPI 3.1 (JSON Schema aligned) and be reproducibly emitted by the build command. NanoCore MAY instantiate the same pure projection once at module load, but MUST NOT rebuild it per request, derive it from runtime reflection, or live-fetch it.
+- The document MUST carry: the App API version identifier, the protocol version it corresponds to (per `docs/core/protocol.md` versioning), and a projection-content digest so copies of the same generated projection can be compared exactly. The digest is not a source-file or commit identifier.
 - Authentication MUST be documented as security schemes matching `docs/specs/20260704-remote_auth_credential_bootstrap.md`: bearer token (`okt_` tokens) and the session-cookie path, applied per route.
 - The shared error envelope MUST be registered once as a component and referenced by every route's error responses; per-route error documentation adds typed codes, not new envelope shapes.
-- NanoCore MUST serve the generated document at a stable App API route (implementation projection: `/api/openapi.json`), gated by the same auth posture as other diagnostics read models. A human-readable documentation UI MAY be mounted in development builds; it is not a product surface commitment.
+- NanoCore MUST serve the generated App API document at a stable diagnostic route (implementation projection: `/api/openapi.json`), gated by the same auth posture as other diagnostics read models. A human-readable documentation UI MAY be mounted in development builds; it is not a product surface commitment.
 
 ### SSE and streaming routes
 
 - OpenAPI cannot express the event envelope, ordering, cursor, and replay semantics that `docs/core/protocol.md` and `docs/core/communication.md` own. The projection MUST NOT attempt to become that owner.
-- Streaming routes MUST still appear in the document: registered with their negotiated content type, the event envelope component schema as the payload description, and a vendor extension (`x-openkit-sse`) carrying the event family names and a pointer to the protocol documentation.
-- The event envelope and event family schemas referenced this way MUST come from `packages/protocol` exports, so the streaming shapes in the document are the same shapes the protocol owns.
+- The current turn-scoped SSE route is part of the separate Core HTTP/SSE projection and therefore MUST NOT be added to the App API document. Its schemas, cursor behavior, and client implementation remain governed by `@openkit/protocol` and `@openkit/core-client`.
+- If a future App API-owned route streams, it MUST appear in this document with its negotiated content type, a vendor extension (`x-openkit-sse`) naming the event families and protocol documentation, and component schemas imported from the owning shared schema package. That conditional rule does not transfer Core stream ownership to the App API.
 
 ### Drift and coverage checks
 
@@ -109,13 +111,13 @@ What remains valuable from the OpenAPI ecosystem is the document itself — as a
 
 ## Accepted Design
 
-The registry is a thin layer over Hono: a route-definition module per API area (workspaces, threads, goal mode, action center, artifacts, runtime config, auth, and the surfaces added by the 20260704 specs — readiness diagnostics, token administration, vault unlock, export/import, push records, MCP catalog) that pairs each handler with its schema imports and OpenAPI metadata. Candidate bindings are `@hono/zod-openapi` or `hono-openapi`, with Zod v4's native `z.toJSONSchema` as the conversion substrate; the choice is an implementation projection to be settled by a spike, because the contract above is deliberately satisfiable by any of them — or by a small OpenKit-owned generator if the libraries fight Zod v4. Generation runs as a build script in `apps/nanocore` emitting the document into the package build output; the drift check re-runs the script in CI.
+The accepted implementation is a small OpenKit-owned registry over Hono and Zod v4's native `z.toJSONSchema` conversion. One canonical App API catalog owns each operation id, method, path, shared-schema references, responses, security posture, and tags. Runtime route registration supplies the operation id and handler, then derives the Hono method and path from that same catalog; the generated document projects the same catalog instead of maintaining a second route identity list. Metadata may move into cohesive API-area modules as feature paths are decomposed, but the implementation must not create one wrapper or file per route. Generation runs as a build script in `apps/nanocore`, and the drift check re-runs that script in CI. No OpenAPI binding dependency or runtime response-validation layer is required unless a later concrete need justifies its behavior and maintenance cost.
 
 ## Current Implementation Projection
 
-The first projection slice is implemented in NanoCore. `apps/nanocore/src/openapi.ts` creates an OpenAPI 3.1 document from shared Zod schemas with Zod v4 JSON Schema conversion, and `GET /api/openapi.json` serves that document. Registered operations currently include `GET /api/app/storage/layout-report`, app/setup diagnostics, runtime config reload/file/schema/validation routes, OpenAI Codex OAuth account list/create/update/delete/status/start/cancel/logout routes, agent catalog list/detail, dashboard and Action Center read models, thread item-log read model, artifact/knowledge/goal review decisions, automation list/create/update/delete, agent health refresh, quick chat, active agent-session terminal command queueing, interrupted worker recovery list, pending user-turn recovery read/edit/follow-up/interrupt/cancel operations, deterministic interrupted-worker recovery state creation, interrupted-worker terminal checkpoint cleanup and retry, app search, turn feedback, Chat Mode start, Task Mode start, Goal Mode summary/start/steering/plan/approval/revision/step routes, Knowledge Manager answer/context/proposal/repair routes, workspace synchronization review/input/materialization/change-set/staged-review/apply-result read models, data-root backup create/verify, workspace export/import/dry-run import, vault admin status/unlock/lock/Codex auth bootstrap, imported workspace vault reference rebind, workspace repository resource list/diagnostics/default setup, and Git push record/approval/execution routes, with response/request schemas from `@openkit/app-api-schemas`, `ApiErrorSchema` from `@openkit/protocol`, and the accepted bearer-token/session-cookie security schemes.
+NanoCore now builds one process-wide OpenAPI 3.1 document in `apps/nanocore/src/openapi.ts` from the canonical operation catalog and shared Zod schemas. Every documented runtime operation registers through `registerAppApiRoute` by operation id, so its method and Hono path come from the same catalog as the generated document. `GET /api/openapi.json` serves the cached document rather than rebuilding it per request. The document identifies App API version `0.1.0`, records the current Core protocol version separately in `x-openkit-protocol-version`, and carries `x-openkit-source-digest` over its version, paths, and components.
 
-Public App API route registration is covered by a focused route-coverage unit check over the projected `/api/app`, `/api/setup`, `/api/admin`, and `/api/turns` feedback route families, with a closed deterministic-test-support exclusion list. The generated artifact is committed at `apps/nanocore/openapi/app-api.openapi.json`, carries `x-openkit-source-digest`, `pnpm --filter @openkit/nanocore run openapi:generate` regenerates it, `pnpm --filter @openkit/nanocore run openapi:validate` validates it against the committed official OpenAPI 3.1 schema, and `pnpm --filter @openkit/nanocore run openapi:check` enforces generation, validation, and artifact drift. The L0 test suite also scans `@openkit/core-client`, `apps/web`, and `mcp` source files to prevent first-party consumers from reading the generated artifact or treating it as a contract source. `@openkit/core-client` remains the only first-party SDK and does not consume the OpenAPI document.
+The focused L0 suite compares the default app's explicit GET, POST, PUT, PATCH, and DELETE route entries with the documented operation set in both directions, rejects duplicate or unsupported App API registrations, and requires every inspected route to fall into either the App API projection or a closed non-App classification. Middleware, Hono `ALL` entries, and conditionally mounted browser-auth routes remain covered by their owning tests rather than this catalog gate. The suite also enforces unique lower-camel operation ids, explicit route security, a shared default `ApiError`, resolvable component references, selected shared-schema fidelity, and canonical Core id parameter fidelity. The generated artifact is committed at `apps/nanocore/openapi/app-api.openapi.json`; `openapi:generate`, `openapi:validate`, and `openapi:check` enforce reproducibility, official OpenAPI 3.1 validation, and drift. First-party consumers remain prohibited from treating the artifact as a contract source, and `@openkit/core-client` remains the only first-party SDK.
 
 ## Alternatives Considered
 
@@ -127,14 +129,14 @@ Public App API route registration is covered by a focused route-coverage unit ch
 
 ## Consequences
 
-- Every public route gains a registration obligation; forgetting it is a CI failure, not a documentation gap discovered later.
+- Every public App API route gains a registration obligation; forgetting it is a CI failure, not a documentation gap discovered later.
 - Schema changes become reviewable as OpenAPI diffs, which doubles as a human-readable contract changelog.
 - External integrators and future non-TS SDKs get a stable artifact without any new contract authority being created.
-- The repository takes on one generation script and its binding library as maintenance surface; the contract's library-agnosticism bounds the exit cost if the binding churns.
+- The repository takes on one small projection module, generation script, official validation schema, and committed artifact as maintenance surface; it adds no OpenAPI binding dependency.
 
 ## Rollout / Migration Plan
 
-1. Spike the binding choice against Zod v4 on one route group; settle the implementation projection.
+1. Select Zod v4's native JSON Schema conversion and a small OpenKit-owned catalog instead of adding a binding dependency.
 2. Land the registry, generation script, document serving route, and the L0 drift check with the first converted route group.
 3. Convert remaining route groups; new routes from the 20260704 specs land pre-registered.
 4. Enable the L0 coverage check, closing the registration obligation.
@@ -146,29 +148,30 @@ No compatibility path is kept for unregistered public routes once the coverage c
 
 Mapped to `docs/specs/20260529-test_strategy.md`:
 
-- L0: drift check (regeneration produces no diff); coverage check (route table equals registered operations modulo the closed exclusion list); OpenAPI 3.1 meta-schema validation.
-- L1: unit tests for the registry (schema reference resolution, operation id uniqueness, security scheme application) and for SSE vendor-extension emission.
-- L2: contract tests that sampled generated component schemas accept and reject the same fixtures as their source Zod schemas (projection fidelity spot checks); error envelope referenced by every operation.
-- L3: black-box test that the serving route returns the document, it parses, and its version identifiers match the running build.
-- L5: packaged-build smoke that the document is present in build output and served.
+- L0: drift check (regeneration produces no diff); coverage check (the default app's explicit supported-method route entries equal registered operations modulo the closed exclusion list); OpenAPI 3.1 meta-schema validation.
+- L1: unit tests for the registry (schema reference resolution, operation id uniqueness, security scheme application) and, if an App API-owned streaming route is introduced, its SSE vendor-extension emission.
+- L2: selected component projections equal the JSON Schema generated directly from their source Zod schemas, and every operation references the shared error envelope.
+- L3: server-level request test that the diagnostic route returns the document, it parses, and its version identifiers match the running build.
+- L5: built-process smoke that starts `dist/index.js` and verifies the module-level document is served with both version identifiers and a SHA-256-formatted projection digest. The review artifact remains under `openapi/`; it is not duplicated into `dist/`.
 
 Acceptance: coverage and drift checks green with all public route groups converted; no first-party package imports anything generated from the document; the document validates and is served.
 
 ## Risks & Mitigations
 
-- Risk: the binding library lags Zod major versions. Mitigation: the contract is library-agnostic; Zod v4's native JSON Schema conversion keeps an OpenKit-owned generator viable as the fallback.
-- Risk: projection fidelity gaps (Zod constructs OpenAPI cannot express) silently weaken the document. Mitigation: L2 fidelity spot checks; constructs that cannot project MUST emit a generation warning naming the schema, not silently degrade.
+- Risk: Zod JSON Schema conversion changes across upgrades. Mitigation: the committed artifact, selected schema-fidelity assertions, official OpenAPI validation, and drift gate make projection changes explicit in review.
+- Risk: projection fidelity gaps (Zod constructs OpenAPI cannot express) silently weaken the document. Mitigation: selected projection-fidelity assertions and artifact review make current mappings explicit; any observed unsupported construct must gain a focused failing fidelity test before its projection is accepted.
 - Risk: the document drifts into being treated as the contract by new contributors. Mitigation: the source-of-truth direction is stated in the document's own `info.description` and enforced by the no-codegen-into-first-party rule at L0 (import lint).
-- Risk: registration ceremony slows route development. Mitigation: the registry is one import and one metadata object per route; the coverage check converts forgetting into an immediate, local failure.
+- Risk: registration ceremony slows route development. Mitigation: runtime registration supplies only an operation id and handler, shared metadata stays in one catalog, and the coverage check converts forgetting into an immediate local failure.
 
 ## Resolved Decisions
 
-Previously open questions are resolved by accepted V1 defaults: the generated OpenAPI document is committed to the repository for reviewable diffs and L0 drift checks; development documentation UI is available only behind an explicit development flag and is not mounted permanently by default.
+Previously open questions are resolved by accepted V1 defaults: the generated OpenAPI document is committed to the repository for reviewable diffs and L0 drift checks; no human-readable documentation UI is shipped in V1.
 
 ## Deferred / Future Work
 
 - Non-TypeScript SDK generation (Python first) from the document for external consumers.
 - Publishing the document as part of release artifacts for external integrators.
+- An optional development-only documentation UI behind an explicit flag, if direct artifact inspection becomes insufficient.
 - Extending the projection discipline to a machine-readable description of the MCP tool surface if external demand appears.
 
 ## Links
