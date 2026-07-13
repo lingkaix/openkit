@@ -684,12 +684,195 @@ describe('scheduler records', () => {
     }
   });
 
+  it('treats a repeated heartbeat sequence as an idempotent retry', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      createAcquiredLease(coreDb, 'lease_heartbeat_retry');
+      const first = acceptSchedulerLeaseHeartbeat(coreDb, {
+        heartbeatTimeoutMs: 30_000,
+        leaseId: 'lease_heartbeat_retry',
+        now: () => '2026-07-05T00:00:10.000Z',
+        workerSequence: 4,
+      });
+      const retry = acceptSchedulerLeaseHeartbeat(coreDb, {
+        heartbeatTimeoutMs: 30_000,
+        leaseId: 'lease_heartbeat_retry',
+        now: () => '2026-07-05T00:00:20.000Z',
+        workerSequence: 4,
+      });
+
+      expect(retry).toEqual(first);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('treats a concurrent same-sequence heartbeat winner as an idempotent retry', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      createAcquiredLease(coreDb, 'lease_heartbeat_concurrent_retry');
+      let winner: ReturnType<typeof acceptSchedulerLeaseHeartbeat> | null = null;
+      const retry = acceptSchedulerLeaseHeartbeat(coreDb, {
+        heartbeatTimeoutMs: 30_000,
+        leaseId: 'lease_heartbeat_concurrent_retry',
+        now: () => {
+          winner = acceptSchedulerLeaseHeartbeat(coreDb, {
+            heartbeatTimeoutMs: 30_000,
+            leaseId: 'lease_heartbeat_concurrent_retry',
+            now: () => '2026-07-05T00:00:10.000Z',
+            workerSequence: 4,
+          });
+          return '2026-07-05T00:00:11.000Z';
+        },
+        workerSequence: 4,
+      });
+
+      expect(retry).toEqual(winner);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('classifies a concurrent newer heartbeat winner as a stale sequence', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      createAcquiredLease(coreDb, 'lease_heartbeat_concurrent_newer');
+
+      expect(() =>
+        acceptSchedulerLeaseHeartbeat(coreDb, {
+          heartbeatTimeoutMs: 30_000,
+          leaseId: 'lease_heartbeat_concurrent_newer',
+          now: () => {
+            acceptSchedulerLeaseHeartbeat(coreDb, {
+              heartbeatTimeoutMs: 30_000,
+              leaseId: 'lease_heartbeat_concurrent_newer',
+              now: () => '2026-07-05T00:00:10.000Z',
+              workerSequence: 5,
+            });
+            return '2026-07-05T00:00:11.000Z';
+          },
+          workerSequence: 4,
+        })
+      ).toThrowError(expect.objectContaining({ reason: 'sequence-stale' }));
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects heartbeat sequences older than the last accepted sequence', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      createAcquiredLease(coreDb, 'lease_heartbeat_stale_sequence');
+      const accepted = acceptSchedulerLeaseHeartbeat(coreDb, {
+        heartbeatTimeoutMs: 30_000,
+        leaseId: 'lease_heartbeat_stale_sequence',
+        now: () => '2026-07-05T00:00:10.000Z',
+        workerSequence: 4,
+      });
+
+      expect(() =>
+        acceptSchedulerLeaseHeartbeat(coreDb, {
+          heartbeatTimeoutMs: 30_000,
+          leaseId: 'lease_heartbeat_stale_sequence',
+          now: () => '2026-07-05T00:00:20.000Z',
+          workerSequence: 3,
+        })
+      ).toThrow();
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT heartbeat_deadline AS heartbeatDeadline,
+                    last_accepted_heartbeat_at AS lastAcceptedHeartbeatAt,
+                    last_worker_sequence AS lastWorkerSequence
+             FROM scheduler_session_leases
+             WHERE lease_id = ?`
+          )
+          .get('lease_heartbeat_stale_sequence')
+      ).toEqual({
+        heartbeatDeadline: accepted.heartbeatDeadline,
+        lastAcceptedHeartbeatAt: accepted.lastAcceptedHeartbeatAt,
+        lastWorkerSequence: accepted.lastWorkerSequence,
+      });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('advances a lease only for a newer heartbeat sequence', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      createAcquiredLease(coreDb, 'lease_heartbeat_newer_sequence');
+      acceptSchedulerLeaseHeartbeat(coreDb, {
+        heartbeatTimeoutMs: 30_000,
+        leaseId: 'lease_heartbeat_newer_sequence',
+        now: () => '2026-07-05T00:00:10.000Z',
+        workerSequence: 4,
+      });
+
+      expect(
+        acceptSchedulerLeaseHeartbeat(coreDb, {
+          heartbeatTimeoutMs: 30_000,
+          leaseId: 'lease_heartbeat_newer_sequence',
+          now: () => '2026-07-05T00:00:20.000Z',
+          workerSequence: 5,
+        })
+      ).toMatchObject({
+        heartbeatDeadline: '2026-07-05T00:00:50.000Z',
+        lastAcceptedHeartbeatAt: '2026-07-05T00:00:20.000Z',
+        lastWorkerSequence: 5,
+      });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('does not revive a lease that starts releasing before the heartbeat update', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      createAcquiredLease(coreDb, 'lease_heartbeat_race');
+
+      expect(() =>
+        acceptSchedulerLeaseHeartbeat(coreDb, {
+          heartbeatTimeoutMs: 30_000,
+          leaseId: 'lease_heartbeat_race',
+          now: () => {
+            markSchedulerSessionLeaseReleasing(coreDb, {
+              leaseId: 'lease_heartbeat_race',
+              releaseReason: 'worker-final-status',
+            });
+            return '2026-07-05T00:00:10.000Z';
+          },
+          workerSequence: 4,
+        })
+      ).toThrow('cannot accept heartbeat');
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT status FROM scheduler_session_leases WHERE lease_id = ?')
+          .get('lease_heartbeat_race')
+      ).toEqual({ status: 'releasing' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('marks expired live leases stale without reviving terminal leases', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
       createAcquiredLease(coreDb, 'lease_expired');
       createAcquiredLease(coreDb, 'lease_terminal');
+      acceptSchedulerLeaseHeartbeat(coreDb, {
+        heartbeatTimeoutMs: 30_000,
+        leaseId: 'lease_expired',
+        now: () => '2026-07-05T00:00:10.000Z',
+        workerSequence: 1,
+      });
       coreDb.sqlite
         .prepare(
           "UPDATE scheduler_session_leases SET status = 'released', release_reason = 'completed' WHERE lease_id = ?"
@@ -1014,6 +1197,7 @@ describe('scheduler records', () => {
 
       const resolution = resolveSchedulerLeaseTokenBinding(coreDb, {
         sandboxBindingRef: 'lease-binding:lease_binding',
+        now: () => '2026-07-05T00:00:10.000Z',
         lineage: {
           agentSessionId: 'session_binding',
           packageSnapshotId: 'pkg_demo',
@@ -1030,6 +1214,84 @@ describe('scheduler records', () => {
           status: 'acquired',
         },
       });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects an expired lease token binding at request time', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      createDispatchedLease(coreDb, 'lease_binding_expired');
+
+      expect(
+        resolveSchedulerLeaseTokenBinding(coreDb, {
+          lineage: {
+            agentSessionId: 'session_binding_expired',
+            packageSnapshotId: 'pkg_demo',
+            threadId: 'thread_binding_expired',
+            turnId: 'turn_binding_expired',
+            workspaceId: 'ws_demo',
+          },
+          now: () => '2026-07-05T00:16:00.000Z',
+          sandboxBindingRef: 'lease-binding:lease_binding_expired',
+        })
+      ).toEqual({ status: 'rejected', reason: 'lease-not-live' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects a lease token binding after its startup deadline', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      createDispatchedLease(coreDb, 'lease_binding_startup_timeout');
+
+      expect(
+        resolveSchedulerLeaseTokenBinding(coreDb, {
+          lineage: {
+            agentSessionId: 'session_binding_startup_timeout',
+            packageSnapshotId: 'pkg_demo',
+            threadId: 'thread_binding_startup_timeout',
+            turnId: 'turn_binding_startup_timeout',
+            workspaceId: 'ws_demo',
+          },
+          now: () => '2026-07-05T00:03:00.000Z',
+          sandboxBindingRef: 'lease-binding:lease_binding_startup_timeout',
+        })
+      ).toEqual({ status: 'rejected', reason: 'lease-not-live' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects a started lease token binding after its heartbeat deadline', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      createDispatchedLease(coreDb, 'lease_binding_heartbeat_timeout');
+      acceptSchedulerLeaseHeartbeat(coreDb, {
+        heartbeatTimeoutMs: 30_000,
+        leaseId: 'lease_binding_heartbeat_timeout',
+        now: () => '2026-07-05T00:00:10.000Z',
+        workerSequence: 1,
+      });
+
+      expect(
+        resolveSchedulerLeaseTokenBinding(coreDb, {
+          lineage: {
+            agentSessionId: 'session_binding_heartbeat_timeout',
+            packageSnapshotId: 'pkg_demo',
+            threadId: 'thread_binding_heartbeat_timeout',
+            turnId: 'turn_binding_heartbeat_timeout',
+            workspaceId: 'ws_demo',
+          },
+          now: () => '2026-07-05T00:00:41.000Z',
+          sandboxBindingRef: 'lease-binding:lease_binding_heartbeat_timeout',
+        })
+      ).toEqual({ status: 'rejected', reason: 'lease-not-live' });
     } finally {
       coreDb.sqlite.close();
     }
@@ -1184,7 +1446,7 @@ describe('scheduler records', () => {
       const health = upsertSchedulerTargetHealthRecord(coreDb, {
         targetId: 'target_local',
         healthState: 'probation',
-        checkResults: [{ surface: 'control-relay', status: 'ok' }],
+        checkResults: [{ surface: 'worker-control', status: 'ok' }],
         consecutiveFailureCount: 0,
         consecutiveSuccessCount: 2,
         quarantineEnteredAt: null,
@@ -1200,7 +1462,7 @@ describe('scheduler records', () => {
         consecutiveSuccessCount: 2,
         probationDeadline: '2026-07-05T00:05:00.000Z',
       });
-      expect(health.checkResults).toEqual([{ surface: 'control-relay', status: 'ok' }]);
+      expect(health.checkResults).toEqual([{ surface: 'worker-control', status: 'ok' }]);
     } finally {
       coreDb.sqlite.close();
     }

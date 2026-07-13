@@ -481,6 +481,13 @@ function readNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+/**
+ * Converts complete SSE events while preserving native stream backpressure and cancellation.
+ *
+ * @param stream Provider SSE byte stream.
+ * @param convertEvent Endpoint-specific event converter.
+ * @returns Converted SSE byte stream.
+ */
 function convertSseStream(
   stream: ReadableStream<Uint8Array>,
   convertEvent: (event: string) => string[]
@@ -488,38 +495,59 @@ function convertSseStream(
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   let buffer = '';
+  const reader = stream.getReader();
+  let cancelled = false;
+  let readerReleased = false;
 
   return new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const reader = stream.getReader();
-
+    async pull(controller) {
       try {
-        while (true) {
-          const result = await reader.read();
+        const result = await reader.read();
 
-          if (result.done) {
-            break;
-          }
-
-          buffer += decoder.decode(result.value, { stream: true });
-          const events = buffer.split('\n\n');
-          buffer = events.pop() ?? '';
-
-          for (const event of events) {
-            for (const converted of convertEvent(event)) {
+        if (result.done) {
+          if (!cancelled && buffer.trim()) {
+            for (const converted of convertEvent(buffer)) {
               controller.enqueue(encoder.encode(`${converted}\n\n`));
             }
           }
+          if (!readerReleased) {
+            readerReleased = true;
+            reader.releaseLock();
+          }
+          if (!cancelled) {
+            controller.close();
+          }
+          return;
         }
 
-        if (buffer.trim()) {
-          for (const converted of convertEvent(buffer)) {
+        buffer += decoder.decode(result.value, { stream: true });
+        const events = buffer.split('\n\n');
+        buffer = events.pop() ?? '';
+
+        for (const event of events) {
+          for (const converted of convertEvent(event)) {
             controller.enqueue(encoder.encode(`${converted}\n\n`));
           }
         }
+      } catch (error) {
+        if (!readerReleased) {
+          readerReleased = true;
+          reader.releaseLock();
+        }
+        if (!cancelled) {
+          controller.error(error);
+        }
+      }
+    },
+    async cancel(reason) {
+      cancelled = true;
+      try {
+        await reader.cancel(reason);
       } finally {
-        controller.close();
-        reader.releaseLock();
+        if (!readerReleased) {
+          readerReleased = true;
+          reader.releaseLock();
+        }
       }
     },
   });

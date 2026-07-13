@@ -91,7 +91,7 @@ Use a two-level workspace model for worker sessions.
 
 Session-static fields include:
 
-- runtime image, image digest, command shape, user, group, umask, base working directory, sidecar presence, and control endpoint shape
+- runtime image, image digest, command shape, user, group, umask, base working directory, worker-shim identity, and direct control endpoint shape
 - workspace root path, slot path set, slot access envelope, static filesystem policy, mount declarations, and output root declarations
 - provider attachment envelope, provider environment placeholder envelope, network policy envelope, vault injection path class, and sandbox policy artifact shape
 - transcript root, audit sink setup, backend service readiness checks, and backend capability summary
@@ -235,7 +235,6 @@ One turn materialization records:
 - baseline manifest per mutable slot
 - excluded paths and path policy decisions
 - output collection roots
-- evidence bundle ids
 
 Materialization MUST occur before the worker receives the turn as ready.
 
@@ -324,7 +323,7 @@ OpenShell upload, download, exec, policy, provider, and log outputs are backend 
 
 The key should cover:
 
-- agent id, profile id, runtime family, runtime image digest, command shape, process user and group, base working directory, sidecar shape, and control mode
+- agent id, profile id, runtime family, runtime image digest, command shape, process user and group, base working directory, worker-shim shape, and direct control mode
 - workspace root, slot ids, slot paths, slot kinds, slot access envelope, allowed materialization modes, output roots, transcript roots, and static filesystem policy digest
 - provider attachment envelope, vault injection visibility classes, provider profile mapping version, and provider credential placeholder names when process-visible
 - network policy envelope, permission policy digest, sandbox policy digest, resource class, and backend capability summary
@@ -368,7 +367,7 @@ Slot write-back modes are:
 
 Provider access should be included in the session-static envelope when the long-running worker process needs process-visible placeholders or provider-derived network policy.
 
-Gateway-mediated capabilities can remain turn-dynamic when the worker reaches providers only through `capability.local` or `inference.local` and does not need direct provider credentials.
+Gateway-mediated capabilities can remain turn-dynamic after a future AEP explicitly enables `capability.local`; backend-local inference may remain turn-dynamic through `inference.local` when the worker does not need direct provider credentials. Current AEP capability routes are disabled.
 
 If a provider is attached after sandbox start, NanoCore MUST distinguish future policy availability from live process environment availability.
 
@@ -398,7 +397,7 @@ Backend adapters should implement only transport and enforcement effects:
 
 - local container adapter: bind, copy, local checkout, local staging, and direct output collection
 - OpenShell adapter: sandbox create, provider attachment, policy materialization, upload, download, exec, log collection, and evidence import
-- remote container adapter: tar, rsync, remote checkout, object-store staging, sidecar upload, output download, and recovery handle persistence
+- remote container adapter: tar, rsync, remote checkout, object-store staging, backend upload, output download, and recovery handle persistence
 - managed sandbox adapter: provider file APIs and provider workspace manifest APIs when supported
 
 Source adapters should normalize source-specific listing and digest behavior:
@@ -416,7 +415,7 @@ The current implementation has a first shared schema and planner slice in `@open
 
 Current AEP docs classify image, base command, initial process environment, static filesystem mounts, user/group identity, and working directory as static fields, and the session workspace planner now makes the strict compatibility key the center of V1 reuse. The durable scheduler dispatch loop uses the strict V1 continuity selector from the agent-session continuity spec when callers provide live, resume, or snapshot candidates; without valid candidates it intentionally selects a fresh session.
 
-The current workspace synchronization implementation can stage Git patches and filesystem changes, persists first-slice `BackendWorkspaceHandle`, `WorkerOutputManifest`, `WorkspaceApplyPlan`, `WorkspaceReconciliationRecord`, and `WorkspaceQuarantineRecord` rows as first-class records, and promotes product-safe evidence through the general `EvidenceBundle` ledger. The accepted workspace synchronization contract removes the redundant `WorkspaceSyncEvidenceBundle` record family under the [Evidence Surface Simplification](../changes/202607111848520001-evidence_surface_simplification.md) change plan; this does not change session-static layout or materialization semantics owned by this spec. Non-host-dir read-only coverage currently supports NanoCore-prepared `materialized-dir` directory inputs for OpenShell. Local-container materialization, remote-container materialization, external provider/object-store/gateway read-source adapters, superset-compatible reuse, and broader backend-native mount support remain deferred future work rather than V1 blockers.
+The current workspace synchronization implementation can stage Git patches and filesystem changes, persists first-slice `BackendWorkspaceHandle`, `WorkerOutputManifest`, `WorkspaceApplyPlan`, `WorkspaceReconciliationRecord`, and `WorkspaceQuarantineRecord` rows as first-class records, and promotes product-safe evidence through automatic general `EvidenceBundle` producers. The redundant `WorkspaceSyncEvidenceBundle` record family has been removed without changing session-static layout or materialization semantics owned by this spec. Non-host-dir read-only coverage currently supports NanoCore-prepared `materialized-dir` directory inputs for OpenShell. Local-container materialization, remote-container materialization, external provider/object-store/gateway read-source adapters, superset-compatible reuse, and broader backend-native mount support remain deferred future work rather than V1 blockers.
 
 ## Alternatives Considered
 
@@ -478,7 +477,7 @@ No legacy preservation is required for existing internal materialization shapes.
 - Git tests prove clone or fetch into a worktree slot, patch collection, `git apply --check`, staged review, and approved apply.
 - S3-compatible tests prove S3 and R2 use one adapter path with provider-specific endpoints and no raw credentials in records.
 - OpenShell tests prove provider attach limitations are represented honestly: a new provider needed by the already-running main process requires process replacement or session replacement.
-- Redaction tests prove backend handles, upload IDs, object-store temporary keys, and provider credentials do not leak into App API, MCP, Web UI, audit summaries, or diagnostics.
+- Redaction tests prove backend handles, upload IDs, object-store temporary keys, and provider credentials do not leak into App API, end-user CLI, Web UI, audit summaries, or diagnostics.
 
 Acceptance requires that a long-lived session can run at least two turns with different input contents in the same slot without remounting, and that a turn requiring a new static provider or path envelope creates a replacement session with clear diagnostics.
 

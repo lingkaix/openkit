@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { isDeepStrictEqual } from 'node:util';
 
 /**
  * Completed OpenShell CLI command result.
@@ -100,8 +102,40 @@ export interface OpenShellProviderUpsertResult {
   name: string;
 }
 
+/** Inputs for ensuring one immutable OpenShell provider profile. */
+export interface OpenShellProviderProfileEnsureInput {
+  /** OpenShell gateway name. */
+  gateway?: string;
+  /** Optional direct OpenShell gateway endpoint URL. */
+  gatewayEndpoint?: string;
+  /** Whether to skip TLS verification for the direct gateway endpoint. */
+  gatewayInsecure?: boolean;
+  /** Content-addressed provider profile id. */
+  id: string;
+  /** Host-local JSON profile path passed to OpenShell import. */
+  path: string;
+}
+
+/** Product-safe immutable provider profile result. */
+export interface OpenShellProviderProfileEnsureResult {
+  /** Provider profile id verified or imported by NanoCore. */
+  id: string;
+}
+
 /** Inputs for reading one OpenShell provider instance. */
 export interface OpenShellProviderGetInput {
+  /** OpenShell gateway name. */
+  gateway?: string;
+  /** Optional direct OpenShell gateway endpoint URL. */
+  gatewayEndpoint?: string;
+  /** Whether to skip TLS verification for the direct gateway endpoint. */
+  gatewayInsecure?: boolean;
+  /** Provider instance name. */
+  name: string;
+}
+
+/** Inputs for deleting one OpenShell provider instance. */
+export interface OpenShellProviderDeleteInput {
   /** OpenShell gateway name. */
   gateway?: string;
   /** Optional direct OpenShell gateway endpoint URL. */
@@ -441,9 +475,14 @@ export class OpenShellCli {
   public async upsertProvider(
     input: OpenShellProviderUpsertInput
   ): Promise<OpenShellProviderUpsertResult> {
-    const exists = await this.providerExists(input);
+    const existingType = await this.existingProviderType(input);
 
-    if (exists) {
+    if (existingType !== null) {
+      if (existingType !== input.providerType) {
+        throw new Error(
+          `OpenShell provider type mismatch for ${input.name}: expected ${input.providerType}; got ${existingType}.`
+        );
+      }
       await this.updateProviderCredential(input);
     } else {
       await this.createProvider(input);
@@ -453,6 +492,68 @@ export class OpenShellCli {
     }
 
     return { name: input.name };
+  }
+
+  /**
+   * Ensures that one content-addressed provider profile exists with exact immutable content.
+   *
+   * @param input Provider profile id, JSON path, and gateway selection.
+   * @returns Product-safe profile identity.
+   * @throws When export, import, parsing, or immutable content verification fails.
+   */
+  public async ensureProviderProfile(
+    input: OpenShellProviderProfileEnsureInput
+  ): Promise<OpenShellProviderProfileEnsureResult> {
+    const desiredProfile = parseOpenShellProviderProfileJson(
+      await readFile(input.path, 'utf8'),
+      'generated provider profile'
+    );
+
+    if (desiredProfile.id !== input.id || 'resource_version' in desiredProfile) {
+      throw new Error(`Invalid generated OpenShell provider profile identity: ${input.id}`);
+    }
+
+    const exportArgs = compileOpenShellProviderProfileExportArgs(input);
+    const exported = await this.runner.run(exportArgs);
+
+    if (exported.exitCode === 0) {
+      assertOpenShellProviderProfileMatches(input.id, desiredProfile, exported.stdout);
+      return { id: input.id };
+    }
+    if (!isOpenShellProviderProfileNotFound(exported)) {
+      throw new Error(`OpenShell provider profile export failed: ${safeErrorText(exported)}`);
+    }
+
+    const imported = await this.runner.run(compileOpenShellProviderProfileImportArgs(input));
+
+    if (imported.exitCode === 0) {
+      return { id: input.id };
+    }
+
+    const importError = new Error(
+      `OpenShell provider profile import failed: ${safeErrorText(imported)}`
+    );
+    const racedExport = await this.runner.run(exportArgs);
+
+    if (racedExport.exitCode === 0) {
+      try {
+        assertOpenShellProviderProfileMatches(input.id, desiredProfile, racedExport.stdout);
+        return { id: input.id };
+      } catch (verificationError) {
+        throw new AggregateError(
+          [importError, verificationError],
+          `OpenShell provider profile import race failed verification: ${input.id}`
+        );
+      }
+    }
+
+    throw new AggregateError(
+      [
+        importError,
+        new Error(`OpenShell provider profile re-export failed: ${safeErrorText(racedExport)}`),
+      ],
+      `OpenShell provider profile import failed: ${input.id}`
+    );
   }
 
   /**
@@ -473,6 +574,31 @@ export class OpenShellCli {
     return {
       name: input.name,
       stdout: redactProviderOutput(result.stdout),
+    };
+  }
+
+  /**
+   * Deletes one OpenShell provider instance.
+   *
+   * @param input Provider and gateway selection.
+   * @returns Product-safe delete result.
+   * @throws When OpenShell rejects the provider deletion.
+   */
+  public async deleteProvider(
+    input: OpenShellProviderDeleteInput
+  ): Promise<OpenShellSandboxFileResult> {
+    const args = ['provider', 'delete'];
+
+    appendOpenShellProviderGatewayFlags(args, input);
+    args.push(input.name);
+    const result = await this.runner.run(args);
+
+    if (result.exitCode !== 0) {
+      throw new Error(`OpenShell provider delete failed: ${safeErrorText(result)}`);
+    }
+
+    return {
+      stdout: result.stdout,
     };
   }
 
@@ -628,23 +754,41 @@ export class OpenShellCli {
 
     const result = await this.runner.run(args);
 
-    if (result.exitCode !== 0) {
+    if (result.exitCode !== 0 && !isOpenShellSandboxNotFound(result)) {
       throw new Error(`OpenShell sandbox delete failed: ${safeErrorText(result)}`);
     }
 
     return {
-      stdout: result.stdout,
+      stdout: result.exitCode === 0 ? result.stdout : '',
     };
   }
 
   /**
-   * Checks whether an OpenShell provider exists.
+   * Reads the immutable type of an existing provider.
    *
    * @param input Provider and gateway selection.
-   * @returns True when the provider exists.
+   * @returns Existing provider type, or null when the provider does not exist.
+   * @throws When inspection fails or omits the immutable type.
    */
-  private async providerExists(input: OpenShellProviderUpsertInput): Promise<boolean> {
-    return (await this.runner.run(compileOpenShellProviderGetArgs(input))).exitCode === 0;
+  private async existingProviderType(input: OpenShellProviderUpsertInput): Promise<string | null> {
+    const result = await this.runner.run(compileOpenShellProviderGetArgs(input));
+
+    if (result.exitCode !== 0) {
+      if (isOpenShellProviderNotFound(result)) {
+        return null;
+      }
+      throw new Error(
+        `OpenShell provider inspection failed: ${redactProviderOutput(safeErrorText(result))}`
+      );
+    }
+
+    const providerType = parseCliFields(result.stdout).get('type');
+
+    if (!providerType) {
+      throw new Error(`OpenShell provider inspection omitted immutable type: ${input.name}`);
+    }
+
+    return providerType;
   }
 
   /**
@@ -732,6 +876,127 @@ function compileOpenShellProviderGetArgs(input: OpenShellProviderGetInput): stri
   args.push(input.name);
 
   return args;
+}
+
+/**
+ * Compiles immutable provider profile export arguments.
+ *
+ * @param input Provider profile and gateway selection.
+ * @returns CLI argument vector.
+ */
+function compileOpenShellProviderProfileExportArgs(
+  input: OpenShellProviderProfileEnsureInput
+): string[] {
+  const args = ['provider', 'profile', 'export', '--output', 'json'];
+
+  appendOpenShellProviderGatewayFlags(args, input);
+  args.push(input.id);
+  return args;
+}
+
+/**
+ * Compiles immutable provider profile import arguments.
+ *
+ * @param input Provider profile and gateway selection.
+ * @returns CLI argument vector.
+ */
+function compileOpenShellProviderProfileImportArgs(
+  input: OpenShellProviderProfileEnsureInput
+): string[] {
+  const args = ['provider', 'profile', 'import', '--file', input.path];
+
+  appendOpenShellProviderGatewayFlags(args, input);
+  return args;
+}
+
+/**
+ * Parses one OpenShell provider profile JSON object.
+ *
+ * @param value JSON text.
+ * @param label Product-safe source label.
+ * @returns Parsed JSON object.
+ * @throws When the text is not a JSON object.
+ */
+function parseOpenShellProviderProfileJson(value: string, label: string): Record<string, unknown> {
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error(`OpenShell ${label} is not valid JSON.`);
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`OpenShell ${label} must be a JSON object.`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/**
+ * Verifies exported OpenShell profile content against the generated immutable profile.
+ *
+ * @param id Expected provider profile id.
+ * @param desiredProfile Generated immutable profile.
+ * @param exportedJson Gateway-exported profile JSON.
+ * @throws When the exported profile differs after removing gateway resource metadata.
+ */
+function assertOpenShellProviderProfileMatches(
+  id: string,
+  desiredProfile: Record<string, unknown>,
+  exportedJson: string
+): void {
+  const exportedProfile = parseOpenShellProviderProfileJson(
+    exportedJson,
+    'exported provider profile'
+  );
+
+  delete exportedProfile.resource_version;
+  if (!isDeepStrictEqual(exportedProfile, desiredProfile)) {
+    throw new Error(`OpenShell provider profile content collision: ${id}`);
+  }
+}
+
+/**
+ * Checks the exact OpenShell 0.0.80 missing-profile diagnostic.
+ *
+ * @param result Failed provider profile export result.
+ * @returns True only for the pinned missing-profile diagnostic.
+ */
+function isOpenShellProviderProfileNotFound(result: OpenShellCommandResult): boolean {
+  return normalizedOpenShellErrorText(result).includes('provider profile not found');
+}
+
+/**
+ * Checks the exact OpenShell 0.0.80 missing-provider diagnostic.
+ *
+ * @param result Failed provider inspection result.
+ * @returns True only for the pinned missing-provider diagnostic.
+ */
+function isOpenShellProviderNotFound(result: OpenShellCommandResult): boolean {
+  const error = normalizedOpenShellErrorText(result);
+
+  return error.includes('provider not found') && !error.includes('provider profile not found');
+}
+
+/**
+ * Checks the exact OpenShell 0.0.80 missing-sandbox diagnostic.
+ *
+ * @param result Failed sandbox deletion result.
+ * @returns True only when the target sandbox is already absent.
+ */
+function isOpenShellSandboxNotFound(result: OpenShellCommandResult): boolean {
+  return normalizedOpenShellErrorText(result).includes('sandbox not found');
+}
+
+/**
+ * Normalizes one product-safe OpenShell error for exact diagnostic matching.
+ *
+ * @param result Failed OpenShell command result.
+ * @returns Lowercase single-line error text.
+ */
+function normalizedOpenShellErrorText(result: OpenShellCommandResult): string {
+  return safeErrorText(result)
+    .replace(/[│\s]+/g, ' ')
+    .toLowerCase();
 }
 
 /**

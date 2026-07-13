@@ -34,7 +34,7 @@ const NON_APP_API_ROUTE_PATTERNS = [
   /^\/v1(?:\/|$)/,
   /^\/internal(?:\/|$)/,
   /^\/api\/worker-control(?:\/|$)/,
-  /^\/api\/worker-capabilities(?:\/|$)/,
+  /^\/api\/worker-inference(?:\/|$)/,
   /^\/api\/workspaces(?:\/|$)/,
   /^\/api\/approvals(?:\/|$)/,
   /^\/(?:api\/)?health$/,
@@ -1645,30 +1645,9 @@ describe('app api openapi projection', () => {
     });
     expect(
       document.paths['/api/app/workspaces/{workspaceId}/evidence-bundles']?.post
-    ).toMatchObject({
-      operationId: 'createEvidenceBundle',
-      tags: ['diagnostics'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/CreateEvidenceBundleRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '201': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/CreateEvidenceBundleResponse',
-              },
-            },
-          },
-        },
-      },
-    });
+    ).toBeUndefined();
+    expect(document.components.schemas).not.toHaveProperty('CreateEvidenceBundleRequest');
+    expect(document.components.schemas).not.toHaveProperty('CreateEvidenceBundleResponse');
     expect(document.paths['/api/app/workspaces/{workspaceId}/evidence-bundles']?.get).toMatchObject(
       {
         operationId: 'listWorkspaceEvidenceBundles',
@@ -1892,11 +1871,6 @@ describe('app api openapi projection', () => {
         'ListWorkspaceQuarantineRecordsResponse',
       ],
       [
-        '/api/app/workspaces/{workspaceId}/workspace-sync/evidence-bundles',
-        'listWorkspaceSyncEvidenceBundles',
-        'ListWorkspaceSyncEvidenceBundlesResponse',
-      ],
-      [
         '/api/app/workspaces/{workspaceId}/workspace-sync/apply-results',
         'listWorkspaceApplyResults',
         'ListWorkspaceApplyResultsResponse',
@@ -1923,6 +1897,12 @@ describe('app api openapi projection', () => {
         },
       });
     }
+    expect(
+      document.paths['/api/app/workspaces/{workspaceId}/workspace-sync/evidence-bundles']
+    ).toBeUndefined();
+    expect(document.components.schemas).not.toHaveProperty(
+      'ListWorkspaceSyncEvidenceBundlesResponse'
+    );
     for (const route of [
       [
         '/api/app/workspaces/{workspaceId}/agent-environment/snapshots',
@@ -2705,7 +2685,6 @@ describe('app api openapi projection', () => {
       'retrySchedulerAdmission',
       'cancelSchedulerAdmission',
       'getCapabilityUsage',
-      'createEvidenceBundle',
       'listWorkspaceEvidenceBundles',
       'listWorkspaceRuntimeEvidence',
       'listWorkspaceAuditEvents',
@@ -2773,7 +2752,6 @@ describe('app api openapi projection', () => {
       'listWorkspaceReconciliationRecords',
       'submitWorkspaceRecoveryDecision',
       'listWorkspaceQuarantineRecords',
-      'listWorkspaceSyncEvidenceBundles',
       'listWorkspaceApplyResults',
       'getWorkspaceApplyResult',
       'listAgentEnvironmentPackageSnapshots',

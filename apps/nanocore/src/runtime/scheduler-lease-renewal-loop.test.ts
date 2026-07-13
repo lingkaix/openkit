@@ -185,11 +185,35 @@ describe('scheduler lease renewal loop', () => {
     }
   });
 
-  it('does not renew leases with stale heartbeat or quarantined target', () => {
+  it('does not renew leases with stale heartbeats', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
       dispatchLease(coreDb, 'stale_heartbeat');
+
+      const result = runSchedulerLeaseRenewalLoop(coreDb, {
+        maxTotalLeaseMs: 7_200_000,
+        now: () => '2026-07-05T00:10:30.000Z',
+        renewalDurationMs: 1_800_000,
+        renewalLeadMs: 300_000,
+      });
+      const lease = coreDb.sqlite
+        .prepare(
+          'SELECT renewal_count AS renewalCount FROM scheduler_session_leases WHERE lease_id = ?'
+        )
+        .get('lease_stale_heartbeat');
+
+      expect(result.renewed).toEqual([]);
+      expect(lease).toEqual({ renewalCount: 0 });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('renews a live lease on a quarantined target when its heartbeat is fresh', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
       dispatchLease(coreDb, 'quarantined');
       acceptSchedulerLeaseHeartbeat(coreDb, {
         heartbeatTimeoutMs: 900_000,
@@ -198,7 +222,7 @@ describe('scheduler lease renewal loop', () => {
         workerSequence: 1,
       });
       upsertSchedulerTargetHealthRecord(coreDb, {
-        checkResults: [{ status: 'failed', surface: 'control-relay' }],
+        checkResults: [{ status: 'failed', surface: 'worker-control' }],
         consecutiveFailureCount: 3,
         consecutiveSuccessCount: 0,
         healthState: 'quarantined',
@@ -213,17 +237,88 @@ describe('scheduler lease renewal loop', () => {
         renewalDurationMs: 1_800_000,
         renewalLeadMs: 300_000,
       });
-      const leases = coreDb.sqlite
+      const lease = coreDb.sqlite
         .prepare(
-          "SELECT lease_id AS leaseId, renewal_count AS renewalCount FROM scheduler_session_leases WHERE lease_id IN ('lease_stale_heartbeat', 'lease_quarantined') ORDER BY lease_id"
+          'SELECT renewal_count AS renewalCount FROM scheduler_session_leases WHERE lease_id = ?'
         )
-        .all();
+        .get('lease_quarantined');
+
+      expect(result.renewed.map((renewed) => renewed.leaseId)).toEqual(['lease_quarantined']);
+      expect(lease).toEqual({ renewalCount: 1 });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('renews a live lease while its worker pool is draining', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      dispatchLease(coreDb, 'draining');
+      acceptSchedulerLeaseHeartbeat(coreDb, {
+        heartbeatTimeoutMs: 900_000,
+        leaseId: 'lease_draining',
+        now: () => '2026-07-05T00:00:10.000Z',
+        workerSequence: 1,
+      });
+      coreDb.sqlite
+        .prepare("UPDATE scheduler_worker_pools SET status = 'draining' WHERE pool_id = ?")
+        .run('pool_draining');
+
+      const result = runSchedulerLeaseRenewalLoop(coreDb, {
+        maxTotalLeaseMs: 7_200_000,
+        now: () => '2026-07-05T00:10:30.000Z',
+        renewalDurationMs: 1_800_000,
+        renewalLeadMs: 300_000,
+      });
+      const lease = coreDb.sqlite
+        .prepare(
+          'SELECT renewal_count AS renewalCount FROM scheduler_session_leases WHERE lease_id = ?'
+        )
+        .get('lease_draining');
+
+      expect(result.renewed.map((renewed) => renewed.leaseId)).toEqual(['lease_draining']);
+      expect(lease).toEqual({ renewalCount: 1 });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('does not renew leases on unavailable targets', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      dispatchLease(coreDb, 'unavailable');
+      acceptSchedulerLeaseHeartbeat(coreDb, {
+        heartbeatTimeoutMs: 900_000,
+        leaseId: 'lease_unavailable',
+        now: () => '2026-07-05T00:00:10.000Z',
+        workerSequence: 1,
+      });
+      upsertSchedulerTargetHealthRecord(coreDb, {
+        checkResults: [{ status: 'failed', surface: 'worker-control' }],
+        consecutiveFailureCount: 3,
+        consecutiveSuccessCount: 0,
+        healthState: 'unavailable',
+        lastProbeAt: '2026-07-05T00:10:00.000Z',
+        nextProbeAt: '2026-07-05T00:11:00.000Z',
+        targetId: 'target_unavailable',
+      });
+
+      const result = runSchedulerLeaseRenewalLoop(coreDb, {
+        maxTotalLeaseMs: 7_200_000,
+        now: () => '2026-07-05T00:10:30.000Z',
+        renewalDurationMs: 1_800_000,
+        renewalLeadMs: 300_000,
+      });
+      const lease = coreDb.sqlite
+        .prepare(
+          'SELECT renewal_count AS renewalCount FROM scheduler_session_leases WHERE lease_id = ?'
+        )
+        .get('lease_unavailable');
 
       expect(result.renewed).toEqual([]);
-      expect(leases).toEqual([
-        { leaseId: 'lease_quarantined', renewalCount: 0 },
-        { leaseId: 'lease_stale_heartbeat', renewalCount: 0 },
-      ]);
+      expect(lease).toEqual({ renewalCount: 0 });
     } finally {
       coreDb.sqlite.close();
     }

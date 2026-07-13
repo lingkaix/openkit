@@ -1,6 +1,6 @@
 ---
 name: openkit-loop
-description: Coordinate bounded OpenKit work loops for a normal end-user workspace through NanoCore and the OpenKit MCP server. Use when setup is already available and Codex, Pi Agent, Claude CoWork, or another agent app should define a verifiable goal with the human, run Goal Mode one approved step at a time, review Action Center decisions, read artifacts and evidence, create evidence bundles, steer or retry based on feedback, and help the human accept, reject, or stop the result. Do not use for OpenKit repository self-development; use `openkit-loop-dev` instead.
+description: Coordinate bounded OpenKit work loops for a normal end-user workspace through NanoCore and the OpenKit MCP server. Use when setup is already available and Codex, Pi Agent, Claude CoWork, or another agent app should define a verifiable goal with the human, run Goal Mode one approved step at a time, review Action Center decisions, read artifacts and NanoCore-produced evidence bundles, steer or retry based on feedback, and help the human accept, reject, or stop the result. Do not use for OpenKit repository self-development; use `openkit-loop-dev` instead.
 ---
 
 # OpenKit Loop
@@ -75,7 +75,7 @@ Call `openkit.draft_goal_plan`, present the plan in plain language, and wait for
 
 Call `openkit.step_goal` once.
 
-After every step, call `openkit.read_goal`, `openkit.read_action_center`, `openkit.read_workspace_reviews`, and relevant `openkit.read_thread`, `openkit.read_artifact`, or `openkit.create_evidence_bundle`.
+After every step, call `openkit.read_goal`, `openkit.read_action_center`, `openkit.read_workspace_reviews`, and relevant `openkit.read_thread` or `openkit.read_artifact` tools, then inspect `openkit://workspaces/{workspaceId}/evidence-bundles` when automatic evidence applies.
 
 Summarize what changed, what evidence exists, what still needs a decision, and what the safest next action is.
 
@@ -91,7 +91,7 @@ Treat Action Center as authoritative for human attention.
 
 Read artifacts before summarizing deliverables.
 
-Create or read an evidence bundle when the human must accept, reject, compare, or hand off the result.
+Read NanoCore-produced evidence bundles when the human must accept, reject, compare, or hand off the result.
 
 For high-stakes or expensive work, recommend an independent verifier before acceptance.
 

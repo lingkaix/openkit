@@ -6,11 +6,11 @@ import {
   planSessionWorkspaceMaterialization,
   resolveWorkspaceDataSourceReference,
   type SessionWorkspaceMaterializationPlan,
+  WORKER_RUNTIME_PROVENANCE_FEATURE,
   type WorkerSandboxAccess,
   WorkerSandboxAccessSchema,
   type WorkspaceDataSourceCatalog,
 } from '@openkit/config-schema';
-import { assertOpenShellProviderProfileConformant } from '@openkit/openshell-schema-snapshot';
 import type { TurnSchema } from '@openkit/protocol';
 import type { z } from 'zod';
 import { createInjectionPlan } from '../injection-plans.js';
@@ -171,16 +171,12 @@ export interface ResolveOpenShellAgentEnvironmentBackendInput {
   placement?: 'local' | 'remote';
   /** Sandbox image, Dockerfile/build context, or OpenShell community name. */
   sandboxImageRef: string;
-  /** NanoCore Worker Control Gateway upstream reached by the sandbox sidecar. */
-  controlRelayUpstream: string;
+  /** Direct NanoCore Worker Control Gateway URL reached by the sandbox. */
+  workerControlBaseUrl: string;
   /** Remote OpenShell gateway URL retained only as runtime-private configuration. */
   gatewayUrl?: string;
   /** Optional Codex model name passed to one-shot OpenShell workers. */
   codexModel?: string;
-  /** Worker-visible control endpoint. */
-  controlBaseUrl?: string;
-  /** Worker-visible capability endpoint. */
-  capabilityBaseUrl?: string;
   /** Worker-visible OpenAI-compatible inference endpoint. */
   inferenceBaseUrl?: string;
   /** Worker-visible package manifest path consumed by the shim. */
@@ -247,6 +243,13 @@ export interface ResolveAgentEnvironmentPackageInput {
   createdAt?: string;
   /** Client request id associated with the turn start. */
   requestId?: string | null;
+  /** Immutable provider and model selection resolved for this worker turn. */
+  providerSelection?: {
+    /** Model selected for the worker. */
+    model: string | null;
+    /** NanoCore provider instance selected for the worker. */
+    providerId: string;
+  };
   /** Turn that requested worker execution. */
   turn: Turn;
   /** User-facing turn input that the worker should execute. */
@@ -314,9 +317,37 @@ function resolveOpenShellAgentEnvironmentPackage(
   const createdAt = input.createdAt ?? new Date().toISOString();
   const profile = resolveProfile(input.agent);
   const workerPackagePath = backend.workerPackagePath ?? '/openkit/config/package.json';
-  const controlBaseUrl = backend.controlBaseUrl ?? 'https://control.local/v1/worker-control';
-  const capabilityBaseUrl = backend.capabilityBaseUrl ?? 'https://capability.local/v1';
-  const inferenceBaseUrl = backend.inferenceBaseUrl ?? 'https://inference.local/v1';
+  const trustedInferenceRequired =
+    input.backendRequirements?.requiredCapabilities.includes('trusted-worker-inference-relay') ??
+    false;
+  const runtimeProvenanceRequired =
+    input.backendRequirements?.requiredCapabilities.includes(WORKER_RUNTIME_PROVENANCE_FEATURE) ??
+    false;
+  const providerSelection = input.providerSelection;
+
+  if (runtimeProvenanceRequired && !trustedInferenceRequired) {
+    throw new Error('Runtime provenance requires the trusted worker inference relay.');
+  }
+  if (trustedInferenceRequired && !providerSelection?.model) {
+    throw new Error('Trusted worker inference requires a resolved provider and model.');
+  }
+  if (trustedInferenceRequired && backend.inferenceBaseUrl) {
+    throw new Error(
+      'Trusted worker inference derives its base URL from the worker-control origin.'
+    );
+  }
+
+  const workerControlUrl = new URL(backend.workerControlBaseUrl);
+
+  if (trustedInferenceRequired && !['http:', 'https:'].includes(workerControlUrl.protocol)) {
+    throw new Error('Trusted worker inference requires an HTTP(S) worker-control endpoint.');
+  }
+
+  const workerControlOrigin = workerControlUrl.origin;
+  const inferenceBaseUrl = trustedInferenceRequired
+    ? `${workerControlOrigin}/api/worker-inference/v1`
+    : (backend.inferenceBaseUrl ?? 'https://inference.local/v1');
+  const inferenceUrl = new URL(inferenceBaseUrl);
   const sandboxAccess = WorkerSandboxAccessSchema.parse(input.sandboxAccess ?? {});
   const resultMessagePath = '/openkit/session/final-message.txt';
   const turnInput = input.turnInput?.trim() || 'Continue the assigned OpenKit turn.';
@@ -341,6 +372,32 @@ function resolveOpenShellAgentEnvironmentPackage(
     source: workspaceInputSource(root, input),
     target: root.workerPath,
   }));
+  const credentialDeclarations = [
+    ...(input.credentialDeclarations ?? []),
+    ...sandboxAccess.credentialDeclarations,
+    ...(trustedInferenceRequired
+      ? []
+      : resolveCodexAuthRuntimeFileDeclarations({
+          agentSessionId: input.agentSessionId,
+          ...(input.coreDb ? { coreDb: input.coreDb } : {}),
+          now: () => createdAt,
+          packageSnapshotId: snapshotId,
+          ...(input.vaultBackend ? { vaultBackend: input.vaultBackend } : {}),
+        })),
+  ];
+
+  if (
+    trustedInferenceRequired &&
+    (sandboxAccess.network.length > 0 ||
+      credentialDeclarations.length > 0 ||
+      workspaceInputsNeedGitHubReadProvider(workspaceInputs) ||
+      workerMcpServers.some((server) => server.providerInstanceIds.length > 0))
+  ) {
+    throw new Error(
+      'Trusted worker inference does not allow direct sandbox network, credentials, or provider attachments.'
+    );
+  }
+
   const workerMcpProviderArtifacts = resolveWorkerMcpProviderArtifacts(workerMcpServers, {
     agentSessionId: input.agentSessionId,
     ...(input.coreDb ? { coreDb: input.coreDb } : {}),
@@ -352,17 +409,6 @@ function resolveOpenShellAgentEnvironmentPackage(
       : {}),
     ...(input.vaultBackend ? { vaultBackend: input.vaultBackend } : {}),
   });
-  const credentialDeclarations = [
-    ...(input.credentialDeclarations ?? []),
-    ...sandboxAccess.credentialDeclarations,
-    ...resolveCodexAuthRuntimeFileDeclarations({
-      agentSessionId: input.agentSessionId,
-      ...(input.coreDb ? { coreDb: input.coreDb } : {}),
-      now: () => createdAt,
-      packageSnapshotId: snapshotId,
-      ...(input.vaultBackend ? { vaultBackend: input.vaultBackend } : {}),
-    }),
-  ];
   const credentialArtifacts = resolveWorkerCredentialDeclarations({
     agentSessionId: input.agentSessionId,
     declarations: credentialDeclarations,
@@ -380,6 +426,43 @@ function resolveOpenShellAgentEnvironmentPackage(
       : {}),
     ...(input.vaultBackend ? { vaultBackend: input.vaultBackend } : {}),
   });
+
+  const workerProviderId = trustedInferenceRequired
+    ? (providerSelection?.providerId ?? '')
+    : 'codex';
+  const workerModel = trustedInferenceRequired ? (providerSelection?.model ?? '') : 'default';
+  const primaryProviderProfile = trustedInferenceRequired
+    ? {
+        category: 'model',
+        displayName: workerProviderId,
+        id: workerProviderId,
+        kind: 'gateway' as const,
+        models: [workerModel],
+      }
+    : {
+        category: 'agent',
+        displayName: 'Codex',
+        id: 'codex',
+        kind: 'oauth' as const,
+        models: ['gpt-5.5'],
+      };
+  const primaryProviderInstance = trustedInferenceRequired
+    ? {
+        displayName: workerProviderId,
+        id: workerProviderId,
+        kind: 'gateway' as const,
+        models: [workerModel],
+        profileId: workerProviderId,
+        vendor: workerProviderId,
+      }
+    : {
+        displayName: 'Codex',
+        id: 'codex',
+        kind: 'oauth' as const,
+        models: ['gpt-5.5'],
+        profileId: 'codex',
+        vendor: 'codex',
+      };
 
   const environmentPackage = AgentEnvironmentPackageSchema.parse({
     schemaVersion: 1,
@@ -467,7 +550,7 @@ function resolveOpenShellAgentEnvironmentPackage(
     },
     control: {
       protocol: 'openkit-worker-control-v1',
-      mode: 'sidecar',
+      mode: 'direct-nanocore',
       transcript: {
         root: '/openkit/session',
         eventsPath: '/openkit/session/events.jsonl',
@@ -476,116 +559,77 @@ function resolveOpenShellAgentEnvironmentPackage(
         flush: 'line',
         import: 'turn-end',
         required: true,
+        ...(runtimeProvenanceRequired
+          ? {
+              runtimeProvenance: {
+                maxStreamCount: 64,
+                maxTotalBytes: 256 * 1024 * 1024,
+                nativeOriginIndexPath: '/openkit/session/runtime/native-origin-index.jsonl',
+                rawStreamsRoot: '/openkit/session/runtime/raw',
+                streamManifestPath: '/openkit/session/runtime/raw-streams.json',
+              },
+            }
+          : {}),
       },
       endpoint: {
-        baseUrl: controlBaseUrl,
-        implementation: 'openkit-sidecar',
-        kind: 'sandbox-local-https',
+        baseUrl: backend.workerControlBaseUrl,
+        implementation: 'direct-nanocore',
+        kind: 'direct-url',
         required: true,
       },
-      relay: {
-        fallback: 'transcript-sink',
-        kind: 'outbound-websocket',
-        upstream: backend.controlRelayUpstream,
-      },
       auth: {
-        credentialVisibility: 'none',
+        credentialVisibility: 'environment',
         kind: 'sandbox-session-token',
         tokenRef: 'runtime://openkit/control-token',
       },
       channels: {
         commands: true,
-        events: 'live',
-        artifacts: 'live',
+        events: 'batch',
+        artifacts: 'batch',
         heartbeats: true,
         logs: 'summary-only',
       },
-      commands: ['interrupt', 'approval-result', 'terminal-command'],
+      commands: ['interrupt', 'terminal-command'],
       events: [
         'worker.ready',
         'worker.heartbeat',
         'item.created',
         'artifact.created',
         'turn.completed',
+        'turn.failed',
       ],
       adapter: {
         kind: 'openkit-codex-shim',
         targetRuntime: input.agent.config.adapterType,
-        targetTransport: 'stdio',
+        targetTransport: workerControlUrl.protocol === 'http:' ? 'outbound-http' : 'outbound-https',
       },
     },
     capabilities: {
       protocol: 'openkit-worker-capability-v1',
-      mode: 'sidecar',
-      endpoint: {
-        baseUrl: capabilityBaseUrl,
-        implementation: 'openkit-sidecar',
-        kind: 'sandbox-local-https',
-        required: true,
-      },
-      auth: {
-        credentialVisibility: 'none',
-        kind: 'sandbox-session-token',
-        tokenRef: 'runtime://openkit/control-token',
-      },
-      routes: [
-        {
-          family: 'knowledge.search',
-          path: '/knowledge/search',
-          policyRefId: 'policy_knowledge_read',
-        },
-        {
-          family: 'knowledge.read',
-          path: '/knowledge/read',
-          policyRefId: 'policy_knowledge_read',
-        },
-        {
-          family: 'knowledge.proposal',
-          path: '/knowledge/proposals',
-          policyRefId: 'policy_knowledge_proposal',
-        },
-        {
-          family: 'artifact.read',
-          path: '/artifacts/read',
-          policyRefId: 'policy_artifact_read',
-        },
-        {
-          family: 'diagnostic.read',
-          path: '/diagnostics/read',
-          policyRefId: 'policy_worker_diagnostics',
-        },
-      ],
+      mode: 'disabled',
+      routes: [],
     },
     providers: {
       providerProfiles: [
-        {
-          category: 'agent',
-          displayName: 'Codex',
-          id: 'codex',
-          kind: 'oauth',
-          models: ['gpt-5.5'],
-        },
+        primaryProviderProfile,
         ...workerMcpProviderArtifacts.providerProfiles,
         ...credentialArtifacts.providerProfiles,
       ],
       providerInstances: [
-        {
-          displayName: 'Codex',
-          id: 'codex',
-          kind: 'oauth',
-          models: ['gpt-5.5'],
-          profileId: 'codex',
-          vendor: 'codex',
-        },
+        primaryProviderInstance,
         ...workerMcpProviderArtifacts.providerInstances,
         ...credentialArtifacts.providerInstances,
       ],
       attachments: [
-        {
-          binaryIds: [input.agent.config.adapterType],
-          id: 'attach_codex',
-          providerInstanceId: 'codex',
-        },
+        ...(trustedInferenceRequired
+          ? []
+          : [
+              {
+                binaryIds: [input.agent.config.adapterType],
+                id: 'attach_codex',
+                providerInstanceId: 'codex',
+              },
+            ]),
         ...workerMcpProviderArtifacts.attachments,
         ...credentialArtifacts.attachments,
       ],
@@ -634,20 +678,43 @@ function resolveOpenShellAgentEnvironmentPackage(
         enforcement: 'openshell',
         rules: [
           {
+            access: 'read-write',
             action: 'allow',
-            host: 'control.local',
-            id: 'openkit-control-local',
+            binaries: ['/usr/local/bin/node', '/usr/local/bin/openkit-codex-shim'],
+            host: workerControlUrl.hostname,
+            id: 'openkit-worker-control',
+            port: Number(
+              workerControlUrl.port || (workerControlUrl.protocol === 'https:' ? '443' : '80')
+            ),
+            protocol: 'rest',
           },
-          {
-            action: 'allow',
-            host: 'capability.local',
-            id: 'openkit-capability-local',
-          },
-          {
-            action: 'allow',
-            host: 'inference.local',
-            id: 'openkit-inference-local',
-          },
+          ...(trustedInferenceRequired
+            ? [
+                {
+                  action: 'allow',
+                  binaries: ['/usr/local/bin/codex', '/usr/local/lib/codex/bin/codex'],
+                  host: inferenceUrl.hostname,
+                  id: 'openkit-worker-inference',
+                  port: Number(
+                    inferenceUrl.port || (inferenceUrl.protocol === 'https:' ? '443' : '80')
+                  ),
+                  protocol: 'rest',
+                  rules: [
+                    {
+                      method: 'POST',
+                      path: '/api/worker-inference/v1/chat/completions',
+                    },
+                    { method: 'POST', path: '/api/worker-inference/v1/responses' },
+                  ],
+                },
+              ]
+            : [
+                {
+                  action: 'allow',
+                  host: 'inference.local',
+                  id: 'openkit-inference-local',
+                },
+              ]),
           ...sandboxAccess.network.map((grant) => ({
             access: grant.access,
             action: 'allow',
@@ -680,7 +747,7 @@ function resolveOpenShellAgentEnvironmentPackage(
       mode: 'gateway',
       routes: [
         {
-          credentialVisibility: 'none',
+          credentialVisibility: trustedInferenceRequired ? 'placeholder' : 'none',
           endpoint: {
             kind: 'openai-compatible',
             upstream: {
@@ -690,8 +757,8 @@ function resolveOpenShellAgentEnvironmentPackage(
             workerBaseUrl: inferenceBaseUrl,
           },
           id: 'nanocore-gateway',
-          model: 'default',
-          providerInstanceId: 'codex',
+          model: workerModel,
+          providerInstanceId: workerProviderId,
         },
       ],
     },
@@ -728,7 +795,8 @@ function resolveOpenShellAgentEnvironmentPackage(
           workingDirectory,
           resultMessagePath,
           turnInput,
-          backend.codexModel
+          trustedInferenceRequired ? workerModel : backend.codexModel,
+          trustedInferenceRequired ? inferenceBaseUrl : undefined
         ),
         resultMessagePath,
         turnInput,
@@ -737,10 +805,31 @@ function resolveOpenShellAgentEnvironmentPackage(
   });
   const sessionWorkspace = planSessionWorkspaceMaterialization({ environmentPackage });
   const activeWorkerDirectory = sessionWorkspaceActiveDirectory(sessionWorkspace, workingDirectory);
+  const materializedWorkspaceInputs = environmentPackage.workspace.inputs.map((workspaceInput) => {
+    const materializationInput = sessionWorkspace.materialization.inputs.find(
+      (candidate) => candidate.inputId === workspaceInput.id
+    );
+    const slot = sessionWorkspace.layout.slots.find(
+      (candidate) => candidate.id === materializationInput?.slotId
+    );
+
+    if (!slot) {
+      throw new Error(`Session workspace target missing for input: ${workspaceInput.id}`);
+    }
+
+    return {
+      ...workspaceInput,
+      target: slot.path,
+    };
+  });
   const openkitExtensions = environmentPackage.extensions.openkit as Record<string, unknown>;
 
   return AgentEnvironmentPackageSchema.parse({
     ...environmentPackage,
+    workspace: {
+      ...environmentPackage.workspace,
+      inputs: materializedWorkspaceInputs,
+    },
     extensions: {
       ...environmentPackage.extensions,
       openkit: {
@@ -749,7 +838,8 @@ function resolveOpenShellAgentEnvironmentPackage(
           activeWorkerDirectory,
           resultMessagePath,
           turnInput,
-          backend.codexModel
+          trustedInferenceRequired ? workerModel : backend.codexModel,
+          trustedInferenceRequired ? inferenceBaseUrl : undefined
         ),
         sessionWorkspace,
       },
@@ -1043,25 +1133,6 @@ interface ResolveRuntimeFileCredentialArtifactsInput {
  * @returns Provider credential declaration for the GitHub MCP token.
  */
 function githubMcpCredentialDeclaration(): AgentEnvironmentCredentialDeclaration {
-  assertOpenShellProviderProfileConformant({
-    category: 'mcp',
-    credentials: {
-      token: {
-        authStyle: 'bearer',
-        envVar: 'GITHUB_TOKEN',
-      },
-    },
-    displayName: 'GitHub MCP',
-    endpoints: {
-      github_api: {
-        host: 'api.github.com',
-        port: 443,
-        protocol: 'rest',
-      },
-    },
-    id: OPEN_SHELL_GITHUB_MCP_PROFILE_ID,
-  });
-
   return {
     id: 'github_mcp_read',
     provider: {
@@ -1657,8 +1728,7 @@ function openShellRequiredCapabilities(
     'network-policy',
     'process-policy',
     'transcript-sink',
-    'sidecar-control-endpoint',
-    'sidecar-capability-endpoint',
+    'worker-control',
     'provider-attachments',
     'nanocore-inference-upstream',
     'audit-export',
@@ -1702,13 +1772,15 @@ function openShellBackendExtension(
  * @param resultMessagePath Worker-visible final-message file path.
  * @param turnInput User-facing turn input to execute.
  * @param codexModel Optional Codex model name to pass through.
+ * @param workerInferenceBaseUrl Optional trusted worker-inference base URL.
  * @returns Codex exec argv.
  */
 function openShellCodexExecCommand(
   workingDirectory: string,
   resultMessagePath: string,
   turnInput: string,
-  codexModel?: string
+  codexModel?: string,
+  workerInferenceBaseUrl?: string
 ): string[] {
   return [
     'codex',
@@ -1718,6 +1790,26 @@ function openShellCodexExecCommand(
     resultMessagePath,
     '--cd',
     workingDirectory,
+    ...(workerInferenceBaseUrl
+      ? [
+          '--ignore-user-config',
+          '--strict-config',
+          '-c',
+          'model_provider="openkit-worker-inference"',
+          '-c',
+          'web_search="disabled"',
+          '-c',
+          'model_providers.openkit-worker-inference.name="OpenKit Worker Inference"',
+          '-c',
+          `model_providers.openkit-worker-inference.base_url=${JSON.stringify(workerInferenceBaseUrl)}`,
+          '-c',
+          'model_providers.openkit-worker-inference.env_key="OPENKIT_WORKER_INFERENCE_TOKEN"',
+          '-c',
+          'model_providers.openkit-worker-inference.wire_api="responses"',
+          '-c',
+          'model_providers.openkit-worker-inference.requires_openai_auth=false',
+        ]
+      : []),
     ...(codexModel ? ['--model', codexModel] : []),
     '--dangerously-bypass-approvals-and-sandbox',
     turnInput,

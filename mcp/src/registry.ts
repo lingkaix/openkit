@@ -228,7 +228,6 @@ const toolCatalog = [
   { mutating: false, name: 'openkit.read_workspace_apply_results' },
   { mutating: false, name: 'openkit.read_agent_environment_package_snapshots' },
   { mutating: false, name: 'openkit.read_artifact' },
-  { mutating: false, name: 'openkit.create_evidence_bundle' },
 ] as const;
 
 const promptNames = [
@@ -397,11 +396,6 @@ const toolSchemas = {
   'openkit.approve_goal_plan': threadSchema
     .merge(optionalRequestIdSchema)
     .extend({ plan: z.unknown(), planItemId: z.string().min(1) }),
-  'openkit.create_evidence_bundle': workspaceSchema.extend({
-    goalId: z.string().min(1).optional(),
-    threadId: z.string().min(1).optional(),
-    turnId: z.string().min(1).optional(),
-  }),
   'openkit.create_thread': workspaceSchema
     .merge(optionalRequestIdSchema)
     .extend({ initialMessage: z.string().min(1).optional(), title: z.string().min(1) }),
@@ -528,7 +522,6 @@ const toolSchemas = {
         'apply-plans',
         'reconciliation-records',
         'quarantine-records',
-        'sync-evidence-bundles',
         'staged-reviews',
       ])
       .optional(),
@@ -1814,14 +1807,6 @@ async function callTool(
     case 'openkit.read_artifact': {
       const parsed = toolSchemas['openkit.read_artifact'].parse(input);
       return readResponse(await nanoCore.readArtifact(parsed), 'Artifact read.', parsed);
-    }
-    case 'openkit.create_evidence_bundle': {
-      const parsed = toolSchemas['openkit.create_evidence_bundle'].parse(input);
-      return readResponse(
-        await nanoCore.createEvidenceBundle(parsed),
-        'Evidence bundle created.',
-        parsed
-      );
     }
   }
 }

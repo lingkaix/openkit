@@ -63,7 +63,7 @@ import {
   registerCodexOAuthLoginRoutes,
 } from './llm/codex-oauth-routes.js';
 import { CodexAuthTokenResolver, CodexResponsesClient } from './llm/codex-responses-client.js';
-import { registerLlmGatewayRoutes } from './llm/gateway-routes.js';
+import { registerLlmGatewayRoutes, registerWorkerInferenceRoutes } from './llm/gateway-routes.js';
 import { GatewayUsageTracker } from './llm/gateway-usage.js';
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
@@ -94,7 +94,6 @@ import {
   resolveWorkspaceRepositoryForTurn,
 } from './runtime/turn-workspace-context.js';
 import type { TurnExecutor } from './runtime/types.js';
-import { registerWorkerCapabilityRoutes } from './runtime/worker-capability-routes.js';
 import { createWorkerControlCommandDeliveryRecorder } from './runtime/worker-control-commands.js';
 import {
   WorkerControlGateway,
@@ -105,16 +104,15 @@ import { rebuildWorkerControlGatewaySessions } from './runtime/worker-control-re
 import { createWorkerControlAcceptedRecordRecorder } from './runtime/worker-control-records.js';
 import { registerWorkerControlRoutes } from './runtime/worker-control-routes.js';
 import { createWorkerControlSequenceRecorder } from './runtime/worker-control-sequences.js';
-import {
-  createDefaultWorkerMcpGateway,
-  type WorkerMcpGateway,
-} from './runtime/worker-mcp-gateway.js';
 import { registerWorkerRecoveryRoutes } from './runtime/worker-recovery-routes.js';
 import { updateBackendWorkspaceHandleCleanupStatus } from './runtime/workspace-sync-records.js';
 import { registerWorkspaceSyncRoutes } from './runtime/workspace-sync-routes.js';
 import {
+  acceptSchedulerLeaseHeartbeatByBinding,
+  completeSchedulerLeaseForTerminalTurn,
   markSchedulerSessionLeaseReleasing,
   resolveSchedulerLeaseTokenBinding,
+  SchedulerLeaseHeartbeatRejectedError,
 } from './scheduler-records.js';
 import { registerSearchRoutes } from './search-routes.js';
 import { mapRuntimeCapabilitiesToFlags, registerServiceRoutes } from './service-routes.js';
@@ -319,10 +317,8 @@ export interface CreateAppOptions {
   codexOAuthAccountManager?: CodexOAuthAccountManager;
   codexOAuthStore?: CodexOAuthStore;
   automationStore?: AutomationStore;
-  /** Process-local worker control gateway used by sandbox-local `control.local` relays. */
+  /** Process-local worker control gateway used by direct sandbox workers. */
   workerControlGateway?: WorkerControlGateway;
-  /** Process-local worker MCP gateway used by sandbox-local `capability.local` relays. */
-  workerMcpGateway?: WorkerMcpGateway;
   /** Scheduler epoch owned by this app instance. */
   schedulerEpoch?: number;
   agentConfigs?: AuthoredAgentConfig[];
@@ -351,6 +347,33 @@ export function createDefaultWorkerControlGateway(coreDb?: CoreDb): WorkerContro
   const gateway = new WorkerControlGateway({
     acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
     commandDeliveryRecorder: createWorkerControlCommandDeliveryRecorder(coreDb),
+    onHeartbeatAccepted: (input) => {
+      try {
+        acceptSchedulerLeaseHeartbeatByBinding(coreDb, {
+          acceptedAt: input.heartbeat.lastHeartbeatAt,
+          lineage: input.lineage,
+          sandboxBindingRef: input.sandboxBindingRef,
+          workerSequence: input.heartbeat.sequence,
+        });
+      } catch (error) {
+        if (error instanceof SchedulerLeaseHeartbeatRejectedError) {
+          if (error.reason === 'sequence-stale') {
+            throw new WorkerControlGatewayError(
+              'worker_control_sequence_stale',
+              'Worker control heartbeat sequence is stale.',
+              409
+            );
+          }
+
+          throw new WorkerControlGatewayError(
+            'worker_control_lease_not_live',
+            'Worker control request lease is not live.',
+            403
+          );
+        }
+        throw error;
+      }
+    },
     onTerminalEventAccepted: (input) => {
       const workspaceDb = openWorkspaceDb(
         coreDb.dataRoot,
@@ -370,10 +393,6 @@ export function createDefaultWorkerControlGateway(coreDb?: CoreDb): WorkerContro
         workspaceDb.sqlite.close();
       }
 
-      if (!input.sandboxBindingRef.startsWith('lease-binding:')) {
-        return;
-      }
-
       const resolution = resolveSchedulerLeaseTokenBinding(coreDb, input);
 
       if (resolution.status === 'accepted') {
@@ -383,14 +402,8 @@ export function createDefaultWorkerControlGateway(coreDb?: CoreDb): WorkerContro
         });
       }
     },
-    resolveTokenBinding: (input) => {
-      if (!input.sandboxBindingRef.startsWith('lease-binding:')) {
-        // ponytail: manually registered test sessions still use process-local tokens.
-        return { status: 'accepted' };
-      }
-
-      return resolveSchedulerLeaseTokenBinding(coreDb, input);
-    },
+    resolveTokenBinding: (input) => resolveSchedulerLeaseTokenBinding(coreDb, input),
+    runHeartbeatTransaction: (operation) => coreDb.sqlite.transaction(operation)(),
     sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
   });
 
@@ -613,7 +626,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const automationStore = options.automationStore ?? new AutomationStore();
   const workerControlGateway =
     options.workerControlGateway ?? createDefaultWorkerControlGateway(options.coreDb);
-  const workerMcpGateway = options.workerMcpGateway ?? createDefaultWorkerMcpGateway();
   const schedulerEpoch = options.schedulerEpoch ?? 1;
   const turnExecutor =
     options.turnExecutor ??
@@ -858,6 +870,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     readonly modelId?: string | undefined;
     readonly requestId?: string | undefined;
     readonly requestedAgentId: string;
+    readonly reservedTurnId?: string | undefined;
   }): Promise<z.infer<typeof TurnSchema>> {
     const snapshot = runtimeConfig();
     const handle = await startProductTurn({
@@ -868,7 +881,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         threadId: input.threadId,
         workspaceId: input.workspaceId,
       },
+      cancelDeferredAdmission: true,
       requestedAgentId: input.requestedAgentId,
+      ...(input.reservedTurnId ? { reservedTurnId: input.reservedTurnId } : {}),
       schedulerEpoch,
       snapshot,
       store: input.store,
@@ -876,6 +891,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     });
 
+    completeSchedulerLeaseForTerminalTurn(options.coreDb, handle.turn);
     return handle.turn;
   }
 
@@ -1072,13 +1088,13 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     workerControlGateway,
   });
 
-  app.use('/api/worker-capabilities/*', browserCors);
-  registerWorkerCapabilityRoutes({
+  app.use('/api/worker-inference/*', browserCors);
+  registerWorkerInferenceRoutes({
     app,
-    authenticateWorkerPackageOwner,
-    coreDb: options.coreDb,
-    vaultUnlockState,
-    workerMcpGateway,
+    ...(options.coreDb ? { coreDb: options.coreDb } : {}),
+    llmGatewayDispatcher,
+    resolveGatewayProvider,
+    workerControlGateway,
   });
 
   app.use('/api/*', browserCors);
@@ -1311,7 +1327,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     mode,
     repositoryWorkspaceDb,
     requestStore,
-    runtimeConfig,
+    startModeWorkerTurn,
     turnExecutor,
     workerCoordinatorCandidates,
   });

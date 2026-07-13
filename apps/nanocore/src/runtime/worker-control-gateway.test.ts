@@ -32,7 +32,7 @@ function createWorkerControlFixture(): {
     agentSessionId: 'as_control_1',
     userId: 'user_local',
     backend: {
-      controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+      workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
       kind: 'openshell',
       sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
     },
@@ -157,17 +157,61 @@ describe('WorkerControlGateway', () => {
     expect(JSON.stringify(snapshot)).not.toContain('token_control_1');
   });
 
-  it('delivers approval and terminal commands to the matching worker session', () => {
+  it('revokes a registered session and its sandbox token', () => {
+    const { environmentPackage, lineage } = createWorkerControlFixture();
+    const gateway = new WorkerControlGateway({
+      createToken: () => 'token_control_revoke_1',
+    });
+    const registration = gateway.registerSession(environmentPackage);
+
+    expect(gateway.unregisterSession(environmentPackage.snapshotId)).toBe(true);
+    expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)).toBeNull();
+    expect(() =>
+      gateway.recordHeartbeat({
+        authorization: `Bearer ${registration.token}`,
+        lineage,
+        sequence: 1,
+        status: 'running',
+      })
+    ).toThrow('missing a valid sandbox token');
+    expect(gateway.unregisterSession(environmentPackage.snapshotId)).toBe(false);
+  });
+
+  it('invalidates the prior token when the same package snapshot is registered again', () => {
+    const { environmentPackage, lineage } = createWorkerControlFixture();
+    const tokens = ['token_control_old_1', 'token_control_new_1'];
+    const gateway = new WorkerControlGateway({
+      createToken: () => tokens.shift() ?? 'unexpected_control_token',
+    });
+    const firstRegistration = gateway.registerSession(environmentPackage);
+    const secondRegistration = gateway.registerSession(environmentPackage);
+
+    expect(() =>
+      gateway.recordHeartbeat({
+        authorization: `Bearer ${firstRegistration.token}`,
+        lineage,
+        sequence: 1,
+        status: 'running',
+      })
+    ).toThrow('missing a valid sandbox token');
+    expect(
+      gateway.recordHeartbeat({
+        authorization: `Bearer ${secondRegistration.token}`,
+        lineage,
+        sequence: 1,
+        status: 'running',
+      })
+    ).toMatchObject({ sequence: 1, status: 'running' });
+  });
+
+  it('delivers interrupt and terminal commands to the matching worker session', () => {
     const { environmentPackage, lineage } = createWorkerControlFixture();
     const gateway = new WorkerControlGateway({
       createToken: () => 'token_control_1',
       now: () => '2026-06-16T00:00:01.000Z',
     });
     const registration = gateway.registerSession(environmentPackage);
-    const approvalCommand = gateway.enqueueApprovalResult(environmentPackage.snapshotId, {
-      approvalRequestId: 'approval_1',
-      decision: 'granted',
-    });
+    const interruptCommand = gateway.enqueueInterrupt(environmentPackage.snapshotId, 'Stop now');
     const terminalCommand = gateway.enqueueTerminalCommand(environmentPackage.snapshotId, {
       argv: ['pwd'],
       commandId: 'term_1',
@@ -187,13 +231,17 @@ describe('WorkerControlGateway', () => {
       stdout: '/workspace/repo\n',
       terminalCommandId: terminalCommand.commandId,
     });
+    gateway.acknowledgeCommand({
+      authorization: `Bearer ${registration.token}`,
+      commandId: interruptCommand.commandId,
+      lineage,
+    });
 
     expect(polled.commands).toEqual([
       expect.objectContaining({
-        approvalRequestId: 'approval_1',
-        commandId: approvalCommand.commandId,
-        decision: 'granted',
-        kind: 'approval-result',
+        commandId: interruptCommand.commandId,
+        kind: 'interrupt',
+        reason: 'Stop now',
       }),
       expect.objectContaining({
         argv: ['pwd'],
@@ -209,46 +257,16 @@ describe('WorkerControlGateway', () => {
     expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.terminalResults).toEqual([
       expect.objectContaining({ commandId: 'term_1', exitCode: 0 }),
     ]);
+    expect(
+      gateway.pollCommands({
+        authorization: `Bearer ${registration.token}`,
+        lineage,
+      }).commands
+    ).toEqual([]);
   });
 
-  it('acknowledges delivered approval and interrupt commands', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
-    const gateway = new WorkerControlGateway({
-      createToken: () => 'token_control_1',
-      now: () => '2026-06-16T00:00:01.000Z',
-    });
-    const registration = gateway.registerSession(environmentPackage);
-    const approvalCommand = gateway.enqueueApprovalResult(environmentPackage.snapshotId, {
-      approvalRequestId: 'approval_1',
-      decision: 'granted',
-    });
-    const interruptCommand = gateway.enqueueInterrupt(environmentPackage.snapshotId, 'Stop now');
-
-    gateway.pollCommands({
-      authorization: `Bearer ${registration.token}`,
-      lineage,
-    });
-
-    expect(
-      gateway.acknowledgeCommand({
-        authorization: `Bearer ${registration.token}`,
-        commandId: approvalCommand.commandId,
-        lineage,
-      })
-    ).toMatchObject({
-      commandId: approvalCommand.commandId,
-      kind: 'approval-result',
-    });
-    expect(
-      gateway.acknowledgeCommand({
-        authorization: `Bearer ${registration.token}`,
-        commandId: interruptCommand.commandId,
-        lineage,
-      })
-    ).toMatchObject({
-      commandId: interruptCommand.commandId,
-      kind: 'interrupt',
-    });
+  it('does not expose retired approval commands', () => {
+    expect(new WorkerControlGateway()).not.toHaveProperty('enqueueApprovalResult');
   });
 
   it('accepts canonical event append records and exposes them in the session snapshot', () => {
@@ -435,6 +453,55 @@ describe('WorkerControlGateway', () => {
     expect(snapshot?.knowledgeProposalSummaries).toHaveLength(1);
   });
 
+  it('retries heartbeat projection before durably recording or publishing its snapshot', () => {
+    const { environmentPackage, lineage } = createWorkerControlFixture();
+    const observations: string[] = [];
+    let projectionAttempts = 0;
+    let gateway!: WorkerControlGateway;
+
+    gateway = new WorkerControlGateway({
+      acceptedRecordRecorder: {
+        record: () => {
+          observations.push(
+            gateway.getSessionSnapshot(environmentPackage.snapshotId)?.heartbeat
+              ? 'record:published'
+              : 'record:pending'
+          );
+        },
+      },
+      createToken: () => 'token_control_1',
+      now: () => '2026-06-16T00:00:02.000Z',
+      onHeartbeatAccepted: () => {
+        projectionAttempts += 1;
+        observations.push(
+          gateway.getSessionSnapshot(environmentPackage.snapshotId)?.heartbeat
+            ? 'hook:published'
+            : 'hook:pending'
+        );
+
+        if (projectionAttempts === 1) {
+          throw new Error('heartbeat projection unavailable');
+        }
+      },
+    });
+    const registration = gateway.registerSession(environmentPackage);
+    const heartbeat = {
+      authorization: `Bearer ${registration.token}`,
+      lineage,
+      sequence: 1,
+      status: 'running' as const,
+    };
+
+    expect(() => gateway.recordHeartbeat(heartbeat)).toThrow('heartbeat projection unavailable');
+    expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.heartbeat).toBeNull();
+    expect(gateway.recordHeartbeat(heartbeat)).toMatchObject({ sequence: 1, status: 'running' });
+    expect(observations).toEqual(['hook:pending', 'hook:pending', 'record:pending']);
+    expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.heartbeat).toMatchObject({
+      sequence: 1,
+      status: 'running',
+    });
+  });
+
   it('rejects stale or conflicting sequenced control operations', () => {
     const { environmentPackage, lineage } = createWorkerControlFixture();
     const gateway = new WorkerControlGateway({ createToken: () => 'token_control_1' });
@@ -616,6 +683,115 @@ describe('WorkerControlGateway', () => {
         sandboxBindingRef: 'lease-binding:control_1',
       },
     ]);
+  });
+
+  it('authenticates a package from its bearer token and server-owned lineage only', () => {
+    const { environmentPackage, lineage } = createWorkerControlFixture();
+    const resolvedBindings: Array<{ sandboxBindingRef: string; lineage: WorkerControlLineage }> =
+      [];
+    const gateway = new WorkerControlGateway({
+      createToken: () => 'lease-binding:inference_1',
+      resolveTokenBinding: (input) => {
+        resolvedBindings.push(input);
+
+        return { status: 'accepted' };
+      },
+    });
+    const registration = gateway.registerSession(environmentPackage);
+
+    expect(gateway.authenticatePackageToken(`Bearer ${registration.token}`)).toEqual(
+      environmentPackage
+    );
+    expect(resolvedBindings).toEqual([
+      {
+        lineage,
+        sandboxBindingRef: 'lease-binding:inference_1',
+      },
+    ]);
+  });
+
+  it('hydrates token-only package authentication when a durable session is restored', () => {
+    const { environmentPackage, lineage } = createWorkerControlFixture();
+    const gateway = new WorkerControlGateway({
+      resolveTokenBinding: () => ({ status: 'accepted' }),
+    });
+
+    gateway.restoreSession({
+      environmentPackage,
+      lineage,
+      registeredAt: '2026-06-16T00:00:01.000Z',
+      token: 'lease-binding:restored_inference_1',
+    });
+
+    expect(gateway.authenticatePackageToken('Bearer lease-binding:restored_inference_1')).toEqual(
+      environmentPackage
+    );
+  });
+
+  it('fails token-only package authentication without a live hydrated package', () => {
+    const { lineage } = createWorkerControlFixture();
+    const gateway = new WorkerControlGateway({
+      resolveTokenBinding: () => ({ status: 'accepted' }),
+    });
+
+    gateway.restoreSession({
+      lineage,
+      registeredAt: '2026-06-16T00:00:01.000Z',
+      token: 'lease-binding:restored_without_package_1',
+    });
+
+    expect(() => gateway.authenticatePackageToken('Bearer invalid')).toThrowError(
+      expect.objectContaining({ code: 'worker_control_unauthorized', status: 401 }) as Error
+    );
+    expect(() =>
+      gateway.authenticatePackageToken('Bearer lease-binding:restored_without_package_1')
+    ).toThrowError(
+      expect.objectContaining({
+        code: 'worker_control_package_unavailable',
+        status: 409,
+      }) as Error
+    );
+  });
+
+  it('requires a durable scheduler lease for token-only package authentication', () => {
+    const { environmentPackage } = createWorkerControlFixture();
+    const gateways = [
+      new WorkerControlGateway({ createToken: () => 'lease-binding:without_resolver' }),
+      new WorkerControlGateway({
+        createToken: () => 'manual_process_token',
+        resolveTokenBinding: () => ({ status: 'accepted' }),
+      }),
+    ];
+
+    for (const gateway of gateways) {
+      const registration = gateway.registerSession(environmentPackage);
+
+      expect(() => gateway.authenticatePackageToken(`Bearer ${registration.token}`)).toThrowError(
+        expect.objectContaining({
+          code: 'worker_control_lease_binding_required',
+          status: 403,
+        }) as WorkerControlGatewayError
+      );
+    }
+  });
+
+  it('rejects a restored package whose lineage differs from the token session', () => {
+    const { environmentPackage, lineage } = createWorkerControlFixture();
+    const gateway = new WorkerControlGateway();
+
+    expect(() =>
+      gateway.restoreSession({
+        environmentPackage,
+        lineage: { ...lineage, requestId: 'req_other' },
+        registeredAt: '2026-06-16T00:00:01.000Z',
+        token: 'lease-binding:restore_mismatch_1',
+      })
+    ).toThrowError(
+      expect.objectContaining({
+        code: 'worker_control_package_restore_mismatch',
+        status: 409,
+      }) as WorkerControlGatewayError
+    );
   });
 
   it('uses a scheduler-owned sandbox binding ref as the registered control token', () => {

@@ -55,7 +55,7 @@ describe('agent environment package resolver', () => {
     ).toThrow('Host Agent Environment Package backends are not supported.');
   });
 
-  it('resolves an OpenShell package with sidecar control and sandbox-local inference routing', () => {
+  it('resolves an OpenShell package with direct NanoCore control and sandbox-local inference routing', () => {
     const store = createDemoStore();
     const turn = store.createTurn('ws_demo', 'th_demo', 'Run OpenShell mode');
     const agent = store.getAgent('ws_demo', 'agent_codex_host');
@@ -65,7 +65,7 @@ describe('agent environment package resolver', () => {
         agentSessionId: 'session_openshell_1',
         userId: 'user_local',
         backend: {
-          controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
           sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
@@ -99,6 +99,7 @@ describe('agent environment package resolver', () => {
       changeSetManifestPath: '/openkit/session/workspace-changes.json',
       strategy: 'git',
     });
+    expect(resolved.workspace.inputs[0]?.target).toBe('/workspace/openkit/worktrees/main');
     expect(resolved.extensions.openkit).toMatchObject({
       turnInput: 'Run OpenShell mode',
       resultMessagePath: '/openkit/session/final-message.txt',
@@ -147,35 +148,34 @@ describe('agent environment package resolver', () => {
       },
     });
     expect(resolved.control).toMatchObject({
-      mode: 'sidecar',
+      adapter: {
+        targetTransport: 'outbound-https',
+      },
+      mode: 'direct-nanocore',
       endpoint: {
-        baseUrl: 'https://control.local/v1/worker-control',
-        implementation: 'openkit-sidecar',
+        baseUrl: 'https://nanocore.local/api/worker-control',
+        implementation: 'direct-nanocore',
+        kind: 'direct-url',
+        required: true,
       },
-      relay: {
-        fallback: 'transcript-sink',
-        kind: 'outbound-websocket',
-        upstream: 'https://nanocore.local/api/worker-control',
+      channels: {
+        artifacts: 'batch',
+        events: 'batch',
       },
+      commands: ['interrupt', 'terminal-command'],
+      events: expect.arrayContaining(['turn.failed']),
     });
+    expect(resolved.control.relay).toBeUndefined();
+    expect(resolved.control.commands).not.toContain('approval-result');
     expect(resolved.control.auth).toMatchObject({
-      credentialVisibility: 'none',
+      credentialVisibility: 'environment',
       kind: 'sandbox-session-token',
       tokenRef: 'runtime://openkit/control-token',
     });
-    expect(resolved.capabilities).toMatchObject({
-      mode: 'sidecar',
-      endpoint: {
-        baseUrl: 'https://capability.local/v1',
-        implementation: 'openkit-sidecar',
-      },
-      routes: [
-        expect.objectContaining({ family: 'knowledge.search' }),
-        expect.objectContaining({ family: 'knowledge.read' }),
-        expect.objectContaining({ family: 'knowledge.proposal' }),
-        expect.objectContaining({ family: 'artifact.read' }),
-        expect.objectContaining({ family: 'diagnostic.read' }),
-      ],
+    expect(resolved.capabilities).toEqual({
+      mode: 'disabled',
+      protocol: 'openkit-worker-capability-v1',
+      routes: [],
     });
     expect(resolved.llm.routes[0]?.endpoint).toMatchObject({
       upstream: {
@@ -219,12 +219,496 @@ describe('agent environment package resolver', () => {
       requiredCapabilities: expect.arrayContaining([
         'container',
         'transcript-sink',
-        'sidecar-control-endpoint',
-        'sidecar-capability-endpoint',
+        'worker-control',
         'nanocore-inference-upstream',
       ]),
     });
+    expect(resolved.backend.requiredCapabilities).not.toContain('control-relay');
+    expect(resolved.backend.requiredCapabilities).not.toContain('sidecar-control-endpoint');
+    expect(resolved.backend.requiredCapabilities).not.toContain('sidecar-capability-endpoint');
     expect(serialized).not.toContain('/Users/m5pro');
+  });
+
+  it('resolves a relay-required package from the trusted provider selection', () => {
+    const store = createDemoStore();
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Run trusted worker inference');
+    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+    const resolved = AgentEnvironmentPackageSchema.parse(
+      resolveAgentEnvironmentPackage({
+        agent,
+        agentSessionId: 'session_relay_1',
+        backend: {
+          workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
+          kind: 'openshell',
+          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
+        },
+        backendRequirements: {
+          allowedKinds: ['openshell'],
+          preferred: 'openshell',
+          requiredCapabilities: ['trusted-worker-inference-relay'],
+        },
+        createdAt: '2026-07-13T00:00:00.000Z',
+        providerSelection: {
+          model: 'openai/gpt-5.2',
+          providerId: 'agent-openrouter',
+        },
+        requestId: 'req_relay_1',
+        turn,
+        turnInput: 'Run trusted worker inference',
+        userId: 'user_local',
+        workspaceCwd: '/workspace/repo',
+        workspaceRoots: [],
+      })
+    );
+    const serialized = JSON.stringify(resolved);
+    const codexCommand = (resolved.extensions.openkit as { codexCommand: string[] }).codexCommand;
+
+    expect(resolved.llm).toEqual({
+      mode: 'gateway',
+      routes: [
+        expect.objectContaining({
+          credentialVisibility: 'placeholder',
+          endpoint: expect.objectContaining({
+            workerBaseUrl: 'http://host.openshell.internal:3000/api/worker-inference/v1',
+            upstream: expect.objectContaining({ kind: 'nanocore-gateway' }),
+          }),
+          model: 'openai/gpt-5.2',
+          providerInstanceId: 'agent-openrouter',
+        }),
+      ],
+    });
+    expect(resolved.providers.providerInstances).toEqual([
+      expect.objectContaining({ id: 'agent-openrouter', models: ['openai/gpt-5.2'] }),
+    ]);
+    expect(resolved.providers.attachments).toEqual([]);
+    expect(resolved.policy.network?.rules).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          binaries: ['/usr/local/bin/codex', '/usr/local/lib/codex/bin/codex'],
+          host: 'host.openshell.internal',
+          id: 'openkit-worker-inference',
+          port: 3000,
+          protocol: 'rest',
+          rules: [
+            { method: 'POST', path: '/api/worker-inference/v1/chat/completions' },
+            { method: 'POST', path: '/api/worker-inference/v1/responses' },
+          ],
+        }),
+      ])
+    );
+    expect(codexCommand).toEqual(
+      expect.arrayContaining([
+        '--ignore-user-config',
+        '--strict-config',
+        '--model',
+        'openai/gpt-5.2',
+        'model_provider="openkit-worker-inference"',
+        'web_search="disabled"',
+        'model_providers.openkit-worker-inference.base_url="http://host.openshell.internal:3000/api/worker-inference/v1"',
+        'model_providers.openkit-worker-inference.env_key="OPENKIT_WORKER_INFERENCE_TOKEN"',
+        'model_providers.openkit-worker-inference.wire_api="responses"',
+        'model_providers.openkit-worker-inference.requires_openai_auth=false',
+      ])
+    );
+    expect(resolved.backend.requiredCapabilities).toContain('trusted-worker-inference-relay');
+    expect(resolved.control.adapter?.targetTransport).toBe('outbound-http');
+    expect(resolved.control.events).toContain('turn.failed');
+    expect(resolved.control.transcript?.runtimeProvenance).toBeUndefined();
+    expect(serialized).not.toContain('inference.local');
+    expect(serialized).not.toContain('/sandbox/.codex/auth.json');
+  });
+
+  it('projects bounded runtime provenance outputs only when explicitly required', () => {
+    const store = createDemoStore();
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Capture runtime provenance');
+    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+    const resolved = AgentEnvironmentPackageSchema.parse(
+      resolveAgentEnvironmentPackage({
+        agent,
+        agentSessionId: 'session_runtime_provenance_1',
+        backend: {
+          workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
+          kind: 'openshell',
+          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
+        },
+        backendRequirements: {
+          allowedKinds: ['openshell'],
+          preferred: 'openshell',
+          requiredCapabilities: ['trusted-worker-inference-relay', 'worker.runtime-provenance.v1'],
+        },
+        createdAt: '2026-07-13T00:00:00.000Z',
+        providerSelection: {
+          model: 'openai/gpt-5.2',
+          providerId: 'agent-openrouter',
+        },
+        requestId: 'req_runtime_provenance_1',
+        turn,
+        turnInput: 'Capture runtime provenance',
+        userId: 'user_local',
+        workspaceCwd: '/workspace/repo',
+        workspaceRoots: [],
+      })
+    );
+
+    expect(resolved.control.transcript?.runtimeProvenance).toEqual({
+      maxStreamCount: 64,
+      maxTotalBytes: 268_435_456,
+      nativeOriginIndexPath: '/openkit/session/runtime/native-origin-index.jsonl',
+      rawStreamsRoot: '/openkit/session/runtime/raw',
+      streamManifestPath: '/openkit/session/runtime/raw-streams.json',
+    });
+    expect(resolved.backend.requiredCapabilities).toContain('worker.runtime-provenance.v1');
+  });
+
+  it('rejects runtime provenance without the trusted worker inference relay', () => {
+    const store = createDemoStore();
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Reject incomplete provenance binding');
+    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+
+    expect(() =>
+      resolveAgentEnvironmentPackage({
+        agent,
+        agentSessionId: 'session_runtime_provenance_untrusted_1',
+        backend: {
+          workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
+          kind: 'openshell',
+          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
+        },
+        backendRequirements: {
+          allowedKinds: ['openshell'],
+          preferred: 'openshell',
+          requiredCapabilities: ['worker.runtime-provenance.v1'],
+        },
+        createdAt: '2026-07-13T00:00:00.000Z',
+        turn,
+        turnInput: 'Reject incomplete provenance binding',
+        userId: 'user_local',
+        workspaceCwd: '/workspace/repo',
+        workspaceRoots: [],
+      })
+    ).toThrow('Runtime provenance requires the trusted worker inference relay.');
+  });
+
+  it('rejects an explicit inference override for a relay-required package', () => {
+    const store = createDemoStore();
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Reject relay URL override');
+    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+
+    expect(() =>
+      resolveAgentEnvironmentPackage({
+        agent,
+        agentSessionId: 'session_relay_override_1',
+        backend: {
+          workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
+          inferenceBaseUrl: 'https://attacker.example/api/worker-inference/v1',
+          kind: 'openshell',
+          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
+        },
+        backendRequirements: {
+          allowedKinds: ['openshell'],
+          preferred: 'openshell',
+          requiredCapabilities: ['trusted-worker-inference-relay'],
+        },
+        createdAt: '2026-07-13T00:00:00.000Z',
+        providerSelection: {
+          model: 'openai/gpt-5.2',
+          providerId: 'agent-openrouter',
+        },
+        requestId: 'req_relay_override_1',
+        turn,
+        userId: 'user_local',
+        workspaceCwd: '/workspace/repo',
+        workspaceRoots: [],
+      })
+    ).toThrow('Trusted worker inference derives its base URL from the worker-control origin.');
+  });
+
+  it('rejects a non-HTTP worker-control endpoint for a relay-required package', () => {
+    const store = createDemoStore();
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Reject relay protocol');
+    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+
+    expect(() =>
+      resolveAgentEnvironmentPackage({
+        agent,
+        agentSessionId: 'session_relay_protocol_1',
+        backend: {
+          workerControlBaseUrl: 'ftp://nanocore.internal/api/worker-control',
+          kind: 'openshell',
+          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
+        },
+        backendRequirements: {
+          allowedKinds: ['openshell'],
+          preferred: 'openshell',
+          requiredCapabilities: ['trusted-worker-inference-relay'],
+        },
+        createdAt: '2026-07-13T00:00:00.000Z',
+        providerSelection: {
+          model: 'openai/gpt-5.2',
+          providerId: 'agent-openrouter',
+        },
+        requestId: 'req_relay_protocol_1',
+        turn,
+        userId: 'user_local',
+        workspaceCwd: '/workspace/repo',
+        workspaceRoots: [],
+      })
+    ).toThrow('Trusted worker inference requires an HTTP(S) worker-control endpoint.');
+  });
+
+  it('fails relay-required package resolution without a trusted provider and model', () => {
+    const store = createDemoStore();
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Reject missing provider selection');
+    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+
+    expect(() =>
+      resolveAgentEnvironmentPackage({
+        agent,
+        agentSessionId: 'session_relay_missing_provider_1',
+        backend: {
+          workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
+          kind: 'openshell',
+          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
+        },
+        backendRequirements: {
+          allowedKinds: ['openshell'],
+          preferred: 'openshell',
+          requiredCapabilities: ['trusted-worker-inference-relay'],
+        },
+        createdAt: '2026-07-13T00:00:00.000Z',
+        requestId: 'req_relay_missing_provider_1',
+        turn,
+        userId: 'user_local',
+        workspaceCwd: '/workspace/repo',
+        workspaceRoots: [],
+      })
+    ).toThrow('Trusted worker inference requires a resolved provider and model.');
+  });
+
+  it('rejects relay-required credentials before recording injection state', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-relay-credential-'));
+    const coreDb = openCoreDb(dataRoot);
+    const vaultUnlockState = createVaultUnlockState({
+      backendKind: 'encrypted-file',
+      storeDir: join(dataRoot, 'server', 'vault'),
+    });
+    const now = '2026-07-13T00:00:00.000Z';
+    const runtimeEnvCredentials: Array<{
+      credentialValue: string;
+      targetEnvVarName: string;
+    }> = [];
+
+    applyMigrations(coreDb);
+    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 16) });
+    vaultUnlockState.backend().store({
+      material: 'forbidden_relay_secret',
+      metadata: { ownerScope: 'server' },
+      referenceId: 'vault_relay_runtime_env',
+    });
+    createVaultReference(coreDb, {
+      backendKind: 'encrypted-file',
+      backendLocator: 'encrypted-file://server/vault/vault_relay_runtime_env',
+      displayName: 'Relay runtime environment',
+      ownerScope: 'server',
+      referenceId: 'vault_relay_runtime_env',
+      secretKind: 'worker-credential',
+      now: () => now,
+    });
+    createVaultGrant(coreDb, {
+      allowedInjectionPaths: ['runtime-env'],
+      grantId: 'grant_relay_runtime_env',
+      lifetime: 'agent-session',
+      ownerScope: 'server',
+      targetAgentSessionId: 'session_relay_credential_1',
+      vaultReferenceId: 'vault_relay_runtime_env',
+      now: () => now,
+    });
+
+    try {
+      const store = createDemoStore();
+      const turn = store.createTurn('ws_demo', 'th_demo', 'Reject relay credential');
+      const agent = store.getAgent('ws_demo', 'agent_codex_host');
+
+      expect(() =>
+        resolveAgentEnvironmentPackage({
+          agent,
+          agentSessionId: 'session_relay_credential_1',
+          backend: {
+            workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
+            kind: 'openshell',
+            sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
+          },
+          backendRequirements: {
+            allowedKinds: ['openshell'],
+            preferred: 'openshell',
+            requiredCapabilities: ['trusted-worker-inference-relay'],
+          },
+          coreDb,
+          createdAt: now,
+          credentialDeclarations: [
+            {
+              id: 'relay_runtime_env',
+              targetEnvVarName: 'RELAY_RUNTIME_ENV_SECRET',
+              vaultGrantId: 'grant_relay_runtime_env',
+              visibility: 'runtime-env',
+            },
+          ],
+          providerSelection: {
+            model: 'openai/gpt-5.2',
+            providerId: 'agent-openrouter',
+          },
+          requestId: 'req_relay_credential_1',
+          runtimeEnvCredentialSink: (credential) => runtimeEnvCredentials.push(credential),
+          turn,
+          userId: 'user_local',
+          vaultBackend: () => vaultUnlockState.backend(),
+          workspaceCwd: '/workspace/repo',
+          workspaceRoots: [],
+        })
+      ).toThrow(
+        'Trusted worker inference does not allow direct sandbox network, credentials, or provider attachments.'
+      );
+      expect(runtimeEnvCredentials).toEqual([]);
+      expect(listInjectionPlans(coreDb)).toEqual([]);
+      expect(listInjectionReceipts(coreDb)).toEqual([]);
+      expect(listVaultUseRecords(coreDb)).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects relay-required sandbox network access before package projection', () => {
+    const store = createDemoStore();
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Reject relay network');
+    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+
+    expect(() =>
+      resolveAgentEnvironmentPackage({
+        agent,
+        agentSessionId: 'session_relay_network_1',
+        backend: {
+          workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
+          kind: 'openshell',
+          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
+        },
+        backendRequirements: {
+          allowedKinds: ['openshell'],
+          preferred: 'openshell',
+          requiredCapabilities: ['trusted-worker-inference-relay'],
+        },
+        createdAt: '2026-07-13T00:00:00.000Z',
+        providerSelection: {
+          model: 'openai/gpt-5.2',
+          providerId: 'agent-openrouter',
+        },
+        requestId: 'req_relay_network_1',
+        sandboxAccess: {
+          network: [
+            {
+              access: 'read-write',
+              binaries: ['/usr/local/bin/codex'],
+              host: 'api.openai.com',
+              id: 'direct_provider',
+              port: 443,
+              protocol: 'rest',
+              purpose: 'Bypass the relay',
+              scope: 'session',
+            },
+          ],
+        },
+        turn,
+        userId: 'user_local',
+        workspaceCwd: '/workspace/repo',
+        workspaceRoots: [],
+      })
+    ).toThrow(
+      'Trusted worker inference does not allow direct sandbox network, credentials, or provider attachments.'
+    );
+  });
+
+  it('rejects relay-required provider-backed MCP before recording injection state', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-relay-mcp-'));
+    const coreDb = openCoreDb(dataRoot);
+    const vaultUnlockState = createVaultUnlockState({
+      backendKind: 'encrypted-file',
+      storeDir: join(dataRoot, 'server', 'vault'),
+    });
+    const now = '2026-07-13T00:00:00.000Z';
+    const providerCredentials: Array<{ credentialValue: string }> = [];
+
+    applyMigrations(coreDb);
+    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 17) });
+    vaultUnlockState.backend().store({
+      material: 'forbidden_github_token',
+      metadata: { ownerScope: 'server' },
+      referenceId: 'vault_github_read',
+    });
+    createVaultReference(coreDb, {
+      backendKind: 'encrypted-file',
+      backendLocator: 'encrypted-file://server/vault/vault_github_read',
+      displayName: 'GitHub read token',
+      ownerScope: 'server',
+      referenceId: 'vault_github_read',
+      secretKind: 'github-token',
+      now: () => now,
+    });
+    createVaultGrant(coreDb, {
+      allowedInjectionPaths: ['backend-provider'],
+      grantId: 'grant_github_read',
+      lifetime: 'turn',
+      ownerScope: 'server',
+      targetAgentSessionId: 'session_relay_mcp_1',
+      vaultReferenceId: 'vault_github_read',
+      now: () => now,
+    });
+
+    try {
+      const store = createDemoStore();
+      const turn = store.createTurn('ws_demo', 'th_demo', 'Reject relay MCP provider');
+      const baseAgent = store.getAgent('ws_demo', 'agent_codex_host');
+      const agent = {
+        ...baseAgent,
+        config: { ...baseAgent.config, mcpServerIds: ['github'] },
+      } as typeof baseAgent;
+
+      expect(() =>
+        resolveAgentEnvironmentPackage({
+          agent,
+          agentSessionId: 'session_relay_mcp_1',
+          backend: {
+            workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
+            kind: 'openshell',
+            sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
+          },
+          backendRequirements: {
+            allowedKinds: ['openshell'],
+            preferred: 'openshell',
+            requiredCapabilities: ['trusted-worker-inference-relay'],
+          },
+          coreDb,
+          createdAt: now,
+          providerCredentialSink: (credential) => providerCredentials.push(credential),
+          providerSelection: {
+            model: 'openai/gpt-5.2',
+            providerId: 'agent-openrouter',
+          },
+          requestId: 'req_relay_mcp_1',
+          turn,
+          userId: 'user_local',
+          vaultBackend: () => vaultUnlockState.backend(),
+          workspaceCwd: '/workspace/repo',
+          workspaceRoots: [],
+        })
+      ).toThrow(
+        'Trusted worker inference does not allow direct sandbox network, credentials, or provider attachments.'
+      );
+      expect(providerCredentials).toEqual([]);
+      expect(listInjectionPlans(coreDb)).toEqual([]);
+      expect(listInjectionReceipts(coreDb)).toEqual([]);
+      expect(listVaultUseRecords(coreDb)).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
   });
 
   it('records catalog-resolved workspace source lineage in the AEP snapshot', () => {
@@ -237,7 +721,7 @@ describe('agent environment package resolver', () => {
         agentSessionId: 'session_catalog_source_1',
         userId: 'user_local',
         backend: {
-          controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
           sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
@@ -294,7 +778,7 @@ describe('agent environment package resolver', () => {
       agentSessionId: 'session_sandbox_policy_1',
       userId: 'user_local',
       backend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
       },
@@ -380,7 +864,7 @@ describe('agent environment package resolver', () => {
         agentSessionId: 'session_supply_catalog_1',
         userId: 'user_local',
         backend: {
-          controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
           sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
@@ -527,7 +1011,7 @@ describe('agent environment package resolver', () => {
           agentSessionId: 'session_supply_catalog_1',
           userId: 'user_local',
           backend: {
-            controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+            workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
             kind: 'openshell',
             sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
           },
@@ -678,7 +1162,7 @@ describe('agent environment package resolver', () => {
           agentSessionId: 'session_supply_catalog_1',
           userId: 'user_local',
           backend: {
-            controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+            workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
             kind: 'openshell',
             sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
           },
@@ -750,7 +1234,7 @@ describe('agent environment package resolver', () => {
           agentSessionId: 'session_supply_catalog_1',
           userId: 'user_local',
           backend: {
-            controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+            workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
             kind: 'openshell',
             sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
           },
@@ -815,7 +1299,7 @@ describe('agent environment package resolver', () => {
         agentSessionId: 'session_private_repo_1',
         userId: 'user_local',
         backend: {
-          controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
           sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
@@ -920,7 +1404,7 @@ describe('agent environment package resolver', () => {
           agentSessionId: 'session_runtime_file_1',
           userId: 'user_local',
           backend: {
-            controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+            workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
             kind: 'openshell',
             sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
           },
@@ -1043,7 +1527,7 @@ describe('agent environment package resolver', () => {
           agentSessionId: 'session_generic_credentials_1',
           userId: 'user_local',
           backend: {
-            controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+            workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
             kind: 'openshell',
             sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
           },
@@ -1183,7 +1667,7 @@ describe('agent environment package resolver', () => {
           agentSessionId: 'session_missing_sink_1',
           userId: 'user_local',
           backend: {
-            controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+            workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
             kind: 'openshell',
             sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
           },
@@ -1231,7 +1715,7 @@ describe('agent environment package resolver', () => {
         agentSessionId: 'session_supply_catalog_reject_1',
         userId: 'user_local',
         backend: {
-          controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
           sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
@@ -1255,7 +1739,7 @@ describe('agent environment package resolver', () => {
         userId: 'user_local',
         backend: {
           codexModel: 'gpt-5-codex',
-          controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
           sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
@@ -1295,7 +1779,7 @@ describe('agent environment package resolver', () => {
         agentSessionId: 'session_remote_openshell_1',
         userId: 'user_local',
         backend: {
-          controlRelayUpstream: 'https://nanocore.example.com/api/worker-control',
+          workerControlBaseUrl: 'https://nanocore.example.com/api/worker-control',
           gatewayUrl: 'https://a1.example.com:17670',
           kind: 'openshell',
           placement: 'remote',
@@ -1320,9 +1804,10 @@ describe('agent environment package resolver', () => {
     const serialized = JSON.stringify(resolved);
 
     expect(resolved.runtime.command.workingDirectory).toBe('/workspace/openkit');
-    expect(resolved.control.relay?.upstream).toBe(
+    expect(resolved.control.endpoint?.baseUrl).toBe(
       'https://nanocore.example.com/api/worker-control'
     );
+    expect(resolved.control.relay).toBeUndefined();
     expect(resolved.backend.requiredCapabilities).toEqual(
       expect.arrayContaining([
         'remote-gateway',
@@ -1350,7 +1835,7 @@ describe('agent environment package resolver', () => {
       agentSessionId: 'as_backend_requirements',
       userId: 'user_local',
       backend: {
-        controlRelayUpstream: 'https://nanocore.example.com/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.example.com/api/worker-control',
         kind: 'openshell',
         placement: 'remote',
         sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',

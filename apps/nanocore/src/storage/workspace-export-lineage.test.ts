@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -118,7 +118,7 @@ function createLineageExportInput(
     agentSessionId: source.sessionId,
     userId: 'user_local',
     backend: {
-      controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+      workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
       kind: 'openshell',
       sandboxImageRef: 'openkit/worker-codex:dev',
     },
@@ -766,5 +766,253 @@ describe('workspace auxiliary lineage reminting', () => {
     ['vault-session', 'as_missing'],
   ] as const)('fails closed when %s references state outside the export', (missing, error) => {
     expect(() => importLineage(createLineageExportInput(missing))).toThrow(error);
+  });
+
+  it('exports and remints only the product-safe runtime provenance index', () => {
+    const input = createLineageExportInput();
+    const packageSnapshotId = (
+      input.agentEnvironmentPackageSnapshots?.[0] as { snapshotId: string }
+    ).snapshotId;
+    const rawBundleId = 'evb_runtime_raw_source';
+    const indexBundleId = 'evb_runtime_index_source';
+    const runtimeEvidenceId = 'rte_runtime_source';
+    const sourceOriginRef = `rto_${'a'.repeat(24)}`;
+    const sourceTurnRef = `rtt_${'b'.repeat(24)}`;
+    const indexText = `${JSON.stringify({
+      lineage: {
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        turnId: source.turnId,
+        agentSessionId: source.sessionId,
+        packageSnapshotId,
+        requestId: 'request_source',
+      },
+      streamRef: 'stream-0000.jsonl',
+      frameSequence: 0,
+      byteOffset: 0,
+      byteLength: 24,
+      frameSha256: `sha256:${'1'.repeat(64)}`,
+      eventKind: 'thread.started',
+      parseStatus: 'parsed',
+      runtimeOriginRef: sourceOriginRef,
+      parentRuntimeOriginRef: null,
+      runtimeTurnRef: sourceTurnRef,
+      runtimeRole: 'worker',
+      runtimeDepth: 0,
+    })}\n`;
+    const indexDigest = `sha256:${createHash('sha256').update(indexText).digest('hex')}`;
+    input.evidenceBundles = [
+      {
+        id: rawBundleId,
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        goalId: null,
+        turnId: source.turnId,
+        agentSessionId: source.sessionId,
+        backendType: 'openshell',
+        sourceKind: 'worker-runtime-provenance-raw',
+        summary: 'Restricted runtime provenance.',
+        rawEvidenceRefs: [
+          { kind: 'worker-runtime-provenance-stream', ref: 'raw/native-canary.jsonl' },
+        ],
+        redactedEvidenceRefs: [],
+        contentDigests: [`sha256:${'2'.repeat(64)}`],
+        retentionClass: 'restricted-raw',
+        sensitivityClass: 'restricted',
+        importStatus: 'promoted',
+        requiredFeatures: ['worker.runtime-provenance.v1'],
+        createdAt: timestamp,
+      },
+      {
+        id: indexBundleId,
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        goalId: null,
+        turnId: source.turnId,
+        agentSessionId: source.sessionId,
+        backendType: 'openshell',
+        sourceKind: 'worker-runtime-provenance-index',
+        summary: 'Product-safe runtime provenance.',
+        rawEvidenceRefs: [],
+        redactedEvidenceRefs: [
+          { kind: 'worker-runtime-provenance-index', ref: 'runtime-origin-index.jsonl' },
+        ],
+        contentDigests: [indexDigest],
+        retentionClass: 'turn-evidence',
+        sensitivityClass: 'product-safe',
+        importStatus: 'promoted',
+        requiredFeatures: ['worker.runtime-provenance.v1'],
+        createdAt: timestamp,
+      },
+    ];
+    input.runtimeEvidence = [
+      {
+        id: runtimeEvidenceId,
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        turnId: source.turnId,
+        goalId: null,
+        taskId: null,
+        agentSessionId: source.sessionId,
+        backendType: 'openshell',
+        backendVersion: '0.0.80',
+        placement: 'local',
+        phase: 'transcript-collection',
+        summary: 'Portable runtime provenance.',
+        policyDigest: null,
+        workerImage: null,
+        sandboxSummary: null,
+        capabilitySummary: null,
+        uploadManifest: [],
+        downloadManifest: [],
+        transcriptSummary: null,
+        workspaceChangeSummary: null,
+        controlSummary: null,
+        outcome: 'succeeded',
+        exitCode: null,
+        signal: null,
+        stopReason: null,
+        errorCode: null,
+        errorMessage: null,
+        redactedStdoutSummary: null,
+        redactedStderrSummary: null,
+        evidenceBundleIds: [rawBundleId, indexBundleId],
+        contentDigests: [`sha256:${'2'.repeat(64)}`, indexDigest],
+        requiredFeatures: ['worker.runtime-provenance.v1'],
+        createdAt: timestamp,
+        startedAt: null,
+        completedAt: null,
+        collectedAt: timestamp,
+      },
+    ];
+    input.runtimeProvenanceIndexes = new Map([[indexBundleId, indexText]]);
+    const sourceCacheLineageRef = `rcl_${'c'.repeat(24)}`;
+    input.capabilityCalls = [
+      {
+        ...(input.capabilityCalls?.[0] as Record<string, unknown>),
+        packageSnapshotId,
+        runtimeOriginRef: sourceOriginRef,
+        runtimeCacheLineageRef: sourceCacheLineageRef,
+      },
+      {
+        ...(input.capabilityCalls?.[0] as Record<string, unknown>),
+        id: 'cap_source_same_cache_lineage',
+        packageSnapshotId,
+        runtimeOriginRef: sourceOriginRef,
+        runtimeCacheLineageRef: sourceCacheLineageRef,
+      },
+    ];
+
+    const verified = writeWorkspaceExportTree(input);
+    const exportedBundles = readFileSync(
+      join(input.exportRoot, 'records', 'evidence-bundles.jsonl'),
+      'utf8'
+    )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(exportedBundles.find((bundle) => bundle.id === rawBundleId)).toMatchObject({
+      id: rawBundleId,
+      importStatus: 'expired',
+      rawEvidenceRefs: [],
+      redactedEvidenceRefs: [],
+    });
+    expect(JSON.stringify([...verified.fileContents])).not.toContain('native-canary');
+    expect(
+      verified.fileContents.get(
+        `workspace-files/evidence/bundles/${indexBundleId}/runtime-origin-index.jsonl`
+      )
+    ).toBe(indexText);
+    expect(
+      [...verified.fileContents.keys()].some((path) => path.startsWith('evidence/backend/'))
+    ).toBe(false);
+
+    const imported = readWorkspaceImportSnapshot({
+      verified,
+      targetWorkspaceId,
+    }) as ReturnType<typeof readWorkspaceImportSnapshot> & {
+      runtimeProvenanceIndexes: ReadonlyMap<string, string>;
+    };
+    const importedRawBundle = imported.evidenceBundles.find(
+      (bundle) => bundle.sourceKind === 'worker-runtime-provenance-raw'
+    );
+    const importedIndexBundle = imported.evidenceBundles.find(
+      (bundle) => bundle.sourceKind === 'worker-runtime-provenance-index'
+    );
+    expect(importedRawBundle).toMatchObject({ importStatus: 'expired', rawEvidenceRefs: [] });
+    expect(importedRawBundle?.id).not.toBe(rawBundleId);
+    expect(importedIndexBundle?.id).not.toBe(indexBundleId);
+    expect(imported.runtimeEvidence[0]?.id).not.toBe(runtimeEvidenceId);
+    expect(imported.runtimeEvidence[0]?.evidenceBundleIds).toEqual([
+      importedRawBundle?.id,
+      importedIndexBundle?.id,
+    ]);
+    const importedIndexText = imported.runtimeProvenanceIndexes.get(importedIndexBundle?.id ?? '');
+    expect(importedIndexText).not.toContain(source.workspaceId);
+    expect(importedIndexText).not.toContain(source.threadId);
+    expect(importedIndexText).not.toContain(source.turnId);
+    expect(importedIndexText).not.toContain(source.sessionId);
+    expect(importedIndexText).not.toContain(packageSnapshotId);
+    expect(importedIndexText).not.toContain(sourceOriginRef);
+    expect(importedIndexText).not.toContain(sourceTurnRef);
+    const importedIndexRow = JSON.parse(importedIndexText?.trim() ?? '{}') as {
+      lineage?: { packageSnapshotId?: string };
+      runtimeOriginRef?: string;
+      runtimeTurnRef?: string;
+    };
+    expect(importedIndexRow.runtimeTurnRef).toMatch(/^rtt_[a-f0-9]{24}$/);
+    expect(imported.capabilityCalls[0]).toMatchObject({
+      packageSnapshotId: importedIndexRow.lineage?.packageSnapshotId,
+      runtimeOriginRef: importedIndexRow.runtimeOriginRef,
+    });
+    expect(imported.capabilityCalls[0]?.runtimeCacheLineageRef).toMatch(/^rcl_[a-f0-9]{24}$/);
+    expect(imported.capabilityCalls[0]?.runtimeCacheLineageRef).not.toBe(sourceCacheLineageRef);
+    expect(imported.capabilityCalls[1]?.runtimeCacheLineageRef).toBe(
+      imported.capabilityCalls[0]?.runtimeCacheLineageRef
+    );
+    expect(importedIndexBundle?.contentDigests).toEqual([
+      `sha256:${createHash('sha256')
+        .update(importedIndexText ?? '')
+        .digest('hex')}`,
+    ]);
+
+    const unlinkedRoot = join(
+      mkdtempSync(join(tmpdir(), 'openkit-workspace-provenance-unlinked-')),
+      'export'
+    );
+    const unlinked = writeWorkspaceExportTree({
+      ...input,
+      exportRoot: unlinkedRoot,
+      runtimeEvidence: [],
+    });
+    expect(() =>
+      readWorkspaceImportSnapshot({ verified: unlinked, targetWorkspaceId: 'ws_unlinked' })
+    ).toThrow(/runtime provenance.*link/i);
+
+    const alternateImport = readWorkspaceImportSnapshot({
+      verified,
+      targetWorkspaceId: 'ws_imported_alternate',
+    });
+    expect(alternateImport.capabilityCalls[0]?.runtimeCacheLineageRef).not.toBe(
+      imported.capabilityCalls[0]?.runtimeCacheLineageRef
+    );
+
+    const unmatchedRoot = join(
+      mkdtempSync(join(tmpdir(), 'openkit-workspace-provenance-unmatched-')),
+      'export'
+    );
+    const unmatched = writeWorkspaceExportTree({
+      ...input,
+      exportRoot: unmatchedRoot,
+      capabilityCalls: [
+        {
+          ...(input.capabilityCalls?.[0] as Record<string, unknown>),
+          runtimeOriginRef: `rto_${'f'.repeat(24)}`,
+        },
+      ],
+    });
+    expect(() =>
+      readWorkspaceImportSnapshot({ verified: unmatched, targetWorkspaceId: 'ws_unmatched' })
+    ).toThrow(/runtime origin.*normalized index/i);
   });
 });

@@ -1,10 +1,10 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { seedDemoWorkspaceDataRoot } from '../support/demo-data.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -38,7 +38,6 @@ async function main() {
     await assertOkJson(`${baseUrl}/api/meta`, 'meta');
     await assertGoalModeRoutes(baseUrl);
     await assertWorkspacePortabilitySmoke(baseUrl, dataRoot);
-    await assertWorkerMcpGatewaySmoke(dataRoot);
     console.log('OpenKit NanoCore built-artifact smoke PASS');
   } finally {
     await stopProcess(child);
@@ -169,76 +168,6 @@ async function assertWorkspacePortabilitySmoke(sourceBaseUrl, sourceDataRoot) {
   } finally {
     await stopProcess(targetChild);
     await rm(targetDataRoot, { force: true, recursive: true });
-  }
-}
-
-/**
- * Verifies that the built Worker MCP gateway can spawn a stdio stub and complete one call.
- *
- * @param {string} dataRoot Harness data root that owns disposable test files.
- * @returns {Promise<void>} Resolves after the MCP smoke check passes.
- */
-async function assertWorkerMcpGatewaySmoke(dataRoot) {
-  const { createDefaultWorkerMcpGateway } = await import(
-    pathToFileURL(join(repoRoot, 'apps/nanocore/dist/runtime/worker-mcp-gateway.js')).href
-  );
-  const serverPath = join(dataRoot, 'smoke-mcp-server.mjs');
-
-  await writeFile(
-    serverPath,
-    `
-import { createInterface } from 'node:readline/promises';
-const lines = createInterface({ input: process.stdin });
-for await (const line of lines) {
-  const message = JSON.parse(line);
-  if (message.method === 'initialize') {
-    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { serverInfo: { name: 'smoke-mcp', version: '1.0.0' } } }) + '\\n');
-  }
-  if (message.method === 'tools/list') {
-    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { tools: [{ name: 'repos.get', inputSchema: { additionalProperties: false, properties: { owner: { type: 'string' }, repo: { type: 'string' } }, required: ['owner', 'repo'], type: 'object' } }] } }) + '\\n');
-  }
-  if (message.method === 'tools/call') {
-    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { structuredContent: { ok: true, tool: message.params.name } } }) + '\\n');
-  }
-}
-`
-  );
-
-  const gateway = createDefaultWorkerMcpGateway();
-
-  try {
-    const result = await gateway.callTool({
-      arguments: { owner: 'openkit', repo: 'openkit' },
-      server: {
-        allowedPrompts: [],
-        allowedTools: ['repos.get'],
-        command: [process.execPath, serverPath],
-        id: 'github',
-        networkPolicyHints: [],
-        providerInstanceIds: [],
-        secretRefIds: [],
-        toolSchemas: [
-          {
-            inputSchema: {
-              additionalProperties: false,
-              properties: { owner: { type: 'string' }, repo: { type: 'string' } },
-              required: ['owner', 'repo'],
-              type: 'object',
-            },
-            name: 'repos.get',
-          },
-        ],
-        transport: 'stdio',
-        vaultGrantIds: [],
-      },
-      toolName: 'repos.get',
-    });
-
-    if (result.ok !== true || result.tool !== 'repos.get') {
-      throw new Error(`MCP gateway smoke returned malformed result: ${JSON.stringify(result)}.`);
-    }
-  } finally {
-    await gateway.close?.();
   }
 }
 

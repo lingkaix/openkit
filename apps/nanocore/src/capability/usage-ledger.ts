@@ -18,6 +18,9 @@ type CapabilityCallRow = {
   item_id: string | null;
   agent_id: string | null;
   agent_session_id: string | null;
+  package_snapshot_id: string | null;
+  runtime_origin_ref: string | null;
+  runtime_cache_lineage_ref: string | null;
   request_id: string | null;
   source_ids_json: string;
   capability_id: string;
@@ -61,6 +64,12 @@ export interface GatewayCallContext {
   agentId?: string | null;
   /** Agent session lineage when available. */
   agentSessionId?: string | null;
+  /** Agent Environment Package snapshot that authorized the call. */
+  packageSnapshotId?: string | null;
+  /** Product-safe runtime origin correlation reference. */
+  runtimeOriginRef?: string | null;
+  /** Product-safe runtime cache-lineage correlation reference. */
+  runtimeCacheLineageRef?: string | null;
   /** Request id used for idempotency when available. */
   requestId?: string | null;
   /** Workspace data source ids touched by this call. */
@@ -183,6 +192,9 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
     itemId: input.itemId ?? null,
     agentId: input.agentId ?? null,
     agentSessionId: input.agentSessionId ?? null,
+    packageSnapshotId: input.packageSnapshotId ?? null,
+    runtimeOriginRef: input.runtimeOriginRef ?? null,
+    runtimeCacheLineageRef: input.runtimeCacheLineageRef ?? null,
     requestId: input.requestId ?? null,
     sourceIds: normalizeSourceIds(input.sourceIds),
     capabilityId: input.capabilityId,
@@ -215,8 +227,11 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
         redaction_class,
         error_code,
         started_at,
-        completed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        completed_at,
+        package_snapshot_id,
+        runtime_origin_ref,
+        runtime_cache_lineage_ref
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       protocolCall.id,
@@ -238,7 +253,10 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
       input.redactionClass,
       protocolCall.errorCode,
       protocolCall.startedAt,
-      protocolCall.completedAt
+      protocolCall.completedAt,
+      protocolCall.packageSnapshotId,
+      protocolCall.runtimeOriginRef,
+      protocolCall.runtimeCacheLineageRef
     );
 
   const stored = findCapabilityCallByIdOrIdempotency(input.workspaceDb, input);
@@ -252,9 +270,12 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
       family: stored.family as CapabilityCallFamily,
       itemId: stored.item_id,
       operation: stored.operation,
+      packageSnapshotId: stored.package_snapshot_id,
       providerRef: stored.provider_ref,
       redactionClass: stored.redaction_class,
       requestId: stored.request_id,
+      runtimeCacheLineageRef: stored.runtime_cache_lineage_ref,
+      runtimeOriginRef: stored.runtime_origin_ref,
       serviceRef: stored.service_ref,
       sourceIds: parseSourceIdsJson(stored.source_ids_json),
       summary: stored.summary,
@@ -563,8 +584,11 @@ function insertCapabilityCall(workspaceDb: WorkspaceDb, call: CapabilityCallLedg
         redaction_class,
         error_code,
         started_at,
-        completed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        completed_at,
+        package_snapshot_id,
+        runtime_origin_ref,
+        runtime_cache_lineage_ref
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       call.id,
@@ -586,7 +610,10 @@ function insertCapabilityCall(workspaceDb: WorkspaceDb, call: CapabilityCallLedg
       call.redactionClass,
       call.errorCode,
       call.startedAt,
-      call.completedAt
+      call.completedAt,
+      call.packageSnapshotId,
+      call.runtimeOriginRef,
+      call.runtimeCacheLineageRef
     );
 }
 
@@ -646,6 +673,9 @@ function capabilityCallFromRow(row: unknown): CapabilityCallLedgerRecord {
     itemId: call.item_id,
     agentId: call.agent_id,
     agentSessionId: call.agent_session_id,
+    packageSnapshotId: call.package_snapshot_id,
+    runtimeOriginRef: call.runtime_origin_ref,
+    runtimeCacheLineageRef: call.runtime_cache_lineage_ref,
     requestId: call.request_id,
     sourceIds: parseSourceIdsJson(call.source_ids_json),
     capabilityId: call.capability_id,

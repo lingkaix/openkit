@@ -10,7 +10,6 @@ import {
   WorkerControlResponseEnvelopeSchema,
   type WorkerLineage,
 } from '@openkit/worker-protocol';
-import type { ApprovalDecision } from './types.js';
 
 /**
  * Stable lineage required on every worker control request.
@@ -82,26 +81,6 @@ export interface WorkerControlArtifactNotice {
 }
 
 /**
- * Approval decision command queued for the worker.
- */
-export interface WorkerControlApprovalCommand {
-  /** Gateway-local command id. */
-  commandId: string;
-  /** Command kind. */
-  kind: 'approval-result';
-  /** Worker command sequence number. */
-  sequence: number;
-  /** Approval request id previously emitted by the worker. */
-  approvalRequestId: string;
-  /** User decision that should resume the worker. */
-  decision: ApprovalDecision;
-  /** Timestamp recorded when NanoCore queued the command. */
-  queuedAt: string;
-  /** Timestamp recorded when a worker poll first delivered the command. */
-  deliveredAt: string | null;
-}
-
-/**
  * Interrupt command queued for the worker.
  */
 export interface WorkerControlInterruptCommand {
@@ -142,10 +121,7 @@ export interface WorkerControlTerminalCommand {
 /**
  * Command delivered to the worker through the control gateway.
  */
-export type WorkerControlCommand =
-  | WorkerControlApprovalCommand
-  | WorkerControlInterruptCommand
-  | WorkerControlTerminalCommand;
+export type WorkerControlCommand = WorkerControlInterruptCommand | WorkerControlTerminalCommand;
 
 /**
  * Terminal command result reported by the worker.
@@ -166,7 +142,7 @@ export interface WorkerControlTerminalResult {
 }
 
 /**
- * Supply refresh acknowledgement reported by a worker sidecar.
+ * Supply refresh acknowledgement reported by a worker runtime adapter.
  */
 export interface WorkerControlSupplyRefreshAck {
   /** Worker sequence number for replay ordering. */
@@ -182,12 +158,12 @@ export interface WorkerControlSupplyRefreshAck {
 }
 
 /**
- * Product-safe knowledge proposal summary reported by a worker sidecar.
+ * Product-safe knowledge proposal summary reported by a worker runtime adapter.
  */
 export interface WorkerControlKnowledgeProposalSummary {
   /** Worker sequence number for replay ordering. */
   sequence: number;
-  /** Stable proposal id suggested by the worker sidecar. */
+  /** Stable proposal id suggested by the worker runtime adapter. */
   proposalId: string;
   /** Human-readable proposal title. */
   title: string;
@@ -235,6 +211,8 @@ export interface WorkerControlSessionSnapshot {
 export interface WorkerControlSessionRestoreInput {
   /** Sandbox bearer token or durable scheduler binding ref. */
   readonly token: string;
+  /** Durable redacted AEP snapshot used for package-bound request authentication. */
+  readonly environmentPackage?: AgentEnvironmentPackage | null;
   /** Worker lineage owned by the restored session. */
   readonly lineage: WorkerControlLineage;
   /** Timestamp recorded when the session was originally registered or acquired. */
@@ -273,9 +251,32 @@ export interface WorkerControlGatewayOptions {
   resolveTokenBinding?: WorkerControlTokenBindingResolver;
   /** Optional durable sequence fingerprint recorder. */
   sequenceRecorder?: WorkerControlSequenceRecorder;
+  /** Optional transaction boundary for atomic heartbeat persistence. */
+  runHeartbeatTransaction?: <T>(operation: () => T) => T;
   /** Optional hook called after a terminal canonical event is accepted. */
   onTerminalEventAccepted?: WorkerControlTerminalEventAcceptedHook;
+  /** Optional hook called after a new heartbeat is accepted. */
+  onHeartbeatAccepted?: WorkerControlHeartbeatAcceptedHook;
 }
+
+/** Metadata emitted after one new worker heartbeat is accepted. */
+export interface WorkerControlHeartbeatAcceptedInput {
+  /** Sandbox session binding authenticated and retained by the gateway. */
+  readonly sandboxBindingRef: string;
+  /** Worker lineage bound to the accepted heartbeat. */
+  readonly lineage: WorkerControlLineage;
+  /** Accepted heartbeat snapshot. */
+  readonly heartbeat: WorkerControlHeartbeat;
+}
+
+/**
+ * Observes newly accepted worker heartbeats.
+ *
+ * @param input Accepted heartbeat metadata.
+ */
+export type WorkerControlHeartbeatAcceptedHook = (
+  input: WorkerControlHeartbeatAcceptedInput
+) => void;
 
 /**
  * Input passed to the durable sandbox binding resolver.
@@ -329,6 +330,8 @@ export type WorkerControlSequenceRecorderResult =
   | {
       /** Sequence was accepted or already present with identical content. */
       readonly status: 'accepted';
+      /** Whether durable state already contained the same sequence and fingerprint. */
+      readonly duplicate: boolean;
       /** Next expected sequence derived from durable state. */
       readonly nextExpectedSequence: number;
     }
@@ -494,15 +497,17 @@ export class WorkerControlGatewayError extends Error {
 }
 
 /**
- * Process-local worker control gateway backing sandbox-local `control.local`.
+ * Process-local worker control gateway serving direct sandbox workers.
  */
 export class WorkerControlGateway {
   private readonly createToken: () => string;
   private readonly now: () => string;
   private readonly acceptedRecordRecorder: WorkerControlAcceptedRecordRecorder | null;
   private readonly commandDeliveryRecorder: WorkerControlCommandDeliveryRecorder | null;
+  private readonly onHeartbeatAccepted: WorkerControlHeartbeatAcceptedHook | null;
   private readonly onTerminalEventAccepted: WorkerControlTerminalEventAcceptedHook | null;
   private readonly resolveTokenBinding: WorkerControlTokenBindingResolver | null;
+  private readonly runHeartbeatTransaction: (<T>(operation: () => T) => T) | null;
   private readonly sequenceRecorder: WorkerControlSequenceRecorder | null;
   private readonly sessionsByToken = new Map<string, WorkerControlSessionState>();
   private readonly sessionsBySnapshotId = new Map<string, WorkerControlSessionState>();
@@ -517,8 +522,10 @@ export class WorkerControlGateway {
     this.now = options.now ?? (() => new Date().toISOString());
     this.acceptedRecordRecorder = options.acceptedRecordRecorder ?? null;
     this.commandDeliveryRecorder = options.commandDeliveryRecorder ?? null;
+    this.onHeartbeatAccepted = options.onHeartbeatAccepted ?? null;
     this.onTerminalEventAccepted = options.onTerminalEventAccepted ?? null;
     this.resolveTokenBinding = options.resolveTokenBinding ?? null;
+    this.runHeartbeatTransaction = options.runHeartbeatTransaction ?? null;
     this.sequenceRecorder = options.sequenceRecorder ?? null;
   }
 
@@ -534,6 +541,8 @@ export class WorkerControlGateway {
   ): WorkerControlRegistration {
     const token = options.sandboxBindingRef ?? this.createToken();
     const lineage = lineageFromEnvironmentPackage(environmentPackage);
+
+    this.unregisterSession(environmentPackage.snapshotId);
     const snapshot: WorkerControlSessionSnapshot = {
       agentSessionId: environmentPackage.scope.agentSessionId,
       artifacts: [],
@@ -573,11 +582,43 @@ export class WorkerControlGateway {
   }
 
   /**
+   * Revokes one live package session and its sandbox bearer token.
+   *
+   * @param packageSnapshotId Package snapshot whose session should be revoked.
+   * @returns True when a registered session was removed.
+   */
+  public unregisterSession(packageSnapshotId: string): boolean {
+    const state = this.sessionsBySnapshotId.get(packageSnapshotId);
+
+    if (!state) {
+      return false;
+    }
+
+    this.sessionsBySnapshotId.delete(packageSnapshotId);
+    if (this.sessionsByToken.get(state.token) === state) {
+      this.sessionsByToken.delete(state.token);
+    }
+
+    return true;
+  }
+
+  /**
    * Restores one durable worker-control session into process serving state.
    *
    * @param input Durable session snapshot to serve.
    */
   public restoreSession(input: WorkerControlSessionRestoreInput): void {
+    if (
+      input.environmentPackage &&
+      !sameLineage(lineageFromEnvironmentPackage(input.environmentPackage), input.lineage)
+    ) {
+      throw new WorkerControlGatewayError(
+        'worker_control_package_restore_mismatch',
+        'Restored worker package does not match the durable token session lineage.',
+        409
+      );
+    }
+
     const events = [...(input.events ?? [])].map(cloneCanonicalEventRecord);
     const commands = [...(input.commands ?? [])].map(cloneCommand);
     const snapshot: WorkerControlSessionSnapshot = {
@@ -599,7 +640,7 @@ export class WorkerControlGateway {
       workspaceId: input.lineage.workspaceId,
     };
     const state: WorkerControlSessionState = {
-      environmentPackage: null,
+      environmentPackage: input.environmentPackage ?? null,
       eventFingerprintsBySequence: new Map(
         events.map((event) => [event.sequence, stableJson(event)])
       ),
@@ -634,44 +675,59 @@ export class WorkerControlGateway {
       message?: string | null;
     }
   ): WorkerControlHeartbeat {
-    const state = this.requireSession(input);
-    const sequence = acceptSequencedControlOperation(
-      state,
-      'heartbeat',
-      input.sequence,
-      input,
-      input.lineage,
-      this.sequenceRecorder
-    );
+    /** Accepts and publishes the heartbeat inside the configured transaction boundary. */
+    const accept = (): WorkerControlHeartbeat => {
+      const state = this.requireSession(input);
+      const sequence = acceptSequencedControlOperation(
+        state,
+        'heartbeat',
+        input.sequence,
+        input,
+        input.lineage,
+        this.sequenceRecorder
+      );
 
-    if (sequence.duplicate) {
-      const heartbeat = state.snapshot.heartbeat;
+      if (sequence.duplicate) {
+        const heartbeat = state.snapshot.heartbeat;
 
-      if (!heartbeat) {
-        throw new Error('Sequenced heartbeat retry has no recorded heartbeat.');
+        if (!heartbeat) {
+          throw new Error('Sequenced heartbeat retry has no recorded heartbeat.');
+        }
+
+        return { ...heartbeat };
+      }
+
+      const heartbeat: WorkerControlHeartbeat = {
+        lastHeartbeatAt: this.now(),
+        message: input.message ?? null,
+        sequence: input.sequence,
+        status: input.status,
+      };
+
+      try {
+        this.onHeartbeatAccepted?.({
+          heartbeat: { ...heartbeat },
+          lineage: { ...input.lineage },
+          sandboxBindingRef: state.token,
+        });
+        this.recordAcceptedRecord({
+          acceptedAt: heartbeat.lastHeartbeatAt,
+          lineage: input.lineage,
+          operation: 'heartbeat',
+          record: heartbeat,
+          recordKey: String(input.sequence),
+          sequence: input.sequence,
+        });
+        state.snapshot.heartbeat = heartbeat;
+      } catch (error) {
+        rollbackSequencedControlOperation(state, 'heartbeat', input.sequence);
+        throw error;
       }
 
       return { ...heartbeat };
-    }
-
-    const heartbeat: WorkerControlHeartbeat = {
-      lastHeartbeatAt: this.now(),
-      message: input.message ?? null,
-      sequence: input.sequence,
-      status: input.status,
     };
 
-    state.snapshot.heartbeat = heartbeat;
-    this.recordAcceptedRecord({
-      acceptedAt: heartbeat.lastHeartbeatAt,
-      lineage: input.lineage,
-      operation: 'heartbeat',
-      record: heartbeat,
-      recordKey: String(input.sequence),
-      sequence: input.sequence,
-    });
-
-    return { ...heartbeat };
+    return this.runHeartbeatTransaction ? this.runHeartbeatTransaction(accept) : accept();
   }
 
   /**
@@ -739,40 +795,6 @@ export class WorkerControlGateway {
     });
 
     return { ...artifact };
-  }
-
-  /**
-   * Queues one approval decision for delivery to the worker.
-   *
-   * @param packageSnapshotId Package snapshot that owns the worker.
-   * @param input Approval command input.
-   * @returns Queued command.
-   */
-  public enqueueApprovalResult(
-    packageSnapshotId: string,
-    input: {
-      /** Approval request id to resolve. */
-      approvalRequestId: string;
-      /** User approval decision. */
-      decision: ApprovalDecision;
-    }
-  ): WorkerControlApprovalCommand {
-    const state = this.requirePackageSession(packageSnapshotId);
-    const command: WorkerControlApprovalCommand = {
-      approvalRequestId: input.approvalRequestId,
-      commandId: `worker-command-${state.nextCommandSequence}`,
-      decision: input.decision,
-      deliveredAt: null,
-      kind: 'approval-result',
-      queuedAt: this.now(),
-      sequence: state.nextCommandSequence,
-    };
-
-    state.nextCommandSequence += 1;
-    state.snapshot.commands.push(command);
-    this.recordQueuedCommand(state, command);
-
-    return cloneCommand(command) as WorkerControlApprovalCommand;
   }
 
   /**
@@ -915,6 +937,7 @@ export class WorkerControlGateway {
       at: this.now(),
       commandId: input.commandId,
     });
+    state.snapshot.commands.splice(state.snapshot.commands.indexOf(command), 1);
 
     return cloneCommand(command);
   }
@@ -975,6 +998,7 @@ export class WorkerControlGateway {
       recordKey: input.terminalCommandId,
       sequence: null,
     });
+    state.snapshot.commands.splice(state.snapshot.commands.indexOf(terminalCommand), 1);
 
     return { ...result };
   }
@@ -1121,7 +1145,7 @@ export class WorkerControlGateway {
     input: AuthenticatedWorkerControlInput & {
       /** Worker sequence number. */
       sequence: number;
-      /** Stable proposal id suggested by the worker sidecar. */
+      /** Stable proposal id suggested by the worker runtime adapter. */
       proposalId: string;
       /** Human-readable proposal title. */
       title: string;
@@ -1194,17 +1218,27 @@ export class WorkerControlGateway {
   public authenticatePackageRequest(
     input: AuthenticatedWorkerControlInput
   ): AgentEnvironmentPackage {
-    const state = this.requireSession(input);
+    return this.requireEnvironmentPackage(this.requireSession(input));
+  }
 
-    if (!state.environmentPackage) {
+  /**
+   * Authenticates a worker bearer token without trusting caller-supplied lineage.
+   *
+   * @param authorization HTTP Authorization header value.
+   * @returns Registered or durably restored Agent Environment Package.
+   */
+  public authenticatePackageToken(authorization: string | null): AgentEnvironmentPackage {
+    const { state, token } = this.requireTokenSession(authorization);
+
+    if (!token.startsWith('lease-binding:') || !this.resolveTokenBinding) {
       throw new WorkerControlGatewayError(
-        'worker_control_package_unavailable',
-        'Worker session package supply is unavailable after restore.',
-        409
+        'worker_control_lease_binding_required',
+        'Worker package token authentication requires a durable scheduler lease binding.',
+        403
       );
     }
-
-    return state.environmentPackage;
+    this.assertTokenBinding(token, state.lineage);
+    return this.requireEnvironmentPackage(state);
   }
 
   /**
@@ -1351,16 +1385,7 @@ export class WorkerControlGateway {
    * @returns Mutable session state.
    */
   private requireSession(input: AuthenticatedWorkerControlInput): WorkerControlSessionState {
-    const token = bearerToken(input.authorization);
-    const state = token ? this.sessionsByToken.get(token) : undefined;
-
-    if (!token || !state) {
-      throw new WorkerControlGatewayError(
-        'worker_control_unauthorized',
-        'Worker control request is missing a valid sandbox token.',
-        401
-      );
-    }
+    const { state, token } = this.requireTokenSession(input.authorization);
 
     if (!sameSessionLineage(input.lineage, state.lineage)) {
       throw new WorkerControlGatewayError(
@@ -1373,6 +1398,48 @@ export class WorkerControlGateway {
     this.assertTokenBinding(token, input.lineage);
 
     return state;
+  }
+
+  /**
+   * Resolves one process-local session from a bearer token without accepting caller lineage.
+   *
+   * @param authorization HTTP Authorization header value.
+   * @returns Token and mutable registered session state.
+   */
+  private requireTokenSession(authorization: string | null): {
+    state: WorkerControlSessionState;
+    token: string;
+  } {
+    const token = bearerToken(authorization);
+    const state = token ? this.sessionsByToken.get(token) : undefined;
+
+    if (!token || !state) {
+      throw new WorkerControlGatewayError(
+        'worker_control_unauthorized',
+        'Worker control request is missing a valid sandbox token.',
+        401
+      );
+    }
+
+    return { state, token };
+  }
+
+  /**
+   * Requires the AEP snapshot attached to one authenticated session.
+   *
+   * @param state Authenticated worker session state.
+   * @returns Registered or restored package snapshot.
+   */
+  private requireEnvironmentPackage(state: WorkerControlSessionState): AgentEnvironmentPackage {
+    if (!state.environmentPackage) {
+      throw new WorkerControlGatewayError(
+        'worker_control_package_unavailable',
+        'Worker session package supply is unavailable after restore.',
+        409
+      );
+    }
+
+    return state.environmentPackage;
   }
 
   /**
@@ -1600,10 +1667,37 @@ function acceptSequencedControlOperation(
   );
 
   return {
-    duplicate: false,
+    duplicate: durableSequence?.status === 'accepted' && durableSequence.duplicate,
     nextExpectedSequence:
       durableSequence?.nextExpectedSequence ?? nextExpectedOperationSequence(state, operation),
   };
+}
+
+/**
+ * Rolls back process-local sequence publication after a downstream acceptance step fails.
+ *
+ * A caller-provided transaction may also roll back the durable fingerprint, while the next
+ * in-process retry must always replay every downstream acceptance step before publication.
+ *
+ * @param state Mutable worker-control session state.
+ * @param operation Control operation whose local publication failed.
+ * @param sequence Worker sequence to remove from process-local state.
+ */
+function rollbackSequencedControlOperation(
+  state: WorkerControlSessionState,
+  operation: string,
+  sequence: number
+): void {
+  const fingerprints = state.operationFingerprintsBySequence.get(operation);
+  fingerprints?.delete(sequence);
+
+  if (!fingerprints || fingerprints.size === 0) {
+    state.operationFingerprintsBySequence.delete(operation);
+    state.highestOperationSequenceByOperation.delete(operation);
+    return;
+  }
+
+  state.highestOperationSequenceByOperation.set(operation, Math.max(...fingerprints.keys()));
 }
 
 /**

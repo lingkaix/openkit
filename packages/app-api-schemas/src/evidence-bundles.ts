@@ -44,22 +44,6 @@ export const EvidenceBundleRecordSchema = z
   })
   .strict();
 
-/** Input for creating one compact workspace evidence bundle. */
-export const CreateEvidenceBundleRequestSchema = z
-  .object({
-    threadId: z.string().min(1).optional(),
-    goalId: z.string().min(1).optional(),
-    turnId: z.string().min(1).optional(),
-  })
-  .strict();
-
-/** Response returned after creating one workspace evidence bundle. */
-export const CreateEvidenceBundleResponseSchema = z
-  .object({
-    evidenceBundle: EvidenceBundleRecordSchema,
-  })
-  .strict();
-
 /** Read-only workspace evidence bundle list response. */
 export const ListWorkspaceEvidenceBundlesResponseSchema = z
   .object({
@@ -73,12 +57,6 @@ export type EvidenceBundleRef = z.infer<typeof EvidenceBundleRefSchema>;
 
 /** Durable workspace evidence bundle read model. */
 export type EvidenceBundleRecord = z.infer<typeof EvidenceBundleRecordSchema>;
-
-/** Input for creating one compact workspace evidence bundle. */
-export type CreateEvidenceBundleRequest = z.infer<typeof CreateEvidenceBundleRequestSchema>;
-
-/** Response returned after creating one workspace evidence bundle. */
-export type CreateEvidenceBundleResponse = z.infer<typeof CreateEvidenceBundleResponseSchema>;
 
 /** Read-only workspace evidence bundle list response. */
 export type ListWorkspaceEvidenceBundlesResponse = z.infer<

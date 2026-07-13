@@ -368,6 +368,8 @@ export interface InternalAgentRunInput {
   readonly agentId: InternalAgentId;
   /** Caller-provided messages, excluding the definition-owned system prompt. */
   readonly messages: readonly InternalAgentMessage[];
+  /** Optional caller cancellation propagated through the bounded provider transport. */
+  readonly signal?: AbortSignal;
   /** Optional provider override from app API request overrides. */
   readonly providerId?: string | null;
   /** Optional model override from app API request overrides. */

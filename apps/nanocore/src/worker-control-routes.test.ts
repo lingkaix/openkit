@@ -8,6 +8,7 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import { createApp, createDefaultWorkerControlGateway } from './app.js';
 import type { FsStore } from './lib/store.js';
+import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
 import {
   WorkerControlGateway,
@@ -23,13 +24,14 @@ import {
   completeSchedulerSessionLease,
   createSchedulerAdmissionEntry,
   dispatchNextSchedulerEntry,
+  requireSchedulerSessionLease,
   resolveSchedulerLeaseTokenBinding,
   schedulerLeaseHasAppliedSupplyRefreshAck,
   upsertSchedulerCapacityRecord,
   upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
 } from './scheduler-records.js';
-import { openCoreDb, openWorkspaceDb } from './storage/db.js';
+import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore } from './test-support/demo-store.js';
@@ -56,7 +58,7 @@ function createWorkerControlRouteFixture(): {
       agentSessionId: 'as_control_route_1',
       userId: 'user_local',
       backend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
       },
@@ -90,6 +92,99 @@ function createWorkerControlRouteFixture(): {
   };
 }
 
+/**
+ * Creates one live scheduler lease for a default database-backed worker-control gateway.
+ *
+ * @param coreDb Open Core database handle.
+ * @param environmentPackage Durable package snapshot owned by the lease.
+ * @param lineage Worker lineage owned by the lease.
+ * @param suffix Stable test id suffix.
+ * @returns Sandbox binding ref registered on the lease.
+ */
+function createDurableWorkerControlLease(
+  coreDb: CoreDb,
+  environmentPackage: AgentEnvironmentPackage,
+  lineage: WorkerControlLineage,
+  suffix: string
+): string {
+  const poolId = `pool_${suffix}`;
+  const targetId = `target_${suffix}`;
+  const binding = `lease-binding:lease_${suffix}`;
+
+  upsertSchedulerWorkerPool(coreDb, {
+    allowedBackendKinds: ['openshell'],
+    allowedPlacements: ['local'],
+    allowedWorkspaceScopes: ['local'],
+    budgetClass: 'interactive',
+    currentAdmittedSessionCount: 0,
+    currentQueueDepth: 1,
+    defaultTimeoutMs: 900_000,
+    healthSummary: 'ready',
+    maxConcurrentSessions: 2,
+    poolId,
+    queueLimit: 20,
+    status: 'active',
+  });
+  upsertSchedulerCapacityRecord(coreDb, {
+    capacityClass: 'local',
+    concurrencyCeiling: 2,
+    inUseCount: 0,
+    observationSource: 'configured',
+    observedAt: '2026-07-05T00:00:00.000Z',
+    poolId,
+    queueDepth: 0,
+    targetId,
+  });
+  upsertSchedulerTargetHealthRecord(coreDb, {
+    checkResults: [],
+    consecutiveFailureCount: 0,
+    consecutiveSuccessCount: 1,
+    healthState: 'healthy',
+    lastProbeAt: '2026-07-05T00:00:00.000Z',
+    nextProbeAt: '2026-07-05T00:01:00.000Z',
+    targetId,
+  });
+  createSchedulerAdmissionEntry(coreDb, {
+    priorityClass: 'interactive',
+    profileRef: 'profile_worker',
+    queueEntryId: `queue_${suffix}`,
+    requestId: lineage.requestId,
+    requestedAgentId: 'agent_worker',
+    requiredPoolConstraints: ['openshell.local'],
+    threadId: lineage.threadId,
+    turnId: lineage.turnId,
+    turnInput: 'Run durable worker-control test',
+    workspaceId: lineage.workspaceId,
+  });
+  dispatchNextSchedulerEntry(coreDb, {
+    agentSessionId: lineage.agentSessionId,
+    expectedControlMode: 'poll',
+    expectedDataPlaneMode: 'openshell-files',
+    heartbeatIntervalMs: 10_000,
+    heartbeatTimeoutMs: 30_000,
+    leaseDurationMs: 900_000,
+    leaseId: `lease_${suffix}`,
+    packageSnapshotId: lineage.packageSnapshotId,
+    planId: `plan_${suffix}`,
+    sandboxBindingRef: binding,
+    schedulerEpoch: 1,
+    startupTimeoutMs: 120_000,
+  });
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, lineage.workspaceId);
+
+  try {
+    applyScopedMigrations(workspaceDb);
+    recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      createdAt: environmentPackage.createdAt,
+      environmentPackage,
+    });
+  } finally {
+    workspaceDb.sqlite.close();
+  }
+
+  return binding;
+}
+
 describe('worker control routes', () => {
   it('keeps worker route planes ahead of product API middleware', () => {
     const routes = createApp()
@@ -108,15 +203,9 @@ describe('worker control routes', () => {
       'POST /api/worker-control/supply-refresh-ack',
       'POST /api/worker-control/capability-summary',
       'POST /api/worker-control/knowledge-proposal-summary',
-      'ALL /api/worker-capabilities/*',
-      'POST /api/worker-capabilities/knowledge/search',
-      'POST /api/worker-capabilities/knowledge/read',
-      'POST /api/worker-capabilities/knowledge/proposals',
-      'POST /api/worker-capabilities/artifacts/read',
-      'POST /api/worker-capabilities/mcp/list-servers',
-      'POST /api/worker-capabilities/mcp/list-tools',
-      'POST /api/worker-capabilities/mcp/call-tool',
-      'POST /api/worker-capabilities/diagnostics/read',
+      'ALL /api/worker-inference/*',
+      'POST /api/worker-inference/v1/chat/completions',
+      'POST /api/worker-inference/v1/responses',
       'ALL /api/*',
       'ALL /api/*',
     ]);
@@ -134,7 +223,7 @@ describe('worker control routes', () => {
         agentSessionId: 'session_durable_sequence',
         userId: 'user_local',
         backend: {
-          controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
           sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
@@ -157,8 +246,16 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
 
+      const binding = createDurableWorkerControlLease(
+        coreDb,
+        environmentPackage,
+        lineage,
+        'durable_sequence'
+      );
       const firstGateway = createDefaultWorkerControlGateway(coreDb);
-      const firstRegistration = firstGateway.registerSession(environmentPackage);
+      const firstRegistration = firstGateway.registerSession(environmentPackage, {
+        sandboxBindingRef: binding,
+      });
       const firstApp = createApp({
         coreDb,
         mode: 'server',
@@ -184,7 +281,9 @@ describe('worker control routes', () => {
       });
 
       const secondGateway = createDefaultWorkerControlGateway(coreDb);
-      const secondRegistration = secondGateway.registerSession(environmentPackage);
+      const secondRegistration = secondGateway.registerSession(environmentPackage, {
+        sandboxBindingRef: binding,
+      });
       const secondApp = createApp({
         coreDb,
         mode: 'server',
@@ -233,7 +332,7 @@ describe('worker control routes', () => {
         agentSessionId: 'session_durable_records',
         userId: 'user_local',
         backend: {
-          controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
           sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
@@ -256,8 +355,16 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
 
+      const binding = createDurableWorkerControlLease(
+        coreDb,
+        environmentPackage,
+        lineage,
+        'durable_records'
+      );
       const gateway = createDefaultWorkerControlGateway(coreDb);
-      const registration = gateway.registerSession(environmentPackage);
+      const registration = gateway.registerSession(environmentPackage, {
+        sandboxBindingRef: binding,
+      });
       const app = createApp({
         coreDb,
         mode: 'server',
@@ -341,7 +448,7 @@ describe('worker control routes', () => {
         agentSessionId: 'session_rejected_records',
         userId: 'user_local',
         backend: {
-          controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
           sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
@@ -364,8 +471,16 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
 
+      const binding = createDurableWorkerControlLease(
+        coreDb,
+        environmentPackage,
+        lineage,
+        'rejected_records'
+      );
       const gateway = createDefaultWorkerControlGateway(coreDb);
-      const registration = gateway.registerSession(environmentPackage);
+      const registration = gateway.registerSession(environmentPackage, {
+        sandboxBindingRef: binding,
+      });
       const app = createApp({
         coreDb,
         mode: 'server',
@@ -426,7 +541,7 @@ describe('worker control routes', () => {
     }
   });
 
-  it('enforces durable scheduler binding refs through the default gateway factory', () => {
+  it('enforces durable scheduler binding refs through the default gateway factory', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-default-')));
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Default binding thread');
@@ -438,7 +553,7 @@ describe('worker control routes', () => {
         agentSessionId: 'session_default_binding',
         userId: 'user_local',
         backend: {
-          controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
           sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
@@ -459,6 +574,7 @@ describe('worker control routes', () => {
     };
 
     applyMigrations(coreDb);
+    const gateway = createDefaultWorkerControlGateway(coreDb);
     upsertSchedulerWorkerPool(coreDb, {
       allowedBackendKinds: ['openshell'],
       allowedPlacements: ['local'],
@@ -517,10 +633,10 @@ describe('worker control routes', () => {
       schedulerEpoch: 1,
       startupTimeoutMs: 120_000,
     });
-    const gateway = createDefaultWorkerControlGateway(coreDb);
     const registration = gateway.registerSession(environmentPackage, {
       sandboxBindingRef: 'lease-binding:lease_default_binding',
     });
+    const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
 
     gateway.recordHeartbeat({
       authorization: `Bearer ${registration.token}`,
@@ -528,6 +644,122 @@ describe('worker control routes', () => {
       sequence: 1,
       status: 'running',
     });
+    expect(requireSchedulerSessionLease(coreDb, 'lease_default_binding')).toMatchObject({
+      lastAcceptedHeartbeatAt: expect.any(String),
+      lastWorkerSequence: 1,
+      status: 'active',
+    });
+    const heartbeatBaseline = requireSchedulerSessionLease(coreDb, 'lease_default_binding');
+
+    coreDb.sqlite
+      .prepare('UPDATE scheduler_session_leases SET last_worker_sequence = ? WHERE lease_id = ?')
+      .run(3, 'lease_default_binding');
+    const staleSequenceResponse = await app.request('/api/worker-control/heartbeat', {
+      body: JSON.stringify({
+        lineage,
+        sequence: 2,
+        status: 'running',
+      }),
+      headers: {
+        authorization: `Bearer ${registration.token}`,
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+    });
+    const staleSequenceBody = (await staleSequenceResponse.json()) as { code: string };
+
+    expect.soft(staleSequenceResponse.status).toBe(409);
+    expect.soft(staleSequenceBody.code).toBe('worker_control_sequence_stale');
+    coreDb.sqlite
+      .prepare(
+        "DELETE FROM worker_control_sequence_fingerprints WHERE operation = 'heartbeat' AND sequence = ?"
+      )
+      .run(2);
+    coreDb.sqlite
+      .prepare('UPDATE scheduler_session_leases SET last_worker_sequence = ? WHERE lease_id = ?')
+      .run(heartbeatBaseline.lastWorkerSequence, 'lease_default_binding');
+
+    coreDb.sqlite.exec(`
+      CREATE TRIGGER reject_second_heartbeat_record
+      BEFORE INSERT ON worker_control_records
+      WHEN NEW.operation = 'heartbeat' AND NEW.record_key = '2'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected heartbeat record failure');
+      END
+    `);
+    const failedHeartbeatResponse = await app.request('/api/worker-control/heartbeat', {
+      body: JSON.stringify({
+        lineage,
+        sequence: 2,
+        status: 'running',
+      }),
+      headers: {
+        authorization: `Bearer ${registration.token}`,
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+    });
+    coreDb.sqlite.exec('DROP TRIGGER reject_second_heartbeat_record');
+    const failedSequence = coreDb.sqlite
+      .prepare(
+        "SELECT COUNT(*) AS count FROM worker_control_sequence_fingerprints WHERE operation = 'heartbeat' AND sequence = ?"
+      )
+      .get(2) as { count: number };
+    const failedRecord = coreDb.sqlite
+      .prepare(
+        "SELECT COUNT(*) AS count FROM worker_control_records WHERE operation = 'heartbeat' AND record_key = ?"
+      )
+      .get('2') as { count: number };
+    const leaseAfterFailure = requireSchedulerSessionLease(coreDb, 'lease_default_binding');
+
+    expect(failedHeartbeatResponse.status).toBe(500);
+    expect.soft(failedSequence.count).toBe(0);
+    expect.soft(failedRecord.count).toBe(0);
+    expect.soft(leaseAfterFailure).toMatchObject({
+      heartbeatDeadline: heartbeatBaseline.heartbeatDeadline,
+      lastAcceptedHeartbeatAt: heartbeatBaseline.lastAcceptedHeartbeatAt,
+      lastWorkerSequence: heartbeatBaseline.lastWorkerSequence,
+      status: heartbeatBaseline.status,
+    });
+    coreDb.sqlite
+      .prepare(
+        "DELETE FROM worker_control_sequence_fingerprints WHERE operation = 'heartbeat' AND sequence = ?"
+      )
+      .run(2);
+    coreDb.sqlite
+      .prepare(
+        `UPDATE scheduler_session_leases
+         SET status = ?, heartbeat_deadline = ?, last_accepted_heartbeat_at = ?, last_worker_sequence = ?
+         WHERE lease_id = ?`
+      )
+      .run(
+        heartbeatBaseline.status,
+        heartbeatBaseline.heartbeatDeadline,
+        heartbeatBaseline.lastAcceptedHeartbeatAt,
+        heartbeatBaseline.lastWorkerSequence,
+        'lease_default_binding'
+      );
+    coreDb.sqlite
+      .prepare(
+        "UPDATE scheduler_session_leases SET heartbeat_deadline = '2000-01-01T00:00:00.000Z' WHERE lease_id = ?"
+      )
+      .run('lease_default_binding');
+    const staleResponse = await app.request('/api/worker-control/heartbeat', {
+      body: JSON.stringify({
+        lineage,
+        sequence: 2,
+        status: 'running',
+      }),
+      headers: {
+        authorization: `Bearer ${registration.token}`,
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+    });
+    const staleBody = (await staleResponse.json()) as { code: string };
+
+    expect(staleResponse.status).toBe(403);
+    expect(staleBody.code).toBe('worker_control_lease_not_live');
     completeSchedulerSessionLease(coreDb, {
       leaseId: 'lease_default_binding',
       releaseReason: 'completed',
@@ -538,7 +770,7 @@ describe('worker control routes', () => {
       gateway.recordHeartbeat({
         authorization: `Bearer ${registration.token}`,
         lineage,
-        sequence: 2,
+        sequence: 3,
         status: 'running',
       })
     ).toThrowError(
@@ -549,6 +781,60 @@ describe('worker control routes', () => {
     );
 
     coreDb.sqlite.close();
+  });
+
+  it('rejects non-lease tokens on the default database gateway', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-non-lease-')));
+    const { environmentPackage, lineage, store } = createWorkerControlRouteFixture();
+
+    try {
+      applyMigrations(coreDb);
+      const gateway = createDefaultWorkerControlGateway(coreDb);
+      const registration = gateway.registerSession(environmentPackage);
+      const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
+      const response = await app.request('/api/worker-control/heartbeat', {
+        body: JSON.stringify({ lineage, sequence: 1, status: 'running' }),
+        headers: {
+          authorization: `Bearer ${registration.token}`,
+          'content-type': 'application/json',
+        },
+        method: 'POST',
+      });
+      const body = (await response.json()) as { code: string };
+
+      expect(response.status).toBe(401);
+      expect(body.code).toBe('worker_control_unauthorized');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('keeps worker-control database failures as internal server errors', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-db-error-')));
+    const { environmentPackage, lineage, store } = createWorkerControlRouteFixture();
+
+    applyMigrations(coreDb);
+    const gateway = createDefaultWorkerControlGateway(coreDb);
+    const registration = gateway.registerSession(environmentPackage, {
+      sandboxBindingRef: 'lease-binding:database_failure',
+    });
+    const app = createApp({ mode: 'server', store, workerControlGateway: gateway });
+
+    coreDb.sqlite.close();
+    const response = await app.request('/api/worker-control/heartbeat', {
+      body: JSON.stringify({
+        lineage,
+        sequence: 1,
+        status: 'running',
+      }),
+      headers: {
+        authorization: `Bearer ${registration.token}`,
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+    });
+
+    expect(response.status).toBe(500);
   });
 
   it('marks durable scheduler leases releasing when final status arrives', async () => {
@@ -563,7 +849,7 @@ describe('worker control routes', () => {
         agentSessionId: 'session_final_status',
         userId: 'user_local',
         backend: {
-          controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
           sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
@@ -584,6 +870,7 @@ describe('worker control routes', () => {
     };
 
     applyMigrations(coreDb);
+    const gateway = createDefaultWorkerControlGateway(coreDb);
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, lineage.workspaceId);
     applyScopedMigrations(workspaceDb);
     recordWorkspaceMaterializationRecords(workspaceDb, [
@@ -660,7 +947,6 @@ describe('worker control routes', () => {
       schedulerEpoch: 1,
       startupTimeoutMs: 120_000,
     });
-    const gateway = createDefaultWorkerControlGateway(coreDb);
     const registration = gateway.registerSession(environmentPackage, {
       sandboxBindingRef: 'lease-binding:lease_final_status',
     });
@@ -772,7 +1058,7 @@ describe('worker control routes', () => {
         agentSessionId: 'session_supply_refresh',
         userId: 'user_local',
         backend: {
-          controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
           sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
@@ -794,6 +1080,7 @@ describe('worker control routes', () => {
 
     try {
       applyMigrations(coreDb);
+      const gateway = createDefaultWorkerControlGateway(coreDb);
       upsertSchedulerWorkerPool(coreDb, {
         allowedBackendKinds: ['openshell'],
         allowedPlacements: ['local'],
@@ -852,7 +1139,6 @@ describe('worker control routes', () => {
         schedulerEpoch: 1,
         startupTimeoutMs: 120_000,
       });
-      const gateway = createDefaultWorkerControlGateway(coreDb);
       const registration = gateway.registerSession(environmentPackage, {
         sandboxBindingRef: 'lease-binding:lease_supply_refresh',
       });
@@ -1284,7 +1570,7 @@ describe('worker control routes', () => {
         agentSessionId: 'session_durable_command',
         userId: 'user_local',
         backend: {
-          controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
           sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
@@ -1307,8 +1593,16 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
 
+      const binding = createDurableWorkerControlLease(
+        coreDb,
+        environmentPackage,
+        lineage,
+        'durable_command'
+      );
       const gateway = createDefaultWorkerControlGateway(coreDb);
-      const registration = gateway.registerSession(environmentPackage);
+      const registration = gateway.registerSession(environmentPackage, {
+        sandboxBindingRef: binding,
+      });
       gateway.enqueueTerminalCommand(environmentPackage.snapshotId, {
         argv: ['pwd'],
         commandId: 'term_durable_1',
@@ -1397,7 +1691,7 @@ describe('worker control routes', () => {
         agentSessionId: 'session_durable_command_ack',
         userId: 'user_local',
         backend: {
-          controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
           sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
@@ -1420,12 +1714,17 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
 
+      const binding = createDurableWorkerControlLease(
+        coreDb,
+        environmentPackage,
+        lineage,
+        'durable_command_ack'
+      );
       const gateway = createDefaultWorkerControlGateway(coreDb);
-      const registration = gateway.registerSession(environmentPackage);
-      const approval = gateway.enqueueApprovalResult(environmentPackage.snapshotId, {
-        approvalRequestId: 'approval_durable_1',
-        decision: 'granted',
+      const registration = gateway.registerSession(environmentPackage, {
+        sandboxBindingRef: binding,
       });
+      const interrupt = gateway.enqueueInterrupt(environmentPackage.snapshotId, 'Stop now');
       const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
 
       await app.request('/api/worker-control/commands/poll', {
@@ -1437,7 +1736,7 @@ describe('worker control routes', () => {
         method: 'POST',
       });
       const ack = await app.request('/api/worker-control/commands/ack', {
-        body: JSON.stringify({ commandId: approval.commandId, lineage }),
+        body: JSON.stringify({ commandId: interrupt.commandId, lineage }),
         headers: {
           authorization: `Bearer ${registration.token}`,
           'content-type': 'application/json',
@@ -1448,7 +1747,7 @@ describe('worker control routes', () => {
         .prepare(
           'SELECT status, acknowledged_at AS acknowledgedAt FROM worker_control_commands WHERE command_id = ?'
         )
-        .get(approval.commandId) as {
+        .get(interrupt.commandId) as {
         acknowledgedAt: string | null;
         status: string;
       };
@@ -1473,7 +1772,7 @@ describe('worker control routes', () => {
         agentSessionId: 'session_rebuild',
         userId: 'user_local',
         backend: {
-          controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
           sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
@@ -1495,6 +1794,7 @@ describe('worker control routes', () => {
 
     try {
       applyMigrations(coreDb);
+      const firstGateway = createDefaultWorkerControlGateway(coreDb);
       upsertSchedulerWorkerPool(coreDb, {
         allowedBackendKinds: ['openshell'],
         allowedPlacements: ['local'],
@@ -1532,6 +1832,7 @@ describe('worker control routes', () => {
         priorityClass: 'interactive',
         profileRef: 'profile_worker',
         queueEntryId: 'queue_rebuild',
+        requestId: lineage.requestId,
         requestedAgentId: 'agent_worker',
         requiredPoolConstraints: ['openshell.local'],
         threadId: lineage.threadId,
@@ -1554,7 +1855,6 @@ describe('worker control routes', () => {
         startupTimeoutMs: 120_000,
       });
 
-      const firstGateway = createDefaultWorkerControlGateway(coreDb);
       const firstRegistration = firstGateway.registerSession(environmentPackage, {
         sandboxBindingRef: 'lease-binding:lease_rebuild',
       });
@@ -1570,7 +1870,7 @@ describe('worker control routes', () => {
         workerControlGateway: firstGateway,
       });
 
-      await firstApp.request('/api/worker-control/heartbeat', {
+      const firstHeartbeatResponse = await firstApp.request('/api/worker-control/heartbeat', {
         body: JSON.stringify({
           lineage,
           message: 'Worker is alive.',
@@ -1583,6 +1883,9 @@ describe('worker control routes', () => {
         },
         method: 'POST',
       });
+      const firstHeartbeatBody = (await firstHeartbeatResponse.json()) as {
+        heartbeat: { lastHeartbeatAt: string; sequence: number; status: string };
+      };
       await firstApp.request('/api/worker-control/events/append', {
         body: JSON.stringify({
           lineage,
@@ -1601,14 +1904,36 @@ describe('worker control routes', () => {
         method: 'POST',
       });
 
+      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, lineage.workspaceId);
+      try {
+        applyScopedMigrations(workspaceDb);
+        recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+          createdAt: '2026-06-16T00:00:01.000Z',
+          environmentPackage,
+        });
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(Date.parse(firstHeartbeatBody.heartbeat.lastHeartbeatAt) + 1_000));
       const rebuiltGateway = createDefaultWorkerControlGateway(coreDb);
-      const snapshot = rebuiltGateway.getSessionSnapshot(lineage.packageSnapshotId);
       const rebuiltApp = createApp({
         coreDb,
         mode: 'server',
         store,
         workerControlGateway: rebuiltGateway,
       });
+      const authorization = 'Bearer lease-binding:lease_rebuild';
+      const retryHeartbeat = rebuiltGateway.recordHeartbeat({
+        authorization,
+        lineage,
+        message: 'Worker is alive.',
+        sequence: 1,
+        status: 'running',
+      });
+      const snapshot = rebuiltGateway.getSessionSnapshot(lineage.packageSnapshotId);
+      const leaseAfterRetry = requireSchedulerSessionLease(coreDb, 'lease_rebuild');
       const poll = await rebuiltApp.request('/api/worker-control/commands/poll', {
         body: JSON.stringify({ lineage }),
         headers: {
@@ -1619,6 +1944,11 @@ describe('worker control routes', () => {
       });
       const body = (await poll.json()) as { commands: Array<{ commandId: string }> };
 
+      expect.soft(retryHeartbeat).toEqual(firstHeartbeatBody.heartbeat);
+      expect.soft(snapshot?.heartbeat).toEqual(firstHeartbeatBody.heartbeat);
+      expect
+        .soft(leaseAfterRetry.lastAcceptedHeartbeatAt)
+        .toBe(firstHeartbeatBody.heartbeat.lastHeartbeatAt);
       expect(snapshot).toMatchObject({
         agentSessionId: 'session_rebuild',
         commands: [expect.objectContaining({ commandId: 'term_rebuild_1' })],
@@ -1628,7 +1958,39 @@ describe('worker control routes', () => {
       });
       expect(poll.status).toBe(200);
       expect(body.commands).toEqual([expect.objectContaining({ commandId: 'term_rebuild_1' })]);
+      const terminalResult = rebuiltGateway.recordTerminalResult({
+        authorization,
+        durationMs: 10,
+        exitCode: 0,
+        lineage,
+        stderr: '',
+        stdout: '/workspace/repo\n',
+        terminalCommandId: 'term_rebuild_1',
+      });
+      const afterTerminalResult = rebuiltGateway.pollCommands({ authorization, lineage });
+
+      expect(terminalResult).toMatchObject({ commandId: 'term_rebuild_1', exitCode: 0 });
+      expect.soft(afterTerminalResult.commands).toEqual([]);
+
+      const interrupt = rebuiltGateway.enqueueInterrupt(
+        environmentPackage.snapshotId,
+        'Stop after current command.'
+      );
+      rebuiltGateway.pollCommands({ authorization, lineage });
+      const interruptAck = rebuiltGateway.acknowledgeCommand({
+        authorization,
+        commandId: interrupt.commandId,
+        lineage,
+      });
+      const afterInterruptAck = rebuiltGateway.pollCommands({ authorization, lineage });
+      const finalGateway = createDefaultWorkerControlGateway(coreDb);
+      const afterSecondRebuild = finalGateway.pollCommands({ authorization, lineage });
+
+      expect(interruptAck).toMatchObject({ commandId: interrupt.commandId, kind: 'interrupt' });
+      expect.soft(afterInterruptAck.commands).toEqual([]);
+      expect.soft(afterSecondRebuild.commands).toEqual([]);
     } finally {
+      vi.useRealTimers();
       coreDb.sqlite.close();
     }
   });

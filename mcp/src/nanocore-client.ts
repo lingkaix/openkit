@@ -554,16 +554,6 @@ export interface ReadArtifactInput extends WorkspaceScopeInput {
   threadId?: string | undefined;
 }
 
-/** Input for building a compact evidence bundle. */
-export interface CreateEvidenceBundleInput extends WorkspaceScopeInput {
-  /** Optional thread id. */
-  threadId?: string | undefined;
-  /** Optional goal id. */
-  goalId?: string | undefined;
-  /** Optional turn id. */
-  turnId?: string | undefined;
-}
-
 /** Input for reading workspace synchronization reviews. */
 export interface ReadWorkspaceReviewsInput extends WorkspaceScopeInput {
   /** Optional staged review id. */
@@ -627,7 +617,6 @@ export interface ReadWorkspaceSyncRecordsInput extends WorkspaceScopeInput {
     | 'apply-plans'
     | 'reconciliation-records'
     | 'quarantine-records'
-    | 'sync-evidence-bundles'
     | undefined;
 }
 
@@ -849,8 +838,6 @@ export interface OpenKitNanoCoreClient {
   readWorkspaceSyncRecords(input: ReadWorkspaceSyncRecordsInput): Promise<unknown>;
   /** Reads one artifact. */
   readArtifact(input: ReadArtifactInput): Promise<unknown>;
-  /** Builds a compact evidence bundle. */
-  createEvidenceBundle(input: CreateEvidenceBundleInput): Promise<unknown>;
 }
 
 /** Options for creating a NanoCore-backed AI Interface client. */
@@ -886,12 +873,6 @@ export function createNanoCoreFacade(
       client.core.createWorkspace({
         name: input.name,
         requestId: input.requestId,
-      }),
-    createEvidenceBundle: (input) =>
-      client.app.createEvidenceBundle(input.workspaceId, {
-        goalId: input.goalId,
-        threadId: input.threadId,
-        turnId: input.turnId,
       }),
     createThread: (input) =>
       client.core.createThread({
@@ -1385,12 +1366,6 @@ async function readWorkspaceSyncRecordPayloads(
     };
   }
 
-  if (kind === 'sync-evidence-bundles') {
-    return {
-      syncEvidenceBundles: await client.app.listWorkspaceSyncEvidenceBundles(workspaceId),
-    };
-  }
-
   const [
     inputSnapshots,
     materializationRecords,
@@ -1401,7 +1376,6 @@ async function readWorkspaceSyncRecordPayloads(
     applyPlans,
     reconciliationRecords,
     quarantineRecords,
-    syncEvidenceBundles,
   ] = await Promise.all([
     client.app.listWorkspaceInputSnapshots(workspaceId),
     client.app.listWorkspaceMaterializationRecords(workspaceId),
@@ -1412,7 +1386,6 @@ async function readWorkspaceSyncRecordPayloads(
     client.app.listWorkspaceApplyPlans(workspaceId),
     client.app.listWorkspaceReconciliationRecords(workspaceId),
     client.app.listWorkspaceQuarantineRecords(workspaceId),
-    client.app.listWorkspaceSyncEvidenceBundles(workspaceId),
   ]);
 
   return {
@@ -1425,6 +1398,5 @@ async function readWorkspaceSyncRecordPayloads(
     quarantineRecords,
     reconciliationRecords,
     stagedReviews,
-    syncEvidenceBundles,
   };
 }

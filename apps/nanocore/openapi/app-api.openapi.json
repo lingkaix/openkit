@@ -4595,63 +4595,6 @@
       }
     },
     "/api/app/workspaces/{workspaceId}/evidence-bundles": {
-      "post": {
-        "operationId": "createEvidenceBundle",
-        "tags": [
-          "diagnostics"
-        ],
-        "summary": "Create one workspace evidence bundle.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateEvidenceBundleRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Created evidence bundle.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CreateEvidenceBundleResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      },
       "get": {
         "operationId": "listWorkspaceEvidenceBundles",
         "tags": [
@@ -5806,55 +5749,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ListWorkspaceQuarantineRecordsResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/workspaces/{workspaceId}/workspace-sync/evidence-bundles": {
-      "get": {
-        "operationId": "listWorkspaceSyncEvidenceBundles",
-        "tags": [
-          "workspace-sync"
-        ],
-        "summary": "List durable workspace synchronization evidence bundles for one workspace.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Workspace synchronization evidence bundles.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListWorkspaceSyncEvidenceBundlesResponse"
                 }
               }
             }
@@ -7525,14 +7419,7 @@
                           "anyOf": [
                             {
                               "type": "string",
-                              "enum": [
-                                "transcript-sink",
-                                "backend-relay",
-                                "direct-nanocore",
-                                "sidecar",
-                                "stdio",
-                                "disabled"
-                              ]
+                              "const": "direct-nanocore"
                             },
                             {
                               "type": "null"
@@ -10244,6 +10131,42 @@
                     }
                   ]
                 },
+                "packageSnapshotId": {
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "runtimeOriginRef": {
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^rto_[a-f0-9]{24}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "runtimeCacheLineageRef": {
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^rcl_[a-f0-9]{24}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "requestId": {
                   "default": null,
                   "anyOf": [
@@ -10375,6 +10298,9 @@
                 "itemId",
                 "agentId",
                 "agentSessionId",
+                "packageSnapshotId",
+                "runtimeOriginRef",
+                "runtimeCacheLineageRef",
                 "requestId",
                 "sourceIds",
                 "capabilityId",
@@ -24093,221 +24019,6 @@
         ],
         "additionalProperties": false
       },
-      "CreateEvidenceBundleRequest": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "threadId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "goalId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "turnId": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "additionalProperties": false
-      },
-      "CreateEvidenceBundleResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "evidenceBundle": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string",
-                "minLength": 1
-              },
-              "workspaceId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "threadId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "goalId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "turnId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "agentSessionId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "backendType": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "sourceKind": {
-                "type": "string",
-                "minLength": 1
-              },
-              "summary": {
-                "type": "string",
-                "minLength": 1
-              },
-              "rawEvidenceRefs": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "kind": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "ref": {
-                      "type": "string",
-                      "minLength": 1
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "ref"
-                  ],
-                  "additionalProperties": false
-                }
-              },
-              "redactedEvidenceRefs": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "kind": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "ref": {
-                      "type": "string",
-                      "minLength": 1
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "ref"
-                  ],
-                  "additionalProperties": false
-                }
-              },
-              "contentDigests": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "retentionClass": {
-                "type": "string",
-                "enum": [
-                  "ephemeral-diagnostic",
-                  "turn-evidence",
-                  "workspace-audit",
-                  "restricted-raw",
-                  "legal-hold"
-                ]
-              },
-              "sensitivityClass": {
-                "type": "string",
-                "enum": [
-                  "product-safe",
-                  "restricted",
-                  "secret"
-                ]
-              },
-              "importStatus": {
-                "type": "string",
-                "enum": [
-                  "collected",
-                  "verified",
-                  "normalized",
-                  "promoted",
-                  "quarantined",
-                  "expired"
-                ]
-              },
-              "requiredFeatures": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "createdAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
-              }
-            },
-            "required": [
-              "id",
-              "workspaceId",
-              "threadId",
-              "goalId",
-              "turnId",
-              "agentSessionId",
-              "backendType",
-              "sourceKind",
-              "summary",
-              "rawEvidenceRefs",
-              "redactedEvidenceRefs",
-              "contentDigests",
-              "retentionClass",
-              "sensitivityClass",
-              "importStatus",
-              "requiredFeatures",
-              "createdAt"
-            ],
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "evidenceBundle"
-        ],
-        "additionalProperties": false
-      },
       "CreateInterruptedRecoveryStateResponse": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -33850,7 +33561,6 @@
                     "capability-negotiation",
                     "policy-apply",
                     "provider-attach",
-                    "sidecar-startup",
                     "heartbeat",
                     "file-transfer",
                     "transcript-collection",
@@ -49791,131 +49501,6 @@
                 "createdAt",
                 "updatedAt",
                 "resolvedAt"
-              ],
-              "additionalProperties": false
-            }
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "additionalProperties": false
-      },
-      "ListWorkspaceSyncEvidenceBundlesResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "workspaceId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "lifecycleRecordIds": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "evidenceBundleIds": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "backendEvidenceRefs": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "kind": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "ref": {
-                        "type": "string",
-                        "minLength": 1
-                      }
-                    },
-                    "required": [
-                      "kind",
-                      "ref"
-                    ],
-                    "additionalProperties": false
-                  }
-                },
-                "redactedEvidenceManifest": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "kind": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "ref": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "digest": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "bytes": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 9007199254740991
-                      }
-                    },
-                    "required": [
-                      "kind",
-                      "ref",
-                      "digest",
-                      "bytes"
-                    ],
-                    "additionalProperties": false
-                  }
-                },
-                "contentDigests": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "retentionClass": {
-                  "type": "string",
-                  "enum": [
-                    "turn-evidence",
-                    "workspace-audit",
-                    "restricted-raw",
-                    "legal-hold"
-                  ]
-                },
-                "createdAt": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "required": [
-                "id",
-                "workspaceId",
-                "lifecycleRecordIds",
-                "evidenceBundleIds",
-                "backendEvidenceRefs",
-                "redactedEvidenceManifest",
-                "contentDigests",
-                "retentionClass",
-                "createdAt"
               ],
               "additionalProperties": false
             }
@@ -89513,14 +89098,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "enum": [
-                                  "transcript-sink",
-                                  "backend-relay",
-                                  "direct-nanocore",
-                                  "sidecar",
-                                  "stdio",
-                                  "disabled"
-                                ]
+                                "const": "direct-nanocore"
                               },
                               {
                                 "type": "null"
@@ -105334,5 +104912,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:0f59201fa16db2a5af8c3022b2f88dd35254b366c590e9d15c841f7ea8f52be0"
+  "x-openkit-source-digest": "sha256:e2efa8d6549a9793dde7f85455c34ee3967e8c7dfe5f34f87e5a76c395887e27"
 }

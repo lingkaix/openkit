@@ -150,7 +150,7 @@ export interface SchedulerSessionLeaseRecord {
   readonly acquiredAt: string;
   /** Lease expiry timestamp. */
   readonly expiresAt: string;
-  /** Heartbeat deadline timestamp. */
+  /** Heartbeat deadline timestamp, enforced after the first accepted heartbeat. */
   readonly heartbeatDeadline: string;
   /** Startup deadline timestamp. */
   readonly startupDeadline: string;
@@ -727,6 +727,15 @@ export interface AcceptSchedulerLeaseHeartbeatInput {
   readonly now?: () => string;
 }
 
+/** Input used to accept a worker heartbeat through its durable sandbox binding. */
+export interface AcceptSchedulerLeaseHeartbeatByBindingInput
+  extends ResolveSchedulerLeaseTokenBindingInput {
+  /** Worker sequence accepted by the worker-control gateway. */
+  readonly workerSequence: number;
+  /** NanoCore timestamp assigned to the accepted heartbeat. */
+  readonly acceptedAt: string;
+}
+
 /** Input used to mark expired scheduler leases stale. */
 export interface MarkExpiredSchedulerLeasesStaleInput {
   /** Optional deterministic clock. */
@@ -779,6 +788,26 @@ export interface ResolveSchedulerLeaseTokenBindingInput {
   readonly sandboxBindingRef: string;
   /** Worker-control request lineage. */
   readonly lineage: SchedulerLeaseTokenBindingLineage;
+  /** Optional deterministic clock used for request-time lease liveness checks. */
+  readonly now?: () => string;
+}
+
+/** Stable scheduler-domain failure raised when a lease cannot accept a worker heartbeat. */
+export class SchedulerLeaseHeartbeatRejectedError extends Error {
+  /** Stable rejection reason for protocol projection. */
+  public readonly reason: 'lease-not-live' | 'sequence-stale' | 'lease-changed';
+
+  /**
+   * Creates one scheduler heartbeat rejection.
+   *
+   * @param reason Stable domain rejection reason.
+   * @param message Product-safe diagnostic message.
+   */
+  public constructor(reason: SchedulerLeaseHeartbeatRejectedError['reason'], message: string) {
+    super(message);
+    this.name = 'SchedulerLeaseHeartbeatRejectedError';
+    this.reason = reason;
+  }
 }
 
 /** Result from resolving a durable scheduler lease token binding. */
@@ -1348,34 +1377,123 @@ export function acceptSchedulerLeaseHeartbeat(
   const timestamp = input.now?.() ?? new Date().toISOString();
 
   if (!canAcceptHeartbeat(lease.status)) {
-    throw new Error(`Scheduler session lease ${input.leaseId} cannot accept heartbeat.`);
+    throw new SchedulerLeaseHeartbeatRejectedError(
+      'lease-not-live',
+      `Scheduler session lease ${input.leaseId} cannot accept heartbeat.`
+    );
   }
 
-  if (lease.expiresAt <= timestamp || lease.heartbeatDeadline <= timestamp) {
-    throw new Error(`Scheduler session lease ${input.leaseId} heartbeat is stale.`);
+  const workerDeadline = lease.lastAcceptedHeartbeatAt
+    ? lease.heartbeatDeadline
+    : lease.startupDeadline;
+
+  if (lease.expiresAt <= timestamp || workerDeadline <= timestamp) {
+    throw new SchedulerLeaseHeartbeatRejectedError(
+      'lease-not-live',
+      `Scheduler session lease ${input.leaseId} heartbeat is stale.`
+    );
   }
 
-  coreDb.sqlite
+  if (lease.lastWorkerSequence !== null) {
+    if (input.workerSequence < lease.lastWorkerSequence) {
+      throw new SchedulerLeaseHeartbeatRejectedError(
+        'sequence-stale',
+        `Scheduler session lease ${input.leaseId} heartbeat sequence is stale.`
+      );
+    }
+    if (input.workerSequence === lease.lastWorkerSequence) {
+      return lease;
+    }
+  }
+
+  const update = coreDb.sqlite
     .prepare(
       `UPDATE scheduler_session_leases
       SET status = 'active',
           heartbeat_deadline = ?,
           last_accepted_heartbeat_at = ?,
           last_worker_sequence = ?
-      WHERE lease_id = ?`
+      WHERE lease_id = ?
+        AND status = ?
+        AND expires_at = ?
+        AND heartbeat_deadline = ?
+        AND startup_deadline = ?
+        AND last_accepted_heartbeat_at IS ?
+        AND last_worker_sequence IS ?`
     )
     .run(
       addMilliseconds(timestamp, input.heartbeatTimeoutMs),
       timestamp,
       input.workerSequence,
-      input.leaseId
+      input.leaseId,
+      lease.status,
+      lease.expiresAt,
+      lease.heartbeatDeadline,
+      lease.startupDeadline,
+      lease.lastAcceptedHeartbeatAt,
+      lease.lastWorkerSequence
     );
+
+  if (update.changes !== 1) {
+    const current = requireSchedulerSessionLease(coreDb, input.leaseId);
+
+    if (current.lastWorkerSequence === input.workerSequence) {
+      return current;
+    }
+
+    if (current.lastWorkerSequence !== null && current.lastWorkerSequence > input.workerSequence) {
+      throw new SchedulerLeaseHeartbeatRejectedError(
+        'sequence-stale',
+        `Scheduler session lease ${input.leaseId} heartbeat sequence is stale.`
+      );
+    }
+
+    throw new SchedulerLeaseHeartbeatRejectedError(
+      'lease-changed',
+      `Scheduler session lease ${input.leaseId} cannot accept heartbeat after a concurrent lease change.`
+    );
+  }
 
   return requireSchedulerSessionLease(coreDb, input.leaseId);
 }
 
 /**
- * Marks live leases stale when their lease or heartbeat deadline has passed.
+ * Accepts one authenticated worker-control heartbeat for its durable scheduler lease.
+ *
+ * @param coreDb Open Core database handle.
+ * @param input Sandbox binding, lineage, sequence, and accepted timestamp.
+ * @returns Updated session lease.
+ * @throws Error when the binding is invalid or the lease is no longer live.
+ */
+export function acceptSchedulerLeaseHeartbeatByBinding(
+  coreDb: CoreDb,
+  input: AcceptSchedulerLeaseHeartbeatByBindingInput
+): SchedulerSessionLeaseRecord {
+  const resolution = resolveSchedulerLeaseTokenBinding(coreDb, {
+    lineage: input.lineage,
+    now: () => input.acceptedAt,
+    sandboxBindingRef: input.sandboxBindingRef,
+  });
+
+  if (resolution.status === 'rejected') {
+    throw new SchedulerLeaseHeartbeatRejectedError(
+      'lease-not-live',
+      `Scheduler heartbeat binding rejected: ${resolution.reason}.`
+    );
+  }
+
+  const plan = requireSchedulerPlacementPlan(coreDb, resolution.lease.planId);
+
+  return acceptSchedulerLeaseHeartbeat(coreDb, {
+    heartbeatTimeoutMs: plan.heartbeatTimeoutMs,
+    leaseId: resolution.lease.leaseId,
+    now: () => input.acceptedAt,
+    workerSequence: input.workerSequence,
+  });
+}
+
+/**
+ * Marks live leases stale when their lease expires or a started worker misses its heartbeat.
  *
  * @param coreDb Open Core database handle.
  * @param input Expiry scan input.
@@ -1390,7 +1508,10 @@ export function markExpiredSchedulerLeasesStale(
     .prepare(
       `${schedulerSessionLeaseSelectSql()}
       WHERE status IN ('acquired', 'starting', 'active', 'idle')
-        AND (expires_at <= ? OR heartbeat_deadline <= ?)
+        AND (
+          expires_at <= ?
+          OR (last_accepted_heartbeat_at IS NOT NULL AND heartbeat_deadline <= ?)
+        )
       ORDER BY expires_at ASC, heartbeat_deadline ASC, lease_id ASC`
     )
     .all(timestamp, timestamp) as SchedulerSessionLeaseRow[];
@@ -1510,12 +1631,21 @@ export function resolveSchedulerLeaseTokenBinding(
   }
 
   const lease = mapSchedulerSessionLeaseRow(row);
+  const timestamp = input.now?.() ?? new Date().toISOString();
 
   if (!leaseMatchesLineage(lease, input.lineage)) {
     return { status: 'rejected', reason: 'lineage-mismatch' };
   }
 
-  if (!canAcceptHeartbeat(lease.status)) {
+  const workerDeadline = lease.lastAcceptedHeartbeatAt
+    ? lease.heartbeatDeadline
+    : lease.startupDeadline;
+
+  if (
+    !canAcceptHeartbeat(lease.status) ||
+    lease.expiresAt <= timestamp ||
+    workerDeadline <= timestamp
+  ) {
     return { status: 'rejected', reason: 'lease-not-live' };
   }
 
@@ -1549,6 +1679,35 @@ export function listRestorableSchedulerSessionLeases(
     .all() as SchedulerSessionLeaseRow[];
 
   return rows.map(mapSchedulerSessionLeaseRow);
+}
+
+/**
+ * Resolves the admission authority context for one scheduler session lease.
+ *
+ * @param coreDb Open Core database handle.
+ * @param leaseId Scheduler session lease id.
+ * @returns User and request ids captured by the originating admission entry.
+ * @throws Error when the lease has no durable admission owner.
+ */
+export function requireSchedulerSessionLeaseAdmissionContext(
+  coreDb: CoreDb,
+  leaseId: string
+): Pick<SchedulerAdmissionEntryRecord, 'requestId' | 'userId'> {
+  const row = coreDb.sqlite
+    .prepare(
+      `SELECT admission.request_id AS requestId, admission.user_id AS userId
+       FROM scheduler_session_leases AS lease
+       JOIN scheduler_placement_plans AS plan ON plan.plan_id = lease.plan_id
+       JOIN scheduler_admission_entries AS admission ON admission.queue_entry_id = plan.queue_entry_id
+       WHERE lease.lease_id = ?`
+    )
+    .get(leaseId) as { requestId: string | null; userId: string } | undefined;
+
+  if (!row?.userId) {
+    throw new Error(`Scheduler session lease owner not found: ${leaseId}`);
+  }
+
+  return row;
 }
 
 /**

@@ -19,6 +19,13 @@ describe('createConfiguredTurnExecutor', () => {
       kind: 'openshell',
       placement: 'local',
     });
+    expect(
+      (
+        executor as unknown as {
+          backend: { trustedWorkerInferenceRelayEnabled: boolean };
+        }
+      ).backend.trustedWorkerInferenceRelayEnabled
+    ).toBe(true);
   });
 
   it('keeps the deterministic self-check executor override', () => {
@@ -35,7 +42,7 @@ describe('createConfiguredTurnExecutor', () => {
       env: {
         OPENKIT_CONTAINER_BACKEND: 'openshell',
         OPENKIT_CONTAINER_PLACEMENT: 'local',
-        OPENKIT_OPENSHELL_CONTROL_RELAY_UPSTREAM:
+        OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL:
           'http://host.openshell.internal:54001/api/worker-control',
         OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS: JSON.stringify([
           {
@@ -78,7 +85,8 @@ describe('createConfiguredTurnExecutor', () => {
       env: {
         OPENKIT_CONTAINER_BACKEND: 'openshell',
         OPENKIT_CONTAINER_PLACEMENT: 'remote',
-        OPENKIT_OPENSHELL_CONTROL_RELAY_UPSTREAM: 'https://nanocore.example.com/api/worker-control',
+        OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL:
+          'https://nanocore.example.com/api/worker-control',
         OPENKIT_OPENSHELL_GATEWAY: 'a1-openshell',
         OPENKIT_OPENSHELL_GATEWAY_INSECURE: '1',
         OPENKIT_OPENSHELL_GATEWAY_URL: 'https://a1.example.com:17670',
@@ -95,12 +103,12 @@ describe('createConfiguredTurnExecutor', () => {
           environmentBackend: {
             placement: string;
             gatewayUrl: string;
-            controlRelayUpstream: string;
+            workerControlBaseUrl: string;
           };
         }
       ).environmentBackend
     ).toMatchObject({
-      controlRelayUpstream: 'https://nanocore.example.com/api/worker-control',
+      workerControlBaseUrl: 'https://nanocore.example.com/api/worker-control',
       gatewayUrl: 'https://a1.example.com:17670',
       placement: 'remote',
     });
@@ -121,7 +129,7 @@ describe('createConfiguredTurnExecutor', () => {
     expect(() =>
       createConfiguredTurnExecutor({
         env: {
-          OPENKIT_OPENSHELL_CONTROL_RELAY_UPSTREAM:
+          OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL:
             'https://nanocore.example.com/api/worker-control',
           OPENKIT_CONTAINER_BACKEND: 'openshell',
           OPENKIT_CONTAINER_PLACEMENT: 'remote',
@@ -177,6 +185,27 @@ describe('createConfiguredTurnExecutor', () => {
     ).toThrow(
       'OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS[0].protocol must be "rest", "websocket", "graphql", or "sql".'
     );
+  });
+
+  it('rejects OpenShell extra endpoints that collide with reserved policy names', () => {
+    for (const name of ['openkit_worker_control', 'openkit_worker_inference']) {
+      expect(() =>
+        createConfiguredTurnExecutor({
+          env: {
+            OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS: JSON.stringify([
+              {
+                host: 'nanocore.local',
+                name,
+                port: 443,
+                protocol: 'rest',
+              },
+            ]),
+            OPENKIT_WORKER_RUNTIME: 'container',
+          },
+          workerControlGateway: new WorkerControlGateway(),
+        })
+      ).toThrow(`OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS[0].name is reserved: ${name}.`);
+    }
   });
 
   it('rejects non-container worker runtime selection', () => {

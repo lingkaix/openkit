@@ -27,7 +27,6 @@ export const RuntimeEvidenceRecordSchema = z
       'capability-negotiation',
       'policy-apply',
       'provider-attach',
-      'sidecar-startup',
       'heartbeat',
       'file-transfer',
       'transcript-collection',

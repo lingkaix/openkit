@@ -9,6 +9,10 @@ This directory owns LLM Gateway behavior, provider dispatch, upstream clients an
 - `../capability/` owns durable capability-call and usage ledger operations; LLM code records observations through that owner.
 - Consume resolved credentials without serializing secret-bearing configuration or creating a second provider vocabulary.
 - Provider-native payloads remain private while public responses preserve the documented OpenAI-compatible contract and redaction rules.
+- Carry request cancellation through the dispatcher, upstream clients, stream converters, usage observers, route responses, and durable capability-call termination without allowing a late disconnect to rewrite an independent provider failure.
+- Preserve `x-codex-turn-state` only through the Codex OAuth transport and the internal worker response boundary. Ordinary pi-ai providers never receive or publish this Codex-private state.
+- Internal worker inference accepts only the package token plus the narrow transport contract; AEP authority, provider/model selection, durable lineage, and privileged request fields remain server-owned.
+- `worker-inference-runtime-hint.ts` validates the pinned Codex 0.144.1 canonical turn metadata, cross-checks its request-body and header projections, normalizes sub-agent kind, and strips native ids and cache lineage instead of forwarding or persisting them.
 
 ## Verification
 

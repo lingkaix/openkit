@@ -19,10 +19,11 @@ export const DEFAULT_TASK_MODE_REAL_WORKER_STORY_PATH = resolve(
 
 const RESULT_FILE = 'task-mode-real-worker-result.json';
 const REDACTION_NOTES_FILE = 'task-mode-real-worker-redaction-notes.md';
+const PROVENANCE_SUMMARY_PATTERN =
+  /^Worker runtime provenance complete: (\d+) streams, (\d+) frames, (\d+) attributed, (\d+) unattributed, (\d+) roots?, (\d+) children, (\d+)\/(\d+) gateway calls reconciled, gateway complete, bundles (\S+) and (\S+)\.$/;
 
 /**
  * @typedef {object} TaskModeRealWorkerRunnerConfig
- * @property {string} codexAuthJsonPath Operator-owned Codex auth JSON path used by deployment setup.
  * @property {string} evidenceDir Directory where redacted evidence files are written.
  * @property {string} nanoCoreUrl Existing NanoCore endpoint.
  * @property {string} repositoryRoot Disposable repository path visible to NanoCore.
@@ -43,15 +44,13 @@ export function evaluateTaskModeRealWorkerPrerequisites(options = {}) {
   const fileExists = options.fileExists ?? existsSync;
   const storyPath = options.storyPath ?? DEFAULT_TASK_MODE_REAL_WORKER_STORY_PATH;
   const config = {
-    codexAuthJsonPath:
-      env.OPENKIT_L6_TASK_CODEX_AUTH_JSON ?? join(env.HOME ?? '', '.codex/auth.json'),
     evidenceDir: env.OPENKIT_L6_EVIDENCE_DIR ?? '',
     nanoCoreUrl: env.OPENKIT_L6_TASK_NANOCORE_URL ?? '',
     repositoryRoot: env.OPENKIT_L6_TASK_REPO_ROOT ?? '',
     storyPath,
     taskInput:
       env.OPENKIT_L6_TASK_INPUT ??
-      'Create docs/task-mode-real-worker-proof.md with one sentence proving Task Mode real worker ran.',
+      'Delegate two independent repository inspections to at least two Codex sub-agents, then create docs/task-mode-runtime-provenance-proof.md with exactly three bullet points summarizing their findings.',
     token: env.OPENKIT_NANOCORE_TOKEN,
     workspaceId: env.OPENKIT_L6_TASK_WORKSPACE_ID ?? 'ws_demo',
   };
@@ -96,14 +95,6 @@ export function evaluateTaskModeRealWorkerPrerequisites(options = {}) {
     };
   }
 
-  if (!fileExists(config.codexAuthJsonPath)) {
-    return {
-      config,
-      enabled: false,
-      reason: `Codex auth JSON path not found: ${config.codexAuthJsonPath}`,
-    };
-  }
-
   if (!config.evidenceDir) {
     return {
       config,
@@ -113,6 +104,191 @@ export function evaluateTaskModeRealWorkerPrerequisites(options = {}) {
   }
 
   return { config, enabled: true, reason: '' };
+}
+
+/**
+ * Asserts the public provenance evidence produced by one real Task Mode worker turn.
+ *
+ * @param {{ auditEvents: Array<Record<string, any>>, capabilityCalls: Array<Record<string, any>>, evidenceBundles: Array<Record<string, any>>, runtimeEvidence: Array<Record<string, any>>, threadItems: Array<Record<string, any>>, turnId: string, usageRecords: Array<Record<string, any>> }} input Public read models for the completed turn.
+ * @returns {{ auditEventCount: number, backendType: string, backendVersion: string, cacheLineageCount: number, cachedInputTokens: number, capabilityCallCount: number, childOriginCount: number, indexBundleId: string, positiveCacheReadObserved: boolean, rawBundleId: string, runtimeOriginCount: number, runtimeRootCount: number, streamCount: number }} Product-safe assertion summary.
+ */
+export function assertTaskModeRuntimeProvenance(input) {
+  assertNoRuntimeProvenanceLeak(input);
+  const transcriptEvidence = input.runtimeEvidence.find(
+    (record) =>
+      record.turnId === input.turnId &&
+      record.phase === 'transcript-collection' &&
+      record.requiredFeatures?.includes('worker.runtime-provenance.v1')
+  );
+  assert(transcriptEvidence, 'Task Mode did not produce runtime provenance evidence.');
+  assert(
+    transcriptEvidence.outcome === 'succeeded',
+    'Task Mode runtime provenance evidence did not succeed.'
+  );
+  assert(
+    transcriptEvidence.backendType === 'openshell' &&
+      transcriptEvidence.backendVersion === '0.0.80',
+    'Runtime provenance did not come from the pinned OpenShell 0.0.80 target.'
+  );
+  const summary = PROVENANCE_SUMMARY_PATTERN.exec(transcriptEvidence.summary ?? '');
+  assert(summary, 'Task Mode runtime provenance summary was incomplete.');
+  const [
+    streamCount,
+    frameCount,
+    attributedFrameCount,
+    unattributedFrameCount,
+    runtimeRootCount,
+    childOriginCount,
+    reconciledCallCount,
+    gatewayCallCount,
+  ] = summary.slice(1, 9).map(Number);
+  const rawBundleId = summary[9];
+  const indexBundleId = summary[10];
+  assert(streamCount >= 4, 'Runtime provenance did not retain primary, root, and child streams.');
+  assert(
+    attributedFrameCount + unattributedFrameCount === frameCount,
+    'Runtime provenance frame accounting was inconsistent.'
+  );
+  assert(
+    runtimeRootCount >= 1 && childOriginCount >= 2,
+    'Runtime provenance forest was incomplete.'
+  );
+  assert(
+    gatewayCallCount >= 3 && reconciledCallCount === gatewayCallCount,
+    'Runtime provenance did not reconcile every root and child Gateway call.'
+  );
+
+  const rawBundle = input.evidenceBundles.find((bundle) => bundle.id === rawBundleId);
+  const indexBundle = input.evidenceBundles.find((bundle) => bundle.id === indexBundleId);
+  assert(
+    rawBundle?.turnId === input.turnId &&
+      rawBundle.sourceKind === 'worker-runtime-provenance-raw' &&
+      rawBundle.retentionClass === 'restricted-raw' &&
+      rawBundle.sensitivityClass === 'restricted' &&
+      rawBundle.importStatus === 'promoted' &&
+      rawBundle.rawEvidenceRefs?.length === 0 &&
+      rawBundle.redactedEvidenceRefs?.length === 0,
+    'Restricted runtime provenance bundle was missing or exposed raw refs.'
+  );
+  assert(
+    indexBundle?.turnId === input.turnId &&
+      indexBundle.sourceKind === 'worker-runtime-provenance-index' &&
+      indexBundle.retentionClass === 'turn-evidence' &&
+      indexBundle.sensitivityClass === 'product-safe' &&
+      indexBundle.importStatus === 'promoted' &&
+      indexBundle.rawEvidenceRefs?.length === 0 &&
+      indexBundle.redactedEvidenceRefs?.length === 1 &&
+      indexBundle.redactedEvidenceRefs[0]?.kind === 'worker-runtime-provenance-index' &&
+      indexBundle.redactedEvidenceRefs[0]?.ref === 'runtime-origin-index.jsonl',
+    'Product-safe runtime provenance index bundle was missing.'
+  );
+  assert(
+    transcriptEvidence.evidenceBundleIds?.length === 2 &&
+      transcriptEvidence.evidenceBundleIds?.includes(rawBundleId) &&
+      transcriptEvidence.evidenceBundleIds?.includes(indexBundleId),
+    'RuntimeEvidence did not link both automatic provenance bundles.'
+  );
+
+  const calls = input.capabilityCalls.filter(
+    (call) =>
+      call.turnId === input.turnId &&
+      call.family === 'llm' &&
+      call.serviceRef === 'worker-inference-gateway' &&
+      call.packageSnapshotId
+  );
+  assert(
+    calls.length === gatewayCallCount,
+    'Capability ledger did not match reconciled Gateway calls.'
+  );
+  assert(
+    calls.every(
+      (call) =>
+        call.status === 'succeeded' &&
+        /^rto_[a-f0-9]{24}$/.test(call.runtimeOriginRef ?? '') &&
+        /^rcl_[a-f0-9]{24}$/.test(call.runtimeCacheLineageRef ?? '')
+    ),
+    'A worker Gateway call lacked trusted product-safe provenance or cache attribution.'
+  );
+  assert(
+    new Set(calls.map((call) => call.packageSnapshotId)).size === 1,
+    'Worker Gateway calls did not share one authoritative AEP snapshot.'
+  );
+  assert(
+    calls.every(
+      (call) =>
+        call.threadId === transcriptEvidence.threadId &&
+        call.agentSessionId === transcriptEvidence.agentSessionId
+    ),
+    'Worker Gateway calls did not match the authoritative runtime evidence lineage.'
+  );
+  assert(
+    calls.every((call) => typeof call.requestId === 'string' && call.requestId.length > 0) &&
+      new Set(calls.map((call) => call.requestId)).size === calls.length,
+    'Worker Gateway calls reused a request id.'
+  );
+  const runtimeOriginCount = new Set(calls.map((call) => call.runtimeOriginRef)).size;
+  const cacheLineageCount = new Set(calls.map((call) => call.runtimeCacheLineageRef)).size;
+  assert(runtimeOriginCount >= 3, 'Root and child Gateway calls did not retain distinct origins.');
+  assert(cacheLineageCount >= 2, 'Sibling Gateway calls collapsed onto one cache lineage.');
+
+  const callIds = new Set(calls.map((call) => call.id));
+  assert(
+    calls.every((call) => input.usageRecords.some((record) => record.capabilityCallId === call.id)),
+    'Worker Gateway calls were missing linked usage records.'
+  );
+  const cacheReadRows = input.usageRecords.filter(
+    (record) =>
+      callIds.has(record.capabilityCallId) &&
+      record.source === 'llm-gateway-adapter-reported:cache_read'
+  );
+  assert(
+    cacheReadRows.every((record) => typeof record.quantity === 'number' && record.quantity >= 0),
+    'Cached-input token telemetry was invalid.'
+  );
+  const cachedInputTokens = cacheReadRows.reduce(
+    (total, record) => total + (record.quantity ?? 0),
+    0
+  );
+  const linkedAuditEvents = input.auditEvents.filter((event) =>
+    callIds.has(event.capabilityCallId)
+  );
+  assert(
+    calls.every((call) =>
+      linkedAuditEvents.some(
+        (event) =>
+          event.action === 'capability.finish' &&
+          event.capabilityCallId === call.id &&
+          event.outcome === 'succeeded'
+      )
+    ),
+    'Worker Gateway calls were missing successful audit linkage.'
+  );
+  const completedAssistantItems = input.threadItems.filter(
+    (item) =>
+      item.turnId === input.turnId &&
+      item.type === 'assistant-message' &&
+      item.status === 'completed'
+  );
+  assert(
+    completedAssistantItems.length === 1,
+    'Runtime-internal children did not collapse to one canonical outer assistant result.'
+  );
+
+  return {
+    auditEventCount: linkedAuditEvents.length,
+    backendType: transcriptEvidence.backendType,
+    backendVersion: transcriptEvidence.backendVersion,
+    cacheLineageCount,
+    cachedInputTokens,
+    capabilityCallCount: calls.length,
+    childOriginCount,
+    indexBundleId,
+    positiveCacheReadObserved: cacheReadRows.length > 0,
+    rawBundleId,
+    runtimeOriginCount,
+    runtimeRootCount,
+    streamCount,
+  };
 }
 
 /**
@@ -154,12 +330,11 @@ export async function runTaskModeRealWorkerStory(options = {}) {
     import(pathToFileURL(mcpRegistryDist).href),
     import(pathToFileURL(mcpClientDist).href),
   ]);
-  const registry = createOpenKitAiInterface({
-    nanoCore: createNanoCoreClient({
-      baseUrl: prerequisites.config.nanoCoreUrl,
-      ...(prerequisites.config.token ? { headers: authHeaders(prerequisites.config.token) } : {}),
-    }),
+  const nanoCore = createNanoCoreClient({
+    baseUrl: prerequisites.config.nanoCoreUrl,
+    ...(prerequisites.config.token ? { headers: authHeaders(prerequisites.config.token) } : {}),
   });
+  const registry = createOpenKitAiInterface({ nanoCore });
   const tools = registry.listTools();
 
   assert(
@@ -167,7 +342,14 @@ export async function runTaskModeRealWorkerStory(options = {}) {
     'MCP tools/list did not include openkit.start_task.'
   );
 
-  await registry.callTool('openkit.read_status', { workspaceId: prerequisites.config.workspaceId });
+  const [, diagnostics] = await Promise.all([
+    registry.callTool('openkit.read_status', { workspaceId: prerequisites.config.workspaceId }),
+    registry.callTool('openkit.read_runtime_diagnostics', {}),
+  ]);
+  assert(
+    diagnostics.raw?.boot?.acceptingProductWork === true,
+    'Target NanoCore is not accepting product work.'
+  );
 
   const thread = await registry.callTool('openkit.create_thread', {
     requestId: randomUUID(),
@@ -201,7 +383,7 @@ export async function runTaskModeRealWorkerStory(options = {}) {
     task.raw?.decision?.mode === 'task',
     'Task Mode response did not include a task decision.'
   );
-  const acceptedStates = new Set(['running', 'completed', 'needs-review', 'awaiting-human']);
+  const acceptedStates = new Set(['completed', 'needs-review']);
   assert(
     acceptedStates.has(task.raw?.state),
     `Task Mode returned a non-acceptance state: ${task.raw?.state}`
@@ -221,9 +403,34 @@ export async function runTaskModeRealWorkerStory(options = {}) {
     (item) => item.type === 'assistant-message' && item.status === 'completed'
   );
   assert(
-    completedAssistantItems.length > 0,
-    'Task Mode thread did not include a completed assistant message.'
+    completedAssistantItems.length === 1,
+    'Task Mode thread did not include one canonical outer assistant message.'
   );
+
+  const [usage, evidenceResource, runtimeEvidenceResource, auditResource] = await Promise.all([
+    registry.callTool('openkit.read_capability_usage', {
+      workspaceId: prerequisites.config.workspaceId,
+    }),
+    registry.readResource(
+      `openkit://workspaces/${prerequisites.config.workspaceId}/evidence-bundles`
+    ),
+    registry.readResource(
+      `openkit://workspaces/${prerequisites.config.workspaceId}/runtime-evidence`
+    ),
+    registry.readResource(`openkit://workspaces/${prerequisites.config.workspaceId}/audit/events`),
+  ]);
+  const evidence = JSON.parse(evidenceResource.text);
+  const runtimeEvidence = JSON.parse(runtimeEvidenceResource.text);
+  const audit = JSON.parse(auditResource.text);
+  const provenance = assertTaskModeRuntimeProvenance({
+    auditEvents: audit.auditEvents ?? [],
+    capabilityCalls: usage.raw?.capabilityCalls ?? [],
+    evidenceBundles: evidence.evidenceBundles ?? [],
+    runtimeEvidence: runtimeEvidence.runtimeEvidence ?? [],
+    threadItems: items,
+    turnId: task.raw.turn.id,
+    usageRecords: usage.raw?.usageRecords ?? [],
+  });
 
   const gitStatus = gitStatusShort(prerequisites.config.repositoryRoot);
   const result = {
@@ -252,18 +459,18 @@ export async function runTaskModeRealWorkerStory(options = {}) {
     git: {
       statusShort: gitStatus,
     },
+    provenance,
     status: 'ok',
   };
+  const redactionNotes = buildRedactionNotes(prerequisites.config, story.metadata);
+  assertNoRuntimeProvenanceLeak({ redactionNotes, result });
 
   mkdirSync(prerequisites.config.evidenceDir, { recursive: true });
   writeFileSync(
     join(prerequisites.config.evidenceDir, RESULT_FILE),
     `${JSON.stringify(result, null, 2)}\n`
   );
-  writeFileSync(
-    join(prerequisites.config.evidenceDir, REDACTION_NOTES_FILE),
-    buildRedactionNotes(prerequisites.config, story.metadata)
-  );
+  writeFileSync(join(prerequisites.config.evidenceDir, REDACTION_NOTES_FILE), redactionNotes);
   stdout(JSON.stringify(result, null, 2));
 
   return result;
@@ -303,12 +510,10 @@ function authHeaders(token) {
  */
 function redactedConfig(config) {
   return {
-    codexAuthJsonPath: config.codexAuthJsonPath,
     evidenceDir: config.evidenceDir,
     nanoCoreUrl: config.nanoCoreUrl,
     repositoryRoot: config.repositoryRoot,
     storyPath: config.storyPath,
-    taskInput: config.taskInput,
     tokenProvided: Boolean(config.token),
     workspaceId: config.workspaceId,
   };
@@ -355,8 +560,6 @@ Evidence directory: ${config.evidenceDir}
 
 Repository root: ${config.repositoryRoot}
 
-Codex auth JSON path: ${config.codexAuthJsonPath}
-
 ## Required Redaction Checks
 
 - Do not preserve raw OAuth tokens, bearer tokens, API keys, cookie values, authorization headers, or Codex auth JSON content.
@@ -364,6 +567,29 @@ Codex auth JSON path: ${config.codexAuthJsonPath}
 - Replace accidental secret-like values with \`[REDACTED]\` before preserving evidence.
 - Record every scanned evidence source in the final acceptance report.
 `;
+}
+
+/**
+ * Fails when public provenance evidence contains runtime-native or secret-bearing fields.
+ *
+ * @param {unknown} value Public response or written evidence to scan.
+ */
+function assertNoRuntimeProvenanceLeak(value) {
+  const text = JSON.stringify(value);
+  const patterns = [
+    /native(?:Thread|Session|Turn|CacheLineage)Id/i,
+    /parentNativeThreadId/i,
+    /prompt_cache_key/i,
+    /x-codex-turn-metadata/i,
+    /\b(?:thread_id|parent_thread_id|sender_thread_id|receiver_thread_ids)\b/i,
+    /"(?:access_token|refresh_token|api_?key|client_?secret|authorization|cookie)"\s*:/i,
+    /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/i,
+    /https?:\/\/[^/\s:@]+:[^/\s@]+@/i,
+  ];
+  assert(
+    patterns.every((pattern) => !pattern.test(text)),
+    'Public story evidence exposed runtime-native metadata or credential material.'
+  );
 }
 
 /**

@@ -235,16 +235,6 @@ export const WorkspacePayloadRefSchema = z
   })
   .strict();
 
-/** Redacted workspace synchronization evidence manifest entry. */
-export const WorkspaceSyncEvidenceManifestEntrySchema = z
-  .object({
-    kind: z.string().min(1),
-    ref: z.string().min(1),
-    digest: z.string().min(1),
-    bytes: z.number().int().nonnegative(),
-  })
-  .strict();
-
 /** Redaction state for a workspace change set. */
 export const WorkspaceChangeSetRedactionSchema = z
   .object({
@@ -463,24 +453,6 @@ export const WorkspaceQuarantineRecordSchema = z
     addRawSecretIssues(value, ctx, []);
   });
 
-/** Durable workspace synchronization evidence linkage record. */
-export const WorkspaceSyncEvidenceBundleSchema = z
-  .object({
-    id: z.string().min(1),
-    workspaceId: z.string().min(1),
-    lifecycleRecordIds: z.array(z.string().min(1)),
-    evidenceBundleIds: z.array(z.string().min(1)),
-    backendEvidenceRefs: z.array(WorkspaceEvidenceRefSchema),
-    redactedEvidenceManifest: z.array(WorkspaceSyncEvidenceManifestEntrySchema),
-    contentDigests: z.array(z.string().min(1)),
-    retentionClass: z.enum(['turn-evidence', 'workspace-audit', 'restricted-raw', 'legal-hold']),
-    createdAt: TimestampSchema,
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
-
 /** Public App API item joining one workspace review with its change set and backing artifact. */
 export const WorkspaceSyncReviewItemSchema = z
   .object({
@@ -636,16 +608,6 @@ export const ListWorkspaceQuarantineRecordsResponseSchema = z
     addRawSecretIssues(value, ctx, []);
   });
 
-/** App API response listing durable workspace synchronization evidence bundles. */
-export const ListWorkspaceSyncEvidenceBundlesResponseSchema = z
-  .object({
-    items: z.array(WorkspaceSyncEvidenceBundleSchema),
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
-
 /** App API response listing durable workspace apply results for one workspace. */
 export const ListWorkspaceApplyResultsResponseSchema = z
   .object({
@@ -711,8 +673,6 @@ export type WorkspaceApplyResult = z.infer<typeof WorkspaceApplyResultSchema>;
 export type WorkspaceReconciliationRecord = z.infer<typeof WorkspaceReconciliationRecordSchema>;
 /** Durable quarantine record isolating invalid workspace synchronization material. */
 export type WorkspaceQuarantineRecord = z.infer<typeof WorkspaceQuarantineRecordSchema>;
-/** Durable workspace synchronization evidence linkage record. */
-export type WorkspaceSyncEvidenceBundle = z.infer<typeof WorkspaceSyncEvidenceBundleSchema>;
 /** Public item joining one workspace sync review with its parsed change set. */
 export type WorkspaceSyncReviewItem = z.infer<typeof WorkspaceSyncReviewItemSchema>;
 /** App API response listing workspace synchronization reviews for one workspace. */
@@ -768,10 +728,6 @@ export type ListWorkspaceReconciliationRecordsResponse = z.infer<
 /** App API response listing durable workspace quarantine records for one workspace. */
 export type ListWorkspaceQuarantineRecordsResponse = z.infer<
   typeof ListWorkspaceQuarantineRecordsResponseSchema
->;
-/** App API response listing durable workspace synchronization evidence bundles. */
-export type ListWorkspaceSyncEvidenceBundlesResponse = z.infer<
-  typeof ListWorkspaceSyncEvidenceBundlesResponseSchema
 >;
 /** App API response listing durable workspace apply results for one workspace. */
 export type ListWorkspaceApplyResultsResponse = z.infer<

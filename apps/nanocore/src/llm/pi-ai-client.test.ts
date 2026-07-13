@@ -75,6 +75,88 @@ describe('PiAiGatewayClient', () => {
     });
   });
 
+  it('does not forward Codex turn state through non-Codex pi-ai providers', async () => {
+    let seenOptions: (StreamOptions & Record<string, unknown>) | undefined;
+    const turnStates: string[] = [];
+    const faux = fauxProvider({
+      provider: 'anthropic_primary',
+      models: [{ id: 'faux-chat' }],
+    });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    faux.setResponses([
+      async (_context, options) => {
+        seenOptions = options as StreamOptions & Record<string, unknown>;
+        await options?.onResponse?.(
+          {
+            headers: {
+              'x-codex-turn-state': 'pi-response-state',
+              'x-request-id': 'private-provider-request-id',
+            },
+            status: 200,
+          },
+          faux.provider.getModels()[0]!
+        );
+        return fauxAssistantMessage('turn state ok');
+      },
+    ]);
+
+    await new PiAiGatewayClient({ models }).createChatCompletion(
+      providerConfig(),
+      {
+        model: 'faux-chat',
+        messages: [{ role: 'user', content: 'Preserve turn state' }],
+      },
+      undefined,
+      {
+        codexTurnState: 'pi-request-state',
+        onCodexTurnState: (turnState) => turnStates.push(turnState),
+      }
+    );
+
+    expect(seenOptions?.headers).toBeUndefined();
+    expect(seenOptions?.onResponse).toBeUndefined();
+    expect(turnStates).toEqual([]);
+  });
+
+  it('does not expose streaming Codex turn state through non-Codex pi-ai providers', async () => {
+    const turnStates: string[] = [];
+    const faux = fauxProvider({
+      provider: 'anthropic_primary',
+      models: [{ id: 'faux-chat' }],
+      tokensPerSecond: 100,
+      tokenSize: { min: 100, max: 100 },
+    });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    faux.setResponses([
+      async (_context, options) => {
+        await options?.onResponse?.(
+          {
+            headers: { 'x-codex-turn-state': 'pi-stream-response-state' },
+            status: 200,
+          },
+          faux.provider.getModels()[0]!
+        );
+        return fauxAssistantMessage('stream state ready');
+      },
+    ]);
+
+    const stream = await new PiAiGatewayClient({ models }).createChatCompletionStream(
+      providerConfig(),
+      {
+        messages: [{ role: 'user', content: 'Preserve stream state' }],
+        model: 'faux-chat',
+        stream: true,
+      },
+      undefined,
+      { onCodexTurnState: (turnState) => turnStates.push(turnState) }
+    );
+
+    await expect(new Response(stream).text()).resolves.toContain('stream state ready');
+    expect(turnStates).toEqual([]);
+  });
+
   it('registers a custom OpenAI-compatible provider model when pi-ai has no catalog entry', () => {
     const models = createModels();
     const customProvider = providerConfig({
@@ -447,6 +529,44 @@ describe('PiAiGatewayClient', () => {
     expect(body).toContain('"finish_reason":"stop"');
     expect(body).toContain('"usage":{"prompt_tokens"');
     expect(body).toContain('data: [DONE]');
+  });
+
+  it('passes the caller signal to pi-ai and aborts its local signal on downstream cancellation', async () => {
+    const callerAbortController = new AbortController();
+    let upstreamSignal: AbortSignal | undefined;
+    const faux = fauxProvider({
+      provider: 'anthropic_primary',
+      models: [{ id: 'faux-chat' }],
+      tokensPerSecond: 100,
+      tokenSize: { min: 1, max: 1 },
+    });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    faux.setResponses([
+      (_context, options) => {
+        upstreamSignal = options?.signal;
+        return fauxAssistantMessage('slow stream');
+      },
+    ]);
+    const stream = await new PiAiGatewayClient({ models }).createChatCompletionStream(
+      providerConfig(),
+      {
+        model: 'faux-chat',
+        stream: true,
+        messages: [{ role: 'user', content: 'Cancel after start' }],
+      },
+      undefined,
+      { signal: callerAbortController.signal }
+    );
+    const reader = stream.getReader();
+
+    await reader.read();
+    await reader.cancel('consumer disconnected');
+
+    expect(upstreamSignal).toBeDefined();
+    expect(upstreamSignal).not.toBe(callerAbortController.signal);
+    expect(upstreamSignal?.aborted).toBe(true);
+    expect(callerAbortController.signal.aborted).toBe(false);
   });
 
   it('maps pi-ai stream tool calls to OpenAI-compatible chat SSE chunks', async () => {

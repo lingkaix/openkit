@@ -64,6 +64,8 @@ export function registerActionCenterRoutes({
     try {
       const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
+
+      store.getWorkspace(workspaceId);
       const workspaceDb = coreDb ? repositoryWorkspaceDb(store, workspaceId) : undefined;
       try {
         return c.json(
@@ -92,8 +94,6 @@ export function registerActionCenterRoutes({
  * @returns Human Attention rows in deterministic creation order.
  */
 function buildHumanAttentionRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] {
-  input.store.getWorkspace(input.workspaceId);
-
   const artifactRows = artifactReviewRows(input);
   const rows = [
     ...approvalRows(input.store, input.workspaceId),

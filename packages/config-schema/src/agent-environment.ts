@@ -1,3 +1,4 @@
+import { WORKER_RUNTIME_PROVENANCE_FEATURE } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import { ProviderProfileSchema } from './provider.js';
 import { OpenKitProviderInstanceSchema } from './server.js';
@@ -12,6 +13,55 @@ const BACKEND_PRIVATE_FIELD_NAMES = new Set([
 ]);
 const WORKER_CREDENTIAL_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const WORKER_SANDBOX_ACCESS_ID_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+const TRUSTED_WORKER_INFERENCE_RELAY_CAPABILITY = 'trusted-worker-inference-relay';
+
+export { WORKER_RUNTIME_PROVENANCE_FEATURE } from '@openkit/worker-protocol';
+
+const TRUSTED_WORKER_CONTROL_NETWORK_RULE_SCHEMA = z
+  .object({
+    access: z.literal('read-write'),
+    action: z.literal('allow'),
+    binaries: z.tuple([
+      z.literal('/usr/local/bin/node'),
+      z.literal('/usr/local/bin/openkit-codex-shim'),
+    ]),
+    host: z.string().min(1),
+    id: z.literal('openkit-worker-control'),
+    port: z.number().int().min(1).max(65535),
+    protocol: z.literal('rest'),
+  })
+  .strict();
+const TRUSTED_WORKER_INFERENCE_NETWORK_RULE_SCHEMA = z
+  .object({
+    action: z.literal('allow'),
+    binaries: z.tuple([
+      z.literal('/usr/local/bin/codex'),
+      z.literal('/usr/local/lib/codex/bin/codex'),
+    ]),
+    host: z.string().min(1),
+    id: z.literal('openkit-worker-inference'),
+    port: z.number().int().min(1).max(65535),
+    protocol: z.literal('rest'),
+    rules: z.tuple([
+      z
+        .object({
+          method: z.literal('POST'),
+          path: z.literal('/api/worker-inference/v1/chat/completions'),
+        })
+        .strict(),
+      z
+        .object({
+          method: z.literal('POST'),
+          path: z.literal('/api/worker-inference/v1/responses'),
+        })
+        .strict(),
+    ]),
+  })
+  .strict();
+const TRUSTED_WORKER_INFERENCE_NETWORK_RULES_SCHEMA = z.tuple([
+  TRUSTED_WORKER_CONTROL_NETWORK_RULE_SCHEMA,
+  TRUSTED_WORKER_INFERENCE_NETWORK_RULE_SCHEMA,
+]);
 
 /**
  * Field classes used by Agent Environment Package schema documentation.
@@ -50,17 +100,16 @@ export const WorkerGovernanceBackendCapabilitySchema = z.enum([
   'network-policy',
   'process-policy',
   'transcript-sink',
-  'control-relay',
+  'worker-control',
   'sandbox-local-endpoint',
-  'sidecar-control-endpoint',
-  'sidecar-capability-endpoint',
-  'generic-local-endpoint-relay',
   'service-forwarding',
   'provider-attachments',
   'credential-placeholder',
   'gateway-header-injection',
   'backend-local-inference',
   'nanocore-inference-upstream',
+  TRUSTED_WORKER_INFERENCE_RELAY_CAPABILITY,
+  WORKER_RUNTIME_PROVENANCE_FEATURE,
   'audit-export',
   'remote-gateway',
   'backend-service-readiness',
@@ -407,9 +456,18 @@ export const AgentEnvironmentSupplySchema = z
     addDuplicateIdIssues(value.services, ctx, ['services']);
   });
 
-/**
- * Worker transcript sink configuration.
- */
+/** Bounded runtime-native provenance outputs declared beneath the worker transcript root. */
+export const AgentEnvironmentRuntimeProvenanceOutputSchema = z
+  .object({
+    rawStreamsRoot: z.literal('/openkit/session/runtime/raw'),
+    streamManifestPath: z.literal('/openkit/session/runtime/raw-streams.json'),
+    nativeOriginIndexPath: z.literal('/openkit/session/runtime/native-origin-index.jsonl'),
+    maxTotalBytes: z.number().int().positive(),
+    maxStreamCount: z.number().int().positive(),
+  })
+  .strict();
+
+/** Worker transcript sink configuration. */
 export const AgentEnvironmentControlTranscriptSchema = z
   .object({
     root: z.string().min(1),
@@ -419,30 +477,19 @@ export const AgentEnvironmentControlTranscriptSchema = z
     flush: z.enum(['line', 'turn-end']).default('line'),
     import: z.enum(['turn-end', 'live']).default('turn-end'),
     required: z.boolean().default(true),
+    runtimeProvenance: AgentEnvironmentRuntimeProvenanceOutputSchema.optional(),
   })
   .strict();
 
 /**
- * Optional worker-visible control endpoint.
+ * Canonical NanoCore worker-control endpoint.
  */
 export const AgentEnvironmentControlEndpointSchema = z
   .object({
-    kind: z.enum(['sandbox-local-https', 'sandbox-local-http', 'direct-url']),
+    kind: z.literal('direct-url'),
     baseUrl: z.string().url(),
-    required: z.boolean().default(false),
-    implementation: z.enum(['openkit-sidecar', 'backend-relay', 'direct-nanocore']),
-  })
-  .strict();
-
-/**
- * Control relay transport from sandbox-local endpoint to NanoCore.
- */
-export const AgentEnvironmentControlRelaySchema = z
-  .object({
-    kind: z.enum(['outbound-websocket', 'outbound-https', 'backend-supervisor']),
-    upstream: z.string().url(),
-    reuseBackendSupervisorSession: z.enum(['never', 'when-supported', 'required']).optional(),
-    fallback: z.enum(['transcript-sink', 'fail-turn', 'none']).default('transcript-sink'),
+    required: z.literal(true),
+    implementation: z.literal('direct-nanocore'),
   })
   .strict();
 
@@ -451,9 +498,9 @@ export const AgentEnvironmentControlRelaySchema = z
  */
 export const AgentEnvironmentControlAuthSchema = z
   .object({
-    kind: z.enum(['sandbox-session-token', 'none']),
-    tokenRef: z.string().min(1).nullable().optional(),
-    credentialVisibility: z.enum(['none', 'placeholder', 'environment']).default('none'),
+    kind: z.literal('sandbox-session-token'),
+    tokenRef: z.literal('runtime://openkit/control-token'),
+    credentialVisibility: z.literal('environment'),
   })
   .strict();
 
@@ -462,10 +509,10 @@ export const AgentEnvironmentControlAuthSchema = z
  */
 export const AgentEnvironmentControlChannelsSchema = z
   .object({
-    commands: z.boolean().default(false),
-    events: z.enum(['none', 'batch', 'live']).default('batch'),
-    artifacts: z.enum(['none', 'batch', 'live']).default('batch'),
-    heartbeats: z.boolean().default(false),
+    commands: z.literal(true),
+    events: z.literal('batch'),
+    artifacts: z.literal('batch'),
+    heartbeats: z.literal(true),
     logs: z.enum(['none', 'summary-only', 'raw']).default('summary-only'),
   })
   .strict();
@@ -487,87 +534,53 @@ export const AgentEnvironmentControlAdapterSchema = z
 export const AgentEnvironmentControlSchema = z
   .object({
     protocol: z.literal('openkit-worker-control-v1'),
-    mode: z.enum([
-      'transcript-sink',
-      'backend-relay',
-      'direct-nanocore',
-      'sidecar',
-      'stdio',
-      'disabled',
-    ]),
-    transcript: AgentEnvironmentControlTranscriptSchema.optional(),
-    endpoint: AgentEnvironmentControlEndpointSchema.optional(),
-    relay: AgentEnvironmentControlRelaySchema.optional(),
-    auth: AgentEnvironmentControlAuthSchema.optional(),
-    channels: AgentEnvironmentControlChannelsSchema.optional(),
+    mode: z.literal('direct-nanocore'),
+    transcript: AgentEnvironmentControlTranscriptSchema,
+    endpoint: AgentEnvironmentControlEndpointSchema,
+    auth: AgentEnvironmentControlAuthSchema,
+    channels: AgentEnvironmentControlChannelsSchema,
     commands: z.array(z.string().min(1)).default([]),
     events: z.array(z.string().min(1)).default([]),
-    adapter: AgentEnvironmentControlAdapterSchema.optional(),
+    adapter: AgentEnvironmentControlAdapterSchema,
   })
   .strict()
   .superRefine((value, ctx) => {
-    if (value.mode === 'sidecar' && !value.endpoint) {
+    const endpointUrl = new URL(value.endpoint.baseUrl);
+    const endpointIsCanonical =
+      (endpointUrl.protocol === 'http:' || endpointUrl.protocol === 'https:') &&
+      !endpointUrl.username &&
+      !endpointUrl.password &&
+      !endpointUrl.search &&
+      !endpointUrl.hash &&
+      endpointUrl.pathname.replace(/\/+$/, '') === '/api/worker-control';
+    const targetTransport = endpointUrl.protocol === 'http:' ? 'outbound-http' : 'outbound-https';
+
+    if (!endpointIsCanonical) {
       ctx.addIssue({
         code: 'custom',
-        message: 'Sidecar control mode requires a worker-visible endpoint.',
+        message: 'Direct NanoCore control requires one canonical HTTP(S) endpoint.',
         path: ['endpoint'],
       });
     }
-
-    if (value.endpoint?.implementation === 'openkit-sidecar' && !value.relay) {
+    if (
+      value.commands.length !== 2 ||
+      !value.commands.includes('interrupt') ||
+      !value.commands.includes('terminal-command')
+    ) {
       ctx.addIssue({
         code: 'custom',
-        message: 'OpenKit sidecar control requires an outbound relay declaration.',
-        path: ['relay'],
+        message: 'Direct NanoCore control supports only interrupt and terminal-command.',
+        path: ['commands'],
+      });
+    }
+    if (value.adapter.targetTransport !== targetTransport) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Direct NanoCore control adapter transport must match its endpoint scheme.',
+        path: ['adapter'],
       });
     }
   });
-
-/**
- * Worker-facing capability endpoint.
- */
-export const AgentEnvironmentCapabilityEndpointSchema = z
-  .object({
-    kind: z.enum(['sandbox-local-https', 'sandbox-local-http', 'direct-url']),
-    baseUrl: z.string().url(),
-    required: z.boolean().default(false),
-    implementation: z.enum(['openkit-sidecar', 'backend-relay', 'direct-nanocore']),
-  })
-  .strict();
-
-/**
- * Worker capability authentication material reference.
- */
-export const AgentEnvironmentCapabilityAuthSchema = z
-  .object({
-    kind: z.enum(['sandbox-session-token', 'none']),
-    tokenRef: z.string().min(1).nullable().optional(),
-    credentialVisibility: z.enum(['none', 'placeholder', 'environment']).default('none'),
-  })
-  .strict();
-
-/**
- * Capability families that may be supplied to real worker containers.
- */
-export const AgentEnvironmentCapabilityFamilySchema = z.enum([
-  'knowledge.search',
-  'knowledge.read',
-  'knowledge.proposal',
-  'worker_mcp.call',
-  'artifact.read',
-  'diagnostic.read',
-]);
-
-/**
- * One governed worker capability route supplied in an AEP snapshot.
- */
-export const AgentEnvironmentCapabilityRouteSchema = z
-  .object({
-    family: AgentEnvironmentCapabilityFamilySchema,
-    path: z.string().min(1),
-    policyRefId: z.string().min(1).nullable().optional(),
-  })
-  .strict();
 
 /**
  * Worker capability plane declaration.
@@ -575,21 +588,10 @@ export const AgentEnvironmentCapabilityRouteSchema = z
 export const AgentEnvironmentCapabilitiesSchema = z
   .object({
     protocol: z.literal('openkit-worker-capability-v1'),
-    mode: z.enum(['sidecar', 'direct-nanocore', 'disabled']),
-    endpoint: AgentEnvironmentCapabilityEndpointSchema.optional(),
-    auth: AgentEnvironmentCapabilityAuthSchema.optional(),
-    routes: z.array(AgentEnvironmentCapabilityRouteSchema).default([]),
+    mode: z.literal('disabled'),
+    routes: z.tuple([]).default([]),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    if (value.mode === 'sidecar' && !value.endpoint) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Sidecar capability mode requires a worker-visible endpoint.',
-        path: ['endpoint'],
-      });
-    }
-  });
+  .strict();
 
 /**
  * Provider attachment visible to one worker package.
@@ -955,12 +957,227 @@ export const AgentEnvironmentPackageSchema = z
   .strict()
   .superRefine((value, ctx) => {
     addRawSecretIssues(value, ctx, []);
+
+    const runtimeProvenanceRequired = value.backend.requiredCapabilities.includes(
+      WORKER_RUNTIME_PROVENANCE_FEATURE
+    );
+    if (runtimeProvenanceRequired && !value.control.transcript?.runtimeProvenance) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Runtime provenance requires bounded transcript output declarations.',
+        path: ['control', 'transcript', 'runtimeProvenance'],
+      });
+    }
+    if (
+      runtimeProvenanceRequired &&
+      !value.backend.requiredCapabilities.includes(TRUSTED_WORKER_INFERENCE_RELAY_CAPABILITY)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Runtime provenance requires the trusted worker inference relay.',
+        path: ['backend', 'requiredCapabilities'],
+      });
+    }
+    if (value.control.transcript?.runtimeProvenance && !runtimeProvenanceRequired) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Runtime provenance outputs require the runtime provenance feature.',
+        path: ['backend', 'requiredCapabilities'],
+      });
+    }
+    if (runtimeProvenanceRequired && value.control.transcript?.root !== '/openkit/session') {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Runtime provenance requires the canonical transcript root.',
+        path: ['control', 'transcript', 'root'],
+      });
+    }
+
+    if (!value.backend.requiredCapabilities.includes(TRUSTED_WORKER_INFERENCE_RELAY_CAPABILITY)) {
+      return;
+    }
+
+    if (value.llm.mode !== 'gateway') {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Trusted worker inference requires gateway mode.',
+        path: ['llm', 'mode'],
+      });
+    }
+    if (value.llm.routes.length !== 1) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Trusted worker inference requires exactly one authoritative route.',
+        path: ['llm', 'routes'],
+      });
+      return;
+    }
+
+    const route = value.llm.routes[0];
+
+    if (route?.endpoint.kind !== 'openai-compatible') {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Trusted worker inference requires an OpenAI-compatible endpoint.',
+        path: ['llm', 'routes', 0, 'endpoint', 'kind'],
+      });
+    }
+    if (route?.credentialVisibility !== 'placeholder') {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Trusted worker inference requires placeholder credentials.',
+        path: ['llm', 'routes', 0, 'credentialVisibility'],
+      });
+    }
+    if (route?.endpoint.upstream?.kind !== 'nanocore-gateway') {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Trusted worker inference must route through the NanoCore gateway.',
+        path: ['llm', 'routes', 0, 'endpoint', 'upstream'],
+      });
+    }
+
+    const workerBaseUrl = route?.endpoint.workerBaseUrl;
+    const workerUrl = workerBaseUrl ? new URL(workerBaseUrl) : null;
+
+    if (
+      !workerUrl ||
+      !['http:', 'https:'].includes(workerUrl.protocol) ||
+      !workerUrl.hostname ||
+      workerUrl.username !== '' ||
+      workerUrl.password !== '' ||
+      workerUrl.hostname === 'inference.local' ||
+      workerUrl.pathname !== '/api/worker-inference/v1' ||
+      workerUrl.search !== '' ||
+      workerUrl.hash !== ''
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Trusted worker inference requires the exact NanoCore worker-inference base path.',
+        path: ['llm', 'routes', 0, 'endpoint', 'workerBaseUrl'],
+      });
+    }
+
+    if (workerUrl && ['http:', 'https:'].includes(workerUrl.protocol)) {
+      const networkRules = value.policy.network?.rules ?? [];
+      const relayNetworkRules =
+        TRUSTED_WORKER_INFERENCE_NETWORK_RULES_SCHEMA.safeParse(networkRules);
+      const expectedPort = Number(
+        workerUrl.port || (workerUrl.protocol === 'https:' ? '443' : '80')
+      );
+      const controlUrl = value.control.endpoint ? new URL(value.control.endpoint.baseUrl) : null;
+      const expectedControlPort = controlUrl
+        ? Number(controlUrl.port || (controlUrl.protocol === 'https:' ? '443' : '80'))
+        : null;
+      const controlRule = relayNetworkRules.success ? relayNetworkRules.data[0] : null;
+      const inferenceRule = relayNetworkRules.success ? relayNetworkRules.data[1] : null;
+
+      if (
+        value.policy.network?.default !== 'deny' ||
+        value.policy.network?.enforcement !== 'openshell' ||
+        !controlUrl ||
+        !controlRule ||
+        controlRule.host !== controlUrl.hostname ||
+        controlRule.port !== expectedControlPort ||
+        !inferenceRule ||
+        inferenceRule.host !== workerUrl.hostname ||
+        inferenceRule.port !== expectedPort
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Trusted worker inference requires exact relay-only network policy.',
+          path: ['policy', 'network', 'rules'],
+        });
+      }
+    }
+
+    if (value.providers.attachments.length > 0) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Trusted worker inference does not allow provider attachments.',
+        path: ['providers', 'attachments'],
+      });
+    }
+    if (value.credentials.declarations.length > 0) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Trusted worker inference does not allow direct credential declarations.',
+        path: ['credentials', 'declarations'],
+      });
+    }
+    if (value.vault.references.length > 0 || value.vault.grants.length > 0) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Trusted worker inference does not allow direct vault material.',
+        path: ['vault'],
+      });
+    }
+
+    const providerBackedMcpIndex = value.supply.mcpServers.findIndex(
+      (server) =>
+        server.providerInstanceIds.length > 0 ||
+        server.vaultGrantIds.length > 0 ||
+        server.secretRefIds.length > 0
+    );
+
+    if (providerBackedMcpIndex >= 0) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Trusted worker inference does not allow provider-backed MCP supply.',
+        path: ['supply', 'mcpServers', providerBackedMcpIndex],
+      });
+    }
+
+    const providerInstance = route
+      ? value.providers.providerInstances.find(
+          (candidate) => candidate.id === route.providerInstanceId
+        )
+      : undefined;
+
+    if (
+      !providerInstance ||
+      providerInstance.kind !== 'gateway' ||
+      !providerInstance.models.includes(route?.model ?? '') ||
+      Boolean(providerInstance.secretRef) ||
+      providerInstance.vaultRefIds.length > 0
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Trusted worker inference requires a secret-free gateway provider instance.',
+        path: ['llm', 'routes', 0, 'providerInstanceId'],
+      });
+      return;
+    }
+
+    const providerProfile = providerInstance.profileId
+      ? value.providers.providerProfiles.find(
+          (candidate) => candidate.id === providerInstance.profileId
+        )
+      : undefined;
+
+    if (
+      !providerProfile ||
+      providerProfile.kind !== 'gateway' ||
+      !providerProfile.models.includes(route?.model ?? '') ||
+      Boolean(providerProfile.secretRef)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Trusted worker inference requires a matching secret-free gateway profile.',
+        path: ['providers', 'providerProfiles'],
+      });
+    }
   });
 
 /**
  * Parsed Agent Environment Package.
  */
 export type AgentEnvironmentPackage = z.infer<typeof AgentEnvironmentPackageSchema>;
+
+/** Parsed bounded runtime provenance output declaration. */
+export type AgentEnvironmentRuntimeProvenanceOutput = z.infer<
+  typeof AgentEnvironmentRuntimeProvenanceOutputSchema
+>;
 
 /**
  * Parsed worker credential declaration.
@@ -1035,36 +1252,6 @@ export function validateAgentEnvironmentPackageForBackend(
         message: `Backend ${backend.kind} does not support required capability ${capability}.`,
       });
     }
-  }
-
-  if (value.control.mode === 'transcript-sink' && !capabilities.has('transcript-sink')) {
-    diagnostics.push({
-      code: 'backend_missing_transcript_sink',
-      path: '$.control.mode',
-      message: 'Transcript-sink control mode requires backend transcript-sink support.',
-    });
-  }
-
-  if (
-    value.control.endpoint?.implementation === 'openkit-sidecar' &&
-    !capabilities.has('sidecar-control-endpoint')
-  ) {
-    diagnostics.push({
-      code: 'backend_missing_sidecar_control_endpoint',
-      path: '$.control.endpoint.implementation',
-      message: 'OpenKit sidecar control requires sidecar-control-endpoint support.',
-    });
-  }
-
-  if (
-    value.capabilities.endpoint?.implementation === 'openkit-sidecar' &&
-    !capabilities.has('sidecar-capability-endpoint')
-  ) {
-    diagnostics.push({
-      code: 'backend_missing_sidecar_capability_endpoint',
-      path: '$.capabilities.endpoint.implementation',
-      message: 'OpenKit sidecar capabilities require sidecar-capability-endpoint support.',
-    });
   }
 
   return diagnostics;
@@ -1272,6 +1459,10 @@ function redactRuntimeReferences(value: unknown): unknown {
   }
 
   if (!value || typeof value !== 'object') {
+    if (value === 'runtime://openkit/control-token') {
+      return value;
+    }
+
     if (typeof value === 'string' && value.startsWith('runtime://')) {
       return '[redacted:runtime-ref]';
     }

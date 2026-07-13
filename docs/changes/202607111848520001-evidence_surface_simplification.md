@@ -1,7 +1,7 @@
 # Evidence Surface Simplification
 
 Type: change-plan
-Status: planned
+Status: verified
 
 ## Intent
 
@@ -16,7 +16,7 @@ The accepted target removes the `WorkspaceSyncEvidenceBundle` record family and 
 - Keep `GET /api/app/workspaces/:workspaceId/evidence-bundles`, `client.app.listWorkspaceEvidenceBundles`, and `openkit://workspaces/{workspaceId}/evidence-bundles` as read-only access to automatically produced bundles.
 - Keep automatic general EvidenceBundle production for workspace materialization, staged workspace review, workspace apply results, and every other existing NanoCore-owned producer.
 - Keep `RuntimeEvidence`, Goal verification records, AuditEvent linkage, evidence retention and sensitivity classes, evidence import quarantine, evidence compaction, and workspace evidence export/import unchanged except for removal of the synchronization-specific record family.
-- Make workspace recovery use `evidenceBundleIds` already stored on `WorkspaceReconciliationRecord` and owning lifecycle records instead of collecting through `WorkspaceSyncEvidenceBundle`.
+- Make workspace recovery retain `WorkspaceReconciliationRecord.evidenceBundleIds` and combine them with matching durable `WorkerOutputManifest` rows instead of collecting through `WorkspaceSyncEvidenceBundle`.
 
 ## Non-Goals
 
@@ -35,19 +35,20 @@ The accepted target removes the `WorkspaceSyncEvidenceBundle` record family and 
 - [Audit](../core/audit.md)
 - [Product Vision](../product-vision.md)
 - [App API Boundary](../app-api.md)
-- [AI Interface](../specs/20260617-openkit_ai_interface.md)
+- [AI Interface](../specs/superseded/20260617-openkit_ai_interface.md)
 - [Audit, Usage, and Evidence Records](../specs/20260703-audit_usage_evidence_records.md)
 - [Workspace Synchronization](../specs/20260703-workspace_synchronization.md)
 - [Session Static Workspace Materialization](../specs/20260704-session_static_workspace_materialization.md)
 - [Storage Layout and Record Ownership](../specs/20260703-storage_layout_record_ownership.md)
 - [App API OpenAPI Projection](../specs/20260704-app_api_openapi_projection.md)
 - [Test Strategy](../specs/20260529-test_strategy.md)
+- [L6 Story Acceptance](../specs/20260529-l6_story_acceptance.md)
 
 ## Decision
 
 `EvidenceBundle` remains the single cross-domain evidence index. Domain records carry their own business state and link directly to general EvidenceBundle ids when cross-record evidence grouping is needed.
 
-Workspace synchronization already stores evidence ids on materialization, change, review, apply, and reconciliation records and automatically promotes materialization readiness, staged review, patch, and apply-result evidence into the general ledger. A second `WorkspaceSyncEvidenceBundle` record repeats those links without owning a distinct state transition or production requirement, so it is removed rather than consolidated behind another abstraction.
+Workspace synchronization already carries product-safe evidence refs and digests on its lifecycle records, stores recovery-required bundle ids on `WorkspaceReconciliationRecord`, and automatically promotes materialization readiness, staged review, patch, and apply-result evidence into the general ledger with stable bundle ids. A second `WorkspaceSyncEvidenceBundle` record repeats those relationships without owning a distinct state transition or production requirement, so it is removed rather than consolidated behind another abstraction.
 
 Evidence bundles represent NanoCore-governed evidence captured at stable domain boundaries. A public manual command that scans current lineage and artifact ids produces only a `collected` reference snapshot and does not verify or promote evidence, so it is removed. Consumers retain read-only access to bundles produced by trusted domain recorders.
 
@@ -55,8 +56,8 @@ Evidence bundles represent NanoCore-governed evidence captured at stable domain 
 
 - Automatic materialization, staged-review, and apply-result producers continue writing the same promoted general EvidenceBundle records with stable ids, refs, digests, retention, sensitivity, and required-feature metadata.
 - RuntimeEvidence remains stored, exported, imported, and readable with its existing `evidenceBundleIds` behavior.
-- Goal verification continues to gate Goal closeout and emit audit lineage without being wrapped in a new general Bundle.
-- Workspace recovery remains able to reach every general EvidenceBundle id needed for existing recovery decisions without `WorkspaceSyncEvidenceBundle`.
+- Task-scoped Goal verification evidence remains stored, audited, exported, imported, and projected without being wrapped in a new general Bundle; the current design does not add a Task Evaluator or independent final-verifier completion gate.
+- Workspace recovery retains every general EvidenceBundle id already persisted on `WorkspaceReconciliationRecord` and resumes from matching durable output manifests without `WorkspaceSyncEvidenceBundle`.
 - Evidence bundle read APIs and MCP resources remain read-only and continue returning automatically produced and imported general bundles.
 - Unknown imported evidence kinds remain quarantined, and restricted or raw evidence never becomes product-visible through this removal.
 - Removed routes, tools, schemas, tables, export fields, and client methods leave no aliases or compatibility readers.
@@ -91,8 +92,8 @@ Evidence bundles represent NanoCore-governed evidence captured at stable domain 
 ### Phase 1: Contract Tests First
 
 - Update schema, OpenAPI, Core Client, MCP registry, workspace export/import, and NanoCore server tests so they require the deleted schemas, operations, tools, resources, fields, and tables to be absent.
-- Preserve focused assertions for automatic EvidenceBundle production, read-only bundle listing, RuntimeEvidence linkage, Goal verification closeout, evidence quarantine, compaction, and recovery behavior.
-- Add one recovery regression proving existing lifecycle and reconciliation evidence ids are sufficient without synchronization-specific bundles.
+- Preserve focused assertions for automatic EvidenceBundle production, read-only bundle listing, RuntimeEvidence linkage, Goal verification storage, audit, export/import, terminal projection, evidence quarantine, compaction, and recovery behavior.
+- Add one recovery regression proving reconciliation evidence ids and durable output manifests are sufficient without synchronization-specific bundles.
 
 Exit criteria: focused tests express the accepted smaller public and storage contract and fail against the current implementation for only the planned removals.
 
@@ -108,7 +109,7 @@ Exit criteria: schema and client packages build and their focused contract tests
 
 - Delete the `WorkspaceSyncEvidenceBundle` storage and runtime modules, route wiring, OpenAPI projection, aggregate read fields, and workspace export/import family.
 - Remove the manual EvidenceBundle POST route, request parsing, collection helper, construction helper, and unused imports.
-- Simplify reconciliation evidence collection to existing general evidence ids and remove now-unused synchronization-specific inputs and deduplication branches.
+- Simplify reconciliation recovery to retain `WorkspaceReconciliationRecord.evidenceBundleIds` and remove now-unused synchronization-specific inputs and evidence-id aggregation branches.
 - Apply the clean one-way internal database migration or baseline update required by current storage conventions; do not preserve the deleted table or legacy import shape.
 
 Exit criteria: NanoCore contains no production symbol, table, route, OpenAPI operation, export field, or import reader for either deleted surface, while automatic producers and existing RuntimeEvidence behavior pass focused tests.
@@ -155,22 +156,45 @@ Exit criteria: all scoped removals are complete, all preserved evidence paths pa
 
 ## Risks And Mitigations
 
-- Risk: Removing synchronization-specific bundles drops recovery evidence ids. Mitigation: characterize current reconciliation inputs first and retain ids directly on the owning lifecycle and reconciliation records.
+- Risk: Removing synchronization-specific bundles drops recovery evidence ids. Mitigation: characterize current reconciliation inputs first and retain the ids already persisted on `WorkspaceReconciliationRecord` while recovery continues from matching durable output manifests.
 - Risk: Removing manual creation accidentally removes general bundle reads or automatic producers. Mitigation: keep explicit contract tests for GET/resource readback and deterministic materialization, review, and apply producer ids.
 - Risk: Workspace imports containing the removed record family fail ambiguously. Mitigation: follow the repository's no-backward-compatibility rule, remove the old import shape cleanly, and return the existing strict schema/version failure rather than adding a legacy reader.
 - Risk: OpenAPI, Client, MCP, and README surfaces drift after route deletion. Mitigation: update all projections in the same phases and run bidirectional contract and repository checks.
 - Risk: Cleanup expands into RuntimeEvidence or general EvidenceBundle redesign. Mitigation: treat any such change as out of scope and require a separate accepted decision.
 
+## Checkpoints
+
+- 2026-07-13: Contract-first commits `08c4daf` and `d0bd0e4` removed the two public schema families, and `31aa92b` and `fb813dd` removed the matching Core Client operations without aliases.
+- 2026-07-13: NanoCore contract commits `486b834` and `c8587d6` established the smaller route, OpenAPI, storage, export/import, migration, automatic-producer, and recovery requirements; implementation commit `8eba4db` removed the manual writer and synchronization-specific record family, preserved automatic producers and read-only general access, and passed 1,625 NanoCore tests with 7 expected skips plus typecheck, lint, build, generated OpenAPI validation, and focused contract suites.
+- 2026-07-13: MCP contract commit `257d3f9` and implementation commit `826b464` removed the manual creation tool and synchronization-specific projection while retaining the read-only general evidence resource; commits `2404f44`, `3b676fc`, `c1fd16e`, and `7fbbe92` aligned Skills, Web mocks, deterministic smoke coverage, guides, stories, active specs, and the implementation-alignment ledger with the smaller surface.
+- 2026-07-13: Final residual searches found no reachable deleted writer, route, client method, schema, storage owner, MCP operation, recovery input, or export/import reader. Remaining names are deletion assertions, the one-way table-drop migration, the explicit fail-closed rejection of the retired export path, this historical change record, and a guard in the subsequent provenance plan.
+- 2026-07-13: Full release verification, deterministic MCP and Web story acceptance, the focused NanoCore E2E smoke suite, format and repository checks, generated OpenAPI drift checks, lifecycle validation, and whitespace checks passed.
+
 ## Current Status
 
-- The design decision is accepted and reflected in the linked active specs.
-- Implementation has not started.
-- `WorkspaceSyncEvidenceBundle` and manual EvidenceBundle creation remain present in the current code until this plan is executed.
+- All five phases are complete and verified.
+- The deleted surfaces are absent from public schemas, storage ownership, App API and OpenAPI, Core Client, MCP, workspace transfer, recovery aggregation, Web mocks, guides, Skills, and stories.
+- General EvidenceBundle access is read-only for consumers, NanoCore-owned automatic producers remain intact, and the linked active specs and implementation-alignment ledger describe the shipped boundary.
 
 ## Final Implementation Summary
 
-Pending.
+- NanoCore is now the only writer of general EvidenceBundle records through trusted domain producers. App API, Core Client, and MCP retain list/read access but expose no manual creation command.
+- The redundant `WorkspaceSyncEvidenceBundle` schema, table, recorder, API and OpenAPI operation, Core Client and MCP projection, recovery input, and workspace export/import family were removed without compatibility aliases or readers. A one-way migration drops the retired table, and imports fail closed when the retired JSONL path is inventoried.
+- Workspace recovery preserves `WorkspaceReconciliationRecord.evidenceBundleIds` and combines the reconciliation record with matching durable `WorkerOutputManifest` rows. It no longer reconstructs evidence through a second synchronization-specific aggregation record.
+- RuntimeEvidence, Goal verification records, general EvidenceBundle retention and sensitivity, automatic materialization/review/apply producers, audit linkage, quarantine, compaction, and general evidence export/import remain unchanged.
+- Product documentation, active specs, Skills, deterministic stories, generated OpenAPI, package guides, and the core/spec implementation-alignment ledger now describe the same smaller surface.
 
 ## Final Verification Evidence
 
-Pending.
+- Changed-package schema, unit, typecheck, lint, and build gates passed for `@openkit/app-api-schemas`, `@openkit/core-client`, `@openkit/nanocore`, `@openkit/mcp`, and `@openkit/web`; the final NanoCore unit run passed 1,625 tests with 7 environment-gated OpenShell E2E tests skipped.
+- NanoCore OpenAPI generation, validation, and checked-artifact drift checks passed with the deleted operations and components absent and the general read operation retained.
+- `CI=true mise exec -- pnpm -w verify:release` passed repository L0-L2 checks, package tests and coverage, builds, 20 NanoCore E2E tests with 1 environment-gated skip, and NanoCore and Web built-artifact smoke tests.
+- `CI=true mise exec -- pnpm -w test:stories` passed 36 story-runner tests, all five deterministic MCP story runners, and the Web Playwright story; the Goal Mode smoke exposed 99 tools, omitted `openkit.create_evidence_bundle`, and read the general evidence resource without manufacturing a bundle.
+- `CI=true pnpm --filter @openkit/nanocore run test:e2e:smoke` passed all 4 focused smoke tests.
+- `CI=true pnpm run format:check`, `CI=true pnpm run check:repo`, the spec lifecycle validator, the changed-document link audit, exact active-spec alignment recount, and `git diff --check` passed.
+- Final CodeGraph and repository searches found no reachable deleted production surface. The only retained old export-path handling is a strict rejection guard, not a compatibility reader.
+- The optional external Skill quick validator could not start because its local Python environment lacks PyYAML; repository-owned MCP Skill tests, package tests, and repository checks validated both changed Skill files successfully.
+
+## Remaining Follow-Ups
+
+- No evidence-surface follow-up remains. Runtime sub-agent provenance is owned by [Worker Runtime Sub-Agent Provenance](202607111937290001-worker_runtime_subagent_provenance.md) and must preserve this read-only consumer boundary without reintroducing either deleted surface.

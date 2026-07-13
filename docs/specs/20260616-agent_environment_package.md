@@ -53,7 +53,7 @@ The backend materializes:
 - backend-native provider attachments
 - backend-native credential placeholders or gateway routes
 - mounted files, repositories, object-store paths, and output directories
-- supervisor, sidecar, proxy, or relay processes
+- supervisor, proxy, or relay processes
 - backend-native logs and enforcement evidence
 
 OpenShell is valuable because its Providers v2, sandbox policy, inference routing, compute driver, and observability designs already cover many of the fields OpenKit needs.
@@ -64,9 +64,13 @@ OpenKit should adopt an OpenShell-inspired provider/profile/policy vocabulary, a
 
 The current NanoCore implementation uses the Agent Environment Package as the concrete V1 contract for worker governance execution. Current code resolves package metadata for local and remote OpenShell container worker paths, including runtime placement, worker-visible workspace roots, generated task context, control endpoint metadata, transcript paths, policy snapshot binding, session workspace layout, workspace synchronization expectations, supply projections, capability projections, vault-backed runtime files, and backend capability requirements. NanoCore also persists redacted workspace-owned package snapshots and exposes them through App API, Core Client, OpenAPI, and MCP readback surfaces for diagnostics, evidence, export/import, and restart investigation.
 
-The first OpenShell-backed path uses an OpenKit-owned sidecar or worker shim shape for `control.local` rather than treating OpenShell service forwarding or backend logs as the product control plane.
+The OpenShell-backed path uses `openkit-codex-shim` as the sandbox entrypoint. The shim supervises Codex and calls the AEP-resolved NanoCore worker-control endpoint directly; the worker image contains no separate control sidecar.
 
-The accepted V1 boundary is implemented for NanoCore-owned AEP resolution and OpenShell-backed materialization. Authored setup can project required backend capabilities into AEP backend requirements, backend materialization validates missing required capabilities before launch, grant-backed provider and runtime-file attachments flow through vault records without storing secret material in the package, worker Skill and MCP supply are resolved from approved catalog entries, worker-visible Knowledge and MCP capability projections are present, and redacted package snapshots can be listed and read without exposing backend-private fields, raw credentials, or host-local runtime references. The accepted worker-runtime provenance and trusted worker-inference binding extension in `docs/specs/20260711-worker_runtime_subagent_provenance.md` is not implemented, so overall AEP alignment is partial until package requirements, transcript paths, relay identity binding, and capability negotiation cover that contract. Rich Web readiness views, broader provider profiles, object-store mounts, and deployment-specific OpenShell service-management contracts remain future extensions over the same AEP boundary.
+The accepted V1 boundary is implemented for NanoCore-owned AEP resolution and OpenShell-backed materialization. Authored setup can project required backend capabilities into AEP backend requirements, backend materialization validates missing required capabilities before launch, grant-backed provider and runtime-file attachments flow through vault records without storing secret material in the package, and redacted package snapshots can be listed and read without exposing backend-private fields, raw credentials, or host-local runtime references.
+
+Current packages always emit `capabilities: { protocol: "openkit-worker-capability-v1", mode: "disabled", routes: [] }`. The removed worker capability client, NanoCore `/api/worker-capabilities/*` routes, worker MCP gateway, and capability smoke are not part of the current implementation. Skill and MCP supply records may still be resolved as static package inputs, but they do not grant a callable worker capability route. The accepted future capability and MCP contracts remain in `docs/specs/20260703-worker_agent_capability.md` and `docs/specs/20260704-worker_mcp_tool_supply.md` and are sequenced in `docs/roadmap.md`.
+
+The worker-runtime provenance and trusted worker-inference extension remains governed by `docs/specs/20260711-worker_runtime_subagent_provenance.md`; production advertisement still depends on its real OpenShell/Codex proof. Rich Web readiness views, broader provider profiles, object-store mounts, worker capabilities, and deployment-specific OpenShell service-management contracts remain future extensions over the same AEP boundary.
 
 ## Goals / Non-goals
 
@@ -196,7 +200,7 @@ Those are separate records.
 
 NanoCore owns abstract permission decisions and policy intent.
 
-The backend owns concrete policy artifacts such as OpenShell policy YAML, container network rules, Kubernetes network policies, sidecar config, or firewall rules.
+The backend owns concrete policy artifacts such as OpenShell policy YAML, container network rules, Kubernetes network policies, proxy config, or firewall rules.
 
 NanoCore audit must record both the abstract decision and the backend enforcement result.
 
@@ -204,49 +208,17 @@ NanoCore audit must record both the abstract decision and the backend enforcemen
 
 Agents should see stable local endpoints or environment variables managed by OpenKit or the backend.
 
-They should not need to know whether routing goes through NanoCore, OpenShell `inference.local`, a sidecar proxy, a Kubernetes service, or a managed sandbox endpoint.
+They should not need to know whether routing goes through NanoCore, OpenShell `inference.local`, a network proxy, a Kubernetes service, or a managed sandbox endpoint.
 
 ### Separate Control From Inference
 
-OpenKit worker control traffic and LLM inference traffic should use separate conceptual channels.
+OpenKit worker control traffic and LLM inference traffic use separate channels.
 
-The inference channel exists so SDKs and agent runtimes can call a stable OpenAI-compatible or provider-compatible endpoint without seeing real provider credentials.
+The inference channel gives agent runtimes an AEP-resolved OpenAI-compatible endpoint without exposing provider credentials. Non-attributed packages may use `https://inference.local`; provenance-required packages receive an exact authenticated NanoCore worker-inference base URL.
 
-The control channel exists only when the product needs live worker interaction such as active-turn input, interrupt, cancel, approval result delivery, live item streaming, live artifact notices, or worker heartbeats.
+The control channel is mandatory for governed workers. `openkit-codex-shim` calls the AEP-resolved NanoCore `/api/worker-control` base URL directly over HTTP or HTTPS, authenticates with the package-bound sandbox token, emits heartbeats and bounded worker records, polls commands, and reports terminal results.
 
-The default worker governance path does not require live conversation with the worker.
-
-OpenKit is primarily a system for managing, scheduling, coordinating, and reviewing many worker agents that collaborate toward a goal.
-
-For that product shape, a lightweight turn-end transcript and evidence sink can be enough.
-
-The two channels may share a backend relay or supervisor session, but they are not the same protocol.
-
-For OpenShell-backed workers, `https://inference.local` is the preferred sandbox-local LLM endpoint.
-
-OpenKit should reserve a separate sandbox-local control endpoint such as `https://openkit.local` or `https://control.local` for OpenKit worker control traffic when the backend can expose it, but this endpoint is optional for the first worker governance backend.
-
-The preferred name for this endpoint is `https://control.local`.
-
-`control.local` should copy the operational shape of `inference.local`, not its exact implementation.
-
-The worker sees a stable sandbox-local HTTPS endpoint.
-
-The endpoint then reaches NanoCore through the simplest reliable backend-specific path.
-
-For stock OpenShell, OpenKit must not assume that arbitrary sandbox-local domains can be registered into the OpenShell `inference.local` privacy router.
-
-OpenShell `inference.local` is a specialized LLM routing path.
-
-OpenShell service forwarding is also not the canonical control path because it exposes a sandbox loopback service through a gateway-managed URL for external callers, while OpenKit control requires a stable endpoint that worker code can call from inside the sandbox and that NanoCore can use for bounded commands.
-
-The first OpenShell integration should therefore materialize `control.local` with an OpenKit-owned sandbox sidecar or worker shim inside the sandbox image.
-
-That sidecar should connect outbound to NanoCore's Worker Control Gateway over an allowlisted HTTPS or WebSocket route.
-
-This keeps stock OpenShell usable without patching its Gateway or Supervisor, while preserving the option to replace the sidecar transport with a native OpenShell generic relay later.
-
-When live control is disabled, the worker or shim writes session transcript files under `/openkit/session/`, and NanoCore imports them at turn end.
+No sandbox-local control alias, sidecar, backend relay, or transcript-only control mode is part of the accepted contract. OpenShell network policy allows only the shim binaries to reach the declared NanoCore control endpoint. The transcript files under `/openkit/session/` remain required evidence collected at turn end; they are not an alternate control path.
 
 ### Do Not Derive Items From Backend Logs
 
@@ -403,7 +375,7 @@ For a plain Docker backend, this may include:
 - bind mounts
 - network mode
 - environment variable placeholders
-- sidecar proxy endpoint
+- managed proxy endpoint
 - resource limits
 - log collection config
 
@@ -840,23 +812,15 @@ Rules:
 - MCP server config must not contain raw credentials.
 - Service URLs should be stable worker-local names when possible.
 
-## Worker Transcript And Optional Control
+## Worker Transcript And Direct Control
 
-`control` describes how NanoCore receives worker transcript data and, when needed, how NanoCore controls the worker.
-
-This contract is separate from LLM inference and separate from backend security telemetry.
-
-The default mode is `transcript-sink`.
-
-In that mode, the worker or shim writes OpenKit-native JSONL files inside the sandbox, and NanoCore imports them when the turn ends.
-
-Live control is optional and can be added when the product needs active steering, live item streaming, or interruption.
+`control` describes the mandatory direct NanoCore worker-control connection and the required transcript evidence collected at turn end. This contract is separate from LLM inference, future worker capabilities, and backend security telemetry.
 
 ```jsonc
 {
   "control": {
     "protocol": "openkit-worker-control-v1",
-    "mode": "transcript-sink",
+    "mode": "direct-nanocore",
     "transcript": {
       "root": "/openkit/session",
       "eventsPath": "/openkit/session/events.jsonl",
@@ -867,45 +831,31 @@ Live control is optional and can be added when the product needs active steering
       "required": true
     },
     "endpoint": {
-      "kind": "sandbox-local-https",
-      "baseUrl": "https://control.local/v1/worker-control",
-      "required": false,
-      "implementation": "openkit-sidecar"
-    },
-    "relay": {
-      "kind": "outbound-websocket",
-      "upstream": "https://nanocore.local/api/worker-control",
-      "reuseBackendSupervisorSession": "when-supported",
-      "fallback": "transcript-sink"
+      "kind": "direct-url",
+      "baseUrl": "https://nanocore.example.com/api/worker-control",
+      "required": true,
+      "implementation": "direct-nanocore"
     },
     "auth": {
       "kind": "sandbox-session-token",
-      "tokenRef": "runtime://sandbox-session-token",
-      "credentialVisibility": "placeholder"
+      "tokenRef": "runtime://openkit/control-token",
+      "credentialVisibility": "environment"
     },
     "channels": {
-      "commands": false,
+      "commands": true,
       "events": "batch",
       "artifacts": "batch",
-      "heartbeats": false,
+      "heartbeats": true,
       "logs": "summary-only"
     },
     "commands": [
-      "start-turn",
-      "active-input",
       "interrupt",
-      "cancel",
-      "approval-result",
-      "config-refresh",
-      "close"
+      "terminal-command"
     ],
     "events": [
       "worker.ready",
-      "turn.started",
       "item.created",
-      "item.delta",
-      "item.completed",
-      "artifact.proposed",
+      "artifact.created",
       "turn.completed",
       "turn.failed",
       "worker.heartbeat"
@@ -913,36 +863,25 @@ Live control is optional and can be added when the product needs active steering
     "adapter": {
       "kind": "openkit-worker-shim",
       "targetRuntime": "codex",
-      "targetTransport": "stdio"
+      "targetTransport": "outbound-https"
     }
   }
 }
 ```
 
-`mode` values:
-
-| Value | Meaning |
-| --- | --- |
-| `transcript-sink` | The worker or shim writes `/openkit/session/*.jsonl`, and NanoCore imports the files at turn end. |
-| `backend-relay` | The backend relay or supervisor session carries control traffic between NanoCore and the sandbox. |
-| `direct-nanocore` | The worker or shim calls a NanoCore endpoint directly through an allowed network route. |
-| `sidecar` | A sandbox-local sidecar bridges worker traffic to NanoCore. |
-| `stdio` | Development harness projection only; not a real Worker Agent product runtime. |
-| `disabled` | The package does not support OpenKit-native worker control and can produce only backend evidence. |
-
 Rules:
 
 - `control.protocol` is an OpenKit protocol owned by NanoCore, not an OpenShell protocol.
+- `control.mode` must be exactly `direct-nanocore`.
 - `transcript.root` should be mounted writable by the worker or shim and readable by NanoCore during artifact collection.
 - `eventsPath`, `itemsPath`, and `artifactsPath` are worker-visible paths.
 - Transcript records must bind to workspace, thread, turn, agent session, package snapshot, and request IDs.
-- `endpoint.baseUrl` is worker-visible and should be sandbox-local when live control is enabled.
-- `endpoint.implementation: "openkit-sidecar"` means OpenKit provides the sandbox-local control endpoint inside the sandbox image or worker shim.
-- `relay.kind` describes how the endpoint reaches NanoCore after accepting sandbox-local worker traffic.
-- `relay.reuseBackendSupervisorSession: "when-supported"` means the same OpenKit control protocol may later move onto a backend-native Gateway/Supervisor relay without changing worker-visible semantics.
-- `relay.fallback: "transcript-sink"` means live control failure must not discard turn evidence when the worker can still write `/openkit/session/*.jsonl`.
-- `auth.tokenRef` must refer to short-lived runtime material, not a durable secret, when live control is enabled.
-- Live control must preserve event ordering before events reach client-facing SSE streams.
+- `endpoint.baseUrl` must be a credential-free HTTP(S) URL whose path is exactly `/api/worker-control` after trailing-slash normalization.
+- `endpoint.required` must be `true`, and `endpoint.implementation` must be `direct-nanocore`.
+- `auth.tokenRef` must be `runtime://openkit/control-token`; the image launcher transfers the material to the shim through an inherited anonymous file descriptor and removes it from the child environment.
+- The only declared NanoCore-to-worker command families are `interrupt` and `terminal-command`.
+- The adapter transport must match the endpoint scheme: `outbound-http` or `outbound-https`.
+- Direct control must preserve event ordering before events reach client-facing streams.
 - The worker or shim may emit candidate events, but NanoCore assigns canonical sequence numbers and persists canonical items.
 - `logs: "summary-only"` means backend or worker logs are summarized before becoming product-visible items.
 - Raw backend security logs remain audit evidence, not chat transcript content.
@@ -1035,56 +974,23 @@ Import rules:
 - Missing transcript files should fail the turn only when `control.transcript.required` is `true`.
 - Imported items should be marked with source metadata that distinguishes `worker-transcript` from live client input and NanoCore-generated status items.
 
-### Sandbox-Local Control Endpoint
+### Direct NanoCore Control Endpoint
 
-`control.local` is the preferred worker-visible endpoint for OpenKit worker progress and optional control commands.
+The AEP-resolved LLM endpoint and worker-control endpoint are separate. The LLM endpoint carries inference requests, provider routing, credential isolation, and usage attribution. The control endpoint carries worker lifecycle updates, bounded records, heartbeats, interrupt commands, terminal commands, and terminal results.
 
-It is separate from `inference.local`.
-
-`inference.local` carries LLM requests, provider routing, model rewriting, credential stripping, and usage attribution.
-
-`control.local` carries OpenKit worker lifecycle events, compact progress updates, item candidates, artifact notices, heartbeats, and bounded commands.
-
-The first implementation should be a no-fork OpenShell path:
+The current OpenShell path is direct:
 
 ```text
 Worker runtime
-  -> OpenKit shim
-  -> https://control.local/v1/worker-control
-  -> OpenKit control sidecar inside the sandbox
-  -> outbound HTTPS or WebSocket
-  -> NanoCore Worker Control Gateway
+  -> openkit-codex-shim
+  -> authenticated HTTP(S)
+  -> NanoCore /api/worker-control
   -> NanoCore worker session state
-  -> Web UI worker and agent-network status views
 ```
 
-This implementation uses stock OpenShell for sandbox lifecycle, filesystem enforcement, process enforcement, network policy, credential enforcement, `inference.local`, logs, and evidence collection.
+The shim receives the exact worker-reachable NanoCore base URL from the AEP. OpenShell network policy permits only the approved shim binaries to reach that endpoint. The package-bound token authenticates the package snapshot, worker session, lease, and request lineage; the request body does not grant authority.
 
-It uses an OpenKit-owned sidecar for OpenKit semantic control traffic.
-
-The sidecar is part of the sandbox image or worker package, not part of the worker agent prompt.
-
-OpenShell network policy must explicitly allow the sidecar binary to reach NanoCore's Worker Control Gateway.
-
-The sidecar must use a short-lived sandbox session token and must bind every message to `workspaceId`, `threadId`, `turnId`, `agentSessionId`, `packageSnapshotId`, and `requestId`.
-
-The sidecar should write every accepted worker-originated event to `/openkit/session/events.jsonl` before or at the same durable boundary as forwarding it live.
-
-Item and artifact candidate records should also remain available through `/openkit/session/items.jsonl` and `/openkit/session/artifacts.jsonl`.
-
-This makes live progress an optimization over the durable transcript sink instead of the only source of evidence.
-
-If the live relay disconnects, the worker may continue when policy allows it, and NanoCore should import the transcript sink at turn end.
-
-If a user sends `cancel`, `interrupt`, or an approval result while the relay is disconnected, NanoCore should persist the command as undelivered and either retry when the relay returns or mark the worker as requiring backend intervention.
-
-Stock OpenShell service forwarding must not be used as the canonical OpenKit control channel.
-
-It may be used for debugging, inspection, preview servers, notebooks, or future operator-only tools, but not for the worker-to-NanoCore turn and item protocol.
-
-If a future OpenShell release exposes a generic sandbox-local endpoint relay that can map `control.local` onto the authenticated Gateway/Supervisor session, the OpenShell backend may switch `control.endpoint.implementation` from `openkit-sidecar` to `backend-relay`.
-
-That switch must not change the OpenKit worker control protocol, NanoCore item state machine, transcript sink contract, or Web UI API.
+Transcript files remain durable turn evidence and artifact inputs. They do not replace the direct control connection, and a control failure does not authorize the worker to continue under an ungoverned transcript-only mode. OpenShell service forwarding, sandbox-local aliases, backend relays, and capability gateways are not worker-control implementations.
 
 ### OpenKit Worker Shim
 
@@ -1097,11 +1003,10 @@ The shim is responsible for:
 - starting the worker runtime
 - translating native runtime events into OpenKit transcript records
 - writing `events.jsonl`, `items.jsonl`, and `artifacts.jsonl`
-- receiving NanoCore commands only when live control is enabled
-- forwarding active-turn input at safe points when live control is enabled and supported
-- translating interrupt and cancellation commands when live control is enabled
+- receiving NanoCore `interrupt` and `terminal-command` commands
+- translating interrupt and terminal-command requests into runtime-native actions
 - publishing artifact candidates through the transcript sink
-- sending heartbeats when live control is enabled
+- sending heartbeats through direct NanoCore control
 - reporting terminal outcomes
 
 The shim is not the policy engine.
@@ -1114,40 +1019,19 @@ The shim is the semantic adapter that makes worker activity visible as OpenKit t
 
 NanoCore retains full control of a thread by owning the authoritative turn and item state machine, even when worker transcript import is non-real-time.
 
-The worker backend may relay commands and evidence, but it must not decide canonical OpenKit turn status.
-
-The default transcript-sink control flow is:
+The worker backend launches, enforces, and collects evidence, but it must not decide canonical OpenKit turn status. The control flow is:
 
 ```text
 NanoCore creates turn
   -> NanoCore resolves AgentEnvironmentPackage
   -> Backend launches governed worker session
-  -> Shim starts the worker runtime
-  -> Shim writes /openkit/session/events.jsonl
-  -> Shim writes /openkit/session/items.jsonl
-  -> Shim writes /openkit/session/artifacts.jsonl
-  -> Backend reports terminal worker outcome
-  -> NanoCore collects transcript files and backend logs
-  -> NanoCore imports valid item candidates as canonical OpenKit items
-  -> NanoCore imports artifact candidates as OpenKit artifacts
-  -> NanoCore imports OCSF JSONL or backend logs as audit and evidence
-  -> NanoCore decides final turn status and review surface state
-```
-
-The optional live-control flow is:
-
-```text
-NanoCore creates turn
-  -> NanoCore resolves AgentEnvironmentPackage
-  -> Backend launches governed worker session
-  -> Shim reports worker.ready through control.local
-  -> Control sidecar relays worker.ready outbound to NanoCore
-  -> NanoCore sends start-turn or active-input commands
+  -> Shim authenticates directly to NanoCore /api/worker-control
+  -> Shim reports heartbeats and bounded worker records
+  -> NanoCore may issue interrupt or terminal-command
   -> Shim translates runtime-native events into item candidate events
   -> NanoCore persists canonical worker state and selected item events
-  -> NanoCore streams compact worker and agent-network status to clients
-  -> NanoCore routes interrupt, cancel, or approval-result commands when needed
   -> Shim reports terminal worker outcome
+  -> NanoCore collects transcript files, artifacts, and backend evidence
   -> NanoCore decides final turn status and artifact registration
 ```
 
@@ -1163,7 +1047,7 @@ Useful status fields include phase, last progress event, last heartbeat, blocked
 
 NanoCore may project this into worker, thread, goal, and agent-network panels.
 
-The UI may send user actions such as cancel, interrupt, priority change, approval result, or policy adjustment request to NanoCore.
+The UI may send user actions such as interrupt, priority change, approval response, or policy adjustment request to NanoCore.
 
 NanoCore decides whether those actions become worker commands, backend operations, human review rows, or denied requests.
 
@@ -1441,9 +1325,9 @@ Rules:
 
 `llm` describes how the worker obtains model inference.
 
-The recommended OpenShell-backed path is that the worker calls `https://inference.local/v1`, OpenShell strips sandbox-supplied credentials and forwards the request through an authenticated AEP-bound relay to NanoCore's internal worker-inference routes, and NanoCore then selects the real provider, model, credential source, usage attribution, prompt cache metadata, and audit linkage.
+The recommended attributed OpenShell-backed path is that the AEP configures the worker with an exact NanoCore worker-inference base URL and one sandbox-wide per-package OpenShell placeholder credential, while a default-deny policy leaves only the exact Codex binaries, NanoCore host, POST methods, and paths reachable. NanoCore then authenticates the active AEP and lease before selecting the real provider, model, credential source, usage attribution, prompt cache metadata, and audit linkage.
 
-In that arrangement, `inference.local` is the sandbox-local endpoint, but NanoCore remains the canonical inference gateway.
+In that arrangement, NanoCore is the canonical inference gateway and stock `inference.local` is not in the attributed path. A package that selects backend-local inference must report attribution as incomplete when that backend cannot preserve the same lineage.
 
 ```jsonc
 {
@@ -1456,13 +1340,13 @@ In that arrangement, `inference.local` is the sandbox-local endpoint, but NanoCo
         "model": "gpt-5",
         "endpoint": {
           "kind": "openai-compatible",
-          "workerBaseUrl": "https://inference.local/v1",
+          "workerBaseUrl": "https://nanocore.internal/api/worker-inference/v1",
           "upstream": {
             "kind": "nanocore-gateway",
-            "baseUrlRef": "runtime://nanocore/v1"
+            "baseUrlRef": "runtime://nanocore/worker-inference/v1"
           }
         },
-        "credentialVisibility": "none",
+        "credentialVisibility": "placeholder",
         "promptCache": {
           "enabled": true,
           "keyScope": "runtime-cache-lineage"
@@ -1493,7 +1377,7 @@ In that arrangement, `inference.local` is the sandbox-local endpoint, but NanoCo
 
 Preferred mode is `gateway`.
 
-For OpenShell-backed workers, preferred `gateway` mode still uses the sandbox-local `https://inference.local` endpoint when possible, but OpenShell should route that endpoint to NanoCore's authenticated worker-inference routes instead of the generic public `/v1` routes or a backend-owned final provider selection.
+For OpenShell-backed workers that require complete attribution, preferred `gateway` mode uses the exact AEP-bound NanoCore worker-inference base URL plus the per-package OpenShell placeholder and REST policy. Legacy `inference.local` remains outside that trusted binding.
 
 `backend-local` is acceptable only when the backend can preserve OpenKit provider IDs, usage, prompt cache metadata, and audit linkage.
 
@@ -1503,13 +1387,13 @@ Rules:
 
 - Workers should not receive real LLM provider API keys.
 - Sandbox-supplied `Authorization` headers should be stripped before upstream inference.
-- NanoCore should authenticate the sandbox or control session before honoring requests forwarded from `inference.local`.
+- NanoCore should authenticate the sandbox token, active AEP, and lease before honoring requests on the internal worker-inference routes.
 - NanoCore should map forwarded inference calls to workspace, thread, turn, agent session, provider instance, and request IDs.
 - NanoCore should record capability calls, usage, and audit events for forwarded inference.
-- If a backend-level `inference.local` implementation cannot preserve NanoCore lineage, provider IDs, usage, and audit, NanoCore should use an OpenKit-owned authenticated relay to the internal worker-inference route instead.
+- A backend-level `inference.local` implementation that cannot preserve NanoCore lineage, provider IDs, usage, and audit is a non-attributed backend-local route; complete attribution requires the OpenKit-owned authenticated worker-inference path.
 - Worker authority-bearing lineage must come from an authenticated AEP and lease binding, not request-body `metadata.openkit` or runtime-supplied headers.
 - Runtime-native causal origin and runtime cache lineage must follow `docs/specs/20260711-worker_runtime_subagent_provenance.md`; the shared outer OpenKit thread, turn, or agent session must not become the cache key for every runtime-internal child.
-- An AEP that requires complete worker-inference attribution must configure the root runtime and every runtime-internal child to use `inference.local`, withhold direct provider credentials, deny direct provider API egress, and fail capability negotiation when the backend cannot prove that coverage; `backend-local` and `direct-external` modes must report attribution as incomplete unless they satisfy the same authenticated relay contract.
+- An AEP that requires complete worker-inference attribution must configure the root runtime and every runtime-internal child to use the authenticated worker-inference base URL, withhold direct provider credentials, deny direct provider API egress, and fail capability negotiation when the backend cannot prove that coverage; `backend-local` and `direct-external` modes must report attribution as incomplete unless they satisfy the same authenticated path contract.
 
 ## Policy Intent
 
@@ -1585,7 +1469,7 @@ For Kubernetes, it may compile into:
 - network policy
 - volume mounts
 - secret projection rules
-- sidecar proxy config
+- managed proxy config
 
 ## Policy Static And Dynamic Fields
 
@@ -1704,6 +1588,7 @@ Rules:
     "requiredCapabilities": [
       "container",
       "transcript-sink",
+      "worker-control",
       "network-policy",
       "provider-attachments",
       "credential-placeholder",
@@ -1737,10 +1622,8 @@ Backend capability names should include:
 | `network-policy` | Can enforce network endpoint policy. |
 | `process-policy` | Can enforce process user, binary, or child-process constraints. |
 | `transcript-sink` | Can preserve worker-written `/openkit/session/*.jsonl` files for turn-end import. |
-| `control-relay` | Can carry OpenKit worker control traffic between NanoCore and the sandbox. |
-| `sandbox-local-endpoint` | Can expose stable sandbox-local endpoints such as `openkit.local` or `inference.local`. |
-| `sidecar-control-endpoint` | Can run an OpenKit-owned sandbox-local sidecar such as `control.local` and route it outbound to NanoCore. |
-| `generic-local-endpoint-relay` | Can map an arbitrary sandbox-local endpoint onto a backend-native authenticated relay session. |
+| `worker-control` | Can let the approved worker shim reach NanoCore's authenticated direct worker-control endpoint. |
+| `sandbox-local-endpoint` | Can expose a stable sandbox-local inference endpoint when selected by the LLM projection. |
 | `service-forwarding` | Can expose sandbox loopback services through backend-managed URLs for debugging, previews, or operator inspection. |
 | `provider-attachments` | Can attach provider instances to worker sessions. |
 | `credential-placeholder` | Can expose placeholders and resolve credentials outside prompts. |
@@ -1785,7 +1668,7 @@ OpenKit-owned semantics include:
 - Agent Environment Package snapshots and materialization decisions
 - permission decisions, vault grants, provider instance lineage, usage records, and audit linkage
 - workspace input snapshots, materialization records, change sets, staged workspace reviews, and apply results
-- public App API, MCP, Web UI, and protocol response shapes
+- public App API, end-user Agent Skill Interface, Web UI, and protocol response shapes
 - human review gates before accepting changes, committing, pushing, deploying, or triggering external side effects
 
 Backend-owned implementation details include:
@@ -1907,15 +1790,14 @@ An OpenShell backend should map OpenKit package fields as follows.
 | `workspace.inputs` | Bind mounts, staged files, repository checkout, or backend-supported mounts. |
 | `workspace.outputs` | Output directories plus artifact collection. |
 | `control.transcript` | Writable `/openkit/session/*.jsonl` directory collected at turn end. |
-| `control.endpoint` with `implementation: "openkit-sidecar"` | OpenKit sidecar or shim inside the sandbox provides `https://control.local` and connects outbound to NanoCore. |
-| `control.endpoint` with `implementation: "backend-relay"` | Future or custom OpenShell generic local endpoint relay over the authenticated Gateway/Supervisor session. |
+| `control.endpoint` with `implementation: "direct-nanocore"` | OpenShell network policy lets the approved worker shim call the exact worker-reachable NanoCore `/api/worker-control` URL. |
 | `providerProfiles` | Built-in or custom OpenShell provider profiles. |
 | `providerInstances` | OpenShell providers created or referenced through gateway state. |
 | `providers.attachments` | Sandbox `--provider` attachments or runtime attach commands. |
 | `policy.filesystem` | `filesystem_policy` and Landlock settings. |
 | `policy.process` | OpenShell `process` and binary policy where supported. |
 | `policy.network` | `network_policies` plus provider-derived layers. |
-| `llm.mode: gateway` with `workerBaseUrl: https://inference.local/v1` | OpenShell `inference.local` privacy router forwarding through an authenticated AEP-bound relay to NanoCore's internal worker-inference routes. |
+| `llm.mode: gateway` with an exact NanoCore `workerInferenceBaseUrl` | Per-package generic provider placeholder plus exact OpenShell Codex REST policy forwarding to NanoCore's authenticated internal worker-inference routes. |
 | `llm.mode: backend-local` | OpenShell `inference.local` owns final provider routing when explicitly selected. |
 | `observability.formats.preferred: ocsf-json` | OpenShell OCSF JSON export setting. |
 | `resources.cpu` and `resources.memory` | Sandbox create `--cpu` and `--memory` where driver supports them. |
@@ -1927,14 +1809,11 @@ OpenShell-specific constraints:
 - Provider attach or detach affects future effective policy reads and future process launches, but already-running processes may keep their original environment.
 - Filesystem policy is static and requires sandbox recreation when changed.
 - Network policy may be dynamic when OpenShell supports policy update for the selected session.
-- `inference.local` should initially forward to NanoCore's internal worker-inference routes so NanoCore keeps authenticated package lineage, provider, model, usage, prompt cache, and audit ownership.
+- Relay-required packages should route the exact AEP-bound worker-inference base URL to NanoCore so it keeps authenticated package lineage, provider, model, usage, prompt cache, and audit ownership.
 - If OpenShell itself owns final `inference.local` provider routing, NanoCore must treat that as `backend-local` mode and require explicit audit and usage preservation checks.
-- Stock OpenShell must not be assumed to support arbitrary `control.local` routing through the `inference.local` privacy router.
-- The no-fork OpenShell integration should provide `control.local` through an OpenKit sidecar or shim packaged into the sandbox image.
-- The sidecar should use ordinary outbound connectivity allowed by OpenShell network policy to reach NanoCore's Worker Control Gateway.
-- OpenShell service forwarding is not the canonical OpenKit worker control channel and should be reserved for debug, preview, notebook, or operator inspection use cases.
-- If OpenShell later exposes a generic sandbox-local endpoint relay, the OpenShell Gateway/Supervisor session can carry the OpenKit worker control channel, but the OpenKit worker control protocol remains NanoCore-owned.
-- OpenShell Gateway should be managed by NanoCore as a backend service, sidecar process, or deployment-selected external service; the first integration should not depend on embedding OpenShell Gateway as a stable in-process library.
+- The OpenShell materializer must provide the worker-reachable NanoCore control URL directly and allow only approved shim binaries to reach it.
+- OpenShell service forwarding, `inference.local`, and future capability mediation are not worker-control paths.
+- OpenShell Gateway should be managed by NanoCore as a backend service or deployment-selected external service; the integration must not depend on embedding OpenShell Gateway as a stable in-process library.
 - OpenShell file transfer, sandbox filesystem access, or declared output collection can collect `/openkit/session/*.jsonl` after turn completion.
 - OpenShell supervisor and OCSF logs are enforcement evidence and must not be treated as canonical `Item` streams.
 - OpenKit must not assume all Providers v2 roadmap items are implemented by a specific OpenShell version.
@@ -1958,7 +1837,7 @@ Hosted sandbox backends must still report NanoCore audit lineage.
 
 ## Canonical Package Snapshot Example
 
-This example is intentionally compact but shows how the fields fit together.
+This example is intentionally compact and shows direct worker control with a separate backend-local inference projection.
 
 ```jsonc
 {
@@ -2026,7 +1905,7 @@ This example is intentionally compact but shows how the fields fit together.
   },
   "control": {
     "protocol": "openkit-worker-control-v1",
-    "mode": "transcript-sink",
+    "mode": "direct-nanocore",
     "transcript": {
       "root": "/openkit/session",
       "eventsPath": "/openkit/session/events.jsonl",
@@ -2036,11 +1915,35 @@ This example is intentionally compact but shows how the fields fit together.
       "import": "turn-end",
       "required": true
     },
+    "endpoint": {
+      "kind": "direct-url",
+      "baseUrl": "https://nanocore.example.com/api/worker-control",
+      "required": true,
+      "implementation": "direct-nanocore"
+    },
+    "auth": {
+      "kind": "sandbox-session-token",
+      "tokenRef": "runtime://openkit/control-token",
+      "credentialVisibility": "environment"
+    },
+    "channels": {
+      "commands": true,
+      "events": "batch",
+      "artifacts": "batch",
+      "heartbeats": true,
+      "logs": "summary-only"
+    },
+    "commands": ["interrupt", "terminal-command"],
     "adapter": {
       "kind": "openkit-worker-shim",
       "targetRuntime": "codex",
-      "targetTransport": "stdio"
+      "targetTransport": "outbound-https"
     }
+  },
+  "capabilities": {
+    "protocol": "openkit-worker-capability-v1",
+    "mode": "disabled",
+    "routes": []
   },
   "providers": {
     "providerInstances": [
@@ -2116,6 +2019,7 @@ This example is intentionally compact but shows how the fields fit together.
     "requiredCapabilities": [
       "container",
       "transcript-sink",
+      "worker-control",
       "network-policy",
       "provider-attachments",
       "credential-placeholder",
@@ -2190,7 +2094,7 @@ The environment package is the per-session resolved snapshot.
 
 This spec complements `docs/specs/20260526-llm_gateway_responses_api.md`.
 
-The LLM gateway remains NanoCore-owned unless a backend-local inference route is explicitly selected and can preserve OpenKit usage and audit linkage. A backend-local route cannot claim complete worker-inference attribution unless it also satisfies the authenticated relay and direct-egress blocking contract.
+The LLM gateway remains NanoCore-owned unless a backend-local inference route is explicitly selected and can preserve OpenKit usage and audit linkage. A backend-local route cannot claim complete worker-inference attribution unless it also satisfies the authenticated path and direct-egress blocking contract.
 
 ## Alternatives Considered
 
@@ -2208,7 +2112,7 @@ OpenShell should remain the reference backend and may strongly influence field v
 
 The acceptable form of dependency is an adapter that compiles OpenKit-owned records into OpenShell-native artifacts and then normalizes OpenShell evidence back into OpenKit-owned records.
 
-The unacceptable form of dependency is public App API, MCP, Web UI, Action Center, or storage records that require consumers to understand OpenShell-native ids, YAML, gateway state, provider payloads, or supervisor logs.
+The unacceptable form of dependency is public App API, end-user CLI, Web UI, Action Center, or storage records that require consumers to understand OpenShell-native ids, YAML, gateway state, provider payloads, or supervisor logs.
 
 ### Design every field from scratch
 
@@ -2232,7 +2136,7 @@ Rejected.
 
 NanoCore should own policy decisions and audit, but filesystem, process, network, and credential enforcement must happen where the worker runs.
 
-That requires a backend supervisor, sidecar, container runtime, VM boundary, hosted sandbox provider, or OS-level controls.
+That requires a backend supervisor, container runtime, VM boundary, hosted sandbox provider, or OS-level controls.
 
 ### Put all enforcement in backend policy and skip NanoCore policy
 
@@ -2289,13 +2193,13 @@ NanoCore must know which user, workspace, thread, turn, agent session, provider 
 
 1. Start a local OpenShell-backed sandbox for a Codex or OpenCode worker.
 2. Materialize `/openkit/session/*.jsonl` as the durable transcript sink.
-3. Package an OpenKit sidecar or shim that exposes `https://control.local/v1/worker-control` inside the sandbox.
-4. Allow only the sidecar binary to reach NanoCore's Worker Control Gateway for live progress and bounded commands.
-5. Expose only the OpenKit LLM gateway route by default for model traffic, preferably through `https://inference.local/v1` when OpenShell can forward through the authenticated AEP-bound relay to NanoCore's internal worker-inference routes.
-6. Attach GitHub read-only provider.
+3. Package `openkit-codex-shim` as the worker entrypoint and supply the exact NanoCore `/api/worker-control` base URL.
+4. Allow only the approved shim binaries to reach NanoCore's direct worker-control endpoint.
+5. Expose only the exact AEP-bound NanoCore worker-inference route for attributed model traffic, using a per-package OpenShell placeholder and Codex-only REST policy.
+6. Exercise any GitHub read-only provider attachment in a separate non-attributed sandbox fixture; do not combine it with the attributed inference package.
 7. Record policy application and sandbox lifecycle evidence.
 8. Collect declared output artifacts.
-9. Mark the session degraded if required audit export, transcript sink, provider policy composition, or control sidecar readiness is unavailable.
+9. Fail launch if required audit export, transcript sink, provider policy composition, or direct worker-control readiness is unavailable.
 
 ### Phase 5: Product Integration
 
@@ -2305,16 +2209,8 @@ NanoCore must know which user, workspace, thread, turn, agent session, provider 
 4. Normalize backend evidence into OpenKit audit records.
 5. Add worker and agent-network status panels backed by NanoCore worker session state, not direct sandbox connections.
 6. Add compact live progress stream support for phase, heartbeat, blocked reason, policy denial summary, artifact count, elapsed time, estimated cost, and available actions.
-7. Add user actions for cancel, interrupt, approval result, and policy adjustment request through NanoCore.
+7. Add user actions for interrupt, approval response, and policy adjustment request through NanoCore.
 8. Add artifact review flow for collected outputs.
-
-### Phase 6: Native Backend Relay Evaluation
-
-1. Evaluate whether the selected OpenShell version exposes a generic sandbox-local endpoint relay suitable for `control.local`.
-2. If it does, implement `control.endpoint.implementation: "backend-relay"` behind the same OpenKit worker control protocol.
-3. If it does not, continue using `openkit-sidecar` and keep OpenShell unmodified.
-4. Do not use OpenShell service forwarding as the product control channel.
-5. Keep NanoCore's Web UI, item model, audit model, and transcript import independent from the selected relay implementation.
 
 ## Testing Strategy
 
@@ -2346,11 +2242,11 @@ NanoCore must know which user, workspace, thread, turn, agent session, provider 
 
 - Compile provider profiles and attachments into backend-native artifacts.
 - Compile `/openkit/session` transcript sink mounts and collection paths.
-- Compile optional sandbox-local `control.local` routing without exposing raw session tokens.
-- Compile no-fork OpenShell live progress mode to an OpenKit sidecar plus outbound NanoCore Worker Control Gateway route.
-- Reject package materialization that assumes stock OpenShell `inference.local` can route arbitrary OpenKit control requests.
+- Compile mandatory direct NanoCore worker-control routing without exposing raw package tokens.
+- Allow only approved shim binaries to reach the resolved worker-control URL.
+- Reject package materialization that maps worker control through `inference.local`, service forwarding, a sandbox-local alias, or a capability route.
 - Reject package materialization that uses OpenShell service forwarding as the canonical OpenKit worker control channel.
-- Compile `inference.local` routing to NanoCore's authenticated internal worker-inference routes when `llm.mode` is `gateway`.
+- Compile attributed `llm.mode: gateway` routing to the exact NanoCore worker-inference base URL with the per-package placeholder and POST-only OpenShell policy.
 - Generate OpenShell-style policy with provider-derived network rules where supported.
 - Generate redacted materialization records.
 - Do not persist derived provider rules as canonical NanoCore policy.
@@ -2362,14 +2258,13 @@ NanoCore must know which user, workspace, thread, turn, agent session, provider 
 - Launch a fake worker through a fake backend and stream lifecycle evidence.
 - Launch a fake worker shim that writes `events.jsonl`, `items.jsonl`, and `artifacts.jsonl`, then verify NanoCore imports canonical items and artifacts at turn end.
 - Verify NanoCore rejects transcript records with mismatched workspace, thread, turn, agent session, or package snapshot IDs.
-- Launch a fake OpenKit control sidecar that accepts `control.local` events and relays compact progress to NanoCore.
+- Launch a fake worker shim that authenticates to the direct NanoCore worker-control endpoint and relays compact progress.
 - Verify live progress updates worker phase, heartbeat, blocked reason, policy denial summary, artifact count, elapsed time, and available actions without creating canonical item records unless NanoCore explicitly imports or promotes them.
-- Verify live relay disconnection does not lose turn evidence when transcript sink files are present.
-- Verify undelivered cancel, interrupt, and approval-result commands are persisted with delivery status and request IDs.
-- Verify optional live control can route active-turn input, interrupt, cancellation, and approval-result commands while preserving request IDs when enabled.
+- Verify direct control failure stops or cancels the worker while preserving transcript evidence already written.
+- Verify `interrupt` and `terminal-command` delivery, acknowledgement, terminal-result reporting, and idempotency.
 - Launch a fake OpenShell backend that reports policy apply success, network deny, credential placeholder resolution, and teardown.
 - Verify OpenShell OCSF evidence can produce audit records without becoming canonical item deltas.
-- Verify forwarded `inference.local` requests map to workspace, thread, turn, agent session, provider instance, usage, and audit records.
+- Verify authenticated worker-inference requests map to workspace, thread, turn, agent session, package snapshot, provider instance, usage, and audit records.
 - Verify dynamic provider attach reports that already-running processes may need restart.
 - Verify artifact collection registers output artifacts with thread, turn, and input lineage.
 - Verify failed backend audit setup blocks launch when audit is required.
@@ -2380,7 +2275,7 @@ NanoCore must know which user, workspace, thread, turn, agent session, provider 
 - Action Center shows approval or blocked-state rows for policy-required decisions.
 - Turn review surfaces show imported transcript items and artifacts without requiring live worker streaming.
 - Agent network panels show compact NanoCore worker session status without connecting directly to sandbox services.
-- Cancel, interrupt, approval result, and policy adjustment actions are submitted to NanoCore and reflected as command or review state.
+- Interrupt, approval response, and policy adjustment actions are submitted to NanoCore and reflected as command or review state.
 - Thread item history is driven by NanoCore canonical item imports, not backend supervisor logs.
 - Audit view can query by workspace, thread, turn, agent session, provider instance, vault grant, and permission decision.
 
@@ -2422,17 +2317,11 @@ Provider attach, credential refresh, or policy update may not affect already-run
 
 Mitigation: classify fields as static or dynamic and mark sessions stale when changes need a process or sandbox restart.
 
-### Risk: Control Sidecar Becomes A Shadow Control Plane
+### Risk: Direct Worker Control Becomes Unreachable
 
-The OpenKit control sidecar could accidentally accumulate product logic, authorization rules, or item sequencing behavior.
+Remote container placement can fail if the resolved NanoCore URL is not worker-reachable or OpenShell policy does not allow the approved shim binaries to connect.
 
-Mitigation: keep the sidecar as a transport and runtime adapter only; NanoCore must own command authorization, worker state, item IDs, canonical sequence numbers, audit linkage, and Web UI projections.
-
-### Risk: OpenShell Service Forwarding Is Misused As Worker Control
-
-Service forwarding can make a sandbox loopback process reachable through backend-managed URLs, which is useful for debugging and previews but has the wrong direction and ownership for canonical OpenKit worker control.
-
-Mitigation: tests must reject service forwarding as the canonical `control.endpoint` implementation, and docs must reserve it for debug, inspection, preview, notebook, and operator-only tools.
+Mitigation: materialization preflight must verify the exact URL, scheme-derived transport, binary allowlist, and authenticated readiness before launch. Runtime control failure stops or cancels the worker instead of silently degrading into transcript-only execution.
 
 ### Risk: Gateway Embedding Creates An Unsupported Coupling
 
@@ -2445,7 +2334,7 @@ Mitigation: run OpenShell Gateway as a NanoCore-managed backend service or deplo
 - OpenKit-authored provider profile and AEP config fields use OpenKit-style camelCase. OpenShell-compatible snake_case belongs only in backend extensions or generated OpenShell materialization artifacts.
 - Provider profiles are server-owned by default. Workspace-defined custom profiles require policy-reviewed setup proposals and must not grant authority beyond server and workspace policy.
 - The first provider profile baseline is GitHub/source-control, OpenAI-compatible inference, and OpenAI Codex account slot. PyPI, generic REST API, and object-store profiles are deferred until a concrete worker task requires them.
-- NanoCore should not hard-code an OpenShell version for `inference.local` behavior. The backend must declare or prove required feature flags during preflight, and NanoCore must fail closed or use an OpenKit-owned authenticated relay to the internal worker-inference route when lineage, usage, or audit preservation cannot be proven.
+- NanoCore should not hard-code an OpenShell version for `inference.local` behavior. The backend must declare or prove required feature flags during preflight, and NanoCore must fail closed or use the OpenKit-owned authenticated internal worker-inference path when lineage, usage, or audit preservation cannot be proven.
 - The first object-store target should be a generic S3-compatible contract that can project to S3 and R2 before adding provider-specific GCS, Azure Blob, or Box contracts.
 - Object-store materialization should start with OpenKit-managed staged files or gateway-mediated reads. Backend FUSE, sync-on-demand, and backend-native mounts require separate backend capability declarations and recovery tests.
 - Generated files are runtime files by default. They become artifacts only when they are user-visible outputs, review inputs, or evidence that must survive beyond the worker session.
@@ -2453,8 +2342,8 @@ Mitigation: run OpenShell Gateway as a NanoCore-managed backend service or deplo
 - Package snapshots are diagnostics-only by default. NanoCore exposes only redacted durable package snapshots through `/api/app/workspaces/:workspaceId/agent-environment/snapshots`, Core Client, OpenAPI, and MCP; a redacted snapshot or snapshot reference may become a restricted evidence artifact when needed for review, replay, or audit.
 - Backend version negotiation uses backend capability declarations, feature probes, selected backend version, and required feature flags recorded in materialization evidence. Missing required capabilities fail before launch.
 - OpenShell Gateway placement is deployment policy. Local development may use a NanoCore-managed local gateway process, while server, remote, team, and production deployments should use a deployment-managed external gateway unless a later service-management spec says otherwise.
-- The smallest worker control protocol is owned by `docs/specs/20260703-worker_control_protocol.md`. AEP supplies the endpoint, auth, transcript, relay, and backend capability projection without redefining operation schemas.
-- The no-fork OpenKit sidecar remains the first `control.local` path. Native OpenShell generic local endpoint relay should be adopted only when the backend declares `generic-local-endpoint-relay` and preserves the same NanoCore-owned worker-control protocol, lineage, audit, and transcript semantics.
+- The smallest worker control protocol is owned by `docs/specs/20260703-worker_control_protocol.md`. AEP supplies the direct endpoint, authentication, transcript, channels, commands, and backend capability projection without redefining operation schemas.
+- Governed workers use only the authenticated direct NanoCore worker-control connection. A sandbox-local alias, sidecar, backend relay, capability gateway, or transcript sink must not become a second control path.
 
 ## Deferred / Future Work
 

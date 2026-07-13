@@ -194,7 +194,7 @@ function createMatrixTurnExecutor(placement: AgentRuntimePlacement): TurnExecuto
       env: {
         OPENKIT_CONTAINER_BACKEND: 'openshell',
         OPENKIT_CONTAINER_PLACEMENT: 'local',
-        OPENKIT_OPENSHELL_CONTROL_RELAY_UPSTREAM:
+        OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL:
           'http://host.openshell.internal:3000/api/worker-control',
         OPENKIT_OPENSHELL_GATEWAY: 'openshell',
         OPENKIT_OPENSHELL_WORKER_IMAGE: 'openkit/worker-codex:dev',
@@ -208,7 +208,7 @@ function createMatrixTurnExecutor(placement: AgentRuntimePlacement): TurnExecuto
     env: {
       OPENKIT_CONTAINER_BACKEND: 'openshell',
       OPENKIT_CONTAINER_PLACEMENT: 'remote',
-      OPENKIT_OPENSHELL_CONTROL_RELAY_UPSTREAM: 'https://nanocore.example.com/api/worker-control',
+      OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL: 'https://nanocore.example.com/api/worker-control',
       OPENKIT_OPENSHELL_GATEWAY: 'a1-openkit',
       OPENKIT_OPENSHELL_GATEWAY_URL: 'https://a1.example.com:17670',
       OPENKIT_OPENSHELL_WORKER_IMAGE: 'openkit/worker-codex:dev',
@@ -236,14 +236,14 @@ function createMatrixLoopTurnExecutor(
     environmentBackend:
       placement === 'remote-container'
         ? {
-            controlRelayUpstream: 'https://nanocore.example.com/api/worker-control',
+            workerControlBaseUrl: 'https://nanocore.example.com/api/worker-control',
             gatewayUrl: 'https://a1.example.com:17670',
             kind: 'openshell',
             placement: 'remote',
             sandboxImageRef: 'openkit/worker-codex:dev',
           }
         : {
-            controlRelayUpstream: 'http://host.openshell.internal:3000/api/worker-control',
+            workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
             kind: 'openshell',
             sandboxImageRef: 'openkit/worker-codex:dev',
           },

@@ -1,6 +1,6 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import {
   WorkspaceExportResponseSchema,
@@ -98,10 +98,6 @@ import {
   importWorkspaceReconciliationRecords,
   listExportableWorkspaceReconciliationRecords,
 } from '../runtime/workspace-reconciliation-records.js';
-import {
-  importWorkspaceSyncEvidenceBundles,
-  listExportableWorkspaceSyncEvidenceBundles,
-} from '../runtime/workspace-sync-evidence-bundles.js';
 import {
   importWorkspaceSyncRecords,
   listExportableWorkspaceSyncRecords,
@@ -314,7 +310,6 @@ function collectWorkspaceExportRows(
       workspaceApplyResults: [],
       workspaceReconciliationRecords: [],
       workspaceQuarantineRecords: [],
-      workspaceSyncEvidenceBundles: [],
       workspaceRepositories: [],
       workspaceSyncRecords: {
         backendWorkspaceHandles: [],
@@ -358,10 +353,6 @@ function collectWorkspaceExportRows(
         workspaceId
       ),
       workspaceQuarantineRecords: listExportableWorkspaceQuarantineRecords(
-        workspaceDb,
-        workspaceId
-      ),
-      workspaceSyncEvidenceBundles: listExportableWorkspaceSyncEvidenceBundles(
         workspaceDb,
         workspaceId
       ),
@@ -435,7 +426,6 @@ function importWorkspaceDatabaseRows({
     importWorkspaceApplyResults(workspaceDb, snapshot.workspaceApplyResults);
     importWorkspaceReconciliationRecords(workspaceDb, snapshot.workspaceReconciliationRecords);
     importWorkspaceQuarantineRecords(workspaceDb, snapshot.workspaceQuarantineRecords);
-    importWorkspaceSyncEvidenceBundles(workspaceDb, snapshot.workspaceSyncEvidenceBundles);
     importWorkspacePermissionDecisions(workspaceDb, snapshot.permissionDecisions);
     importGoalRecords(workspaceDb, snapshot.goalRecords);
     importGoalTasks(workspaceDb, snapshot.goalTasks);
@@ -622,6 +612,22 @@ export function registerWorkspaceTransferRoutes({
       assertCanonicalDirectory(path);
     }
     const exportRoot = join(workspaceExportsRoot, exportId);
+    const runtimeProvenanceIndexes = new Map<string, string>();
+    for (const bundle of workspaceRowFamilies.evidenceBundles) {
+      if (bundle.sourceKind !== 'worker-runtime-provenance-index') {
+        continue;
+      }
+      assertSafeWorkspacePathSegment(bundle.id, 'Evidence bundle id');
+      const text = readFileSync(
+        join(workspaceRoot, 'evidence', 'bundles', bundle.id, 'runtime-origin-index.jsonl'),
+        'utf8'
+      );
+      const digest = `sha256:${createHash('sha256').update(text).digest('hex')}`;
+      if (bundle.contentDigests.length !== 1 || bundle.contentDigests[0] !== digest) {
+        throw new Error(`Runtime provenance index digest mismatch: ${bundle.id}`);
+      }
+      runtimeProvenanceIndexes.set(bundle.id, text);
+    }
     const exported = writeWorkspaceExportTree({
       exportRoot,
       exportId,
@@ -663,6 +669,7 @@ export function registerWorkspaceTransferRoutes({
       permissionDecisions: workspaceRowFamilies.permissionDecisions,
       resolvedAgentSetups: workspaceRowFamilies.resolvedAgentSetups,
       runtimeEvidence: workspaceRowFamilies.runtimeEvidence,
+      runtimeProvenanceIndexes,
       stagedWorkspaceReviews: workspaceRowFamilies.workspaceSyncRecords.stagedReviews,
       usageRecords: workspaceRowFamilies.usageRecords,
       vaultUseRecords: workspaceRowFamilies.vaultUseRecords,
@@ -671,7 +678,6 @@ export function registerWorkspaceTransferRoutes({
       workspaceApplyResults: workspaceRowFamilies.workspaceApplyResults,
       workspaceReconciliationRecords: workspaceRowFamilies.workspaceReconciliationRecords,
       workspaceQuarantineRecords: workspaceRowFamilies.workspaceQuarantineRecords,
-      workspaceSyncEvidenceBundles: workspaceRowFamilies.workspaceSyncEvidenceBundles,
       backendWorkspaceHandles: workspaceRowFamilies.workspaceSyncRecords.backendWorkspaceHandles,
       workerOutputManifests: workspaceRowFamilies.workspaceSyncRecords.workerOutputManifests,
       workspaceChangeSets: workspaceRowFamilies.workspaceSyncRecords.changeSets,
@@ -839,6 +845,18 @@ export function registerWorkspaceTransferRoutes({
       const importCoreDb = coreDb;
       const stageWorkspace = ({ workspaceRoot }: ImportWorkspaceStage) => {
         writeWorkspacePortableFileState(workspaceRoot, snapshot.portableFileState);
+        for (const [bundleId, text] of snapshot.runtimeProvenanceIndexes) {
+          assertSafeWorkspacePathSegment(bundleId, 'Evidence bundle id');
+          const path = join(
+            workspaceRoot,
+            'evidence',
+            'bundles',
+            bundleId,
+            'runtime-origin-index.jsonl'
+          );
+          mkdirSync(dirname(path), { recursive: true });
+          writeFileSync(path, text);
+        }
         if (snapshot.dataSourceCatalog) {
           const catalogRoot = join(workspaceRoot, 'config');
           mkdirSync(catalogRoot, { recursive: true });

@@ -1,9 +1,16 @@
-import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
+import {
+  createModels,
+  fauxAssistantMessage,
+  fauxProvider,
+  type StreamOptions,
+} from '@earendil-works/pi-ai';
 import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { CodexResponsesClient } from './codex-responses-client.js';
 import { GatewayUsageTracker } from './gateway-usage.js';
 import type {
+  OpenAICompatibleChatCompletionRequest,
+  OpenAICompatibleChatCompletionResponse,
   OpenAICompatibleResponsesRequest,
   OpenAICompatibleResponsesResponse,
 } from './openai-compatible-client.js';
@@ -196,11 +203,25 @@ describe('LLMGatewayProviderDispatcher pi-ai routing', () => {
     expect(usageTracker.snapshot().summaries[0]?.requestCount).toBe(1);
   });
 
-  it('bridges pi-ai backend Responses requests through the pi-ai chat client', async () => {
+  it('bridges pi-ai Responses without forwarding Codex-private continuity state', async () => {
+    let seenOptions: StreamOptions | undefined;
+    const turnStates: string[] = [];
     const faux = fauxProvider({ provider: 'anthropic_primary', models: [{ id: 'faux-chat' }] });
     const models = createModels();
     models.setProvider(faux.provider);
-    faux.setResponses([fauxAssistantMessage('dispatcher responses')]);
+    faux.setResponses([
+      async (_context, options) => {
+        seenOptions = options;
+        await options?.onResponse?.(
+          {
+            headers: { 'x-codex-turn-state': 'dispatcher-pi-response-state' },
+            status: 200,
+          },
+          faux.provider.getModels()[0]!
+        );
+        return fauxAssistantMessage('dispatcher responses');
+      },
+    ]);
     const dispatcher = new LLMGatewayProviderDispatcher({
       codexResponsesClient: new CodexResponsesClient({
         tokenResolver: {
@@ -210,10 +231,19 @@ describe('LLMGatewayProviderDispatcher pi-ai routing', () => {
       piAiClient: new PiAiGatewayClient({ models }),
     });
 
-    const response = await dispatcher.createResponses(piProviderConfig(), {
-      model: 'faux-chat',
-      input: 'Hello',
-    });
+    const response = await dispatcher.createResponses(
+      piProviderConfig(),
+      {
+        model: 'faux-chat',
+        input: 'Hello',
+      },
+      {
+        transport: {
+          codexTurnState: 'dispatcher-pi-request-state',
+          onCodexTurnState: (turnState) => turnStates.push(turnState),
+        },
+      }
+    );
 
     expect(response).toMatchObject({
       object: 'response',
@@ -221,6 +251,9 @@ describe('LLMGatewayProviderDispatcher pi-ai routing', () => {
       output: [{ content: [{ text: 'dispatcher responses' }] }],
     });
     expect(faux.state.callCount).toBe(1);
+    expect(seenOptions?.headers).toBeUndefined();
+    expect(seenOptions?.onResponse).toBeUndefined();
+    expect(turnStates).toEqual([]);
   });
 
   it('routes native pi-ai backend Responses requests through the pi-ai responses client', async () => {
@@ -309,25 +342,34 @@ describe('LLMGatewayProviderDispatcher pi-ai routing', () => {
 });
 
 describe('LLMGatewayProviderDispatcher Codex usage', () => {
-  it('records public non-stream and stream usage exactly once per request', async () => {
+  it('records non-stream and stream usage while preserving Codex turn state', async () => {
+    const turnStates: string[] = [];
     const codexResponsesClient = new CodexResponsesClient({
       tokenResolver: {
         resolve: async () => ({ accessToken: 'unused', chatgptAccountId: 'unused' }),
       },
     });
-    vi.spyOn(codexResponsesClient, 'createResponses').mockResolvedValue({
-      id: 'resp_codex_usage',
-      object: 'response',
-      status: 'completed',
-      model: 'gpt-test',
-      output: [],
-      usage: { input_tokens: 8, output_tokens: 2, total_tokens: 10 },
-    });
-    vi.spyOn(codexResponsesClient, 'createResponsesStream').mockResolvedValue(
-      new Response(
-        'data: {"type":"response.completed","response":{"id":"resp_codex_stream_usage","object":"response","status":"completed","model":"gpt-test","output":[],"usage":{"input_tokens":5,"output_tokens":1,"total_tokens":6}}}\n\ndata: [DONE]\n\n'
-      ).body!
-    );
+    const createResponses = vi
+      .spyOn(codexResponsesClient, 'createResponses')
+      .mockImplementation(async (_provider, _request, transport) => {
+        transport?.onCodexTurnState?.('dispatcher-codex-json-response-state');
+        return {
+          id: 'resp_codex_usage',
+          object: 'response',
+          status: 'completed',
+          model: 'gpt-test',
+          output: [],
+          usage: { input_tokens: 8, output_tokens: 2, total_tokens: 10 },
+        };
+      });
+    const createResponsesStream = vi
+      .spyOn(codexResponsesClient, 'createResponsesStream')
+      .mockImplementation(async (_provider, _request, transport) => {
+        transport?.onCodexTurnState?.('dispatcher-codex-stream-response-state');
+        return new Response(
+          'data: {"type":"response.completed","response":{"id":"resp_codex_stream_usage","object":"response","status":"completed","model":"gpt-test","output":[],"usage":{"input_tokens":5,"output_tokens":1,"total_tokens":6}}}\n\ndata: [DONE]\n\n'
+        ).body!;
+      });
     const usageTracker = new GatewayUsageTracker();
     const dispatcher = new LLMGatewayProviderDispatcher({ codexResponsesClient, usageTracker });
     const provider = piProviderConfig({
@@ -344,7 +386,13 @@ describe('LLMGatewayProviderDispatcher Codex usage', () => {
     await dispatcher.createResponses(
       provider,
       { input: 'Hello', model: 'gpt-test' },
-      { onUsage: nonstreamOnUsage }
+      {
+        onUsage: nonstreamOnUsage,
+        transport: {
+          codexTurnState: 'dispatcher-codex-json-request-state',
+          onCodexTurnState: (turnState) => turnStates.push(turnState),
+        },
+      }
     );
 
     expect(nonstreamOnUsage).toHaveBeenCalledOnce();
@@ -354,12 +402,21 @@ describe('LLMGatewayProviderDispatcher Codex usage', () => {
       total_tokens: 10,
     });
     expect(usageTracker.snapshot().summaries[0]?.requestCount).toBe(1);
+    expect(createResponses.mock.calls[0]?.[2]).toMatchObject({
+      codexTurnState: 'dispatcher-codex-json-request-state',
+    });
 
     const streamOnUsage = vi.fn();
     const stream = await dispatcher.createResponsesStream(
       provider,
       { input: 'Hello', model: 'gpt-test', stream: true },
-      { onUsage: streamOnUsage }
+      {
+        onUsage: streamOnUsage,
+        transport: {
+          codexTurnState: 'dispatcher-codex-stream-request-state',
+          onCodexTurnState: (turnState) => turnStates.push(turnState),
+        },
+      }
     );
 
     await new Response(stream).text();
@@ -371,5 +428,90 @@ describe('LLMGatewayProviderDispatcher Codex usage', () => {
       total_tokens: 6,
     });
     expect(usageTracker.snapshot().summaries[0]?.requestCount).toBe(2);
+    expect(createResponsesStream.mock.calls[0]?.[2]).toMatchObject({
+      codexTurnState: 'dispatcher-codex-stream-request-state',
+    });
+    expect(turnStates).toEqual([
+      'dispatcher-codex-json-response-state',
+      'dispatcher-codex-stream-response-state',
+    ]);
+  });
+});
+
+describe('LLMGatewayProviderDispatcher cancellation', () => {
+  it('forwards one dispatch signal through pi-ai and Codex provider calls', async () => {
+    const abortController = new AbortController();
+    let codexSignal: AbortSignal | undefined;
+    let piAiSignal: AbortSignal | undefined;
+    const piAiClient = {
+      createChatCompletion: async (
+        _provider: ResolvedLLMProviderConfig,
+        request: OpenAICompatibleChatCompletionRequest,
+        _onUsage?: (usage: unknown) => void,
+        transport?: { readonly signal?: AbortSignal }
+      ): Promise<OpenAICompatibleChatCompletionResponse> => {
+        piAiSignal = transport?.signal;
+        return {
+          choices: [
+            {
+              finish_reason: 'stop',
+              index: 0,
+              message: { content: 'pi signal', role: 'assistant' },
+            },
+          ],
+          created: 1,
+          id: 'chatcmpl_pi_signal',
+          model: request.model,
+          object: 'chat.completion',
+        };
+      },
+    } as unknown as PiAiGatewayClient;
+    const codexResponsesClient = {
+      createResponses: async (
+        _provider: ResolvedLLMProviderConfig,
+        request: OpenAICompatibleResponsesRequest,
+        transport?: { readonly signal?: AbortSignal }
+      ): Promise<OpenAICompatibleResponsesResponse> => {
+        codexSignal = transport?.signal;
+        return {
+          id: 'resp_codex_signal',
+          model: request.model,
+          object: 'response',
+          output: [],
+          status: 'completed',
+        };
+      },
+    } as unknown as CodexResponsesClient;
+    const dispatcher = new LLMGatewayProviderDispatcher({
+      codexResponsesClient,
+      piAiClient,
+    });
+    const dispatchContext = {
+      transport: { signal: abortController.signal },
+    } as NonNullable<Parameters<LLMGatewayProviderDispatcher['createResponses']>[2]> & {
+      readonly transport: { readonly signal: AbortSignal };
+    };
+
+    await dispatcher.createChatCompletion(
+      piProviderConfig(),
+      { messages: [{ content: 'Hello', role: 'user' }], model: 'faux-chat' },
+      dispatchContext
+    );
+    await dispatcher.createResponses(
+      piProviderConfig({
+        adapterId: 'openai_codex',
+        apiKey: null,
+        backend: 'codex-oauth',
+        displayName: 'OpenAI Codex',
+        gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+        id: 'openai_codex',
+        requiresApiKey: false,
+      }),
+      { input: 'Hello', model: 'gpt-test' },
+      dispatchContext
+    );
+
+    expect(piAiSignal).toBe(abortController.signal);
+    expect(codexSignal).toBe(abortController.signal);
   });
 });

@@ -35,6 +35,65 @@ export interface PromptCacheKeyResolverOptions {
 }
 
 /**
+ * Resolves product-safe cache correlation for one trusted worker inference call.
+ *
+ * @param input Provider, model, workspace, runtime, and optional native cache lineage identity.
+ * @returns An upstream prompt cache key, product-safe lineage ref, and degradation marker.
+ */
+export function resolveWorkerPromptCacheKey(input: {
+  /** Resolved Codex OAuth account slot, or null for providers without one. */
+  readonly codexOAuthAccountSlotId: string | null;
+  /** Provider model selected by the trusted Agent Environment Package. */
+  readonly model: string;
+  /** Runtime-native cache lineage, when explicitly reported. */
+  readonly nativeCacheLineageId?: string;
+  /** Resolved provider instance id. */
+  readonly providerId: string;
+  /** Runtime adapter family. */
+  readonly runtimeFamily: string;
+  /** Owning workspace id. */
+  readonly workspaceId: string;
+}): {
+  /** Whether request-scoped isolation replaced stable lineage correlation. */
+  readonly degraded: boolean;
+  /** Upstream-only prompt cache key. */
+  readonly promptCacheKey: string;
+  /** Product-safe cache lineage correlation ref. */
+  readonly runtimeCacheLineageRef: string | null;
+} {
+  if (!input.nativeCacheLineageId) {
+    return {
+      degraded: true,
+      promptCacheKey: `openkit:responses:request:${randomUUID()}`,
+      runtimeCacheLineageRef: null,
+    };
+  }
+
+  const identity = stableStringify({
+    accountSlotId: input.codexOAuthAccountSlotId,
+    model: input.model,
+    nativeCacheLineageId: input.nativeCacheLineageId,
+    providerId: input.providerId,
+    runtimeFamily: input.runtimeFamily,
+    workspaceId: input.workspaceId,
+  });
+  const promptCacheKeyDigest = createHash('sha256')
+    .update('openkit:worker-prompt-cache-key:v1\0')
+    .update(identity)
+    .digest('hex');
+  const runtimeCacheLineageDigest = createHash('sha256')
+    .update('openkit:runtime-cache-lineage-ref:v1\0')
+    .update(identity)
+    .digest('hex');
+
+  return {
+    degraded: false,
+    promptCacheKey: `openkit:responses:${promptCacheKeyDigest.slice(0, 32)}`,
+    runtimeCacheLineageRef: `rcl_${runtimeCacheLineageDigest.slice(0, 24)}`,
+  };
+}
+
+/**
  * Adds OpenAI-compatible prompt cache keys to text-generation requests.
  */
 export class PromptCacheKeyResolver {

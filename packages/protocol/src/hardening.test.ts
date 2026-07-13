@@ -430,6 +430,9 @@ describe('protocol hardening boundary', () => {
         threadId: 'th_demo',
         turnId: 'tu_demo',
         agentSessionId: 'as_demo',
+        packageSnapshotId: 'aepsnap_demo',
+        runtimeOriginRef: `rto_${'a'.repeat(24)}`,
+        runtimeCacheLineageRef: `rcl_${'b'.repeat(24)}`,
         requestId: '0190f4c8-0000-7000-8000-000000000124',
         sourceIds: ['repo_default'],
         capabilityId: 'llm.gateway.responses',
@@ -439,7 +442,32 @@ describe('protocol hardening boundary', () => {
         startedAt: '2026-05-27T00:00:00Z',
         completedAt: '2026-05-27T00:00:01Z',
       })
-    ).toMatchObject({ sourceIds: ['repo_default'], status: 'succeeded' });
+    ).toMatchObject({
+      packageSnapshotId: 'aepsnap_demo',
+      runtimeOriginRef: `rto_${'a'.repeat(24)}`,
+      runtimeCacheLineageRef: `rcl_${'b'.repeat(24)}`,
+      sourceIds: ['repo_default'],
+      status: 'succeeded',
+    });
+
+    expect(() =>
+      protocol.CapabilityCallSchema.parse({
+        id: 'cap_raw_runtime',
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: 'tu_demo',
+        agentSessionId: 'as_demo',
+        packageSnapshotId: 'aepsnap_demo',
+        runtimeOriginRef: '019f0000-0000-7000-8000-000000000001',
+        runtimeCacheLineageRef: 'raw-cache-lineage',
+        capabilityId: 'llm.gateway.responses',
+        status: 'running',
+        summary: null,
+        errorCode: null,
+        startedAt: null,
+        completedAt: null,
+      })
+    ).toThrow();
 
     expect(
       protocol.UsageRecordSchema.parse({

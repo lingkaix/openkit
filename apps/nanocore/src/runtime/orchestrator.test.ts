@@ -323,7 +323,15 @@ describe('startTurn orchestrator', () => {
     });
     expect(turnExecutor.calls).toEqual([
       {
-        context: { requestId: null, workspaceCwd: null, workspaceRoots: [] },
+        context: {
+          providerSelection: {
+            model: 'openai/gpt-5.2',
+            providerId: 'agent-openrouter',
+          },
+          requestId: null,
+          workspaceCwd: null,
+          workspaceRoots: [],
+        },
         input: 'Run tests',
         turnId: handle.turn.id,
       },
@@ -484,6 +492,10 @@ describe('startTurn orchestrator', () => {
     expect(turnExecutor.calls).toEqual([
       {
         context: {
+          providerSelection: {
+            model: 'openai/gpt-5.2',
+            providerId: 'agent-openrouter',
+          },
           requestId: null,
           workspaceCwd: null,
           workspaceDataSourceCatalog: catalog,

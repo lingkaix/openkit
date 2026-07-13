@@ -10,6 +10,6 @@ This directory owns the shared workspace-scoped capability-call and usage-record
 
 ## Verification
 
-Run `pnpm --filter @openkit/nanocore exec vitest run src/capability` plus the affected Gateway or worker-capability tests.
+Run `pnpm --filter @openkit/nanocore exec vitest run src/capability` plus the affected Gateway tests.
 
 See [Audit, Usage, And Evidence Records](../../../../docs/specs/20260703-audit_usage_evidence_records.md).

@@ -71,7 +71,7 @@ Task Mode is heavier than Chat Mode because it starts worker execution. It is li
 Task Mode may start from:
 
 - Assistant handoff
-- direct product UI or AI Interface command
+- direct product UI or Agent Skill Interface operation
 - user request in an existing thread
 - retry, refinement, or handoff from a prior completed or failed task
 

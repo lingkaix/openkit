@@ -13,7 +13,7 @@ requires_real_codex: false
 
 ## Purpose
 
-Verify that a product evaluator can operate the stable NanoCore Goal Mode workflow through the OpenKit MCP facade: inspect runtime status, link a repository, start a goal, draft and approve a plan, run one bounded step, resolve human attention when raised, collect evidence, and read artifacts without requiring real provider quota or real Codex credentials.
+Verify that a product evaluator can operate the stable NanoCore Goal Mode workflow through the OpenKit MCP facade: inspect runtime status, link a repository, start a goal, draft and approve a plan, run one bounded step, resolve human attention when raised, inspect NanoCore-produced evidence, and read artifacts without requiring real provider quota or real Codex credentials.
 
 ## Preconditions
 
@@ -39,7 +39,7 @@ Verify that a product evaluator can operate the stable NanoCore Goal Mode workfl
 8. Run exactly one bounded Goal Mode step.
 9. Read Goal Mode state and Action Center state.
 10. Resolve approval or question gates when the deterministic worker raises them.
-11. Create an evidence bundle and read the produced artifact when present.
+11. Read the workspace evidence bundle resource and read the produced artifact when present.
 
 ## Expected Outcomes
 
@@ -49,7 +49,7 @@ Verify that a product evaluator can operate the stable NanoCore Goal Mode workfl
 - Plan approval succeeds before worker execution.
 - One bounded worker step returns a worker turn id.
 - Action Center exposes approval or question gates when the deterministic worker asks for them.
-- The evidence bundle records item and artifact evidence.
+- The evidence resource returns the read-only workspace bundle list without requiring a manual creation tool.
 - The MCP result summary contains no raw token, API key, cookie, authorization header, or secret-shaped value.
 
 ## Deterministic Assertions
@@ -60,7 +60,8 @@ Verify that a product evaluator can operate the stable NanoCore Goal Mode workfl
 - `openkit.create_thread` returns a thread id.
 - `openkit.draft_goal_plan` returns a plan item id.
 - `openkit.step_goal` returns a worker turn id.
-- `openkit.create_evidence_bundle` returns item or artifact evidence.
+- `openkit.create_evidence_bundle` is absent from the MCP tool list.
+- `openkit://workspaces/{workspaceId}/evidence-bundles` returns an `evidenceBundles` array, which may be empty when the deterministic simulator does not cross an automatic producer boundary.
 - The final result reports whether approval and question gates were resolved.
 
 ## Evidence To Collect
@@ -68,7 +69,7 @@ Verify that a product evaluator can operate the stable NanoCore Goal Mode workfl
 - Story metadata and final assertion summary.
 - MCP smoke JSON result.
 - NanoCore health response.
-- Goal Mode status, Action Center item count, evidence item count, evidence artifact count, and artifact-read status.
+- Goal Mode status, Action Center item count, workspace evidence bundle count, and artifact-read status.
 - Redaction notes if any fake secret marker appears in logs or results.
 
 ## Cleanup

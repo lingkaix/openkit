@@ -1,8 +1,9 @@
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { JsonRpcNotification } from '../runtime/codex/protocol.js';
+import { ensureLayout } from '../storage/fs-layout.js';
 import type { CodexAccountClient } from './codex-oauth.js';
 import {
   CODEX_OAUTH_DEFAULT_ACCOUNT_SLOT_ID,
@@ -162,6 +163,31 @@ describe('Codex OAuth account slots', () => {
       ),
     ]);
     await expect(manager.deleteAccount('team_b')).rejects.toThrow('pending login');
+  });
+
+  it('still rejects symlinks in persistent Codex account metadata', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-codex-account-symlink-'));
+    const outsideRoot = mkdtempSync(join(tmpdir(), 'openkit-codex-account-outside-'));
+    const manager = new CodexOAuthAccountManager({ dataRoot });
+    const accountPath = join(
+      dataRoot,
+      'server',
+      'files',
+      'oauth',
+      'openai-codex',
+      'accounts',
+      'team_persistent',
+      'account.json'
+    );
+    const outsideAccountPath = join(outsideRoot, 'account.json');
+
+    ensureLayout(dataRoot);
+    await manager.createAccount({ accountSlotId: 'team_persistent' });
+    writeFileSync(outsideAccountPath, readFileSync(accountPath));
+    rmSync(accountPath);
+    symlinkSync(outsideAccountPath, accountPath);
+
+    expect(() => ensureLayout(dataRoot)).toThrow(/symbolic link/i);
   });
 
   it('requires callers to pass the default account slot explicitly', async () => {

@@ -339,7 +339,7 @@ The App API projection must keep each surface inside its owning contract:
 
 - boot, liveness, readiness, and recovery diagnostics follow `docs/specs/20260704-nanocore_bootstrap_readiness.md`
 - storage layout reports follow `docs/specs/20260703-storage_layout_record_ownership.md`
-- bearer-token bootstrap and MCP channel auth follow `docs/specs/20260704-remote_auth_credential_bootstrap.md`
+- bearer-token bootstrap and bundled CLI channel auth follow `docs/specs/20260704-remote_auth_credential_bootstrap.md`
 - vault unlock/status and backend summaries follow `docs/specs/20260704-vault_backend_implementation.md`
 - workspace export/import and data-root migration follow `docs/specs/20260704-workspace_backup_export_import.md`
 - commit-on-apply and GitHub-only push records follow `docs/specs/20260704-git_write_workflow.md`

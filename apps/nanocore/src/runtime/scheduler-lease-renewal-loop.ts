@@ -92,8 +92,8 @@ export function runSchedulerLeaseRenewalLoop(
         AND leases.expires_at > ?
         AND leases.heartbeat_deadline > ?
         AND leases.expires_at <= ?
-        AND pools.status = 'active'
-        AND health.health_state IN ('healthy', 'degraded', 'probation')
+        AND pools.status IN ('active', 'draining')
+        AND health.health_state IN ('healthy', 'degraded', 'quarantined', 'probation')
       ORDER BY leases.expires_at ASC, leases.lease_id ASC`
     )
     .all(timestamp, timestamp, renewalCutoff) as RenewableLeaseRow[];

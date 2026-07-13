@@ -1,9 +1,5 @@
 import {
   CapabilityUsageResponseSchema,
-  type CreateEvidenceBundleRequest,
-  CreateEvidenceBundleRequestSchema,
-  CreateEvidenceBundleResponseSchema,
-  type EvidenceBundleRef,
   ListServerAuditEventsResponseSchema,
   ListServerPermissionDecisionsResponseSchema,
   ListWorkspaceAuditEventsResponseSchema,
@@ -24,7 +20,7 @@ import {
   listWorkspaceCapabilityCalls,
   listWorkspaceUsageRecords,
 } from './capability/usage-ledger.js';
-import { createWorkspaceEvidenceBundle, listWorkspaceEvidenceBundles } from './evidence-bundles.js';
+import { listWorkspaceEvidenceBundles } from './evidence-bundles.js';
 import { listExportableInjectionPlans } from './injection-plans.js';
 import { listExportableInjectionReceipts } from './injection-receipts.js';
 import type { FsStore } from './lib/store.js';
@@ -82,33 +78,6 @@ export function registerGovernanceRoutes({
             capabilityCalls: listWorkspaceCapabilityCalls(workspaceDb, workspaceId),
             usageRecords: listWorkspaceUsageRecords(workspaceDb, workspaceId),
           })
-        );
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-    } catch (error) {
-      return asApiError((error as Error).message);
-    }
-  });
-
-  registerAppApiRoute(app, 'createEvidenceBundle', async (c) => {
-    try {
-      const store = requestStore(c);
-      const workspaceId = c.req.param('workspaceId');
-      const input = CreateEvidenceBundleRequestSchema.parse(await c.req.json());
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-
-      try {
-        return c.json(
-          CreateEvidenceBundleResponseSchema.parse({
-            evidenceBundle: createWorkspaceEvidenceBundle({
-              workspaceDb,
-              workspaceId,
-              request: input,
-              redactedEvidenceRefs: collectEvidenceBundleRefs(store, workspaceId, input),
-            }),
-          }),
-          201
         );
       } finally {
         workspaceDb.sqlite.close();
@@ -320,48 +289,4 @@ export function registerGovernanceRoutes({
       return asApiError((error as Error).message);
     }
   });
-}
-
-/**
- * Collects product-safe evidence references for one compact bundle.
- *
- * @param store App store that owns app-local thread and artifact records.
- * @param workspaceId Workspace that owns the bundle.
- * @param input Bundle lineage input.
- * @returns Product-safe record references only.
- */
-function collectEvidenceBundleRefs(
-  store: FsStore,
-  workspaceId: string,
-  input: CreateEvidenceBundleRequest
-): EvidenceBundleRef[] {
-  const refs: EvidenceBundleRef[] = [{ kind: 'workspace', ref: workspaceId }];
-
-  if (input.threadId) {
-    store.getThread(workspaceId, input.threadId);
-    refs.push({ kind: 'thread', ref: input.threadId });
-  }
-
-  if (input.turnId) {
-    if (input.threadId) {
-      store.getTurn(workspaceId, input.threadId, input.turnId);
-    }
-    refs.push({ kind: 'turn', ref: input.turnId });
-  }
-
-  if (input.goalId) {
-    refs.push({ kind: 'goal', ref: input.goalId });
-  }
-
-  for (const artifact of store.listArtifacts(workspaceId)) {
-    if (input.threadId && artifact.threadId !== input.threadId) {
-      continue;
-    }
-    if (input.turnId && artifact.turnId !== input.turnId) {
-      continue;
-    }
-    refs.push({ kind: 'artifact', ref: artifact.id });
-  }
-
-  return refs;
 }

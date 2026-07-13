@@ -1,7 +1,7 @@
 # Worker Runtime Communication Model
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
 
 ## Summary
 
@@ -11,7 +11,7 @@ NanoCore owns product state, policy, review, audit, verification, and canonical 
 
 Every real Worker Agent runs inside a governed container runtime and communicates through one OpenKit worker-facing contract, regardless of whether the container placement is local or remote.
 
-Runtime-native differences belong inside the worker container behind the OpenKit Worker Sidecar and runtime adapter packages.
+Runtime-native differences belong inside the worker container behind the OpenKit worker shim and its runtime adapter.
 
 NanoCore receives canonical OpenKit worker records, verifies lineage, schema, sequence, policy, digest, and workspace boundaries, and commits accepted records into the `Workspace -> Thread -> Turn -> Item[]` product model.
 
@@ -22,9 +22,9 @@ This document is the release-neutral overview for worker runtime communication. 
 - The high-level worker runtime communication model for governed container workers.
 - The separation between static supply, control, data, capability, inference, evidence, and audit planes.
 - The worker-facing container contract that hides local versus remote placement from worker agents.
-- The sidecar or shim responsibility boundary between worker-runtime adaptation and NanoCore-owned product verification.
+- The worker-shim responsibility boundary between worker-runtime adaptation and NanoCore-owned product verification.
 - The rule that host execution is not a product Worker Agent runtime.
-- The release-neutral packaging direction for worker protocol schemas, worker shim, sidecar logic, and runtime adapters.
+- The release-neutral packaging direction for worker protocol schemas, the worker shim, and runtime adapters.
 
 ## Does Not Own
 
@@ -52,7 +52,7 @@ This document is the release-neutral overview for worker runtime communication. 
 - Keep deterministic test fixtures available without treating them as real Worker runtimes.
 - Define one Worker-facing communication contract for local and remote governed containers.
 - Keep local and remote placement differences inside backend transport adapters.
-- Require the OpenKit Worker Sidecar or an equivalent shim in every real worker container.
+- Require the OpenKit worker shim in every real worker container.
 - Move runtime-native output parsing, config materialization, Skill placement, MCP placement, and lightweight transcript normalization into worker-side packages.
 - Keep NanoCore focused on policy resolution, Agent Environment Package snapshot creation, canonical record verification, durable state, Action Center, evidence, and review gates.
 - Preserve backend portability for OpenShell first and later Docker, VM, Kubernetes, managed sandbox, or custom worker runtimes.
@@ -66,8 +66,8 @@ This document is the release-neutral overview for worker runtime communication. 
 - Do not make OpenShell policy YAML, sandbox ids, gateway internals, raw environment variables, process handles, or provider secrets public OpenKit protocol.
 - Do not let a Worker Agent install Skills, MCP servers, tools, packages, or credentials from arbitrary sources.
 - Do not let a Worker Agent write long-term knowledge, notes, or Knowledge Store records directly.
-- Do not make the Worker Sidecar a second NanoCore, a product state owner, a review decision engine, or a generic shell daemon.
-- Do not mix the user-facing `@openkit/mcp` channel with worker-side MCP capability supply.
+- Do not make the worker shim a second NanoCore, a product state owner, a review decision engine, or a generic shell daemon.
+- Do not mix the end-user Agent Skill Interface with worker-side MCP capability supply.
 - Do not allow sandbox workers to push, publish, tag, deploy, or mutate protected branches without NanoCore-owned review and apply gates.
 - Do not keep historical host runtime configuration shapes as supported product behavior.
 
@@ -113,9 +113,8 @@ Every real Worker Agent sees the same contract inside its container:
 /openkit/session/items.jsonl
 /openkit/session/artifacts.jsonl
 /openkit/session/workspace-changes.json
-https://control.local/v1/worker-control
-https://capability.local/v1
-https://inference.local/v1
+<AEP-resolved NanoCore /api/worker-control base URL>
+<AEP-resolved OpenAI-compatible LLM base URL>
 declared workspace roots
 declared output roots
 ```
@@ -124,7 +123,7 @@ The Worker Agent should not know whether the container is local or remote.
 
 The Worker Agent should not know raw NanoCore host paths, raw remote gateway URLs, raw OpenShell gateway internals, raw backend upload/download handles, raw secrets, or private data-root paths.
 
-The Worker Agent receives an Agent Environment Package snapshot, local files generated from that snapshot, sandbox-local endpoints, declared workspace roots, and declared output roots.
+The Worker Agent receives an Agent Environment Package snapshot, local files generated from that snapshot, exact worker-reachable endpoints, declared workspace roots, and declared output roots. Current AEPs declare the capability plane disabled with no routes; `capability.local` remains an accepted future projection, not a current endpoint.
 
 ## Communication Planes
 
@@ -136,13 +135,13 @@ The AEP snapshot carries lineage, selected runtime, workspace inputs, generated 
 
 The backend materializes the AEP snapshot into the container.
 
-The Worker Sidecar converts AEP supply into runtime-native config files.
+The worker shim converts AEP supply into runtime-native config files.
 
 Examples include Codex config files, OpenCode config files, runtime-specific Skill paths, runtime-specific MCP config files, provider endpoint config, capability endpoint config, and transcript paths.
 
 Dynamic supply changes create a new AEP snapshot.
 
-NanoCore may deliver a safe-point supply refresh command only when the active sidecar and runtime adapter explicitly advertise refresh support.
+NanoCore may deliver a safe-point supply refresh command only when the active shim and runtime adapter explicitly advertise refresh support.
 
 When refresh support is absent or uncertain, NanoCore must finish or stop the current bounded step and launch the next step with the new AEP snapshot.
 
@@ -150,23 +149,22 @@ When refresh support is absent or uncertain, NanoCore must finish or stop the cu
 
 The control plane uses `openkit-worker-control-v1`.
 
-The worker-visible endpoint is `https://control.local/v1/worker-control`.
+The worker-visible endpoint is the AEP-resolved HTTP(S) NanoCore base URL whose path is `/api/worker-control`.
 
 The control plane is for session lifecycle and small control messages only.
 
 It must not become a generic capability RPC, arbitrary shell, file transfer channel, or product-state mutation API.
 
-Current command families are:
+Current worker-control families are:
 
 - heartbeat
 - artifact notice
 - command polling
-- approval result delivery
 - interrupt delivery
 - allowlisted terminal command delivery
 - terminal result reporting
 
-Required extensions are:
+Current worker-to-NanoCore record families also include:
 
 - canonical event append
 - final status reporting
@@ -200,62 +198,56 @@ The control plane may announce that data is ready, but it must not carry full pa
 
 The capability plane gives Worker Agents governed access to privileged services.
 
-The worker-visible endpoint is `https://capability.local/v1`.
+The accepted target endpoint is `https://capability.local/v1`, but the current AEP projection is exactly `capabilities.mode: disabled` with `routes: []`.
 
-Capability families include worker-side MCP calls, Knowledge Store search, Knowledge Store read, context retrieval, external API calls, network proxy access, vault-mediated credential use, and future non-LLM tools.
+Planned capability families include worker-side MCP calls, Knowledge Store search, Knowledge Store read, context retrieval, external API calls, network proxy access, vault-mediated credential use, and future non-LLM tools.
 
 NanoCore owns routing, policy checks, credential references, redaction, metering, audit summaries, and upstream error normalization.
 
-Worker Agents must not access NanoCore internals, SQLite files, raw data roots, raw secrets, or arbitrary network sources to obtain these capabilities.
+Worker Agents must not access NanoCore internals, SQLite files, raw data roots, raw secrets, or arbitrary network sources to obtain these capabilities. Until the plane is implemented, workers have no callable capability route.
 
-`https://inference.local/v1` remains the OpenAI-compatible LLM endpoint for Worker Agent runtimes that expect an OpenAI-style base URL.
+Every Worker Agent runtime that expects an OpenAI-style base URL receives one from its AEP. Backend-local inference may use `https://inference.local/v1`; attributed worker inference receives the exact authenticated NanoCore worker-inference base URL.
 
-`inference.local` is a specialized capability endpoint for LLM routing and must not be reused for control, knowledge, MCP, vault, or generic capability traffic.
+The AEP-resolved LLM route is specialized for inference and must not be reused for control, knowledge, MCP, vault, or generic capability traffic.
 
-Future implementations may route `inference.local` through the same server-side Agent Capability gateway projection as `capability.local`, but the worker-facing OpenAI-compatible endpoint may remain separate for runtime ergonomics.
+When implemented, the capability plane may share server-side policy, ledger, and provider dispatch owners with authenticated worker inference while retaining a separate worker-facing wire contract.
 
 ### Evidence And Audit Plane
 
 The evidence and audit plane records what was launched, what policy was applied, what the backend did, what the worker reported, what changed, and what a human reviewed.
 
-The Worker Sidecar may produce normalized audit events and transcript records.
+The worker shim may produce normalized audit events and transcript records.
 
 The backend may collect backend-native logs and transport evidence.
 
 NanoCore verifies and stores product-safe summaries and evidence references.
 
-Public App API, MCP, and Web UI surfaces expose OpenKit ids, summaries, digests, artifact ids, review ids, and next suggested actions rather than backend-private internals.
+Public App API, end-user Agent Skill Interface, and Web UI surfaces expose OpenKit ids, summaries, digests, artifact ids, review ids, and next suggested actions rather than backend-private internals.
 
-## OpenKit Worker Sidecar
+## OpenKit Worker Shim
 
-Every real worker container must run the OpenKit Worker Sidecar or an equivalent shim.
+Every real worker container runs an OpenKit worker shim. The current concrete entrypoint is `openkit-codex-shim`; the removed `openkit-worker-sidecar` binary is not part of the architecture.
 
-The concrete container entrypoint should be `openkit-worker-shim`.
+The shim owns runtime-native adaptation inside the worker image. NanoCore owns canonical verification outside the worker image.
 
-`openkit-worker-shim` composes sidecar-core with one runtime adapter, such as Codex or OpenCode.
-
-The sidecar owns runtime-native adaptation inside the worker image.
-
-NanoCore owns canonical verification outside the worker image.
-
-The sidecar should:
+The shim should:
 
 - read the AEP snapshot and generated files
 - materialize runtime-native Skill configuration
-- materialize runtime-native MCP configuration
-- materialize provider, model, control, capability, and inference endpoint configuration
+- materialize approved runtime-native Skill and MCP configuration as static supply
+- materialize provider, model, direct control, and inference endpoint configuration
 - launch or supervise the Worker Agent runtime as a child process
 - parse runtime-native stdout, JSONL, event streams, command logs, tool calls, and final messages
 - convert runtime-native records into canonical OpenKit transcript and event records
 - write `/openkit/session/events.jsonl`, `/openkit/session/items.jsonl`, and `/openkit/session/artifacts.jsonl`
-- emit heartbeat and artifact notices through `control.local`
-- append canonical events through `control.local` when live delivery is available
+- emit heartbeat and artifact notices through direct NanoCore worker control
+- append canonical events through direct NanoCore worker control
 - write `/openkit/session/workspace-changes.json` when workspace changes are produced
 - maintain sequence numbers and lineage on emitted records
 - apply best-effort lightweight redaction before records leave the container
-- keep a turn-end transcript fallback even when live control delivery fails
+- stop or cancel the worker when required direct control fails while retaining transcript evidence already written
 
-The sidecar must not:
+The shim must not:
 
 - own Workspace, Thread, Turn, Item, Goal Mode, Action Center, Knowledge Store, Review, or Apply state
 - make final authorization decisions
@@ -265,58 +257,46 @@ The sidecar must not:
 - push, publish, tag, deploy, or trigger external side effects without a NanoCore-approved path
 - become a generic interactive shell
 
-Sidecar redaction is best effort.
+Shim redaction is best effort.
 
 NanoCore canonical verification and redaction remain the server-owned product boundary.
 
 ## Runtime Adapter Packaging
 
-Runtime-native adapter logic should live outside NanoCore.
-
-The preferred package structure is:
+Runtime-native adapter logic lives outside NanoCore. The current package structure is:
 
 ```text
 packages/worker-protocol
   canonical worker-control, transcript, item, artifact, workspace-change, capability, sequence, lineage, and error schemas
 
-packages/worker-sidecar-core
-  lineage helpers, sequence helpers, control client, capability client, transcript writer, redaction, config materialization helpers
-
-packages/worker-adapter-codex
-  Codex CLI parsing, Codex config materialization, Codex MCP config materialization, Codex Skill materialization
-
-packages/worker-adapter-opencode
-  OpenCode parsing, OpenCode config materialization, OpenCode MCP config materialization, OpenCode Skill materialization
-
 packages/worker-shim
-  executable entrypoint composing sidecar-core with a selected runtime adapter
+  direct worker-control client, transcript writer, redaction, config materialization, and Codex runtime adaptation
 ```
 
 NanoCore may depend on canonical schemas from `packages/worker-protocol`.
 
 NanoCore should not depend on runtime-native adapter packages.
 
-Container images may depend on sidecar and adapter packages.
+Container images may depend on the worker protocol and worker shim packages.
 
-Adding a new Worker Agent should primarily require a new adapter package that maps native runtime behavior into canonical OpenKit records and maps AEP supply into native config files.
+Adding a new Worker Agent should extend or split the runtime adapter only when a concrete second runtime requires a separate ownership boundary.
 
 ## Current Implementation Projection
 
-The current implementation is the accepted V1 projection of this model:
+The current implementation is a partial projection of this model:
 
 - `packages/worker-protocol` exists and defines canonical worker lineage, schema version, worker event records, transcript records, workspace change manifests, capability call summaries, worker-control request and response envelopes, and worker error shapes.
-- `packages/worker-shim` exists and provides `openkit-worker-sidecar`, `openkit-codex-shim`, a worker-control client, a capability client, transcript writing, worker workspace change manifests, and Codex-oriented runtime adaptation.
-- Separate `packages/worker-sidecar-core`, `packages/worker-adapter-codex`, and `packages/worker-adapter-opencode` packages are deferred packaging extractions. Their V1 responsibilities currently live primarily in `packages/worker-shim`, which is the worker-side contract package for the first release.
-- `apps/nanocore/src/runtime/agent-environment.ts` resolves OpenShell-backed AEP snapshots with `control.local`, `capability.local`, and `inference.local` endpoint projections.
+- `packages/worker-shim` provides `openkit-codex-shim`, a direct NanoCore worker-control client, transcript writing, worker workspace change manifests, and Codex-oriented runtime adaptation. It has no worker capability client and no sidecar binary.
+- `apps/nanocore/src/runtime/agent-environment.ts` resolves OpenShell-backed AEP snapshots with required `direct-nanocore` control and exact `worker-control` backend capability requirements. Current packages emit a disabled capability plane with no routes.
 - `apps/nanocore/src/runtime/worker-control-gateway.ts`, `worker-control-records.ts`, `worker-control-sequences.ts`, `worker-control-commands.ts`, `worker-control-rejected-evidence.ts`, and `worker-control-rebuild.ts` provide the durable V1 worker-control state, sequence, command, rejection-evidence, and restart-rebuild surfaces for registered AEP snapshots.
-- `apps/nanocore/src/app.ts` exposes current worker-control routes for heartbeat, artifact notice, command polling, terminal results, supply refresh acknowledgement, knowledge proposal summary, and live canonical event append.
-- `apps/nanocore/src/app.ts` exposes current worker capability routes for governed Knowledge search/read/proposal, artifact read, product-safe diagnostics, worker-side MCP list/list-tools/call, and OpenAI-compatible inference projection.
+- `apps/nanocore/src/app.ts` exposes current worker-control routes for heartbeat, artifact notice, command polling and acknowledgement, terminal results, event append, final status, supply-refresh acknowledgement, capability-call summary, and knowledge-proposal summary.
+- NanoCore exposes no `/api/worker-capabilities/*` routes and no worker MCP gateway. `WorkerCapabilityCallSummary` remains a transcript/import schema and does not prove a callable capability route.
 - `apps/nanocore/src/runtime/turn-executor-factory.ts` selects local or remote OpenShell placement from runtime environment configuration and rejects historical host selector shapes.
 - The turn executor factory also rejects the historical `OPENKIT_REMOTE_CONTAINER_BACKEND` selector, keeping the public worker runtime model on `OPENKIT_WORKER_RUNTIME=container`, `OPENKIT_CONTAINER_PLACEMENT=local|remote`, and `OPENKIT_CONTAINER_BACKEND=openshell`.
 - `apps/nanocore/src/runtime/worker-governance-backend.ts` validates OpenShell control endpoints, collects transcript and workspace-change data-plane artifacts, and imports product-safe records.
 - `apps/nanocore/src/runtime/filesystem-workspace-sync.ts` and related storage code implement filesystem snapshot, staging, review, and apply records that are now owned by the workspace synchronization spec.
 
-The accepted V1 communication model is implemented. Further package extraction, broader worker-side runtime adapters, generic future capability families, and richer Knowledge Store capability semantics remain future work over the same control, capability, data, inference, evidence, and audit planes.
+Direct control, data collection, generic inference, evidence, and audit foundations are implemented. The worker capability plane and worker MCP gateway are not implemented and remain accepted future contracts. The trusted worker-inference and runtime-provenance extension remains governed by `docs/specs/20260711-worker_runtime_subagent_provenance.md`, including its separate production proof requirement.
 
 ## Skill And MCP Supply
 
@@ -347,19 +327,19 @@ The AEP snapshot should include stable ids, versions, digests, allowed runtime f
 
 The backend transfers the resolved supply into the container.
 
-The sidecar writes runtime-native Skill and MCP configuration from that resolved supply.
+The shim writes runtime-native Skill and MCP configuration from that resolved supply.
 
-Worker-side MCP calls go through `capability.local` and NanoCore-owned policy, not through the user-facing `@openkit/mcp` server.
+Static MCP supply does not grant a callable tool route. Future worker-side MCP calls will use the accepted `capability.local` contract and NanoCore-owned policy, not the end-user Skill's bundled CLI.
 
 Dynamic supply changes create a new AEP snapshot and follow the safe-point refresh rules in the Static Supply Plane.
 
 ## Knowledge And Context
 
-Knowledge and context access use the capability plane.
+Runtime Knowledge and context access will use the capability plane after that plane is implemented.
 
 Initialization may inject selected knowledge-derived material as context package entries or product-visible context injection items.
 
-Runtime retrieval should use governed capability calls such as knowledge search, knowledge read, context read, source read, and worker-side MCP calls.
+Runtime retrieval should use future governed capability calls such as knowledge search, knowledge read, context read, source read, and worker-side MCP calls.
 
 Each retrieval call should produce an auditable capability call summary, and product-visible retrieval should be referenced by an item when it affects the worker-visible conversation or result.
 
@@ -389,7 +369,7 @@ NanoCore assigns or validates final product ids according to server policy.
 
 Worker-provided ids are candidate ids unless the schema explicitly marks them as stable package-scoped ids.
 
-NanoCore must preserve enough rejected-record diagnostics to debug worker and sidecar failures without importing invalid records into product history.
+NanoCore must preserve enough rejected-record diagnostics to debug worker and shim failures without importing invalid records into product history.
 
 ## Sequence, Idempotency, And Replay
 
@@ -429,7 +409,7 @@ They must not be silently applied.
 
 `terminal-command` is not a generic shell channel.
 
-NanoCore may queue terminal commands only for narrowly allowlisted diagnostics or sidecar/runtime control operations.
+NanoCore may queue terminal commands only for narrowly allowlisted diagnostics or shim/runtime control operations.
 
 The command allowlist belongs to NanoCore policy and the active AEP.
 
@@ -445,19 +425,15 @@ Local and remote container placements share the same Worker-facing contract and 
 
 They may differ only in backend transport and reachability.
 
-Local placement may use a local OpenShell gateway, local relay upstream, local upload and download operations, and local diagnostic commands.
+Local placement may use a local OpenShell gateway, a worker-reachable direct NanoCore endpoint, local upload and download operations, and local diagnostic commands.
 
-Remote placement may use a remote OpenShell gateway URL, explicit relay upstream reachable from the remote sandbox, remote upload and download operations, and remote diagnostic commands.
+Remote placement may use a remote OpenShell gateway URL, a worker-reachable direct NanoCore endpoint, remote upload and download operations, and remote diagnostic commands.
 
-These differences must not leak into Worker records, public App API, MCP tools, Web UI, Goal Mode, Action Center, or review semantics.
+These differences must not leak into Worker records, public App API, end-user CLI operations, Web UI, Goal Mode, Action Center, or review semantics.
 
 ## Failure And Recovery
 
-Control channel failure should not automatically lose the turn.
-
-When live control delivery fails, the sidecar should continue writing transcript files when possible.
-
-At turn end, NanoCore should collect transcript files through backend transport and import validated records.
+Required direct control failure stops or cancels the worker; it does not activate another control mode. NanoCore should still collect transcript files already written through backend transport and import validated records as evidence.
 
 If transcript files are missing and required by the AEP, the turn should fail with a redacted diagnostic.
 
@@ -485,7 +461,7 @@ If a restart loses an active sandbox token, NanoCore should recover by collectin
 
 ## Public Surfaces
 
-Public App API, MCP, Web UI, deployment docs, setup Skills, and status summaries should describe:
+Public App API, the end-user Agent Skill Interface, Web UI, deployment docs, and status summaries should describe:
 
 - Core mode: `local | server`
 - Worker runtime: `container`
@@ -494,9 +470,9 @@ Public App API, MCP, Web UI, deployment docs, setup Skills, and status summaries
 
 They should not advertise host execution as a supported Worker runtime.
 
-The user-facing `@openkit/mcp` server remains a channel facade over NanoCore public APIs.
+The end-user `openkit` Skill's bundled CLI is the accepted channel facade over NanoCore public APIs; the currently implemented `@openkit/mcp` facade is removal-only until replacement parity is complete.
 
-It may need new tools or resources to inspect worker runtime status, worker communication diagnostics, supply catalog summaries, capability call summaries, and staged review evidence.
+The transport-neutral operation catalog may need operations to inspect worker runtime status, worker communication diagnostics, supply catalog summaries, capability call summaries, and staged review evidence.
 
 It must not become worker-side MCP supply and must not expose backend-private sandbox control.
 
@@ -506,12 +482,12 @@ Implementation should move through these release-neutral milestones:
 
 1. Remove host Worker runtime from product selection and public surfaces.
 2. Promote canonical worker schemas into `packages/worker-protocol`.
-3. Extract sidecar-core and runtime adapter responsibilities from NanoCore and worker shim code.
-4. Implement live canonical event append on the worker-control plane with transcript import deduplication.
-5. Implement NanoCore-resolved Skill and MCP supply catalog materialization into container workers.
-6. Implement worker capability plane routes for Knowledge Store search/read, knowledge proposals, and worker-side MCP calls.
-7. Update `@openkit/mcp` and Skills so coordinator agents can inspect and drive the new runtime communication model through public NanoCore APIs.
-8. Verify the full local and remote loop through public NanoCore APIs and MCP without relying on backend-private runtime state.
+3. Keep direct worker control and Codex adaptation cohesive in `packages/worker-shim`; split an adapter only when a concrete second runtime needs it.
+4. Complete live canonical event append and transcript import deduplication on direct worker control.
+5. Complete NanoCore-resolved Skill and MCP supply catalog materialization into container workers.
+6. Rebuild the worker capability plane, thin shim client, Knowledge Store operations, and worker MCP gateway from their accepted contracts without adding another control path.
+7. Update the unified `openkit` Skill, bundled CLI, and operation catalog so coordinator agents can inspect and drive the new runtime communication model through public NanoCore APIs.
+8. Verify the full local and remote loop through public NanoCore APIs and the Agent Skill Interface without relying on backend-private runtime state.
 
 ## Verification Expectations
 
@@ -519,15 +495,15 @@ The communication model is implemented only when:
 
 - no real product runtime path uses host execution
 - local and remote container placements generate equivalent AEP worker-facing control contracts
-- local and remote container placements use the same sidecar protocol, transcript schema, event schema, capability schema, and workspace-change schema
+- local and remote container placements use the same direct worker-control protocol, transcript schema, event schema, disabled capability declaration, and workspace-change schema
 - NanoCore validates canonical records without importing runtime-native adapters
-- Worker Sidecar packages own runtime-native parsing and config materialization
+- Worker shim code owns runtime-native parsing and config materialization
 - Skill and MCP supply comes from NanoCore-resolved catalog snapshots
-- Knowledge Store and context access use governed capability or proposal flows
+- the future worker capability plane passes governed Knowledge Store, context, MCP, and proposal-flow acceptance before it is advertised
 - terminal commands are narrowly allowlisted and cannot become generic shell access
 - tests prove token, lineage, schema, sequence, idempotency, digest, workspace path, and policy validation
 - e2e smoke proves local-container and remote-container can each run one bounded Goal Mode worker step and produce reviewable evidence
-- MCP-driven dogfood loops prove the coordinator can inspect runtime status, run bounded steps, review evidence, and continue/refine/reject/accept without bypassing review gates
+- Agent-Skill-driven dogfood loops prove the coordinator can inspect runtime status, run bounded steps, review evidence, and continue/refine/reject/accept without bypassing review gates
 
 ## Testing Strategy
 
@@ -535,16 +511,17 @@ Required local development machine verification:
 
 - format and static checks for touched packages
 - schema and contract tests for `packages/worker-protocol`, `packages/config-schema`, `packages/app-api-schemas`, and `packages/core-client`
-- NanoCore unit and black-box tests for runtime selection, AEP generation, worker-control routes, event append, transcript import, workspace validation, capability calls, and Action Center review projection
-- worker-sidecar-core and runtime adapter tests for config materialization, transcript writing, redaction, sequence handling, and runtime parser behavior
-- `@openkit/mcp` tests, build, and smoke against a local NanoCore development server
-- a real MCP-driven Goal Mode loop on the development machine using local container placement
+- NanoCore unit and black-box tests for runtime selection, AEP generation, direct worker-control routes, event append, transcript import, workspace validation, and Action Center review projection
+- worker-shim tests for direct control, config materialization, transcript writing, redaction, sequence handling, and runtime parser behavior
+- future capability-plane tests for route authentication, Knowledge operations, MCP calls, usage, audit, and fail-closed disabled projection before those routes are advertised
+- bundled CLI tests, build, and smoke against a local NanoCore development server
+- a real Agent-Skill-driven Goal Mode loop on the development machine using local container placement
 
 Required remote placement verification:
 
 - run NanoCore in server mode
 - run the OpenShell remote gateway and remote container worker placement
-- connect from a desktop agent app or MCP smoke harness through `@openkit/mcp`
+- connect from a Skill-capable agent app through the bundled `openkit` CLI
 - create or resume a real thread
 - run one bounded Goal Mode step through remote container placement
 - collect Action Center rows, artifacts, workspace review evidence, worker diagnostics, and capability summaries
@@ -560,32 +537,28 @@ Risk: Removing host runtime slows local development.
 
 Mitigation: invest in a fast local-container development profile and deterministic container tests.
 
-Risk: Sidecar extraction becomes too large.
+Risk: Direct worker control becomes a generic RPC.
 
-Mitigation: phase extraction through canonical schemas first, then sidecar-core, then runtime adapters.
-
-Risk: `control.local` becomes a generic RPC.
-
-Mitigation: keep capability traffic on `capability.local` and keep terminal commands allowlisted.
+Mitigation: keep the direct route limited to the worker-control protocol, keep terminal commands allowlisted, and implement capabilities on their separate future plane.
 
 Risk: Worker-side MCP bypasses NanoCore policy.
 
-Mitigation: require NanoCore-resolved MCP catalog snapshots and route worker-side calls through `capability.local`.
+Mitigation: advertise no worker capability route until NanoCore-resolved MCP catalog snapshots, gateway policy, and the thin `capability.local` client pass acceptance.
 
 Risk: Remote recovery after NanoCore restart loses live token state.
 
-Mitigation: persist product-safe materialization and collection state, collect transcript/data-plane fallback evidence, and require a new bounded step when live token recovery is unsafe.
+Mitigation: persist product-safe materialization and collection state, collect transcript/data-plane evidence, and require a new bounded step when live token recovery is unsafe.
 
 ## Decisions
 
 - Host runtime is removed from product execution and public surfaces.
 - Public runtime configuration should move to `OPENKIT_WORKER_RUNTIME=container`, `OPENKIT_CONTAINER_PLACEMENT=local|remote`, and `OPENKIT_CONTAINER_BACKEND=openshell`.
-- `control.local` and `capability.local` are separate worker-facing endpoints.
-- `inference.local` remains a specialized OpenAI-compatible LLM endpoint.
-- `openkit-worker-shim` is the real container entrypoint that composes sidecar-core with a runtime adapter.
+- Direct NanoCore `/api/worker-control` is the only worker-control endpoint. The accepted future `capability.local` projection is a separate plane and must not carry control traffic.
+- The AEP resolves one specialized OpenAI-compatible LLM endpoint: backend-local `inference.local` or the authenticated NanoCore worker-inference base URL when complete attribution is required.
+- `openkit-codex-shim` is the current real container entrypoint and owns the cohesive Codex adapter path.
 - Live canonical event append should be implemented before broad Skill, MCP, knowledge, and context capability work.
 - Dynamic Skill and MCP updates create new AEP snapshots and refresh only at safe points when explicitly supported.
-- Sidecar redaction is best effort; NanoCore redaction and verification remain authoritative.
+- Shim redaction is best effort; NanoCore redaction and verification remain authoritative.
 - Terminal commands are narrowly allowlisted diagnostics or runtime-control operations, not a generic shell.
 
 ## Specialized Decision Index
@@ -597,9 +570,9 @@ This overview records the worker runtime communication direction. Detailed imple
 - Worker capability route projection, canonical `knowledge.*` target families, sandbox bearer lineage, `WorkerCapabilityCallSummary`, metering, and audit hooks are owned by `docs/specs/20260703-worker_agent_capability.md` and `docs/specs/20260702-knowledge_store_governance_rules.md`.
 - Worker-side Skill and MCP catalog resolution, approved catalog ids, version or digest resolution, runtime-adapter compatibility, provider and vault references, and generated runtime config materialization are owned by `docs/specs/20260703-agent_manifest_aep_resolution.md` and `docs/specs/20260616-agent_environment_package.md`.
 - Filesystem workspace staging, resolved-path containment, symlink escape rejection, staged review, apply, and recovery behavior are owned by `docs/specs/20260703-workspace_synchronization.md`.
-- User-facing MCP coordinator diagnostics must use public NanoCore App API surfaces rather than runtime internals. Concrete AI interface tools and resources are owned by `docs/specs/20260617-openkit_ai_interface.md`.
+- End-user coordinator diagnostics must use public NanoCore App API surfaces rather than runtime internals. Concrete Skill guidance and CLI operations are owned by `docs/specs/20260713-openkit_agent_skill_interface.md`.
 - OpenShell network policy defaults, Codex binary allowlists, Git remote helper binary allowlists, and remote gateway transport details are owned by `docs/specs/20260627-remote_openshell_gateway.md`, `docs/specs/20260703-workspace_synchronization.md`, and NanoCore runtime implementation docs.
-- Restart recovery is split between worker-control fallback, workspace synchronization recovery, evidence import, and bounded-step scheduling. Detailed rules are owned by `docs/specs/20260703-worker_control_protocol.md`, `docs/specs/20260703-workspace_synchronization.md`, `docs/specs/20260703-audit_usage_evidence_records.md`, and `docs/specs/20260703-runtime_scheduling_scale.md`.
+- Restart recovery is split between direct worker-control recovery, workspace synchronization recovery, evidence import, and bounded-step scheduling. Detailed rules are owned by `docs/specs/20260703-worker_control_protocol.md`, `docs/specs/20260703-workspace_synchronization.md`, `docs/specs/20260703-audit_usage_evidence_records.md`, and `docs/specs/20260703-runtime_scheduling_scale.md`.
 
 ## Related Documents
 
@@ -611,7 +584,7 @@ This overview records the worker runtime communication direction. Detailed imple
 - `docs/core/agent-supply.md`
 - `docs/core/knowledge.md`
 - `docs/specs/20260616-agent_environment_package.md`
-- `docs/specs/20260617-openkit_ai_interface.md`
+- `docs/specs/20260713-openkit_agent_skill_interface.md`
 - `docs/specs/20260627-remote_openshell_gateway.md`
 - `docs/specs/20260703-workspace_synchronization.md`
 - `docs/specs/20260628-agent_setup_runtime_supply_contract.md`

@@ -137,7 +137,7 @@ Examples:
 
 Gateways let agents use standard SDKs or local endpoints while Core retains audit, routing, metering, rate limiting, credential control, and policy enforcement.
 
-In container or remote deployments, a bridge sidecar may project these gateways into the agent environment.
+In container or remote deployments, an explicitly enabled gateway may be projected through a network proxy, runtime adapter, or managed service. Current worker AEPs expose no capability routes.
 
 ## Workspace Services
 

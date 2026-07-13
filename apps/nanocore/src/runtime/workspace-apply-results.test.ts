@@ -63,7 +63,10 @@ describe('workspace apply results', () => {
             summary,
             redacted_evidence_refs_json,
             content_digests_json,
-            import_status
+            retention_class,
+            sensitivity_class,
+            import_status,
+            required_features_json
           FROM evidence_bundles
           ORDER BY created_at`
         )
@@ -95,7 +98,10 @@ describe('workspace apply results', () => {
             { kind: 'workspace-change-set', ref: 'workspace-change-set:wcs_1' },
           ]),
           content_digests_json: JSON.stringify([]),
+          retention_class: 'workspace-audit',
+          sensitivity_class: 'product-safe',
           import_status: 'promoted',
+          required_features_json: JSON.stringify(['evidence.bundle.v1']),
         }),
       ]);
     } finally {

@@ -39,13 +39,13 @@ Do not generate or commit a deterministic adapter as a side effect of running an
 
 When a story becomes stable, high-value, and cheap enough to repeat, add a deterministic adapter as a normal reviewed code change.
 
-The real Codex Goal Mode story has a manual preflight command:
+The real Codex Goal Mode story has a manual MCP-first runtime command:
 
 ```bash
 pnpm -w test:stories:real-codex
 ```
 
-The command skips by default and requires explicit real Codex plus provider quota opt-in before it writes evidence setup files.
+The command skips by default and requires explicit real Codex plus provider quota opt-in, an existing NanoCore URL and local data root, non-interactive `ssh a1`, a clean disposable repository, and a writable evidence directory before it streams server-owned OAuth and runs the bounded Goal flow.
 
 The real OpenShell/Codex Task Mode story has a manual runner:
 
@@ -85,7 +85,7 @@ pnpm -w test:stories:mcp
 ## Current Stories
 
 - `chat-mode-mcp-smoke.story.md`: deterministic MCP-backed Chat Mode acceptance flow covering knowledge-backed answers, bounded clarification, read-only repository file-list and file-read answers, Action Center projection, Task Mode handoff, and Goal Mode handoff.
-- `goal-mode-real-codex-release.story.md`: agentic-only opt-in release validation for a real Codex Goal Mode run against a disposable local repository.
+- `goal-mode-real-codex-release.story.md`: opt-in MCP-backed real Codex Goal kernel validation covering server-owned OAuth, strict provider binding, one bounded OpenShell worker task, workspace and Goal reviews, AEP boundaries, capability usage, audit and runtime evidence, exact repository output, and redaction.
 - `goal-mode-mcp-smoke.story.md`: deterministic MCP-backed Goal Mode acceptance flow covering status, diagnostics, repository linking, plan approval, one bounded step, Action Center, evidence, and artifact reads.
 - `openkit-local-self-check.story.md`: deterministic local Web/NanoCore self-check flow backed by `tests/story-runner/openkit-local-self-check.spec.ts`.
 - `pi-ai-gateway-real-provider.story.md`: opt-in real-provider validation for NanoCore public gateway routing through pi-ai, backed by `tests/story-runner/pi-ai-real-provider-runner.mjs`.

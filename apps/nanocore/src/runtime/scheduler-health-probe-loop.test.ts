@@ -109,7 +109,7 @@ describe('scheduler health probe loop', () => {
         successThreshold: 2,
         probeTarget: () => ({
           checks: [
-            { message: 'control relay refused', status: 'failed', surface: 'control-relay' },
+            { message: 'worker control refused', status: 'failed', surface: 'worker-control' },
           ],
           status: 'failed',
         }),

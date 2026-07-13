@@ -8,6 +8,7 @@ import {
   CodexResponsesClient,
   type CodexTokenResolutionAccountStore,
 } from './codex-responses-client.js';
+import type { OpenAICompatibleProviderError } from './openai-compatible-client.js';
 
 class FakeAccountStore implements CodexTokenResolutionAccountStore {
   public readonly refreshes: boolean[] = [];
@@ -140,8 +141,45 @@ describe('Codex Responses client', () => {
     });
   });
 
+  it('binds the caller signal to the upstream request and skips a 401 retry after abort', async () => {
+    const abortController = new AbortController();
+    const requests: Request[] = [];
+    let tokenResolutions = 0;
+    const client = new CodexResponsesClient({
+      tokenResolver: {
+        resolve: async () => {
+          tokenResolutions += 1;
+          return { accessToken: 'access-secret', chatgptAccountId: 'account_123' };
+        },
+      },
+      fetch: async (request) => {
+        requests.push(request);
+        abortController.abort();
+        return Response.json({ error: { message: 'expired' } }, { status: 401 });
+      },
+    });
+    let failure: unknown;
+
+    try {
+      await client.createResponses(
+        codexProvider(),
+        { model: 'codex', input: 'Hi' },
+        { signal: abortController.signal }
+      );
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toMatchObject({ name: 'AbortError' });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.signal.aborted).toBe(true);
+    expect(tokenResolutions).toBe(1);
+  });
+
   it('refreshes the Codex token and retries once after a 401 response', async () => {
     const requests: Request[] = [];
+    const turnStates: string[] = [];
+    let rejectedBodyCancellations = 0;
     let tokenCounter = 0;
     const client = new CodexResponsesClient({
       tokenResolver: {
@@ -153,20 +191,88 @@ describe('Codex Responses client', () => {
       fetch: async (request) => {
         requests.push(request);
         if (requests.length === 1) {
-          return Response.json({ error: { message: 'expired' } }, { status: 401 });
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              cancel() {
+                rejectedBodyCancellations += 1;
+              },
+            }),
+            {
+              headers: {
+                'content-type': 'application/json',
+                'x-codex-turn-state': 'discarded-401-state',
+                'x-request-id': 'discarded-private-request-id',
+              },
+              status: 401,
+            }
+          );
         }
 
-        return Response.json({ id: 'resp_2', object: 'response', status: 'completed', output: [] });
+        return Response.json(
+          { id: 'resp_2', object: 'response', status: 'completed', output: [] },
+          {
+            headers: {
+              'x-codex-turn-state': 'accepted-final-state',
+              'x-request-id': 'private-final-request-id',
+            },
+          }
+        );
       },
     });
 
     await expect(
-      client.createResponses(codexProvider(), { model: 'codex', input: 'Hi' })
+      client.createResponses(
+        codexProvider(),
+        { model: 'codex', input: 'Hi' },
+        {
+          codexTurnState: 'replayed-request-state',
+          onCodexTurnState: (turnState) => turnStates.push(turnState),
+        }
+      )
     ).resolves.toMatchObject({ id: 'resp_2' });
     expect(requests.map((request) => request.headers.get('authorization'))).toEqual([
       'Bearer access-1',
       'Bearer access-2',
     ]);
+    expect(requests.map((request) => request.headers.get('x-codex-turn-state'))).toEqual([
+      'replayed-request-state',
+      'replayed-request-state',
+    ]);
+    expect(rejectedBodyCancellations).toBe(1);
+    expect(turnStates).toEqual(['accepted-final-state']);
+  });
+
+  it('preserves Codex turn state before returning an upstream Responses stream', async () => {
+    const requests: Request[] = [];
+    const turnStates: string[] = [];
+    const client = new CodexResponsesClient({
+      tokenResolver: {
+        resolve: async () => ({ accessToken: 'access-secret', chatgptAccountId: 'account_123' }),
+      },
+      fetch: async (request) => {
+        requests.push(request);
+        return new Response('data: {"type":"response.completed"}\n\ndata: [DONE]\n\n', {
+          headers: {
+            'content-type': 'text/event-stream',
+            'x-codex-turn-state': 'stream-response-state',
+            'x-request-id': 'private-stream-request-id',
+          },
+        });
+      },
+    });
+
+    const stream = await client.createResponsesStream(
+      codexProvider(),
+      { model: 'codex', input: 'Hi', stream: true },
+      {
+        codexTurnState: 'stream-request-state',
+        onCodexTurnState: (turnState) => turnStates.push(turnState),
+      }
+    );
+
+    expect(requests[0]?.headers.get('x-codex-turn-state')).toBe('stream-request-state');
+    expect(turnStates).toEqual(['stream-response-state']);
+    await expect(new Response(stream).text()).resolves.toContain('response.completed');
   });
 
   it('selects the token resolver from the resolved provider account slot for every retry', async () => {
@@ -204,5 +310,37 @@ describe('Codex Responses client', () => {
       'Bearer access-team_a',
       'Bearer access-team_a',
     ]);
+  });
+
+  it('preserves top-level ChatGPT Codex error detail as a typed provider failure', async () => {
+    const client = new CodexResponsesClient({
+      tokenResolver: {
+        resolve: async () => ({ accessToken: 'access-secret', chatgptAccountId: 'account_123' }),
+      },
+      fetch: async () =>
+        Response.json(
+          {
+            detail:
+              "The 'retired-codex-model' model is not supported when using Codex with a ChatGPT account.",
+          },
+          { status: 400 }
+        ),
+    });
+
+    await expect(
+      client.createResponses(codexProvider(), {
+        model: 'openai-codex/retired-codex-model',
+        input: 'Hello',
+      })
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<OpenAICompatibleProviderError>>({
+        code: 'provider_error',
+        message:
+          "The 'retired-codex-model' model is not supported when using Codex with a ChatGPT account.",
+        name: 'OpenAICompatibleProviderError',
+        status: 400,
+        type: null,
+      })
+    );
   });
 });

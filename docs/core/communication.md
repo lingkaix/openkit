@@ -4,9 +4,9 @@ Status: Accepted
 
 This document defines OpenKit core communication semantics.
 
-This document owns how clients, channels, Core, agent adapters, agent runtimes, bridge sidecars, and capability services exchange commands, events, files, artifacts, and capability traffic.
+This document owns how clients, channels, Core, agent adapters, agent runtimes, and capability services exchange commands, events, files, artifacts, and capability traffic.
 
-This document owns communication layers, transport projections, input routing and safe-point delivery, communication planes, bridge sidecar responsibilities, deployment-specific communication mapping, and transport independence.
+This document owns communication layers, transport projections, input routing and safe-point delivery, communication planes, mediation boundaries, deployment-specific communication mapping, and transport independence.
 
 This document does not own stable protocol records, event envelope shape, event families, command semantics, lifecycle states, stream replay semantics, command idempotency semantics, error shape, complete HTTP endpoint lists, app read models, database tables, provider-native payloads, or agent runtime private schemas.
 
@@ -41,7 +41,7 @@ The core protocol must not depend on whether a message crosses:
 - Unix socket
 - container exec
 - SSH
-- sidecar mTLS
+- mutually authenticated service transport
 - in-process function calls
 
 The transport must preserve stable command semantics, event ordering, IDs, lifecycle states, and error shape.
@@ -52,7 +52,7 @@ The transport must preserve stable command semantics, event ordering, IDs, lifec
 - Communication should preserve ordering, terminal proof, request correlation, idempotency, and redaction across transports.
 - Client/Core communication and Core/agent communication may use different transports, but they share the same core concepts.
 - Core-to-agent work should use separate control, workspace, artifact, and capability planes rather than forcing every byte through one stream.
-- Bridge sidecars are communication substrate, not business-logic owners.
+- Runtime mediation components are communication substrate, not business-logic owners.
 
 ## Client To Core Projection
 
@@ -289,7 +289,9 @@ The adapter chooses a transport per plane based on agent setup contract, deploym
 
 The control plane starts agent sessions, starts turns, interrupts turns, receives agent events, and tracks lifecycle state.
 
-For Codex-like agents, the reference control surface is a structured app-server protocol such as JSON-RPC over stdio, container exec, SSH exec, Unix socket, or WebSocket fallback.
+Governed workers use an authenticated direct NanoCore control connection. A capability gateway, proxy, backend relay, or sandbox-local alias MUST NOT become an alternative worker-control path.
+
+Inside a governed Codex-like worker, the shim may adapt NanoCore control into a runtime-native structured protocol such as JSON-RPC over stdio. Container exec, SSH, sockets, or backend APIs may support lifecycle and diagnostics, but they do not replace the direct worker-control contract.
 
 For ACP-native, A2A-native, SDK-native, or future runtimes, the adapter may use that runtime's structured control protocol directly.
 
@@ -339,13 +341,13 @@ Capability calls should carry audit metadata such as agent session ID, workspace
 
 Detailed gateway semantics belong to `docs/core/agent-capability.md`.
 
-## Bridge Sidecar
+## Capability Mediation Boundary
 
-`openkit-bridge` is the sidecar used when the agent runtime cannot call Core capability services directly.
+A future capability mediation component may project Core capability services into a worker environment when the runtime cannot call those services directly.
 
-The bridge is part of the communication substrate, not the agent runtime and not the business-logic owner.
+The component is communication substrate, not the agent runtime, worker-control path, or business-logic owner.
 
-Bridge responsibilities:
+Mediation responsibilities may include:
 
 - expose local capability endpoints to the agent
 - establish or accept a secure connection according to the deployment strategy
@@ -355,7 +357,7 @@ Bridge responsibilities:
 - forward audit metadata
 - surface upstream failures as standard errors
 
-Bridge non-responsibilities:
+Mediation non-responsibilities:
 
 - choosing models
 - deciding provider fallback
@@ -374,10 +376,10 @@ In local-container mode, the agent runs in a container on the same machine as Co
 
 Typical mapping:
 
-- Control: container exec or local structured protocol.
+- Control: authenticated direct NanoCore worker control.
 - Workspace: bind mount.
 - Artifact: bind mount.
-- Capability: bridge sidecar or Core loopback endpoint reachable from container.
+- Capability: disabled unless the Agent Environment Package explicitly projects a governed gateway route.
 
 ### Remote Agent
 
@@ -385,21 +387,12 @@ In remote-agent mode, the agent runs in a different controlled environment.
 
 Typical mapping:
 
-- Control: sidecar-multiplexed structured control, SSH exec, or another adapter-selected structured transport.
+- Control: authenticated direct NanoCore worker control over an explicitly reachable endpoint.
 - Workspace: remote bind mount, rsync, object store, or workspace service.
 - Artifact: remote bind mount, rsync back, object store, or artifact pointers.
-- Capability: bridge sidecar over mTLS or another secured Core connection.
+- Capability: disabled unless the Agent Environment Package explicitly projects a governed gateway route.
 
-The preferred long-term remote shape is an agent-side bridge sidecar that multiplexes control, workspace events, artifact pointers, and capability requests over a small number of secure connections.
-
-The connection establishment direction is deployment-specific:
-
-- Server-side Core with a reachable endpoint usually lets the sidecar dial Core.
-- Desktop-embedded Core may dial the remote agent endpoint or sidecar after provisioning the remote agent.
-- Desktop-embedded Core may also reach the sidecar through SSH, a tunnel, a tailnet, a provider API, or a relay.
-- Future managed deployments may let both Core and sidecar dial a relay.
-
-The logical model remains `Core <-> Bridge Sidecar <-> Agent` regardless of which side initiates the network connection.
+Remote placement may use deployment-managed tunnels or routing to make the direct NanoCore control endpoint reachable. Those deployment mechanisms do not become a second control protocol or product-state owner.
 
 ## Transport Independence
 
@@ -437,7 +430,7 @@ Audit is a cross-cutting communication requirement, not a separate transport.
 - Raw heterogeneous streaming payloads MUST NOT replace the core event envelope for live product events.
 - Client and channel adapters MUST NOT implement their own steer, queue, retry, promotion, or safe-point rules as product truth.
 - Workspace bytes and artifact bytes SHOULD NOT travel through the control stream except for intentionally small inline previews.
-- Bridge sidecars MUST NOT choose models, decide provider fallback, own rate limits, decide tool visibility, persist sensitive responses, or implement business logic.
+- Capability mediation components MUST NOT carry worker-control traffic, choose models, decide provider fallback, own rate limits, decide tool visibility, persist sensitive responses, or implement business logic.
 
 ## Related Docs
 

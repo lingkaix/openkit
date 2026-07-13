@@ -9,7 +9,6 @@ export type RuntimeEvidencePhase =
   | 'capability-negotiation'
   | 'policy-apply'
   | 'provider-attach'
-  | 'sidecar-startup'
   | 'heartbeat'
   | 'file-transfer'
   | 'transcript-collection'
@@ -64,7 +63,7 @@ export const runtimeEvidence = sqliteTable(
     transcriptSummary: text('transcript_summary'),
     /** Workspace change collection summary when known. */
     workspaceChangeSummary: text('workspace_change_summary'),
-    /** Control relay or heartbeat summary when known. */
+    /** Worker-control or heartbeat summary when known. */
     controlSummary: text('control_summary'),
     /** Runtime outcome. */
     outcome: text('outcome').$type<RuntimeEvidenceOutcome>().notNull(),

@@ -584,14 +584,3 @@ CREATE TABLE IF NOT EXISTS workspace_quarantine_records (
 
 CREATE INDEX IF NOT EXISTS idx_workspace_quarantine_records_workspace_resolution_created
   ON workspace_quarantine_records (workspace_id, resolution, created_at, quarantine_record_id);
---> statement-breakpoint
-CREATE TABLE IF NOT EXISTS workspace_sync_evidence_bundles (
-  sync_evidence_bundle_id TEXT NOT NULL,
-  workspace_id TEXT NOT NULL,
-  payload_json TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (workspace_id, sync_evidence_bundle_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_workspace_sync_evidence_bundles_workspace_created
-  ON workspace_sync_evidence_bundles (workspace_id, created_at, sync_evidence_bundle_id);

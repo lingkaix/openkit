@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
+import type { LLMGatewayDispatchContext } from '../llm/provider-dispatcher.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import {
   createInternalAgentHookDispatcher,
@@ -194,10 +195,15 @@ export class InternalAgentRunner {
           input,
           model: selection.model,
           providerId: provider.id,
+          ...(input.signal ? { signal: input.signal } : {}),
         },
         {
-          callProvider: async ({ context, request }) => {
-            completion = await this.llmClient.createChatCompletion(provider, request, context);
+          callProvider: async ({ context, request, signal }) => {
+            completion = await this.llmClient.createChatCompletion(
+              provider,
+              request,
+              withProviderSignal(context, signal)
+            );
             return completion;
           },
           createMessageId: createInternalAgentEventId,
@@ -296,16 +302,25 @@ export class InternalAgentRunner {
         input,
         model: selection.model,
         providerId: provider.id,
+        ...(input.signal ? { signal: input.signal } : {}),
         stream: Boolean(createChatCompletionStream),
       },
       {
-        callProvider: ({ context, request }) =>
-          this.llmClient.createChatCompletion(provider, request, context),
+        callProvider: ({ context, request, signal }) =>
+          this.llmClient.createChatCompletion(
+            provider,
+            request,
+            withProviderSignal(context, signal)
+          ),
         ...(createChatCompletionStream
           ? {
-              callProviderStream: async ({ context, request }) =>
+              callProviderStream: async ({ context, request, signal }) =>
                 readOpenAIChatCompletionStreamDeltas(
-                  await createChatCompletionStream(provider, request, context)
+                  await createChatCompletionStream(
+                    provider,
+                    request,
+                    withProviderSignal(context, signal)
+                  )
                 ),
             }
           : {}),
@@ -482,6 +497,30 @@ export class InternalAgentRunner {
       this.failures.length = MAX_FAILURES;
     }
   }
+}
+
+/**
+ * Merges the loop-owned downstream signal into provider transport context.
+ *
+ * @param context Optional caller dispatch context.
+ * @param signal Optional loop-owned provider signal.
+ * @returns Dispatch context retaining caller fields and the bounded provider signal.
+ */
+function withProviderSignal(
+  context: LLMGatewayDispatchContext | undefined,
+  signal: AbortSignal | undefined
+): LLMGatewayDispatchContext {
+  if (!signal) {
+    return context ?? {};
+  }
+
+  return {
+    ...context,
+    transport: {
+      ...context?.transport,
+      signal,
+    },
+  };
 }
 
 /**

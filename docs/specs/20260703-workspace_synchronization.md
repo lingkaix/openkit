@@ -1,7 +1,7 @@
 # Workspace Synchronization
 
 Status: Accepted
-Implementation: Diverged
+Implementation: Implemented
 
 ## Owns
 
@@ -24,7 +24,7 @@ It is the canonical active spec for `WorkspaceInputSnapshot`,
 `WorkspaceMaterializationRecord`, `BackendWorkspaceHandle`,
 `WorkerOutputManifest`, `WorkspaceChangeSet`, `StagedWorkspaceReview`,
 `WorkspaceApplyPlan`, `WorkspaceApplyResult`,
-and `WorkspaceReconciliationRecord`. Workspace synchronization evidence uses the general `EvidenceBundle` ledger and evidence ids carried directly by the owning lifecycle records rather than a parallel synchronization-specific bundle record.
+and `WorkspaceReconciliationRecord`. Workspace synchronization evidence uses automatic general `EvidenceBundle` producers, product-safe refs and digests on lifecycle records, and recovery-required bundle ids on `WorkspaceReconciliationRecord` rather than a parallel synchronization-specific bundle record.
 
 ## Does Not Own
 
@@ -105,7 +105,7 @@ becoming the canonical source of workspace truth.
 - Let backends use native transport primitives without exposing backend internals as product contracts.
 - Support Git repositories as the first implementation path for the OpenKit self-improvement loop.
 - Support non-Git workspaces through filesystem snapshots, change manifests, staged review, and conflict-checked apply.
-- Keep `control.local` focused on worker control metadata and small events instead of large file synchronization.
+- Keep direct NanoCore worker control focused on metadata and small events instead of large file synchronization.
 - Make synchronization reviewable, auditable, resumable, and safe across local mode, server mode, OpenShell, Docker, remote VM, and future managed sandbox backends.
 
 ### Non-goals
@@ -185,12 +185,12 @@ Rules:
 - `WorkerOutputManifest` records changed files, artifacts, transcripts, logs, and evidence under declared output, worktree, session, and artifact slots.
 - `WorkspaceChangeSet` is produced only after NanoCore verifies output manifests against the baseline slot manifests and policy.
 - Backends may use bind mounts, copies, uploads, downloads, tar streams, rsync, Git checkout, provider file APIs, object-store staging, or future FUSE mounts, but those are transport projections rather than product truth.
-- `control.local` may announce slot materialization and output readiness, but large file payloads must move through backend data transport.
+- Direct worker control may announce slot materialization and output readiness, but large file payloads must move through backend data transport.
 - A new static slot, static mount path, provider placeholder, working directory, image, user, group, or control endpoint requirement must be handled by session replacement before this spec's materialization step proceeds.
 
 ## Current Implementation Projection
 
-The current implementation realizes the accepted V1 synchronization behavior below but still retains the rejected synchronization-specific evidence bundle record family, so alignment remains diverged until the linked change plan lands:
+The current implementation realizes the accepted V1 synchronization behavior below:
 
 - `packages/app-api-schemas/src/workspace-sync.ts` defines schemas for input snapshots, materialization records, backend workspace handles, worker output manifests, change sets, staged reviews, review patch payloads, and apply results.
 - `apps/nanocore/drizzle/0010_workspace_sync_records.sql` persists input snapshots, materialization records, change sets, and staged reviews.
@@ -213,7 +213,7 @@ The current implementation realizes the accepted V1 synchronization behavior bel
 - Server tests cover review listing, Git patch apply, filesystem staging apply, filesystem permission-change apply, and persisted apply results after app restart.
 - `WorkspaceSynchronizationBackendKindSchema` still includes `host` for host-local staging, deterministic harnesses, and inferred legacy artifact-backed records. It must not be read as permission to reintroduce host execution as a product Worker Agent runtime.
 
-The implementation now persists redacted `BackendWorkspaceHandle` rows at materialization time and carries them through workspace export/import. It also persists `WorkerOutputManifest` rows derived from collected change sets before reviewed change-set readback, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It persists `WorkspaceApplyPlan` rows before accepted Git patch or filesystem staging apply mutations, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It persists `WorkspaceReconciliationRecord` rows for recovery transitions, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It persists `WorkspaceQuarantineRecord` rows for isolated invalid synchronization material, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It also automatically promotes materialization readiness evidence, staged review evidence refs, patch digests, and apply-result lineage into the general `EvidenceBundle` ledger. The accepted contract removes the redundant `WorkspaceSyncEvidenceBundle` schema, table, APIs, client and MCP projections, and workspace export/import record family; the current implementation temporarily retains them pending the [Evidence Surface Simplification](../changes/202607111848520001-evidence_surface_simplification.md) change plan. Recovery reads evidence bundle ids directly from owning lifecycle and reconciliation records. It projects recovery-specific Action Center rows for `WorkspaceReconciliationRecord` rows in `requires-human`; `resume_collection`, `stage_verified`, `quarantine`, and `abandon` recovery decisions are executable through App API/Core Client/MCP. Terminal recovery decisions set the record retention decision to `teardown-backend`, and `resume_collection` recovers from already durable worker output manifests and general evidence bundle references without requiring live backend reachability. Filesystem synchronization detects POSIX permission-only changes as `mode_changed`, carries old and new permission summaries on changed paths, records them in apply plans, applies accepted permission changes through the same reviewed filesystem staging path, and reports target path type conflicts during apply preflight before mutating the workspace. Binary changed paths carry artifact-only review presentation with digest, media type, byte size, summary, and typed staged-review diagnostics; binary payloads over 1 MiB use the same artifact-only presentation with an explicit payload-size reason. Worker-control terminal events move matching `BackendWorkspaceHandle` rows from `pending` to `retained`, while governed worker teardown later moves matching handles to `cleaned` after successful backend teardown or `failed` after teardown failure. Scheduler lease maintenance records `WorkspaceReconciliationRecord` recovery triggers when a stale lease still has pending backend workspace handles. Live backend reconnection collection, object-store synchronization, and richer multi-backend recovery orchestration remain deferred future work.
+The implementation now persists redacted `BackendWorkspaceHandle` rows at materialization time and carries them through workspace export/import. It also persists `WorkerOutputManifest` rows derived from collected change sets before reviewed change-set readback, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It persists `WorkspaceApplyPlan` rows before accepted Git patch or filesystem staging apply mutations, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It persists `WorkspaceReconciliationRecord` rows for recovery transitions, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It persists `WorkspaceQuarantineRecord` rows for isolated invalid synchronization material, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It automatically promotes materialization readiness evidence, staged review evidence refs, patch digests, and apply-result lineage into the general `EvidenceBundle` ledger, and no `WorkspaceSyncEvidenceBundle` schema, table, API, client or MCP projection, recovery input, or workspace export/import family remains. `WorkspaceReconciliationRecord.evidenceBundleIds` retains recovery-required bundle ids, lifecycle records retain their product-safe refs and digests, and `resume_collection` combines the reconciliation record with matching durable output manifests without requiring live backend reachability. Recovery-specific Action Center rows project `WorkspaceReconciliationRecord` rows in `requires-human`; `resume_collection`, `stage_verified`, `quarantine`, and `abandon` recovery decisions are executable through App API/Core Client/MCP. Terminal recovery decisions set the record retention decision to `teardown-backend`. Filesystem synchronization detects POSIX permission-only changes as `mode_changed`, carries old and new permission summaries on changed paths, records them in apply plans, applies accepted permission changes through the same reviewed filesystem staging path, and reports target path type conflicts during apply preflight before mutating the workspace. Binary changed paths carry artifact-only review presentation with digest, media type, byte size, summary, and typed staged-review diagnostics; binary payloads over 1 MiB use the same artifact-only presentation with an explicit payload-size reason. Worker-control terminal events move matching `BackendWorkspaceHandle` rows from `pending` to `retained`, while governed worker teardown later moves matching handles to `cleaned` after successful backend teardown or `failed` after teardown failure. Scheduler lease maintenance records `WorkspaceReconciliationRecord` recovery triggers when a stale lease still has pending backend workspace handles. Live backend reconnection collection, object-store synchronization, and richer multi-backend recovery orchestration remain deferred future work.
 
 ## Record Contract
 
@@ -291,7 +291,7 @@ when applicable, final status, and reviewer decision linkage.
 - cleanup or retention decision
 - start and finish timestamps
 
-Workspace synchronization MUST attach general `EvidenceBundle` ids directly to the lifecycle records that own the evidence relationship. It MUST NOT introduce a parallel workspace-synchronization evidence bundle schema, table, API, or export record family. Backend-native evidence remains referenced through product-safe refs and digests on the owning materialization, output, review, reconciliation, quarantine, apply, or general evidence records.
+Workspace synchronization MUST write general `EvidenceBundle` rows automatically at the lifecycle boundaries that own evidence production. `WorkspaceReconciliationRecord` MAY retain the bundle ids required by recovery; other lifecycle records retain their existing product-safe refs and digests. Workspace synchronization MUST NOT introduce a parallel synchronization-specific evidence schema, table, API, or export record family. Backend-native evidence remains referenced through product-safe refs and digests on the owning materialization, output, review, reconciliation, quarantine, apply, or general evidence records.
 
 ## State Model
 
@@ -398,7 +398,7 @@ review affordances. The exact artifact-only size threshold remains policy.
 
 ## Control Channel And Data Transport
 
-`control.local` is for small worker control messages: heartbeat, turn events,
+Direct NanoCore worker control is for small messages: heartbeat, turn events,
 approval state, artifact notices, change-set ready notices, and final status.
 
 Backend-native data transport moves large payloads: repositories, patches,
@@ -453,10 +453,7 @@ The OpenShell materializer should:
 - collect `/openkit/session/workspace-changes.json`, patch files, bundles, artifact notices, logs, and final status during teardown
 - record every gateway, sandbox, policy, upload, download, and file-transfer step as backend evidence
 
-The OpenShell adapter compiles OpenKit-owned materialization plans into
-OpenShell-native artifacts and normalizes OpenShell evidence back into
-OpenKit-owned records. Public App API, MCP, Action Center, and reviewer surfaces
-must not need OpenShell-native ids or YAML.
+The OpenShell adapter compiles OpenKit-owned materialization plans into OpenShell-native artifacts and normalizes OpenShell evidence back into OpenKit-owned records. Public App API, end-user CLI, Action Center, and reviewer surfaces must not need OpenShell-native ids or YAML.
 
 ## OpenShell Codex Runtime Configuration
 
@@ -485,7 +482,7 @@ The OpenShell network policy must explicitly allow the Codex binary to reach the
 OpenAI or ChatGPT HTTPS endpoints required by the configured account. The first
 verified dogfood configuration allowed `api.openai.com`, `chatgpt.com`,
 `chat.openai.com`, and `auth.openai.com` for `/usr/local/bin/codex` and
-`/usr/local/lib/codex/codex/codex`.
+`/usr/local/lib/codex/bin/codex`.
 
 Future production packaging should replace this deployment-local allowlist with
 a named Codex provider endpoint profile.
@@ -601,7 +598,7 @@ requirements are:
   pending backend workspace handles. Human recovery decisions now produce
   terminal `recovered`, `quarantined`, or `unrecoverable` states and mark the
   backend retention decision as `teardown-backend`.
-The accepted recovery contract does not persist a separate synchronization-specific evidence linkage record. `WorkspaceReconciliationRecord.evidenceBundleIds` and evidence ids on the owning lifecycle records provide the required recovery linkage, while the general `EvidenceBundle` ledger owns cross-record evidence indexing, retention, sensitivity, promotion, and import status.
+The accepted recovery contract does not persist a separate synchronization-specific evidence linkage record. `WorkspaceReconciliationRecord.evidenceBundleIds` plus `collectedOutputManifestIds` provide the required recovery linkage; owning lifecycle records provide domain refs and digests, while the general `EvidenceBundle` ledger owns cross-record evidence indexing, retention, sensitivity, promotion, and import status.
 
 Quarantine is a record, not just a state. A `WorkspaceQuarantineRecord` MUST
 carry: quarantine id, the lifecycle record ids it isolates, the validation
@@ -662,9 +659,9 @@ control with workspace synchronization.
 
 Git is a strategy, not the abstraction.
 
-### Stream All Files Through control.local
+### Stream All Files Through Worker Control
 
-Streaming all file data through `control.local` would simplify one code path but
+Streaming all file data through the direct worker-control connection would simplify one code path but
 would overload the control plane, create large-message and retry problems, and
 duplicate backend file APIs.
 
@@ -775,8 +772,7 @@ Contract above; their build-out is implementation work tracked through the
 - `docs/specs/20260703-worker_control_protocol.md`
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260704-session_static_workspace_materialization.md`
-- `docs/specs/20260627-openkit_development_loop_protocol.md`
-- `docs/specs/20260617-openkit_ai_interface.md`
+- `docs/specs/20260713-openkit_agent_skill_interface.md`
 - `docs/specs/20260531-worker_turn_reliability_envelope.md`
 - `docs/specs/20260531-human_attention_intervention_model.md`
 - `docs/core/storage.md`

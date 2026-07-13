@@ -21,9 +21,9 @@ OpenKit turns those isolated sessions into a managed workspace:
 
 OpenKit is in internal developer-preview development.
 
-The current release posture is deliberately kernel-first. Core mechanisms are implemented at the NanoCore layer, callable by an external coordinator agent through `@openkit/mcp`, and verified through focused core tests. The Web UI remains part of the product direction, but it follows stable NanoCore APIs rather than driving core behavior.
+The accepted release posture is deliberately NanoCore-first and end-user Agent-Skill-first. Core mechanisms stabilize at the NanoCore App API layer, then one progressively disclosed `openkit` Skill and its bundled CLI project the complete supported user/operator capability surface. The Web UI remains part of the product direction, but it follows stable NanoCore APIs rather than driving core behavior.
 
-Use this preview when you want to evaluate or dogfood the OpenKit work loop with a desktop AI application acting as coordinator.
+The unified Skill and CLI are not implemented yet. The current checkout still contains the legacy user-facing `@openkit/mcp` package and four setup/loop Skills, but those surfaces are removal-only and must not be used as the basis for new integrations.
 
 ## Core Model
 
@@ -42,8 +42,8 @@ Workspace -> Thread -> Turn -> Item[]
 ## Main Modules
 
 - `apps/nanocore`: the kernel and public App API server for workspaces, threads, Goal Mode, Action Center, artifacts, runtime config, auth, storage, and worker coordination.
-- `mcp/`: `@openkit/mcp`, the stdio MCP channel that lets desktop AI applications operate NanoCore through public contracts.
-- `skills/`: OpenKit-authored setup and loop Skills for MCP-capable desktop AI applications.
+- `skills/`: the accepted home of one end-user `openkit` Skill, its bundled CLI, and progressively disclosed operating guidance; four legacy Skill folders remain temporarily pending deletion.
+- `mcp/`: the removal-only legacy `@openkit/mcp` package, retained temporarily for capability-parity verification before clean deletion.
 - `apps/web`: the browser product surface over stabilized NanoCore APIs.
 - `packages/protocol`: stable Core protocol schemas and generated JSON Schema outputs.
 - `packages/app-api-schemas`: shared NanoCore App API schemas for product read models and admin/config surfaces.
@@ -56,39 +56,19 @@ Workspace -> Thread -> Turn -> Item[]
 - Durable workspace, thread, turn, item, artifact, knowledge, agent session, approval, automation, and review-related storage foundations.
 - Goal Mode for objective capture, plan review, bounded steps, steering, verification evidence, and terminal completion state.
 - Action Center read models for human attention, approvals, blocked work, and follow-up decisions.
-- Workspace repository linking, sync records, review records, apply results, artifacts, and evidence bundles through MCP-facing flows.
-- `@openkit/mcp` as the primary dogfooding channel for external coordinator agents.
-- OpenKit setup and loop Skills: `openkit-setup`, `openkit-setup-dev`, `openkit-loop`, and `openkit-loop-dev`.
+- Workspace repository linking, sync records, review records, apply results, artifacts, and evidence bundles through public NanoCore contracts.
+- A currently implemented legacy `@openkit/mcp` coordinator path that remains only while the unified Skill and CLI reach capability parity.
+- Four currently implemented legacy setup and loop Skills that are scheduled to be replaced by one end-user-only `openkit` Skill.
 - OpenShell and worker-path foundations for running bounded work through NanoCore-managed coordination.
-- Focused static, package, NanoCore, MCP, smoke, and story-test layers for release validation.
+- Focused static, package, NanoCore, channel, smoke, and story-test layers for release validation.
 
-## Try The MCP-First Loop
+## Agent Skill Interface Direction
 
-Start NanoCore:
+The accepted AI-native interface is one end-user Skill with a bundled CLI. The Skill will teach setup, diagnostics, workspace operation, Chat Mode, Task Mode, Goal Mode, bounded loops, Action Center decisions, artifacts, evidence, knowledge, recovery, runtime configuration, vault administration, audit, usage, automations, Git operations, and workspace portability.
 
-```bash
-mise exec -- pnpm --filter @openkit/nanocore dev
-```
+The CLI will use a small agent-first command contract: `openkit doctor`, `openkit ops search`, `openkit ops describe`, and `openkit ops call`. It will expose public NanoCore capabilities progressively rather than advertising a flat eager tool catalog. No user-facing MCP compatibility layer or developer Skill variant will remain.
 
-Build and run the MCP server:
-
-```bash
-mise exec -- pnpm --filter @openkit/mcp build
-OPENKIT_NANOCORE_URL=http://127.0.0.1:3000 mise exec -- pnpm --filter @openkit/mcp start
-```
-
-For source development, use:
-
-```bash
-mise exec -- pnpm --filter @openkit/mcp dev
-```
-
-Configure your MCP-capable desktop AI application with the `openkit-mcp` package entrypoint or the package start command described in [`mcp/README.md`](./mcp/README.md). Use [`skills/README.md`](./skills/README.md) to choose the right Skill:
-
-- `openkit-setup`: connect an end-user desktop AI app to an existing NanoCore backend.
-- `openkit-setup-dev`: prepare this repository for local NanoCore plus MCP dogfooding.
-- `openkit-loop`: coordinate bounded end-user workspace work.
-- `openkit-loop-dev`: coordinate review-gated OpenKit self-improvement.
+This is currently an accepted, not-yet-implemented contract. Do not expect `skills/openkit/` or its CLI commands to exist until the implementation stages in [`docs/changes/202607131935040001-openkit_agent_skill_interface.md`](./docs/changes/202607131935040001-openkit_agent_skill_interface.md) are completed.
 
 ## Web UI
 
@@ -118,9 +98,6 @@ Prefer `mise exec --` or `mise run` so the repository toolchain comes from `.mis
 ```bash
 mise exec -- pnpm run check:repo
 mise exec -- pnpm --filter @openkit/nanocore test
-mise exec -- pnpm --filter @openkit/mcp test
-mise exec -- pnpm --filter @openkit/mcp typecheck
-mise exec -- pnpm --filter @openkit/mcp smoke:nanocore
 mise run verify
 mise run verify-release
 mise run verify-full
@@ -133,9 +110,9 @@ Use focused package commands while developing and run release gates before taggi
 ```text
 .
 ├── apps/                   # NanoCore and Web product surfaces
-├── mcp/                    # @openkit/mcp stdio control channel
+├── mcp/                    # Removal-only legacy user-facing MCP package
 ├── packages/               # Shared protocol, App API, config, and client packages
-├── skills/                 # OpenKit-authored setup and loop Skills
+├── skills/                 # Unified end-user Skill target and temporary legacy Skills
 ├── docs/                   # Core docs, specs, cookbooks, changes, and working logs
 ├── scripts/                # Bootstrap and helper scripts
 ├── .mise.toml              # Tool versions and top-level tasks
@@ -146,13 +123,14 @@ Use focused package commands while developing and run release gates before taggi
 ## Where To Read More
 
 - [`AGENTS.md`](./AGENTS.md): execution rules for agents working in this repository.
-- [`mcp/README.md`](./mcp/README.md): `@openkit/mcp` setup, tools, commands, and smoke tests.
-- [`skills/README.md`](./skills/README.md): OpenKit Skill selection guide.
+- [`skills/README.md`](./skills/README.md): unified end-user Skill package direction and transitional state.
+- [`mcp/README.md`](./mcp/README.md): removal-only rules for the legacy user-facing MCP package.
 - [`docs/core/work-model.md`](./docs/core/work-model.md): stable user-facing work model.
 - [`docs/deployment.md`](./docs/deployment.md): stable deployment model.
 - [`docs/product-vision.md`](./docs/product-vision.md): long-term product direction.
 - [`docs/roadmap.md`](./docs/roadmap.md): roadmap and version-scope planning.
-- [`docs/specs/20260617-openkit_ai_interface.md`](./docs/specs/20260617-openkit_ai_interface.md): AI-native product channel boundary.
+- [`docs/specs/20260713-openkit_agent_skill_interface.md`](./docs/specs/20260713-openkit_agent_skill_interface.md): canonical end-user Agent Skill Interface contract.
+- [`docs/changes/202607131935040001-openkit_agent_skill_interface.md`](./docs/changes/202607131935040001-openkit_agent_skill_interface.md): staged implementation and clean-removal plan.
 - [`apps/README.md`](./apps/README.md): application sub-project expectations.
 - [`packages/README.md`](./packages/README.md): shared package inventory.
 - [`docs/change-tracking.md`](./docs/change-tracking.md): rules for specs, changes, and working logs.

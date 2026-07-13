@@ -136,8 +136,6 @@ function createFakeCoreClient(): {
           record('app.getThreadDashboard', { threadId, workspaceId }),
         getThreadGoalSummary: (workspaceId: string, threadId: string) =>
           record('app.getThreadGoalSummary', { threadId, workspaceId }),
-        createEvidenceBundle: (workspaceId: string, input: unknown) =>
-          record('app.createEvidenceBundle', { input, workspaceId }),
         listWorkspaceEvidenceBundles: (workspaceId: string) =>
           record('app.listWorkspaceEvidenceBundles', { workspaceId }),
         listWorkspaceRuntimeEvidence: (workspaceId: string) =>
@@ -164,8 +162,6 @@ function createFakeCoreClient(): {
           record('app.listWorkspaceReconciliationRecords', { workspaceId }),
         listWorkspaceQuarantineRecords: (workspaceId: string) =>
           record('app.listWorkspaceQuarantineRecords', { workspaceId }),
-        listWorkspaceSyncEvidenceBundles: (workspaceId: string) =>
-          record('app.listWorkspaceSyncEvidenceBundles', { workspaceId }),
         listWorkspaceApplyResults: (workspaceId: string) =>
           record('app.listWorkspaceApplyResults', { workspaceId }),
         getWorkspaceApplyResult: (workspaceId: string, applyResultId: string) =>
@@ -1440,30 +1436,11 @@ describe('NanoCore public client facade', () => {
     });
   });
 
-  it('creates evidence bundles through the public App API client', async () => {
-    const { calls, client } = createFakeCoreClient();
+  it('does not expose manual evidence bundle creation', () => {
+    const { client } = createFakeCoreClient();
     const facade = createNanoCoreFacade(client);
 
-    await facade.createEvidenceBundle({
-      workspaceId: 'ws_demo',
-      goalId: 'goal_demo',
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
-    });
-
-    expect(calls).toEqual([
-      {
-        method: 'app.createEvidenceBundle',
-        input: {
-          workspaceId: 'ws_demo',
-          input: {
-            goalId: 'goal_demo',
-            threadId: 'th_demo',
-            turnId: 'turn_demo',
-          },
-        },
-      },
-    ]);
+    expect(facade).not.toHaveProperty('createEvidenceBundle');
   });
 
   it('reads runtime evidence through the public App API client', async () => {
@@ -1592,7 +1569,7 @@ describe('NanoCore public client facade', () => {
     const { calls, client } = createFakeCoreClient();
     const facade = createNanoCoreFacade(client);
 
-    await facade.readWorkspaceSyncRecords({ workspaceId: 'ws_demo' });
+    const records = await facade.readWorkspaceSyncRecords({ workspaceId: 'ws_demo' });
     await facade.readWorkspaceSyncRecords({
       workspaceId: 'ws_demo',
       kind: 'materialization-records',
@@ -1609,11 +1586,6 @@ describe('NanoCore public client facade', () => {
       workspaceId: 'ws_demo',
       kind: 'quarantine-records',
     });
-    await facade.readWorkspaceSyncRecords({
-      workspaceId: 'ws_demo',
-      kind: 'sync-evidence-bundles',
-    });
-
     expect(calls).toEqual([
       { method: 'app.listWorkspaceInputSnapshots', input: { workspaceId: 'ws_demo' } },
       { method: 'app.listWorkspaceMaterializationRecords', input: { workspaceId: 'ws_demo' } },
@@ -1624,7 +1596,6 @@ describe('NanoCore public client facade', () => {
       { method: 'app.listWorkspaceApplyPlans', input: { workspaceId: 'ws_demo' } },
       { method: 'app.listWorkspaceReconciliationRecords', input: { workspaceId: 'ws_demo' } },
       { method: 'app.listWorkspaceQuarantineRecords', input: { workspaceId: 'ws_demo' } },
-      { method: 'app.listWorkspaceSyncEvidenceBundles', input: { workspaceId: 'ws_demo' } },
       { method: 'app.listWorkspaceMaterializationRecords', input: { workspaceId: 'ws_demo' } },
       { method: 'app.listBackendWorkspaceHandles', input: { workspaceId: 'ws_demo' } },
       { method: 'app.listWorkerOutputManifests', input: { workspaceId: 'ws_demo' } },
@@ -1632,8 +1603,8 @@ describe('NanoCore public client facade', () => {
       { method: 'app.listWorkspaceApplyPlans', input: { workspaceId: 'ws_demo' } },
       { method: 'app.listWorkspaceReconciliationRecords', input: { workspaceId: 'ws_demo' } },
       { method: 'app.listWorkspaceQuarantineRecords', input: { workspaceId: 'ws_demo' } },
-      { method: 'app.listWorkspaceSyncEvidenceBundles', input: { workspaceId: 'ws_demo' } },
     ]);
+    expect(records).not.toHaveProperty('syncEvidenceBundles');
   });
 
   it('reads durable Agent Environment Package snapshots through the public App API client', async () => {

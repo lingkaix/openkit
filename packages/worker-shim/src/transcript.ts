@@ -148,7 +148,7 @@ export class WorkerTranscriptWriter {
    * @returns Promise that resolves after the line is durable.
    */
   public async writeTerminalOutcome(input: WorkerTerminalOutcomeInput): Promise<void> {
-    const eventType = input.status === 'failed' ? 'turn.failed' : 'turn.completed';
+    const eventType = input.status === 'completed' ? 'turn.completed' : 'turn.failed';
     const record = WorkerTranscriptEventRecordSchema.parse({
       ...this.nextBaseRecord('event'),
       event: {

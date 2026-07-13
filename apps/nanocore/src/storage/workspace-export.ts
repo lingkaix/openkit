@@ -59,7 +59,6 @@ export const WORKSPACE_EXPORT_PORTABLE_WORKSPACE_SQLITE_TABLES = [
   'workspace_quarantine_records',
   'workspace_reconciliation_records',
   'workspace_repository_resources',
-  'workspace_sync_evidence_bundles',
   'staged_workspace_reviews',
 ] as const;
 
@@ -151,6 +150,8 @@ export interface WriteWorkspaceExportTreeInput {
   evidenceBundles?: readonly unknown[];
   /** Workspace-scoped runtime evidence to export as line-oriented records. */
   runtimeEvidence?: readonly unknown[];
+  /** Product-safe normalized runtime provenance indexes keyed by source bundle id. */
+  runtimeProvenanceIndexes?: ReadonlyMap<string, string>;
   /** Workspace-scoped usage records to export as line-oriented records. */
   usageRecords?: readonly unknown[];
   /** Workspace-owned data source catalog to export. */
@@ -183,8 +184,6 @@ export interface WriteWorkspaceExportTreeInput {
   workspaceReconciliationRecords?: readonly unknown[];
   /** Durable workspace quarantine rows to export as line-oriented records. */
   workspaceQuarantineRecords?: readonly unknown[];
-  /** Durable workspace sync evidence bundle rows to export as line-oriented records. */
-  workspaceSyncEvidenceBundles?: readonly unknown[];
   /** Workspace-scoped permission decision rows to export as line-oriented records. */
   permissionDecisions?: readonly unknown[];
   /** Pending user turn rows to export as line-oriented records. */
@@ -375,11 +374,48 @@ export function writeWorkspaceExportTree(
     if (input.capabilityCalls?.length) {
       writeJsonl(join(recordsRoot, 'capability-calls.jsonl'), input.capabilityCalls);
     }
-    if (input.evidenceBundles?.length) {
-      writeJsonl(join(recordsRoot, 'evidence-bundles.jsonl'), input.evidenceBundles);
+    const evidenceBundles = (input.evidenceBundles ?? []).map((record) =>
+      isRestrictedRuntimeProvenanceBundle(record)
+        ? {
+            ...record,
+            importStatus: 'expired',
+            rawEvidenceRefs: [],
+            redactedEvidenceRefs: [],
+          }
+        : record
+    );
+    if (evidenceBundles.length) {
+      writeJsonl(join(recordsRoot, 'evidence-bundles.jsonl'), evidenceBundles);
     }
     if (input.runtimeEvidence?.length) {
       writeJsonl(join(recordsRoot, 'runtime-evidence.jsonl'), input.runtimeEvidence);
+    }
+    for (const [bundleId, text] of input.runtimeProvenanceIndexes ?? []) {
+      assertSafeWorkspacePathSegment(bundleId, 'Evidence bundle id');
+      const bundle = evidenceBundles.find(
+        (record): record is Record<string, unknown> =>
+          isRecord(record) &&
+          record.id === bundleId &&
+          record.sourceKind === 'worker-runtime-provenance-index'
+      );
+      if (
+        !bundle ||
+        !Array.isArray(bundle.contentDigests) ||
+        bundle.contentDigests.length !== 1 ||
+        bundle.contentDigests[0] !== digestText(text)
+      ) {
+        throw new Error(`Runtime provenance index does not match its evidence bundle: ${bundleId}`);
+      }
+      const path = join(
+        input.exportRoot,
+        'workspace-files',
+        'evidence',
+        'bundles',
+        bundleId,
+        'runtime-origin-index.jsonl'
+      );
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, text);
     }
     if (input.usageRecords?.length) {
       writeJsonl(join(recordsRoot, 'usage-records.jsonl'), input.usageRecords);
@@ -468,12 +504,6 @@ export function writeWorkspaceExportTree(
         input.workspaceQuarantineRecords
       );
     }
-    if (input.workspaceSyncEvidenceBundles?.length) {
-      writeJsonl(
-        join(recordsRoot, 'workspace-sync-evidence-bundles.jsonl'),
-        input.workspaceSyncEvidenceBundles
-      );
-    }
     if (input.permissionDecisions?.length) {
       writeJsonl(join(recordsRoot, 'permission-decisions.jsonl'), input.permissionDecisions);
     }
@@ -543,6 +573,20 @@ export function writeWorkspaceExportTree(
     rmSync(input.exportRoot, { recursive: true, force: true });
     throw error;
   }
+}
+
+/** Returns whether one export record is the restricted runtime provenance source bundle. */
+function isRestrictedRuntimeProvenanceBundle(record: unknown): record is Record<string, unknown> {
+  return (
+    isRecord(record) &&
+    record.sourceKind === 'worker-runtime-provenance-raw' &&
+    record.retentionClass === 'restricted-raw'
+  );
+}
+
+/** Returns whether one unknown value is a non-array object. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**

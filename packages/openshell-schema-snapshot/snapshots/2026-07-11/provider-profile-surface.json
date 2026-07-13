@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "upstreamProviderProfile": {
     "categories": [
       "other",
@@ -23,6 +23,7 @@
       "nvidia",
       "pypi"
     ],
+    "genericProviderType": "generic",
     "authStyles": ["basic", "bearer", "header", "query", "path"],
     "refreshStrategies": [
       "static",
@@ -42,23 +43,44 @@
     ]
   },
   "openKitProviderProfileMapping": {
-    "requiredFields": ["id", "category", "displayName", "credentials", "endpoints"],
-    "categories": ["agent", "mcp", "model", "repository", "custom"],
-    "credentialFields": ["envVar", "authStyle", "headerName", "queryParam", "pathTemplate"],
-    "authStyles": ["bearer", "header", "query", "path", "none"],
-    "refreshStrategies": [
-      "static",
-      "external",
-      "oauth2_refresh_token",
-      "oauth2_client_credentials",
-      "google_service_account_jwt"
+    "requiredFields": [
+      "id",
+      "display_name",
+      "category",
+      "credentials",
+      "endpoints",
+      "binaries",
+      "inference_capable"
     ],
-    "gatewayDelegatedRefreshStrategies": [
-      "oauth2_refresh_token",
-      "oauth2_client_credentials",
-      "google_service_account_jwt"
+    "credentialPlaceholderPrefix": "openshell:resolve:env:",
+    "categories": ["inference"],
+    "credentialFields": [
+      "name",
+      "description",
+      "env_vars",
+      "required",
+      "auth_style",
+      "header_name",
+      "query_param"
     ],
-    "refreshMaterialKeys": ["refresh_token", "client_secret", "private_key"],
+    "endpointFields": ["host", "port", "protocol", "enforcement", "rules"],
+    "ruleFields": ["allow"],
+    "restAllowRuleFields": ["method", "path"],
+    "workerInferenceRules": [
+      {
+        "allow": {
+          "method": "POST",
+          "path": "/api/worker-inference/v1/chat/completions"
+        }
+      },
+      {
+        "allow": {
+          "method": "POST",
+          "path": "/api/worker-inference/v1/responses"
+        }
+      }
+    ],
+    "authStyles": ["bearer"],
     "reservedEnvPrefixPattern": "^v[0-9]+_[A-Za-z0-9_]+$"
   }
 }

@@ -56,7 +56,7 @@ Detailed authored manifest to AEP resolution is owned by `docs/specs/20260703-ag
 
 - Do not preserve historical setup file shapes as supported current behavior.
 - Do not make old manifest/profile specs active guidance.
-- Do not let worker-side MCP supply be confused with the user-facing `@openkit/mcp` channel.
+- Do not let worker-side MCP supply be confused with the end-user Agent Skill Interface.
 - Do not reintroduce host execution as a real Worker Agent runtime.
 
 ## Current Contract
@@ -72,7 +72,7 @@ The snapshot should include:
 - workspace materialization inputs and writable path policy
 - provider attachments, vault references, and credential visibility policy
 - MCP and other tool supply intended for the worker runtime
-- control endpoint metadata when live worker control is available
+- mandatory direct NanoCore control endpoint metadata
 - transcript, artifact, workspace change, and audit output paths
 
 Backends materialize the snapshot. Product surfaces read NanoCore records and redacted backend evidence, not backend-native manifests.
@@ -85,8 +85,8 @@ The high-level setup and runtime supply contract owned by this spec is implement
 - `apps/nanocore/src/config/agents-loader.ts` loads `.agent.jsonc` files and maps them into runtime-facing agent manifests.
 - `apps/nanocore/src/agents/setup-resolver.ts` resolves active deployment, provider references, runtime summary, transport, and origin metadata.
 - `apps/nanocore/src/runtime/agent-environment.ts` resolves OpenShell-backed AEP snapshots from selected agent, turn, workspace roots, and backend input.
-- Current AEP resolution includes static worker Skill and MCP catalog fixtures, `control.local`, `capability.local`, `inference.local`, transcript paths, workspace roots, provider attachments, vault references, policy blocks, and observability blocks.
-- Current worker capability supply exposes `knowledge.*` route families through the AEP capability projection.
+- Current AEP resolution includes static worker Skill and MCP catalog fixtures, required direct NanoCore worker control, backend-local inference or an exact trusted NanoCore worker-inference route, transcript paths, workspace roots, provider attachments where allowed, vault references where allowed, policy blocks, and observability blocks.
+- Current AEPs declare `capabilities.mode: disabled` with no routes. Static worker supply does not expose `knowledge.*`, MCP, or any other callable capability family.
 - The full durable server, workspace, user, request, vault, permission, scheduler, and backend capability layer stack remains owned and tracked by `docs/specs/20260703-agent_manifest_aep_resolution.md` rather than by this high-level entry point.
 
 ## Runtime Placement Mapping

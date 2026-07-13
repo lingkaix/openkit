@@ -104,7 +104,7 @@ The intended flow is:
 
 This layering is compatible with the existing OpenShell-first backend strategy. OpenShell remains the first-class local and remote container backend, and it should strongly influence runtime policy materialization, provider vocabulary, endpoint declarations, binary allowlists, and enforcement evidence.
 
-OpenShell must not become the canonical OpenKit permission model. Public App API, MCP, Web UI, Action Center, storage records, and audit records must not require consumers to understand OpenShell-native sandbox ids, gateway names, provider handles, raw policy YAML, supervisor logs, or backend-private environment values.
+OpenShell must not become the canonical OpenKit permission model. Public App API, end-user CLI, Web UI, Action Center, storage records, and audit records must not require consumers to understand OpenShell-native sandbox ids, gateway names, provider handles, raw policy YAML, supervisor logs, or backend-private environment values.
 
 The acceptable dependency is an adapter boundary: OpenKit-owned policy and runtime records compile into OpenShell-native artifacts, and OpenShell-native evidence normalizes back into OpenKit-owned records.
 

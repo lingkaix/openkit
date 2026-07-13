@@ -835,6 +835,7 @@ export function registerQuickAndChatModeRoutes({
         providerId,
         model,
         messages: [{ role: 'user', content: input.input }],
+        signal: c.req.raw.signal,
         metadata: {
           openkit: {
             sessionId,
@@ -1277,6 +1278,7 @@ export function registerQuickAndChatModeRoutes({
         providerId,
         model,
         messages: [{ role: 'user', content: parsed.data.input }],
+        signal: c.req.raw.signal,
         metadata: {
           openkit: {
             sessionId,

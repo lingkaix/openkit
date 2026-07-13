@@ -1,7 +1,7 @@
 # L6 Story Acceptance Testing
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
 
 ## Owns
 
@@ -26,11 +26,11 @@ It exists because OpenKit is an agent workflow product, and many important failu
 
 L6 should be agent-first for exploratory and long-flow acceptance, deterministic where a story becomes stable enough to automate, and strict about reducing confirmed defects into lower-level regression coverage.
 
-The current repository implementation includes deterministic Web and MCP slices plus opt-in real Codex, real worker, and real-provider preflight slices: Markdown story artifacts live in `tests/stories/`, executable deterministic adapters and preflight runners live in `tests/story-runner/`, and `pnpm -w test:stories` runs the metadata parser tests plus the current deterministic story adapters.
+The current repository implementation includes deterministic Web and legacy user-facing MCP slices plus opt-in real Codex, real worker, and real-provider preflight slices: Markdown story artifacts live in `tests/stories/`, executable deterministic adapters and preflight runners live in `tests/story-runner/`, and `pnpm -w test:stories` runs the metadata parser tests plus the current deterministic story adapters.
 
 The deterministic MCP slice now covers Goal Mode, Task Mode escalation, Chat Mode, workspace portability, and recovery controls. `tests/stories/goal-mode-mcp-smoke.story.md` validates the Goal Mode planning, approval, step, evidence, Action Center, and artifact read path through the MCP facade. `tests/stories/task-mode-mcp-smoke.story.md` validates the Task Mode MCP entry point and Task-to-Goal escalation path. `tests/stories/chat-mode-mcp-smoke.story.md` validates Chat Mode knowledge-backed answering, clarification gates, Action Center projection, and Goal Mode handoff through the same facade. `tests/stories/workspace-portability-release.story.md` validates cross-deployment workspace export/import, repository re-binding, lineage evidence, and redaction checks through a deterministic MCP runner, while vault reference re-binding remains part of the full agentic seeded path until a public setup path can seed workspace vault references without private test hooks. `tests/stories/recovery-mcp-smoke.story.md` validates interrupted worker recovery reads, pending input edit/follow-up/cancel actions, and interrupted checkpoint retry through the MCP facade.
 
-The V1 implementation is complete for the accepted deterministic and opt-in preflight L6 contract. A future agentic executor remains deferred product work and does not block the current story artifact, metadata, deterministic adapter, MCP runner, explicit opt-in, evidence, and release-policy contract.
+The existing deterministic and opt-in preflight L6 mechanics are implemented, but the accepted end-user channel contract is only partially covered. The user-facing MCP stories and runners are removal-only and must be replaced by unified Skill and bundled CLI stories before the Agent Skill Interface change closes. A future general agentic executor remains deferred product work and does not block that replacement.
 
 ## Goals
 
@@ -184,7 +184,7 @@ It starts an isolated NanoCore and Web stack, enables the deterministic internal
 
 The current MCP-backed deterministic stories are `tests/stories/goal-mode-mcp-smoke.story.md`, `tests/stories/task-mode-mcp-smoke.story.md`, `tests/stories/chat-mode-mcp-smoke.story.md`, `tests/stories/workspace-portability-release.story.md`, and `tests/stories/recovery-mcp-smoke.story.md`. Their adapters start built NanoCore on disposable local data roots, use the built OpenKit MCP registry against the public App API, avoid real provider and real Codex dependencies, and write optional evidence summaries when the relevant evidence directory environment variable is set.
 
-Deterministic mode is appropriate for stable acceptance flows, release confidence checks, workflows where fixed accessible selectors are reliable, and MCP-first dogfooding loops that intentionally validate the AI Interface rather than the browser UI.
+Deterministic mode is appropriate for stable acceptance flows, release confidence checks, workflows where fixed accessible selectors are reliable, and Agent-Skill-first dogfooding loops that intentionally validate the AI-native interface rather than the browser UI.
 
 It is not the preferred form for every L6 story.
 
@@ -384,6 +384,8 @@ If future release policy promotes any L6 story to an automatic gate, that story 
 
 ## Current Implementation
 
+The MCP-backed files and commands listed below describe the current removal-only implementation, not the accepted future channel. Replacement coverage must exercise Skill discovery, `openkit doctor`, progressive operation search and description, operation invocation, the default bounded loop, secret-safe credential handling, and public-capability coverage through the bundled CLI; worker-side MCP stories remain future targets for a separate capability plane and are not currently runnable.
+
 The committed stories are `tests/stories/openkit-local-self-check.story.md`, `tests/stories/goal-mode-mcp-smoke.story.md`, `tests/stories/task-mode-mcp-smoke.story.md`, `tests/stories/chat-mode-mcp-smoke.story.md`, `tests/stories/workspace-portability-release.story.md`, `tests/stories/recovery-mcp-smoke.story.md`, `tests/stories/goal-mode-real-codex-release.story.md`, `tests/stories/task-mode-real-worker-release.story.md`, `tests/stories/pi-ai-gateway-real-provider.story.md`, and `tests/stories/worker-mcp-governed-tool-use.story.md`.
 
 The metadata parser is `tests/story-runner/story-metadata.mjs`.
@@ -442,7 +444,7 @@ The Web package story command is `pnpm --filter @openkit/web e2e:stories`.
 
 The current deterministic Web story starts a local stack, creates a workspace, creates a thread, sends a simulated turn, grants an approval, answers a question, opens an artifact, and verifies diagnostics redaction.
 
-The current deterministic Goal Mode MCP story builds the required packages, starts a temporary NanoCore plus MCP stdio server through the existing smoke harness, reads status and diagnostics, links a disposable repository, creates a thread, starts Goal Mode, drafts and approves a plan, runs one bounded step, resolves deterministic approval or question gates, creates an evidence bundle, and reads the produced artifact when present.
+The current deterministic Goal Mode MCP story builds the required packages, starts a temporary NanoCore plus MCP stdio server through the existing smoke harness, reads status and diagnostics, links a disposable repository, creates a thread, starts Goal Mode, drafts and approves a plan, runs one bounded step, resolves deterministic approval or question gates, verifies that manual evidence-bundle creation is absent, reads the general evidence-bundle resource without creating a bundle, and reads the produced artifact when present.
 
 The current deterministic Task Mode, Chat Mode, workspace portability, and recovery MCP stories exercise the same public AI Interface path for Task escalation, knowledge-backed Chat answers, Goal handoff, workspace export/import, repository re-binding, lineage evidence, recovery controls, and redaction checks.
 
@@ -617,12 +619,13 @@ Mitigation: Require defect reduction into the lowest practical deterministic lay
 ## Rollout Plan
 
 1. Keep the current deterministic story runner as the smoke test for the L6 infrastructure itself.
-2. Add a story catalog or metadata report when the number of stories grows beyond what directory naming makes obvious.
-3. Add one agentic executor prototype that can run a single story manually and write structured evidence.
-4. Keep the current real Codex Goal Mode story as the first agentic-only long workflow and add one or two additional agentic-only stories only when they have clear evidence value.
-5. Review the evidence quality and flake rate before scheduling any agentic story automation.
-6. Promote only stable and cheap L6 stories into deterministic adapters or explicit release-candidate manual gates.
-7. Keep updating `docs/specs/20260529-test_strategy.md` only for the high-level layer policy and keep detailed L6 behavior in this spec.
+2. Replace every user-facing MCP story and runner with equivalent or stronger unified Skill and bundled CLI coverage, then delete the legacy files and command.
+3. Add a story catalog or metadata report when the number of stories grows beyond what directory naming makes obvious.
+4. Add one agentic executor prototype that can run a single story manually and write structured evidence.
+5. Keep the current real Codex Goal Mode story as the first agentic-only long workflow and add one or two additional agentic-only stories only when they have clear evidence value.
+6. Review the evidence quality and flake rate before scheduling any agentic story automation.
+7. Promote only stable and cheap L6 stories into deterministic adapters or explicit release-candidate manual gates.
+8. Keep updating `docs/specs/20260529-test_strategy.md` only for the high-level layer policy and keep detailed L6 behavior in this spec.
 
 ## Resolved Decisions
 
@@ -642,6 +645,7 @@ Mitigation: Require defect reduction into the lowest practical deterministic lay
 ## Related Docs
 
 - `docs/specs/20260529-test_strategy.md`
+- `docs/specs/20260713-openkit_agent_skill_interface.md`
 - `tests/stories/README.md`
 - `tests/story-runner/README.md`
 - `tests/stories/openkit-local-self-check.story.md`

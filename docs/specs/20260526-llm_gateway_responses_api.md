@@ -218,6 +218,6 @@ NanoCore implements the accepted Gateway surface through `/v1/chat/completions`,
 - `mise exec -- pnpm --filter @openkit/web test typecheck lint build`
 
 Real Codex or real subscription verification must stay skip-aware and explicitly gated so default release gates do not consume user subscription quota.
-The current opt-in real Codex Goal Mode preflight uses `pnpm -w test:stories:real-codex` with `OPENKIT_L6_REAL_CODEX=1`, `OPENKIT_L6_ALLOW_PROVIDER_QUOTA=1`, `OPENKIT_L6_GOAL_REPO_ROOT`, and `OPENKIT_L6_EVIDENCE_DIR`.
+The current opt-in real Codex Goal kernel run still uses the temporary legacy MCP story path through `pnpm -w test:stories:real-codex` with `OPENKIT_L6_REAL_CODEX=1`, `OPENKIT_L6_ALLOW_PROVIDER_QUOTA=1`, `OPENKIT_L6_NANOCORE_URL`, `OPENKIT_L6_NANOCORE_DATA_ROOT`, `OPENKIT_L6_GOAL_REPO_ROOT`, and `OPENKIT_L6_EVIDENCE_DIR`. The runner streams A1 auth only into the server-owned OAuth slot and verifies that trusted worker inference uses a placeholder-only NanoCore Gateway route without direct worker credentials; `docs/specs/20260713-openkit_agent_skill_interface.md` requires this story path to move to the bundled CLI before MCP deletion.
 
 Worker-specific trusted identity and cache-lineage behavior is owned by `docs/specs/20260711-worker_runtime_subagent_provenance.md` and does not change the generic public Gateway contract in this spec.

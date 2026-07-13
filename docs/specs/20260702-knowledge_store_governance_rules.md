@@ -641,7 +641,7 @@ The current implementation is the accepted V1 projection of the target Knowledge
 - `packages/protocol/src/requests/workspace.ts` exposes knowledge create, update, delete, and list request shapes.
 - `apps/nanocore/src/lib/store.ts` stores workspace knowledge entries and app-local knowledge proposals in the current file-backed store snapshot, then projects accepted knowledge entries into governed Markdown pages with a default workspace schema file.
 - `apps/nanocore/src/app.ts` exposes `/api/workspaces/:workspaceId/knowledge` create, update, delete, and list routes with idempotent command handling.
-- `apps/nanocore/src/app.ts` exposes worker capability routes `/api/worker-capabilities/knowledge/search` and `/api/worker-capabilities/knowledge/read` for authenticated worker sessions.
+- NanoCore currently exposes no worker Knowledge capability routes because Agent Environment Packages declare the capability plane disabled. The conformance table above remains the accepted requirement for future `knowledge.search` and `knowledge.read` routes.
 - `apps/nanocore/src/action-center.ts` projects pending knowledge proposals into human-attention rows for accept, edit, reject, or defer review actions.
 - `apps/nanocore/src/internal-agents/quick-chat.ts` retains the `searchKnowledge` diagnostic allowlist identifier. No internal Core tool executor or `knowledge-manager` mode runner is currently wired; the implemented Knowledge Manager surface is the App API context-package path below.
 - `apps/nanocore/src/storage/fs-layout.ts` creates workspace `knowledge/` and `sources/` directories.

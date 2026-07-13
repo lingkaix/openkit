@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type {
   WorkspaceInputSnapshot,
@@ -38,6 +39,7 @@ import type {
   WorkerGovernanceEvidenceRecord,
   WorkerGovernanceWorkspaceChangeRecord,
 } from './worker-governance-backend.js';
+import { importWorkerRuntimeProvenance } from './worker-runtime-provenance.js';
 import { importWorkerTranscript } from './worker-transcript.js';
 import { recordFilesystemWorkspaceStagingRoot } from './workspace-filesystem-staging.js';
 import {
@@ -67,6 +69,8 @@ export interface WorkerGovernanceTurnExecutorOptions {
   createAgentSessionId?: (() => string) | undefined;
   /** Optional clock for deterministic tests. */
   now?: (() => string) | undefined;
+  /** Optional deterministic runtime provenance importer for tests. */
+  runtimeProvenanceImporter?: typeof importWorkerRuntimeProvenance | undefined;
   /** Optional vault backend used for grant-derived provider attachments. */
   vaultBackend?: (() => VaultBackend) | undefined;
 }
@@ -107,6 +111,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   private readonly createAgentSessionId: () => string;
   private readonly environmentBackend: ResolveAgentEnvironmentBackendInput;
   private readonly now: () => string;
+  private readonly runtimeProvenanceImporter: typeof importWorkerRuntimeProvenance;
   private readonly vaultBackend: (() => VaultBackend) | null;
 
   /**
@@ -120,6 +125,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     this.environmentBackend = options.environmentBackend;
     this.createAgentSessionId = options.createAgentSessionId ?? (() => generateUuidV7());
     this.now = options.now ?? (() => new Date().toISOString());
+    this.runtimeProvenanceImporter =
+      options.runtimeProvenanceImporter ?? importWorkerRuntimeProvenance;
     this.vaultBackend = options.vaultBackend ?? null;
   }
 
@@ -172,6 +179,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           : {}),
         ...(this.coreDb ? { coreDb: this.coreDb } : {}),
         providerCredentialSink: (credential) => providerCredentials.push(credential),
+        ...(context.providerSelection ? { providerSelection: context.providerSelection } : {}),
         requestId,
         runtimeEnvCredentialSink: (credential) => runtimeEnvCredentials.push(credential),
         runtimeFileCredentialSink: (credential) => runtimeFileCredentials.push(credential),
@@ -282,6 +290,45 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       await this.backend.launch(materialization);
       await this.backend.collectEvidence(environmentPackage.snapshotId);
       const transcript = await this.backend.collectTranscript(environmentPackage.snapshotId);
+      if (environmentPackage.control.transcript?.runtimeProvenance) {
+        if (!workspaceDb) {
+          throw new Error('Runtime provenance collection requires durable workspace storage.');
+        }
+        const collection = transcript.runtimeProvenance;
+        const firstRawStreamPath = Object.values(collection?.rawStreamPaths ?? {})[0];
+        const rawStreamsRoot = firstRawStreamPath
+          ? dirname(firstRawStreamPath)
+          : collection?.manifestPath
+            ? join(dirname(collection.manifestPath), 'raw')
+            : collection?.nativeOriginIndexPath
+              ? join(dirname(collection.nativeOriginIndexPath), 'raw')
+              : '';
+        const provenance = await this.runtimeProvenanceImporter({
+          backend: {
+            kind: backendCapabilities.kind,
+            placement: this.environmentBackend.placement ?? 'local',
+            version: backendCapabilities.version ?? null,
+          },
+          capture: {
+            nativeOriginIndexPath: collection?.nativeOriginIndexPath ?? null,
+            rawStreamsRoot,
+            streamManifestPath: collection?.manifestPath ?? null,
+          },
+          collectedAt: this.now(),
+          environmentPackage,
+          workspaceDb,
+          workspaceRoot: join(
+            workspaceDb.dataRoot,
+            'users',
+            workspaceDb.userId,
+            'workspaces',
+            workspaceDb.workspaceId
+          ),
+        });
+        if (!provenance.complete) {
+          throw new Error('Required worker runtime provenance verification failed.');
+        }
+      }
       const importResult = importWorkerTranscript(store, environmentPackage, transcript);
       const workspaceChanges = await this.backend.collectWorkspaceChanges(
         environmentPackage.snapshotId

@@ -29,10 +29,6 @@ import {
   ConvertRecoveryPendingUserTurnToFollowUpResponseSchema,
   type CreateAutomationRequest,
   CreateAutomationRequestSchema,
-  type CreateEvidenceBundleRequest,
-  CreateEvidenceBundleRequestSchema,
-  type CreateEvidenceBundleResponse,
-  CreateEvidenceBundleResponseSchema,
   type CreateOpenKitAccessTokenRequest,
   CreateOpenKitAccessTokenRequestSchema,
   type CreateOpenKitAccessTokenResponse,
@@ -135,8 +131,6 @@ import {
   ListWorkspaceReconciliationRecordsResponseSchema,
   type ListWorkspaceRuntimeEvidenceResponse,
   ListWorkspaceRuntimeEvidenceResponseSchema,
-  type ListWorkspaceSyncEvidenceBundlesResponse,
-  ListWorkspaceSyncEvidenceBundlesResponseSchema,
   type ListWorkspaceSyncReviewsResponse,
   ListWorkspaceSyncReviewsResponseSchema,
   type ListWorkspaceVaultGrantsResponse,
@@ -561,10 +555,6 @@ export interface AppApiClient {
   listWorkspaceQuarantineRecords(
     workspaceId: string
   ): Promise<ListWorkspaceQuarantineRecordsResponse>;
-  /** Lists durable workspace synchronization evidence bundles for one workspace. */
-  listWorkspaceSyncEvidenceBundles(
-    workspaceId: string
-  ): Promise<ListWorkspaceSyncEvidenceBundlesResponse>;
   /** Lists durable workspace apply results for one workspace. */
   listWorkspaceApplyResults(workspaceId: string): Promise<ListWorkspaceApplyResultsResponse>;
   /** Reads one durable workspace apply result by id. */
@@ -637,11 +627,6 @@ export interface AppApiClient {
   verifyDataRootBackup(backupId: string): Promise<DataRootBackupVerifyResponse>;
   /** Reads workspace capability-call and usage evidence. */
   getCapabilityUsage(workspaceId: string): Promise<CapabilityUsageResponse>;
-  /** Creates one workspace evidence bundle. */
-  createEvidenceBundle(
-    workspaceId: string,
-    input: CreateEvidenceBundleRequest
-  ): Promise<CreateEvidenceBundleResponse>;
   /** Lists workspace evidence bundles. */
   listWorkspaceEvidenceBundles(workspaceId: string): Promise<ListWorkspaceEvidenceBundlesResponse>;
   /** Lists workspace runtime evidence. */
@@ -1070,11 +1055,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         `/api/app/workspaces/${workspaceId}/workspace-sync/quarantine-records`,
         ListWorkspaceQuarantineRecordsResponseSchema
       ),
-    listWorkspaceSyncEvidenceBundles: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/workspace-sync/evidence-bundles`,
-        ListWorkspaceSyncEvidenceBundlesResponseSchema
-      ),
     listWorkspaceApplyResults: (workspaceId) =>
       transport.getJson(
         `/api/app/workspaces/${workspaceId}/workspace-sync/apply-results`,
@@ -1166,12 +1146,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
       transport.getJson(
         `/api/app/workspaces/${workspaceId}/capability-usage`,
         CapabilityUsageResponseSchema
-      ),
-    createEvidenceBundle: (workspaceId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/evidence-bundles`,
-        CreateEvidenceBundleRequestSchema.parse(input),
-        CreateEvidenceBundleResponseSchema
       ),
     listWorkspaceEvidenceBundles: (workspaceId) =>
       transport.getJson(

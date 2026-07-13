@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import * as appApiSchemas from './index.js';
 import {
   AgentSessionReadModelSchema,
   AppDiagnosticsResponseSchema,
@@ -23,8 +24,6 @@ import {
   ConsumeOpenKitBootstrapTokenRequestSchema,
   ConsumeOpenKitBootstrapTokenResponseSchema,
   ConvertRecoveryPendingUserTurnToFollowUpResponseSchema,
-  CreateEvidenceBundleRequestSchema,
-  CreateEvidenceBundleResponseSchema,
   CreateInterruptedRecoveryStateResponseSchema,
   CreateOpenKitAccessTokenRequestSchema,
   CreateOpenKitAccessTokenResponseSchema,
@@ -84,7 +83,6 @@ import {
   ListWorkspaceReconciliationRecordsResponseSchema,
   ListWorkspaceRepositoriesResponseSchema,
   ListWorkspaceRuntimeEvidenceResponseSchema,
-  ListWorkspaceSyncEvidenceBundlesResponseSchema,
   ListWorkspaceSyncReviewsResponseSchema,
   ListWorkspaceVaultUseRecordsResponseSchema,
   MaterializeKnowledgeContextPackageResponseSchema,
@@ -183,7 +181,6 @@ import {
   WorkspaceRecoveryDecisionSchema,
   WorkspaceRepositoryDiagnosticsResponseSchema,
   WorkspaceRepositoryResourceSchema,
-  WorkspaceSyncEvidenceBundleSchema,
 } from './index.js';
 
 const timestamp = '2026-05-15T05:17:42.000Z';
@@ -1815,6 +1812,9 @@ describe('app api schemas', () => {
           itemId: 'it_demo',
           agentId: 'assistant',
           agentSessionId: 'session_demo',
+          packageSnapshotId: 'aepsnap_demo',
+          runtimeOriginRef: `rto_${'a'.repeat(24)}`,
+          runtimeCacheLineageRef: `rcl_${'b'.repeat(24)}`,
           sourceIds: ['repo_default'],
           requestId,
           capabilityId: 'llm.chat_completions',
@@ -1856,50 +1856,63 @@ describe('app api schemas', () => {
 
     expect(parsed.usageRecords[0]?.capabilityCallId).toBe('cap_1');
     expect(parsed.usageRecords[0]?.unit).toBe('usd');
+    expect(parsed.capabilityCalls[0]).toMatchObject({
+      packageSnapshotId: 'aepsnap_demo',
+      runtimeOriginRef: `rto_${'a'.repeat(24)}`,
+      runtimeCacheLineageRef: `rcl_${'b'.repeat(24)}`,
+    });
+    expect(() =>
+      CapabilityUsageResponseSchema.parse({
+        ...parsed,
+        capabilityCalls: [
+          {
+            ...parsed.capabilityCalls[0],
+            runtimeOriginRef: 'native-thread-id',
+          },
+        ],
+      })
+    ).toThrow();
   });
 
-  it('accepts evidence bundle create and list read models', () => {
-    const request = CreateEvidenceBundleRequestSchema.parse({
-      goalId: 'goal_demo',
+  it('accepts read-only evidence bundle list models', () => {
+    const evidenceBundle = {
+      id: 'evb_demo',
+      workspaceId: 'ws_demo',
       threadId: 'th_demo',
+      goalId: 'goal_demo',
       turnId: 'turn_demo',
-    });
-    const response = CreateEvidenceBundleResponseSchema.parse({
-      evidenceBundle: {
-        id: 'evb_demo',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        goalId: 'goal_demo',
-        turnId: 'turn_demo',
-        agentSessionId: null,
-        backendType: null,
-        sourceKind: 'manual',
-        summary: 'Goal evidence is ready for review.',
-        rawEvidenceRefs: [],
-        redactedEvidenceRefs: [{ kind: 'artifact', ref: 'artifact_demo' }],
-        contentDigests: ['sha256:9a0f3c8d4b7e5a6c9d2f1b0a3e4c5d6f7a8b9c0d1e2f3456789abcdef0123456'],
-        retentionClass: 'turn-evidence',
-        sensitivityClass: 'product-safe',
-        importStatus: 'collected',
-        requiredFeatures: ['evidence.bundle.v1'],
-        createdAt: timestamp,
-      },
-    });
+      agentSessionId: null,
+      backendType: null,
+      sourceKind: 'workspace-apply-result',
+      summary: 'Workspace apply evidence is ready for review.',
+      rawEvidenceRefs: [],
+      redactedEvidenceRefs: [
+        { kind: 'workspace-apply-result', ref: 'workspace-apply-result:war_1' },
+      ],
+      contentDigests: ['sha256:9a0f3c8d4b7e5a6c9d2f1b0a3e4c5d6f7a8b9c0d1e2f3456789abcdef0123456'],
+      retentionClass: 'workspace-audit',
+      sensitivityClass: 'product-safe',
+      importStatus: 'promoted',
+      requiredFeatures: ['evidence.bundle.v1'],
+      createdAt: timestamp,
+    };
 
-    expect(request).toEqual({
-      goalId: 'goal_demo',
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
-    });
     expect(
       ListWorkspaceEvidenceBundlesResponseSchema.parse({
         workspaceId: 'ws_demo',
-        evidenceBundles: [response.evidenceBundle],
+        evidenceBundles: [evidenceBundle],
       })
     ).toEqual({
       workspaceId: 'ws_demo',
-      evidenceBundles: [response.evidenceBundle],
+      evidenceBundles: [evidenceBundle],
     });
+  });
+
+  it('does not export manual or synchronization-specific evidence contracts', () => {
+    expect(appApiSchemas).not.toHaveProperty('CreateEvidenceBundleRequestSchema');
+    expect(appApiSchemas).not.toHaveProperty('CreateEvidenceBundleResponseSchema');
+    expect(appApiSchemas).not.toHaveProperty('WorkspaceSyncEvidenceBundleSchema');
+    expect(appApiSchemas).not.toHaveProperty('ListWorkspaceSyncEvidenceBundlesResponseSchema');
   });
 
   it('accepts workspace runtime evidence read models without raw backend payloads', () => {
@@ -1953,6 +1966,12 @@ describe('app api schemas', () => {
     });
     expect(JSON.stringify(runtimeEvidence)).not.toContain('Authorization');
     expect(JSON.stringify(runtimeEvidence)).not.toContain('sk-openkit-secret');
+    expect(
+      RuntimeEvidenceRecordSchema.safeParse({
+        ...runtimeEvidence,
+        phase: 'sidecar-startup',
+      }).success
+    ).toBe(false);
   });
 
   it('accepts workspace permission decision read models without raw secrets', () => {
@@ -2052,7 +2071,7 @@ describe('app api schemas', () => {
         backend: {
           kind: 'openshell',
           health: 'ready',
-          controlMode: 'sidecar',
+          controlMode: 'direct-nanocore',
           control: {
             heartbeat: {
               status: 'running',
@@ -2075,7 +2094,7 @@ describe('app api schemas', () => {
     ).toEqual({
       kind: 'openshell',
       health: 'ready',
-      controlMode: 'sidecar',
+      controlMode: 'direct-nanocore',
       control: {
         heartbeat: {
           status: 'running',
@@ -2094,6 +2113,36 @@ describe('app api schemas', () => {
       version: '0.0.63',
       sandboxName: 'openkit-as-openshell-1',
     });
+  });
+
+  it.each([
+    'transcript-sink',
+    'backend-relay',
+    'sidecar',
+    'stdio',
+    'disabled',
+  ])('rejects retired agent-session control mode %s', (controlMode) => {
+    expect(
+      AgentSessionReadModelSchema.safeParse({
+        id: 'as_openshell_legacy',
+        status: 'ready',
+        message: null,
+        configVersion: 1,
+        workspaceRoots: [],
+        stale: false,
+        sandboxSummary: null,
+        backend: {
+          kind: 'openshell',
+          health: 'ready',
+          controlMode,
+          control: null,
+          gatewayName: 'openshell',
+          gatewayEndpoint: 'https://127.0.0.1:17670',
+          version: '0.0.80',
+          sandboxName: 'openkit-as-openshell-legacy',
+        },
+      }).success
+    ).toBe(false);
   });
 
   it('accepts workspace synchronization records without raw backend paths', () => {
@@ -2525,28 +2574,6 @@ describe('app api schemas', () => {
     expect(
       ListWorkspaceQuarantineRecordsResponseSchema.parse({ items: [quarantine] }).items[0]?.id
     ).toBe('wqr_1');
-    const syncEvidenceBundle = WorkspaceSyncEvidenceBundleSchema.parse({
-      id: 'wseb_1',
-      workspaceId: 'ws_demo',
-      lifecycleRecordIds: ['wrr_1', 'wom_1'],
-      evidenceBundleIds: ['evb_workspace_materialization_wmr_1'],
-      backendEvidenceRefs: [{ kind: 'backend.openshell', ref: 'session/session_1/output' }],
-      redactedEvidenceManifest: [
-        {
-          kind: 'worker-log',
-          ref: 'evidence/workspace-sync/wseb_1/log',
-          digest: 'sha256:log',
-          bytes: 42,
-        },
-      ],
-      contentDigests: ['sha256:bundle'],
-      retentionClass: 'workspace-audit',
-      createdAt: timestamp,
-    });
-    expect(
-      ListWorkspaceSyncEvidenceBundlesResponseSchema.parse({ items: [syncEvidenceBundle] }).items[0]
-        ?.id
-    ).toBe('wseb_1');
     expect(ListWorkspaceChangeSetsResponseSchema.parse({ items: [changeSet] }).items[0]?.id).toBe(
       changeSet.id
     );
@@ -2664,21 +2691,6 @@ describe('app api schemas', () => {
         createdAt: timestamp,
         updatedAt: timestamp,
         resolvedAt: null,
-      }).success
-    ).toBe(false);
-    expect(
-      WorkspaceSyncEvidenceBundleSchema.safeParse({
-        id: 'wseb_unsafe',
-        workspaceId: 'ws_demo',
-        lifecycleRecordIds: ['ghp_openkit_secret'],
-        evidenceBundleIds: [],
-        backendEvidenceRefs: [{ kind: 'backend.openshell', ref: '/Users/m5pro/.ssh/id_rsa' }],
-        redactedEvidenceManifest: [
-          { kind: 'worker-log', ref: 'ghp_openkit_secret', digest: 'sha256:log', bytes: 1 },
-        ],
-        contentDigests: ['sha256:bundle'],
-        retentionClass: 'restricted-raw',
-        createdAt: timestamp,
       }).success
     ).toBe(false);
   });

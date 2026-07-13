@@ -8,7 +8,7 @@ This document owns the product-independent protocol model shared by app clients,
 
 This document owns stable protocol records, command semantics, event families, event envelopes, lifecycle states, stream replay semantics, command idempotency semantics, error shape, protocol versioning, and schema evolution rules.
 
-This document does not own communication topology, transport selection, bridge sidecar behavior, app-specific read models, UI convenience endpoints, storage tables, agent-runtime wire formats, provider-native payloads, or complete schema field lists.
+This document does not own communication topology, transport selection, runtime mediation behavior, app-specific read models, UI convenience endpoints, storage tables, agent-runtime wire formats, provider-native payloads, or complete schema field lists.
 
 ## Purpose
 
@@ -101,7 +101,7 @@ The protocol should not own:
 
 - communication topology
 - transport selection
-- bridge sidecar behavior
+- runtime mediation behavior
 - app-only dashboards and sidebar read models
 - database table layouts
 - filesystem layouts

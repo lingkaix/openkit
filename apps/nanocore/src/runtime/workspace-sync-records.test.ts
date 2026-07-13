@@ -50,7 +50,10 @@ describe('workspace sync records', () => {
             summary,
             redacted_evidence_refs_json,
             content_digests_json,
-            import_status
+            retention_class,
+            sensitivity_class,
+            import_status,
+            required_features_json
           FROM evidence_bundles
           WHERE source_kind = 'workspace-sync-review'
           ORDER BY created_at`
@@ -81,7 +84,10 @@ describe('workspace sync records', () => {
             { kind: 'workspace-sync-patch', ref: 'artifact://patch' },
           ]),
           content_digests_json: JSON.stringify([workspacePatchDigest]),
+          retention_class: 'workspace-audit',
+          sensitivity_class: 'product-safe',
           import_status: 'promoted',
+          required_features_json: JSON.stringify(['evidence.bundle.v1']),
         }),
       ]);
     } finally {
@@ -369,7 +375,10 @@ describe('workspace sync records', () => {
             summary,
             redacted_evidence_refs_json,
             content_digests_json,
-            import_status
+            retention_class,
+            sensitivity_class,
+            import_status,
+            required_features_json
           FROM evidence_bundles
           ORDER BY created_at`
         )
@@ -385,7 +394,10 @@ describe('workspace sync records', () => {
             { kind: 'backend.ready', ref: 'version:0.0.63' },
           ]),
           content_digests_json: JSON.stringify(['sha256:policy']),
+          retention_class: 'workspace-audit',
+          sensitivity_class: 'product-safe',
           import_status: 'promoted',
+          required_features_json: JSON.stringify(['evidence.bundle.v1']),
         }),
       ]);
       expect(listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo')).toMatchObject([

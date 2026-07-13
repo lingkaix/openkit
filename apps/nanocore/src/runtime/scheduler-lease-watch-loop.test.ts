@@ -105,6 +105,47 @@ function dispatchLease(coreDb: ReturnType<typeof createMigratedCoreDb>, suffix: 
 }
 
 describe('scheduler lease watch loop', () => {
+  it('keeps a pre-heartbeat lease live until its startup deadline', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      dispatchLease(coreDb, 'materializing');
+
+      const result = runSchedulerLeaseWatchLoop(coreDb, {
+        now: () => '2026-07-05T00:00:40.000Z',
+      });
+
+      expect(result.startupTimedOut).toEqual([]);
+      expect(result.stale).toEqual([]);
+      expect(
+        resolveSchedulerLeaseTokenBinding(coreDb, {
+          now: () => '2026-07-05T00:00:40.000Z',
+          sandboxBindingRef: 'lease-binding:lease_materializing',
+          lineage: {
+            agentSessionId: 'as_materializing',
+            packageSnapshotId: 'aepsnap_turn_materializing_as_materializing',
+            threadId: 'thread_materializing',
+            turnId: 'turn_materializing',
+            workspaceId: 'ws_demo',
+          },
+        })
+      ).toMatchObject({ status: 'accepted' });
+      expect(
+        acceptSchedulerLeaseHeartbeat(coreDb, {
+          heartbeatTimeoutMs: 30_000,
+          leaseId: 'lease_materializing',
+          now: () => '2026-07-05T00:00:40.000Z',
+          workerSequence: 1,
+        })
+      ).toMatchObject({
+        lastAcceptedHeartbeatAt: '2026-07-05T00:00:40.000Z',
+        status: 'active',
+      });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('fails startup-timed-out leases before marking expired live leases stale', () => {
     const coreDb = createMigratedCoreDb();
 

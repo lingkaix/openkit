@@ -72,7 +72,7 @@ describe('AgentStatusBadge', () => {
         backend={{
           kind: 'openshell',
           health: 'ready',
-          controlMode: 'sidecar',
+          controlMode: 'direct-nanocore',
           control: {
             heartbeat: {
               status: 'running',
@@ -116,7 +116,7 @@ describe('AgentStatusBadge', () => {
         backend={{
           kind: 'openshell',
           health: 'ready',
-          controlMode: 'sidecar',
+          controlMode: 'direct-nanocore',
           control: {
             heartbeat: {
               status: 'running',

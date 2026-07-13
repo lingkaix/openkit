@@ -1,28 +1,10 @@
-import { createHash, randomUUID } from 'node:crypto';
-import {
-  type CreateEvidenceBundleRequest,
-  type EvidenceBundleRecord,
-  EvidenceBundleRecordSchema,
-  type EvidenceBundleRef,
-} from '@openkit/app-api-schemas';
+import { rmSync } from 'node:fs';
+import { join } from 'node:path';
+
+import { type EvidenceBundleRecord, EvidenceBundleRecordSchema } from '@openkit/app-api-schemas';
 
 import type { WorkspaceDb } from './storage/db.js';
-
-/** Input for creating one workspace-owned evidence bundle. */
-export interface CreateWorkspaceEvidenceBundleInput {
-  /** Workspace-scoped database handle. */
-  workspaceDb: WorkspaceDb;
-  /** Workspace that owns the bundle. */
-  workspaceId: string;
-  /** Product-level request fields. */
-  request: CreateEvidenceBundleRequest;
-  /** Product-safe references to include. */
-  redactedEvidenceRefs: readonly EvidenceBundleRef[];
-  /** Stable evidence bundle id for deterministic tests. */
-  evidenceBundleId?: string;
-  /** Storage creation time. */
-  now?: Date;
-}
+import { assertSafeWorkspacePathSegment } from './storage/workspace-file-records.js';
 
 interface EvidenceBundleRow {
   readonly evidence_bundle_id: string;
@@ -46,7 +28,9 @@ interface EvidenceBundleRow {
 
 const knownImportedEvidenceRefKinds = new Set([
   'artifact',
+  'agent-session',
   'goal',
+  'item',
   'thread',
   'turn',
   'worker',
@@ -55,6 +39,10 @@ const knownImportedEvidenceRefKinds = new Set([
   'workspace-change-set',
   'workspace-review',
   'workspace-sync-patch',
+  'worker-runtime-provenance-index',
+  'worker-runtime-provenance-manifest',
+  'worker-runtime-provenance-native-index',
+  'worker-runtime-provenance-stream',
 ]);
 
 const ImportedEvidenceBundleRecordSchema = EvidenceBundleRecordSchema.strip();
@@ -76,42 +64,6 @@ export interface CompactWorkspaceEvidenceBundlesResult {
 }
 
 /**
- * Creates one compact workspace-owned evidence bundle index.
- *
- * @param input Workspace database, request lineage, and product-safe refs.
- * @returns Stored evidence bundle read model.
- */
-export function createWorkspaceEvidenceBundle(
-  input: CreateWorkspaceEvidenceBundleInput
-): EvidenceBundleRecord {
-  const createdAt = (input.now ?? new Date()).toISOString();
-  const redactedEvidenceRefs = [...input.redactedEvidenceRefs];
-  const record = EvidenceBundleRecordSchema.parse({
-    id: input.evidenceBundleId ?? `evb_${randomUUID()}`,
-    workspaceId: input.workspaceId,
-    threadId: input.request.threadId ?? null,
-    goalId: input.request.goalId ?? null,
-    turnId: input.request.turnId ?? null,
-    agentSessionId: null,
-    backendType: null,
-    sourceKind: 'manual',
-    summary: summarizeEvidenceBundle(input.workspaceId, input.request),
-    rawEvidenceRefs: [],
-    redactedEvidenceRefs,
-    contentDigests: [digestEvidenceRefs(input.workspaceId, input.request, redactedEvidenceRefs)],
-    retentionClass: input.request.turnId ? 'turn-evidence' : 'workspace-audit',
-    sensitivityClass: 'product-safe',
-    importStatus: 'collected',
-    requiredFeatures: ['evidence.bundle.v1'],
-    createdAt,
-  });
-
-  insertEvidenceBundle(input.workspaceDb, record);
-
-  return record;
-}
-
-/**
  * Records one pre-normalized workspace evidence bundle.
  *
  * @param workspaceDb Workspace database that owns the bundle.
@@ -123,9 +75,7 @@ export function recordWorkspaceEvidenceBundle(
   record: EvidenceBundleRecord
 ): EvidenceBundleRecord {
   const parsed = EvidenceBundleRecordSchema.parse(record);
-  insertEvidenceBundle(workspaceDb, parsed);
-
-  return parsed;
+  return insertEvidenceBundle(workspaceDb, parsed);
 }
 
 /**
@@ -152,6 +102,32 @@ export function importWorkspaceEvidenceBundles(
 export function compactWorkspaceEvidenceBundles(
   input: CompactWorkspaceEvidenceBundlesInput
 ): CompactWorkspaceEvidenceBundlesResult {
+  const restrictedRows = input.workspaceDb.sqlite
+    .prepare(
+      `SELECT evidence_bundle_id
+      FROM evidence_bundles
+      WHERE workspace_id = ?
+        AND retention_class = 'restricted-raw'
+        AND source_kind = 'worker-runtime-provenance-raw'
+        AND created_at < ?`
+    )
+    .all(input.workspaceId, input.olderThan) as Array<{ evidence_bundle_id: string }>;
+  for (const row of restrictedRows) {
+    assertSafeWorkspacePathSegment(row.evidence_bundle_id, 'Evidence bundle id');
+    rmSync(
+      join(
+        input.workspaceDb.dataRoot,
+        'users',
+        input.workspaceDb.userId,
+        'workspaces',
+        input.workspaceId,
+        'evidence',
+        'backend',
+        row.evidence_bundle_id
+      ),
+      { force: true, recursive: true }
+    );
+  }
   const result = input.workspaceDb.sqlite
     .prepare(
       `UPDATE evidence_bundles
@@ -160,7 +136,13 @@ export function compactWorkspaceEvidenceBundles(
         redacted_evidence_refs_json = ?,
         import_status = 'expired'
       WHERE workspace_id = ?
-        AND retention_class = 'ephemeral-diagnostic'
+        AND (
+          retention_class = 'ephemeral-diagnostic'
+          OR (
+            retention_class = 'restricted-raw'
+            AND source_kind = 'worker-runtime-provenance-raw'
+          )
+        )
         AND import_status != 'expired'
         AND created_at < ?`
     )
@@ -169,7 +151,41 @@ export function compactWorkspaceEvidenceBundles(
   return { expiredCount: result.changes };
 }
 
-function insertEvidenceBundle(workspaceDb: WorkspaceDb, record: EvidenceBundleRecord): void {
+function insertEvidenceBundle(
+  workspaceDb: WorkspaceDb,
+  record: EvidenceBundleRecord
+): EvidenceBundleRecord {
+  const existingRow = workspaceDb.sqlite
+    .prepare(
+      `SELECT
+        evidence_bundle_id,
+        workspace_id,
+        thread_id,
+        goal_id,
+        turn_id,
+        agent_session_id,
+        backend_type,
+        source_kind,
+        summary,
+        raw_evidence_refs_json,
+        redacted_evidence_refs_json,
+        content_digests_json,
+        retention_class,
+        sensitivity_class,
+        import_status,
+        required_features_json,
+        created_at
+      FROM evidence_bundles
+      WHERE evidence_bundle_id = ?`
+    )
+    .get(record.id) as EvidenceBundleRow | undefined;
+  if (existingRow) {
+    const existing = evidenceBundleFromRow(existingRow);
+    if (JSON.stringify(existing) !== JSON.stringify(record)) {
+      throw new Error(`Evidence bundle replay conflict: ${record.id}`);
+    }
+    return existing;
+  }
   workspaceDb.sqlite
     .prepare(
       `INSERT INTO evidence_bundles (
@@ -211,6 +227,8 @@ function insertEvidenceBundle(workspaceDb: WorkspaceDb, record: EvidenceBundleRe
       JSON.stringify(record.requiredFeatures),
       record.createdAt
     );
+
+  return record;
 }
 
 function quarantineUnknownEvidenceKinds(record: unknown): EvidenceBundleRecord {
@@ -243,6 +261,15 @@ export function listWorkspaceEvidenceBundles(
   workspaceDb: WorkspaceDb,
   workspaceId: string
 ): EvidenceBundleRecord[] {
+  return listStoredWorkspaceEvidenceBundles(workspaceDb, workspaceId).map(
+    projectEvidenceBundleForProduct
+  );
+}
+
+function listStoredWorkspaceEvidenceBundles(
+  workspaceDb: WorkspaceDb,
+  workspaceId: string
+): EvidenceBundleRecord[] {
   return (
     workspaceDb.sqlite
       .prepare(
@@ -272,14 +299,10 @@ export function listWorkspaceEvidenceBundles(
   ).map(evidenceBundleFromRow);
 }
 
-function digestEvidenceRefs(
-  workspaceId: string,
-  request: CreateEvidenceBundleRequest,
-  refs: readonly EvidenceBundleRef[]
-): string {
-  return `sha256:${createHash('sha256')
-    .update(JSON.stringify({ refs, request, workspaceId }))
-    .digest('hex')}`;
+function projectEvidenceBundleForProduct(record: EvidenceBundleRecord): EvidenceBundleRecord {
+  return record.sourceKind === 'worker-runtime-provenance-raw'
+    ? EvidenceBundleRecordSchema.parse({ ...record, rawEvidenceRefs: [] })
+    : record;
 }
 
 function evidenceBundleFromRow(row: EvidenceBundleRow): EvidenceBundleRecord {
@@ -302,19 +325,4 @@ function evidenceBundleFromRow(row: EvidenceBundleRow): EvidenceBundleRecord {
     requiredFeatures: JSON.parse(row.required_features_json) as unknown,
     createdAt: row.created_at,
   });
-}
-
-function summarizeEvidenceBundle(
-  workspaceId: string,
-  request: CreateEvidenceBundleRequest
-): string {
-  if (request.turnId) {
-    return `Evidence bundle for turn ${request.turnId} in workspace ${workspaceId}.`;
-  }
-
-  if (request.threadId) {
-    return `Evidence bundle for thread ${request.threadId} in workspace ${workspaceId}.`;
-  }
-
-  return `Evidence bundle for workspace ${workspaceId}.`;
 }

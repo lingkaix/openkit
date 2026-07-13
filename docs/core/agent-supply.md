@@ -14,7 +14,7 @@ It covers agent catalogs, agent setup contracts, profiles, capability summaries,
 
 OpenKit needs a stable way to describe what agents are available in a workspace, what supply they require, and how Core can initialize them.
 
-The agent catalog is the discovery layer. Agent setup config is the declarative runtime setup contract. Runtime adapters may resolve and materialize that contract into native files, environment variables, process arguments, containers, sidecars, or provider sessions.
+The agent catalog is the discovery layer. Agent setup config is the declarative runtime setup contract. Runtime adapters may resolve and materialize that contract into native files, environment variables, process arguments, containers, proxies, or provider sessions.
 
 The supply model must stay open-ended because OpenKit will add agent fields over time for model routing, runtime selection, workspace inputs, MCP and skills, knowledge/context injection, vault references, sandbox policy, observability, and deployment modes.
 
@@ -244,7 +244,7 @@ Examples:
 - OpenCode config files
 - environment variables
 - container image and volume mounts
-- sidecar endpoints
+- governed service endpoints
 - MCP server config
 - sandbox provider payloads
 

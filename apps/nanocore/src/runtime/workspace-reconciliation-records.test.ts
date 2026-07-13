@@ -122,7 +122,7 @@ describe('workspace reconciliation records', () => {
     }
   });
 
-  it('resumes recovery collection from durable output manifests and evidence bundles', () => {
+  it('resumes recovery collection from durable output manifests and retained evidence ids', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-reconciliation-resume-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
     const decidedAt = '2026-07-08T00:10:00.000Z';
@@ -133,7 +133,7 @@ describe('workspace reconciliation records', () => {
       recordWorkspaceReconciliationRecord(workspaceDb, {
         ...workspaceReconciliationRecord(),
         collectedOutputManifestIds: [],
-        evidenceBundleIds: ['evb_workspace_materialization_wmr_1'],
+        evidenceBundleIds: ['evb_workspace_materialization_wmr_1', 'evb_workspace_review_resume'],
         id: 'wrr_resume',
         retentionDecision: 'retain-backend',
       });
@@ -160,26 +160,6 @@ describe('workspace reconciliation records', () => {
               strategy: 'git',
               testOutputRefs: [],
               workerSessionId: 'session_1',
-              workspaceId: 'ws_demo',
-            },
-          ],
-          workspaceSyncEvidenceBundles: [
-            {
-              backendEvidenceRefs: [{ kind: 'backend.openshell', ref: 'session/session_1/output' }],
-              contentDigests: ['sha256:bundle'],
-              createdAt: timestamp,
-              evidenceBundleIds: ['evb_workspace_review_resume'],
-              id: 'wseb_resume',
-              lifecycleRecordIds: ['wrr_resume', 'wom_resume'],
-              redactedEvidenceManifest: [
-                {
-                  bytes: 42,
-                  digest: 'sha256:log',
-                  kind: 'worker-log',
-                  ref: 'evidence/workspace-sync/wseb_resume/log',
-                },
-              ],
-              retentionClass: 'workspace-audit',
               workspaceId: 'ws_demo',
             },
           ],
@@ -223,7 +203,6 @@ describe('workspace reconciliation records', () => {
           workspaceDb,
           workspaceId: 'ws_demo',
           workerOutputManifests: [],
-          workspaceSyncEvidenceBundles: [],
         })
       ).toThrow('Workspace recovery collection has no durable output manifest');
     } finally {

@@ -36,6 +36,7 @@ import type {
   OpenAICompatibleResponsesResponse,
 } from './openai-compatible-client.js';
 import { OpenAICompatibleProviderError } from './openai-compatible-client.js';
+import type { LLMGatewayTransportContext } from './provider-dispatcher.js';
 
 const ZERO_USAGE = {
   input: 0,
@@ -50,6 +51,46 @@ const PI_AI_PROVIDER_ALIASES: Record<string, readonly string[]> = {
   moonshot: ['moonshotai'],
   zhipu: ['zai'],
 };
+
+/**
+ * Races provider work against one AbortSignal while preserving the signal's exact reason.
+ *
+ * @param operation Lazy provider operation started after the abort listener is installed.
+ * @param signal Optional caller or combined provider signal.
+ * @returns Provider result when it settles before cancellation.
+ */
+async function raceProviderWithSignal<T>(
+  operation: () => Promise<T>,
+  signal?: AbortSignal
+): Promise<T> {
+  if (!signal) {
+    return operation();
+  }
+
+  signal.throwIfAborted();
+  let abortListener: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    abortListener = () => {
+      try {
+        signal.throwIfAborted();
+      } catch (error) {
+        reject(error);
+      }
+    };
+    signal.addEventListener('abort', abortListener, { once: true });
+    if (signal.aborted) {
+      abortListener();
+    }
+  });
+
+  try {
+    return await Promise.race([operation(), aborted]);
+  } finally {
+    if (abortListener) {
+      signal.removeEventListener('abort', abortListener);
+    }
+  }
+}
 
 /**
  * Error thrown when a pi-ai-routed provider is not safely configured.
@@ -123,21 +164,27 @@ export class PiAiGatewayClient {
    * @param provider Resolved OpenKit provider config.
    * @param request Chat Completions request.
    * @param onUsage Optional observer for the provider-native terminal usage payload.
+   * @param transport Optional gateway transport state; pi-ai consumes only cancellation.
    * @returns OpenAI-compatible Chat Completions response.
    */
   public async createChatCompletion(
     provider: ResolvedLLMProviderConfig,
     request: OpenAICompatibleChatCompletionRequest,
-    onUsage?: (usage: unknown) => void
+    onUsage?: (usage: unknown) => void,
+    transport: LLMGatewayTransportContext = {}
   ): Promise<OpenAICompatibleChatCompletionResponse> {
     this.assertExplicitCredential(provider);
     this.assertSupportedRequest(request, { allowStream: false });
 
     const model = this.resolveModel(provider, request.model);
-    const response = await this.models.complete(
-      model,
-      this.toContext(request, model),
-      this.toStreamOptions(provider, request)
+    const response = await raceProviderWithSignal(
+      () =>
+        this.models.complete(
+          model,
+          this.toContext(request, model),
+          this.toStreamOptions(provider, request, transport)
+        ),
+      transport.signal
     );
     onUsage?.(response.usage);
 
@@ -159,24 +206,33 @@ export class PiAiGatewayClient {
    * @param provider Resolved OpenKit provider config.
    * @param request Chat Completions request.
    * @param onUsage Optional observer for the provider-native terminal usage payload.
+   * @param transport Optional gateway transport state; pi-ai consumes only cancellation.
    * @returns OpenAI-compatible Chat Completions SSE stream.
    */
   public async createChatCompletionStream(
     provider: ResolvedLLMProviderConfig,
     request: OpenAICompatibleChatCompletionRequest,
-    onUsage?: (usage: unknown) => void
+    onUsage?: (usage: unknown) => void,
+    transport: LLMGatewayTransportContext = {}
   ): Promise<ReadableStream<Uint8Array>> {
     this.assertExplicitCredential(provider);
     this.assertSupportedRequest(request, { allowStream: true });
 
     const model = this.resolveModel(provider, request.model);
+    const localAbortController = new AbortController();
+    const signal = transport.signal
+      ? AbortSignal.any([transport.signal, localAbortController.signal])
+      : localAbortController.signal;
     const events = this.models.stream(
       model,
       this.toContext(request, model),
-      this.toStreamOptions(provider, request)
+      this.toStreamOptions(provider, request, { ...transport, signal })
     );
+    const iterator = events[Symbol.asyncIterator]();
 
-    return this.toChatCompletionSseStream(events, request.model, onUsage);
+    return this.toChatCompletionSseStream(iterator, request.model, onUsage, signal, (reason) => {
+      localAbortController.abort(reason);
+    });
   }
 
   /**
@@ -185,18 +241,21 @@ export class PiAiGatewayClient {
    * @param provider Resolved OpenKit provider config.
    * @param request Responses request.
    * @param onUsage Optional observer for the provider-native terminal usage payload.
+   * @param transport Optional gateway transport state; pi-ai consumes only cancellation.
    * @returns OpenAI-compatible Responses response.
    */
   public async createResponses(
     provider: ResolvedLLMProviderConfig,
     request: OpenAICompatibleResponsesRequest,
-    onUsage?: (usage: unknown) => void
+    onUsage?: (usage: unknown) => void,
+    transport: LLMGatewayTransportContext = {}
   ): Promise<OpenAICompatibleResponsesResponse> {
     return convertChatCompletionResponseToResponsesResponse(
       await this.createChatCompletion(
         provider,
         convertResponsesRequestToChatCompletionRequest(request),
-        onUsage
+        onUsage,
+        transport
       )
     );
   }
@@ -207,18 +266,21 @@ export class PiAiGatewayClient {
    * @param provider Resolved OpenKit provider config.
    * @param request Responses request.
    * @param onUsage Optional observer for the provider-native terminal usage payload.
+   * @param transport Optional gateway transport state; pi-ai consumes only cancellation.
    * @returns OpenAI-compatible Responses SSE stream.
    */
   public async createResponsesStream(
     provider: ResolvedLLMProviderConfig,
     request: OpenAICompatibleResponsesRequest,
-    onUsage?: (usage: unknown) => void
+    onUsage?: (usage: unknown) => void,
+    transport: LLMGatewayTransportContext = {}
   ): Promise<ReadableStream<Uint8Array>> {
     return convertChatCompletionStreamToResponsesStream(
       await this.createChatCompletionStream(
         provider,
         convertResponsesRequestToChatCompletionRequest({ ...request, stream: true }),
-        onUsage
+        onUsage,
+        transport
       )
     );
   }
@@ -365,11 +427,13 @@ export class PiAiGatewayClient {
    *
    * @param provider Resolved OpenKit provider config.
    * @param request Chat Completions request.
+   * @param transport Gateway transport state; only its cancellation signal is mapped.
    * @returns pi-ai stream options with explicit credential isolation.
    */
   private toStreamOptions(
     provider: ResolvedLLMProviderConfig,
-    request: OpenAICompatibleChatCompletionRequest
+    request: OpenAICompatibleChatCompletionRequest,
+    transport: LLMGatewayTransportContext
   ): StreamOptions & Record<string, unknown> {
     const options: StreamOptions & Record<string, unknown> = { env: {} };
     const cacheRetention = this.cacheRetention(request.prompt_cache_retention);
@@ -394,6 +458,9 @@ export class PiAiGatewayClient {
     }
     if (temperature !== undefined) {
       options.temperature = temperature;
+    }
+    if (transport.signal) {
+      options.signal = transport.signal;
     }
     const toolChoice = toPiToolChoice(request.tool_choice);
     if (toolChoice !== undefined) {
@@ -521,27 +588,50 @@ export class PiAiGatewayClient {
   /**
    * Converts pi-ai stream events into OpenAI-compatible Chat Completions SSE.
    *
-   * @param stream pi-ai assistant event stream.
+   * @param iterator pi-ai assistant event iterator.
    * @param requestModel Model requested by the caller.
    * @param onUsage Optional observer for the provider-native terminal usage payload.
+   * @param signal Combined caller and downstream cancellation signal.
+   * @param abortUpstream Cancels provider work when the downstream stream stops early.
    * @returns Public Chat Completions SSE stream.
    */
   private toChatCompletionSseStream(
-    stream: AsyncIterable<AssistantMessageEvent>,
+    iterator: AsyncIterator<AssistantMessageEvent>,
     requestModel: string,
-    onUsage?: (usage: unknown) => void
+    onUsage: ((usage: unknown) => void) | undefined,
+    signal: AbortSignal,
+    abortUpstream: (reason?: unknown) => void
   ): ReadableStream<Uint8Array> {
     const encoder = new TextEncoder();
     let id = `chatcmpl_pi_${Date.now()}`;
     let created = Math.floor(Date.now() / 1000);
     let model = requestModel;
     let usageObserved = false;
+    let cancelled = false;
+    let terminal = false;
     const toolIndexes = new Map<number, number>();
 
     return new ReadableStream<Uint8Array>({
-      start: async (controller) => {
+      pull: async (controller) => {
+        if (cancelled || terminal) {
+          return;
+        }
+
         try {
-          for await (const event of stream) {
+          while (!cancelled && !terminal) {
+            const result = await raceProviderWithSignal(() => iterator.next(), signal);
+
+            if (cancelled) {
+              return;
+            }
+            if (result.done) {
+              terminal = true;
+              controller.close();
+              return;
+            }
+
+            const event = result.value;
+
             if (event.type === 'start') {
               id = `chatcmpl_${event.partial.responseId ?? `pi_${event.partial.timestamp}`}`;
               created = Math.floor(event.partial.timestamp / 1000);
@@ -551,7 +641,7 @@ export class PiAiGatewayClient {
                   chatStreamEvent({ id, created, model, delta: { role: 'assistant' } })
                 )
               );
-              continue;
+              return;
             }
 
             if (event.type === 'text_delta') {
@@ -560,7 +650,7 @@ export class PiAiGatewayClient {
                   chatStreamEvent({ id, created, model, delta: { content: event.delta } })
                 )
               );
-              continue;
+              return;
             }
 
             if (event.type === 'toolcall_start') {
@@ -586,7 +676,7 @@ export class PiAiGatewayClient {
                   })
                 )
               );
-              continue;
+              return;
             }
 
             if (event.type === 'toolcall_delta') {
@@ -611,7 +701,7 @@ export class PiAiGatewayClient {
                   })
                 )
               );
-              continue;
+              return;
             }
 
             if (event.type === 'toolcall_end') {
@@ -637,7 +727,10 @@ export class PiAiGatewayClient {
                   )
                 );
               }
-              throw new Error(event.error.errorMessage ?? 'pi-ai stream failed');
+              terminal = true;
+              controller.error(new Error(event.error.errorMessage ?? 'pi-ai stream failed'));
+              await iterator.return?.();
+              return;
             }
 
             if (event.type === 'done') {
@@ -659,13 +752,31 @@ export class PiAiGatewayClient {
                 )
               );
               controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              terminal = true;
+              controller.close();
+              await iterator.return?.();
+              return;
             }
           }
-
-          controller.close();
         } catch (error) {
+          if (cancelled || terminal) {
+            return;
+          }
+
+          terminal = true;
+          abortUpstream(error);
           controller.error(error);
+          await iterator.return?.();
         }
+      },
+      cancel: async (reason) => {
+        if (cancelled || terminal) {
+          return;
+        }
+
+        cancelled = true;
+        abortUpstream(reason);
+        await iterator.return?.();
       },
     });
   }

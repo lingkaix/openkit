@@ -101,7 +101,7 @@ const WORKER_CONTROL_EVENT_APPEND_MAX_BYTES = 256 * 1024;
 const WORKER_CONTROL_TERMINAL_RESULT_MAX_BYTES = 1024 * 1024;
 
 /**
- * Registers the sandbox-authenticated worker control relay routes.
+ * Registers the sandbox-authenticated direct worker-control routes.
  *
  * @param dependencies Worker control HTTP dependencies owned by the app composition root.
  */

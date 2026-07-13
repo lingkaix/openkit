@@ -104,7 +104,7 @@ A runtime target should carry:
 - target id
 - backend kind
 - placement
-- endpoint reference or managed sidecar reference
+- endpoint reference or managed backend-service reference
 - feature flags
 - capacity class
 - health state
@@ -225,7 +225,7 @@ Affinity rules:
 - Policy and capability requirements override affinity.
 - A stale or unhealthy session must not be reused for convenience.
 
-Session reuse must bind to compatible AEP snapshots. If the new snapshot changes static supply, secret visibility, backend requirements, or workspace roots, the old session is stale unless the sidecar supports safe refresh.
+Session reuse must bind to compatible AEP snapshots. If the new snapshot changes static supply, secret visibility, backend requirements, or workspace roots, the old session is stale unless the worker shim and runtime adapter support safe refresh.
 
 ## Bounded Steps
 
@@ -265,9 +265,9 @@ Agent manifests declare scale intent. Scale policy decides what is allowed.
 Remote OpenShell targets can be:
 
 - deployment-selected external gateways
-- NanoCore-managed sidecar gateway processes
+- NanoCore-managed local gateway services
 
-The first production-shaped design should prefer deployment-selected external gateways for remote targets and NanoCore-managed sidecars for local development or controlled single-server deployments.
+The first production-shaped design should prefer deployment-selected external gateways for remote targets and NanoCore-managed gateway services for local development or controlled single-server deployments.
 
 In-process OpenShell embedding is not the default target unless OpenShell exposes a stable embedding API or OpenKit owns that integration boundary.
 
@@ -281,11 +281,11 @@ Required checks:
 - authentication or relay credential readiness without exposing secret material
 - worker image or sandbox profile availability
 - sandbox launch capability or dry-run support
-- `control.local` relay reachability from the worker placement
+- direct NanoCore `/api/worker-control` reachability from the worker placement
 - upload support for AEP, context package, workspace input, and credential injection artifacts
 - download support for transcript, artifacts, workspace-change manifests, and evidence bundles
-- `capability.local` routing support for the resolved AEP catalog
-- `inference.local` routing support when the package declares LLM gateway use
+- `capability.local` routing support only when a future AEP explicitly enables capability routes; current disabled projections require no capability endpoint
+- routing support for the AEP-resolved LLM endpoint, whether backend-local `inference.local` or the authenticated worker-inference base URL
 - workspace synchronization support for the requested backend mode
 - clock skew or timestamp sanity check for audit and lease deadlines
 - capacity summary for concurrent sessions, queue depth, memory, CPU, and storage class where available

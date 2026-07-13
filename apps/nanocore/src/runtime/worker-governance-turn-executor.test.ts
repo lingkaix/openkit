@@ -3,19 +3,38 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type {
-  WorkspaceInputSnapshot,
-  WorkspaceMaterializationRecord,
+import {
+  CapabilityUsageResponseSchema,
+  ListThreadItemsResponseSchema,
+  ListWorkspaceAuditEventsResponseSchema,
+  ListWorkspaceEvidenceBundlesResponseSchema,
+  ListWorkspaceRuntimeEvidenceResponseSchema,
+  type WorkspaceInputSnapshot,
+  type WorkspaceMaterializationRecord,
 } from '@openkit/app-api-schemas';
 import type {
   AgentEnvironmentPackage,
   AgentEnvironmentValidationDiagnostic,
   WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
+import {
+  type WorkerLineage,
+  type WorkerRuntimeNativeOriginIndexEntry,
+  WorkerRuntimeNativeOriginIndexEntrySchema,
+  type WorkerRuntimeRawStreamManifest,
+  WorkerRuntimeRawStreamManifestSchema,
+} from '@openkit/worker-protocol';
 import { describe, expect, it, vi } from 'vitest';
+import { createApp } from '../app.js';
+import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { listInjectionPlans } from '../injection-plans.js';
 import { listInjectionReceipts } from '../injection-receipts.js';
 import type { FsStore } from '../lib/store.js';
+import type {
+  LLMGatewayDispatchContext,
+  LLMGatewayProviderDispatcher,
+} from '../llm/provider-dispatcher.js';
+import { ProviderRegistry } from '../providers/registry.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { LOCAL_USER_ID, workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -26,6 +45,8 @@ import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 import { listVaultUseRecords } from '../vault/vault-use-records.js';
 import { upsertWorkspaceRepositoryResource } from '../workspace/repository-store.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
+import { WorkerControlGateway } from './worker-control-gateway.js';
 import type {
   WorkerGovernanceArtifactRecord,
   WorkerGovernanceBackend,
@@ -34,6 +55,11 @@ import type {
   WorkerGovernanceWorkspaceChangeRecord,
 } from './worker-governance-backend.js';
 import { WorkerGovernanceTurnExecutor } from './worker-governance-turn-executor.js';
+import {
+  createWorkerRuntimeOriginRef,
+  type ImportWorkerRuntimeProvenanceInput,
+  importWorkerRuntimeProvenance,
+} from './worker-runtime-provenance.js';
 import type { WorkerTranscriptPayload } from './worker-transcript.js';
 import { getFilesystemWorkspaceStagingRoot } from './workspace-filesystem-staging.js';
 import {
@@ -43,6 +69,12 @@ import {
   listWorkspaceMaterializationRecords,
   listWorkspaceSyncReviews,
 } from './workspace-sync-records.js';
+
+const TURN_ROOT_NATIVE_ID = '019f1000-0000-7000-8000-000000000001';
+const TURN_CHILD_NATIVE_ID = '019f1000-0000-7000-8000-000000000002';
+const TURN_CHILD_B_NATIVE_ID = '019f1000-0000-7000-8000-000000000003';
+const TURN_NATIVE_SESSION_ID = '019f1000-0000-7000-8000-000000000010';
+const TURN_CHILD_RAW_MESSAGE = 'private child raw answer must not become a canonical item';
 
 /**
  * Opens the migrated workspace database used by worker governance tests.
@@ -135,7 +167,7 @@ function createWorkspaceChangeIngressFixture(
     backend: new FakeWorkerGovernanceBackend(),
     createAgentSessionId: () => `as_ingress_${name}`,
     environmentBackend: {
-      controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+      workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
       kind: 'openshell',
       sandboxImageRef: 'openkit/worker-codex:dev',
     },
@@ -338,7 +370,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const executor = new WorkerGovernanceTurnExecutor({
       backend: new FakeWorkerGovernanceBackend(),
       environmentBackend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
@@ -371,7 +403,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       createAgentSessionId: () => 'as_governance_1',
       environmentBackend: {
         codexModel: 'gpt-5-codex',
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
@@ -483,6 +515,472 @@ describe('WorkerGovernanceTurnExecutor', () => {
     coreDb.sqlite.close();
   });
 
+  it('reconciles worker inference with runtime provenance before one canonical outer result', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-provenance-success-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Import governed runtime provenance');
+    const backend = new FakeWorkerGovernanceBackend({
+      capabilities: [
+        'container',
+        'transcript-sink',
+        'worker-control',
+        'trusted-worker-inference-relay',
+        'worker.runtime-provenance.v1',
+      ],
+    });
+    let capture: TurnRuntimeProvenanceCapture | null = null;
+    backend.runtimeProvenanceFactory = (environmentPackage) => {
+      capture = createTurnRuntimeProvenanceCapture(
+        mkdtempSync(join(tmpdir(), 'openkit-governance-provenance-capture-')),
+        environmentPackage
+      );
+      return capture.collection;
+    };
+    const workerToken = 'lease-binding:provenance-blackbox-1';
+    const workerControlGateway = new WorkerControlGateway({
+      resolveTokenBinding: () => ({ status: 'accepted' }),
+    });
+    const workerRequests: Array<{ prompt_cache_key?: string }> = [];
+    const llmGatewayDispatcher = {
+      createResponses: vi.fn(
+        async (
+          _provider: unknown,
+          request: { model: string; prompt_cache_key?: string },
+          context: LLMGatewayDispatchContext
+        ) => {
+          workerRequests.push(request);
+          context.onUsage?.({ input_tokens: 3, output_tokens: 1, total_tokens: 4 });
+          return {
+            id: 'resp_provenance_blackbox',
+            model: request.model,
+            object: 'response' as const,
+            output: [],
+            status: 'completed' as const,
+          };
+        }
+      ),
+    } as unknown as LLMGatewayProviderDispatcher;
+    const app = createApp({
+      coreDb,
+      llmGatewayDispatcher,
+      mode: 'local',
+      providerRegistry: new ProviderRegistry([
+        {
+          defaultModel: 'openai/gpt-5.2',
+          displayName: 'Agent OpenRouter',
+          id: 'agent-openrouter',
+          kind: 'gateway',
+          models: ['openai/gpt-5.2'],
+          vendor: 'openrouter',
+        },
+      ]),
+      store,
+      workerControlGateway,
+    });
+    const materialize = backend.materialize.bind(backend);
+    vi.spyOn(backend, 'materialize').mockImplementation(async (environmentPackage, context) => {
+      workerControlGateway.registerSession(environmentPackage, { sandboxBindingRef: workerToken });
+      return materialize(environmentPackage, context);
+    });
+
+    /**
+     * Posts one canonical Codex worker-inference request through the authenticated relay route.
+     *
+     * @param nativeThreadId Runtime-native origin thread.
+     * @param nativeCacheLineageId Runtime-native cache lineage.
+     * @param parentNativeThreadId Optional runtime-native parent thread.
+     * @param options Optional body overrides and expected response status.
+     * @returns Worker inference route response.
+     */
+    async function postWorkerInference(
+      nativeThreadId: string,
+      nativeCacheLineageId: string,
+      parentNativeThreadId?: string,
+      options: { body?: Record<string, unknown>; expectedStatus?: number } = {}
+    ): Promise<Response> {
+      const turnMetadata = {
+        ...(parentNativeThreadId
+          ? { parent_thread_id: parentNativeThreadId, subagent_kind: 'thread_spawn' }
+          : {}),
+        request_kind: 'turn',
+        session_id: TURN_NATIVE_SESSION_ID,
+        thread_id: nativeThreadId,
+      };
+      const encodedMetadata = JSON.stringify(turnMetadata);
+      const response = await app.request('/api/worker-inference/v1/responses', {
+        body: JSON.stringify({
+          client_metadata: {
+            session_id: TURN_NATIVE_SESSION_ID,
+            thread_id: nativeThreadId,
+            ...(parentNativeThreadId
+              ? {
+                  'x-codex-parent-thread-id': parentNativeThreadId,
+                  'x-openai-subagent': 'collab_spawn',
+                }
+              : {}),
+            'x-codex-turn-metadata': encodedMetadata,
+          },
+          input: 'Deterministic worker inference',
+          model: 'openai/gpt-5.2',
+          prompt_cache_key: nativeCacheLineageId,
+          ...options.body,
+        }),
+        headers: {
+          authorization: `Bearer ${workerToken}`,
+          'content-type': 'application/json',
+          'session-id': TURN_NATIVE_SESSION_ID,
+          'thread-id': nativeThreadId,
+          'x-client-request-id': nativeThreadId,
+          ...(parentNativeThreadId
+            ? {
+                'x-codex-parent-thread-id': parentNativeThreadId,
+                'x-openai-subagent': 'collab_spawn',
+              }
+            : {}),
+          'x-codex-turn-metadata': encodedMetadata,
+        },
+        method: 'POST',
+      });
+
+      expect(response.status, await response.clone().text()).toBe(options.expectedStatus ?? 200);
+      return response;
+    }
+
+    const collectTranscript = backend.collectTranscript.bind(backend);
+    vi.spyOn(backend, 'collectTranscript').mockImplementation(async () => {
+      await postWorkerInference(TURN_ROOT_NATIVE_ID, 'cache_shared');
+      await postWorkerInference(TURN_CHILD_NATIVE_ID, 'cache_child_a', TURN_ROOT_NATIVE_ID);
+      await postWorkerInference(TURN_CHILD_B_NATIVE_ID, 'cache_shared', TURN_ROOT_NATIVE_ID);
+      const bypassResponse = await postWorkerInference(
+        TURN_ROOT_NATIVE_ID,
+        'cache_shared',
+        undefined,
+        { body: { provider_id: 'public-default' }, expectedStatus: 403 }
+      );
+      await expect(bypassResponse.json()).resolves.toMatchObject({
+        error: { code: 'worker_inference_lineage_mismatch' },
+      });
+      expect(workerRequests).toHaveLength(3);
+      return collectTranscript();
+    });
+    const runtimeProvenanceImporter = vi.fn(async (input: ImportWorkerRuntimeProvenanceInput) => {
+      backend.calls.push('importRuntimeProvenance');
+      expect(
+        store
+          .listThreadItems('ws_demo', 'th_demo')
+          .filter((item) => item.turnId === turn.id && item.type === 'assistant-message')
+      ).toEqual([]);
+      expect(capture).not.toBeNull();
+      expect(input.capture).toEqual({
+        nativeOriginIndexPath: capture?.nativeOriginIndexPath,
+        rawStreamsRoot: capture?.rawStreamsRoot,
+        streamManifestPath: capture?.streamManifestPath,
+      });
+      return importWorkerRuntimeProvenance(input);
+    });
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      createAgentSessionId: () => 'as_governance_provenance_success_1',
+      environmentBackend: {
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+        kind: 'openshell',
+        sandboxImageRef: 'openkit/worker-codex:dev',
+      },
+      now: () => '2026-07-13T00:00:01.000Z',
+      runtimeProvenanceImporter,
+    });
+
+    try {
+      await executor.startTurn(store, turn.id, 'Import governed runtime provenance', {
+        backendRequirements: {
+          allowedKinds: ['openshell'],
+          preferred: 'openshell',
+          requiredCapabilities: ['trusted-worker-inference-relay', 'worker.runtime-provenance.v1'],
+        },
+        providerSelection: {
+          model: 'openai/gpt-5.2',
+          providerId: 'agent-openrouter',
+        },
+        requestId: '00000000-0000-4000-8000-000000000220',
+        workspaceRoots: [],
+      });
+
+      expect(runtimeProvenanceImporter).toHaveBeenCalledOnce();
+      expect(backend.calls.indexOf('importRuntimeProvenance')).toBeGreaterThan(
+        backend.calls.indexOf('collectTranscript')
+      );
+      expect(backend.calls.indexOf('importRuntimeProvenance')).toBeLessThan(
+        backend.calls.indexOf('collectWorkspaceChanges')
+      );
+      const evidenceResponse = await app.request('/api/app/workspaces/ws_demo/evidence-bundles');
+      expect(evidenceResponse.status, await evidenceResponse.clone().text()).toBe(200);
+      const evidence = ListWorkspaceEvidenceBundlesResponseSchema.parse(
+        await evidenceResponse.json()
+      );
+      const rawBundle = evidence.evidenceBundles.find(
+        (bundle) => bundle.sourceKind === 'worker-runtime-provenance-raw'
+      );
+      const indexBundle = evidence.evidenceBundles.find(
+        (bundle) => bundle.sourceKind === 'worker-runtime-provenance-index'
+      );
+      expect(
+        evidence.evidenceBundles.filter(
+          (bundle) => bundle.sourceKind === 'worker-runtime-provenance-raw'
+        )
+      ).toHaveLength(1);
+      expect(
+        evidence.evidenceBundles.filter(
+          (bundle) => bundle.sourceKind === 'worker-runtime-provenance-index'
+        )
+      ).toHaveLength(1);
+      expect(rawBundle).toMatchObject({
+        importStatus: 'promoted',
+        rawEvidenceRefs: [],
+        retentionClass: 'restricted-raw',
+      });
+      expect(indexBundle).toMatchObject({
+        importStatus: 'promoted',
+        retentionClass: 'turn-evidence',
+      });
+      expect(indexBundle?.summary).toContain('4 streams');
+      expect(indexBundle?.summary).toContain('2 children');
+      expect(indexBundle?.summary).toContain('3/3 gateway calls reconciled');
+      const upstreamCacheKeys = workerRequests.map((request) => request.prompt_cache_key);
+      expect(upstreamCacheKeys).toEqual([
+        expect.stringMatching(/^openkit:responses:[a-f0-9]{32}$/),
+        expect.stringMatching(/^openkit:responses:[a-f0-9]{32}$/),
+        expect.stringMatching(/^openkit:responses:[a-f0-9]{32}$/),
+      ]);
+      expect(upstreamCacheKeys[0]).toBe(upstreamCacheKeys[2]);
+      expect(upstreamCacheKeys[1]).not.toBe(upstreamCacheKeys[2]);
+      expect(JSON.stringify(workerRequests)).not.toContain('cache_shared');
+      expect(JSON.stringify(workerRequests)).not.toContain('cache_child_a');
+
+      const usageResponse = await app.request('/api/app/workspaces/ws_demo/capability-usage');
+      expect(usageResponse.status, await usageResponse.clone().text()).toBe(200);
+      const usage = CapabilityUsageResponseSchema.parse(await usageResponse.json());
+      const workerCalls = usage.capabilityCalls.filter(
+        (call) => call.serviceRef === 'worker-inference-gateway'
+      );
+      const packageSnapshotId = backend.lastPackage!.snapshotId;
+      const rootOriginRef = createWorkerRuntimeOriginRef(packageSnapshotId, TURN_ROOT_NATIVE_ID);
+      const childOriginRef = createWorkerRuntimeOriginRef(packageSnapshotId, TURN_CHILD_NATIVE_ID);
+      const childBOriginRef = createWorkerRuntimeOriginRef(
+        packageSnapshotId,
+        TURN_CHILD_B_NATIVE_ID
+      );
+      const callsByOrigin = new Map(workerCalls.map((call) => [call.runtimeOriginRef, call]));
+      const workerCallIds = new Set(workerCalls.map((call) => call.id));
+      expect(workerCalls).toHaveLength(3);
+      expect(new Set(workerCalls.map((call) => call.packageSnapshotId))).toEqual(
+        new Set([packageSnapshotId])
+      );
+      expect(new Set(workerCalls.map((call) => call.requestId))).toHaveProperty('size', 3);
+      expect(new Set(workerCalls.map((call) => call.runtimeOriginRef))).toEqual(
+        new Set([rootOriginRef, childOriginRef, childBOriginRef])
+      );
+      expect(callsByOrigin.get(rootOriginRef)?.runtimeCacheLineageRef).toBe(
+        callsByOrigin.get(childBOriginRef)?.runtimeCacheLineageRef
+      );
+      expect(callsByOrigin.get(childOriginRef)?.runtimeCacheLineageRef).not.toBe(
+        callsByOrigin.get(childBOriginRef)?.runtimeCacheLineageRef
+      );
+      expect(
+        new Set(
+          usage.usageRecords
+            .filter((record) => workerCallIds.has(record.capabilityCallId))
+            .map((record) => record.capabilityCallId)
+        )
+      ).toEqual(workerCallIds);
+
+      const auditResponse = await app.request('/api/app/workspaces/ws_demo/audit/events');
+      expect(auditResponse.status, await auditResponse.clone().text()).toBe(200);
+      const audit = ListWorkspaceAuditEventsResponseSchema.parse(await auditResponse.json());
+      const linkedFinishEvents = audit.auditEvents.filter(
+        (event) =>
+          event.action === 'capability.finish' &&
+          event.capabilityCallId !== null &&
+          workerCallIds.has(event.capabilityCallId)
+      );
+      expect(new Set(linkedFinishEvents.map((event) => event.capabilityCallId))).toEqual(
+        workerCallIds
+      );
+      expect(linkedFinishEvents.every((event) => event.outcome === 'succeeded')).toBe(true);
+
+      const runtimeEvidenceResponse = await app.request(
+        '/api/app/workspaces/ws_demo/runtime-evidence'
+      );
+      expect(runtimeEvidenceResponse.status, await runtimeEvidenceResponse.clone().text()).toBe(
+        200
+      );
+      const runtimeEvidence = ListWorkspaceRuntimeEvidenceResponseSchema.parse(
+        await runtimeEvidenceResponse.json()
+      ).runtimeEvidence;
+      expect(runtimeEvidence).toEqual([
+        expect.objectContaining({
+          outcome: 'succeeded',
+          phase: 'transcript-collection',
+        }),
+      ]);
+      expect(runtimeEvidence[0]?.evidenceBundleIds).toHaveLength(2);
+      const itemsResponse = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/items');
+      expect(itemsResponse.status, await itemsResponse.clone().text()).toBe(200);
+      const turnItems = ListThreadItemsResponseSchema.parse(
+        await itemsResponse.json()
+      ).items.filter((item) => item.turnId === turn.id);
+      expect(turnItems.filter((item) => item.type === 'assistant-message')).toEqual([
+        expect.objectContaining({
+          text: 'Governed worker completed the task.',
+          type: 'assistant-message',
+        }),
+      ]);
+      expect(JSON.stringify(turnItems)).not.toContain(TURN_CHILD_RAW_MESSAGE);
+      expect(store.getTurnById(turn.id)).toMatchObject({ status: 'completed' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'missing',
+    'tampered',
+  ] as const)('fails the outer turn while retaining %s runtime provenance quarantine evidence', async (failure) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), `openkit-governance-provenance-${failure}-`));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const turn = store.createTurn('ws_demo', 'th_demo', `Reject ${failure} runtime provenance`);
+    const backend = new FakeWorkerGovernanceBackend({
+      capabilities: [
+        'container',
+        'transcript-sink',
+        'worker-control',
+        'trusted-worker-inference-relay',
+        'worker.runtime-provenance.v1',
+      ],
+    });
+    backend.runtimeProvenanceFactory = (environmentPackage) =>
+      createTurnRuntimeProvenanceCapture(
+        mkdtempSync(join(tmpdir(), `openkit-governance-provenance-${failure}-capture-`)),
+        environmentPackage,
+        failure
+      ).collection;
+    const runtimeProvenanceImporter = vi.fn(async (input: ImportWorkerRuntimeProvenanceInput) => {
+      backend.calls.push('importRuntimeProvenance');
+      return importWorkerRuntimeProvenance(input);
+    });
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      createAgentSessionId: () => `as_governance_provenance_${failure}_1`,
+      environmentBackend: {
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+        kind: 'openshell',
+        sandboxImageRef: 'openkit/worker-codex:dev',
+      },
+      now: () => '2026-07-13T00:00:01.000Z',
+      runtimeProvenanceImporter,
+    });
+
+    try {
+      await expect(
+        executor.startTurn(store, turn.id, `Reject ${failure} runtime provenance`, {
+          backendRequirements: {
+            allowedKinds: ['openshell'],
+            preferred: 'openshell',
+            requiredCapabilities: [
+              'trusted-worker-inference-relay',
+              'worker.runtime-provenance.v1',
+            ],
+          },
+          providerSelection: {
+            model: 'openai/gpt-5.2',
+            providerId: 'agent-openrouter',
+          },
+          requestId: `00000000-0000-4000-8000-${failure === 'missing' ? '000000000221' : '000000000222'}`,
+          workspaceRoots: [],
+        })
+      ).rejects.toThrow();
+
+      expect(runtimeProvenanceImporter).toHaveBeenCalledOnce();
+      expect(backend.calls.at(-1)).toBe('teardown');
+      expect(store.getTurnById(turn.id)).toMatchObject({ status: 'failed' });
+      expect(
+        store
+          .listThreadItems('ws_demo', 'th_demo')
+          .filter((item) => item.turnId === turn.id && item.type === 'assistant-message')
+      ).toEqual([]);
+      const workspaceDb = openTestWorkspaceDb(coreDb);
+      expect(listWorkspaceEvidenceBundles(workspaceDb, 'ws_demo')).toEqual([
+        expect.objectContaining({
+          importStatus: 'quarantined',
+          sourceKind: 'worker-runtime-provenance-raw',
+        }),
+      ]);
+      const runtimeEvidence = listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo');
+      expect(runtimeEvidence).toEqual([
+        expect.objectContaining({
+          outcome: 'failed',
+          phase: 'transcript-collection',
+        }),
+      ]);
+      expect(runtimeEvidence[0]?.evidenceBundleIds).toHaveLength(1);
+      workspaceDb.sqlite.close();
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('binds the trusted provider selection into the materialized package', async () => {
+    const store = createDemoStore();
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Run trusted worker inference');
+    const backend = new FakeWorkerGovernanceBackend();
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      createAgentSessionId: () => 'as_governance_relay_1',
+      environmentBackend: {
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+        kind: 'openshell',
+        sandboxImageRef: 'openkit/worker-codex:dev',
+      },
+    });
+
+    await executor.startTurn(store, turn.id, 'Run trusted worker inference', {
+      backendRequirements: {
+        allowedKinds: ['openshell'],
+        preferred: 'openshell',
+        requiredCapabilities: ['trusted-worker-inference-relay'],
+      },
+      providerSelection: {
+        model: 'openai/gpt-5.2',
+        providerId: 'agent-openrouter',
+      },
+      requestId: '00000000-0000-4000-8000-000000000214',
+      workspaceCwd: '/workspace/repo',
+      workspaceRoots: [],
+    });
+
+    expect(backend.lastPackage?.llm.routes).toEqual([
+      expect.objectContaining({
+        model: 'openai/gpt-5.2',
+        providerInstanceId: 'agent-openrouter',
+      }),
+    ]);
+    expect(backend.lastPackage?.providers.providerInstances).toEqual([
+      expect.objectContaining({
+        id: 'agent-openrouter',
+        kind: 'gateway',
+        models: ['openai/gpt-5.2'],
+      }),
+    ]);
+    expect(
+      (backend.lastPackage?.extensions.openkit as { codexCommand?: string[] }).codexCommand
+    ).toEqual(expect.arrayContaining(['--model', 'openai/gpt-5.2']));
+  });
+
   it('stages linked review branches while ingesting production worker changes', async () => {
     const fixture = createWorkspaceChangeIngressFixture(
       'staged_review_branch',
@@ -535,7 +1033,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       backend,
       createAgentSessionId: () => 'as_git_without_core_db_1',
       environmentBackend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
@@ -626,7 +1124,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       coreDb,
       createAgentSessionId: () => 'as_actor_scope_1',
       environmentBackend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
@@ -1035,7 +1533,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       coreDb,
       createAgentSessionId: () => 'as_sandbox_access_1',
       environmentBackend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
@@ -1100,7 +1598,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       coreDb,
       createAgentSessionId: () => 'as_teardown_fail_1',
       environmentBackend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
@@ -1147,7 +1645,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       coreDb,
       createAgentSessionId: () => 'as_teardown_retry_1',
       environmentBackend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
@@ -1213,7 +1711,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       coreDb,
       createAgentSessionId: () => 'as_cleanup_status_1',
       environmentBackend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
@@ -1267,7 +1765,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       coreDb,
       createAgentSessionId: () => 'as_workspace_open_fail_1',
       environmentBackend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
@@ -1314,7 +1812,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       coreDb,
       createAgentSessionId: () => 'as_workspace_migrate_fail_1',
       environmentBackend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
@@ -1361,7 +1859,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       coreDb,
       createAgentSessionId: () => 'as_workspace_close_fail_1',
       environmentBackend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
@@ -1403,7 +1901,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       backend: new FakeWorkerGovernanceBackend(),
       createAgentSessionId: () => 'as_completed_turn_persistence_fail_1',
       environmentBackend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
@@ -1442,7 +1940,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       backend,
       createAgentSessionId: () => 'as_falsey_rejection_1',
       environmentBackend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
@@ -1488,7 +1986,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       backend: new FakeWorkerGovernanceBackend(),
       createAgentSessionId: () => 'as_terminal_notify_fail_1',
       environmentBackend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
@@ -1583,7 +2081,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       backend,
       createAgentSessionId: () => `as_${failurePoint}_fail_1`,
       environmentBackend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
@@ -1630,7 +2128,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       backend: new FakeWorkerGovernanceBackend(),
       createAgentSessionId: () => 'as_setup_fail_1',
       environmentBackend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
@@ -1673,7 +2171,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       coreDb,
       createAgentSessionId: () => 'as_source_ref_1',
       environmentBackend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
@@ -1751,8 +2249,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       capabilities: [
         'container',
         'transcript-sink',
-        'sidecar-control-endpoint',
-        'sidecar-capability-endpoint',
+        'worker-control',
         'remote-gateway',
         'backend-service-readiness',
         'file-upload-download',
@@ -1771,7 +2268,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       coreDb,
       createAgentSessionId: () => 'as_remote_governance_1',
       environmentBackend: {
-        controlRelayUpstream: 'https://nanocore.example.com/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.example.com/api/worker-control',
         gatewayUrl: 'https://a1.example.com:17670',
         kind: 'openshell',
         placement: 'remote',
@@ -1844,7 +2341,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       coreDb,
       createAgentSessionId: () => 'as_unexpected_random_1',
       environmentBackend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
@@ -1921,7 +2418,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       coreDb,
       createAgentSessionId: () => 'as_governance_vault_1',
       environmentBackend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
@@ -2009,7 +2506,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       coreDb,
       createAgentSessionId: () => 'as_governance_runtime_file_1',
       environmentBackend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
@@ -2043,12 +2540,314 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 });
 
+/** One native JSON frame and its restricted origin claims. */
+interface TurnRuntimeNativeFrame {
+  /** Exact native JSON object retained in the raw stream. */
+  record: Record<string, unknown>;
+  /** Restricted native-origin fields for this frame. */
+  origin: Partial<
+    Pick<
+      WorkerRuntimeNativeOriginIndexEntry,
+      | 'nativeSessionId'
+      | 'nativeThreadId'
+      | 'parentNativeThreadId'
+      | 'nativeTurnId'
+      | 'runtimeRole'
+      | 'runtimeNickname'
+      | 'runtimeDepth'
+    >
+  >;
+}
+
+/** One synthetic raw stream plus its manifest and native-index rows. */
+interface TurnRuntimeStream {
+  /** Exact raw JSONL bytes. */
+  bytes: Buffer;
+  /** Native index rows covering every physical frame. */
+  entries: WorkerRuntimeNativeOriginIndexEntry[];
+  /** Restricted stream manifest row. */
+  manifest: WorkerRuntimeRawStreamManifest['streams'][number];
+}
+
+/** Backend-local provenance capture returned by the fake transcript collector. */
+interface TurnRuntimeProvenanceCapture {
+  /** Worker transcript collection projection. */
+  collection: NonNullable<WorkerTranscriptPayload['runtimeProvenance']>;
+  /** Backend-local native-origin index path. */
+  nativeOriginIndexPath: string;
+  /** Backend-local synthetic raw stream directory. */
+  rawStreamsRoot: string;
+  /** Backend-local raw stream manifest path. */
+  streamManifestPath: string;
+}
+
+/**
+ * Creates a small complete, missing, or digest-tampered runtime forest for turn gating.
+ *
+ * @param root Isolated backend-local collection root.
+ * @param environmentPackage Provenance-required outer AEP.
+ * @param failure Optional collection failure mode.
+ * @returns Backend transcript projection and canonical importer paths.
+ */
+function createTurnRuntimeProvenanceCapture(
+  root: string,
+  environmentPackage: AgentEnvironmentPackage,
+  failure: 'missing' | 'tampered' | null = null
+): TurnRuntimeProvenanceCapture {
+  const lineage = turnRuntimeLineage(environmentPackage);
+  const rawStreamsRoot = join(root, 'runtime', 'raw');
+  const streamManifestPath = join(root, 'runtime', 'raw-streams.json');
+  const nativeOriginIndexPath = join(root, 'runtime', 'native-origin-index.jsonl');
+  const streams = [
+    createTurnRuntimeStream(lineage, 'stream-0000.jsonl', 'primary', [
+      {
+        record: { thread_id: TURN_ROOT_NATIVE_ID, type: 'thread.started' },
+        origin: { nativeThreadId: TURN_ROOT_NATIVE_ID },
+      },
+      {
+        record: {
+          item: {
+            receiver_thread_ids: [TURN_CHILD_NATIVE_ID, TURN_CHILD_B_NATIVE_ID],
+            sender_thread_id: TURN_ROOT_NATIVE_ID,
+            status: 'completed',
+            tool: 'spawn_agent',
+            type: 'collab_tool_call',
+          },
+          type: 'item.completed',
+        },
+        origin: { nativeThreadId: TURN_ROOT_NATIVE_ID },
+      },
+    ]),
+    createTurnRuntimeStream(lineage, 'stream-0001.jsonl', 'runtime-thread', [
+      {
+        record: turnRuntimeSessionMeta(TURN_ROOT_NATIVE_ID),
+        origin: {
+          nativeSessionId: TURN_NATIVE_SESSION_ID,
+          nativeThreadId: TURN_ROOT_NATIVE_ID,
+        },
+      },
+    ]),
+    createTurnRuntimeStream(lineage, 'stream-0002.jsonl', 'runtime-thread', [
+      {
+        record: turnRuntimeSessionMeta(TURN_CHILD_NATIVE_ID, TURN_ROOT_NATIVE_ID),
+        origin: {
+          nativeSessionId: TURN_NATIVE_SESSION_ID,
+          nativeThreadId: TURN_CHILD_NATIVE_ID,
+          parentNativeThreadId: TURN_ROOT_NATIVE_ID,
+          runtimeDepth: 1,
+          runtimeNickname: 'Curie',
+          runtimeRole: 'researcher',
+        },
+      },
+      {
+        record: {
+          payload: {
+            content: [{ text: TURN_CHILD_RAW_MESSAGE, type: 'output_text' }],
+            role: 'assistant',
+            type: 'message',
+          },
+          timestamp: '2026-07-13T00:00:01.000Z',
+          type: 'response_item',
+        },
+        origin: {
+          nativeSessionId: TURN_NATIVE_SESSION_ID,
+          nativeThreadId: TURN_CHILD_NATIVE_ID,
+          parentNativeThreadId: TURN_ROOT_NATIVE_ID,
+          runtimeDepth: 1,
+          runtimeNickname: 'Curie',
+          runtimeRole: 'researcher',
+        },
+      },
+    ]),
+    createTurnRuntimeStream(lineage, 'stream-0003.jsonl', 'runtime-thread', [
+      {
+        record: turnRuntimeSessionMeta(TURN_CHILD_B_NATIVE_ID, TURN_ROOT_NATIVE_ID),
+        origin: {
+          nativeSessionId: TURN_NATIVE_SESSION_ID,
+          nativeThreadId: TURN_CHILD_B_NATIVE_ID,
+          parentNativeThreadId: TURN_ROOT_NATIVE_ID,
+          runtimeDepth: 1,
+          runtimeNickname: 'Curie',
+          runtimeRole: 'researcher',
+        },
+      },
+    ]),
+  ];
+  const manifest = WorkerRuntimeRawStreamManifestSchema.parse({
+    adapterVersion: '0.144.1',
+    captureStatus: 'complete',
+    lineage,
+    primaryStreamRef: 'stream-0000.jsonl',
+    runtimeFamily: 'codex',
+    schemaVersion: 1,
+    streams: streams.map((stream, index) =>
+      failure === 'tampered' && index === 2
+        ? { ...stream.manifest, sha256: `sha256:${'f'.repeat(64)}` }
+        : stream.manifest
+    ),
+  });
+  mkdirSync(rawStreamsRoot, { recursive: true });
+  for (const stream of streams) {
+    writeFileSync(join(rawStreamsRoot, stream.manifest.streamRef), stream.bytes);
+  }
+  writeFileSync(
+    nativeOriginIndexPath,
+    `${streams
+      .flatMap((stream) => stream.entries)
+      .map((entry) => JSON.stringify(entry))
+      .join('\n')}\n`
+  );
+  if (failure !== 'missing') {
+    writeFileSync(streamManifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  }
+
+  return {
+    collection: {
+      diagnostics: failure
+        ? [
+            {
+              code: `worker_runtime_provenance_${failure}`,
+              message: `Runtime provenance collection is ${failure}.`,
+              path: '/openkit/session/runtime/raw-streams.json',
+            },
+          ]
+        : [],
+      manifestPath: streamManifestPath,
+      missingPaths: failure === 'missing' ? ['/openkit/session/runtime/raw-streams.json'] : [],
+      nativeOriginIndexPath,
+      rawStreamPaths: Object.fromEntries(
+        streams.map((stream) => [
+          stream.manifest.streamRef,
+          join(rawStreamsRoot, stream.manifest.streamRef),
+        ])
+      ),
+    },
+    nativeOriginIndexPath,
+    rawStreamsRoot,
+    streamManifestPath,
+  };
+}
+
+/**
+ * Builds one exact LF-framed runtime stream and matching index rows.
+ *
+ * @param lineage Authoritative outer worker lineage.
+ * @param streamRef Synthetic stream reference.
+ * @param sourceKind Primary or runtime-thread stream class.
+ * @param frames Native frames and adapter origin claims.
+ * @returns Exact raw bytes, manifest row, and index rows.
+ */
+function createTurnRuntimeStream(
+  lineage: WorkerLineage,
+  streamRef: string,
+  sourceKind: 'primary' | 'runtime-thread',
+  frames: TurnRuntimeNativeFrame[]
+): TurnRuntimeStream {
+  const chunks: Buffer[] = [];
+  const entries: WorkerRuntimeNativeOriginIndexEntry[] = [];
+  let byteOffset = 0;
+  for (const [frameSequence, frame] of frames.entries()) {
+    const bytes = Buffer.from(`${JSON.stringify(frame.record)}\n`);
+    chunks.push(bytes);
+    entries.push(
+      WorkerRuntimeNativeOriginIndexEntrySchema.parse({
+        adapterVersion: '0.144.1',
+        byteLength: bytes.byteLength,
+        byteOffset,
+        eventKind: frame.record.type,
+        frameSequence,
+        frameSha256: turnRuntimeSha256(bytes),
+        lineage,
+        ...frame.origin,
+        parseStatus: 'parsed',
+        runtimeFamily: 'codex',
+        schemaVersion: 1,
+        streamRef,
+      })
+    );
+    byteOffset += bytes.byteLength;
+  }
+  const bytes = Buffer.concat(chunks);
+  return {
+    bytes,
+    entries,
+    manifest: {
+      bytes: bytes.byteLength,
+      captureStatus: 'complete',
+      frameCount: frames.length,
+      sha256: turnRuntimeSha256(bytes),
+      sourceKind,
+      stableTerminal: true,
+      streamRef,
+    },
+  };
+}
+
+/**
+ * Builds pinned Codex session metadata for a root or child runtime thread.
+ *
+ * @param threadId Native thread id.
+ * @param parentThreadId Native parent id for a child thread.
+ * @returns One Codex rollout session metadata record.
+ */
+function turnRuntimeSessionMeta(
+  threadId: string,
+  parentThreadId?: string
+): Record<string, unknown> {
+  return {
+    payload: {
+      cwd: '/private/runtime-provenance',
+      id: threadId,
+      originator: 'codex_exec',
+      ...(parentThreadId ? { parent_thread_id: parentThreadId } : {}),
+      session_id: TURN_NATIVE_SESSION_ID,
+      source: parentThreadId
+        ? {
+            subagent: {
+              thread_spawn: {
+                agent_nickname: 'Curie',
+                agent_role: 'researcher',
+                depth: 1,
+                parent_thread_id: parentThreadId,
+              },
+            },
+          }
+        : 'exec',
+      timestamp: '2026-07-13T00:00:00.000Z',
+    },
+    timestamp: '2026-07-13T00:00:00.000Z',
+    type: 'session_meta',
+  };
+}
+
+/** Builds authoritative runtime provenance lineage from a materialized AEP. */
+function turnRuntimeLineage(environmentPackage: AgentEnvironmentPackage): WorkerLineage {
+  return {
+    agentSessionId: environmentPackage.scope.agentSessionId,
+    packageSnapshotId: environmentPackage.snapshotId,
+    requestId: environmentPackage.scope.requestId ?? null,
+    threadId: environmentPackage.scope.threadId,
+    turnId: environmentPackage.scope.turnId,
+    workspaceId: environmentPackage.scope.workspaceId,
+  };
+}
+
+/** Computes one canonical prefixed SHA-256 digest. */
+function turnRuntimeSha256(bytes: Uint8Array): string {
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
 class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
   public readonly calls: string[] = [];
   public failTeardown = false;
   public teardownFailuresRemaining = 0;
   public lastContext: Parameters<WorkerGovernanceBackend['materialize']>[1] | null = null;
   public lastPackage: AgentEnvironmentPackage | null = null;
+  public runtimeProvenanceFactory:
+    | ((
+        environmentPackage: AgentEnvironmentPackage
+      ) => NonNullable<WorkerTranscriptPayload['runtimeProvenance']>)
+    | null = null;
   private readonly capabilities: string[];
   private readonly materializationStatus:
     | WorkerGovernanceMaterializationRecord['backendStatus']
@@ -2060,12 +2859,7 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
       materializationStatus?: WorkerGovernanceMaterializationRecord['backendStatus'];
     } = {}
   ) {
-    this.capabilities = options.capabilities ?? [
-      'container',
-      'transcript-sink',
-      'sidecar-control-endpoint',
-      'sidecar-capability-endpoint',
-    ];
+    this.capabilities = options.capabilities ?? ['container', 'transcript-sink', 'worker-control'];
     this.materializationStatus = options.materializationStatus;
   }
 
@@ -2181,6 +2975,9 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
           text: 'Governed worker completed the task.',
         },
       })}\n`,
+      ...(this.runtimeProvenanceFactory
+        ? { runtimeProvenance: this.runtimeProvenanceFactory(this.lastPackage) }
+        : {}),
     };
   }
 

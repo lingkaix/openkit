@@ -34,6 +34,17 @@ export const CapabilityCallSchema = z.object({
   itemId: ItemIdSchema.nullable().default(null),
   agentId: AgentIdSchema.nullable().default(null),
   agentSessionId: AgentSessionIdSchema.nullable(),
+  packageSnapshotId: z.string().min(1).nullable().default(null),
+  runtimeOriginRef: z
+    .string()
+    .regex(/^rto_[a-f0-9]{24}$/)
+    .nullable()
+    .default(null),
+  runtimeCacheLineageRef: z
+    .string()
+    .regex(/^rcl_[a-f0-9]{24}$/)
+    .nullable()
+    .default(null),
   requestId: RequestIdSchema.nullable().default(null),
   sourceIds: z.array(z.string().min(1)).default([]),
   capabilityId: z.string().min(1),

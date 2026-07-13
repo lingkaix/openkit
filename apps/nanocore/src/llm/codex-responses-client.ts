@@ -6,10 +6,12 @@ import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type { GetAccountResponse } from '../runtime/codex/protocol.js';
-import type {
-  OpenAICompatibleResponsesRequest,
-  OpenAICompatibleResponsesResponse,
+import {
+  OpenAICompatibleProviderError,
+  type OpenAICompatibleResponsesRequest,
+  type OpenAICompatibleResponsesResponse,
 } from './openai-compatible-client.js';
+import type { LLMGatewayTransportContext } from './provider-dispatcher.js';
 
 const DEFAULT_CODEX_BASE_URL = 'https://chatgpt.com/backend-api';
 const CODEX_RESPONSES_PATH = 'codex/responses';
@@ -188,13 +190,15 @@ export class CodexResponsesClient {
    *
    * @param provider OpenAI Codex provider config.
    * @param request Responses request.
+   * @param transport Optional cancellation and Codex continuity state.
    * @returns Responses response.
    */
   public async createResponses(
     provider: ResolvedLLMProviderConfig,
-    request: OpenAICompatibleResponsesRequest
+    request: OpenAICompatibleResponsesRequest,
+    transport: LLMGatewayTransportContext = {}
   ): Promise<OpenAICompatibleResponsesResponse> {
-    const response = await this.send(provider, request, false);
+    const response = await this.send(provider, request, false, transport);
     return this.readJsonResponse<OpenAICompatibleResponsesResponse>(response);
   }
 
@@ -203,13 +207,15 @@ export class CodexResponsesClient {
    *
    * @param provider OpenAI Codex provider config.
    * @param request Responses request.
+   * @param transport Optional cancellation and Codex continuity state.
    * @returns Upstream Responses SSE stream.
    */
   public async createResponsesStream(
     provider: ResolvedLLMProviderConfig,
-    request: OpenAICompatibleResponsesRequest
+    request: OpenAICompatibleResponsesRequest,
+    transport: LLMGatewayTransportContext = {}
   ): Promise<ReadableStream<Uint8Array>> {
-    const response = await this.send(provider, request, true);
+    const response = await this.send(provider, request, true, transport);
 
     if (!response.ok) {
       await this.readJsonResponse(response);
@@ -225,20 +231,31 @@ export class CodexResponsesClient {
   private async send(
     provider: ResolvedLLMProviderConfig,
     request: OpenAICompatibleResponsesRequest,
-    stream: boolean
+    stream: boolean,
+    transport: LLMGatewayTransportContext
   ): Promise<Response> {
+    transport.signal?.throwIfAborted();
     const tokenResolver = this.resolveTokenResolver(provider);
     const first = await tokenResolver.resolve();
+    transport.signal?.throwIfAborted();
     const firstResponse = await this.fetchImpl(
-      this.createRequest(provider, request, first, stream)
+      this.createRequest(provider, request, first, stream, transport)
     );
 
     if (firstResponse.status !== 401) {
+      this.acceptCodexTurnState(firstResponse, transport);
       return firstResponse;
     }
 
+    await firstResponse.body?.cancel().catch(() => undefined);
+    transport.signal?.throwIfAborted();
     const refreshed = await tokenResolver.resolve();
-    return this.fetchImpl(this.createRequest(provider, request, refreshed, stream));
+    transport.signal?.throwIfAborted();
+    const finalResponse = await this.fetchImpl(
+      this.createRequest(provider, request, refreshed, stream, transport)
+    );
+    this.acceptCodexTurnState(finalResponse, transport);
+    return finalResponse;
   }
 
   private resolveTokenResolver(provider: ResolvedLLMProviderConfig): CodexTokenResolver {
@@ -255,7 +272,8 @@ export class CodexResponsesClient {
     provider: ResolvedLLMProviderConfig,
     request: OpenAICompatibleResponsesRequest,
     token: CodexResolvedAuthToken,
-    stream: boolean
+    stream: boolean,
+    transport: LLMGatewayTransportContext
   ): Request {
     const body = {
       ...request,
@@ -271,14 +289,39 @@ export class CodexResponsesClient {
       'openai-beta': 'responses=experimental',
       originator: 'openkit',
     });
+    if (transport.codexTurnState) {
+      headers.set('x-codex-turn-state', transport.codexTurnState);
+    }
 
     return new Request(joinUrl(provider.baseUrl ?? DEFAULT_CODEX_BASE_URL, CODEX_RESPONSES_PATH), {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
+      ...(transport.signal ? { signal: transport.signal } : {}),
     });
   }
 
+  /**
+   * Accepts Codex turn state only from the response returned to the caller.
+   *
+   * @param response Final upstream response.
+   * @param transport Continuity observer supplied by the caller.
+   */
+  private acceptCodexTurnState(response: Response, transport: LLMGatewayTransportContext): void {
+    const turnState = response.headers.get('x-codex-turn-state');
+
+    if (turnState) {
+      transport.onCodexTurnState?.(turnState);
+    }
+  }
+
+  /**
+   * Parses one Codex JSON response and normalizes an upstream failure.
+   *
+   * @param response Upstream Codex response.
+   * @returns Parsed successful response payload.
+   * @throws {OpenAICompatibleProviderError} When Codex returns a non-success response.
+   */
   private async readJsonResponse<T>(response: Response): Promise<T> {
     const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
 
@@ -288,9 +331,16 @@ export class CodexResponsesClient {
       const message =
         typeof detail.message === 'string'
           ? detail.message
-          : `OpenAI Codex provider request failed with status ${response.status}.`;
+          : typeof payload.detail === 'string'
+            ? payload.detail
+            : `OpenAI Codex provider request failed with status ${response.status}.`;
 
-      throw new Error(message);
+      throw new OpenAICompatibleProviderError({
+        code: typeof detail.code === 'string' ? detail.code : 'provider_error',
+        message,
+        status: response.status,
+        type: typeof detail.type === 'string' ? detail.type : null,
+      });
     }
 
     return payload as T;

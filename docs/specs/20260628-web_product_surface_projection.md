@@ -109,6 +109,5 @@ They are retained to recover useful copy, interaction details, and edge-case not
 - [Core Architecture](../core/architecture.md)
 - [Knowledge Model](../core/knowledge.md)
 - [Agent Capability](../core/agent-capability.md)
-- [OpenKit AI Interface](./20260617-openkit_ai_interface.md)
-- [OpenKit Development Loop Protocol](./20260627-openkit_development_loop_protocol.md)
+- [OpenKit Agent Skill Interface](./20260713-openkit_agent_skill_interface.md)
 - [Workspace Synchronization](./20260703-workspace_synchronization.md)

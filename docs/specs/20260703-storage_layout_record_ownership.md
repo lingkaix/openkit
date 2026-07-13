@@ -44,7 +44,7 @@ The important call is to stop organizing persistence by feature module. Storage 
 
 - Define the target `DATA_ROOT` tree for server, user, and workspace scopes.
 - Decide which record families are file-backed source of truth and which may use SQLite as source of truth.
-- Bring OpenShell, worker sidecar, audit, log, transcript, and evidence outputs back into NanoCore-owned storage.
+- Bring OpenShell, worker-shim, audit, log, transcript, and evidence outputs back into NanoCore-owned storage.
 - Keep records inspectable, portable, backup-friendly, and easy to rebuild into query indexes.
 - Preserve lineage from workspace, thread, turn, agent session, package snapshot, backend session, capability call, policy decision, and evidence bundle.
 
@@ -242,7 +242,7 @@ runtime/
     <agentSessionId>/
       session.json
       aep-snapshots/
-      sidecar/
+      shim/
       transcripts/
       workspace-changes/
 reviews/
@@ -283,7 +283,7 @@ Reference-only sources should still store non-secret metadata: source id, source
 
 ## OpenShell And Worker Output Ingestion
 
-OpenShell and worker sidecar output has three layers:
+OpenShell and worker-shim output has three layers:
 
 - backend-native raw evidence
 - normalized OpenKit evidence

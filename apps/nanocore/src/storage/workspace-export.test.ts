@@ -164,26 +164,6 @@ describe('workspace export verifier', () => {
           resolvedAt: null,
         },
       ],
-      workspaceSyncEvidenceBundles: [
-        {
-          id: 'wseb_1',
-          workspaceId: 'ws_demo',
-          lifecycleRecordIds: ['wrr_1', 'wom_1'],
-          evidenceBundleIds: ['evb_workspace_materialization_wmr_1'],
-          backendEvidenceRefs: [{ kind: 'backend.openshell', ref: 'session/session_1/output' }],
-          redactedEvidenceManifest: [
-            {
-              kind: 'worker-log',
-              ref: 'evidence/workspace-sync/wseb_1/log',
-              digest: 'sha256:log',
-              bytes: 42,
-            },
-          ],
-          contentDigests: ['sha256:bundle'],
-          retentionClass: 'workspace-audit',
-          createdAt: timestamp,
-        },
-      ],
     });
 
     expect(existsSync(join(root, WORKSPACE_EXPORT_MANIFEST_FILE))).toBe(true);
@@ -201,7 +181,6 @@ describe('workspace export verifier', () => {
       'records/turn-events.jsonl',
       'records/turns.jsonl',
       'records/workspace-quarantine-records.jsonl',
-      'records/workspace-sync-evidence-bundles.jsonl',
       'records/workspace.json',
     ]);
     expect(
@@ -209,11 +188,7 @@ describe('workspace export verifier', () => {
         readFileSync(join(root, 'records', 'workspace-quarantine-records.jsonl'), 'utf8').trim()
       )
     ).toMatchObject({ id: 'wqr_1', workspaceId: 'ws_demo' });
-    expect(
-      JSON.parse(
-        readFileSync(join(root, 'records', 'workspace-sync-evidence-bundles.jsonl'), 'utf8').trim()
-      )
-    ).toMatchObject({ id: 'wseb_1', workspaceId: 'ws_demo' });
+    expect(existsSync(join(root, 'records', 'workspace-sync-evidence-bundles.jsonl'))).toBe(false);
     expect(JSON.parse(readFileSync(join(root, 'records', 'workspace.json'), 'utf8'))).toMatchObject(
       {
         id: 'ws_demo',
@@ -869,6 +844,65 @@ describe('workspace export verifier', () => {
     );
   });
 
+  it('rejects unknown runtime provenance features at the record boundary', () => {
+    const root = freshExportRoot('openkit-workspace-import-provenance-feature-');
+    writeWorkspaceExportTree({
+      exportRoot: root,
+      exportId: 'wsexp_demo',
+      sourceDeploymentId: 'dep_local',
+      createdAt: timestamp,
+      workspace: {
+        id: 'ws_demo',
+        name: 'Demo workspace',
+        kind: 'general',
+        status: 'active',
+        defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
+        counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      threads: [],
+      knowledge: [],
+      turns: [],
+      itemRevisions: [],
+      artifacts: [],
+      artifactReviews: [],
+      agentSessions: [],
+      turnEvents: [],
+      evidenceBundles: [
+        {
+          id: 'evb_runtime_provenance',
+          workspaceId: 'ws_demo',
+          threadId: null,
+          goalId: null,
+          turnId: null,
+          agentSessionId: null,
+          backendType: 'openshell',
+          sourceKind: 'worker-runtime-provenance-index',
+          summary: 'Portable runtime provenance index.',
+          rawEvidenceRefs: [],
+          redactedEvidenceRefs: [
+            { kind: 'worker-runtime-provenance-index', ref: 'runtime-origin-index.jsonl' },
+          ],
+          contentDigests: ['sha256:provenance'],
+          retentionClass: 'turn-evidence',
+          sensitivityClass: 'product-safe',
+          importStatus: 'promoted',
+          requiredFeatures: [
+            'evidence.bundle.v1',
+            'worker.runtime-provenance.v1',
+            'worker.runtime-provenance.future',
+          ],
+          createdAt: timestamp,
+        },
+      ],
+    });
+
+    expect(() => readImportSnapshot(root, 'ws_imported_demo')).toThrow(
+      'Unsupported requiredFeatures in records/evidence-bundles.jsonl:1: worker.runtime-provenance.future'
+    );
+  });
+
   it('rejects a workspace record owned by another manifest workspace', () => {
     const root = freshExportRoot('openkit-workspace-import-owner-mismatch-');
     writeWorkspaceExportTree({
@@ -1205,7 +1239,7 @@ describe('workspace export verifier', () => {
     ]);
   });
 
-  it('rewrites workspace sync evidence bundles while reading workspace imports', () => {
+  it('rejects the removed workspace synchronization evidence record family on import', () => {
     const root = freshExportRoot('openkit-workspace-import-sync-evidence-');
     writeWorkspaceExportTree({
       exportRoot: root,
@@ -1230,37 +1264,29 @@ describe('workspace export verifier', () => {
       artifactReviews: [],
       agentSessions: [],
       turnEvents: [],
-      workspaceSyncEvidenceBundles: [
-        {
-          id: 'wseb_import',
-          workspaceId: 'ws_demo',
-          lifecycleRecordIds: ['wrr_import'],
-          evidenceBundleIds: ['evb_import'],
-          backendEvidenceRefs: [{ kind: 'backend.openshell', ref: 'session/session_1/output' }],
-          redactedEvidenceManifest: [
-            {
-              kind: 'worker-log',
-              ref: 'evidence/workspace-sync/wseb_import/log',
-              digest: 'sha256:log',
-              bytes: 42,
-            },
-          ],
-          contentDigests: ['sha256:bundle'],
-          retentionClass: 'workspace-audit',
-          createdAt: timestamp,
-        },
-      ],
     });
+    const removedPath = 'records/workspace-sync-evidence-bundles.jsonl';
+    const removedContent = `${JSON.stringify({ id: 'wseb_import', workspaceId: 'ws_demo' })}\n`;
+    writeFileSync(join(root, removedPath), removedContent);
+    const manifestPath = join(root, WORKSPACE_EXPORT_MANIFEST_FILE);
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+      contentDigest: string;
+      contentInventory: Array<{ path: string; digest: string; bytes: number }>;
+    };
+    manifest.contentInventory.push({
+      path: removedPath,
+      digest: `sha256:${createHash('sha256').update(removedContent).digest('hex')}`,
+      bytes: Buffer.byteLength(removedContent),
+    });
+    manifest.contentInventory.sort((left, right) => left.path.localeCompare(right.path));
+    manifest.contentDigest = `sha256:${createHash('sha256')
+      .update(JSON.stringify(manifest.contentInventory))
+      .digest('hex')}`;
+    writeFileSync(manifestPath, JSON.stringify(manifest));
 
-    const snapshot = readImportSnapshot(root, 'ws_imported_demo');
-
-    expect(snapshot.workspaceSyncEvidenceBundles).toEqual([
-      expect.objectContaining({
-        id: 'wseb_import',
-        workspaceId: 'ws_imported_demo',
-        evidenceBundleIds: ['evb_import'],
-      }),
-    ]);
+    expect(() => readImportSnapshot(root, 'ws_imported_demo')).toThrow(
+      `Unsupported workspace export record path: ${removedPath}`
+    );
   });
 
   it('exports and imports redacted worker setup evidence rows', () => {

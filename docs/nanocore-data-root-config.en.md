@@ -388,7 +388,7 @@ The agent config rejects unknown top-level fields outside the schema.
 
 `mode` describes where the agent runtime lives relative to NanoCore.
 
-Use `local` when the worker service is local to the deployment. This fits a sidecar, local service, or local container that NanoCore reaches through a local transport.
+Use `local` when the worker service is local to the deployment. This fits a local service or local container that NanoCore reaches through a local transport.
 
 Use `remote` when the agent runs outside the NanoCore host or container and NanoCore communicates with it over a network endpoint.
 

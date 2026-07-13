@@ -170,7 +170,7 @@ Resolved: icons stay on Iconify + Remix Icon; `apps/web` is rebuilt in place; th
 - Product-surface posture: [`20260628-web_product_surface_projection.md`](./20260628-web_product_surface_projection.md)
 - Client boundary: [`20260528-core_client_boundary.md`](./20260528-core_client_boundary.md)
 - Test model: [`20260529-test_strategy.md`](./20260529-test_strategy.md), [`20260529-l6_story_acceptance.md`](./20260529-l6_story_acceptance.md)
-- Development loop (dogfooding): [`20260627-openkit_development_loop_protocol.md`](./20260627-openkit_development_loop_protocol.md)
+- AI-native coordination surface: [`20260713-openkit_agent_skill_interface.md`](./20260713-openkit_agent_skill_interface.md)
 - Design guide: [`../../DESIGN.md`](../../DESIGN.md)
 - Design→code workflow: [`../cookbooks/claude-design-web-ui-loop.md`](../cookbooks/claude-design-web-ui-loop.md)
 - Superseded scaffold: [`../cookbooks/spa-solid-vite.md`](../cookbooks/spa-solid-vite.md)

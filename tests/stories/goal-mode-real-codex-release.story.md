@@ -1,113 +1,104 @@
 ---
 id: story-goal-mode-real-codex-release
-title: Complete a real Codex Goal Mode release run
-persona: Release owner validating host-mode Goal Mode against a disposable local repository
-entrypoint: web
-default_tool: playwright
+title: Complete a real Codex Goal kernel run through MCP
+persona: Release owner validating the governed Goal kernel against a disposable repository
+entrypoint: mcp
+default_tool: mcp_stdio
 timeout_seconds: 1800
 requires_real_provider: true
 requires_real_codex: true
 ---
 
-# Complete A Real Codex Goal Mode Release Run
+# Complete A Real Codex Goal Kernel Run Through MCP
 
 ## Purpose
 
-Verify that a release owner can use Goal Mode from the Web UI to plan, execute, review, verify, and complete a bounded product task in a linked local git repository with the real Codex host adapter.
+Verify that the public OpenKit MCP facade can plan, execute, review, and complete one bounded Goal through a real OpenShell Codex worker while NanoCore owns provider credentials, inference routing, workspace synchronization, evidence, usage, and audit.
 
 ## Preconditions
 
-- NanoCore can boot with a disposable data root.
-- Web can boot against the NanoCore instance.
-- A disposable local git repository exists for the story run.
-- The local machine has a valid Codex OAuth account slot that the operator explicitly points to with an environment variable.
-- The story is skipped by default because it can consume real provider quota and real Codex subscription capacity.
+- A fresh NanoCore server deployment is already running and reachable from the runner.
+- The runner can access the NanoCore data root on the same machine.
+- The NanoCore host can launch `codex app-server` to probe the streamed account slot.
+- The deployment uses a real OpenShell worker backend and the locally built `openkit/worker-codex:dev` image.
+- `ssh a1` can read `/home/ubuntu/.codex/auth.json` without interactive input.
+- A disposable local git repository with one baseline commit is visible to NanoCore.
+- The story is skipped by default because it consumes real Codex subscription capacity and provider quota.
 
 ## Required Opt-in Environment Variables
 
-- `OPENKIT_L6_REAL_CODEX=1` enables real Codex story execution.
-- `OPENKIT_L6_ALLOW_PROVIDER_QUOTA=1` confirms the operator accepts provider or subscription usage.
-- `OPENKIT_L6_CODEX_OAUTH_ACCOUNT_DIR` points to the local Codex OAuth account directory for this machine.
-- `OPENKIT_L6_GOAL_REPO_ROOT` points to the disposable git repository that Goal Mode may modify.
-- `OPENKIT_L6_EVIDENCE_DIR` points to a writable directory for transcripts, screenshots, server logs, item history, artifact references, verification output, and redaction notes.
+- `OPENKIT_L6_REAL_CODEX=1` enables the real Codex Goal runner.
+- `OPENKIT_L6_ALLOW_PROVIDER_QUOTA=1` confirms the operator accepts provider usage.
+- `OPENKIT_L6_NANOCORE_URL` points to the existing NanoCore deployment.
+- `OPENKIT_L6_NANOCORE_DATA_ROOT` points to that deployment's local data root.
+- `OPENKIT_L6_GOAL_REPO_ROOT` points to the disposable git repository.
+- `OPENKIT_L6_EVIDENCE_DIR` points to a writable redacted evidence directory.
+- `OPENKIT_L6_GOAL_WORKSPACE_ID` optionally selects the workspace and defaults to `ws_demo`.
+- `OPENKIT_NANOCORE_TOKEN` is required when the NanoCore deployment requires bearer authentication.
 
 ## Setup
 
-- Start NanoCore in host mode with a fresh temporary data root.
-- Start the Web UI against that NanoCore instance.
-- Link the disposable git repository through the repository App API setup route before opening the Goal Mode thread.
-- Use a fresh browser context.
-- Confirm the repository has a clean initial git status before starting the goal.
+- Confirm the repository is clean, has a baseline commit, and does not contain `docs/l6-real-goal-proof.md`.
+- Ask NanoCore to materialize its default OpenAI Codex OAuth account slot.
+- When the server-owned account file is absent, stream the A1 auth file directly into a new `0600` file; when it already exists, require a regular file owned by the runner user with mode `0600` and validate `logged_in` through the public OAuth status without transferring auth again. Never place auth content in process arguments, environment variables, logs, evidence, or the worker sandbox.
+- Create the `openai_codex` OAuth provider for `openai-codex/gpt-5.1-codex` only when absent, update it by revision only when it differs, and bind `agent_codex_host` only when its selection differs.
+- If the strict reload reports only provider or agent restart-required changes, stop before MCP execution, provider quota, or evidence, restart NanoCore, and rerun. After restart, consume only an exact `workspaceDataSources` session-scoped deferral when present, then require the strict dry-run response to be an exact no-op before continuing.
+- Confirm NanoCore accepts product work, the provider registry contains `openai_codex`, provider diagnostics are not blocked, and the linked repository is ready.
 
-## User-visible Steps
+## MCP Steps
 
-1. Open the Web UI root route.
-2. Select or create the workspace used for release validation.
-3. Create a thread named `L6 Goal Mode real Codex release`.
-4. Start Goal Mode with an objective that asks OpenKit to make a small, reversible repository change and verify it.
-5. Review the generated plan, including assumptions, tasks, verification checks, expected artifacts, risks, and human review policy.
-6. Approve the plan only if every task is bounded to the disposable repository.
-7. Observe the first worker task running through the real Codex host adapter.
-8. Review the worker result, changed files, artifacts, verification output, and any requested human attention.
-9. Accept, retry, refine, or block the task according to the visible review outcome.
-10. Continue until all planned tasks are terminal.
-11. Review the final Goal Mode completion summary and final verification evidence.
+1. Create a thread named `L6 Goal Mode real Codex kernel`.
+2. Start Goal Mode with the exact bounded proof-file objective from the runner.
+3. Read the planning state, draft a one-task plan, and confirm it has verification checks.
+4. Approve the plan and confirm approval does not start worker execution.
+5. Run one bounded Goal step and wait for the real worker turn to reach its terminal checkpoint.
+6. Fail if the worker requested approval or user input.
+7. Read the Action Center and require exactly one workspace review and one Goal review.
+8. Accept the workspace review through the public Core Client and require it to apply only `docs/l6-real-goal-proof.md`.
+9. Accept the stored Goal review verdict through `openkit.resolve_action_center_item`.
+10. Read Goal state until it is terminal and require successful completion.
+11. Read the thread, AEP snapshot, CapabilityCall and usage rows, audit events, EvidenceBundles, RuntimeEvidence, and final git state.
 
-## Checkpoints
+## Exact Proof File
 
-- Capture a checkpoint after repository linking succeeds.
-- Capture a checkpoint after the plan is generated but before approval.
-- Capture a checkpoint after each worker task reaches review.
-- Capture a checkpoint after verification evidence is attached.
-- Capture a checkpoint after the final terminal summary is visible.
+The only repository change must be `docs/l6-real-goal-proof.md` with this exact content:
 
-## Expected Outcomes
-
-- Goal Mode starts without a missing workspace repository warning.
-- The plan approval step is explicit and does not start worker execution before approval.
-- Worker execution occurs in the linked disposable repository.
-- The review surface shows changed files, artifacts, or evidence sufficient for a release owner to accept or reject the work.
-- Verification output is visible before final completion.
-- The terminal summary shows completed tasks, blocked or skipped tasks if any, artifact references, verification evidence, risks, and suggested next work.
+```markdown
+- Real Goal Mode executed through OpenShell.
+- Worker inference stayed behind NanoCore.
+- Repository changes remained review-gated.
+```
 
 ## Deterministic Assertions
 
-- The Web UI does not show `Workspace repository is not configured.` after repository setup.
-- The Goal Mode panel shows a planning state before plan approval.
-- The Goal Mode panel shows a running, reviewing, verifying, awaiting-human, completed, blocked, aborted, or failed state after plan approval.
-- Final completion requires visible verification evidence.
-- The evidence bundle records the final git status and changed-file summary for the disposable repository.
-- The browser body, server logs, item history, and evidence bundle do not contain raw OAuth tokens, bearer tokens, API keys, or provider secrets.
+- Goal planning produces exactly one task with at least one verification check.
+- Plan approval is explicit and returns `startsWorkerTurn: false`.
+- The worker returns a real turn id, worker session id, successful stop reason, terminal checkpoint, and review outcome.
+- No approval or question row is produced by the worker turn.
+- The workspace review applies exactly the proof path before the Goal review is accepted.
+- The Goal review advances the one-task graph to `complete_goal`.
+- Final Goal state is `completed`, exactly one task is complete, and a terminal summary exists.
+- The thread contains exactly one completed outer assistant message for the worker turn.
+- The turn AEP uses OpenShell, Codex, `direct-nanocore` control, one NanoCore Gateway route, provider `openai_codex`, model `openai-codex/gpt-5.1-codex`, placeholder credential visibility, no direct credential declarations, no provider attachments, no vault material, and `policy.secrets.visibility: none`.
+- At least one successful `worker-inference-gateway` LLM CapabilityCall is linked to matching provider and model usage, a successful audit event, an EvidenceBundle, and successful RuntimeEvidence.
+- `git diff --check` succeeds, the baseline commit is unchanged, and final git status contains only the untracked proof file.
+- Preserved evidence excludes OAuth content, bearer tokens, authorization headers, private account labels, account-file paths, and the NanoCore data-root path.
 
 ## Evidence To Collect
 
-- Agent transcript with goals, actions, observations, assertions, deviations, and final status.
-- Browser screenshots or trace at each checkpoint when available.
-- NanoCore process logs and health responses.
-- Goal Mode item history for plan, task progress, review, verification, and terminal summary items.
-- Artifact ids, artifact titles, or changed-file summaries produced by the run.
-- Verification commands, exit codes, and redacted output snippets.
-- Final git status for the disposable repository.
-- Redaction notes describing every scanned evidence source.
-
-## Secret Redaction Expectations
-
-- Do not write raw OAuth tokens, bearer tokens, API keys, cookie values, authorization headers, or private account payloads into committed files or evidence artifacts.
-- Replace any accidental secret-like values with `[REDACTED]` before preserving evidence.
-- Treat fake secret markers as test data only when they are intentionally introduced for redaction checks.
-- Record the evidence locations that were scanned for secret leakage.
+- Redacted story metadata, runtime config summary, OAuth status summary, Goal outcome, review outcomes, AEP boundary summary, inference lineage counts, thread result count, and final git status.
+- Redaction notes naming every public surface scanned before evidence was written.
 
 ## Cleanup
 
-- Stop all spawned NanoCore and Web processes.
-- Preserve the evidence directory only after redaction checks pass.
-- Remove the temporary data root.
-- Restore or delete the disposable repository according to the runbook for the release validation session.
+- Stop and remove the disposable NanoCore deployment after evidence has been preserved.
+- Remove its data root, including the streamed server-owned OAuth account file.
+- Restore or delete the disposable repository according to the release validation runbook.
 
 ## Failure Triage Notes
 
-If the story fails because the environment cannot provide the explicit real Codex opt-in, classify the result as an environment failure.
+If explicit opt-in, the target deployment, local data root, A1 SSH source, provider quota, or disposable repository is unavailable, classify the result as an environment failure.
 
-If the story fails because Goal Mode cannot complete the visible workflow, classify the result by suspected layer and add or request the lowest practical L1-L5 regression test.
+If Goal execution, workspace review, Goal review, AEP boundaries, inference attribution, evidence linkage, or repository assertions fail, classify the result by the owning product layer and reduce the defect into the lowest practical L1-L5 regression test.
 
-If the story finds a secret leak, treat it as a release-blocking defect and preserve only redacted reproduction evidence.
+If any secret-bearing value reaches public output or preserved evidence, treat the failure as release-blocking and retain only redacted reproduction evidence.

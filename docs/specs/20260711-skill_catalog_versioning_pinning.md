@@ -34,6 +34,7 @@ Implementation: Not Started
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260703-agent_manifest_aep_resolution.md`
 - `docs/specs/20260704-worker_mcp_tool_supply.md`
+- `docs/specs/20260713-openkit_agent_skill_interface.md`
 - `docs/specs/20260710-self_improvement_evaluation_loop.md`
 - `docs/specs/20260531-human_attention_intervention_model.md`
 - `docs/specs/20260704-workspace_backup_export_import.md`
@@ -155,7 +156,7 @@ Rules:
 
 ## Proposed Design
 
-Catalog index records (entries, versions, pins) are SQLite rows in the appropriate scope databases per the storage layout policy; version content is stored once per content digest in a content-addressed catalog area under the server data root, with workspace-scope version content under the workspace data root so export scope stays clean. The digest function is one pure, platform-independent utility with exhaustive unit tests, implemented beside the existing context-package digest utilities. AEP resolution (`agent-environment.ts`) replaces the const-table lookup with record-backed resolution: pin lookup, pointer lookup, approval and adapter assertions unchanged in spirit, digest recorded on the supply snapshot. Governed operations surface through App API routes, `@openkit/core-client`, and MCP tools following the established catalog patterns (MCP server catalog, data source catalog). Repository-authored skills under `skills/` are seeded into the catalog by a publish step at bootstrap, keyed by their computed digests, replacing the hardcoded entries.
+Catalog index records (entries, versions, pins) are SQLite rows in the appropriate scope databases per the storage layout policy; version content is stored once per content digest in a content-addressed catalog area under the server data root, with workspace-scope version content under the workspace data root so export scope stays clean. The digest function is one pure, platform-independent utility with exhaustive unit tests, implemented beside the existing context-package digest utilities. AEP resolution (`agent-environment.ts`) replaces the const-table lookup with record-backed resolution: pin lookup, pointer lookup, approval and adapter assertions unchanged in spirit, digest recorded on the supply snapshot. Governed operations surface through App API routes, `@openkit/core-client`, and the end-user Agent Skill operation catalog following the established catalog patterns (MCP server catalog, data source catalog). Repository-authored worker Skills remain catalog content; the end-user `openkit` Skill defined by `docs/specs/20260713-openkit_agent_skill_interface.md` is a separate product-interface artifact and must not be seeded into worker supply merely because it lives under `skills/`.
 
 ## Current Implementation Projection
 
@@ -180,7 +181,7 @@ Nothing in this contract is implemented. Current adjacent state: `apps/nanocore/
 
 ## Rollout / Migration Plan
 
-New machinery replacing a hardcoded table; no compatibility path. Order: (1) digest utility with exhaustive unit tests; (2) record layer and content area with publish/pin/promote/rollback helpers; (3) AEP resolution switch from const table to records, seeding repository-authored skills via bootstrap publish in the same change; (4) governed App API / core-client / MCP surfaces plus audit events; (5) workspace export scope additions; (6) improvement-proposal promotion linkage when the self-improvement Phase 2 harness ships. Existing package snapshots created before this change carry no skill digests; they are historical records and are not migrated, per the internal-development rule.
+New machinery replacing a hardcoded table; no compatibility path. Order: (1) digest utility with exhaustive unit tests; (2) record layer and content area with publish/pin/promote/rollback helpers; (3) AEP resolution switch from const table to records, seeding only repository-authored worker Skills via bootstrap publish in the same change and excluding the end-user interface Skill; (4) governed App API, Core Client, and end-user operation-catalog surfaces plus audit events; (5) workspace export scope additions; (6) improvement-proposal promotion linkage when the self-improvement Phase 2 harness ships. Existing package snapshots created before this change carry no skill digests; they are historical records and are not migrated, per the internal-development rule.
 
 ## Testing Strategy / Acceptance Criteria
 

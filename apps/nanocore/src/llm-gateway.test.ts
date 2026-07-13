@@ -310,6 +310,62 @@ describe('OpenAI-compatible agent gateway', () => {
     ]);
   });
 
+  it('passes the public request abort signal to the gateway dispatcher', async () => {
+    const abortController = new AbortController();
+    let dispatchedSignal: AbortSignal | undefined;
+    let markProviderStarted: (() => void) | undefined;
+    let releaseProvider: (() => void) | undefined;
+    const providerStarted = new Promise<void>((resolve) => {
+      markProviderStarted = resolve;
+    });
+    const providerRelease = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const app = createApp({
+      ...createOllamaProviderOptions(),
+      llmGatewayDispatcher: {
+        createChatCompletion: async (_provider, request, context = {}) => {
+          dispatchedSignal = (context as { readonly transport?: { readonly signal?: AbortSignal } })
+            .transport?.signal;
+          markProviderStarted?.();
+          await providerRelease;
+
+          return {
+            id: 'chatcmpl_signal',
+            object: 'chat.completion',
+            created: 1,
+            model: request.model,
+            choices: [
+              {
+                index: 0,
+                message: { role: 'assistant', content: 'Signal received' },
+                finish_reason: 'stop',
+              },
+            ],
+          };
+        },
+      } as unknown as LLMGatewayProviderDispatcher,
+    });
+
+    const responsePromise = app.request('/v1/chat/completions', {
+      body: JSON.stringify({
+        messages: [{ content: 'Hello', role: 'user' }],
+        model: 'llama3.2',
+      }),
+      headers: { 'content-type': 'application/json' },
+      method: 'POST',
+      signal: abortController.signal,
+    });
+
+    await providerStarted;
+    expect(dispatchedSignal?.aborted).toBe(false);
+    abortController.abort();
+    expect(dispatchedSignal?.aborted).toBe(true);
+    releaseProvider?.();
+
+    expect((await responsePromise).status).toBe(200);
+  });
+
   it('routes Anthropic chat completions through the pi-ai dispatcher path', async () => {
     const faux = fauxProvider({ provider: 'anthropic', models: [{ id: 'faux-chat' }] });
     const models = createModels();

@@ -3,7 +3,6 @@ import {
   type WorkspaceReconciliationRecord,
   WorkspaceReconciliationRecordSchema,
   type WorkspaceRecoveryDecision,
-  type WorkspaceSyncEvidenceBundle,
 } from '@openkit/app-api-schemas';
 import type { WorkspaceDb } from '../storage/db.js';
 
@@ -14,8 +13,6 @@ interface WorkspaceReconciliationRecordRow {
 interface ResumeWorkspaceRecoveryCollectionInput {
   /** Durable worker output manifests currently available for the workspace. */
   readonly workerOutputManifests?: readonly WorkerOutputManifest[];
-  /** Durable workspace synchronization evidence bundles currently available for the workspace. */
-  readonly workspaceSyncEvidenceBundles?: readonly WorkspaceSyncEvidenceBundle[];
 }
 
 /**
@@ -130,7 +127,6 @@ export function resolveWorkspaceReconciliationRecord(
           decidedAt: input.decidedAt,
           record,
           workerOutputManifests: input.workerOutputManifests ?? [],
-          workspaceSyncEvidenceBundles: input.workspaceSyncEvidenceBundles ?? [],
         })
       : null;
   const updated = WorkspaceReconciliationRecordSchema.parse({
@@ -159,8 +155,6 @@ function resolveResumeCollection(input: {
   readonly record: WorkspaceReconciliationRecord;
   /** Durable worker output manifests currently available for the workspace. */
   readonly workerOutputManifests: readonly WorkerOutputManifest[];
-  /** Durable workspace synchronization evidence bundles currently available for the workspace. */
-  readonly workspaceSyncEvidenceBundles: readonly WorkspaceSyncEvidenceBundle[];
 }): Pick<
   WorkspaceReconciliationRecord,
   'backendReachability' | 'collectedOutputManifestIds' | 'evidenceBundleIds'
@@ -185,18 +179,6 @@ function resolveResumeCollection(input: {
     );
   }
 
-  const relevantLifecycleIds = new Set([
-    input.record.id,
-    ...input.record.affectedRecordIds,
-    ...collectedOutputManifestIds,
-  ]);
-  const evidenceBundleIds = uniqueStrings([
-    ...input.record.evidenceBundleIds,
-    ...input.workspaceSyncEvidenceBundles
-      .filter((bundle) => bundle.lifecycleRecordIds.some((id) => relevantLifecycleIds.has(id)))
-      .flatMap((bundle) => bundle.evidenceBundleIds),
-  ]);
-
   return {
     backendReachability: {
       checkedAt: input.decidedAt,
@@ -205,7 +187,7 @@ function resolveResumeCollection(input: {
       status: 'unknown',
     },
     collectedOutputManifestIds,
-    evidenceBundleIds,
+    evidenceBundleIds: input.record.evidenceBundleIds,
   };
 }
 

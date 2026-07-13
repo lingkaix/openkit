@@ -1,14 +1,14 @@
 # Capability Usage Gateway Foundation
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
 
 ## Owns
 
-- The shared implementation slice that makes LLM gateway calls and worker MCP tool calls emit the same durable `CapabilityCall`, `UsageRecord`, and audit linkage shape.
+- The shared ledger foundation used by current LLM gateway producers and required by the future worker MCP producer.
 - The minimum NanoCore services needed by both gateway families: capability call recorder, usage recorder, attribution resolver, gateway request context, and failure-safe write ordering.
-- The implementation order for landing pi-ai LLM usage counting and worker MCP usage counting together without creating two parallel ledgers.
-- The conformance checks that prove `inference.local` and `capability.local` use the same attribution, redaction, storage, and error-normalization rules.
+- The implementation order for adding worker MCP usage counting without creating a parallel ledger.
+- The conformance checks that the future `capability.local` producer must pass against the implemented LLM producers.
 
 ## Does Not Own
 
@@ -40,22 +40,22 @@ Related specs:
 
 ## Summary
 
-OpenKit has two gateway paths that must become durable usage producers at the same time:
+OpenKit has one implemented durable gateway producer family and one accepted future producer:
 
-- `inference.local` / `/v1/*` LLM gateway calls, where pi-ai supplies token and cost measurements for non-native provider families.
-- `capability.local` worker MCP calls, where NanoCore supplies governed MCP tool access and records tool-call usage.
+- AEP-resolved or public `/v1/*` LLM gateway calls, where pi-ai supplies token and cost measurements for non-native provider families.
+- Future `capability.local` worker MCP calls, where NanoCore will supply governed MCP tool access and record tool-call usage.
 
-This spec defines the shared foundation those two slices must use. The implementation should add one small capability-ledger service in NanoCore, not two feature-local logging systems. LLM and MCP adapters each normalize their own upstream result, then call the same recorder with the same attribution context. The recorder writes `CapabilityCall` first, then `UsageRecord` rows, then audit linkage, with redacted diagnostics or restricted evidence referenced by digest only.
+This spec defines the shared foundation those two slices must use. NanoCore already has one small capability-ledger service rather than feature-local logging systems. Implemented LLM adapters normalize their upstream results and call that recorder; the future MCP adapter must do the same. The recorder writes `CapabilityCall` first, then `UsageRecord` rows, then audit linkage, with redacted diagnostics or restricted evidence referenced by digest only.
 
-The goal is boring: one call path, one attribution resolver, one durable usage writer, and two producers.
+The goal is boring: one attribution resolver and one durable usage writer, with the future worker MCP producer reusing the implemented LLM path.
 
 ## Goals / Non-goals
 
 ### Goals
 
-- Land durable usage production for pi-ai-routed LLM calls and worker MCP tool calls in one implementation slice.
+- Keep durable usage production for pi-ai-routed LLM calls and require worker MCP to reuse it when implemented.
 - Ensure both producers share the same `CapabilityCall` status model, lineage fields, request id handling, and redaction rules.
-- Keep feature-specific adapters thin: pi-ai normalizes LLM token/cost usage; MCP normalizes tool-call/byte usage; neither owns the ledger.
+- Keep feature-specific adapters thin: pi-ai normalizes LLM token/cost usage; the future MCP adapter normalizes tool-call/byte usage; neither owns the ledger.
 - Make failed and aborted upstream calls record partial usage when upstream resources were consumed.
 - Give diagnostics and future budget/rate-limit work one queryable source of truth.
 
@@ -70,11 +70,11 @@ The goal is boring: one call path, one attribution resolver, one durable usage w
 
 ## Background
 
-The LLM gateway already records process-local usage diagnostics, but those are not durable `UsageRecord` rows. The pi-ai adoption spec makes pi-ai the first durable LLM usage producer for provider families where OpenKit does not keep a native adapter.
+The LLM gateway retains process-local usage diagnostics and now also records durable `UsageRecord` rows for workspace-attributed producers. The pi-ai adoption spec made pi-ai the first durable LLM usage producer for provider families where OpenKit does not keep a native adapter.
 
 The worker MCP tool supply spec makes `mcp.call_tool` the first non-LLM worker capability family that should emit one `CapabilityCall` and one tool-call usage row for every executed call.
 
-Implementing these separately would create duplicate attribution code, duplicate redaction decisions, and incompatible failure semantics. That is the wrong split. Both paths are gateway-mediated capability calls, so the shared ledger should land first.
+Implementing worker MCP separately would create duplicate attribution code, duplicate redaction decisions, and incompatible failure semantics. The worker producer must reuse the shared ledger that already serves LLM paths.
 
 ## Decision
 
@@ -84,7 +84,7 @@ Implementing these separately would create duplicate attribution code, duplicate
   - `CapabilityCallRecorder`: starts, finishes, and fails durable capability calls.
   - `UsageRecorder`: writes usage rows linked to a capability call.
   - `GatewayUsageNormalizer` functions owned by each producer family.
-- LLM gateway calls and worker MCP calls MUST both create `CapabilityCall` records. LLM calls MAY have an OpenAI-compatible public route, but internally they still represent an `llm` capability call through `inference.local`.
+- LLM gateway calls and future worker MCP calls MUST both create `CapabilityCall` records. LLM calls MAY use an OpenAI-compatible public route, backend-local `inference.local`, or the authenticated worker-inference route, but internally they still represent one `llm` capability family.
 - pi-ai-routed LLM calls MUST record `UsageRecord` rows with `category: "llm"`.
 - Worker MCP `mcp.call_tool` calls MUST record `UsageRecord` rows with `category: "tool"`, `unit: "tool_calls"`, and quantity `1`; byte quantities MAY be recorded when reliably measured.
 - `mcp.list_servers` and `mcp.list_tools` MUST create capability-call/audit records but MUST NOT create usage rows unless a later accepted spec defines billable listing semantics.
@@ -210,7 +210,7 @@ The shared foundation owns:
 
 ```text
 worker or gateway client
-  -> inference.local or capability.local route
+  -> AEP-resolved inference or capability.local route
   -> resolve GatewayCallContext
   -> start CapabilityCall
   -> feature adapter
@@ -263,13 +263,11 @@ Current relevant code is split:
 - `packages/protocol/src/models/capability.ts` already defines `CapabilityCallSchema`.
 - `apps/nanocore/src/capability/usage-ledger.ts` now provides the first shared workspace-scoped ledger skeleton: start a durable capability call, record linked usage rows, finish the call with a terminal status, recover `running` calls during boot workspace scans, and emit one linked `AuditEvent` for terminal capability outcomes. The recorder validates rows against the existing protocol schemas, rejects raw payload-shaped field names before storage, skips duplicate equivalent usage measurements when an idempotent capability call is retried, marks the linked call `failed` with `usage_record_failed` when usage recording fails, and marks restart-recovered calls `cancelled` with `capability_call_recovered_after_restart`.
 - Workspace-scoped databases now own `capability_calls` and `usage_records` tables through `workspace_0013_capability_usage_ledger`.
-- Authenticated worker knowledge capability routes now use the same recorder when NanoCore has a Core database. `knowledge.search` and `knowledge.read` write durable workspace-scoped `CapabilityCall` rows, keep the existing worker response summary shape, and do not write `UsageRecord` rows because list/read knowledge operations are not metered usage producers.
 - QuickChatAgent LLM calls now use the same recorder when NanoCore has a Core database. The producer writes one workspace-scoped `CapabilityCall` with family `llm` and one linked `UsageRecord` using provider-reported total tokens when available, falling back to one request-count row when token usage is absent.
 - Public `/v1/chat/completions` and `/v1/responses` calls routed through pi-ai now use the same recorder when the request carries `metadata.openkit.workspaceId`. NanoCore starts a workspace-scoped `CapabilityCall` with family `llm`, observes raw pi-ai terminal usage exactly once before public normalization, records positive input, output, cache-read, and cache-write token rows plus one positive estimated-USD row when available, and marks started calls failed when dispatch, stream consumption, or usage recording fails. The same observation feeds process-local diagnostics while retaining their existing public token and cache-hit semantics. Public calls without workspace attribution remain process-local diagnostics only, and public responses never expose raw usage, cost objects, or prompt-cache keys.
-- Authenticated worker MCP list routes now use the same recorder for MCP-family capability calls without usage rows. `mcp.call_tool` also requires an allowed workspace-scoped `mcp.call` `PermissionDecision`, validates arguments against the AEP schema subset, records one MCP-family `CapabilityCall`, and emits one linked `UsageRecord` with `category: "tool"`, `unit: "tool_calls"`, and quantity `1` only after policy and argument validation pass.
-- Worker MCP server lifecycle is not implemented.
+- Worker Knowledge and MCP capability producers are not implemented because the AEP capability plane is disabled, NanoCore exposes no `/api/worker-capabilities/*` routes, and the shim has no capability client.
 
-The shared recorder now exists, non-metered worker capability producers use it, workspace-attributed internal and public LLM producers write durable usage, and worker MCP tool calls write durable tool-call usage after policy allow. Cross-producer conformance coverage proves LLM and MCP producers use the same recorder lifecycle for `startCapabilityCall`, `recordUsage`, `finishCapabilityCall`, linked `UsageRecord` rows, and terminal audit events. Pi dispatcher coverage proves successful, provider-error, and aborted terminal usage is observed once, public Pi streams omit raw cache-write, cost, and cache-key data, and Codex non-streaming and streaming usage retain the existing public-payload accounting path. Public pi-ai stream route coverage proves aborted and timed-out attributed streams finish durable `CapabilityCall` rows as `failed`, keep partial usage rows when upstream usage exists, classify the public SSE error without leaking provider secrets, and avoid leaving abandoned `running` ledger state.
+The shared recorder and workspace-attributed internal and public LLM producers are implemented. Cross-producer MCP conformance remains a future acceptance gate, not current evidence. Pi dispatcher coverage proves successful, provider-error, and aborted terminal usage is observed once, public Pi streams omit raw cache-write, cost, and cache-key data, and Codex non-streaming and streaming usage retain the existing public-payload accounting path. Public pi-ai stream route coverage proves aborted and timed-out attributed streams finish durable `CapabilityCall` rows as `failed`, keep partial usage rows when upstream usage exists, classify the public SSE error without leaking provider secrets, and avoid leaving abandoned `running` ledger state.
 
 ## Alternatives Considered
 
@@ -283,7 +281,7 @@ The shared recorder now exists, non-metered worker capability producers use it, 
 
 ## Consequences
 
-- pi-ai LLM usage and worker MCP usage become comparable because both attach to `CapabilityCall`.
+- pi-ai LLM usage and future worker MCP usage will be comparable because both attach to `CapabilityCall`.
 - Future budget and rate-limit work gets one ledger instead of two feature logs.
 - The first implementation must touch shared NanoCore storage before either producer is fully useful.
 - Synchronous recording is intentionally simple; high-throughput optimization is deferred until measured.

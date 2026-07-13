@@ -699,9 +699,7 @@ export const AgentSessionBackendSummarySchema = z.object({
     'unknown',
   ]),
   health: z.enum(['ready', 'unavailable', 'unknown', 'not-applicable']),
-  controlMode: z
-    .enum(['transcript-sink', 'backend-relay', 'direct-nanocore', 'sidecar', 'stdio', 'disabled'])
-    .nullable(),
+  controlMode: z.literal('direct-nanocore').nullable(),
   control: AgentSessionBackendControlSummarySchema.nullable().default(null),
   gatewayName: z.string().min(1).nullable(),
   gatewayEndpoint: z.string().min(1).nullable(),

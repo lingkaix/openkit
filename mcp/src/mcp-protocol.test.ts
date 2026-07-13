@@ -13,7 +13,6 @@ function createFakeNanoCoreClient(): OpenKitNanoCoreClient {
 
   return {
     approveGoalPlan: (input) => respond('approveGoalPlan', input),
-    createEvidenceBundle: (input) => respond('createEvidenceBundle', input),
     createThread: (input) => respond('createThread', input),
     draftKnowledgeProposal: (input) => respond('draftKnowledgeProposal', input),
     draftGoalPlan: (input) => respond('draftGoalPlan', input),

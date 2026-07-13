@@ -22,7 +22,7 @@ Specs to implement (design authority; this record does not restate their contrac
 - `docs/specs/20260531-human_attention_intervention_model.md` (updated) — `improvement_proposal` row kind with evidence-bundle requirement and batch-separation rule.
 - `docs/specs/20260704-workspace_backup_export_import.md` (updated) — evaluation area and workspace-scope Skill Catalog families in export scope with coverage-guard wiring.
 
-Impacted surfaces: `packages/protocol` (if new record envelopes are needed), `packages/app-api-schemas`, `packages/core-client`, `apps/nanocore` (scheduler services, agent-environment/AEP resolution, knowledge governance, internal agents, evaluation module family, action center, export/import, metering/usage categories, audit categories), `mcp` (read/write tools for new surfaces), and L0-L6 test assets including new L6 stories. `apps/web` reflects new read models only after kernel contracts stabilize, per the MCP-first operating model.
+Impacted surfaces: `packages/protocol` (if new record envelopes are needed), `packages/app-api-schemas`, `packages/core-client`, `apps/nanocore` (scheduler services, agent-environment/AEP resolution, knowledge governance, internal agents, evaluation module family, action center, export/import, metering/usage categories, audit categories), the transport-neutral end-user operation catalog and bundled CLI when new public user/operator operations are exposed, and L0-L6 test assets including new L6 stories. `apps/web` reflects new read models only after kernel contracts stabilize, per the NanoCore-first and Agent-Skill-first operating model.
 
 ## Non-Goals
 
@@ -97,7 +97,7 @@ Implements `20260711-skill_catalog_versioning_pinning.md`.
 
 - `skv1` digest utility; entry/version/pin records and content-addressed storage; publish/promote/rollback/pin/unpin/deprecate with governance tiers and audit.
 - AEP resolution switch from `WORKER_SKILL_CATALOG` to records with digest recording and digest-verified materialization; bootstrap seeding of repository-authored skills.
-- App API / core-client / MCP surfaces; workspace export scope additions with coverage-guard wiring.
+- App API, Core Client, and end-user operation-catalog surfaces; workspace export scope additions with coverage-guard wiring.
 
 ### Stage 5 — Context package replay reconstruction (Phase 2 prerequisite)
 

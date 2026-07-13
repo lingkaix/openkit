@@ -37,11 +37,8 @@ export const OPEN_SHELL_CLI_SURFACE = cliSurface.cli;
 /** OpenShell snapshot metadata shape. */
 interface OpenShellSnapshotMetadata {
   readonly checksums: Record<string, string>;
-  readonly compatibleGatewayRange: {
-    readonly maxExclusive: string;
-    readonly min: string;
-  };
   readonly mappingVersion: string;
+  readonly requiredGatewayVersion: string;
   readonly refreshedAt: string;
   readonly snapshotId: string;
   readonly sourceBoundary: string;
@@ -58,18 +55,26 @@ interface OpenShellProviderProfileSurfaceFile {
   readonly openKitProviderProfileMapping: {
     readonly authStyles: string[];
     readonly categories: string[];
+    readonly credentialPlaceholderPrefix: string;
     readonly credentialFields: string[];
-    readonly gatewayDelegatedRefreshStrategies: string[];
-    readonly refreshMaterialKeys: string[];
-    readonly refreshStrategies: string[];
+    readonly endpointFields: string[];
     readonly requiredFields: string[];
     readonly reservedEnvPrefixPattern: string;
+    readonly ruleFields: string[];
+    readonly restAllowRuleFields: string[];
+    readonly workerInferenceRules: Array<{
+      readonly allow: {
+        readonly method: string;
+        readonly path: string;
+      };
+    }>;
   };
   readonly schemaVersion: number;
   readonly upstreamProviderProfile: {
     readonly authStyles: string[];
     readonly builtInProfileIds: string[];
     readonly categories: string[];
+    readonly genericProviderType: string;
     readonly gatewayRefreshMaterialKeys: string[];
     readonly refreshStrategies: string[];
   };
@@ -87,6 +92,7 @@ interface OpenShellPolicySurfaceFile {
     readonly providerLayerPrefix: string;
     readonly providersV2Required: boolean;
     readonly requiredTopLevelKeys: string[];
+    readonly restAllowRuleKeys: string[];
     readonly version: number;
   };
   readonly schemaVersion: number;
@@ -102,40 +108,72 @@ interface OpenShellCliSurfaceFile {
   readonly cli: {
     readonly binary: string;
     readonly commands: string[][];
-    readonly compatibleVersionRange: {
-      readonly maxExclusive: string;
-      readonly min: string;
-    };
+    readonly requiredVersion: string;
   };
   readonly schemaVersion: number;
 }
 
-/** Minimal OpenShell provider profile artifact validated by this snapshot. */
+/** OpenShell 0.0.80 provider credential emitted by OpenKit. */
+export interface OpenShellProviderProfileCredentialArtifact {
+  /** OpenShell credential injection style. */
+  readonly auth_style: string;
+  /** Optional human-readable credential purpose. */
+  readonly description?: string;
+  /** Sandbox environment variables receiving OpenShell placeholders. */
+  readonly env_vars: readonly string[];
+  /** HTTP header receiving the resolved credential. */
+  readonly header_name: string;
+  /** Stable credential name within the profile. */
+  readonly name: string;
+  /** Empty for header-auth credentials after OpenShell normalization. */
+  readonly query_param: string;
+  /** Whether provider creation requires the credential. */
+  readonly required: boolean;
+}
+
+/** Exact REST allow rule emitted inside an OpenShell 0.0.80 provider endpoint. */
+export interface OpenShellProviderProfileAllowRuleArtifact {
+  /** Exact request matcher allowed by the provider-composed policy layer. */
+  readonly allow: {
+    /** Exact HTTP method. */
+    readonly method: string;
+    /** Exact absolute HTTP path. */
+    readonly path: string;
+  };
+}
+
+/** OpenShell 0.0.80 provider endpoint emitted by OpenKit. */
+export interface OpenShellProviderProfileEndpointArtifact {
+  /** Enforcement mode applied by the OpenShell network proxy. */
+  readonly enforcement: string;
+  /** Relay or provider host visible from the sandbox network. */
+  readonly host: string;
+  /** Relay or provider TCP port. */
+  readonly port: number;
+  /** OpenShell application protocol. */
+  readonly protocol: string;
+  /** Exact request rules retained when OpenShell composes the provider policy layer. */
+  readonly rules: readonly OpenShellProviderProfileAllowRuleArtifact[];
+}
+
+/** Exact OpenShell 0.0.80 provider profile artifact emitted by OpenKit. */
 export interface OpenShellProviderProfileArtifact {
+  /** Executable paths authorized to use this provider. */
+  readonly binaries: readonly string[];
   /** Generated provider profile id. */
   readonly id: string;
   /** Provider profile category. */
   readonly category: string;
-  /** Human-readable display name. */
-  readonly displayName: string;
-  /** Credential declarations keyed by logical credential id. */
-  readonly credentials: Record<
-    string,
-    {
-      readonly authStyle?: string;
-      readonly envVar: string;
-      readonly headerName?: string;
-      readonly pathTemplate?: string;
-      readonly queryParam?: string;
-    }
-  >;
-  /** Endpoint declarations keyed by endpoint id. */
-  readonly endpoints: Record<string, unknown>;
-  /** Optional refresh strategy declaration. */
-  readonly refresh?: {
-    readonly materialKeys?: readonly string[];
-    readonly strategy: string;
-  };
+  /** Credential declarations consumed by OpenShell. */
+  readonly credentials: readonly OpenShellProviderProfileCredentialArtifact[];
+  /** Optional human-readable profile purpose. */
+  readonly description?: string;
+  /** Human-readable display name using the upstream field name. */
+  readonly display_name: string;
+  /** Network endpoints contributed by the provider policy layer. */
+  readonly endpoints: readonly OpenShellProviderProfileEndpointArtifact[];
+  /** Whether OpenShell may use this profile as its own inference provider. */
+  readonly inference_capable: boolean;
 }
 
 /**
@@ -155,43 +193,84 @@ export function assertOpenShellProviderProfileConformant(
   if (!OPEN_SHELL_PROVIDER_PROFILE_SURFACE.categories.includes(profile.category)) {
     throw new Error(`Unsupported OpenShell provider profile category: ${profile.category}`);
   }
-  if (!profile.displayName.trim()) {
-    throw new Error('OpenShell provider profile displayName is required.');
+  if (!profile.display_name.trim()) {
+    throw new Error('OpenShell provider profile display_name is required.');
   }
-
-  for (const [credentialId, credential] of Object.entries(profile.credentials)) {
-    assertIdentifier(credentialId, 'OpenShell provider credential id');
-
-    if (!credential.envVar.trim()) {
-      throw new Error(`OpenShell provider credential ${credentialId} envVar is required.`);
-    }
-    if (
-      new RegExp(OPEN_SHELL_PROVIDER_PROFILE_SURFACE.reservedEnvPrefixPattern).test(
-        credential.envVar
-      )
-    ) {
+  if (profile.credentials.length === 0) {
+    throw new Error('OpenShell provider profile requires at least one credential.');
+  }
+  for (const credential of profile.credentials) {
+    assertProviderCredentialName(credential.name);
+    if (credential.env_vars.length === 0) {
       throw new Error(
-        `OpenShell provider credential envVar uses a reserved prefix: ${credential.envVar}`
+        `OpenShell provider credential ${credential.name} requires at least one env_var.`
       );
     }
-    if (
-      credential.authStyle &&
-      !OPEN_SHELL_PROVIDER_PROFILE_SURFACE.authStyles.includes(credential.authStyle)
-    ) {
-      throw new Error(`Unsupported OpenShell auth style: ${credential.authStyle}`);
-    }
-  }
-
-  if (profile.refresh) {
-    if (!OPEN_SHELL_PROVIDER_PROFILE_SURFACE.refreshStrategies.includes(profile.refresh.strategy)) {
-      throw new Error(`Unsupported OpenShell refresh strategy: ${profile.refresh.strategy}`);
-    }
-
-    for (const key of profile.refresh.materialKeys ?? []) {
-      if (!OPEN_SHELL_PROVIDER_PROFILE_SURFACE.refreshMaterialKeys.includes(key)) {
-        throw new Error(`Unsupported OpenShell refresh material key: ${key}`);
+    for (const envVar of credential.env_vars) {
+      if (!envVar.trim()) {
+        throw new Error(`OpenShell provider credential ${credential.name} env_var is required.`);
+      }
+      if (new RegExp(OPEN_SHELL_PROVIDER_PROFILE_SURFACE.reservedEnvPrefixPattern).test(envVar)) {
+        throw new Error(`OpenShell provider credential env_var uses a reserved prefix: ${envVar}`);
       }
     }
+    if (!OPEN_SHELL_PROVIDER_PROFILE_SURFACE.authStyles.includes(credential.auth_style)) {
+      throw new Error(`Unsupported OpenShell auth style: ${credential.auth_style}`);
+    }
+    if (!credential.header_name.trim()) {
+      throw new Error(`OpenShell provider credential ${credential.name} header_name is required.`);
+    }
+    if (credential.query_param !== '') {
+      throw new Error(
+        `OpenShell provider credential ${credential.name} query_param must be empty for header auth.`
+      );
+    }
+  }
+  if (profile.endpoints.length === 0) {
+    throw new Error('OpenShell provider profile requires at least one endpoint.');
+  }
+  for (const endpoint of profile.endpoints) {
+    if (!endpoint.host.trim()) {
+      throw new Error('OpenShell provider endpoint host is required.');
+    }
+    if (!Number.isInteger(endpoint.port) || endpoint.port < 1 || endpoint.port > 65_535) {
+      throw new Error(`Invalid OpenShell provider endpoint port: ${endpoint.port}`);
+    }
+    if (!OPEN_SHELL_POLICY_SURFACE.protocols.includes(endpoint.protocol)) {
+      throw new Error(`Unsupported OpenShell provider endpoint protocol: ${endpoint.protocol}`);
+    }
+    if (!OPEN_SHELL_POLICY_SURFACE.enforcements.includes(endpoint.enforcement)) {
+      throw new Error(
+        `Unsupported OpenShell provider endpoint enforcement: ${endpoint.enforcement}`
+      );
+    }
+    if ('access' in endpoint) {
+      throw new Error(
+        'OpenShell worker inference provider endpoint must not declare broad access.'
+      );
+    }
+    const exactRules = endpoint.rules
+      .map((rule) => `${rule.allow.method} ${rule.allow.path}`)
+      .sort();
+    const requiredRules = OPEN_SHELL_PROVIDER_PROFILE_SURFACE.workerInferenceRules
+      .map((rule) => `${rule.allow.method} ${rule.allow.path}`)
+      .sort();
+    if (
+      endpoint.rules.length !== 2 ||
+      endpoint.rules.some(
+        (rule) =>
+          Object.keys(rule).length !== 1 ||
+          Object.keys(rule.allow).sort().join(',') !== 'method,path'
+      ) ||
+      exactRules.join('\n') !== requiredRules.join('\n')
+    ) {
+      throw new Error(
+        'OpenShell provider endpoint must contain the exact worker inference POST rules.'
+      );
+    }
+  }
+  if (profile.binaries.length === 0 || profile.binaries.some((binary) => !binary.startsWith('/'))) {
+    throw new Error('OpenShell provider profile binaries must contain absolute paths.');
   }
 }
 
@@ -249,17 +328,15 @@ export function assertOpenShellCliCommandConformant(args: readonly string[]): vo
 }
 
 /**
- * Validates an OpenShell version against the snapshot compatibility range.
+ * Validates an OpenShell version against the exact snapshot requirement.
  *
  * @param version OpenShell version string.
- * @throws Error when the version is outside the pinned compatibility range.
+ * @throws Error when the version differs from the pinned version.
  */
-export function assertCompatibleOpenShellVersion(version: string): void {
-  const range = OPEN_SHELL_CLI_SURFACE.compatibleVersionRange;
-
-  if (compareSemver(version, range.min) < 0 || compareSemver(version, range.maxExclusive) >= 0) {
+export function assertRequiredOpenShellVersion(version: string): void {
+  if (version !== OPEN_SHELL_CLI_SURFACE.requiredVersion) {
     throw new Error(
-      `OpenShell version ${version} is outside the pinned range ${range.min} <= version < ${range.maxExclusive}.`
+      `OpenShell requires exactly ${OPEN_SHELL_CLI_SURFACE.requiredVersion}; got ${version}.`
     );
   }
 }
@@ -272,51 +349,6 @@ export function assertCompatibleOpenShellVersion(version: string): void {
  */
 function readSnapshotJson<T>(fileName: string): T {
   return JSON.parse(readFileSync(new URL(fileName, snapshotRoot), 'utf8')) as T;
-}
-
-/**
- * Compares two dotted numeric version strings.
- *
- * @param left Left version.
- * @param right Right version.
- * @returns Negative, zero, or positive comparison result.
- */
-function compareSemver(left: string, right: string): number {
-  const leftParts = parseVersion(left);
-  const rightParts = parseVersion(right);
-
-  for (const index of [0, 1, 2] as const) {
-    const delta = leftParts[index] - rightParts[index];
-
-    if (delta !== 0) {
-      return delta;
-    }
-  }
-
-  return 0;
-}
-
-/**
- * Parses a three-part numeric version string.
- *
- * @param version Version string.
- * @returns Numeric version tuple.
- * @throws Error when the version is malformed.
- */
-function parseVersion(version: string): [number, number, number] {
-  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
-
-  if (!match) {
-    throw new Error(`OpenShell version must be x.y.z: ${version}`);
-  }
-
-  const [, major, minor, patch] = match;
-
-  if (major === undefined || minor === undefined || patch === undefined) {
-    throw new Error(`OpenShell version must be x.y.z: ${version}`);
-  }
-
-  return [Number(major), Number(minor), Number(patch)];
 }
 
 /**
@@ -345,5 +377,16 @@ function valuesForIndentedKey(lines: string[], key: string): string[] {
 function assertIdentifier(value: string, label: string): void {
   if (!/^[a-z][a-z0-9-]*$/.test(value)) {
     throw new Error(`${label} must be lowercase kebab-case: ${value}`);
+  }
+}
+
+/**
+ * Validates the upstream snake-case provider credential name shape.
+ *
+ * @param value Provider credential name.
+ */
+function assertProviderCredentialName(value: string): void {
+  if (!/^[a-z][a-z0-9_]*$/.test(value)) {
+    throw new Error(`OpenShell provider credential name must be lowercase snake-case: ${value}`);
   }
 }

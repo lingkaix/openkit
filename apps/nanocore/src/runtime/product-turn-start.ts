@@ -6,6 +6,7 @@ import type { z } from 'zod';
 import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { FsStore } from '../lib/store.js';
 import {
+  cancelSchedulerAdmissionEntry,
   createSchedulerAdmissionEntry,
   ensureLocalhostSchedulerBaseline,
 } from '../scheduler-records.js';
@@ -35,6 +36,10 @@ interface StartProductTurnInput {
   readonly turnExecutor: TurnExecutor;
   /** Optional worker id selected by an upper-level coordinator. */
   readonly requestedAgentId?: string | null;
+  /** Optional turn id reserved by an upper-level worker loop. */
+  readonly reservedTurnId?: string;
+  /** Whether a synchronous caller should cancel its admission when dispatch is deferred. */
+  readonly cancelDeferredAdmission?: boolean;
 }
 
 /**
@@ -85,6 +90,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
     input.input.requestId
   );
   const queueEntryId = `queue_${input.input.requestId}_${suffix}`;
+  const turnId = input.reservedTurnId ?? `turn_${input.input.requestId}_${suffix}`;
 
   ensureLocalhostSchedulerBaseline(input.coreDb);
   createSchedulerAdmissionEntry(input.coreDb, {
@@ -95,7 +101,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
     requestedAgentId,
     requiredPoolConstraints: ['openshell.local'],
     threadId: input.input.threadId,
-    turnId: `turn_${input.input.requestId}_${suffix}`,
+    turnId,
     turnInput: input.input.input,
     userId: input.store.getUserId(),
     workspaceCwd: repository?.localPath ?? null,
@@ -136,6 +142,14 @@ export async function startProductTurn(input: StartProductTurnInput) {
   );
 
   if (!started) {
+    if (input.cancelDeferredAdmission) {
+      cancelSchedulerAdmissionEntry(input.coreDb, {
+        queueEntryId,
+        userId: input.store.getUserId(),
+        workspaceId: input.input.workspaceId,
+      });
+    }
+
     throw new TurnStartValidationError(
       'scheduler_admission_deferred',
       'Turn was queued but not dispatched in this scheduler iteration.',

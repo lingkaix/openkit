@@ -21,7 +21,7 @@ Verify that a user can run a worker task whose resolved Agent Environment Packag
 - Web can boot against that NanoCore instance.
 - The test environment can use a deterministic stdio MCP stub server instead of a real external MCP provider.
 - The story does not require real Codex, real provider quota, real GitHub credentials, or external network access.
-- Worker MCP lower-level L1-L5 coverage is available for schema validation, policy denials, vault grant revocation, gateway result redaction, and built-artifact gateway smoke.
+- Before this future L6 story can run, the worker capability plane and MCP gateway must be implemented and their L1-L5 coverage must pass for schema validation, policy denials, vault grant revocation, gateway result redaction, and built-artifact gateway smoke. This prerequisite is not currently satisfied.
 
 ## Setup
 

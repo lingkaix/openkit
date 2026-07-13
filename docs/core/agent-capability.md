@@ -21,7 +21,7 @@ It is part of the broader agent supply domain: `agent-supply.md` declares what a
 ## Principles
 
 - Agent capability is the governed runtime path for supplying capabilities to worker agents, not the declaration that an agent can do something.
-- Gateway projection is the default implementation shape because it gives Core a natural point for routing, policy, metering, audit, credential injection, and upstream error normalization.
+- Gateway projection is the target realization for capabilities that need routing, policy, metering, audit, credential injection, or upstream error normalization.
 - Capability calls that are product-visible should remain item-backed; infrastructure calls may stay in capability, usage, and audit records.
 - Credential injection must use vault-mediated paths and must stay outside prompt context.
 - Agent capability usage and audit should be related but separate: usage measures consumption, audit explains action and governance.
@@ -40,7 +40,7 @@ Communication defines the capability plane used to carry calls.
 
 Agent supply declares requested capability categories and setup requirements.
 
-The gateway is the default implementation projection for agent capabilities.
+The gateway is the target implementation projection for agent capabilities that require mediation. A worker environment MUST advertise capability routes explicitly; an environment whose capability plane is disabled has no implicit capability access.
 
 The gateway owns routing, transformer pipeline selection, credential injection contract, gateway audit metadata, usage metering, rate-limit hooks, budget checks, and upstream error normalization for gateway-mediated calls.
 
@@ -80,13 +80,15 @@ This rule keeps user-visible history in the item log while allowing high-volume 
 
 ## Gateway Projection
 
-The unified gateway is the default implementation projection for agent capabilities.
+The unified gateway is the target implementation projection for agent capabilities.
 
 The gateway provides stable local or protocol-level endpoints for LLM, MCP, tool, network, context, and credential-mediated calls while Core retains routing, policy, metering, audit, and rate-limit control.
 
 In local deployments, the gateway may be a Core-local service, loopback endpoint, adapter hook, or in-process provider dispatcher.
 
-In container or remote deployments, the gateway may be projected into the agent environment through a bridge sidecar, network proxy, runtime adapter, or managed service.
+In container or remote deployments, the gateway may be projected into the agent environment through a network proxy, runtime adapter, or managed service.
+
+Capability projection is independent from worker control. A direct worker-control connection MUST NOT imply that any capability route exists, and a future capability gateway MUST NOT become a control relay.
 
 Agents should depend on stable capability routes, not provider-specific routing logic.
 
@@ -189,6 +191,7 @@ Usage measures resource consumption. Audit explains who caused an action, which 
 - Gateway-mediated calls SHOULD preserve workspace, thread, turn, item, agent, agent session, capability-call, request, usage, vault-reference, transformer, and error context where practical.
 - Secret values MUST NOT appear in prompts, item payloads, context packages, audit records, usage records, or normal workspace files through the capability path.
 - Product-visible capability calls MUST produce or be referenced by item-backed events.
+- A disabled capability plane MUST expose no routes and MUST fail closed rather than infer access from worker supply, network reachability, or control connectivity.
 - Non-gateway runtime, sandbox, storage, and workspace-sync metering MUST remain future metering scope until promoted by a stable design.
 
 ## Agent Capability vs Feature Discovery

@@ -439,6 +439,10 @@ try {
     toolList.tools.some((tool) => tool.name === 'openkit.step_goal'),
     'MCP tools/list did not include openkit.step_goal.'
   );
+  assert(
+    !toolList.tools.some((tool) => tool.name === 'openkit.create_evidence_bundle'),
+    'MCP tools/list still exposed the removed openkit.create_evidence_bundle tool.'
+  );
 
   await callTool(mcp, 'openkit.read_status', { workspaceId });
   const runtimeDiagnostics = await callTool(mcp, 'openkit.read_runtime_diagnostics', {});
@@ -544,13 +548,17 @@ try {
   const workspaceReviews = await callTool(mcp, 'openkit.read_workspace_reviews', {
     workspaceId,
   });
-  const evidence = await callTool(mcp, 'openkit.create_evidence_bundle', {
-    workspaceId,
-    threadId,
-    goalId: goal.raw.goal?.goalId,
+  const evidenceResource = await mcp.call('resources/read', {
+    uri: `openkit://workspaces/${workspaceId}/evidence-bundles`,
   });
-  const artifactId =
-    step.raw.worker.evidence.artifactIds[0] ?? evidence.raw.artifacts?.items?.[0]?.id ?? null;
+  const evidenceText = evidenceResource.contents?.[0]?.text;
+  assert(typeof evidenceText === 'string', 'Evidence resource did not return JSON text.');
+  const evidence = JSON.parse(evidenceText);
+  assert(
+    Array.isArray(evidence.evidenceBundles),
+    'Evidence resource did not return a bundle list.'
+  );
+  const artifactId = step.raw.worker.evidence.artifactIds[0] ?? null;
   const artifact = artifactId
     ? await callTool(mcp, 'openkit.read_artifact', { workspaceId, artifactId })
     : null;
@@ -573,8 +581,7 @@ try {
         runtimeDiagnostics: true,
         resolvedApproval,
         answeredQuestion,
-        evidenceItems: evidence.raw.items?.items?.length ?? null,
-        evidenceArtifacts: evidence.raw.artifacts?.items?.length ?? null,
+        evidenceBundles: evidence.evidenceBundles.length,
         artifactRead: artifact !== null,
         tools: toolList.tools.length,
       },

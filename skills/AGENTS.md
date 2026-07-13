@@ -1,13 +1,15 @@
-# OpenKit Skills
+# OpenKit End-User Skill
 
 Read `README.md` first. This file contains only local agent execution rules for OpenKit-authored Skills.
 
 ## Local Agent Rules
 
-- Keep each Skill focused on one audience and one operating context.
-- Keep Skill folders minimal: `SKILL.md` is required and `agents/openai.yaml` is recommended; do not add README files inside individual Skill folders.
-- Keep normal end-user setup in `openkit-setup`, repository-developer setup in `openkit-setup-dev`, normal end-user loop coordination in `openkit-loop`, and repository self-improvement coordination in `openkit-loop-dev`.
-- Keep worker-side MCP capability supply out of these Skills.
-- Do not teach agents to bypass NanoCore public APIs, Goal Mode, Action Center, approval gates, review gates, repository diagnostics, or human decisions.
+- Implement one end-user-only Skill at `skills/openkit/`; do not create developer, self-improvement, setup-only, or loop-only variants.
+- Treat `openkit-setup`, `openkit-setup-dev`, `openkit-loop`, and `openkit-loop-dev` as removal-only legacy folders until they are deleted.
+- Keep the Skill folder minimal: `SKILL.md` is required, `agents/openai.yaml` is generated, the CLI entrypoint belongs under `scripts/`, and detailed guidance belongs in directly linked one-level `references/`; do not add a README or nested reference chain inside the Skill folder.
+- Keep `SKILL.md` as a concise router and default loop rather than copying the complete capability catalog into context.
+- Keep the bundled CLI thin, deterministic, JSON-only, and limited to the transport-neutral operation catalog over public NanoCore contracts.
+- Keep worker-side MCP capability supply out of the Skill and do not restore a user-facing MCP transport.
+- Do not teach agents to bypass NanoCore public APIs, Goal Mode, Action Center, approval gates, review gates, repository diagnostics, credential safeguards, or human decisions.
 - Keep all Skill text in English.
 - Validate Skill metadata with the skill-creator quick validator when the local Python environment supports its dependencies.

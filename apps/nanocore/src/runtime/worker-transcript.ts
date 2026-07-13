@@ -19,6 +19,22 @@ export interface WorkerTranscriptPayload {
   itemsJsonl?: string;
   /** Serialized `/openkit/session/artifacts.jsonl` content. */
   artifactsJsonl?: string;
+  /** Backend-local restricted runtime provenance files, when the AEP requested collection. */
+  runtimeProvenance?: WorkerRuntimeProvenanceCollection;
+}
+
+/** Backend-local runtime provenance collection passed only to NanoCore's restricted importer. */
+export interface WorkerRuntimeProvenanceCollection {
+  /** Product-safe collection diagnostics. */
+  diagnostics: WorkerTranscriptDiagnostic[];
+  /** Downloaded restricted raw-stream manifest path, or null when unavailable. */
+  manifestPath: string | null;
+  /** Required worker-visible paths that could not be collected. */
+  missingPaths: string[];
+  /** Downloaded restricted native-origin index path, or null when unavailable. */
+  nativeOriginIndexPath: string | null;
+  /** Synthetic stream refs mapped to backend-local restricted files. */
+  rawStreamPaths: Record<string, string>;
 }
 
 /**

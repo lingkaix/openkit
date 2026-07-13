@@ -72,7 +72,7 @@ Subjects may include:
 - profile
 - agent session
 - automation
-- bridge sidecar
+- runtime mediation service
 - external integration
 
 An agent action should usually be evaluated with both the agent identity and the responsible user or automation context.
@@ -184,7 +184,7 @@ Examples:
 - Core scheduler
 - agent adapter
 - agent capability gateway projection
-- bridge sidecar boundary
+- runtime mediation boundary
 - vault access boundary
 - filesystem operation boundary
 - sandbox startup boundary

@@ -1,9 +1,16 @@
+import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import type {
   WorkerCanonicalEventRecord,
   WorkerCapabilityCallSummary,
 } from '@openkit/worker-protocol';
-import { listRestorableSchedulerSessionLeases } from '../scheduler-records.js';
-import type { CoreDb } from '../storage/db.js';
+import {
+  listRestorableSchedulerSessionLeases,
+  requireSchedulerSessionLeaseAdmissionContext,
+  type SchedulerSessionLeaseRecord,
+} from '../scheduler-records.js';
+import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
+import { applyScopedMigrations } from '../storage/migrate.js';
+import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import type {
   WorkerControlArtifactNotice,
   WorkerControlCommand,
@@ -41,23 +48,67 @@ export function rebuildWorkerControlGatewaySessions(
       continue;
     }
 
+    const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, lease.leaseId);
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, admission.userId, lease.workspaceId);
+    let environmentPackage: AgentEnvironmentPackage;
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      environmentPackage = requireAgentEnvironmentPackageSnapshot(
+        workspaceDb,
+        lease.workspaceId,
+        lease.packageSnapshotId
+      ).snapshot;
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+    assertRestoredPackageLineage(environmentPackage, lease, admission);
     const lineage: WorkerControlLineage = {
-      agentSessionId: lease.agentSessionId,
-      packageSnapshotId: lease.packageSnapshotId,
-      requestId: null,
-      threadId: lease.threadId,
-      turnId: lease.turnId,
-      workspaceId: lease.workspaceId,
+      agentSessionId: environmentPackage.scope.agentSessionId,
+      packageSnapshotId: environmentPackage.snapshotId,
+      requestId: environmentPackage.scope.requestId,
+      threadId: environmentPackage.scope.threadId,
+      turnId: environmentPackage.scope.turnId,
+      workspaceId: environmentPackage.scope.workspaceId,
     };
     const records = readAcceptedRecords(coreDb, lineage);
 
     gateway.restoreSession({
       ...records,
       commands: readCommands(coreDb, lineage),
+      environmentPackage,
       lineage,
       registeredAt: lease.acquiredAt,
       token: lease.sandboxBindingRef,
     });
+  }
+}
+
+/**
+ * Verifies that a durable AEP belongs to the scheduler lease and admission owner being restored.
+ *
+ * @param environmentPackage Durable redacted AEP snapshot.
+ * @param lease Restorable scheduler lease.
+ * @param admission Admission authority resolved through the scheduler chain.
+ * @throws Error when any authority-bearing lineage field disagrees.
+ */
+function assertRestoredPackageLineage(
+  environmentPackage: AgentEnvironmentPackage,
+  lease: SchedulerSessionLeaseRecord,
+  admission: { readonly requestId: string | null; readonly userId: string }
+): void {
+  const scope = environmentPackage.scope;
+
+  if (
+    environmentPackage.snapshotId !== lease.packageSnapshotId ||
+    scope.agentSessionId !== lease.agentSessionId ||
+    scope.workspaceId !== lease.workspaceId ||
+    scope.threadId !== lease.threadId ||
+    scope.turnId !== lease.turnId ||
+    scope.userId !== admission.userId ||
+    scope.requestId !== admission.requestId
+  ) {
+    throw new Error(`Restored worker-control package lineage mismatch: ${lease.leaseId}`);
   }
 }
 
@@ -140,6 +191,7 @@ function readCommands(coreDb: CoreDb, lineage: WorkerControlLineage): WorkerCont
         FROM worker_control_commands
         WHERE agent_session_id = ?
           AND package_snapshot_id = ?
+          AND acknowledged_at IS NULL
         ORDER BY sequence ASC
         `
       )

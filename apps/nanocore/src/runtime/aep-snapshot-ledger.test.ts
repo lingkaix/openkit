@@ -78,7 +78,7 @@ function createEnvironmentPackage(): AgentEnvironmentPackage {
       agentSessionId: 'as_1',
       userId: 'user_local',
       backend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },

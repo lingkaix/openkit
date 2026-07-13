@@ -1,10 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   convertChatCompletionResponseToResponsesResponse,
+  convertChatCompletionStreamToResponsesStream,
   convertChatCompletionToResponsesRequest,
   convertResponsesRequestToChatCompletionRequest,
   convertResponsesResponseToChatCompletionResponse,
+  convertResponsesStreamToChatCompletionStream,
   GatewayUnsupportedFeatureError,
 } from './gateway-converters.js';
 
@@ -190,5 +192,38 @@ describe('LLM gateway format converters', () => {
         cached_tokens: 75,
       },
     });
+  });
+
+  it.each([
+    {
+      endpoint: 'Chat Completions to Responses',
+      convert: convertChatCompletionStreamToResponsesStream,
+      input: 'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n',
+    },
+    {
+      endpoint: 'Responses to Chat Completions',
+      convert: (stream: ReadableStream<Uint8Array>) =>
+        convertResponsesStreamToChatCompletionStream(stream, 'gpt-5.1'),
+      input: 'data: {"type":"response.output_text.delta","delta":"Hi"}\n\n',
+    },
+  ])('cancels the upstream $endpoint SSE stream exactly once when its converted stream is cancelled', async (testCase) => {
+    const cancel = vi.fn();
+    let pulled = false;
+    const source = new ReadableStream<Uint8Array>({
+      cancel,
+      pull(controller) {
+        if (!pulled) {
+          pulled = true;
+          controller.enqueue(new TextEncoder().encode(testCase.input));
+        }
+      },
+    });
+    const reader = testCase.convert(source).getReader();
+
+    await reader.read();
+    await reader.cancel('consumer disconnected');
+
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledWith('consumer disconnected');
   });
 });

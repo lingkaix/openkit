@@ -27,7 +27,7 @@ OpenKit-owned container images are cataloged in `containers/images.json`.
 The normal release images are:
 
 - `app`: the product app image with NanoCore, the public HTTP entrypoint, Web assets, migrations, and data-root templates.
-- `worker-codex`: the governed Codex worker image with the OpenKit worker shim or sidecar.
+- `worker-codex`: the governed Codex worker image with the OpenKit Codex shim.
 
 `dev-e2e` is a local and CI diagnostic image. It is not published as a normal release artifact.
 
@@ -108,7 +108,7 @@ Use local mode for development, personal desktop operation, and test deployments
 
 ### Server Mode
 
-Server mode enables authenticated HTTP operation through Better Auth. Use it for shared deployments, remote MCP access, and any deployment where users should authenticate before using product APIs.
+Server mode enables authenticated HTTP operation through Better Auth. Use it for shared deployments, remote public API or Agent Skill CLI access, and any deployment where users should authenticate before using product APIs.
 
 ```bash
 OPENKIT_CORE_MODE=server \
@@ -146,7 +146,7 @@ OPENKIT_CONTAINER_PLACEMENT=local
 OPENKIT_CONTAINER_BACKEND=openshell
 OPENKIT_OPENSHELL_GATEWAY=openshell
 OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev
-OPENKIT_OPENSHELL_CONTROL_RELAY_UPSTREAM=http://host.openshell.internal:3000/api/worker-control
+OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:3000/api/worker-control
 ```
 
 Use local container runtime when NanoCore and the OpenShell gateway are reachable from the same machine or local gateway context.
@@ -179,16 +179,16 @@ OPENKIT_CONTAINER_BACKEND=openshell
 OPENKIT_OPENSHELL_GATEWAY=a1-openkit
 OPENKIT_OPENSHELL_GATEWAY_URL=https://127.0.0.1:54003
 OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev
-OPENKIT_OPENSHELL_CONTROL_RELAY_UPSTREAM=http://host.openshell.internal:54002/api/worker-control
+OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:54002/api/worker-control
 ```
 
-Remote container mode requires both `OPENKIT_OPENSHELL_GATEWAY_URL` and `OPENKIT_OPENSHELL_CONTROL_RELAY_UPSTREAM`.
+Remote container mode requires both `OPENKIT_OPENSHELL_GATEWAY_URL` and `OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL`.
 
 For a release deployment, replace `OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev` with the published version or digest reference.
 
 `OPENKIT_OPENSHELL_GATEWAY_URL` is the OpenShell gateway endpoint as seen by the NanoCore process.
 
-`OPENKIT_OPENSHELL_CONTROL_RELAY_UPSTREAM` is the NanoCore worker-control route as seen by the remote worker sandbox.
+`OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL` is the NanoCore worker-control route as seen by the remote worker sandbox.
 
 For the current `a1` development topology, expose the remote gateway locally and expose the local worker-control route back to the remote sandbox:
 
@@ -212,7 +212,7 @@ OPENKIT_CONTAINER_PLACEMENT=local \
 OPENKIT_CONTAINER_BACKEND=openshell \
 OPENKIT_OPENSHELL_GATEWAY=openshell \
 OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev \
-OPENKIT_OPENSHELL_CONTROL_RELAY_UPSTREAM=http://host.openshell.internal:3000/api/worker-control \
+OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:3000/api/worker-control \
 OPENKIT_DATA_ROOT="$HOME/nano-data/local-container" \
 pnpm --filter @openkit/nanocore dev
 ```
@@ -227,7 +227,7 @@ OPENKIT_CONTAINER_BACKEND=openshell \
 OPENKIT_OPENSHELL_GATEWAY=a1-openkit \
 OPENKIT_OPENSHELL_GATEWAY_URL=https://127.0.0.1:54003 \
 OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev \
-OPENKIT_OPENSHELL_CONTROL_RELAY_UPSTREAM=http://host.openshell.internal:54002/api/worker-control \
+OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:54002/api/worker-control \
 OPENKIT_DATA_ROOT="$HOME/nano-data/local-remote-container" \
 pnpm --filter @openkit/nanocore dev
 ```
@@ -241,7 +241,7 @@ OPENKIT_CONTAINER_PLACEMENT=local \
 OPENKIT_CONTAINER_BACKEND=openshell \
 OPENKIT_OPENSHELL_GATEWAY=openshell \
 OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev \
-OPENKIT_OPENSHELL_CONTROL_RELAY_UPSTREAM=http://host.openshell.internal:3000/api/worker-control \
+OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:3000/api/worker-control \
 OPENKIT_BIND_HOST=0.0.0.0 \
 PORT=3000 \
 OPENKIT_DATA_ROOT="$HOME/nano-data/server-local-container" \
@@ -258,7 +258,7 @@ OPENKIT_CONTAINER_BACKEND=openshell \
 OPENKIT_OPENSHELL_GATEWAY=a1-openkit \
 OPENKIT_OPENSHELL_GATEWAY_URL=https://127.0.0.1:54003 \
 OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev \
-OPENKIT_OPENSHELL_CONTROL_RELAY_UPSTREAM=http://host.openshell.internal:54002/api/worker-control \
+OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:54002/api/worker-control \
 OPENKIT_BIND_HOST=0.0.0.0 \
 PORT=3000 \
 OPENKIT_DATA_ROOT="$HOME/nano-data/server-remote-container" \
@@ -308,37 +308,27 @@ OPENKIT_E2E_REMOTE_OPENSHELL=1 \
 OPENKIT_E2E_REMOTE_OPENSHELL_GATEWAY=a1-openkit \
 OPENKIT_E2E_REMOTE_OPENSHELL_GATEWAY_URL=https://127.0.0.1:54003 \
 OPENKIT_E2E_REMOTE_OPENSHELL_LOCAL_RELAY_PORT=54101 \
-OPENKIT_E2E_REMOTE_OPENSHELL_CONTROL_RELAY_UPSTREAM=http://host.openshell.internal:54002/api/worker-control \
+OPENKIT_E2E_REMOTE_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:54002/api/worker-control \
 pnpm --filter @openkit/nanocore exec vitest run src/runtime/openshell-cli.e2e.test.ts
 ```
 
 The remote e2e probe starts a local worker-control relay, creates a remote OpenShell sandbox, uploads a temporary Git workspace, runs a no-quota `node -e` worker command, downloads transcript and patch evidence, asserts a pending staged review, and tears down the sandbox.
 
-## MCP And Desktop Agent Access
+## Agent Skill Access
 
-The OpenKit MCP server is a stdio interface over public NanoCore APIs. It does not start NanoCore, manage OpenShell, or bypass auth.
+The accepted AI-native access path is one end-user `openkit` Skill with a bundled CLI over public NanoCore APIs. The CLI does not start NanoCore, manage OpenShell, bypass authentication, or expose private deployment state.
 
-For local deployments:
+The unified Skill and CLI are not implemented yet. The current `@openkit/mcp` package is removal-only and this deployment guide no longer recommends configuring it for new use.
 
-```bash
-OPENKIT_NANOCORE_URL=http://127.0.0.1:3000 pnpm --filter @openkit/mcp dev
-```
+The bundled CLI will use `OPENKIT_NANOCORE_URL` as explicit endpoint configuration. Server-mode access will resolve a scoped token from supported credential storage or the explicit ephemeral `OPENKIT_NANOCORE_TOKEN` override without printing credential material.
 
-For server-mode deployments, add the deployment-provided scoped NanoCore token only through environment variables:
-
-```bash
-OPENKIT_NANOCORE_URL=https://nanocore.example.com \
-OPENKIT_NANOCORE_TOKEN='server-issued-okt-token' \
-pnpm --filter @openkit/mcp dev
-```
-
-Use [mcp/README.md](../mcp/README.md) and [skills/README.md](../skills/README.md) for desktop agent setup and loop operation.
+Use [skills/README.md](../skills/README.md), [the Agent Skill Interface spec](./specs/20260713-openkit_agent_skill_interface.md), and [the implementation plan](./changes/202607131935040001-openkit_agent_skill_interface.md) for the accepted setup and loop direction.
 
 ## Operational Notes
 
 - Keep NanoCore as the source of truth for Goal Mode, Action Center, artifacts, workspace change sets, and review decisions.
 - Keep OpenShell as a backend runtime for sandbox lifecycle, file transport, policy, and teardown.
-- Do not expose generic shell execution through MCP, App API, or Web UI.
+- Do not expose generic shell execution through the Agent Skill Interface, App API, or Web UI.
 - Do not allow remote workers to push directly to protected branches in the first implementation.
 - Treat Codex auth JSON bootstrap content, `OPENKIT_OPENSHELL_CODEX_CONFIG_TOML`, NanoCore tokens, and provider keys as secrets. Do not write them into repository files.
 - Use fresh `OPENKIT_DATA_ROOT` directories when switching between incompatible internal pre-release layouts.

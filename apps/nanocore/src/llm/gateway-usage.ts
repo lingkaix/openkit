@@ -125,7 +125,7 @@ export class GatewayUsageTracker {
    *
    * @param stream Provider SSE stream.
    * @param input Routing metadata for usage aggregation.
-   * @returns Stream with the original event bytes.
+   * @returns Stream with the original event bytes and native cancellation propagation.
    */
   public observeSseUsage(
     stream: ReadableStream<Uint8Array>,
@@ -133,38 +133,57 @@ export class GatewayUsageTracker {
   ): ReadableStream<Uint8Array> {
     const decoder = new TextDecoder();
     let buffer = '';
+    const reader = stream.getReader();
+    let cancelled = false;
+    let readerReleased = false;
 
     return new ReadableStream<Uint8Array>({
-      start: async (controller) => {
-        const reader = stream.getReader();
-
+      pull: async (controller) => {
         try {
-          while (true) {
-            const result = await reader.read();
+          const result = await reader.read();
 
-            if (result.done) {
-              break;
+          if (result.done) {
+            if (!cancelled && buffer.trim()) {
+              this.recordSseEventUsage(buffer, input);
             }
-
-            buffer += decoder.decode(result.value, { stream: true });
-            const events = buffer.split('\n\n');
-            buffer = events.pop() ?? '';
-
-            for (const event of events) {
-              this.recordSseEventUsage(event, input);
+            if (!readerReleased) {
+              readerReleased = true;
+              reader.releaseLock();
             }
-
-            controller.enqueue(result.value);
+            if (!cancelled) {
+              controller.close();
+            }
+            return;
           }
 
-          if (buffer.trim()) {
-            this.recordSseEventUsage(buffer, input);
+          buffer += decoder.decode(result.value, { stream: true });
+          const events = buffer.split('\n\n');
+          buffer = events.pop() ?? '';
+
+          for (const event of events) {
+            this.recordSseEventUsage(event, input);
           }
-          controller.close();
+
+          controller.enqueue(result.value);
         } catch (error) {
-          controller.error(error);
+          if (!readerReleased) {
+            readerReleased = true;
+            reader.releaseLock();
+          }
+          if (!cancelled) {
+            controller.error(error);
+          }
+        }
+      },
+      cancel: async (reason) => {
+        cancelled = true;
+        try {
+          await reader.cancel(reason);
         } finally {
-          reader.releaseLock();
+          if (!readerReleased) {
+            readerReleased = true;
+            reader.releaseLock();
+          }
         }
       },
     });

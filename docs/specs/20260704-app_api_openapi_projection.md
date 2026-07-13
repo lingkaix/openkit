@@ -30,7 +30,7 @@ Implementation: Implemented
 
 ## Summary
 
-The App API contract already lives in shared Zod schema packages consumed by NanoCore, the Web SPA, and the MCP channel through `@openkit/core-client`. What is missing is a machine-readable, framework-neutral description of the public App API surface for external integrators, contract fixtures, documentation, and future non-TypeScript SDKs.
+The App API contract already lives in shared Zod schema packages consumed by NanoCore and the Web SPA through `@openkit/core-client`; the accepted Agent Skill Interface will consume the same public contract through its bundled CLI. What is missing is a machine-readable, framework-neutral description of the public App API surface for external integrators, contract fixtures, documentation, and future non-TypeScript SDKs.
 
 This spec adds an OpenAPI document as a generated projection with the direction fixed: Zod schemas in the shared packages define payload contracts; one canonical operation catalog owns documented route identity and metadata; runtime route registration selects the same operation by id; and build/CI commands reproducibly emit and check the document. Handler runtime parsing still imports the shared schemas directly rather than running through OpenAPI. The projection direction is never inverted — no code, type, or client is generated from the OpenAPI document into first-party packages, and `@openkit/core-client` remains the only first-party SDK.
 
@@ -50,7 +50,7 @@ This spec adds an OpenAPI document as a generated projection with the direction 
 - Do not replace or wrap `@openkit/core-client`; no second first-party SDK.
 - Do not make OpenAPI the owner of streaming semantics; the protocol docs own the event envelope.
 - Do not pull the separate Core HTTP/SSE projection into the App API document merely because NanoCore serves both surfaces.
-- Do not cover the OpenAI-compatible gateway `/v1/*` surface or the worker-visible `control.local` and `capability.local` planes; those follow their own external or worker-facing contracts.
+- Do not cover the OpenAI-compatible gateway `/v1/*` surface, the direct worker-control `/api/worker-control` contract, or the accepted future `capability.local` plane; those follow their own external or worker-facing contracts.
 - Do not add an OpenAPI binding dependency or runtime validation layer without a concrete need that justifies its behavior and maintenance cost.
 
 ## Background

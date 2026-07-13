@@ -1,6 +1,6 @@
 import type { WorkerCanonicalEventRecord, WorkerLineage } from '@openkit/worker-protocol';
 import { describe, expect, it } from 'vitest';
-import { WorkerControlRelayClient, type WorkerControlRelayFetch } from './control-client.js';
+import { WorkerControlClient, type WorkerControlFetch } from './control-client.js';
 
 const lineage: WorkerLineage = {
   agentSessionId: 'as_control_1',
@@ -18,11 +18,11 @@ const lineage: WorkerLineage = {
  * @returns Fake fetch function and captured requests.
  */
 function createFetchFixture(responses: Array<{ body: unknown; ok?: boolean; status?: number }>): {
-  fetch: WorkerControlRelayFetch;
+  fetch: WorkerControlFetch;
   requests: Array<{ body: unknown; headers: Record<string, string>; url: string }>;
 } {
   const requests: Array<{ body: unknown; headers: Record<string, string>; url: string }> = [];
-  const fetch: WorkerControlRelayFetch = async (url, init) => {
+  const fetch: WorkerControlFetch = async (url, init) => {
     requests.push({
       body: JSON.parse(String(init?.body ?? '{}')) as unknown,
       headers: Object.fromEntries(
@@ -45,17 +45,17 @@ function createFetchFixture(responses: Array<{ body: unknown; ok?: boolean; stat
   return { fetch, requests };
 }
 
-describe('WorkerControlRelayClient', () => {
+describe('WorkerControlClient', () => {
   it('sends heartbeat and artifact notices with sandbox bearer lineage', async () => {
     const { fetch, requests } = createFetchFixture([
       { body: { heartbeat: { status: 'running' } } },
       { body: { artifact: { artifactId: 'worker-artifact-1' } } },
     ]);
-    const client = new WorkerControlRelayClient({
+    const client = new WorkerControlClient({
       fetch,
       lineage,
       token: 'token_control_1',
-      upstreamBaseUrl: 'https://nanocore.local/api/worker-control',
+      baseUrl: 'https://nanocore.local/api/worker-control',
     });
 
     await client.recordHeartbeat({ message: 'Worker running.', sequence: 1, status: 'running' });
@@ -101,11 +101,11 @@ describe('WorkerControlRelayClient', () => {
       },
       { body: { terminalResult: { commandId: 'term_1', exitCode: 0 } } },
     ]);
-    const client = new WorkerControlRelayClient({
+    const client = new WorkerControlClient({
       fetch,
       lineage,
       token: 'token_control_1',
-      upstreamBaseUrl: 'https://nanocore.local/api/worker-control/',
+      baseUrl: 'https://nanocore.local/api/worker-control/',
     });
 
     const poll = await client.pollCommands();
@@ -131,15 +131,38 @@ describe('WorkerControlRelayClient', () => {
     });
   });
 
+  it('posts interrupt acknowledgements with bearer lineage', async () => {
+    const { fetch, requests } = createFetchFixture([{ body: { acknowledged: true } }]);
+    const client = new WorkerControlClient({
+      baseUrl: 'https://nanocore.local/api/worker-control',
+      fetch,
+      lineage,
+      token: 'token_control_1',
+    });
+
+    await client.acknowledgeCommand('interrupt_1');
+
+    expect(requests).toEqual([
+      {
+        body: { commandId: 'interrupt_1', lineage },
+        headers: {
+          authorization: 'Bearer token_control_1',
+          'content-type': 'application/json',
+        },
+        url: 'https://nanocore.local/api/worker-control/commands/ack',
+      },
+    ]);
+  });
+
   it('appends canonical events with sandbox bearer lineage', async () => {
     const { fetch, requests } = createFetchFixture([
       { body: { accepted: true, diagnostics: [], nextExpectedSequence: 4, schemaVersion: 1 } },
     ]);
-    const client = new WorkerControlRelayClient({
+    const client = new WorkerControlClient({
       fetch,
       lineage,
       token: 'token_control_1',
-      upstreamBaseUrl: 'https://nanocore.local/api/worker-control',
+      baseUrl: 'https://nanocore.local/api/worker-control',
     });
     const record: WorkerCanonicalEventRecord = {
       event: {
@@ -168,7 +191,27 @@ describe('WorkerControlRelayClient', () => {
     ]);
   });
 
-  it('raises product-safe errors for rejected relay requests', async () => {
+  it('does not start a request after the supervisor signal is already aborted', async () => {
+    const controller = new AbortController();
+    const abortReason = new Error('supervisor already stopped');
+    let fetchCalls = 0;
+    controller.abort(abortReason);
+    const client = new WorkerControlClient({
+      baseUrl: 'https://nanocore.local/api/worker-control',
+      fetch: async () => {
+        fetchCalls += 1;
+        return { ok: true, status: 200, text: async () => '{}' };
+      },
+      lineage,
+      signal: controller.signal,
+      token: 'token_control_1',
+    });
+
+    await expect(client.pollCommands()).rejects.toBe(abortReason);
+    expect(fetchCalls).toBe(0);
+  });
+
+  it('raises product-safe errors for rejected control requests', async () => {
     const { fetch } = createFetchFixture([
       {
         body: { code: 'worker_control_unauthorized', message: 'Token rejected.' },
@@ -176,15 +219,15 @@ describe('WorkerControlRelayClient', () => {
         status: 401,
       },
     ]);
-    const client = new WorkerControlRelayClient({
+    const client = new WorkerControlClient({
       fetch,
       lineage,
       token: 'bad',
-      upstreamBaseUrl: 'https://nanocore.local/api/worker-control',
+      baseUrl: 'https://nanocore.local/api/worker-control',
     });
 
     await expect(client.recordHeartbeat({ sequence: 1, status: 'running' })).rejects.toThrowError(
-      'Worker control relay request failed: worker_control_unauthorized'
+      'Worker control request failed: worker_control_unauthorized'
     );
   });
 });

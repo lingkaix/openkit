@@ -1,3 +1,4 @@
+import { CapabilityUsageResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 import type { OpenKitNanoCoreClient } from './nanocore-client.js';
 import { createOpenKitAiInterface } from './registry.js';
@@ -102,7 +103,6 @@ const requiredTools = [
   'openkit.read_workspace_apply_results',
   'openkit.read_agent_environment_package_snapshots',
   'openkit.read_artifact',
-  'openkit.create_evidence_bundle',
 ] as const;
 
 const requiredResources = [
@@ -205,7 +205,6 @@ function createFakeNanoCoreClient(): {
       draftKnowledgeProposal: (input) => record('draftKnowledgeProposal', input),
       suggestKnowledgeRepairs: (input) => record('suggestKnowledgeRepairs', input),
       checkKnowledgeHealth: (input) => record('checkKnowledgeHealth', input),
-      createEvidenceBundle: (input) => record('createEvidenceBundle', input),
       readWorkspaceEvidenceBundles: (input) => record('readWorkspaceEvidenceBundles', input),
       readWorkspaceRuntimeEvidence: (input) => record('readWorkspaceRuntimeEvidence', input),
       consumeBootstrapToken: async (input) => {
@@ -409,8 +408,20 @@ describe('OpenKit AI Interface registry', () => {
       'openkit.read_workspace_apply_results',
       'openkit.read_agent_environment_package_snapshots',
       'openkit.read_artifact',
-      'openkit.create_evidence_bundle',
     ]);
+  });
+
+  it('rejects the removed workspace synchronization evidence projection', async () => {
+    const { calls, client } = createFakeNanoCoreClient();
+    const registry = createOpenKitAiInterface({ nanoCore: client });
+
+    await expect(
+      registry.callTool('openkit.read_workspace_sync_records', {
+        kind: 'sync-evidence-bundles',
+        workspaceId: 'ws_demo',
+      })
+    ).rejects.toThrow();
+    expect(calls).toEqual([]);
   });
 
   it('routes Knowledge Manager proposal drafts through a mutating tool', async () => {
@@ -1409,6 +1420,45 @@ describe('OpenKit AI Interface registry', () => {
 
   it('routes capability usage reads through a read-only tool', async () => {
     const { calls, client } = createFakeNanoCoreClient();
+    const runtimeOriginRef = `rto_${'a'.repeat(24)}`;
+    const runtimeCacheLineageRef = `rcl_${'b'.repeat(24)}`;
+    client.readCapabilityUsage = async (input) => {
+      calls.push({ input, method: 'readCapabilityUsage' });
+      return CapabilityUsageResponseSchema.parse({
+        capabilityCalls: [
+          {
+            agentId: 'assistant',
+            agentSessionId: 'session_demo',
+            capabilityId: 'llm.chat_completions',
+            completedAt: '2026-07-13T00:00:00.000Z',
+            errorCode: null,
+            family: 'llm',
+            id: 'cap_demo',
+            itemId: null,
+            nativeCacheLineageId: 'native-cache-secret',
+            nativeSessionId: 'native-session-secret',
+            nativeThreadId: 'native-thread-secret',
+            operation: 'chat_completions',
+            packageSnapshotId: 'aepsnap_demo',
+            providerRef: 'openrouter',
+            redactionClass: 'metadata-only',
+            requestId: '00000000-0000-4000-8000-000000000001',
+            runtimeCacheLineageRef,
+            runtimeOriginRef,
+            serviceRef: 'llm-gateway',
+            sourceIds: [],
+            startedAt: '2026-07-13T00:00:00.000Z',
+            status: 'succeeded',
+            summary: 'Gateway call completed.',
+            threadId: 'th_demo',
+            turnId: 'turn_demo',
+            workspaceId: 'ws_demo',
+          },
+        ],
+        usageRecords: [],
+        workspaceId: 'ws_demo',
+      });
+    };
     const registry = createOpenKitAiInterface({ nanoCore: client });
 
     const response = await registry.callTool('openkit.read_capability_usage', {
@@ -1423,9 +1473,19 @@ describe('OpenKit AI Interface registry', () => {
     ]);
     expect(response).toMatchObject({
       ok: true,
+      raw: {
+        capabilityCalls: [
+          {
+            packageSnapshotId: 'aepsnap_demo',
+            runtimeCacheLineageRef,
+            runtimeOriginRef,
+          },
+        ],
+      },
       summary: 'Capability usage read.',
       workspaceId: 'ws_demo',
     });
+    expect(JSON.stringify(response)).not.toMatch(/native-(?:cache|session|thread)-secret/);
   });
 
   it('routes workspace audit event reads through a read-only tool', async () => {

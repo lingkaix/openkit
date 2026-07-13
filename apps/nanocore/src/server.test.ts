@@ -17,7 +17,6 @@ import {
   CancelSchedulerAdmissionResponseSchema,
   CapabilityUsageResponseSchema,
   ConvertRecoveryPendingUserTurnToFollowUpResponseSchema,
-  CreateEvidenceBundleResponseSchema,
   DataRootBackupCreateResponseSchema,
   DataRootBackupVerifyResponseSchema,
   EditRecoveryPendingUserTurnResponseSchema,
@@ -135,7 +134,6 @@ import {
 import { recordFilesystemWorkspaceStagingRoot } from './runtime/workspace-filesystem-staging.js';
 import { recordWorkspaceQuarantineRecord } from './runtime/workspace-quarantine-records.js';
 import { recordWorkspaceReconciliationRecord } from './runtime/workspace-reconciliation-records.js';
-import { recordWorkspaceSyncEvidenceBundle } from './runtime/workspace-sync-evidence-bundles.js';
 import {
   getWorkspaceSyncReview,
   listBackendWorkspaceHandles,
@@ -150,6 +148,7 @@ import {
   createSchedulerAdmissionEntry,
   denySchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
+  requireSchedulerSessionLease,
 } from './scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import {
@@ -308,7 +307,7 @@ function createOpenShellWorkerControlPackage(
       agentSessionId: 'as_dashboard_control_1',
       userId: 'user_local',
       backend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
       },
@@ -3093,68 +3092,44 @@ describe('nanocore server', () => {
     coreDb.sqlite.close();
   });
 
-  it('creates and lists workspace evidence bundles through App API', async () => {
+  it('keeps workspace evidence bundle access read-only for automatically produced bundles', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-bundle-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const thread = store.createThread('ws_demo', 'Evidence bundle route');
-    const turn = store.createTurn('ws_demo', thread.id, 'Collect release evidence.', null, {
-      turnId: 'turn_evb_route',
-    });
-    store.createArtifact({
-      id: 'artifact_evb_route',
-      workspaceId: 'ws_demo',
-      threadId: thread.id,
-      turnId: turn.id,
-      kind: 'summary',
-      title: 'Release evidence',
-      status: 'ready',
-      summary: 'Release evidence is ready.',
-      version: 1,
-      content: { format: 'text', body: 'release evidence body' },
-      createdAt: '2026-07-07T00:03:00.000Z',
-      updatedAt: '2026-07-07T00:03:00.000Z',
-    });
     const app = createApp({ coreDb, dataRoot, store });
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+
+    try {
+      recordWorkspaceSyncReview(workspaceDb, { item: workspaceSyncReviewRouteItem() });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
 
     const createRes = await app.request('/api/app/workspaces/ws_demo/evidence-bundles', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        goalId: 'goal_evb_route',
-        threadId: thread.id,
-        turnId: turn.id,
-      }),
+      body: JSON.stringify({}),
     });
-
-    expect(createRes.status, await createRes.clone().text()).toBe(201);
-    const created = CreateEvidenceBundleResponseSchema.parse(await createRes.json());
-    expect(created.evidenceBundle).toMatchObject({
-      workspaceId: 'ws_demo',
-      threadId: thread.id,
-      goalId: 'goal_evb_route',
-      turnId: turn.id,
-      sourceKind: 'manual',
-      retentionClass: 'turn-evidence',
-      sensitivityClass: 'product-safe',
-      importStatus: 'collected',
-    });
-    expect(created.evidenceBundle.id).toMatch(/^evb_/);
-    expect(created.evidenceBundle.redactedEvidenceRefs).toContainEqual({
-      kind: 'artifact',
-      ref: 'artifact_evb_route',
-    });
-    expect(created.evidenceBundle.contentDigests[0]).toMatch(/^sha256:[a-f0-9]{64}$/);
-
     const listRes = await app.request('/api/app/workspaces/ws_demo/evidence-bundles');
 
+    expect(createRes.status).toBe(404);
     expect(listRes.status, await listRes.clone().text()).toBe(200);
-    expect(ListWorkspaceEvidenceBundlesResponseSchema.parse(await listRes.json())).toEqual({
+    expect(ListWorkspaceEvidenceBundlesResponseSchema.parse(await listRes.json())).toMatchObject({
       workspaceId: 'ws_demo',
-      evidenceBundles: [created.evidenceBundle],
+      evidenceBundles: [
+        {
+          id: 'evb_workspace_materialization_wmr_route_1',
+          sourceKind: 'workspace-materialization',
+          importStatus: 'promoted',
+        },
+        {
+          id: 'evb_workspace_review_swr_route_1',
+          sourceKind: 'workspace-sync-review',
+          importStatus: 'promoted',
+        },
+      ],
     });
-    expect(JSON.stringify(created)).not.toContain('release evidence body');
     coreDb.sqlite.close();
   });
 
@@ -4674,6 +4649,14 @@ describe('nanocore server', () => {
         reviewIds: [],
       });
       expect(executor.startContexts).toHaveLength(1);
+      const sandboxBindingRef = executor.startContexts[0]!.sandboxBindingRef!;
+      expect(
+        requireSchedulerSessionLease(coreDb, sandboxBindingRef.slice('lease-binding:'.length))
+      ).toMatchObject({
+        status: 'released',
+        releaseReason: 'turn-completed',
+        turnId: parsed.turn.id,
+      });
     } finally {
       coreDb.sqlite.close();
     }
@@ -7212,7 +7195,10 @@ describe('nanocore server', () => {
             detail: 'lease stale',
           },
           collectedOutputManifestIds: [],
-          evidenceBundleIds: ['evb_workspace_materialization_wmr_resume_route'],
+          evidenceBundleIds: [
+            'evb_workspace_materialization_wmr_resume_route',
+            'evb_workspace_review_swr_resume_route',
+          ],
           stateBefore: 'lease-stale',
           stateAfter: 'requires-human',
           quarantineRefs: [],
@@ -7220,26 +7206,6 @@ describe('nanocore server', () => {
           retentionDecision: 'retain-backend',
           startedAt: timestamp,
           finishedAt: null,
-        });
-        recordWorkspaceSyncEvidenceBundle(workspaceDb, {
-          id: 'wseb_resume_route',
-          workspaceId: workspace.id,
-          lifecycleRecordIds: ['wrr_resume_route', 'wom_wcs_resume_route'],
-          evidenceBundleIds: ['evb_workspace_review_swr_resume_route'],
-          backendEvidenceRefs: [
-            { kind: 'backend.openshell', ref: 'session/session_resume/output' },
-          ],
-          redactedEvidenceManifest: [
-            {
-              kind: 'worker-log',
-              ref: 'evidence/workspace-sync/wseb_resume_route/log',
-              digest: 'sha256:resume-log',
-              bytes: 42,
-            },
-          ],
-          contentDigests: ['sha256:resume-bundle'],
-          retentionClass: 'workspace-audit',
-          createdAt: timestamp,
         });
       } finally {
         workspaceDb.sqlite.close();
@@ -7318,7 +7284,7 @@ describe('nanocore server', () => {
         agentSessionId: 'as_aep_readback',
         userId: 'user_local',
         backend: {
-          controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
           sandboxImageRef: 'openkit/worker-codex:dev',
         },
@@ -8281,24 +8247,6 @@ describe('nanocore server', () => {
         updatedAt: timestamp,
         resolvedAt: null,
       });
-      recordWorkspaceSyncEvidenceBundle(reconciliationDb, {
-        id: 'wseb_swr_apply_1',
-        workspaceId: workspace.id,
-        lifecycleRecordIds: ['wrr_swr_apply_1', 'wom_wcs_apply_1'],
-        evidenceBundleIds: ['evb_workspace_review_swr_apply_1'],
-        backendEvidenceRefs: [{ kind: 'backend.openshell', ref: 'session/session_1/output' }],
-        redactedEvidenceManifest: [
-          {
-            kind: 'worker-log',
-            ref: 'evidence/workspace-sync/wseb_swr_apply_1/log',
-            digest: 'sha256:log',
-            bytes: 42,
-          },
-        ],
-        contentDigests: ['sha256:bundle'],
-        retentionClass: 'workspace-audit',
-        createdAt: timestamp,
-      });
     } finally {
       reconciliationDb.sqlite.close();
     }
@@ -8366,16 +8314,7 @@ describe('nanocore server', () => {
         },
       ],
     });
-    expect(listSyncEvidenceBundles.status).toBe(200);
-    await expect(listSyncEvidenceBundles.json()).resolves.toMatchObject({
-      items: [
-        {
-          id: 'wseb_swr_apply_1',
-          lifecycleRecordIds: ['wrr_swr_apply_1', 'wom_wcs_apply_1'],
-          evidenceBundleIds: ['evb_workspace_review_swr_apply_1'],
-        },
-      ],
-    });
+    expect(listSyncEvidenceBundles.status).toBe(404);
     expect(readApplyResult.status).toBe(200);
     await expect(readApplyResult.json()).resolves.toMatchObject({
       id: 'war_swr_apply_1',
@@ -9566,10 +9505,7 @@ describe('nanocore server', () => {
       lineage,
       sequence: 5,
     });
-    gateway.enqueueApprovalResult(environmentPackage.snapshotId, {
-      approvalRequestId: 'approval_dashboard_1',
-      decision: 'granted',
-    });
+    gateway.enqueueInterrupt(environmentPackage.snapshotId, 'Stop now');
     gateway.enqueueTerminalCommand(environmentPackage.snapshotId, {
       argv: ['pwd'],
       commandId: 'term_dashboard_1',
@@ -9602,7 +9538,7 @@ describe('nanocore server', () => {
         backend: {
           kind: 'openshell',
           health: 'ready',
-          controlMode: 'sidecar',
+          controlMode: 'direct-nanocore',
           control: null,
           gatewayName: 'openshell',
           gatewayEndpoint: 'https://127.0.0.1:17670',
@@ -9625,8 +9561,8 @@ describe('nanocore server', () => {
         lastHeartbeatAt: '2026-06-16T00:00:03.000Z',
       },
       artifactNoticeCount: 1,
-      queuedCommandCount: 2,
-      deliveredCommandCount: 2,
+      queuedCommandCount: 1,
+      deliveredCommandCount: 1,
       terminalResultCount: 1,
       lastTerminalExitCode: 0,
       lastTerminalCompletedAt: '2026-06-16T00:00:03.000Z',
@@ -9713,7 +9649,7 @@ describe('nanocore server', () => {
         backend: {
           kind: 'openshell',
           health: 'ready',
-          controlMode: 'sidecar',
+          controlMode: 'direct-nanocore',
           control: null,
           gatewayName: 'openshell',
           gatewayEndpoint: 'https://127.0.0.1:17670',
@@ -9817,7 +9753,7 @@ describe('nanocore server', () => {
         backend: {
           kind: 'openshell',
           health: 'ready',
-          controlMode: 'sidecar',
+          controlMode: 'direct-nanocore',
           control: null,
           gatewayName: 'openshell',
           gatewayEndpoint: 'https://127.0.0.1:17670',

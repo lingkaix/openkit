@@ -17,7 +17,7 @@ function createTranscriptFixture() {
     agentSessionId: 'as_transcript_1',
     userId: 'user_local',
     backend: {
-      controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+      workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
       kind: 'openshell',
       sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
     },

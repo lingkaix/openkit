@@ -1,13 +1,13 @@
 # Protocol Contract Consolidation
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
 
 ## Summary
 
 This spec consolidates the stable conclusions from earlier protocol package, lifecycle enum, naming, output delta, and core hardening specs.
 
-The active contract is that `packages/protocol`, NanoCore App API schemas, and MCP-facing read/write tools stay structurally aligned around OpenKit-owned concepts. Runtime-native payloads, backend logs, and external protocol shapes may be projected into OpenKit records only through explicit adapters.
+The active contract is that `packages/protocol`, NanoCore App API schemas, and end-user Agent Skill Interface operations stay structurally aligned around OpenKit-owned concepts. Runtime-native payloads, backend logs, and external protocol shapes may be projected into OpenKit records only through explicit adapters.
 
 Historical protocol hardening specs have been moved under `docs/specs/superseded/protocol-hardening/` and are retained as supporting detail.
 
@@ -21,7 +21,7 @@ Historical protocol hardening specs have been moved under `docs/specs/superseded
 ## Does Not Own
 
 - Canonical core protocol doctrine already owned by `docs/core/protocol.md`.
-- Transport topology, communication planes, bridge sidecars, or worker-control wire semantics.
+- Transport topology, communication planes, runtime mediation, or worker-control wire semantics.
 - App API route shape, Web UI read models, database tables, filesystem layout, or runtime adapter private APIs.
 - Provider-native payloads, OpenShell internals, Codex app-server JSON-RPC, ACP, A2A, or MCP-native protocol internals.
 - Knowledge Store governance, agent capability routing, audit storage, or usage metering.
@@ -39,7 +39,7 @@ Historical protocol hardening specs have been moved under `docs/specs/superseded
 - Preserve `Workspace -> Thread -> Turn -> Item[]` as the user-visible backbone.
 - Keep human gates represented through `awaiting_human` and item-backed approval or elicitation records.
 - Keep artifacts, workspace reviews, goal reviews, knowledge proposals, and evidence exposed through product records instead of runtime-private logs.
-- Keep public App API and MCP contracts aligned with stable NanoCore behavior.
+- Keep public App API and Agent Skill Interface operation contracts aligned with stable NanoCore behavior.
 - Promote stable protocol decisions into `docs/core/protocol.md`, `docs/core/communication.md`, and `docs/core/contract-evolution.md`.
 
 ## Non-goals
@@ -54,11 +54,13 @@ Historical protocol hardening specs have been moved under `docs/specs/superseded
 
 NanoCore owns app-local records and App API schemas while their shape is still being validated through dogfooding.
 
-`@openkit/mcp` is a user-facing channel facade over public NanoCore behavior. It is not the canonical protocol and should not bypass NanoCore records.
+The unified end-user Skill's bundled CLI is a channel facade over public NanoCore behavior. It is not the canonical protocol and must not bypass NanoCore records.
 
 Worker runtimes and backends may produce native events, logs, checkpoints, and transcripts. NanoCore decides what becomes a canonical turn item, artifact, review row, workspace sync record, audit event, or diagnostic.
 
 ## Current Implementation Projection
+
+The stable protocol package and NanoCore App API alignment described here are implemented. The accepted end-user Agent Skill Interface projection is not implemented yet, so channel alignment remains partial until the bundled CLI and operation coverage guard replace the legacy MCP projection.
 
 `packages/protocol` is the current machine-readable protocol package for stable shared schemas.
 
@@ -104,5 +106,5 @@ They are useful for why older names changed, but current work should start from 
 - [Core Protocol](../core/protocol.md)
 - [Communication Model](../core/communication.md)
 - [Contract Evolution Model](../core/contract-evolution.md)
-- [OpenKit AI Interface](./20260617-openkit_ai_interface.md)
+- [OpenKit Agent Skill Interface](./20260713-openkit_agent_skill_interface.md)
 - [Human Attention And Intervention Model](./20260531-human_attention_intervention_model.md)

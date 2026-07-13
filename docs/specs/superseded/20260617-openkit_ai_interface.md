@@ -1,7 +1,18 @@
 # OpenKit AI Interface: Skill And MCP Control Surface
 
-Status: Accepted
-Implementation: Diverged
+Status: Superseded
+Implementation: N/A
+Status Changed: 2026-07-13
+Current Guidance: `docs/specs/20260713-openkit_agent_skill_interface.md`
+Decision Evidence: `docs/changes/202607131935040001-openkit_agent_skill_interface.md`
+
+## Lifecycle Reason
+
+The AI-native end-user interface continues under `docs/specs/20260713-openkit_agent_skill_interface.md`, but the accepted contract no longer uses a user-facing MCP transport or four audience/phase-specific Skills. The replacement spec absorbs the continuing end-user channel, public-operation, safety, loop-guidance, and NanoCore authority boundaries while replacing MCP tools, resources, and prompts with one progressively disclosed Skill and bundled CLI. The old MCP transport, developer Skill variants, and dual packaging model are therefore no longer current guidance.
+
+## Retention Reason
+
+This document preserves the former MCP tool, resource, prompt, setup, authentication, self-improvement, and story-acceptance contracts so maintainers can interpret the implementation and tests being deleted during the clean replacement. Its detailed tool inventory and rejected alternatives remain useful migration evidence, but none of them should be extended as current product design.
 
 ## Owns
 
@@ -59,7 +70,7 @@ The current MCP surface is a thin facade over public NanoCore behavior. The acce
 
 Current dogfooding treats this MCP channel as the primary coordinator interface for AI-native operation. The Web UI remains a product surface, but the MCP channel is the first-class dogfood path for coordinator-led work.
 
-The remaining MCP-internal implementation-alignment gap is removal of the legacy `openkit.create_evidence_bundle` tool and its NanoCore/Core Client command path under the [Evidence Surface Simplification](../changes/202607111848520001-evidence_surface_simplification.md) change plan. Managed sign-in UX, local or remote NanoCore discovery, install and supervision, richer desktop credential UX, richer permission UX, full audit-record linkage beyond bearer last-used labels, and multi-user workspace administration are deferred product surfaces that require their own NanoCore public contracts or installer designs before the AI Interface should expose them.
+The accepted V1 MCP boundary is aligned with its NanoCore and Core Client contracts. Managed sign-in UX, local or remote NanoCore discovery, install and supervision, richer desktop credential UX, richer permission UX, full audit-record linkage beyond bearer last-used labels, and multi-user workspace administration remain deferred product surfaces that require their own NanoCore public contracts or installer designs before the AI Interface should expose them.
 
 ## Goals / Non-goals
 
@@ -1374,19 +1385,19 @@ Require human review, bounded steps, automatically produced evidence bundles, an
 
 ## Links
 
-- [Core Architecture](../core/architecture.md)
-- [Core Concepts](../core/core-concepts.md)
-- [Communication Model](../core/communication.md)
-- [Core Protocol](../core/protocol.md)
-- [Work Model](../core/work-model.md)
-- [Agent Capability](../core/agent-capability.md)
-- [Human Attention And Intervention Model](./20260531-human_attention_intervention_model.md)
-- [Worker Turn Reliability Envelope](./20260531-worker_turn_reliability_envelope.md)
-- [Agent Environment Package And Worker Governance Backends](./20260616-agent_environment_package.md)
-- [Remote Auth Credential Bootstrap](./20260704-remote_auth_credential_bootstrap.md)
-- [Chat Mode And Core Assistant](./20260704-chat_mode_assistant.md)
-- [Task Mode Worker Delegation](./20260704-task_mode_worker_delegation.md)
-- [Goal Mode Coordination](./20260704-goal_mode_coordination.md)
-- [Evidence Surface Simplification](../changes/202607111848520001-evidence_surface_simplification.md)
-- [Codex Agent Communication Modes](./superseded/worker-runtime/20260507-codex_agent_communication_modes.md)
-- [Change Tracking](../change-tracking.md)
+- [Core Architecture](../../core/architecture.md)
+- [Core Concepts](../../core/core-concepts.md)
+- [Communication Model](../../core/communication.md)
+- [Core Protocol](../../core/protocol.md)
+- [Work Model](../../core/work-model.md)
+- [Agent Capability](../../core/agent-capability.md)
+- [Human Attention And Intervention Model](../20260531-human_attention_intervention_model.md)
+- [Worker Turn Reliability Envelope](../20260531-worker_turn_reliability_envelope.md)
+- [Agent Environment Package And Worker Governance Backends](../20260616-agent_environment_package.md)
+- [Remote Auth Credential Bootstrap](../20260704-remote_auth_credential_bootstrap.md)
+- [Chat Mode And Core Assistant](../20260704-chat_mode_assistant.md)
+- [Task Mode Worker Delegation](../20260704-task_mode_worker_delegation.md)
+- [Goal Mode Coordination](../20260704-goal_mode_coordination.md)
+- [Evidence Surface Simplification](../../changes/202607111848520001-evidence_surface_simplification.md)
+- [Codex Agent Communication Modes](./worker-runtime/20260507-codex_agent_communication_modes.md)
+- [Change Tracking](../../change-tracking.md)

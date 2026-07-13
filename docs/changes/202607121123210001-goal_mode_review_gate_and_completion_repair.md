@@ -40,7 +40,7 @@ Remove the unused verification runner and closeout implementations without delet
 - [Agent Workflow](../core/agent-workflow.md)
 - [Product Vision](../product-vision.md)
 - [Goal Mode Coordination](../specs/20260704-goal_mode_coordination.md)
-- [OpenKit AI Interface](../specs/20260617-openkit_ai_interface.md)
+- [OpenKit AI Interface](../specs/superseded/20260617-openkit_ai_interface.md)
 - [Human Attention and Intervention Model](../specs/20260531-human_attention_intervention_model.md)
 - [Worker Turn Reliability Envelope](../specs/20260531-worker_turn_reliability_envelope.md)
 - [Storage Layout and Record Ownership](../specs/20260703-storage_layout_record_ownership.md)

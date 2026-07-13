@@ -1,23 +1,17 @@
-# OpenKit Skills
+# OpenKit End-User Skill
 
-This directory contains repository-authored Skills used by desktop AI applications to operate OpenKit through the OpenKit MCP server.
+This directory is transitioning to one repository-authored Skill named `openkit` for agents helping end users operate OpenKit. The accepted design is defined by [`docs/specs/20260713-openkit_agent_skill_interface.md`](../docs/specs/20260713-openkit_agent_skill_interface.md), and implementation is tracked by [`docs/changes/202607131935040001-openkit_agent_skill_interface.md`](../docs/changes/202607131935040001-openkit_agent_skill_interface.md).
 
-## Skills
+## Accepted Package
 
-| Skill | Audience | Phase | Use when |
-|---|---|---|---|
-| `openkit-setup` | end user | setup | an agent helps a human connect a desktop AI app to an existing local or remote NanoCore backend and configure MCP |
-| `openkit-setup-dev` | OpenKit developer | setup | an agent works inside this repository and needs local NanoCore plus MCP configured for dogfooding |
-| `openkit-loop` | end user | loop | setup is already available and an agent should coordinate bounded work on the user's selected workspace |
-| `openkit-loop-dev` | OpenKit developer | loop | developer setup is already available and an agent should coordinate review-gated OpenKit self-improvement |
+The final package contains one concise `skills/openkit/SKILL.md`, generated `agents/openai.yaml` metadata, one bundled `scripts/openkit` CLI entrypoint, and one-level `references/` material for setup, loop operation, knowledge, recovery, administration, and capability discovery.
 
-## Handoff Rules
+The Skill is end-user-only. It combines connection setup, diagnostics, workspace operation, Chat Mode, Task Mode, Goal Mode, bounded loop guidance, Action Center decisions, artifacts, evidence, knowledge, recovery, runtime configuration, vault administration, audit, usage, automations, Git operations, and workspace portability without adding a developer audience switch or repository self-improvement mode.
 
-- Use `openkit-setup` before `openkit-loop` when the user-facing MCP connection is not configured or verified.
-- Use `openkit-setup-dev` before `openkit-loop-dev` when this repository is not prepared for local NanoCore and MCP dogfooding.
-- Keep setup Skills focused on connection, diagnostics, and readiness verification.
-- Keep loop Skills focused on Goal Mode, bounded worker steps, Action Center review, artifacts, evidence, and human decisions.
+The bundled CLI progressively exposes every supported public end-user and operator NanoCore capability through operation search, description, and invocation. The Skill and CLI do not expose private NanoCore internals, generic shell access, arbitrary HTTP access, or worker-side capability supply.
 
-## Boundary
+## Transitional State
 
-Skills provide operating guidance. They are not worker-side tool supply, NanoCore installers, backend supervisors, or internal admin APIs.
+The current `openkit-setup`, `openkit-setup-dev`, `openkit-loop`, and `openkit-loop-dev` folders are legacy implementation pending deletion. They must not receive new capabilities, compatibility behavior, aliases, or documentation investment while the unified Skill is implemented.
+
+The current user-facing `@openkit/mcp` package is also pending clean deletion. Worker-side MCP tool supply is a separate Agent Capability plane and remains supported.

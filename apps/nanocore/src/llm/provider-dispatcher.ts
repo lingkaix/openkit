@@ -38,6 +38,18 @@ export interface LLMGatewayProviderDispatcherOptions {
 }
 
 /**
+ * Provider transport state shared across one gateway dispatch.
+ */
+export interface LLMGatewayTransportContext {
+  /** Optional caller signal used to abort provider work. */
+  readonly signal?: AbortSignal;
+  /** Opaque Codex turn state replayed to the next provider request. */
+  readonly codexTurnState?: string;
+  /** Observer for accepted terminal Codex turn state. */
+  readonly onCodexTurnState?: (turnState: string) => void;
+}
+
+/**
  * Optional per-call context for Gateway dispatch.
  */
 export interface LLMGatewayDispatchContext {
@@ -47,6 +59,8 @@ export interface LLMGatewayDispatchContext {
   readonly promptCacheScope?: PromptCacheKeyScope;
   /** Optional side-effect observer for adapter-reported usage payloads. */
   readonly onUsage?: GatewayUsageRecordInput['onUsage'];
+  /** Optional provider transport state for cancellation and Codex continuity. */
+  readonly transport?: LLMGatewayTransportContext;
 }
 
 /**
@@ -94,7 +108,8 @@ export class LLMGatewayProviderDispatcher {
         );
         const response = await this.codexResponsesClient.createResponses(
           provider,
-          responsesRequest
+          responsesRequest,
+          context.transport
         );
         this.recordUsage(provider, request.model, endpoint, response.usage, context.onUsage);
 
@@ -110,8 +125,11 @@ export class LLMGatewayProviderDispatcher {
         request,
         context.promptCacheScope
       );
-      const response = await this.piAiClient.createChatCompletion(provider, keyedRequest, (usage) =>
-        this.recordUsage(provider, request.model, endpoint, usage, context.onUsage)
+      const response = await this.piAiClient.createChatCompletion(
+        provider,
+        keyedRequest,
+        (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
+        context.transport
       );
 
       return response;
@@ -122,8 +140,11 @@ export class LLMGatewayProviderDispatcher {
         convertChatCompletionToResponsesRequest(request),
         context.promptCacheScope
       );
-      const response = await this.piAiClient.createResponses(provider, responsesRequest, (usage) =>
-        this.recordUsage(provider, request.model, endpoint, usage, context.onUsage)
+      const response = await this.piAiClient.createResponses(
+        provider,
+        responsesRequest,
+        (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
+        context.transport
       );
 
       return convertResponsesResponseToChatCompletionResponse(response, request.model);
@@ -159,7 +180,8 @@ export class LLMGatewayProviderDispatcher {
         );
         const stream = await this.codexResponsesClient.createResponsesStream(
           provider,
-          responsesRequest
+          responsesRequest,
+          context.transport
         );
 
         return convertResponsesStreamToChatCompletionStream(
@@ -177,8 +199,11 @@ export class LLMGatewayProviderDispatcher {
         request,
         context.promptCacheScope
       );
-      return this.piAiClient.createChatCompletionStream(provider, keyedRequest, (usage) =>
-        this.recordUsage(provider, request.model, endpoint, usage, context.onUsage)
+      return this.piAiClient.createChatCompletionStream(
+        provider,
+        keyedRequest,
+        (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
+        context.transport
       );
     }
     if (capability === 'bridged' && provider.gatewayCapabilities.responses === 'native') {
@@ -191,8 +216,11 @@ export class LLMGatewayProviderDispatcher {
         context.promptCacheScope
       );
       return convertResponsesStreamToChatCompletionStream(
-        await this.piAiClient.createResponsesStream(provider, responsesRequest, (usage) =>
-          this.recordUsage(provider, request.model, endpoint, usage, context.onUsage)
+        await this.piAiClient.createResponsesStream(
+          provider,
+          responsesRequest,
+          (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
+          context.transport
         ),
         request.model
       );
@@ -223,7 +251,11 @@ export class LLMGatewayProviderDispatcher {
           request,
           context.promptCacheScope
         );
-        const response = await this.codexResponsesClient.createResponses(provider, keyedRequest);
+        const response = await this.codexResponsesClient.createResponses(
+          provider,
+          keyedRequest,
+          context.transport
+        );
         this.recordUsage(provider, request.model, endpoint, response.usage, context.onUsage);
 
         return response;
@@ -238,8 +270,11 @@ export class LLMGatewayProviderDispatcher {
         request,
         context.promptCacheScope
       );
-      const response = await this.piAiClient.createResponses(provider, keyedRequest, (usage) =>
-        this.recordUsage(provider, request.model, endpoint, usage, context.onUsage)
+      const response = await this.piAiClient.createResponses(
+        provider,
+        keyedRequest,
+        (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
+        context.transport
       );
 
       return response;
@@ -250,8 +285,11 @@ export class LLMGatewayProviderDispatcher {
         convertResponsesRequestToChatCompletionRequest(request),
         context.promptCacheScope
       );
-      const response = await this.piAiClient.createChatCompletion(provider, chatRequest, (usage) =>
-        this.recordUsage(provider, request.model, endpoint, usage, context.onUsage)
+      const response = await this.piAiClient.createChatCompletion(
+        provider,
+        chatRequest,
+        (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
+        context.transport
       );
 
       return convertChatCompletionResponseToResponsesResponse(response);
@@ -284,7 +322,8 @@ export class LLMGatewayProviderDispatcher {
         );
         const stream = await this.codexResponsesClient.createResponsesStream(
           provider,
-          keyedRequest
+          keyedRequest,
+          context.transport
         );
 
         return this.observeUsage(stream, provider, request.model, endpoint, context.onUsage);
@@ -299,8 +338,11 @@ export class LLMGatewayProviderDispatcher {
         request,
         context.promptCacheScope
       );
-      return this.piAiClient.createResponsesStream(provider, keyedRequest, (usage) =>
-        this.recordUsage(provider, request.model, endpoint, usage, context.onUsage)
+      return this.piAiClient.createResponsesStream(
+        provider,
+        keyedRequest,
+        (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
+        context.transport
       );
     }
     if (capability === 'bridged' && provider.gatewayCapabilities.chatCompletions === 'native') {
@@ -313,8 +355,11 @@ export class LLMGatewayProviderDispatcher {
         context.promptCacheScope
       );
       return convertChatCompletionStreamToResponsesStream(
-        await this.piAiClient.createChatCompletionStream(provider, chatRequest, (usage) =>
-          this.recordUsage(provider, request.model, endpoint, usage, context.onUsage)
+        await this.piAiClient.createChatCompletionStream(
+          provider,
+          chatRequest,
+          (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
+          context.transport
         )
       );
     }

@@ -64,8 +64,7 @@ Subjects:
 - agent
 - agent profile
 - agent session
-- worker sidecar
-- MCP client
+- worker shim
 - external integration
 
 Actions:
@@ -164,7 +163,7 @@ Decisions are immutable.
 NanoCore should evaluate policy at:
 
 - app API command handlers
-- MCP operation handlers
+- worker MCP capability handlers
 - worker scheduling
 - AEP resolution
 - workspace materialization
@@ -280,14 +279,14 @@ Server mode needs explicit membership facts before workspace policy can be enfor
 Minimum facts:
 
 - authenticated actor id
-- actor kind: user, service identity, automation, agent, sidecar, or integration
-- responsible user id when an agent, automation, sidecar, or integration acts on behalf of a user
+- actor kind: user, service identity, automation, agent, worker shim, or integration
+- responsible user id when an agent, automation, worker shim, or integration acts on behalf of a user
 - workspace id
 - membership status: active, invited, suspended, removed, or service-bound
 - workspace role or policy principal set
 - workspace owner or admin authority marker
 - explicit grants and restrictions relevant to the request
-- request origin: app, MCP, worker sidecar, internal scheduler, webhook, or integration
+- request origin: app, MCP, worker shim, internal scheduler, webhook, or integration
 - policy snapshot id or policy version used for evaluation
 - authentication assurance level when policy depends on it
 - time and retention class when policy depends on it

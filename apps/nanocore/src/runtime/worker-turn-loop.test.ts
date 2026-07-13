@@ -111,7 +111,7 @@ describe('worker turn loop', () => {
             followUpInputs: input.followUpInputs,
           };
         },
-        createTurn: () => ({ turnId: 'turn_worker_1' }),
+        reserveTurn: () => ({ turnId: 'turn_worker_1' }),
         startWorker: () => ({ workerSessionId: 'session_worker_1' }),
         awaitWorker: () => ({
           stopReason: 'completed',
@@ -210,7 +210,7 @@ describe('worker turn loop', () => {
             steeringMessages: [],
             followUpInputs: [],
           }),
-          createTurn: () => ({ turnId: 'turn_worker_error' }),
+          reserveTurn: () => ({ turnId: 'turn_worker_error' }),
           startWorker: () => {
             throw new Error('Worker failed Authorization: Bearer live_secret');
           },

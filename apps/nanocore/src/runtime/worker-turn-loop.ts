@@ -38,33 +38,33 @@ export type WorkerTurnLoopPrepareEffect = (
 ) => PreparedNextTurn | Promise<PreparedNextTurn>;
 
 /**
- * Input passed to the worker turn creation effect.
+ * Input passed to the worker turn reservation effect.
  */
-export interface WorkerTurnLoopCreateTurnInput {
+export interface WorkerTurnLoopReserveTurnInput {
   /** Prepared delegation payload that frames the worker turn. */
   readonly prepared: PreparedNextTurn;
 }
 
 /**
- * Worker turn creation effect result.
+ * Worker turn reservation effect result.
  */
-export interface WorkerTurnLoopCreateTurnResult {
+export interface WorkerTurnLoopReserveTurnResult {
   /** Stable turn id for the worker boundary. */
   readonly turnId: string;
 }
 
 /**
- * Effect that creates the durable turn before checkpointing begins.
+ * Effect that reserves stable turn lineage before checkpointing begins.
  */
-export type WorkerTurnLoopCreateTurnEffect = (
-  input: WorkerTurnLoopCreateTurnInput
-) => WorkerTurnLoopCreateTurnResult | Promise<WorkerTurnLoopCreateTurnResult>;
+export type WorkerTurnLoopReserveTurnEffect = (
+  input: WorkerTurnLoopReserveTurnInput
+) => WorkerTurnLoopReserveTurnResult | Promise<WorkerTurnLoopReserveTurnResult>;
 
 /**
  * Input passed to the worker start effect.
  */
 export interface WorkerTurnLoopStartWorkerInput {
-  /** Created worker turn id. */
+  /** Reserved worker turn id. */
   readonly turnId: string;
   /** Prepared worker delegation payload. */
   readonly prepared: PreparedNextTurn;
@@ -89,7 +89,7 @@ export type WorkerTurnLoopStartWorkerEffect = (
  * Input passed to the worker completion effect.
  */
 export interface WorkerTurnLoopAwaitWorkerInput {
-  /** Created worker turn id. */
+  /** Reserved worker turn id. */
   readonly turnId: string;
   /** Prepared worker delegation payload. */
   readonly prepared: PreparedNextTurn;
@@ -140,8 +140,8 @@ export interface RunWorkerTurnLoopInput {
   readonly followUpDrainMode?: FollowUpDrainMode;
   /** Effect that prepares worker-visible context. */
   readonly prepare: WorkerTurnLoopPrepareEffect;
-  /** Effect that creates the durable worker turn. */
-  readonly createTurn: WorkerTurnLoopCreateTurnEffect;
+  /** Effect that reserves stable worker turn lineage before checkpointing. */
+  readonly reserveTurn: WorkerTurnLoopReserveTurnEffect;
   /** Effect that starts the worker after checkpointing. */
   readonly startWorker: WorkerTurnLoopStartWorkerEffect;
   /** Effect that returns the bounded worker outcome. */
@@ -154,7 +154,7 @@ export interface RunWorkerTurnLoopInput {
  * Result returned after one worker turn loop reaches a terminal outcome.
  */
 export interface RunWorkerTurnLoopResult {
-  /** Created worker turn id. */
+  /** Reserved worker turn id. */
   readonly turnId: string;
   /** Prepared worker delegation payload. */
   readonly prepared: PreparedNextTurn;
@@ -180,7 +180,7 @@ export interface RunWorkerTurnLoopResult {
  *
  * @param input Worker turn loop input and effects.
  * @returns Terminal worker loop result.
- * @throws Error when preparation, turn creation, worker start, or worker completion fails.
+ * @throws Error when preparation, turn reservation, worker start, or worker completion fails.
  */
 export async function runWorkerTurnLoop(
   input: RunWorkerTurnLoopInput
@@ -188,7 +188,7 @@ export async function runWorkerTurnLoop(
   const queues = drainWorkerTurnQueues(input);
   const prepared = await input.prepare(queues);
   const contextAssembly = createContextAssemblySummary(prepared);
-  const turn = await input.createTurn({ prepared });
+  const turn = await input.reserveTurn({ prepared });
   recordWorkerTurnLaunchDecision({
     workspaceDb: input.workspaceDb,
     workspaceId: input.workspaceId,

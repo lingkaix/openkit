@@ -324,6 +324,109 @@ describe('internal agent runner', () => {
     expect(diagnostics).not.toContain('ghp_secret');
   });
 
+  it('makes caller cancellation reachable by the provider dispatch', async () => {
+    const abortController = new AbortController();
+    let dispatchSignal: AbortSignal | undefined;
+    let markProviderStarted: (() => void) | undefined;
+    const providerStarted = new Promise<void>((resolve) => {
+      markProviderStarted = resolve;
+    });
+    const llmClient: InternalAgentLLMClient = {
+      createChatCompletion: async (_provider, _request, context = {}) => {
+        dispatchSignal = (
+          context as LLMGatewayDispatchContext & {
+            readonly transport?: { readonly signal?: AbortSignal };
+          }
+        ).transport?.signal;
+        markProviderStarted?.();
+        return new Promise(() => undefined);
+      },
+    };
+    const runner = new InternalAgentRunner({
+      defaultSelectionResolver: resolveDefaultSelection,
+      llmClient,
+      providerResolver: resolveProvider,
+      registry: createDefaultInternalAgentRegistry([
+        {
+          ...QUICK_CHAT_AGENT_DEFINITION,
+          limits: {
+            ...QUICK_CHAT_AGENT_DEFINITION.limits,
+            timeoutMs: 1_000,
+          },
+        },
+      ]),
+    });
+    const input = {
+      agentId: QUICK_CHAT_AGENT_ID,
+      messages: [{ role: 'user' as const, content: 'Wait for cancellation.' }],
+      signal: abortController.signal,
+    };
+    const run = runner.run(input);
+
+    await providerStarted;
+    abortController.abort();
+
+    await expect(run).rejects.toMatchObject({ name: 'InternalAgentAbortedError' });
+    expect(dispatchSignal?.aborted).toBe(true);
+  });
+
+  it('makes caller cancellation reachable by streaming provider dispatch', async () => {
+    const abortController = new AbortController();
+    let dispatchSignal: AbortSignal | undefined;
+    let markProviderStarted: (() => void) | undefined;
+    const providerStarted = new Promise<void>((resolve) => {
+      markProviderStarted = resolve;
+    });
+    const llmClient: InternalAgentLLMClient = {
+      createChatCompletion: async () => {
+        throw new Error('non-streaming provider should not be called');
+      },
+      createChatCompletionStream: async (_provider, _request, context = {}) => {
+        dispatchSignal = (
+          context as LLMGatewayDispatchContext & {
+            readonly transport?: { readonly signal?: AbortSignal };
+          }
+        ).transport?.signal;
+        markProviderStarted?.();
+        return new ReadableStream<Uint8Array>();
+      },
+    };
+    const runner = new InternalAgentRunner({
+      defaultSelectionResolver: resolveDefaultSelection,
+      llmClient,
+      providerResolver: resolveProvider,
+      registry: createDefaultInternalAgentRegistry([
+        {
+          ...QUICK_CHAT_AGENT_DEFINITION,
+          limits: {
+            ...QUICK_CHAT_AGENT_DEFINITION.limits,
+            timeoutMs: 1_000,
+          },
+        },
+      ]),
+    });
+    const input = {
+      agentId: QUICK_CHAT_AGENT_ID,
+      messages: [{ role: 'user' as const, content: 'Wait for cancellation.' }],
+      signal: abortController.signal,
+    };
+    let terminalEvent: { readonly status: string; readonly stopReason: string } | undefined;
+    const stream = (async () => {
+      for await (const event of runner.stream(input)) {
+        if (event.eventType === 'agent_end') {
+          terminalEvent = event;
+        }
+      }
+    })();
+
+    await providerStarted;
+    abortController.abort();
+    await stream;
+
+    expect(dispatchSignal?.aborted).toBe(true);
+    expect(terminalEvent).toMatchObject({ status: 'aborted', stopReason: 'aborted' });
+  });
+
   it('dispatches loop events to observational hooks without failing the run', async () => {
     const seenEvents: string[] = [];
     const llmClient: InternalAgentLLMClient = {

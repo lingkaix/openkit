@@ -18,7 +18,7 @@ describe('workspace materializer records', () => {
       agentSessionId: 'session_1',
       userId: 'user_local',
       backend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
       },
@@ -71,7 +71,7 @@ describe('workspace materializer records', () => {
       agentSessionId: 'session_source_1',
       userId: 'user_local',
       backend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
       },

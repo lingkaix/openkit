@@ -1,14 +1,14 @@
 # Remote Auth Credential Bootstrap
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
 
 ## Owns
 
 - The OpenKit access-token format, lifecycle, and the closed v1 scope set.
 - The server-mode first-boot bootstrap ceremony that establishes the owner `User` and the first credential.
-- The channel authentication contract for the MCP channel and any remote coordinator calling NanoCore with a token.
-- Client-side credential storage rules for desktop AI applications and the MCP server process.
+- The channel authentication contract for the bundled `openkit` CLI and any remote coordinator calling NanoCore with a token.
+- Client-side credential storage rules for Skill-capable AI applications and the bundled CLI process.
 - Transport requirements for accepting bearer tokens on non-loopback interfaces.
 - Token rotation, revocation, and the independence of `Token` and `AuthSession` revocation.
 - The actor-context resolution and audit-label binding for token-authenticated requests.
@@ -32,15 +32,15 @@ Implementation: Implemented
 
 ## Summary
 
-This spec fills the remote-auth gap deferred by `docs/specs/20260628-nanocore_config_identity_contract.md`: how a server-mode NanoCore deployment mints its first credential, how the MCP channel and remote coordinators authenticate afterward, and how desktop clients store credential material safely.
+This spec fills the remote-auth gap deferred by `docs/specs/20260628-nanocore_config_identity_contract.md`: how a server-mode NanoCore deployment mints its first credential, how the bundled CLI and remote coordinators authenticate afterward, and how Skill-capable clients store credential material safely.
 
-The clean target is a single credential family: server-issued opaque access tokens realizing the `Token` identity concept. Tokens carry a `okt_` prefix for leak scanning, are stored hashed, are shown exactly once at issuance, and belong to a small closed scope set. Server mode mints a one-time owner bootstrap token on first boot; local mode keeps its implicit local-user posture unchanged. The MCP channel authenticates with `OPENKIT_NANOCORE_TOKEN` as a bearer token, replacing the raw `OPENKIT_NANOCORE_COOKIE` / `OPENKIT_NANOCORE_AUTHORIZATION` passthrough in the same change. Clients store tokens in the OS keychain first, an encrypted fallback file second, and never in plaintext config. Bearer tokens are refused over non-loopback plaintext HTTP.
+The clean target is a single credential family: server-issued opaque access tokens realizing the `Token` identity concept. Tokens carry a `okt_` prefix for leak scanning, are stored hashed, are shown exactly once at issuance, and belong to a small closed scope set. Server mode mints a one-time owner bootstrap token on first boot; local mode keeps its implicit local-user posture unchanged. The bundled CLI authenticates with `OPENKIT_NANOCORE_TOKEN` as an explicit ephemeral bearer-token override or resolves a persistent token from supported credential storage. Clients store tokens in the OS keychain first, an encrypted fallback file only where the accepted platform contract permits it, and never in plaintext config. Bearer tokens are refused over non-loopback plaintext HTTP.
 
 ## Goals
 
 - Define one token format and lifecycle precise enough to implement, test, and audit.
 - Make a fresh server-mode deployment reach an authenticated owner without any out-of-band credential provisioning.
-- Give the MCP channel a first-class, scoped, revocable credential instead of forwarded raw headers.
+- Give the bundled CLI a first-class, scoped, revocable credential instead of forwarded raw headers.
 - Bind every token-authenticated request to an explicit actor context that flows into audit labels.
 - Keep client machines free of plaintext token material at rest.
 - Keep the check structure ready for multi-user tenancy so later work only adds membership facts, per the NGAC direction in the policy specs.
@@ -55,9 +55,9 @@ The clean target is a single credential family: server-issued opaque access toke
 
 ## Background
 
-`docs/specs/20260628-nanocore_config_identity_contract.md` accepts Better Auth as the current server-mode browser auth implementation and explicitly defers remote NanoCore auth bootstrap, desktop credential storage, and audit labels for MCP-originated operations. The MCP channel previously shipped with deployment-supplied raw cookie and authorization-header forwarding; this spec replaces that stopgap with scoped NanoCore tokens. `docs/core/identity.md` already names the conceptual records this spec needs: `Token` with status values `active`, `expired`, `revoked`, `rotated`, and the invariant that raw token secret material must not be exposed after issuance.
+`docs/specs/20260628-nanocore_config_identity_contract.md` accepts Better Auth as the current server-mode browser auth implementation and explicitly defers remote NanoCore auth bootstrap, client credential storage, and audit labels for remote coordinator operations. The legacy MCP channel previously shipped with deployment-supplied raw cookie and authorization-header forwarding; the implemented token substrate replaced that stopgap, and the accepted Agent Skill Interface now carries it forward through the bundled CLI. `docs/core/identity.md` already names the conceptual records this spec needs: `Token` with status values `active`, `expired`, `revoked`, `rotated`, and the invariant that raw token secret material must not be exposed after issuance.
 
-There is currently no way to stand up a remote NanoCore and authenticate to it without hand-crafting a Better Auth session and pasting header values into environment variables. That path has no scoping, no revocation story, no rotation story, and no audit identity for MCP-originated operations.
+The historical gap was the absence of a safe way to stand up a remote NanoCore and authenticate without hand-crafting a Better Auth session and pasting header values into environment variables. NanoCore now implements the token and bootstrap substrate, while the accepted bundled CLI projection remains to be implemented.
 
 ## Decision
 
@@ -65,7 +65,7 @@ NanoCore owns opaque access-token issuance and verification as the remote channe
 
 - Tokens are server-issued opaque secrets realizing the `Token` concept, verified by hash lookup on every request. There is no client-verifiable or stateless token format in v1.
 - Server mode self-bootstraps: an empty deployment mints exactly one owner bootstrap token through the operator channel, consumed exactly once.
-- The MCP channel and remote coordinators authenticate with `Authorization: Bearer` carrying a scoped token supplied via `OPENKIT_NANOCORE_TOKEN`. The raw cookie/authorization passthrough is removed in the same change, per the internal development compatibility rule.
+- The bundled CLI and remote coordinators authenticate with `Authorization: Bearer` carrying a scoped token resolved from supported credential storage or supplied through the explicit ephemeral `OPENKIT_NANOCORE_TOKEN` override. The raw cookie/authorization passthrough remains removed, per the internal development compatibility rule.
 - Clients store tokens in the OS keychain when available, an encrypted file fallback otherwise, and never in plaintext config files.
 - Bearer authentication and bootstrap-token consumption over non-loopback plaintext HTTP are refused; server mode MUST present TLS on non-loopback interfaces before either secret is accepted there.
 - Rotation is overlap-based, revocation is immediate, and `AuthSession` and `Token` revocation are independent.
@@ -107,19 +107,20 @@ Rules:
 
 ### Channel authentication
 
-- The MCP channel and any remote coordinator MUST authenticate to server-mode NanoCore with a scoped token presented as `Authorization: Bearer <token>`.
-- The MCP server MUST read the token from `OPENKIT_NANOCORE_TOKEN` (or from the client credential store, see below) at process start. The `OPENKIT_NANOCORE_COOKIE` and `OPENKIT_NANOCORE_AUTHORIZATION` raw passthrough variables are removed in the same change with no compatibility alias, per the internal development compatibility rule.
-- Every authenticated request MUST resolve to an actor context containing: the acting identity (`User` or `AutomationIdentity`), the token id (or `AuthSession` id for session-authenticated requests), and the channel. The actor context MUST flow into audit labels for MCP-originated operations so audit records can answer which identity, credential, and channel caused an action, per `docs/core/audit.md`.
+- The bundled CLI and any remote coordinator MUST authenticate to server-mode NanoCore with a scoped token presented as `Authorization: Bearer <token>`.
+- The bundled CLI MUST resolve the token from the client credential store or the explicit ephemeral `OPENKIT_NANOCORE_TOKEN` override. The `OPENKIT_NANOCORE_COOKIE` and `OPENKIT_NANOCORE_AUTHORIZATION` raw passthrough variables remain removed with no compatibility alias, per the internal development compatibility rule.
+- Every authenticated request MUST resolve to an actor context containing: the acting identity (`User` or `AutomationIdentity`), the token id (or `AuthSession` id for session-authenticated requests), and the channel. The actor context MUST flow into audit labels for CLI-originated operations so audit records can answer which identity, credential, and channel caused an action, per `docs/core/audit.md`.
 - Token verification failures MUST be indistinguishable between unknown, expired, revoked, and malformed tokens in the response body, and MUST NOT echo the presented value.
 - Tokens MUST NOT be accepted from query strings, request bodies, or cookies. The bearer header is the only token transport.
 - Better Auth session cookies remain a valid authentication path for browser product surfaces; this spec adds token authentication beside it, and both resolve to the same actor-context shape.
 
 ### Client credential storage
 
-- Desktop clients (setup Skills, the MCP server configuration flow, future installers) MUST store tokens in the OS keychain when available: macOS Keychain, Windows Credential Manager, or Secret Service / libsecret on Linux.
+- Skill-capable clients and future installers MUST store tokens in the OS keychain when available: macOS Keychain, Windows Credential Manager, or Secret Service / libsecret on Linux.
 - When no keychain backend is available, the fallback MUST be an encrypted file under the user's OpenKit config directory, and any process using the fallback MUST emit a boot-time warning naming the degraded storage.
-- Plaintext tokens in config files, MCP configuration JSON committed to disk, repository files, examples, artifacts, or change records are prohibited. Environment-variable delivery (`OPENKIT_NANOCORE_TOKEN`) is permitted as a process-launch mechanism because it is not at-rest storage, but documentation MUST steer users toward keychain-backed delivery.
-- The MCP server process MUST read the token from the keychain or environment at start and MUST NOT persist it itself, echo it in tool responses, resources, logs, or diagnostics, or include it in error payloads.
+- Plaintext tokens in config files, agent configuration committed to disk, repository files, examples, artifacts, or change records are prohibited. Environment-variable delivery (`OPENKIT_NANOCORE_TOKEN`) is permitted only as an explicit ephemeral process override; documentation MUST steer users toward keychain-backed delivery.
+- The bundled CLI MUST read persistent tokens from supported credential storage and MUST NOT echo them in result envelopes, stderr, logs, diagnostics, artifacts, knowledge, or error payloads.
+- An operation that receives one-time token material MUST store it directly through a supported credential destination and return only redacted storage metadata, or fail with a typed setup error when secure storage is unavailable; it MUST NOT print the token for an agent to copy.
 
 ### Transport requirements
 
@@ -133,7 +134,7 @@ Rules:
 - Revocation MUST take effect immediately at the auth layer: the next verification of a revoked token fails. There is no revocation grace.
 - `AuthSession` records and `Token` records MUST be revocable independently. Revoking a user's sessions MUST NOT revoke their tokens, and vice versa; an owner-initiated "revoke all credentials" action is a composite of both.
 - A rotated or revoked token MUST NOT be reactivatable; recovery is issuing a new token.
-- `server-admin` tokens MUST be able to list, issue, rotate, and revoke tokens through public App API routes; those routes are the only token administration surface, and MCP token-administration tools MUST be facades over them.
+- `server-admin` tokens MUST be able to list, issue, rotate, and revoke tokens through public App API routes; those routes are the only token administration surface, and bundled CLI token-administration operations MUST be facades over them.
 
 ## Accepted Design
 
@@ -141,9 +142,11 @@ Token verification is a NanoCore auth-middleware concern beside the existing Bet
 
 Bootstrap is a startup hook: on server-mode boot with zero users, mint the bootstrap secret, store its hash with a `bootstrap` marker distinct from the public scope set, and emit the plaintext once. A single public consumption endpoint accepts the bootstrap token and the owner profile payload and performs the atomic owner-creation transaction.
 
-The client side ships a small credential-store helper used by the setup Skills and MCP server: resolve order is explicit environment variable, then OS keychain entry keyed by NanoCore endpoint URL, then encrypted fallback file, with the boot-time warning on fallback use.
+The client side ships a small credential-store helper used by the unified Skill's bundled CLI: resolve order is explicit ephemeral environment override, then OS keychain entry keyed by NanoCore endpoint URL, then any platform fallback explicitly permitted by the Agent Skill Interface, with a warning on degraded storage.
 
 ## Current Implementation Projection
+
+The NanoCore token, bootstrap, authorization, audit, and `@openkit/core-client` substrate is implemented. The legacy `@openkit/mcp` projection below is also implemented but is removal-only; the bundled CLI credential path required by `docs/specs/20260713-openkit_agent_skill_interface.md` is not implemented yet, so this spec is only partially aligned with its accepted channel contract.
 
 - `mcp/` reads `OPENKIT_NANOCORE_URL`, resolves `OPENKIT_NANOCORE_TOKEN` first, an OS keychain token second, and an encrypted fallback file third, maps the token to `Authorization: Bearer <token>`, and exposes `openkit.consume_bootstrap_token` over the public App API bootstrap-consume route. The old raw `OPENKIT_NANOCORE_COOKIE` and `OPENKIT_NANOCORE_AUTHORIZATION` passthrough variables are removed without aliases.
 - Server mode uses Better Auth for session authentication; `apps/nanocore/src/auth/middleware.ts` attaches actor context and enforces server-mode auth for protected APIs. Token verification lands beside it in the same middleware layer.
@@ -163,8 +166,8 @@ The client side ships a small credential-store helper used by the setup Skills a
 ## Consequences
 
 - A fresh remote deployment becomes self-service: boot, read the bootstrap token once, consume it, issue scoped tokens.
-- The MCP channel gains a revocable, scoped, auditable credential, and MCP-originated operations gain a real actor identity in audit labels.
-- Removing the raw header passthrough is a breaking change for existing server-mode dogfooding environments; operators must issue a token and switch to `OPENKIT_NANOCORE_TOKEN` in the same upgrade.
+- The end-user Agent Skill Interface gains a revocable, scoped, auditable credential, and CLI-originated operations gain a real actor identity in audit labels.
+- The raw header passthrough remains absent; the bundled CLI reuses the implemented token substrate without a compatibility path for the removed MCP channel.
 - NanoCore takes on hash-verification on every token-authenticated request and a small token administration API surface.
 - Client tooling takes on a keychain dependency per platform, with the encrypted-file fallback as the portability escape hatch.
 
@@ -174,8 +177,9 @@ This is new machinery plus one same-change removal, not a compatibility migratio
 
 1. Token record, hashing, verification middleware, scope checks, and transport refusal land together in NanoCore, with token administration routes behind `server-admin`.
 2. Server-mode bootstrap ceremony lands next, gated on the zero-user condition.
-3. The MCP server switches to `OPENKIT_NANOCORE_TOKEN` and deletes the cookie/authorization passthrough in the same change; `mcp/README.md`, the setup Skills, and `docs/specs/20260617-openkit_ai_interface.md` are updated in that change.
+3. The legacy MCP server switched to `OPENKIT_NANOCORE_TOKEN` and deleted the cookie/authorization passthrough; that implementation remains only as parity evidence until MCP removal.
 4. The client credential-store helper reads OS keychain entries first and encrypted fallback files second. Linux and Windows setup writes use stdin-backed keychain commands; macOS setup uses encrypted fallback until a safe non-argv keychain writer is available.
+5. The bundled CLI adopts the credential-store and bootstrap contracts, adds secret-safe direct storage for one-time token material, replaces MCP auth smoke coverage, and then the legacy MCP credential path is deleted.
 
 Fresh dogfooding deployments authenticate by consuming the one-time bootstrap token. Existing data roots require an existing `server-admin` token; locked-out deployments require a separately defined operator data-root recovery procedure, and this change does not allow an ordinary Better Auth session to elevate through token-administration routes.
 
@@ -186,18 +190,18 @@ Mapped to the L0-L6 model in `docs/specs/20260529-test_strategy.md`:
 - L0: repository checks that no plaintext `okt_` secret appears in committed files, examples, or fixtures other than clearly fake documented placeholders; schema-drift checks for the `Token` record shape.
 - L1: unit tests for secret generation entropy and prefix shape, hash-and-lookup verification, status transitions (`active` to `expired`/`revoked`/`rotated`), rotation-grace math, scope-to-route gating, bootstrap single-consumption logic, and credential-store resolve order including fallback warning emission, encrypted fallback non-plaintext storage, and stdin-backed Linux/Windows keychain writes with secret-free argv.
 - L2: contract tests binding the auth middleware to the actor-context shape: token-authenticated requests produce actor context with identity, token id, and channel; audit label producers receive it; verification failures are uniform and non-echoing; tokens in query strings, bodies, and cookies are rejected.
-- L3: NanoCore black-box tests: fresh server-mode boot emits a bootstrap token with `0600` file permissions, consumption creates the owner atomically and invalidates the bootstrap token, second consumption fails; issued `workspace` tokens pass on bound workspaces and fail elsewhere with typed errors; revocation takes effect on the next request; rotation keeps the old token working through grace and not after; non-loopback plaintext HTTP bearer requests are refused while loopback succeeds; MCP smoke path authenticates end-to-end with `OPENKIT_NANOCORE_TOKEN`. The owned server-mode MCP smoke now covers the bootstrap-backed MCP path on a clean data root.
+- L3: NanoCore black-box tests cover fresh server-mode bootstrap, single consumption, scoped-token isolation, revocation, rotation, and plaintext transport refusal; bundled CLI black-box coverage must authenticate end to end through supported credential resolution. The current server-mode MCP smoke is temporary legacy evidence until the CLI replacement lands.
 - L4: not applicable until Web UI token administration screens exist.
-- L5: packaged-build smoke that a server-mode boot on a clean data root produces exactly one bootstrap emission and that the MCP server connects with a minted token. The current `@openkit/mcp` server-mode smoke validates the bootstrap emission file permission, consumes the bootstrap token, issues a scoped workspace token, and connects MCP with the minted token.
-- L6: story acceptance covering an operator standing up a remote NanoCore, consuming the bootstrap token, issuing a workspace-scoped token, connecting a desktop AI application through MCP, and revoking the token to confirm access ends.
+- L5: packaged-build smoke that a server-mode boot on a clean data root produces exactly one bootstrap emission and that the bundled CLI stores and uses the minted token without exposing it. The current `@openkit/mcp` server-mode smoke remains temporary parity evidence.
+- L6: story acceptance covering an operator standing up a remote NanoCore, consuming the bootstrap token through the end-user Skill flow, connecting through the bundled CLI, issuing a workspace-scoped token, and revoking the token to confirm access ends.
 
-Acceptance criteria: all L1-L3 behaviors pass deterministically; no code path can return a token secret after issuance; the cookie/authorization passthrough is absent from the MCP package; a revoked token fails on the request after revocation with no grace.
+Acceptance criteria: all L1-L3 behaviors pass deterministically; no agent-visible CLI path prints one-time or persistent token material; the cookie/authorization passthrough and user-facing MCP package are absent; a revoked token fails on the request after revocation with no grace.
 
 ## Risks & Mitigations
 
 - Risk: the bootstrap token leaks through operator logs or CI capture of stdout. Mitigation: single emission, bounded expiry, single consumption, `0600` file option for environments where stdout is captured, and the `okt_` prefix so scanners catch accidental persistence.
 - Risk: hash verification on every request becomes a hot-path cost. Mitigation: single indexed lookup with an asynchronous last-used update; the deployment shape is one NanoCore, not a token-verification fleet.
-- Risk: keychain integration fails unevenly across platforms and users silently land on the encrypted fallback. Mitigation: the mandatory boot-time warning, plus diagnostics in `openkit.read_status`-class surfaces naming the storage backend in use without revealing material.
+- Risk: keychain integration fails unevenly across platforms and users silently land on the encrypted fallback. Mitigation: the mandatory warning, plus `openkit doctor` diagnostics naming the storage backend in use without revealing material.
 - Risk: scope checks get mistaken for the permission model and policy work stalls. Mitigation: the contract states scopes are authentication-layer gates; policy enforcement mapping remains a required downstream check, restated at every check site.
 - Risk: TLS refusal blocks legitimate proxy deployments that terminate TLS upstream. Mitigation: the deployment-declared fronting-proxy posture is an explicit configuration, not an inference, so operators state their transport intent.
 
@@ -207,7 +211,7 @@ Previously open questions are resolved by accepted V1 defaults: the encrypted fa
 
 ## Deferred / Future Work
 
-- OAuth-style device-flow pairing so a desktop AI application can acquire a token through a browser consent step instead of manual issuance.
+- OAuth-style device-flow pairing so a Skill-capable AI application can acquire a token through a browser consent step instead of manual issuance.
 - Multi-user invitations, membership administration, and role-bearing tokens once tenancy lands; the membership check structure here is built for that addition.
 - Fine-grained token scopes (per-capability, per-thread, time-boxed step tokens) beyond the closed v1 set.
 - Web UI token administration surfaces projecting the token read models.
@@ -220,7 +224,7 @@ Previously open questions are resolved by accepted V1 defaults: the encrypted fa
 - `docs/core/permissions.md`
 - `docs/core/audit.md`
 - `docs/specs/20260628-nanocore_config_identity_contract.md`
-- `docs/specs/20260617-openkit_ai_interface.md`
+- `docs/specs/20260713-openkit_agent_skill_interface.md`
 - `docs/specs/20260629-openkit_policy_model.md`
 - `docs/specs/20260703-policy_enforcement_mapping.md`
 - `docs/specs/20260703-vault_secret_injection.md`

@@ -100,7 +100,6 @@ export type {
   WorkspaceRepositoryStagingStrategy,
 } from './workspace-repositories.js';
 export { workspaceRepositoryResources } from './workspace-repositories.js';
-export { workspaceSyncEvidenceBundles } from './workspace-sync-evidence-bundles.js';
 export {
   backendWorkspaceHandles,
   stagedWorkspaceReviews,

@@ -940,6 +940,9 @@ function capabilityUsageResponse() {
         itemId: 'it_demo',
         agentId: 'assistant',
         agentSessionId: 'session_demo',
+        packageSnapshotId: 'aep_snapshot_1',
+        runtimeOriginRef: 'rto_0123456789abcdef01234567',
+        runtimeCacheLineageRef: 'rcl_89abcdef0123456789abcdef',
         sourceIds: ['repo_default'],
         requestId: '00000000-0000-4000-8000-000000000911',
         capabilityId: 'llm.chat_completions',
@@ -1005,13 +1008,6 @@ function workspaceEvidenceBundlesResponse() {
         createdAt: timestamp,
       },
     ],
-  };
-}
-
-/** Returns one evidence bundle create response fixture. */
-function createEvidenceBundleResponse() {
-  return {
-    evidenceBundle: workspaceEvidenceBundlesResponse().evidenceBundles[0],
   };
 }
 
@@ -1462,6 +1458,13 @@ describe('createCoreClient', () => {
     for (const alias of ['getStatus', 'start', 'cancel', 'logout']) {
       expect(alias in client.oauth.openaiCodex).toBe(false);
     }
+
+    for (const removedEvidenceOperation of [
+      'createEvidenceBundle',
+      'listWorkspaceSyncEvidenceBundles',
+    ]) {
+      expect(removedEvidenceOperation in client.app).toBe(false);
+    }
   });
 
   it('routes core protocol calls through the core sub-client', async () => {
@@ -1717,30 +1720,6 @@ describe('createCoreClient', () => {
           ],
         },
       },
-      'GET /api/app/workspaces/ws_demo/workspace-sync/evidence-bundles': {
-        body: {
-          items: [
-            {
-              id: 'wseb_1',
-              workspaceId: 'ws_demo',
-              lifecycleRecordIds: ['wrr_1', 'wom_1'],
-              evidenceBundleIds: ['evb_workspace_materialization_wmr_1'],
-              backendEvidenceRefs: [{ kind: 'backend.openshell', ref: 'session/session_1/output' }],
-              redactedEvidenceManifest: [
-                {
-                  kind: 'worker-log',
-                  ref: 'evidence/workspace-sync/wseb_1/log',
-                  digest: 'sha256:log',
-                  bytes: 42,
-                },
-              ],
-              contentDigests: ['sha256:bundle'],
-              retentionClass: 'workspace-audit',
-              createdAt: timestamp,
-            },
-          ],
-        },
-      },
       'GET /api/app/workspaces/ws_demo/workspace-sync/apply-results': {
         body: { items: [workspaceApplyResult()] },
       },
@@ -1871,9 +1850,6 @@ describe('createCoreClient', () => {
     await expect(client.app.listWorkspaceQuarantineRecords('ws_demo')).resolves.toMatchObject({
       items: [{ id: 'wqr_1', failureKind: 'digest_mismatch', resolution: 'pending' }],
     });
-    await expect(client.app.listWorkspaceSyncEvidenceBundles('ws_demo')).resolves.toMatchObject({
-      items: [{ id: 'wseb_1', evidenceBundleIds: ['evb_workspace_materialization_wmr_1'] }],
-    });
     await expect(client.app.listWorkspaceApplyResults('ws_demo')).resolves.toEqual({
       items: [workspaceApplyResult()],
     });
@@ -1924,7 +1900,6 @@ describe('createCoreClient', () => {
       'GET /api/app/workspaces/ws_demo/workspace-sync/apply-plans',
       'GET /api/app/workspaces/ws_demo/workspace-sync/reconciliation-records',
       'GET /api/app/workspaces/ws_demo/workspace-sync/quarantine-records',
-      'GET /api/app/workspaces/ws_demo/workspace-sync/evidence-bundles',
       'GET /api/app/workspaces/ws_demo/workspace-sync/apply-results',
       'GET /api/app/workspaces/ws_demo/workspace-sync/apply-results/war_swr_1',
       'GET /api/app/workspaces/ws_demo/agent-environment/snapshots',
@@ -2928,9 +2903,6 @@ describe('createCoreClient', () => {
       'GET /api/app/workspaces/ws_demo/capability-usage': {
         body: capabilityUsageResponse(),
       },
-      'POST /api/app/workspaces/ws_demo/evidence-bundles': {
-        body: createEvidenceBundleResponse(),
-      },
       'GET /api/app/workspaces/ws_demo/evidence-bundles': {
         body: workspaceEvidenceBundlesResponse(),
       },
@@ -3012,13 +2984,6 @@ describe('createCoreClient', () => {
     await expect(client.app.getCapabilityUsage('ws_demo')).resolves.toEqual(
       capabilityUsageResponse()
     );
-    await expect(
-      client.app.createEvidenceBundle('ws_demo', {
-        goalId: 'goal_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
-      })
-    ).resolves.toEqual(createEvidenceBundleResponse());
     await expect(client.app.listWorkspaceEvidenceBundles('ws_demo')).resolves.toEqual(
       workspaceEvidenceBundlesResponse()
     );
@@ -3307,7 +3272,6 @@ describe('createCoreClient', () => {
       'GET /api/app/workspaces/ws_demo/vault/use-records',
       'GET /api/app/vault/use-records',
       'GET /api/app/workspaces/ws_demo/capability-usage',
-      'POST /api/app/workspaces/ws_demo/evidence-bundles',
       'GET /api/app/workspaces/ws_demo/evidence-bundles',
       'GET /api/app/workspaces/ws_demo/runtime-evidence',
       'GET /api/app/workspaces/ws_demo/audit/events',
@@ -4119,6 +4083,23 @@ describe('createCoreClient', () => {
     await expect(client.app.getThreadGoalSummary('ws_demo', 'th_demo')).rejects.toBeInstanceOf(
       ProtocolValidationError
     );
+  });
+
+  it('rejects raw native runtime refs in capability usage', async () => {
+    for (const [field, value] of [
+      ['runtimeOriginRef', 'native_thread_0190'],
+      ['runtimeCacheLineageRef', 'native_cache_0190'],
+    ] as const) {
+      const payload = capabilityUsageResponse();
+      payload.capabilityCalls[0] = { ...payload.capabilityCalls[0], [field]: value };
+      const { client } = createFakeClient({
+        'GET /api/app/workspaces/ws_demo/capability-usage': { body: payload },
+      });
+
+      await expect(client.app.getCapabilityUsage('ws_demo')).rejects.toBeInstanceOf(
+        ProtocolValidationError
+      );
+    }
   });
 
   it('uses strict diagnostics and OAuth schemas without unsupported response shapes', async () => {

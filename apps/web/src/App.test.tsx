@@ -1628,7 +1628,7 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
           backend: {
             kind: 'openshell',
             health: 'ready',
-            controlMode: 'sidecar',
+            controlMode: 'direct-nanocore',
             control: {
               heartbeat: {
                 status: 'running',
@@ -2604,7 +2604,6 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
       listWorkspaceApplyPlans: async () => ({ items: [] }),
       listWorkspaceReconciliationRecords: async () => ({ items: [] }),
       listWorkspaceQuarantineRecords: async () => ({ items: [] }),
-      listWorkspaceSyncEvidenceBundles: async () => ({ items: [] }),
       listWorkspaceApplyResults: async () => ({ items: [] }),
       getWorkspaceApplyResult: async () => {
         throw new Error('Workspace apply result fixture not found.');
@@ -2650,9 +2649,6 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
         capabilityCalls: [],
         usageRecords: [],
       }),
-      createEvidenceBundle: async () => {
-        throw new Error('Evidence bundle fixture not configured.');
-      },
       listWorkspaceEvidenceBundles: async (workspaceId) => ({ evidenceBundles: [], workspaceId }),
       listWorkspaceRuntimeEvidence: async (workspaceId) => ({ runtimeEvidence: [], workspaceId }),
       listWorkspaceAuditEvents: async (workspaceId) => ({ auditEvents: [], workspaceId }),

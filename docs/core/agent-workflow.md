@@ -4,7 +4,7 @@ Status: Accepted
 
 This document owns the Core workflow mechanisms used to coordinate worker-agent work.
 
-This document does not own user-facing work vocabulary, agent runtime substrate, agent session continuity, agent supply, agent capability routing, protocol record schemas, channel-specific MCP behavior, Skill implementation, App API endpoints, storage schemas, UI components, or agent-private task graphs.
+This document does not own user-facing work vocabulary, agent runtime substrate, agent session continuity, agent supply, agent capability routing, protocol record schemas, channel-specific Agent Skill Interface behavior, Skill implementation, App API endpoints, storage schemas, UI components, or agent-private task graphs.
 
 `Agent Workflow` is the Core-owned mechanism layer for composing planned, bounded, reviewable, resumable worker-agent work.
 
@@ -24,7 +24,7 @@ Workspace -> Thread -> Turn -> Item[]
 
 Agent workflow organizes that backbone into reusable mechanisms.
 
-Goal Mode and the current loop Skills are OpenKit's default workflow setup over those mechanisms. They are optimized for low-configuration, reviewable worker-agent work, but they are not the only valid workflow shape.
+Goal Mode and the accepted unified `openkit` Skill's loop recipe are OpenKit's default workflow setup over those mechanisms. They are optimized for low-configuration, reviewable worker-agent work, but they are not the only valid workflow shape.
 
 ## Principles
 
@@ -34,7 +34,7 @@ Goal Mode and the current loop Skills are OpenKit's default workflow setup over 
 - Keep the default backbone small. Use workspace, thread, turn, item, artifact, approval, and agent session records before promoting richer workflow objects.
 - Move work forward in bounded, reviewable steps. A worker step should produce observable items, artifacts, evidence, pending human attention, or a terminal state before the next step begins.
 - Keep human decisions explicit. Plan approval, user input, sensitive action approval, review, retry, refinement, acceptance, and stop decisions must be visible and auditable.
-- Treat channels as projections. Web UI, MCP, Skills, desktop apps, and future integrations may operate the same workflow mechanisms, but they do not redefine them.
+- Treat channels as projections. Web UI, the unified end-user Agent Skill Interface, desktop apps, automations, and future integrations may operate the same workflow mechanisms, but they do not redefine them.
 - Keep agent-private loops private until Core needs them. Tool retries, model self-reflection, private planner traces, and runtime-native task graphs should not become core records unless Core must schedule, retry, show, approve, audit, or attach artifacts to them.
 - Make graph semantics earned. Dependencies, attempts, branches, joins, and lineage should be promoted only after real workflows require them beyond item causality and normal turn structure.
 - Avoid a `Core Agent` concept by default. Workflow orchestration is a Core responsibility, not a separate canonical agent unless a future design proves that abstraction is necessary.
@@ -97,7 +97,7 @@ Agent workflow owns:
 - workflow mode and recipe composition boundaries
 - default workflow setup semantics
 - planning, plan approval, bounded step, gate, decision, evidence, checkpoint, context compaction, handoff, retry, refinement, stop, and closeout semantics
-- the relationship between workflow mechanisms, current Goal Mode, loop Skills, MCP operation, worker execution, artifacts, evidence, and review
+- the relationship between workflow mechanisms, current Goal Mode, the unified Agent Skill loop recipe, worker execution, artifacts, evidence, and review
 - the boundary for future dynamic workflow and graph semantics
 - the rule that prevents premature `TaskRun`-style core concepts
 
@@ -109,7 +109,7 @@ Agent workflow does not own:
 - agent catalogs, setup contracts, and profile supply, which belong to `agent-supply.md`
 - LLM, MCP, tool, network, credential, context, usage, and rate-limit supply for worker agents, which belongs to `agent-capability.md`
 - protocol schemas, commands, events, and lifecycle enum definitions, which belong to `protocol.md` and `communication.md`
-- Action Center response fields, MCP tool arguments, Skill file contents, Web UI components, database tables, or route paths
+- Action Center response fields, channel operation arguments, Skill file contents, Web UI components, database tables, or route paths
 - agent-private planning, hidden chain-of-thought, tool retry traces, runtime-native task graphs, or provider-native workflow representations
 - a single mandatory workflow shape that every user or workspace must follow
 
@@ -178,7 +178,7 @@ Goal Mode
   + one bounded worker step at a time
   + Action Center projections for human attention
   + artifacts and evidence bundles for review
-  + loop Skills that guide low-configuration operation
+  + the unified openkit Skill loop recipe for low-configuration operation
 ```
 
 This setup is recommended when the user wants reviewable worker-agent work without custom workflow configuration.
@@ -195,7 +195,7 @@ It binds a thread to an objective, optional planning, bounded steps, review stat
 
 Goal Mode must not become a hidden autonomous loop. It should advance through explicit gates, bounded worker steps, visible review state, and human decisions.
 
-Goal Mode may be operated by Web UI, MCP, Skills, desktop channels, automations, or future integrations, but NanoCore remains the source of truth for Goal Mode state.
+Goal Mode may be operated by Web UI, the unified end-user Agent Skill Interface, desktop channels, automations, or future integrations, but NanoCore remains the source of truth for Goal Mode state.
 
 ## Chat And Task Modes
 
@@ -275,17 +275,17 @@ Action Center is an App API and product-surface projection over pending human at
 
 The canonical workflow state remains item-backed, objective-backed, approval-backed, artifact-backed, review-backed, evidence-backed, checkpoint-backed, and audit-backed records owned by Core.
 
-## Skills And MCP Loop Projection
+## Agent Skill Loop Projection
 
-OpenKit Skills and the user-facing MCP server can operate Agent Workflow mechanisms.
+The unified end-user `openkit` Skill and its bundled CLI can operate Agent Workflow mechanisms through governed public NanoCore contracts.
 
-They may provide setup guidance, safe workflow policy, tool ordering, review expectations, and recovery playbooks.
+The Skill may provide setup guidance, safe workflow policy, operation ordering, review expectations, and recovery playbooks through progressive disclosure.
 
 They do not own workflow state and must not bypass Core-owned workflow mechanisms, approval gates, user-input gates, artifacts, evidence, repository readiness, human decisions, or App API Action Center projections.
 
-The user-facing MCP server is a channel facade over public Core or App API contracts. It is separate from worker-side MCP capability supply, which belongs to Agent Capability.
+The bundled CLI is a deterministic channel facade over public Core or App API contracts. It is separate from planned worker-side MCP capability supply, which belongs to Agent Capability.
 
-The current loop Skills are workflow recipes for the default setup. They should drive one bounded step at a time, read workflow state after each step, present evidence, and ask the human before continuing when a gate or external side effect is involved.
+The Skill's loop guidance is a workflow recipe for the default setup. It should drive one bounded step at a time, read workflow state after each step, present evidence, and ask the human before continuing when a gate or external side effect is involved.
 
 ## Dynamic Workflow And Graph Semantics
 
@@ -358,7 +358,7 @@ If a future graph is promoted, it should be designed around explicit workflow an
 
 ## Default Setup Projection
 
-The built-in default setup may combine Goal Mode, optional plan review, bounded worker steps, Action Center projections, artifacts, evidence bundles, workspace review and apply records, and MCP-first loop operation.
+The built-in default setup may combine Goal Mode, optional plan review, bounded worker steps, Action Center projections, artifacts, evidence bundles, workspace review and apply records, and end-user Agent Skill loop operation.
 
 That setup is a recommended composition of Core workflow mechanisms, not the definition of Agent Workflow itself.
 

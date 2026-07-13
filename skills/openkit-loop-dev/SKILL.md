@@ -29,7 +29,7 @@ Use a remote verifier server only when the loop needs server-mode proof, indepen
 
 ## Required Context
 
-Read `AGENTS.md`, `skills/AGENTS.md`, `docs/change-tracking.md`, `docs/specs/20260617-openkit_ai_interface.md`, and `docs/specs/20260627-openkit_development_loop_protocol.md` before changing repository files.
+Read `AGENTS.md`, `skills/README.md`, `skills/AGENTS.md`, `docs/change-tracking.md`, and `docs/specs/20260713-openkit_agent_skill_interface.md` before changing repository files. This legacy Skill is removal-only, and its former developer-loop protocol is retained only as history at `docs/specs/retired/20260627-openkit_development_loop_protocol.md`.
 
 Keep repository text in English.
 
@@ -101,7 +101,7 @@ Call `openkit.draft_goal_plan`, present the plan, and wait for explicit human ap
 
 Call `openkit.step_goal` once.
 
-After every worker step, call `openkit.read_goal`, `openkit.read_action_center`, `openkit.read_workspace_reviews`, and relevant `openkit.read_thread`, `openkit.read_artifact`, or `openkit.create_evidence_bundle`.
+After every worker step, call `openkit.read_goal`, `openkit.read_action_center`, `openkit.read_workspace_reviews`, and relevant `openkit.read_thread` or `openkit.read_artifact` tools, then inspect `openkit://workspaces/{workspaceId}/evidence-bundles` when automatic evidence applies.
 
 Ask the human whether to continue, steer, refine, reject, accept, or stop.
 

@@ -35,7 +35,7 @@ Implementation: Implemented
 
 OpenKit already has the correct security model for worker credentials: workers should consume tools, providers, local files, or endpoints, while NanoCore owns vault resolution, grants, injection records, receipts, and audit.
 
-The current implementation proves the path through narrow hard-coded cases: GitHub MCP provider attachment, Codex auth JSON runtime-file upload, worker MCP gateway credentials, and host-side Git push.
+The current implementation proves the path through narrow cases: sandbox-provider attachment, Codex auth JSON runtime-file upload, and host-side Git push. Worker MCP gateway credentials are not current because the worker capability plane is disabled.
 
 This spec generalizes the worker launch-time credential path without adding a new secret system.
 
@@ -247,7 +247,7 @@ In all cases, `VaultReference`, `VaultGrant`, `InjectionPlan`, `InjectionReceipt
 
 ### Public Surface Rules
 
-App API, MCP, Web, exported package snapshots, and diagnostic readback MAY expose declaration id, visibility, grant id, redacted reference id, target path, target environment variable name, provider instance id, provider type, plan id, receipt id, status, revocation status, and audit event id.
+App API, end-user CLI, Web, exported package snapshots, and diagnostic readback MAY expose declaration id, visibility, grant id, redacted reference id, target path, target environment variable name, provider instance id, provider type, plan id, receipt id, status, revocation status, and audit event id.
 
 They MUST NOT expose secret values, provider placeholder values, authorization headers, raw credential file contents, host temporary paths, raw backend provider handles, or unrestricted OpenShell provider output.
 
@@ -387,7 +387,7 @@ The next step should be one shared declaration resolver.
 5. Convert the existing Codex auth JSON path to a generated `runtime-file` declaration.
 6. Add generic runtime-file and runtime-env tests with non-GitHub, non-Codex fixture credentials.
 7. Add generic sandbox-provider tests using a built-in or generic OpenShell provider fixture.
-8. Update App API, Core Client, MCP, and readback surfaces only where existing redacted AEP or vault read models need to display generic declaration metadata.
+8. Update App API, Core Client, end-user operation-catalog, and readback surfaces only where existing redacted AEP or vault read models need to display generic declaration metadata.
 9. Remove replaced hard-coded helper paths in the same change.
 
 ## Testing Strategy / Acceptance Criteria
@@ -396,7 +396,7 @@ The next step should be one shared declaration resolver.
 - L1 resolver tests prove invalid grants fail before materialization, expired grants fail closed, inactive references fail closed, disallowed visibility fails closed, and successful declarations create plan, receipt, and vault-use records.
 - L1 redaction tests prove secret values, provider placeholder values, host temporary paths, and raw credential file contents are absent from AEP snapshots and product-safe materialization records.
 - L1 OpenShell backend tests prove provider credentials are upserted before sandbox creation, runtime files are uploaded through backend-private temporary files, runtime env values are merged only into sandbox env, and none of those values appear in returned materialization summaries.
-- L2 contract tests prove the generated schemas and OpenAPI or MCP projections expose only non-secret metadata when those surfaces are updated.
+- L2 contract tests prove the generated schemas, OpenAPI, and end-user CLI projections expose only non-secret metadata when those surfaces are updated.
 - L3 NanoCore black-box tests prove a worker package can launch with one generic sandbox-provider credential and one generic runtime-file credential through a deterministic OpenShell stub.
 - L6 story acceptance can later prove a real OpenShell sandbox uses a provider placeholder to call an external HTTP API while NanoCore records the plan, receipt, vault-use, and redacted evidence chain.
 

@@ -285,6 +285,13 @@ export interface TurnStartRuntimeContext {
     /** Backend capabilities required by the authored setup. */
     requiredCapabilities: AgentEnvironmentPackage['backend']['requiredCapabilities'];
   };
+  /** Immutable provider and model selection resolved from the authored agent setup. */
+  providerSelection?: {
+    /** Model selected for this worker turn. */
+    model: string | null;
+    /** NanoCore provider instance selected for this worker turn. */
+    providerId: string;
+  };
   /** Materialized workspace roots captured from the effective config snapshot. */
   workspaceRoots: MaterializedWorkspaceRoot[];
   /** Optional workspace data source catalog captured for sourceRef-backed roots. */

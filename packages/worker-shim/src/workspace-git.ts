@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstat, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, readFile, readlink, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 
 import type { WorkerLineage } from './transcript.js';
@@ -358,7 +358,7 @@ async function unstagedCandidatePaths(cwd: string, sessionDir: string): Promise<
   );
   // ponytail: this fail-closed parser avoids clean filters; use a native index parser if Git changes the format.
   const pattern =
-    /(\d{6}) (?:[0-9a-f]{40}|[0-9a-f]{64}) ([0-3])\t([^\0]*)\0 {2}ctime: (\d+):(\d+)\n {2}mtime: (\d+):(\d+)\n {2}dev: (\d+)\tino: (\d+)\n {2}uid: (\d+)\tgid: (\d+)\n {2}size: (\d+)\tflags: \d+\n/g;
+    /(\d{6}) ([0-9a-f]{40}|[0-9a-f]{64}) ([0-3])\t([^\0]*)\0 {2}ctime: (\d+):(\d+)\n {2}mtime: (\d+):(\d+)\n {2}dev: (\d+)\tino: (\d+)\n {2}uid: (\d+)\tgid: (\d+)\n {2}size: (\d+)\tflags: \d+\n/g;
   const candidates: string[] = [];
   let consumed = 0;
 
@@ -367,8 +367,8 @@ async function unstagedCandidatePaths(cwd: string, sessionDir: string): Promise<
       throw new Error('Git workspace index stat metadata is invalid.');
     }
     consumed = pattern.lastIndex;
-    const [mode, stage, path] = match.slice(1, 4);
-    if (!mode || !stage || !path || stage !== '0') {
+    const [mode, objectId, stage, path] = match.slice(1, 5);
+    if (!mode || !objectId || !stage || !path || stage !== '0') {
       throw new Error('Git workspace index stat metadata is invalid.');
     }
     const root = resolve(cwd);
@@ -384,8 +384,8 @@ async function unstagedCandidatePaths(cwd: string, sessionDir: string): Promise<
 
     try {
       const stat = await lstat(target, { bigint: true });
-      const expectedCtime = BigInt(match[4] ?? '') * 1_000_000_000n + BigInt(match[5] ?? '');
-      const expectedMtime = BigInt(match[6] ?? '') * 1_000_000_000n + BigInt(match[7] ?? '');
+      const expectedCtime = BigInt(match[5] ?? '') * 1_000_000_000n + BigInt(match[6] ?? '');
+      const expectedMtime = BigInt(match[7] ?? '') * 1_000_000_000n + BigInt(match[8] ?? '');
       const sameType =
         (mode.startsWith('100') && stat.isFile()) ||
         (mode === '120000' && stat.isSymbolicLink()) ||
@@ -397,13 +397,31 @@ async function unstagedCandidatePaths(cwd: string, sessionDir: string): Promise<
       const sameMetadata =
         stat.ctimeNs === expectedCtime &&
         stat.mtimeNs === expectedMtime &&
-        BigInt.asUintN(32, stat.dev) === BigInt(match[8] ?? '') &&
-        BigInt.asUintN(32, stat.ino) === BigInt(match[9] ?? '') &&
-        BigInt.asUintN(32, stat.uid) === BigInt(match[10] ?? '') &&
-        BigInt.asUintN(32, stat.gid) === BigInt(match[11] ?? '') &&
-        BigInt.asUintN(32, stat.size) === BigInt(match[12] ?? '');
-      if (!sameType || !sameExecutable || !sameMetadata) {
+        BigInt.asUintN(32, stat.dev) === BigInt(match[9] ?? '') &&
+        BigInt.asUintN(32, stat.ino) === BigInt(match[10] ?? '') &&
+        BigInt.asUintN(32, stat.uid) === BigInt(match[11] ?? '') &&
+        BigInt.asUintN(32, stat.gid) === BigInt(match[12] ?? '') &&
+        BigInt.asUintN(32, stat.size) === BigInt(match[13] ?? '');
+      if (!sameType || !sameExecutable) {
         candidates.push(path);
+        continue;
+      }
+      if (!sameMetadata) {
+        if (mode === '160000') {
+          candidates.push(path);
+          continue;
+        }
+        const content =
+          mode === '120000' ? Buffer.from(await readlink(target)) : await readFile(target);
+        const algorithm = objectId.length === 40 ? 'sha1' : 'sha256';
+        const actualObjectId = createHash(algorithm)
+          .update(`blob ${content.byteLength}\0`)
+          .update(content)
+          .digest('hex');
+
+        if (actualObjectId !== objectId) {
+          candidates.push(path);
+        }
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {

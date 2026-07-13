@@ -412,7 +412,11 @@ describe('internalAgentLoop', () => {
   });
 
   it('emits budget_exhausted terminal events for timeouts', async () => {
-    const effects = createLoopEffects(async () => new Promise(() => undefined));
+    let providerSignal: AbortSignal | undefined;
+    const effects = createLoopEffects(async ({ signal }) => {
+      providerSignal = signal;
+      return new Promise(() => undefined);
+    });
 
     const events = await collectAsync(
       internalAgentLoop(
@@ -447,6 +451,243 @@ describe('internalAgentLoop', () => {
       stopReason: 'budget_exhausted',
       errorMessage: 'TimeoutLoopTestAgent timed out after 1ms.',
     });
+    expect(providerSignal?.aborted).toBe(true);
+  });
+
+  it('aborts the in-flight provider signal while preserving caller-aborted terminal events', async () => {
+    const abortController = new AbortController();
+    let providerSignal: AbortSignal | undefined;
+    let markProviderStarted: (() => void) | undefined;
+    const providerStarted = new Promise<void>((resolve) => {
+      markProviderStarted = resolve;
+    });
+    const effects = createLoopEffects(async ({ signal }) => {
+      providerSignal = signal;
+      markProviderStarted?.();
+      return new Promise(() => undefined);
+    });
+    const eventsPromise = collectAsync(
+      internalAgentLoop(
+        {
+          definition: QUICK_CHAT_AGENT_DEFINITION,
+          input: {
+            agentId: QUICK_CHAT_AGENT_ID,
+            messages: [{ role: 'user', content: 'Say hello.' }],
+          },
+          model: 'llama3.2',
+          providerId: 'ollama',
+          signal: abortController.signal,
+        },
+        effects
+      )
+    );
+
+    await providerStarted;
+    expect(providerSignal?.aborted).toBe(false);
+    abortController.abort();
+
+    const events = await eventsPromise;
+
+    expect(providerSignal?.aborted).toBe(true);
+    expect(events.slice(-2)).toEqual([
+      expect.objectContaining({
+        eventType: 'turn_end',
+        status: 'aborted',
+        stopReason: 'aborted',
+        errorMessage: 'Internal agent loop was aborted.',
+      }),
+      expect.objectContaining({
+        eventType: 'agent_end',
+        status: 'aborted',
+        stopReason: 'aborted',
+        errorMessage: 'Internal agent loop was aborted.',
+      }),
+    ]);
+  });
+
+  it('aborts a timed-out streaming provider signal while preserving budget terminal events', async () => {
+    let providerSignal: AbortSignal | undefined;
+    const effects: InternalAgentLoopEffects = {
+      ...createLoopEffects(async () => {
+        throw new Error('non-streaming provider should not be called');
+      }),
+      callProviderStream: async function* ({ signal }) {
+        providerSignal = signal;
+        await new Promise(() => undefined);
+      },
+    };
+
+    const events = await collectAsync(
+      internalAgentLoop(
+        {
+          definition: TIMEOUT_AGENT_DEFINITION,
+          input: {
+            agentId: TIMEOUT_AGENT_DEFINITION.id,
+            messages: [{ role: 'user', content: 'Say hello.' }],
+          },
+          model: 'llama3.2',
+          providerId: 'ollama',
+          stream: true,
+        },
+        effects
+      )
+    );
+
+    expect(providerSignal?.aborted).toBe(true);
+    expect(events.slice(-2)).toEqual([
+      expect.objectContaining({
+        eventType: 'turn_end',
+        status: 'error',
+        stopReason: 'budget_exhausted',
+        errorMessage: 'TimeoutLoopTestAgent timed out after 1ms.',
+      }),
+      expect.objectContaining({
+        eventType: 'agent_end',
+        status: 'error',
+        stopReason: 'budget_exhausted',
+        errorMessage: 'TimeoutLoopTestAgent timed out after 1ms.',
+      }),
+    ]);
+  });
+
+  it('aborts an in-flight streaming provider signal while preserving caller-aborted terminal events', async () => {
+    const abortController = new AbortController();
+    let providerSignal: AbortSignal | undefined;
+    let markProviderStarted: (() => void) | undefined;
+    const providerStarted = new Promise<void>((resolve) => {
+      markProviderStarted = resolve;
+    });
+    const effects: InternalAgentLoopEffects = {
+      ...createLoopEffects(async () => {
+        throw new Error('non-streaming provider should not be called');
+      }),
+      callProviderStream: async function* ({ signal }) {
+        providerSignal = signal;
+        markProviderStarted?.();
+        await new Promise(() => undefined);
+      },
+    };
+    const eventsPromise = collectAsync(
+      internalAgentLoop(
+        {
+          definition: QUICK_CHAT_AGENT_DEFINITION,
+          input: {
+            agentId: QUICK_CHAT_AGENT_ID,
+            messages: [{ role: 'user', content: 'Say hello.' }],
+          },
+          model: 'llama3.2',
+          providerId: 'ollama',
+          signal: abortController.signal,
+          stream: true,
+        },
+        effects
+      )
+    );
+
+    await providerStarted;
+    expect(providerSignal?.aborted).toBe(false);
+    abortController.abort();
+
+    const events = await eventsPromise;
+
+    expect(providerSignal?.aborted).toBe(true);
+    expect(events.slice(-2)).toEqual([
+      expect.objectContaining({
+        eventType: 'turn_end',
+        status: 'aborted',
+        stopReason: 'aborted',
+        errorMessage: 'Internal agent loop was aborted.',
+      }),
+      expect.objectContaining({
+        eventType: 'agent_end',
+        status: 'aborted',
+        stopReason: 'aborted',
+        errorMessage: 'Internal agent loop was aborted.',
+      }),
+    ]);
+  });
+
+  it.each([
+    'timeout',
+    'caller abort',
+  ] as const)('closes a late stream iterator exactly once after %s wins stream creation', async (termination) => {
+    const abortController = new AbortController();
+    const definition =
+      termination === 'timeout' ? TIMEOUT_AGENT_DEFINITION : QUICK_CHAT_AGENT_DEFINITION;
+    let markProviderStarted: (() => void) | undefined;
+    let resolveProviderStream:
+      | ((stream: AsyncIterable<{ readonly delta: string }>) => void)
+      | undefined;
+    let returnCalls = 0;
+    const providerStarted = new Promise<void>((resolve) => {
+      markProviderStarted = resolve;
+    });
+    const providerStream = new Promise<AsyncIterable<{ readonly delta: string }>>((resolve) => {
+      resolveProviderStream = resolve;
+    });
+    const effects: InternalAgentLoopEffects = {
+      ...createLoopEffects(async () => {
+        throw new Error('non-streaming provider should not be called');
+      }),
+      callProviderStream: () => {
+        markProviderStarted?.();
+        return providerStream;
+      },
+    };
+    const eventsPromise = collectAsync(
+      internalAgentLoop(
+        {
+          definition,
+          input: {
+            agentId: definition.id,
+            messages: [{ role: 'user', content: 'Wait for stream creation.' }],
+          },
+          model: 'llama3.2',
+          providerId: 'ollama',
+          ...(termination === 'caller abort' ? { signal: abortController.signal } : {}),
+          stream: true,
+        },
+        effects
+      )
+    );
+
+    await providerStarted;
+    if (termination === 'caller abort') {
+      abortController.abort();
+    }
+    const events = await eventsPromise;
+    const terminal =
+      termination === 'timeout'
+        ? {
+            status: 'error',
+            stopReason: 'budget_exhausted',
+            errorMessage: 'TimeoutLoopTestAgent timed out after 1ms.',
+          }
+        : {
+            status: 'aborted',
+            stopReason: 'aborted',
+            errorMessage: 'Internal agent loop was aborted.',
+          };
+
+    expect(events.slice(-2)).toEqual([
+      expect.objectContaining({ eventType: 'turn_end', ...terminal }),
+      expect.objectContaining({ eventType: 'agent_end', ...terminal }),
+    ]);
+
+    resolveProviderStream?.({
+      [Symbol.asyncIterator]() {
+        return {
+          next: async () => ({ done: true, value: undefined }),
+          return: async () => {
+            returnCalls += 1;
+            return { done: true, value: undefined };
+          },
+        };
+      },
+    });
+    await Promise.resolve();
+
+    expect(returnCalls).toBe(1);
   });
 
   it('emits aborted terminal events for abort signals', async () => {

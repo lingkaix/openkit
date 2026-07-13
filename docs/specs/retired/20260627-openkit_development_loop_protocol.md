@@ -1,7 +1,18 @@
 # OpenKit Development Loop Protocol
 
-Status: Accepted
-Implementation: Implemented
+Status: Retired
+Implementation: N/A
+Status Changed: 2026-07-13
+Current Guidance: None
+Decision Evidence: `docs/changes/202607131935040001-openkit_agent_skill_interface.md`
+
+## Lifecycle Reason
+
+OpenKit no longer treats repository-developer setup, OpenKit self-improvement coordination, or a developer-specific Skill as a user-facing product scenario. The unified `openkit` Skill is explicitly end-user-only, and normal repository development continues under repository governance, tests, change records, and implementation workflows rather than a product channel contract. Because the developer-loop product capability ended instead of continuing under the end-user Skill, this specification is retired rather than superseded.
+
+## Retention Reason
+
+This document preserves the former local-first coordinator topology, optional remote-verifier model, review gates, restart discipline, bypass classification, and GitHub synchronization rules. Those details remain useful historical evidence for interpreting earlier dogfood work and MCP stories, but they no longer define a supported Skill audience or current development protocol.
 
 ## Owns
 

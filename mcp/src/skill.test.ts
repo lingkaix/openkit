@@ -31,6 +31,8 @@ describe('OpenKit Skill artifacts', () => {
     expect(skill).toContain('openkit.read_runtime_diagnostics');
     expect(skill).toContain('openkit.read_action_center');
     expect(skill).toContain('openkit.read_workspace_reviews');
+    expect(skill).toContain('openkit://workspaces/{workspaceId}/evidence-bundles');
+    expect(skill).not.toContain('openkit.create_evidence_bundle');
     expect(skill).toContain('Do not implement unattended recursive self-modification.');
   });
 
@@ -56,6 +58,8 @@ describe('OpenKit Skill artifacts', () => {
     expect(skill).toContain('openkit.read_runtime_diagnostics');
     expect(skill).toContain('openkit.read_action_center');
     expect(skill).toContain('openkit.read_workspace_reviews');
+    expect(skill).toContain('openkit://workspaces/{workspaceId}/evidence-bundles');
+    expect(skill).not.toContain('openkit.create_evidence_bundle');
     expect(skill).toContain(
       'Ask the human before approving plans, resolving Action Center rows, accepting results, rejecting results, extending budgets, spending provider quota, changing workspace files, calling external services, committing, pushing, publishing, deploying, or triggering external side effects.'
     );

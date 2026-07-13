@@ -17,13 +17,13 @@ It is a remote Worker Governance backend target that reuses the same Agent Envir
 
 NanoCore supports remote container placement through `OPENKIT_WORKER_RUNTIME=container`, `OPENKIT_CONTAINER_PLACEMENT=remote`, and `OPENKIT_CONTAINER_BACKEND=openshell`, and keeps local/server NanoCore mode separate from worker runtime placement.
 
-The accepted V1 implementation has configuration parsing, fail-closed diagnostics, deterministic deployment-mode tests, remote OpenShell target selection, worker-control relay configuration, scheduler-owned lineage, workspace synchronization evidence persistence, redacted backend workspace handles, workspace recovery records, Action Center recovery rows, vault-backed credential attachment, permission/audit linkage, and opt-in remote OpenShell verification paths. Deployment packaging, multi-gateway operations, richer remote health probing, and remote runtime gateway extraction remain future work rather than blockers for the V1 remote OpenShell placement contract.
+The accepted V1 implementation has configuration parsing, fail-closed diagnostics, deterministic deployment-mode tests, remote OpenShell target selection, direct worker-control configuration, scheduler-owned lineage, workspace synchronization evidence persistence, redacted backend workspace handles, workspace recovery records, Action Center recovery rows, vault-backed credential attachment, permission/audit linkage, and opt-in remote OpenShell verification paths. Deployment packaging, multi-gateway operations, richer remote health probing, and remote runtime gateway extraction remain future work rather than blockers for the V1 remote OpenShell placement contract.
 
 ## Owns
 
 - The remote OpenShell worker governance backend projection.
 - Remote placement architecture for OpenShell-managed worker containers.
-- Remote control relay, data transport, workspace materialization, evidence collection, and staged review boundaries.
+- Direct remote worker control, data transport, workspace materialization, evidence collection, and staged review boundaries.
 - Backend capability expectations for remote OpenShell placement.
 - The future extraction path toward a backend-neutral remote runtime gateway.
 
@@ -52,7 +52,7 @@ The accepted V1 implementation has configuration parsing, fail-closed diagnostic
 - Define the architecture for running agent workers in remote OpenShell-managed containers.
 - Keep NanoCore server mode as the source of truth for Goal Mode, worker lineage, workspace materialization records, change sets, artifacts, Action Center rows, and review decisions.
 - Make remote container placement a backend target under the Worker Governance boundary instead of a new product channel.
-- Reuse `control.local` semantics through a remote-safe relay path.
+- Use the same authenticated direct NanoCore worker-control contract for local and remote placement.
 - Reuse the workspace materialization and synchronization model from `docs/specs/20260703-workspace_synchronization.md`.
 - Preserve backend portability so future remote Docker, VM, Kubernetes, managed sandbox, or custom worker gateway implementations can share the same product semantics.
 
@@ -124,7 +124,7 @@ The remote OpenShell gateway owns:
 - backend policy enforcement
 - upload and download transport
 - gateway health and readiness
-- sandbox-local sidecar routing
+- direct worker-control endpoint routing
 - backend-native logs and audit files
 - backend-specific teardown
 
@@ -146,7 +146,7 @@ OPENKIT_CONTAINER_BACKEND=openshell
 OPENKIT_OPENSHELL_GATEWAY=...
 OPENKIT_OPENSHELL_GATEWAY_URL=...
 OPENKIT_OPENSHELL_WORKER_IMAGE=...
-OPENKIT_OPENSHELL_CONTROL_RELAY_UPSTREAM=https://<nanocore-public-or-tunnel>/api/worker-control
+OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=https://<nanocore-public-or-tunnel>/api/worker-control
 OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS='[...]'
 ```
 
@@ -157,7 +157,7 @@ The distinction is:
 - Container placement selects local or remote worker placement
 - Container backend selects the remote runtime implementation
 - gateway URL selects the remote OpenShell control plane
-- control relay upstream selects the NanoCore worker-control route that the remote worker can reach
+- worker-control base URL selects the exact NanoCore route that the remote worker can reach
 - worker image selects the container runtime payload
 - extra endpoints declare explicit network policy additions
 
@@ -170,7 +170,7 @@ Conceptually:
 ```ts
 type OpenShellGatewayTarget =
   | { placement: 'local'; gatewayName: string }
-  | { placement: 'remote'; gatewayName: string; gatewayUrl: string; controlRelayUpstream: string };
+  | { placement: 'remote'; gatewayName: string; gatewayUrl: string; workerControlBaseUrl: string };
 ```
 
 The target is configuration and transport.
@@ -183,7 +183,7 @@ The backend capabilities should identify placement-sensitive capabilities such a
 - `filesystem-policy`
 - `network-policy`
 - `transcript-sink`
-- `sidecar-control-endpoint`
+- `worker-control`
 - `file-upload-download`
 - `git-materialization`
 - `change-set-collection`
@@ -197,15 +197,13 @@ If remote placement lacks a required capability, NanoCore should fail before lau
 
 ### Control Channel
 
-Remote workers should continue to see a sandbox-local control endpoint such as:
+Remote workers receive the exact worker-reachable NanoCore endpoint:
 
 ```text
-https://control.local/v1/worker-control
+https://<nanocore-public-or-tunnel>/api/worker-control
 ```
 
-The OpenShell sidecar or gateway routing layer maps `control.local` to the configured NanoCore worker-control upstream.
-
-The worker should not receive raw NanoCore internal addresses unless the address is explicitly intended to be worker-reachable.
+The configured URL must be explicitly intended for worker reachability, contain no credentials, and bind requests with the package-scoped control token. OpenShell network policy allows only the approved shim binaries to reach it. No sandbox-local alias, sidecar, gateway relay, or service-forwarding path is part of worker control.
 
 The control channel carries small worker events:
 
@@ -274,12 +272,12 @@ The package should include:
 - change-set output path
 - generated files and task files
 - transcript paths
-- control endpoint and relay metadata
+- direct control endpoint metadata
 - declared provider attachments
 - declared filesystem and network policy intent
 - redacted backend capability requirements
 
-OpenShell-specific ids and policy internals may live in backend evidence, but they should not be required by the App API, MCP, Web UI, or Action Center.
+OpenShell-specific ids and policy internals may live in backend evidence, but they should not be required by the App API, end-user CLI, Web UI, or Action Center.
 
 ### Remote Runtime Gateway Generalization
 
@@ -434,7 +432,7 @@ Useful tiers include:
 
 NanoCore should select a backend only when the requested task and workspace strategy can be satisfied by the backend's declared tier.
 
-If a backend is missing a required tier, NanoCore should fail before launch with a clear, redacted diagnostic and suggested fallback.
+If a backend is missing a required tier, NanoCore should fail before launch with a clear, redacted diagnostic.
 
 ### Worker Placement And Scheduling
 
@@ -555,7 +553,7 @@ The expected evolution is:
 ## Risks & Mitigations
 
 - Risk: remote backend transport becomes product state. Mitigation: normalize backend results into NanoCore-owned records and expose only redacted summaries publicly.
-- Risk: remote workers cannot reach NanoCore worker-control routes. Mitigation: make control relay upstream explicit and verify it in preflight before launch.
+- Risk: remote workers cannot reach NanoCore worker-control routes. Mitigation: make the exact direct base URL explicit and verify reachability, authentication, and OpenShell binary policy in preflight before launch.
 - Risk: workspace sync bypasses review. Mitigation: require change-set collection and staged review before apply.
 - Risk: credentials leak through package snapshots or logs. Mitigation: use provider attachments, placeholders, redaction, and tests that reject raw secret shapes.
 - Risk: OpenShell-specific assumptions block future backends. Mitigation: keep OpenShell as the first adapter under a capability-based backend target model.
@@ -578,8 +576,7 @@ The expected evolution is:
 
 - `docs/specs/20260703-workspace_synchronization.md`
 - `docs/specs/20260616-agent_environment_package.md`
-- `docs/specs/20260627-openkit_development_loop_protocol.md`
-- `docs/specs/20260617-openkit_ai_interface.md`
+- `docs/specs/20260713-openkit_agent_skill_interface.md`
 - `docs/specs/20260531-worker_turn_reliability_envelope.md`
 - `docs/specs/20260531-human_attention_intervention_model.md`
 - `docs/core/architecture.md`

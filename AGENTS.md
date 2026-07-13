@@ -9,8 +9,9 @@ This file is the concise execution rulebook for agents working in this repositor
 - Agents execute well-scoped work end-to-end.
 - Engineers own architecture, trade-offs, and final approval.
 - Prefer explicit rules over tribal knowledge.
-- Current product development is MCP-first and NanoCore-first: use external coordinator agents through `@openkit/mcp` to dogfood the system, discover gaps, and harden the kernel before treating the Web UI as the primary product build surface.
-- Stabilize core behavior in protocol, schemas, NanoCore, public App API, and MCP contracts first. Reflect that stable behavior in the Web UI after the kernel contract is reliable instead of using UI work as the default starting point for core behavior.
+- Current product development is NanoCore-first and end-user Agent-Skill-first: harden the kernel through public App API contracts, then project the complete supported user/operator surface through the unified `openkit` Skill and its bundled CLI before treating the Web UI as the primary product build surface.
+- The user-facing `@openkit/mcp` package and the four legacy setup/loop Skills are removal-only. Do not add capabilities, compatibility layers, aliases, or new consumers to those surfaces; new AI-interface work belongs to the transport-neutral operation catalog, bundled CLI, and unified end-user Skill defined by `docs/specs/20260713-openkit_agent_skill_interface.md`.
+- Stabilize core behavior in protocol, schemas, NanoCore, public App API, and transport-neutral Agent Skill Interface contracts first. Reflect that stable behavior in the unified Skill and Web UI after the kernel contract is reliable instead of using either presentation surface as the source of core behavior.
 - Testing follows the accepted L0-L6 model: L0 static repo checks, L1 package and app unit tests, L2 contract and conformance tests, L3 NanoCore black-box e2e, L4 Web browser e2e, L5 smoke and artifact health tests, and L6 story acceptance. Keep L6 agent-first, keep deterministic adapters only where useful, and reduce confirmed L6 defects into L1-L5 regression coverage.
 - Current protocol design is being advanced by keeping `packages/protocol`, `apps/nanocore`, and `apps/web` structurally aligned.
 - Default protocol iteration follows one of two paths:

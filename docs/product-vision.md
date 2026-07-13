@@ -5,7 +5,7 @@ Date: 2026-04-15
 
 ## Current Implementation Posture
 
-The current implementation path is NanoCore-first and MCP-first. OpenKit is hardening the core kernel, public API, and AI-native coordination channel before completing the Web UI as the primary product surface. This preserves the long-term product vision while letting the team validate the real work loop through external coordinator agents and NanoCore contracts first.
+The accepted implementation path is NanoCore-first and end-user Agent-Skill-first. OpenKit is hardening the core kernel and public API, then projecting the complete supported user/operator capability surface through one progressively disclosed `openkit` Skill and bundled CLI before completing the Web UI as the primary product surface. The existing user-facing `@openkit/mcp` package and four setup/loop Skills are transitional implementation scheduled for clean removal, while worker-side MCP capability supply remains a separate accepted future plane whose current AEP projection is disabled.
 
 ## 1. 产品定位
 

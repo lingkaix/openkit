@@ -11,7 +11,6 @@ print_required_version() {
 
 print_required_version "node" node --version
 print_required_version "codex" codex --version
-command -v openkit-worker-sidecar >/dev/null
 command -v openkit-codex-shim >/dev/null
 test -d /openkit/session
 test -d /openkit/artifacts

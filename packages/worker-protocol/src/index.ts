@@ -24,6 +24,128 @@ export const WorkerLineageSchema = z
   })
   .strict();
 
+/** Required feature id for bounded runtime-native provenance capture. */
+export const WORKER_RUNTIME_PROVENANCE_FEATURE = 'worker.runtime-provenance.v1' as const;
+
+/** Required feature schema for bounded runtime-native provenance capture. */
+export const WorkerRuntimeProvenanceFeatureSchema = z.literal(WORKER_RUNTIME_PROVENANCE_FEATURE);
+
+/** Canonical lowercase SHA-256 digest used by runtime provenance files and frames. */
+export const WorkerRuntimeSha256Schema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
+
+/** Synthetic raw stream reference that cannot expose runtime-native ids or paths. */
+export const WorkerRuntimeStreamRefSchema = z.string().regex(/^stream-\d{4}\.jsonl$/);
+
+/** Runtime raw stream source classes understood by the backend-neutral manifest. */
+export const WorkerRuntimeStreamSourceKindSchema = z.enum(['primary', 'runtime-thread']);
+
+/** Capture outcomes retained for each raw stream and the complete manifest. */
+export const WorkerRuntimeCaptureStatusSchema = z.enum([
+  'complete',
+  'truncated',
+  'unstable',
+  'failed',
+]);
+
+/** Parse outcomes retained for every physical runtime-native frame. */
+export const WorkerRuntimeFrameParseStatusSchema = z.enum([
+  'parsed',
+  'unattributed',
+  'malformed',
+  'truncated',
+]);
+
+/** One byte-preserved raw stream declared by the restricted runtime manifest. */
+export const WorkerRuntimeRawStreamSchema = z
+  .object({
+    streamRef: WorkerRuntimeStreamRefSchema,
+    sourceKind: WorkerRuntimeStreamSourceKindSchema,
+    bytes: z.number().int().nonnegative(),
+    sha256: WorkerRuntimeSha256Schema,
+    frameCount: z.number().int().nonnegative(),
+    captureStatus: WorkerRuntimeCaptureStatusSchema,
+    stableTerminal: z.boolean(),
+  })
+  .strict();
+
+/** Restricted manifest for one bounded set of runtime-native raw streams. */
+export const WorkerRuntimeRawStreamManifestSchema = z
+  .object({
+    schemaVersion: WorkerProtocolSchemaVersionSchema,
+    lineage: WorkerLineageSchema,
+    runtimeFamily: WorkerOpaqueIdSchema,
+    adapterVersion: WorkerOpaqueIdSchema,
+    primaryStreamRef: z.literal('stream-0000.jsonl'),
+    captureStatus: WorkerRuntimeCaptureStatusSchema,
+    streams: z.array(WorkerRuntimeRawStreamSchema).min(1),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const refs = new Set<string>();
+
+    for (const [index, stream] of value.streams.entries()) {
+      if (refs.has(stream.streamRef)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `Duplicate runtime stream ref: ${stream.streamRef}.`,
+          path: ['streams', index, 'streamRef'],
+        });
+      }
+      refs.add(stream.streamRef);
+
+      const isPrimary = stream.streamRef === value.primaryStreamRef;
+      if (isPrimary !== (stream.sourceKind === 'primary')) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Exactly the declared primary stream must use sourceKind primary.',
+          path: ['streams', index, 'sourceKind'],
+        });
+      }
+      if (
+        value.captureStatus === 'complete' &&
+        (stream.captureStatus !== 'complete' || !stream.stableTerminal)
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'A complete runtime manifest requires complete stable streams.',
+          path: ['streams', index],
+        });
+      }
+    }
+
+    if (!refs.has(value.primaryStreamRef)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Runtime stream manifest must contain its declared primary stream.',
+        path: ['primaryStreamRef'],
+      });
+    }
+  });
+
+/** Restricted index entry mapping one physical raw frame to runtime-native origin evidence. */
+export const WorkerRuntimeNativeOriginIndexEntrySchema = z
+  .object({
+    schemaVersion: WorkerProtocolSchemaVersionSchema,
+    lineage: WorkerLineageSchema,
+    runtimeFamily: WorkerOpaqueIdSchema,
+    adapterVersion: WorkerOpaqueIdSchema,
+    streamRef: WorkerRuntimeStreamRefSchema,
+    frameSequence: z.number().int().nonnegative(),
+    byteOffset: z.number().int().nonnegative(),
+    byteLength: z.number().int().positive(),
+    frameSha256: WorkerRuntimeSha256Schema,
+    eventKind: z.string().min(1),
+    parseStatus: WorkerRuntimeFrameParseStatusSchema,
+    nativeSessionId: WorkerOpaqueIdSchema.optional(),
+    nativeThreadId: WorkerOpaqueIdSchema.optional(),
+    parentNativeThreadId: WorkerOpaqueIdSchema.optional(),
+    nativeTurnId: WorkerOpaqueIdSchema.optional(),
+    runtimeRole: z.string().min(1).optional(),
+    runtimeNickname: z.string().min(1).optional(),
+    runtimeDepth: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
 /**
  * Worker-emitted sequence number, monotonic within one package snapshot and channel.
  */
@@ -286,6 +408,12 @@ export const WorkerErrorEnvelopeSchema = z
 
 /** Worker lineage inferred TypeScript type. */
 export type WorkerLineage = z.infer<typeof WorkerLineageSchema>;
+/** Runtime raw stream manifest inferred TypeScript type. */
+export type WorkerRuntimeRawStreamManifest = z.infer<typeof WorkerRuntimeRawStreamManifestSchema>;
+/** Runtime native-origin index entry inferred TypeScript type. */
+export type WorkerRuntimeNativeOriginIndexEntry = z.infer<
+  typeof WorkerRuntimeNativeOriginIndexEntrySchema
+>;
 /** Worker text part inferred TypeScript type. */
 export type WorkerTextPart = z.infer<typeof WorkerTextPartSchema>;
 /** Canonical worker event record inferred TypeScript type. */

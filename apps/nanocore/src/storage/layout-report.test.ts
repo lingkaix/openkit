@@ -49,6 +49,8 @@ describe('storage layout report', () => {
                     'workspace_0000_baseline',
                     'workspace_0001_goal_review_resolution_snapshot',
                     'workspace_0002_idempotency_requests',
+                    'workspace_0003_drop_sync_evidence_bundles',
+                    'workspace_0004_capability_runtime_correlation',
                   ],
                 }),
                 indexesDir: expect.objectContaining({ exists: true, entryCount: 0 }),

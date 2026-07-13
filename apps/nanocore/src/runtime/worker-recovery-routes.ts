@@ -435,7 +435,7 @@ export function registerWorkerRecoveryRoutes({
     }
   });
 
-  registerAppApiRoute(app, 'retryInterruptedWorkerCheckpoint', (c) => {
+  registerAppApiRoute(app, 'retryInterruptedWorkerCheckpoint', async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const threadId = c.req.param('threadId');
@@ -519,7 +519,7 @@ export function registerWorkerRecoveryRoutes({
           });
         }
 
-        clearWorkerCheckpointAfterTerminalState(workspaceDb, {
+        await clearWorkerCheckpointAfterTerminalState(workspaceDb, {
           terminalStage: 'aborted',
           threadId,
           turnId,
@@ -570,7 +570,7 @@ export function registerWorkerRecoveryRoutes({
       try {
         return c.json(
           ClearInterruptedWorkerCheckpointResponseSchema.parse({
-            cleared: clearWorkerCheckpointAfterTerminalState(workspaceDb, {
+            cleared: await clearWorkerCheckpointAfterTerminalState(workspaceDb, {
               workspaceId,
               threadId,
               turnId,

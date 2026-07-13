@@ -31,6 +31,11 @@
   "workspace": {
     "root": "."
   },
+  "sandbox": {
+    "backend": {
+      "requiredCapabilities": ["trusted-worker-inference-relay", "worker.runtime-provenance.v1"]
+    }
+  },
   "readiness": {
     "status": "unknown",
     "message": "Codex binary and login state are checked at runtime."

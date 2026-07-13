@@ -29,6 +29,14 @@ const workspaceMigrations: MigrationFile[] = [
     id: '0002_idempotency_requests',
     fileName: '0001_user_0002_workspace_idempotency_requests.sql',
   },
+  {
+    id: '0003_drop_sync_evidence_bundles',
+    fileName: '0003_workspace_drop_sync_evidence_bundles.sql',
+  },
+  {
+    id: '0004_capability_runtime_correlation',
+    fileName: '0004_workspace_capability_runtime_correlation.sql',
+  },
 ];
 
 const userMigrations: MigrationFile[] = [

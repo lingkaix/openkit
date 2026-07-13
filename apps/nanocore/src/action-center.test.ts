@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ListHumanAttentionResponseSchema } from '@openkit/app-api-schemas';
@@ -48,6 +48,23 @@ function openTestWorkspaceDb(coreDb: CoreDb, workspaceId: string): WorkspaceDb {
 }
 
 describe('action center app API', () => {
+  it('rejects a missing workspace without creating its canonical directory', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore();
+    const workspaceRoot = join(coreDb.dataRoot, 'users', LOCAL_USER_ID, 'workspaces', 'ws_missing');
+
+    try {
+      const response = await createApp({ coreDb, store }).request(
+        '/api/app/workspaces/ws_missing/action-center'
+      );
+
+      expect(response.status).toBe(404);
+      expect(existsSync(workspaceRoot)).toBe(false);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('returns unified human attention rows for pending approval and question gates', async () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Needs human input');

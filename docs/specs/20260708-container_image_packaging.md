@@ -86,7 +86,7 @@ Goals:
 4. Publish release images to GHCR from version tags.
 5. Keep GHCR image tags, OCI labels, and GitHub release notes traceable to one Git commit and one Git tag.
 6. Prefer OpenShell Community sandbox base images for worker images, with digest pinning.
-7. Keep OpenKit worker contracts inside OpenKit-owned worker shims or sidecars.
+7. Keep OpenKit worker contracts inside OpenKit-owned worker shims.
 8. Remove staging-specific names from future release packaging.
 9. Make image smoke checks mandatory before publishing.
 10. Keep the design small enough to implement without a custom release platform.
@@ -135,7 +135,7 @@ App image and worker images are separate release units.
 
 The app image is user-facing. It owns NanoCore startup, Web UI static assets, public HTTP routing, data-root layout, database migrations, app smoke checks, and packaged UI checks.
 
-Worker images are backend payloads. They own agent runtime binaries, OpenKit worker shim or sidecar, worker-visible `/openkit` layout, transcript output paths, runtime-native config materialization, and agent-specific adapters. They do not own product state, review decisions, workspace truth, vault truth, or public API semantics.
+Worker images are backend payloads. They own agent runtime binaries, the OpenKit worker shim, worker-visible `/openkit` layout, transcript output paths, runtime-native config materialization, and agent-specific adapters. They do not own product state, review decisions, workspace truth, vault truth, or public API semantics.
 
 ## Contract / Expected Behavior
 
@@ -225,7 +225,7 @@ The app image should not bundle worker agent runtimes as the normal release mode
 Every release worker image must:
 
 - run inside OpenShell as a sandbox payload,
-- provide `openkit-worker-sidecar` or an equivalent OpenKit worker shim,
+- provide the runtime-specific OpenKit worker shim,
 - provide a runtime-specific entrypoint such as `openkit-codex-shim`,
 - provide `/openkit/config/package.json`,
 - write `/openkit/session/events.jsonl`,
@@ -695,7 +695,6 @@ App image smoke acceptance:
 
 Worker image smoke acceptance:
 
-- The image contains `openkit-worker-sidecar`.
 - The image contains the runtime-specific shim.
 - The image contains the runtime binary.
 - The image can read an AEP package from `/openkit/config/package.json`.

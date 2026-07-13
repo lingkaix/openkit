@@ -37,7 +37,7 @@ export function asWorkerControlApiError(error: unknown): Response {
     return asApiError(error.message, error.code, error.status);
   }
 
-  return asInvalidRequestError(error);
+  return asApiError('Worker request failed.', 'worker_internal_error', 500);
 }
 
 /**

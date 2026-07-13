@@ -31,6 +31,12 @@ export const capabilityCalls = sqliteTable(
     agentId: text('agent_id'),
     /** Agent session lineage when available. */
     agentSessionId: text('agent_session_id'),
+    /** Agent Environment Package snapshot that authorized the call. */
+    packageSnapshotId: text('package_snapshot_id'),
+    /** Product-safe runtime origin correlation reference. */
+    runtimeOriginRef: text('runtime_origin_ref'),
+    /** Product-safe runtime cache-lineage correlation reference. */
+    runtimeCacheLineageRef: text('runtime_cache_lineage_ref'),
     /** Request id used for idempotency when available. */
     requestId: text('request_id'),
     /** Workspace data source ids touched by the call. */

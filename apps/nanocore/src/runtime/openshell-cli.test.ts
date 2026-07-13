@@ -1,9 +1,60 @@
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   compileOpenShellSandboxCreateArgs,
   OpenShellCli,
   type OpenShellCommandRunner,
 } from './openshell-cli.js';
+
+const workerInferenceProfile = {
+  binaries: ['/usr/local/bin/codex', '/usr/local/lib/codex/bin/codex'],
+  category: 'inference',
+  credentials: [
+    {
+      auth_style: 'bearer',
+      description: 'Package-bound scheduler lease token',
+      env_vars: ['OPENKIT_WORKER_INFERENCE_TOKEN'],
+      header_name: 'Authorization',
+      name: 'session_token',
+      query_param: '',
+      required: true,
+    },
+  ],
+  description: 'Package-bound NanoCore worker inference relay',
+  display_name: 'OpenKit Worker Inference',
+  endpoints: [
+    {
+      enforcement: 'enforce',
+      host: 'host.openshell.internal',
+      port: 54002,
+      protocol: 'rest',
+      rules: [
+        {
+          allow: {
+            method: 'POST',
+            path: '/api/worker-inference/v1/chat/completions',
+          },
+        },
+        {
+          allow: {
+            method: 'POST',
+            path: '/api/worker-inference/v1/responses',
+          },
+        },
+      ],
+    },
+  ],
+  id: 'okp-local-worker-inference-0123456789abcdef',
+  inference_capable: false,
+} as const;
+const workerInferenceProfilePath = join(
+  mkdtempSync(join(tmpdir(), 'openkit-openshell-profile-')),
+  'worker-inference-provider-profile.json'
+);
+
+writeFileSync(workerInferenceProfilePath, JSON.stringify(workerInferenceProfile), 'utf8');
 
 class FakeOpenShellCommandRunner implements OpenShellCommandRunner {
   public readonly calls: string[][] = [];
@@ -36,6 +87,25 @@ class FakeOpenShellCommandRunner implements OpenShellCommandRunner {
 }
 
 describe('OpenShellCli', () => {
+  it('treats deleting an absent sandbox as an idempotent success', async () => {
+    const runner = new FakeOpenShellCommandRunner([
+      {
+        exitCode: 1,
+        stdout: '',
+        stderr:
+          'Error:   × code: \'Some requested entity was not found\', message: "sandbox not found"\n',
+      },
+    ]);
+    const cli = new OpenShellCli({ runner });
+
+    await expect(
+      cli.deleteSandbox({
+        gateway: 'openshell',
+        name: 'openkit-as-absent',
+      })
+    ).resolves.toEqual({ stdout: '' });
+  });
+
   it('parses version, status, gateway, and doctor output from the real CLI shape', async () => {
     const runner = new FakeOpenShellCommandRunner([
       { exitCode: 0, stdout: 'openshell 0.0.63\n' },
@@ -244,6 +314,172 @@ describe('OpenShellCli', () => {
     expect(JSON.stringify(runner.calls)).not.toContain('ghp_secret');
   });
 
+  it('updates an existing provider only when its immutable type matches', async () => {
+    const runner = new FakeOpenShellCommandRunner([
+      {
+        exitCode: 0,
+        stdout: 'Provider\n\n  Name: worker-relay\n  Type: worker-inference-profile\n',
+      },
+      { exitCode: 0, stdout: 'provider updated\n' },
+    ]);
+    const cli = new OpenShellCli({ runner });
+
+    await expect(
+      cli.upsertProvider({
+        credentialKey: 'OPENKIT_WORKER_INFERENCE_TOKEN',
+        credentialValue: 'lease_binding_secret',
+        gateway: 'openshell',
+        name: 'worker-relay',
+        providerType: 'worker-inference-profile',
+      })
+    ).resolves.toEqual({ name: 'worker-relay' });
+    expect(runner.calls).toEqual([
+      ['provider', 'get', '--gateway', 'openshell', 'worker-relay'],
+      [
+        'provider',
+        'update',
+        '--credential',
+        'OPENKIT_WORKER_INFERENCE_TOKEN',
+        '--gateway',
+        'openshell',
+        'worker-relay',
+      ],
+    ]);
+  });
+
+  it('fails closed when an existing provider has a different immutable type', async () => {
+    const runner = new FakeOpenShellCommandRunner([
+      {
+        exitCode: 0,
+        stdout: 'Provider\n\n  Name: worker-relay\n  Type: generic\n',
+      },
+    ]);
+    const cli = new OpenShellCli({ runner });
+
+    await expect(
+      cli.upsertProvider({
+        credentialKey: 'OPENKIT_WORKER_INFERENCE_TOKEN',
+        credentialValue: 'lease_binding_secret',
+        gateway: 'openshell',
+        name: 'worker-relay',
+        providerType: 'worker-inference-profile',
+      })
+    ).rejects.toThrow('provider type mismatch');
+    expect(runner.calls).toEqual([['provider', 'get', '--gateway', 'openshell', 'worker-relay']]);
+  });
+
+  it('fails closed when provider inspection fails for a reason other than not found', async () => {
+    const runner = new FakeOpenShellCommandRunner([
+      { exitCode: 1, stdout: '', stderr: 'gateway authentication failed' },
+    ]);
+    const cli = new OpenShellCli({ runner });
+
+    await expect(
+      cli.upsertProvider({
+        credentialKey: 'OPENKIT_WORKER_INFERENCE_TOKEN',
+        credentialValue: 'lease_binding_secret',
+        gateway: 'openshell',
+        name: 'worker-relay',
+        providerType: 'worker-inference-profile',
+      })
+    ).rejects.toThrow('provider inspection failed');
+    expect(runner.calls).toEqual([['provider', 'get', '--gateway', 'openshell', 'worker-relay']]);
+  });
+
+  it('imports a missing immutable provider profile', async () => {
+    const runner = new FakeOpenShellCommandRunner([
+      { exitCode: 1, stdout: '', stderr: 'provider profile\n  │ not found' },
+      { exitCode: 0, stdout: 'Imported 1 provider profile.\n' },
+    ]);
+    const cli = new OpenShellCli({ runner });
+    const input = {
+      gateway: 'openshell',
+      id: workerInferenceProfile.id,
+      path: workerInferenceProfilePath,
+    };
+
+    await expect(cli.ensureProviderProfile(input)).resolves.toEqual({ id: input.id });
+    expect(runner.calls).toEqual([
+      ['provider', 'profile', 'export', '--output', 'json', '--gateway', 'openshell', input.id],
+      ['provider', 'profile', 'import', '--file', input.path, '--gateway', 'openshell'],
+    ]);
+  });
+
+  it('keeps an existing immutable provider profile only when content matches', async () => {
+    const matchingRunner = new FakeOpenShellCommandRunner([
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({ ...workerInferenceProfile, resource_version: 1 }),
+      },
+    ]);
+    const matchingCli = new OpenShellCli({ runner: matchingRunner });
+    const input = {
+      gateway: 'openshell',
+      id: workerInferenceProfile.id,
+      path: workerInferenceProfilePath,
+    };
+
+    await expect(matchingCli.ensureProviderProfile(input)).resolves.toEqual({ id: input.id });
+
+    const mismatchedRunner = new FakeOpenShellCommandRunner([
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          ...workerInferenceProfile,
+          endpoints: [{ ...workerInferenceProfile.endpoints[0], host: 'wrong.example.com' }],
+          resource_version: 1,
+        }),
+      },
+    ]);
+    const mismatchedCli = new OpenShellCli({ runner: mismatchedRunner });
+
+    await expect(mismatchedCli.ensureProviderProfile(input)).rejects.toThrow(
+      'provider profile content collision'
+    );
+    expect(mismatchedRunner.calls).toHaveLength(1);
+  });
+
+  it('does not import a profile when export fails for a reason other than not found', async () => {
+    const runner = new FakeOpenShellCommandRunner([
+      { exitCode: 1, stdout: '', stderr: 'gateway authentication failed' },
+    ]);
+    const cli = new OpenShellCli({ runner });
+
+    await expect(
+      cli.ensureProviderProfile({
+        gateway: 'openshell',
+        id: workerInferenceProfile.id,
+        path: workerInferenceProfilePath,
+      })
+    ).rejects.toThrow('provider profile export failed');
+    expect(runner.calls).toHaveLength(1);
+  });
+
+  it('accepts an identical immutable profile imported concurrently', async () => {
+    const runner = new FakeOpenShellCommandRunner([
+      { exitCode: 1, stdout: '', stderr: 'provider profile\n  │ not found' },
+      { exitCode: 1, stdout: '', stderr: 'provider profile already exists' },
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({ ...workerInferenceProfile, resource_version: 1 }),
+      },
+    ]);
+    const cli = new OpenShellCli({ runner });
+
+    await expect(
+      cli.ensureProviderProfile({
+        gateway: 'openshell',
+        id: workerInferenceProfile.id,
+        path: workerInferenceProfilePath,
+      })
+    ).resolves.toEqual({ id: workerInferenceProfile.id });
+    expect(runner.calls.map((call) => call.slice(0, 4))).toEqual([
+      ['provider', 'profile', 'export', '--output'],
+      ['provider', 'profile', 'import', '--file'],
+      ['provider', 'profile', 'export', '--output'],
+    ]);
+  });
+
   it('reads provider details without returning credential-looking values', async () => {
     const runner = new FakeOpenShellCommandRunner([
       {
@@ -305,16 +541,46 @@ describe('OpenShellCli', () => {
     expect(status.stdout).not.toContain('ghp_secret_value');
     expect(status.stdout).not.toContain('sk-secret-value');
   });
+
+  it('deletes one transient provider through the selected gateway', async () => {
+    const runner = new FakeOpenShellCommandRunner([
+      { exitCode: 0, stdout: 'Deleted provider worker-relay\n' },
+    ]);
+    const cli = new OpenShellCli({ runner });
+
+    await expect(
+      cli.deleteProvider({
+        gateway: 'openshell',
+        gatewayEndpoint: 'https://a1.example.com:54003',
+        gatewayInsecure: true,
+        name: 'worker-relay',
+      })
+    ).resolves.toEqual({
+      stdout: 'Deleted provider worker-relay\n',
+    });
+    expect(runner.calls).toEqual([
+      [
+        'provider',
+        'delete',
+        '--gateway',
+        'openshell',
+        '--gateway-endpoint',
+        'https://a1.example.com:54003',
+        '--gateway-insecure',
+        'worker-relay',
+      ],
+    ]);
+  });
 });
 
 describe('compileOpenShellSandboxCreateArgs', () => {
-  it('compiles a no-fork OpenKit sidecar sandbox create command', () => {
+  it('compiles a single-process OpenKit worker sandbox create command', () => {
     expect(
       compileOpenShellSandboxCreateArgs({
         command: ['openkit-codex-shim', '--package', '/openkit/config/package.json'],
         cpu: '2',
         env: {
-          OPENKIT_CONTROL_BASE_URL: 'https://control.local/v1/worker-control',
+          OPENKIT_CONTROL_BASE_URL: 'https://nanocore.example/api/worker-control',
           OPENKIT_SESSION_DIR: '/openkit/session',
         },
         from: 'ghcr.io/openkit/codex-worker:test',
@@ -364,7 +630,7 @@ describe('compileOpenShellSandboxCreateArgs', () => {
       '--label',
       'openkit.packageSnapshotId=aepsnap_123',
       '--env',
-      'OPENKIT_CONTROL_BASE_URL=https://control.local/v1/worker-control',
+      'OPENKIT_CONTROL_BASE_URL=https://nanocore.example/api/worker-control',
       '--env',
       'OPENKIT_SESSION_DIR=/openkit/session',
       '--',

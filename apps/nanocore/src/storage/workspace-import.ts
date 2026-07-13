@@ -23,7 +23,6 @@ import {
   WorkspaceQuarantineRecordSchema,
   WorkspaceReconciliationRecordSchema,
   WorkspaceRepositoryGitConfigSchema,
-  WorkspaceSyncEvidenceBundleSchema,
   WorkspaceSyncReviewPatchPayloadSchema,
 } from '@openkit/app-api-schemas';
 import {
@@ -55,6 +54,12 @@ import type {
   KnowledgeSourceRecord,
 } from '../lib/store.js';
 import type { AgentEnvironmentPackageSnapshotRecord } from '../runtime/aep-snapshot-ledger.js';
+import { createWorkerRuntimeProvenanceEvidenceId } from '../runtime/runtime-evidence.js';
+import {
+  createWorkerRuntimeProvenanceBundleId,
+  remintWorkerRuntimeProvenanceIndex,
+  WorkerRuntimeOriginIndexRowSchema,
+} from '../runtime/worker-runtime-provenance.js';
 import {
   dryRunWorkspaceImport,
   type ExportedKnowledgeSourceMaterial,
@@ -92,7 +97,6 @@ type WorkspaceChangeSet = z.infer<typeof WorkspaceChangeSetSchema>;
 type WorkspaceApplyPlan = z.infer<typeof WorkspaceApplyPlanSchema>;
 type WorkspaceQuarantineRecord = z.infer<typeof WorkspaceQuarantineRecordSchema>;
 type WorkspaceReconciliationRecord = z.infer<typeof WorkspaceReconciliationRecordSchema>;
-type WorkspaceSyncEvidenceBundle = z.infer<typeof WorkspaceSyncEvidenceBundleSchema>;
 
 const ImportedEvidenceBundleRecordSchema = EvidenceBundleRecordSchema.strict();
 const ImportedRuntimeEvidenceRecordSchema = RuntimeEvidenceRecordSchema.strict();
@@ -637,6 +641,8 @@ export interface WorkspaceImportSnapshot {
   evidenceBundles: EvidenceBundleRecord[];
   /** Imported workspace runtime evidence. */
   runtimeEvidence: RuntimeEvidenceRecord[];
+  /** Reminted product-safe runtime provenance indexes keyed by target bundle id. */
+  runtimeProvenanceIndexes: ReadonlyMap<string, string>;
   /** Imported workspace usage records. */
   usageRecords: UsageRecord[];
   /** Imported workspace-owned data source catalog. */
@@ -669,8 +675,6 @@ export interface WorkspaceImportSnapshot {
   workspaceReconciliationRecords: WorkspaceReconciliationRecord[];
   /** Imported workspace quarantine rows. */
   workspaceQuarantineRecords: WorkspaceQuarantineRecord[];
-  /** Imported workspace sync evidence bundle rows. */
-  workspaceSyncEvidenceBundles: WorkspaceSyncEvidenceBundle[];
   /** Imported workspace permission decision rows. */
   permissionDecisions: ExportedWorkspacePermissionDecision[];
   /** Imported pending user turn rows. */
@@ -737,6 +741,10 @@ interface ImportRemintContext {
 export function readWorkspaceImportSnapshot(
   input: ReadWorkspaceImportSnapshotInput
 ): WorkspaceImportSnapshot {
+  const removedPath = 'records/workspace-sync-evidence-bundles.jsonl';
+  if (input.verified.fileContents.has(removedPath)) {
+    throw new Error(`Unsupported workspace export record path: ${removedPath}`);
+  }
   const report = dryRunWorkspaceImport({
     verified: input.verified,
     workspaceExists: () => false,
@@ -789,6 +797,7 @@ export function readWorkspaceImportSnapshot(
     capabilityCalls: securityRuntime.capabilityCalls,
     evidenceBundles: securityRuntime.evidenceBundles,
     runtimeEvidence: securityRuntime.runtimeEvidence,
+    runtimeProvenanceIndexes: securityRuntime.runtimeProvenanceIndexes,
     usageRecords: securityRuntime.usageRecords,
     dataSourceCatalog: securityRuntime.dataSourceCatalog,
     gitPushRecords: securityRuntime.gitPushRecords,
@@ -805,7 +814,6 @@ export function readWorkspaceImportSnapshot(
     workspaceApplyResults: workspaceSync.workspaceApplyResults,
     workspaceReconciliationRecords: workspaceSync.workspaceReconciliationRecords,
     workspaceQuarantineRecords: workspaceSync.workspaceQuarantineRecords,
-    workspaceSyncEvidenceBundles: workspaceSync.workspaceSyncEvidenceBundles,
     permissionDecisions: securityRuntime.permissionDecisions,
     pendingUserTurns: goalRuntime.pendingUserTurns,
     workerCheckpoints: goalRuntime.workerCheckpoints,
@@ -1671,11 +1679,117 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
       });
     }
   );
-  const capabilityCalls = readOptionalImportJsonl(
+  const exportedCapabilityCalls = readOptionalImportJsonl(
     context.files,
     'records/capability-calls.jsonl'
-  ).map((record) => {
-    const parsed = ExportedCapabilityCallSchema.parse(record);
+  ).map((record) => ExportedCapabilityCallSchema.parse(record));
+  const exportedEvidenceBundles = readOptionalImportJsonl(
+    context.files,
+    'records/evidence-bundles.jsonl'
+  ).map((record) => ImportedEvidenceBundleRecordSchema.parse(record));
+  const exportedRuntimeEvidence = readOptionalImportJsonl(
+    context.files,
+    'records/runtime-evidence.jsonl'
+  ).map((record) => ImportedRuntimeEvidenceRecordSchema.parse(record));
+  const runtimeProvenanceIndexes = new Map<string, string>();
+  const provenancePackages = new Map<string, { targetPackageSnapshotId: string; digest: string }>();
+  const runtimeOriginRefsByPackageSnapshotId = new Map<string, ReadonlyMap<string, string>>();
+  for (const bundle of exportedEvidenceBundles) {
+    if (bundle.sourceKind !== 'worker-runtime-provenance-index') {
+      continue;
+    }
+    const exportPath = `workspace-files/evidence/bundles/${bundle.id}/runtime-origin-index.jsonl`;
+    const sourceText = requiredExportFile(context.files, exportPath);
+    const firstLine = sourceText.trim().split('\n')[0];
+    if (!firstLine) {
+      throw new Error('Runtime provenance index is empty.');
+    }
+    const firstRow = WorkerRuntimeOriginIndexRowSchema.parse(JSON.parse(firstLine));
+    const sourceLineage = firstRow.lineage;
+    if (
+      bundle.workspaceId !== sourceLineage.workspaceId ||
+      bundle.threadId !== sourceLineage.threadId ||
+      bundle.turnId !== sourceLineage.turnId ||
+      bundle.agentSessionId !== sourceLineage.agentSessionId ||
+      bundle.rawEvidenceRefs.length > 0 ||
+      bundle.redactedEvidenceRefs.length !== 1 ||
+      bundle.redactedEvidenceRefs[0]?.kind !== 'worker-runtime-provenance-index' ||
+      bundle.redactedEvidenceRefs[0]?.ref !== 'runtime-origin-index.jsonl' ||
+      bundle.contentDigests.length !== 1 ||
+      bundle.contentDigests[0] !== digestText(sourceText)
+    ) {
+      throw new Error(`Runtime provenance index bundle is inconsistent: ${bundle.id}`);
+    }
+    const targetPackageSnapshotId = requiredMapValue(
+      agentEnvironmentPackageSnapshotIds,
+      sourceLineage.packageSnapshotId,
+      'agent environment package snapshot'
+    );
+    const targetLineage = {
+      workspaceId: context.targetWorkspaceId,
+      threadId: requiredMapValue(threadIds, sourceLineage.threadId, 'thread'),
+      turnId: requiredMapValue(turnIds, sourceLineage.turnId, 'turn'),
+      agentSessionId: requiredMapValue(
+        agentSessionIds,
+        sourceLineage.agentSessionId,
+        'agent session'
+      ),
+      packageSnapshotId: targetPackageSnapshotId,
+      requestId: sourceLineage.requestId,
+    };
+    const reminted = remintWorkerRuntimeProvenanceIndex(sourceText, sourceLineage, targetLineage);
+    const targetBundleId = createWorkerRuntimeProvenanceBundleId(
+      'worker-runtime-provenance-index',
+      targetPackageSnapshotId
+    );
+    provenancePackages.set(bundle.id, {
+      targetPackageSnapshotId,
+      digest: reminted.digest,
+    });
+    runtimeOriginRefsByPackageSnapshotId.set(
+      sourceLineage.packageSnapshotId,
+      reminted.runtimeOriginRefs
+    );
+    runtimeProvenanceIndexes.set(targetBundleId, reminted.text);
+  }
+  for (const sourceIndexId of provenancePackages.keys()) {
+    const linkedRuntime = exportedRuntimeEvidence.filter((runtime) =>
+      runtime.evidenceBundleIds.includes(sourceIndexId)
+    );
+    const linkedRaw = linkedRuntime.flatMap((runtime) =>
+      runtime.evidenceBundleIds.filter(
+        (id) =>
+          exportedEvidenceBundles.find((bundle) => bundle.id === id)?.sourceKind ===
+          'worker-runtime-provenance-raw'
+      )
+    );
+    if (
+      linkedRuntime.length !== 1 ||
+      linkedRaw.length !== 1 ||
+      linkedRuntime[0]?.phase !== 'transcript-collection' ||
+      !linkedRuntime[0]?.requiredFeatures.includes('worker.runtime-provenance.v1')
+    ) {
+      throw new Error('Runtime provenance bundle linkage is incomplete.');
+    }
+  }
+  const capabilityCalls = exportedCapabilityCalls.map((parsed) => {
+    const packageSnapshotId = parsed.packageSnapshotId
+      ? requiredMapValue(
+          agentEnvironmentPackageSnapshotIds,
+          parsed.packageSnapshotId,
+          'agent environment package snapshot'
+        )
+      : null;
+    const runtimeOriginRef = parsed.runtimeOriginRef
+      ? parsed.packageSnapshotId
+        ? runtimeOriginRefsByPackageSnapshotId
+            .get(parsed.packageSnapshotId)
+            ?.get(parsed.runtimeOriginRef)
+        : undefined
+      : null;
+    if (parsed.runtimeOriginRef && !runtimeOriginRef) {
+      throw new Error('Runtime origin reference is absent from its package normalized index.');
+    }
 
     return ExportedCapabilityCallSchema.parse({
       ...parsed,
@@ -1685,17 +1799,58 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
       agentSessionId: parsed.agentSessionId
         ? requiredMapValue(agentSessionIds, parsed.agentSessionId, 'agent session')
         : null,
+      packageSnapshotId,
+      runtimeOriginRef,
+      runtimeCacheLineageRef: parsed.runtimeCacheLineageRef
+        ? `rcl_${createHash('sha256')
+            .update(
+              `runtime-cache-lineage:${context.targetWorkspaceId}:${parsed.runtimeCacheLineageRef}`
+            )
+            .digest('hex')
+            .slice(0, 24)}`
+        : null,
       workspaceId: context.targetWorkspaceId,
     });
   });
-  const evidenceBundles = readOptionalImportJsonl(
-    context.files,
-    'records/evidence-bundles.jsonl'
-  ).map((record) => {
-    const parsed = ImportedEvidenceBundleRecordSchema.parse(record);
+  const evidenceBundleIds = new Map<string, string>();
+  for (const [index, bundle] of exportedEvidenceBundles.entries()) {
+    const indexPackage = provenancePackages.get(bundle.id);
+    const pairedIndexId = exportedRuntimeEvidence
+      .find((runtime) => runtime.evidenceBundleIds.includes(bundle.id))
+      ?.evidenceBundleIds.find((id) => provenancePackages.has(id));
+    const pairedPackage = pairedIndexId ? provenancePackages.get(pairedIndexId) : undefined;
+    const provenancePackage = indexPackage ?? pairedPackage;
+    if (
+      (bundle.sourceKind === 'worker-runtime-provenance-raw' ||
+        bundle.sourceKind === 'worker-runtime-provenance-index') &&
+      !provenancePackage
+    ) {
+      throw new Error('Runtime provenance bundle linkage is incomplete.');
+    }
+    const targetId = provenancePackage
+      ? createWorkerRuntimeProvenanceBundleId(
+          bundle.sourceKind === 'worker-runtime-provenance-raw'
+            ? 'worker-runtime-provenance-raw'
+            : 'worker-runtime-provenance-index',
+          provenancePackage.targetPackageSnapshotId
+        )
+      : `evb_imported_${context.targetWorkspaceId}_${index + 1}`;
+    evidenceBundleIds.set(bundle.id, targetId);
+  }
+  const evidenceBundles = exportedEvidenceBundles.map((parsed) => {
+    const provenancePackage = provenancePackages.get(parsed.id);
+    if (
+      parsed.sourceKind === 'worker-runtime-provenance-raw' &&
+      (parsed.importStatus !== 'expired' ||
+        parsed.rawEvidenceRefs.length > 0 ||
+        parsed.redactedEvidenceRefs.length > 0)
+    ) {
+      throw new Error('Portable restricted runtime provenance must be expired and ref-free.');
+    }
 
     return EvidenceBundleRecordSchema.parse({
       ...parsed,
+      id: requiredMapValue(evidenceBundleIds, parsed.id, 'evidence bundle'),
       threadId: parsed.threadId ? requiredMapValue(threadIds, parsed.threadId, 'thread') : null,
       turnId: parsed.turnId ? requiredMapValue(turnIds, parsed.turnId, 'turn') : null,
       goalId: parsed.goalId ? requiredMapValue(goalIds, parsed.goalId, 'goal') : null,
@@ -1724,17 +1879,23 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
         itemIds,
         agentSessionIds
       ),
+      ...(provenancePackage ? { contentDigests: [provenancePackage.digest] } : {}),
       workspaceId: context.targetWorkspaceId,
     });
   });
-  const runtimeEvidence = readOptionalImportJsonl(
-    context.files,
-    'records/runtime-evidence.jsonl'
-  ).map((record) => {
-    const parsed = ImportedRuntimeEvidenceRecordSchema.parse(record);
+  const runtimeEvidence = exportedRuntimeEvidence.map((parsed) => {
+    const sourceIndexId = parsed.evidenceBundleIds.find((id) => provenancePackages.has(id));
+    const provenancePackage = sourceIndexId ? provenancePackages.get(sourceIndexId) : undefined;
+    const sourceIndexBundle = sourceIndexId
+      ? exportedEvidenceBundles.find((bundle) => bundle.id === sourceIndexId)
+      : undefined;
+    const targetIndexDigest = provenancePackage?.digest;
 
     return RuntimeEvidenceRecordSchema.parse({
       ...parsed,
+      ...(provenancePackage
+        ? { id: createWorkerRuntimeProvenanceEvidenceId(provenancePackage.targetPackageSnapshotId) }
+        : {}),
       threadId: parsed.threadId ? requiredMapValue(threadIds, parsed.threadId, 'thread') : null,
       turnId: parsed.turnId ? requiredMapValue(turnIds, parsed.turnId, 'turn') : null,
       goalId: parsed.goalId ? requiredMapValue(goalIds, parsed.goalId, 'goal') : null,
@@ -1742,6 +1903,15 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
       agentSessionId: parsed.agentSessionId
         ? (agentSessionIds.get(parsed.agentSessionId) ?? parsed.agentSessionId)
         : null,
+      evidenceBundleIds: parsed.evidenceBundleIds.map((id) =>
+        requiredMapValue(evidenceBundleIds, id, 'evidence bundle')
+      ),
+      contentDigests:
+        targetIndexDigest && sourceIndexBundle
+          ? parsed.contentDigests.map((digest) =>
+              sourceIndexBundle.contentDigests.includes(digest) ? targetIndexDigest : digest
+            )
+          : parsed.contentDigests,
       workspaceId: context.targetWorkspaceId,
     });
   });
@@ -1853,6 +2023,7 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
     capabilityCalls,
     evidenceBundles,
     runtimeEvidence,
+    runtimeProvenanceIndexes,
     usageRecords,
     dataSourceCatalog,
     gitPushRecords,
@@ -2026,18 +2197,6 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
       workspaceId: context.targetWorkspaceId,
     });
   });
-  const workspaceSyncEvidenceBundles = readOptionalImportJsonl(
-    context.files,
-    'records/workspace-sync-evidence-bundles.jsonl'
-  ).map((record) => {
-    const parsed = WorkspaceSyncEvidenceBundleSchema.parse(record);
-
-    return WorkspaceSyncEvidenceBundleSchema.parse({
-      ...parsed,
-      workspaceId: context.targetWorkspaceId,
-    });
-  });
-
   return {
     workspaceRepositories,
     workspaceInputSnapshots,
@@ -2050,7 +2209,6 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
     workspaceApplyResults,
     workspaceReconciliationRecords,
     workspaceQuarantineRecords,
-    workspaceSyncEvidenceBundles,
   };
 }
 
@@ -2357,6 +2515,7 @@ function readPortableFileStateFromExport(
       );
     } else if (workspacePath.startsWith('knowledge/context-materializations/')) {
       contextMaterializations.set(workspacePath, content);
+    } else if (workspacePath.startsWith('evidence/bundles/')) {
     } else {
       throw new Error(`Unsupported portable workspace file: ${workspacePath}`);
     }
@@ -3153,7 +3312,11 @@ function rejectUnsupportedRecordFeatures(record: unknown, exportPath: string): v
     throw new Error(`Invalid requiredFeatures in ${exportPath}.`);
   }
 
-  const supportedRecordFeatures = new Set(['evidence.bundle.v1', 'runtime.evidence.v1']);
+  const supportedRecordFeatures = new Set([
+    'evidence.bundle.v1',
+    'runtime.evidence.v1',
+    'worker.runtime-provenance.v1',
+  ]);
   const unsupported = requiredFeatures.filter((feature) => !supportedRecordFeatures.has(feature));
   if (unsupported.length > 0) {
     throw new Error(`Unsupported requiredFeatures in ${exportPath}: ${unsupported.join(', ')}`);

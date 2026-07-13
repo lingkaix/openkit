@@ -427,6 +427,7 @@ describe('quick chat app API', () => {
         providerId: 'ollama',
         model: 'llama3.2',
         messages: [{ role: 'user', content: 'Route this.' }],
+        signal: expect.any(AbortSignal),
         metadata: {
           openkit: {
             sessionId: 'quick-chat:ws_quick',

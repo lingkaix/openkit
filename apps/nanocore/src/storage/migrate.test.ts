@@ -72,7 +72,6 @@ const WORKSPACE_TABLES = [
   'workspace_quarantine_records',
   'workspace_reconciliation_records',
   'workspace_repository_resources',
-  'workspace_sync_evidence_bundles',
 ];
 
 /**
@@ -234,6 +233,8 @@ describe('storage migrations', () => {
         'workspace_0000_baseline',
         'workspace_0001_goal_review_resolution_snapshot',
         'workspace_0002_idempotency_requests',
+        'workspace_0003_drop_sync_evidence_bundles',
+        'workspace_0004_capability_runtime_correlation',
       ]);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
       const idempotencyRequestColumns = [
@@ -251,6 +252,31 @@ describe('storage migrations', () => {
       expect(listColumnNames(workspaceDb, 'idempotency_requests')).toEqual(
         idempotencyRequestColumns
       );
+      expect(listColumnNames(workspaceDb, 'capability_calls')).toEqual([
+        'call_id',
+        'workspace_id',
+        'thread_id',
+        'turn_id',
+        'item_id',
+        'agent_id',
+        'agent_session_id',
+        'request_id',
+        'source_ids_json',
+        'capability_id',
+        'family',
+        'operation',
+        'status',
+        'summary',
+        'provider_ref',
+        'service_ref',
+        'redaction_class',
+        'error_code',
+        'started_at',
+        'completed_at',
+        'package_snapshot_id',
+        'runtime_origin_ref',
+        'runtime_cache_lineage_ref',
+      ]);
       expect(listColumnNames(workspaceDb, 'goal_review_records')).toEqual([
         'review_id',
         'workspace_id',

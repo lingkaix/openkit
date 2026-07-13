@@ -149,64 +149,63 @@ describeOpenShell('real OpenShell CLI preflight', () => {
     }
   }, 120_000);
 
-  it('relays a sidecar heartbeat to NanoCore worker control routes', async () => {
+  it('runs direct worker control through the supervised Codex shim', async () => {
     const cli = new OpenShellCli();
     const gateway = new WorkerControlGateway();
     const store = new FsStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Run sidecar relay.');
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Run direct worker control.');
     const agent = store.getAgent('ws_demo', 'agent_codex_host');
     const server = await startWorkerControlServer(store, gateway);
-    const tempDir = await mkdtemp(join(tmpdir(), 'openkit-openshell-sidecar-'));
+    const tempDir = await mkdtemp(join(tmpdir(), 'openkit-openshell-direct-control-'));
+    const packagePath = join(tempDir, 'package.json');
     const policyPath = join(tempDir, 'policy.yaml');
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
         agent,
-        agentSessionId: 'as_e2e_sidecar',
+        agentSessionId: 'as_e2e_direct_control',
         userId: 'user_local',
         backend: {
-          controlRelayUpstream: `${server.workerRelayBaseUrl}/api/worker-control`,
+          workerControlBaseUrl: `${server.workerFacingBaseUrl}/api/worker-control`,
           kind: 'openshell',
           sandboxImageRef:
             process.env.OPENKIT_E2E_OPENSHELL_WORKER_IMAGE ?? 'openkit/worker-codex:dev',
         },
         createdAt: '2026-06-16T00:00:00.000Z',
-        requestId: 'req_e2e_sidecar',
+        requestId: 'req_e2e_direct_control',
         turn,
         workspaceCwd: '/workspace',
         workspaceRoots: [],
       })
     );
     const registration = gateway.registerSession(environmentPackage);
-    gateway.enqueueApprovalResult(environmentPackage.snapshotId, {
-      approvalRequestId: 'approval_e2e_sidecar_1',
-      decision: 'granted',
-    });
     gateway.enqueueTerminalCommand(environmentPackage.snapshotId, {
       argv: ['pwd'],
-      commandId: 'term_e2e_sidecar_1',
+      commandId: 'term_e2e_direct_control_1',
       cwd: '/workspace',
     });
+    await writeFile(packagePath, JSON.stringify(environmentPackage), 'utf8');
     await writeFile(
       policyPath,
       renderOpenShellWorkerPolicy({
-        relayUpstream: `${server.workerRelayBaseUrl}/api/worker-control`,
+        controlBaseUrl: `${server.workerFacingBaseUrl}/api/worker-control`,
       }),
       'utf8'
     );
-    const sandboxName = `openkit-e2e-sidecar-${Date.now()}`;
+    const sandboxName = `openkit-e2e-direct-control-${Date.now()}`;
 
     try {
       await cli.createSandbox({
         command: [
-          'openkit-worker-sidecar',
-          '--control-base-url',
-          'https://control.local/v1/worker-control',
-          '--relay-upstream',
-          `${server.workerRelayBaseUrl}/api/worker-control`,
-          '--once',
+          'openkit-codex-shim',
+          '--package',
+          '/openkit/config/package.json',
+          '--session-dir',
+          '/openkit/session',
         ],
         env: {
           OPENKIT_AGENT_SESSION_ID: environmentPackage.scope.agentSessionId,
+          OPENKIT_CODEX_COMMAND: '["true"]',
+          OPENKIT_CONTROL_BASE_URL: `${server.workerFacingBaseUrl}/api/worker-control`,
           OPENKIT_CONTROL_TOKEN: registration.token,
           OPENKIT_PACKAGE_SNAPSHOT_ID: environmentPackage.snapshotId,
           OPENKIT_REQUEST_ID: environmentPackage.scope.requestId ?? '',
@@ -217,22 +216,23 @@ describeOpenShell('real OpenShell CLI preflight', () => {
         from: process.env.OPENKIT_E2E_OPENSHELL_WORKER_IMAGE ?? 'openkit/worker-codex:dev',
         gateway: 'openshell',
         labels: {
-          'openkit.e2e': 'sidecar-relay',
+          'openkit.e2e': 'direct-control',
         },
         name: sandboxName,
         noKeep: true,
         policyPath,
+        uploads: [
+          {
+            sourcePath: packagePath,
+            targetPath: '/openkit/config/package.json',
+          },
+        ],
       });
 
       expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)).toMatchObject({
         commands: [
           expect.objectContaining({
-            approvalRequestId: 'approval_e2e_sidecar_1',
-            deliveredAt: expect.any(String),
-            kind: 'approval-result',
-          }),
-          expect.objectContaining({
-            commandId: 'term_e2e_sidecar_1',
+            commandId: 'term_e2e_direct_control_1',
             deliveredAt: expect.any(String),
             kind: 'terminal-command',
           }),
@@ -243,7 +243,7 @@ describeOpenShell('real OpenShell CLI preflight', () => {
         },
         terminalResults: [
           expect.objectContaining({
-            commandId: 'term_e2e_sidecar_1',
+            commandId: 'term_e2e_direct_control_1',
             exitCode: 0,
           }),
         ],
@@ -275,7 +275,7 @@ describeOpenShell('real OpenShell CLI preflight', () => {
       agentSessionId: sessionId,
       userId: 'user_local',
       backend: {
-        controlRelayUpstream: 'http://127.0.0.1:9/api/worker-control',
+        workerControlBaseUrl: 'http://127.0.0.1:9/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: imageRef,
       },
@@ -369,7 +369,7 @@ describeOpenShell('real OpenShell CLI preflight', () => {
         agentSessionId: sessionId,
         userId: 'user_local',
         backend: {
-          controlRelayUpstream: 'http://127.0.0.1:9/api/worker-control',
+          workerControlBaseUrl: 'http://127.0.0.1:9/api/worker-control',
           kind: 'openshell',
           sandboxImageRef: imageRef,
         },
@@ -449,13 +449,13 @@ describeRemoteOpenShell('real remote OpenShell backend lifecycle', () => {
     const cli = new OpenShellCli();
     const store = new FsStore();
     const gateway = new WorkerControlGateway();
-    const relayPort = readRequiredIntegerEnv(
-      'OPENKIT_E2E_REMOTE_OPENSHELL_LOCAL_RELAY_PORT',
-      process.env.OPENKIT_E2E_REMOTE_OPENSHELL_LOCAL_RELAY_PORT
+    const workerControlPort = readRequiredIntegerEnv(
+      'OPENKIT_E2E_REMOTE_OPENSHELL_LOCAL_CONTROL_PORT',
+      process.env.OPENKIT_E2E_REMOTE_OPENSHELL_LOCAL_CONTROL_PORT
     );
-    const controlRelayUpstream = readRequiredEnv(
-      'OPENKIT_E2E_REMOTE_OPENSHELL_CONTROL_RELAY_UPSTREAM',
-      process.env.OPENKIT_E2E_REMOTE_OPENSHELL_CONTROL_RELAY_UPSTREAM
+    const workerControlBaseUrl = readRequiredEnv(
+      'OPENKIT_E2E_REMOTE_OPENSHELL_WORKER_CONTROL_BASE_URL',
+      process.env.OPENKIT_E2E_REMOTE_OPENSHELL_WORKER_CONTROL_BASE_URL
     );
     const gatewayUrl = readRequiredEnv(
       'OPENKIT_E2E_REMOTE_OPENSHELL_GATEWAY_URL',
@@ -497,7 +497,7 @@ describeRemoteOpenShell('real remote OpenShell backend lifecycle', () => {
         agentSessionId: sessionId,
         userId: 'user_local',
         backend: {
-          controlRelayUpstream,
+          workerControlBaseUrl,
           gatewayUrl,
           kind: 'openshell',
           placement: 'remote',
@@ -536,8 +536,8 @@ describeRemoteOpenShell('real remote OpenShell backend lifecycle', () => {
       workerControlGateway: gateway,
     });
     const relayServer = await startWorkerControlServer(store, gateway, {
-      port: relayPort,
-      workerRelayBaseUrl: new URL(controlRelayUpstream).origin,
+      port: workerControlPort,
+      workerFacingBaseUrl: new URL(workerControlBaseUrl).origin,
     });
 
     try {
@@ -633,18 +633,18 @@ function readRequiredIntegerEnv(name: string, value: string | undefined): number
 }
 
 /**
- * Starts a temporary NanoCore HTTP server for real sandbox worker-control relay tests.
+ * Starts a temporary NanoCore HTTP server for real sandbox worker-control tests.
  *
  * @param store Store used by the app.
  * @param gateway Worker control gateway registered by the test.
  * @param options Optional bind and worker-visible URL settings.
- * @returns Worker-visible relay base URL and close function.
+ * @returns Worker-visible base URL and close function.
  */
 async function startWorkerControlServer(
   store: FsStore,
   gateway: WorkerControlGateway,
-  options: { port?: number; workerRelayBaseUrl?: string } = {}
-): Promise<{ close: () => Promise<void>; workerRelayBaseUrl: string }> {
+  options: { port?: number; workerFacingBaseUrl?: string } = {}
+): Promise<{ close: () => Promise<void>; workerFacingBaseUrl: string }> {
   const app = createApp({ mode: 'server', store, workerControlGateway: gateway });
 
   return new Promise((resolve) => {
@@ -666,8 +666,8 @@ async function startWorkerControlServer(
                 closeResolve();
               });
             }),
-          workerRelayBaseUrl:
-            options.workerRelayBaseUrl ??
+          workerFacingBaseUrl:
+            options.workerFacingBaseUrl ??
             `http://${process.env.OPENKIT_E2E_OPENSHELL_RELAY_HOST ?? 'host.openshell.internal'}:${info.port}`,
         });
       }

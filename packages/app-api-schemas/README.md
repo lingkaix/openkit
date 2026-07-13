@@ -6,6 +6,8 @@ These schemas are shared by `apps/nanocore` and `@openkit/core-client` while the
 
 Workspace export response schemas reuse the format version owned by `@openkit/config-schema` so manifests cannot drift between the storage and App API contracts.
 
+Agent-session backend summaries expose only the canonical `direct-nanocore` worker-control mode or `null`; retired control transports are not public read-model states.
+
 Do not add stable Core protocol records here. Core records, commands, events, errors, and conformance fixtures belong in `@openkit/protocol`.
 
 ## Commands

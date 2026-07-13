@@ -1,0 +1,3 @@
+{"type":"thread.started","thread_id":"019f0000-0000-7000-8000-000000000001"}
+{"type":"item.started","item":{"id":"item_0","type":"collab_tool_call","tool":"spawn_agent","sender_thread_id":"019f0000-0000-7000-8000-000000000001","receiver_thread_ids":[],"prompt":"draft a plan","agents_states":{},"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"collab_tool_call","tool":"spawn_agent","sender_thread_id":"019f0000-0000-7000-8000-000000000001","receiver_thread_ids":["019f0000-0000-7000-8000-000000000002"],"prompt":"draft a plan","agents_states":{"019f0000-0000-7000-8000-000000000002":{"status":"running","message":null}},"status":"completed"}}

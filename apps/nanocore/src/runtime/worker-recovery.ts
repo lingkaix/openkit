@@ -1,13 +1,18 @@
+import { join } from 'node:path';
+
 import type { StopReason } from '@openkit/protocol';
 
 import type { WorkspaceDb } from '../storage/db.js';
+import { listExportableAgentEnvironmentPackageSnapshots } from './aep-snapshot-ledger.js';
 import {
   clearWorkerCheckpoint,
+  getWorkerCheckpoint,
   listRecoverableWorkerCheckpoints,
   parseWorkerCheckpointContextAssembly,
   type WorkerCheckpointContextAssemblySummary,
   type WorkerCheckpointRecord,
 } from './worker-checkpoints.js';
+import { importWorkerRuntimeProvenance } from './worker-runtime-provenance.js';
 import { isTerminalWorkerTurnStage, type WorkerTurnStage } from './worker-stage.js';
 
 /**
@@ -137,12 +142,96 @@ export function materializeInterruptedWorkerStates(
  * @param input Cleanup input with the saved terminal stage.
  * @returns True when a checkpoint row was deleted.
  */
-export function clearWorkerCheckpointAfterTerminalState(
+export async function clearWorkerCheckpointAfterTerminalState(
   workspaceDb: WorkspaceDb,
   input: ClearWorkerCheckpointAfterTerminalStateInput
-): boolean {
+): Promise<boolean> {
   if (!isTerminalWorkerTurnStage(input.terminalStage)) {
     return false;
+  }
+
+  const checkpoint = getWorkerCheckpoint(
+    workspaceDb,
+    input.workspaceId,
+    input.threadId,
+    input.turnId
+  );
+  if (!checkpoint) {
+    return false;
+  }
+  const environmentPackage = listExportableAgentEnvironmentPackageSnapshots(
+    workspaceDb,
+    input.workspaceId
+  ).find(
+    (record) =>
+      record.turnId === input.turnId &&
+      (!checkpoint.workerSessionId || record.agentSessionId === checkpoint.workerSessionId)
+  )?.snapshot;
+  if (environmentPackage?.control.transcript?.runtimeProvenance) {
+    const rawBundle = workspaceDb.sqlite
+      .prepare(
+        `SELECT evidence_bundle_id, backend_type, created_at
+        FROM evidence_bundles
+        WHERE workspace_id = ?
+          AND thread_id = ?
+          AND turn_id = ?
+          AND agent_session_id = ?
+          AND source_kind = 'worker-runtime-provenance-raw'
+        LIMIT 1`
+      )
+      .get(
+        input.workspaceId,
+        input.threadId,
+        input.turnId,
+        environmentPackage.scope.agentSessionId
+      ) as
+      | { evidence_bundle_id: string; backend_type: string | null; created_at: string }
+      | undefined;
+    if (!rawBundle) {
+      throw new Error('Required retained runtime provenance is missing.');
+    }
+    const runtime = workspaceDb.sqlite
+      .prepare(
+        `SELECT backend_version, placement
+        FROM runtime_evidence
+        WHERE workspace_id = ?
+          AND turn_id = ?
+          AND agent_session_id = ?
+          AND phase = 'transcript-collection'
+        LIMIT 1`
+      )
+      .get(input.workspaceId, input.turnId, environmentPackage.scope.agentSessionId) as
+      | { backend_version: string | null; placement: 'local' | 'remote' | 'unknown' }
+      | undefined;
+    const workspaceRoot = join(
+      workspaceDb.dataRoot,
+      'users',
+      workspaceDb.userId,
+      'workspaces',
+      workspaceDb.workspaceId
+    );
+    const rawRoot = join(workspaceRoot, 'evidence', 'backend', rawBundle.evidence_bundle_id);
+    const verified = await importWorkerRuntimeProvenance({
+      backend: {
+        kind: rawBundle.backend_type ?? environmentPackage.backend.preferred,
+        placement: runtime?.placement ?? 'unknown',
+        version: runtime?.backend_version ?? null,
+      },
+      capture: {
+        nativeOriginIndexPath: join(rawRoot, 'native-origin-index.jsonl'),
+        rawStreamsRoot: join(rawRoot, 'raw'),
+        streamManifestPath: join(rawRoot, 'raw-streams.json'),
+      },
+      collectedAt: rawBundle.created_at,
+      environmentPackage,
+      workspaceDb,
+      workspaceRoot,
+    }).catch(() => {
+      throw new Error('Required retained runtime provenance verification failed.');
+    });
+    if (!verified.complete) {
+      throw new Error('Required retained runtime provenance verification failed.');
+    }
   }
 
   return clearWorkerCheckpoint(workspaceDb, input.workspaceId, input.threadId, input.turnId);

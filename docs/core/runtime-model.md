@@ -42,7 +42,7 @@ The runtime model does not own:
 - app read models
 - agent-native task graphs
 - native provider payloads
-- process handles, container IDs, SSH sessions, or sidecar wire formats
+- process handles, container IDs, SSH sessions, or mediation wire formats
 - complete sandbox, permission, knowledge, or storage schemas
 
 ## Core Relationship

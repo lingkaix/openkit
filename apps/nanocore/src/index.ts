@@ -51,7 +51,6 @@ import {
 } from './runtime/scheduler-lease-maintenance-service.js';
 import { runSchedulerRestartRecovery } from './runtime/scheduler-restart-recovery.js';
 import { createConfiguredTurnExecutor } from './runtime/turn-executor-factory.js';
-import { schedulerLeaseHasAppliedSupplyRefreshAck } from './scheduler-records.js';
 import {
   type CoreDb,
   openCoreDbWithIntegrityRecovery,
@@ -273,7 +272,6 @@ if (criticalBootFailure || !bootReadiness.acceptingProductWork) {
 runtimeConfigSnapshot = requireBootValue(runtimeConfigSnapshot, 'Runtime config was not loaded.');
 mode = requireBootValue(mode, 'Core mode was not resolved.');
 coreDb = requireBootValue(coreDb, 'Core database was not initialized.');
-const serverCoreDb = coreDb;
 const activeVaultUnlockState = requireBootValue(
   vaultUnlockState,
   'Vault unlock state was not initialized.'
@@ -367,7 +365,6 @@ schedulerLeaseMaintenance = startSchedulerLeaseMaintenanceService(coreDb, {
   maxTotalLeaseMs: SCHEDULER_LEASE_MAX_TOTAL_MS,
   renewalDurationMs: SCHEDULER_LEASE_RENEWAL_DURATION_MS,
   renewalLeadMs: SCHEDULER_LEASE_RENEWAL_LEAD_MS,
-  canRenewPackageSnapshot: (lease) => schedulerLeaseHasAppliedSupplyRefreshAck(serverCoreDb, lease),
   onError: (error) => {
     console.warn(
       `Scheduler lease maintenance failed: ${error instanceof Error ? error.message : String(error)}`

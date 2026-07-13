@@ -1,7 +1,7 @@
 # Knowledge Store Implementation Contract
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
 
 ## Owns
 
@@ -153,7 +153,7 @@ Passive actions run as post-event hooks after worker turns, ingest events, user 
 
 ### Migration from the legacy memory projection
 
-The legacy `memory` projection has been renamed directly, with no compatibility aliases, per the internal development rule: protocol schemas, item projections, workspace routes, worker capability routes, internal-agent mode names, and the workspace directory now use `knowledge` vocabulary. The later governed Knowledge Store migration maps existing minimal knowledge entries to pages with mapped types (`preference` and `project-context` to `KnowledgePage`, `task-summary` to `SourceSummary` or `KnowledgePage` by content), `review_state: user-authored` for user-created entries, and synthesized required fields validated against the initial workspace schema. Existing knowledge proposals migrate to governed knowledge proposals. The migration produces a validation report; entries that cannot be migrated cleanly become invalid drafts flagged for review.
+The `memory` vocabulary has been renamed directly, with no compatibility aliases, across protocol schemas, item projections, workspace routes, internal-agent mode names, and the workspace directory. Worker capability routes are not currently implemented; their accepted future names are `knowledge.search`, `knowledge.read`, and `knowledge.propose`. The governed Knowledge Store migration maps existing minimal knowledge entries to pages with mapped types (`preference` and `project-context` to `KnowledgePage`, `task-summary` to `SourceSummary` or `KnowledgePage` by content), `review_state: user-authored` for user-created entries, and synthesized required fields validated against the initial workspace schema. Existing knowledge proposals migrate to governed knowledge proposals. The migration produces a validation report; entries that cannot be migrated cleanly become invalid drafts flagged for review.
 
 ## Contract / Expected Behavior
 
@@ -171,7 +171,7 @@ The legacy `memory` projection has been renamed directly, with no compatibility 
 ## Current Implementation Projection
 
 - `packages/protocol` exposes minimal `KnowledgeEntry` schemas, workspace knowledge request/response schemas, and `knowledge-injection` item projections.
-- `apps/nanocore/src/app.ts` exposes `/api/workspaces/:workspaceId/knowledge` routes, `/api/app/workspaces/:workspaceId/knowledge/proposals/:proposalId/decision`, and `/api/worker-capabilities/knowledge/{search,read}`. The proposal decision route executes first-slice accept, edit, reject, and defer review decisions; edit decisions persist human-edited proposal title and summary before closing the pending review row.
+- `apps/nanocore/src/app.ts` exposes `/api/workspaces/:workspaceId/knowledge` routes and `/api/app/workspaces/:workspaceId/knowledge/proposals/:proposalId/decision`. The proposal decision route executes first-slice accept, edit, reject, and defer review decisions; edit decisions persist human-edited proposal title and summary before closing the pending review row. NanoCore currently exposes no `/api/worker-capabilities/knowledge/*` routes; worker operations remain accepted target behavior for the future capability plane.
 - `apps/nanocore/src/app.ts` also exposes explicit Knowledge Source identity registration and read surfaces through `/api/app/workspaces/:workspaceId/knowledge/sources` and `/api/app/workspaces/:workspaceId/knowledge/sources/:sourceId`. Registration computes a `sha256:` digest, stores the product-safe source identity record, and copies submitted first-slice text material into `sources/materials/<sourceId>/content.txt`; the API response never returns the submitted content.
 - `apps/nanocore/src/storage/fs-layout.ts` creates `knowledge/` and `sources/`.
 - `apps/nanocore/src/lib/store.ts` projects current app-local `KnowledgeEntry` records into minimal Workspace-schema-valid OKF Markdown pages under `knowledge/pages/<knowledgeEntryId>.md`, writes the default workspace schema at `knowledge/schema/workspace-schema.yaml`, uses the `KnowledgePage` base type, and keeps the app-local kind in the `openkit_entry_kind` extension. It also projects current app-local `KnowledgeProposalRecord` summaries under `knowledge/proposals/<proposalId>.md`, records app-local knowledge proposal review decisions under `knowledge/reviews/<proposalId>.json`, stores first-slice source identity records under `sources/registry/<sourceId>.json`, stores registered text material under `sources/materials/<sourceId>/content.txt`, and writes first-slice text derived representation metadata under `sources/derived/<sourceId>/text.json` with lineage back to the source content digest.

@@ -358,6 +358,14 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
           },
         }
       : {}),
+    ...(agentSetupResult.setup?.provider
+      ? {
+          providerSelection: {
+            model: agentSetupResult.setup.provider.model,
+            providerId: agentSetupResult.setup.provider.providerId,
+          },
+        }
+      : {}),
     requestId: input.requestId ?? null,
     ...(input.sandboxBindingRef ? { sandboxBindingRef: input.sandboxBindingRef } : {}),
     ...(input.workspaceDataSourceCatalog

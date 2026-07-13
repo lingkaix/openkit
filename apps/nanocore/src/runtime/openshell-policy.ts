@@ -1,16 +1,16 @@
 import { assertOpenShellPolicyConformant } from '@openkit/openshell-schema-snapshot';
 
 /**
- * Input used to render an OpenShell sandbox policy for the OpenKit worker relay.
+ * Input used to render an OpenShell sandbox policy for direct OpenKit worker control.
  */
 export interface RenderOpenShellWorkerPolicyInput {
   /** Additional filesystem grants derived from the Agent Environment Package policy. */
   additionalFilesystemGrants?: OpenShellFilesystemGrant[] | undefined;
   /** Additional outbound endpoints allowed for selected worker binaries. */
   additionalNetworkEndpoints?: OpenShellNetworkEndpoint[] | undefined;
-  /** NanoCore Worker Control Gateway relay upstream URL. */
-  relayUpstream: string;
-  /** Executable paths allowed to use the worker control relay endpoint. */
+  /** Direct NanoCore Worker Control Gateway URL. */
+  controlBaseUrl: string;
+  /** Executable paths allowed to use the worker control endpoint. */
   binaries?: string[] | undefined;
 }
 
@@ -40,20 +40,24 @@ export interface OpenShellNetworkEndpoint {
   port: number;
   /** Endpoint protocol label understood by OpenShell. */
   protocol?: string | undefined;
+  /** Exact POST requests allowed instead of a broad access preset. */
+  rules?: Array<{
+    /** HTTP method allowed by the rule. */
+    method: 'POST';
+    /** Exact absolute HTTP path allowed by the rule. */
+    path: string;
+  }>;
 }
 
 /**
  * Renders the OpenShell policy schema accepted by the installed distribution.
  *
- * @param input Worker relay target.
+ * @param input Direct worker control target.
  * @returns YAML policy text for `openshell sandbox create --policy`.
  */
 export function renderOpenShellWorkerPolicy(input: RenderOpenShellWorkerPolicyInput): string {
-  const endpoint = resolveRelayEndpoint(input.relayUpstream);
-  const binaries = input.binaries ?? [
-    '/usr/local/bin/node',
-    '/usr/local/bin/openkit-worker-sidecar',
-  ];
+  const endpoint = resolveControlEndpoint(input.controlBaseUrl);
+  const binaries = input.binaries ?? ['/usr/local/bin/node', '/usr/local/bin/openkit-codex-shim'];
   const additionalNetworkPolicies = (input.additionalNetworkEndpoints ?? []).flatMap((entry) =>
     renderNetworkPolicyEntry(entry)
   );
@@ -88,8 +92,8 @@ export function renderOpenShellWorkerPolicy(input: RenderOpenShellWorkerPolicyIn
     '  run_as_user: sandbox',
     '  run_as_group: sandbox',
     'network_policies:',
-    '  openkit_worker_control_relay:',
-    '    name: openkit_worker_control_relay',
+    '  openkit_worker_control:',
+    '    name: openkit_worker_control',
     '    binaries:',
     ...binaries.map((binary) => `      - path: ${binary}`),
     '    endpoints:',
@@ -146,12 +150,28 @@ function renderNetworkPolicyEntry(entry: OpenShellNetworkEndpoint): string[] {
     '/usr/bin/git',
     '/usr/bin/curl',
     '/usr/local/bin/codex',
-    '/usr/local/lib/codex/codex/codex',
+    '/usr/local/lib/codex/bin/codex',
     '/usr/lib/git-core/git-remote-http',
     '/usr/lib/git-core/git-remote-https',
   ];
   const protocol = entry.protocol ?? 'rest';
   const access = entry.access ?? 'read-only';
+  const rules = entry.rules ?? [];
+
+  if (rules.length > 0 && entry.access) {
+    throw new Error('OpenShell network endpoint cannot combine access with exact REST rules.');
+  }
+  if (rules.length > 0 && protocol !== 'rest') {
+    throw new Error('OpenShell exact HTTP rules require the rest protocol.');
+  }
+  for (const rule of rules) {
+    if (rule.method !== 'POST') {
+      throw new Error('OpenShell worker inference rules only support POST.');
+    }
+    if (!rule.path.startsWith('/') || /[\r\n*?]/.test(rule.path)) {
+      throw new Error('OpenShell exact REST rule paths must be absolute and contain no globs.');
+    }
+  }
 
   return [
     `  ${entry.name}:`,
@@ -163,22 +183,31 @@ function renderNetworkPolicyEntry(entry: OpenShellNetworkEndpoint): string[] {
     `        port: ${entry.port}`,
     `        protocol: ${protocol}`,
     '        enforcement: enforce',
-    `        access: ${access}`,
+    ...(rules.length > 0
+      ? [
+          '        rules:',
+          ...rules.flatMap((rule) => [
+            '          - allow:',
+            `              method: ${rule.method}`,
+            `              path: ${rule.path}`,
+          ]),
+        ]
+      : [`        access: ${access}`]),
   ];
 }
 
 /**
  * Resolves an HTTP URL into the host and port OpenShell policy expects.
  *
- * @param relayUpstream Relay upstream URL.
+ * @param controlBaseUrl Direct worker control URL.
  * @returns Host and numeric port.
  * @throws Error when the URL is not HTTP(S).
  */
-function resolveRelayEndpoint(relayUpstream: string): { host: string; port: number } {
-  const url = new URL(relayUpstream);
+function resolveControlEndpoint(controlBaseUrl: string): { host: string; port: number } {
+  const url = new URL(controlBaseUrl);
 
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error('OpenShell worker relay upstream must be an HTTP or HTTPS URL.');
+    throw new Error('OpenShell worker control endpoint must be an HTTP or HTTPS URL.');
   }
 
   return {

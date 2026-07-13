@@ -32,8 +32,8 @@ export interface TurnExecutorFactoryEnv {
   OPENKIT_OPENSHELL_WORKER_IMAGE?: string | undefined;
   /** Whether OpenShell sandboxes should be retained after turn completion. */
   OPENKIT_OPENSHELL_RETAIN_SANDBOXES?: string | undefined;
-  /** NanoCore worker-control upstream reached by the sandbox sidecar. */
-  OPENKIT_OPENSHELL_CONTROL_RELAY_UPSTREAM?: string | undefined;
+  /** Direct NanoCore worker-control URL reached by the sandbox worker. */
+  OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL?: string | undefined;
   /** OpenShell binary path or command name. */
   OPENKIT_OPENSHELL_BINARY?: string | undefined;
   /** Optional host Codex config file uploaded into explicitly configured OpenShell workers. */
@@ -136,7 +136,7 @@ function normalizeContainerPlacement(value: string | undefined): 'local' | 'remo
  * Creates the OpenShell-backed local-container turn executor.
  *
  * @param env Environment variables to read.
- * @param workerControlGateway Shared worker-control gateway for sidecar sessions.
+ * @param workerControlGateway Shared worker-control gateway for direct worker sessions.
  * @returns Worker governance turn executor.
  */
 function createOpenShellTurnExecutor(
@@ -148,9 +148,9 @@ function createOpenShellTurnExecutor(
 ): WorkerGovernanceTurnExecutor {
   const sandboxImageRef =
     normalizeEnvValue(env.OPENKIT_OPENSHELL_WORKER_IMAGE) ?? 'openkit/worker-codex:dev';
-  const controlRelayUpstream =
-    normalizeEnvValue(env.OPENKIT_OPENSHELL_CONTROL_RELAY_UPSTREAM) ??
-    defaultControlRelayUpstream(env, placement);
+  const workerControlBaseUrl =
+    normalizeEnvValue(env.OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL) ??
+    defaultWorkerControlBaseUrl(env, placement);
   const gatewayName = normalizeEnvValue(env.OPENKIT_OPENSHELL_GATEWAY) ?? 'openshell';
   const gatewayUrl = parseOpenShellGatewayUrl(env, placement);
   const gatewayInsecure = parseBooleanEnv(env.OPENKIT_OPENSHELL_GATEWAY_INSECURE, false);
@@ -171,12 +171,13 @@ function createOpenShellTurnExecutor(
       placement,
       retainSandboxes: parseBooleanEnv(env.OPENKIT_OPENSHELL_RETAIN_SANDBOXES, false),
       sandboxSource: sandboxImageRef,
+      trustedWorkerInferenceRelayEnabled: true,
       workerControlGateway,
     }),
     coreDb,
     environmentBackend: {
       ...(codexModel ? { codexModel } : {}),
-      controlRelayUpstream,
+      workerControlBaseUrl,
       ...(gatewayUrl ? { gatewayUrl } : {}),
       kind: 'openshell',
       placement,
@@ -187,20 +188,20 @@ function createOpenShellTurnExecutor(
 }
 
 /**
- * Builds the default worker-control upstream for local OpenShell placement only.
+ * Builds the default worker-control URL for local OpenShell placement only.
  *
  * @param env Environment variables to read.
  * @param placement OpenShell runtime placement.
- * @returns Local relay upstream.
- * @throws Error when remote placement omits an explicit relay upstream.
+ * @returns Local worker-control URL.
+ * @throws Error when remote placement omits an explicit worker-control URL.
  */
-function defaultControlRelayUpstream(
+function defaultWorkerControlBaseUrl(
   env: TurnExecutorFactoryEnv,
   placement: 'local' | 'remote'
 ): string {
   if (placement === 'remote') {
     throw new Error(
-      'OPENKIT_OPENSHELL_CONTROL_RELAY_UPSTREAM is required when OPENKIT_CONTAINER_PLACEMENT=remote.'
+      'OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL is required when OPENKIT_CONTAINER_PLACEMENT=remote.'
     );
   }
 
@@ -295,6 +296,12 @@ function parseExtraNetworkEndpoint(value: unknown, index: number): OpenShellNetw
     record.name,
     `OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS[${index}].name`
   );
+
+  if (name === 'openkit_worker_control' || name === 'openkit_worker_inference') {
+    throw new Error(
+      `OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS[${index}].name is reserved: ${name}.`
+    );
+  }
   const host = parseRequiredString(
     record.host,
     `OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS[${index}].host`

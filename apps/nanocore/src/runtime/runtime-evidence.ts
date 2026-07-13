@@ -49,6 +49,93 @@ interface RuntimeEvidenceRow {
 
 const ImportedRuntimeEvidenceRecordSchema = RuntimeEvidenceRecordSchema.strip();
 
+/** Input for one automatic worker runtime provenance evidence record. */
+export interface RecordWorkerRuntimeProvenanceEvidenceInput {
+  /** Agent Environment Package snapshot that owns the capture. */
+  packageSnapshotId: string;
+  /** Workspace that owns the outer turn. */
+  workspaceId: string;
+  /** Outer OpenKit thread id. */
+  threadId: string;
+  /** Outer OpenKit turn id. */
+  turnId: string;
+  /** Outer worker agent session id. */
+  agentSessionId: string;
+  /** Governance backend family. */
+  backendType: string;
+  /** Governance backend version. */
+  backendVersion: string | null;
+  /** Governance backend placement. */
+  placement: RuntimeEvidenceRecord['placement'];
+  /** Product-safe transcript collection summary. */
+  summary: string;
+  /** Automatically produced evidence bundle ids. */
+  evidenceBundleIds: string[];
+  /** Digests of the retained and normalized evidence. */
+  contentDigests: string[];
+  /** Transcript collection outcome. */
+  outcome: RuntimeEvidenceRecord['outcome'];
+  /** Stable failure code when transcript collection fails. */
+  errorCode?: string | null;
+  /** Product-safe failure message when transcript collection fails. */
+  errorMessage?: string | null;
+  /** Collection timestamp. */
+  collectedAt: string;
+}
+
+/**
+ * Records package-scoped transcript collection evidence for worker runtime provenance.
+ *
+ * @param workspaceDb Open workspace database handle.
+ * @param input Product-safe runtime provenance summary and bundle linkage.
+ * @returns Stored runtime evidence record.
+ */
+export function recordWorkerRuntimeProvenanceEvidence(
+  workspaceDb: WorkspaceDb,
+  input: RecordWorkerRuntimeProvenanceEvidenceInput
+): RuntimeEvidenceRecord {
+  const record = RuntimeEvidenceRecordSchema.parse({
+    id: createWorkerRuntimeProvenanceEvidenceId(input.packageSnapshotId),
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    turnId: input.turnId,
+    goalId: null,
+    taskId: null,
+    agentSessionId: input.agentSessionId,
+    backendType: input.backendType,
+    backendVersion: input.backendVersion,
+    placement: input.placement,
+    phase: 'transcript-collection',
+    summary: input.summary,
+    policyDigest: null,
+    workerImage: null,
+    sandboxSummary: null,
+    capabilitySummary: 'worker runtime provenance',
+    uploadManifest: [],
+    downloadManifest: [],
+    transcriptSummary: input.summary,
+    workspaceChangeSummary: null,
+    controlSummary: null,
+    outcome: input.outcome,
+    exitCode: null,
+    signal: null,
+    stopReason: null,
+    errorCode: input.errorCode ?? null,
+    errorMessage: input.errorMessage ?? null,
+    redactedStdoutSummary: null,
+    redactedStderrSummary: null,
+    evidenceBundleIds: input.evidenceBundleIds,
+    contentDigests: input.contentDigests,
+    requiredFeatures: ['runtime.evidence.v1', 'worker.runtime-provenance.v1'],
+    createdAt: input.collectedAt,
+    startedAt: null,
+    completedAt: input.collectedAt,
+    collectedAt: input.collectedAt,
+  });
+
+  return insertRuntimeEvidence(workspaceDb, record);
+}
+
 /**
  * Records normalized runtime evidence for a terminal worker checkpoint.
  *
@@ -99,8 +186,7 @@ export function recordWorkerCheckpointRuntimeEvidence(
     collectedAt: checkpoint.updatedAt,
   });
 
-  insertRuntimeEvidence(workspaceDb, record);
-  return record;
+  return insertRuntimeEvidence(workspaceDb, record);
 }
 
 /**
@@ -153,8 +239,7 @@ export function recordMaterializationRuntimeEvidence(
     collectedAt: record.createdAt,
   });
 
-  insertRuntimeEvidence(workspaceDb, runtimeEvidence);
-  return runtimeEvidence;
+  return insertRuntimeEvidence(workspaceDb, runtimeEvidence);
 }
 
 /**
@@ -197,6 +282,16 @@ export function importWorkspaceRuntimeEvidence(
 
 function createRuntimeEvidenceId(checkpointId: string): string {
   return `rte_${createHash('sha256').update(checkpointId).digest('hex').slice(0, 24)}`;
+}
+
+/**
+ * Returns the deterministic RuntimeEvidence id for one provenance package snapshot.
+ *
+ * @param packageSnapshotId Package snapshot that owns the evidence.
+ * @returns Deterministic runtime evidence id.
+ */
+export function createWorkerRuntimeProvenanceEvidenceId(packageSnapshotId: string): string {
+  return createRuntimeEvidenceId(`worker-runtime-provenance:${packageSnapshotId}`);
 }
 
 function materializationBackendVersion(record: WorkspaceMaterializationRecord): string | null {
@@ -290,10 +385,23 @@ function runtimeEvidenceFromRow(row: RuntimeEvidenceRow): RuntimeEvidenceRecord 
   });
 }
 
-function insertRuntimeEvidence(workspaceDb: WorkspaceDb, record: RuntimeEvidenceRecord): void {
+function insertRuntimeEvidence(
+  workspaceDb: WorkspaceDb,
+  record: RuntimeEvidenceRecord
+): RuntimeEvidenceRecord {
+  const existingRow = workspaceDb.sqlite
+    .prepare('SELECT * FROM runtime_evidence WHERE runtime_evidence_id = ?')
+    .get(record.id) as RuntimeEvidenceRow | undefined;
+  if (existingRow) {
+    const existing = runtimeEvidenceFromRow(existingRow);
+    if (JSON.stringify(existing) !== JSON.stringify(record)) {
+      throw new Error(`Runtime evidence replay conflict: ${record.id}`);
+    }
+    return existing;
+  }
   workspaceDb.sqlite
     .prepare(
-      `INSERT OR IGNORE INTO runtime_evidence (
+      `INSERT INTO runtime_evidence (
         runtime_evidence_id,
         workspace_id,
         thread_id,
@@ -370,4 +478,6 @@ function insertRuntimeEvidence(workspaceDb: WorkspaceDb, record: RuntimeEvidence
       record.completedAt,
       record.collectedAt
     );
+
+  return record;
 }

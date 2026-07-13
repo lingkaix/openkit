@@ -28,8 +28,12 @@ describe('loadAgentManifests', () => {
     ensureLayout(dataRoot);
 
     const result = loadAgentManifests(dataRoot);
+    const codexConfig = result.configs.find((config) => config.id === 'agent_codex_host');
 
     expect(result.diagnostics).toEqual([]);
+    expect(codexConfig?.sandbox?.backend?.requiredCapabilities).toEqual(
+      expect.arrayContaining(['trusted-worker-inference-relay', 'worker.runtime-provenance.v1'])
+    );
     expect(result.manifests).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

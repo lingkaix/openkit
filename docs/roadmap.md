@@ -14,11 +14,15 @@ Each entry states what the area is, why it is deferred, where its boundary is cu
 
 ### Unified proxy: third-party resource proxy, network egress
 
-The product vision (§6.5) defines a unified proxy covering LLM providers, MCP servers, third-party APIs, and network egress, with auth injection, access control, rate limiting, and audit. The LLM provider plane is active (`docs/specs/20260526-llm_gateway_responses_api.md`, `docs/specs/20260708-pi_ai_unified_llm_backend.md`), and the MCP plane for worker traffic is now active (`docs/specs/20260704-worker_mcp_tool_supply.md`). The remaining planes — authenticated third-party resource access and a unified network egress — are deferred. Boundary declarations live in `docs/core/agent-capability.md`. Design should start only after the capability plane's catalog and budget model exists, since proxy access control composes with capability grants; credential-bearing paths must reuse the vault injection contract (`docs/specs/20260703-vault_secret_injection.md`, `docs/specs/20260703-openshell_mechanism_internalization.md`) rather than inventing a parallel mechanism.
+The product vision (§6.5) defines a unified proxy covering LLM providers, MCP servers, third-party APIs, and network egress, with auth injection, access control, rate limiting, and audit. The LLM provider plane is active (`docs/specs/20260526-llm_gateway_responses_api.md`, `docs/specs/20260708-pi_ai_unified_llm_backend.md`). Worker-side MCP supply has an accepted target contract (`docs/specs/20260704-worker_mcp_tool_supply.md`) but no current implementation. Authenticated third-party resource access and unified network egress are also deferred. Boundary declarations live in `docs/core/agent-capability.md`. Implementation should start only after the worker capability plane has a reviewed catalog and budget model, since proxy access control composes with capability grants; credential-bearing paths must reuse the vault injection contract (`docs/specs/20260703-vault_secret_injection.md`, `docs/specs/20260703-openshell_mechanism_internalization.md`) rather than inventing a parallel mechanism.
+
+### Worker capability plane and MCP tool supply
+
+The accepted worker capability and MCP contracts remain the target design in `docs/specs/20260703-worker_agent_capability.md` and `docs/specs/20260704-worker_mcp_tool_supply.md`. The earlier implementation was removed during the direct worker-control reset: current Agent Environment Packages require `capabilities.mode: disabled` with no routes, `@openkit/worker-shim` has no capability client, and NanoCore exposes no `/api/worker-capabilities/*` routes or worker MCP gateway. This area stays visible here until a dedicated implementation slice rebuilds it from the accepted contracts after direct worker control and runtime provenance pass real OpenShell/Codex acceptance. Reimplementation must begin with current trust-boundary tests and must not restore the removed sidecar or create a second control path.
 
 ### Capability catalog and rate-limit/budget model
 
-The worker capability plane (`docs/specs/20260703-worker_agent_capability.md`) defers the full capability catalog schema, per-capability rate limits, and budget enforcement. The shared durable usage foundation for LLM and MCP gateway producers is active in `docs/specs/20260704-capability_usage_gateway_foundation.md`, but it deliberately does not implement budget or rate-limit policy. The deferred model remains the economic backbone for multi-agent concurrency and is a prerequisite for the proxy planes above. Design should start when more than one capability family beyond `inference.local` is durably implemented and real usage rows show the required control dimensions.
+The worker capability plane (`docs/specs/20260703-worker_agent_capability.md`) defers the full capability catalog schema, per-capability rate limits, and budget enforcement. The shared durable usage foundation for LLM gateway producers is active in `docs/specs/20260704-capability_usage_gateway_foundation.md`, but it deliberately does not implement budget or rate-limit policy. The deferred model remains the economic backbone for multi-agent concurrency and is a prerequisite for the proxy planes above. Design should start after at least one non-LLM worker capability family is durably implemented and real usage rows show the required control dimensions.
 
 ### Metering beyond the gateway
 
@@ -42,7 +46,7 @@ The V1 Git write workflow is active through `docs/specs/20260704-git_write_workf
 
 ### Multi-channel communication gateway
 
-The product vision (§6.2) targets Core as a gateway for external messaging channels (Discord, Slack, Signal, and similar). `docs/core/communication.md` already fixes the invariant that channels are projections that must not implement their own workflow truth. The concrete channel adapter contract, identity mapping, and notification routing are deferred until the Web and MCP channels are stable in real use, since a third channel type would currently triple surface area while the workflow mechanisms are still hardening.
+The product vision (§6.2) targets Core as a gateway for external messaging channels (Discord, Slack, Signal, and similar). `docs/core/communication.md` already fixes the invariant that channels are projections that must not implement their own workflow truth. The concrete channel adapter contract, identity mapping, and notification routing are deferred until the Web and end-user Agent Skill Interface are stable in real use, since another channel type would currently expand surface area while the workflow mechanisms are still hardening.
 
 ### Generative Kernel data plane
 
@@ -58,15 +62,15 @@ The durable scheduler design (`docs/specs/20260703-durable_scheduler_design.md`)
 
 ## Deferred Design Areas: Product Surface And UI
 
-The current development posture is NanoCore-first and MCP-first: kernel contracts stabilize before the Web UI becomes the primary build surface (`README.md`, `docs/specs/20260628-web_product_surface_projection.md`). The areas below are product commitments from the vision whose design work is deliberately sequenced after kernel stabilization. They are projections over kernel contracts and MUST NOT become a second source of workflow or protocol truth.
+The current development posture is NanoCore-first and end-user Agent-Skill-first: kernel contracts stabilize before the unified `openkit` Skill, bundled CLI, or Web UI projects them as a product surface (`README.md`, `docs/specs/20260713-openkit_agent_skill_interface.md`, `docs/specs/20260628-web_product_surface_projection.md`). The areas below are product commitments from the vision whose design work is deliberately sequenced after kernel stabilization. They are projections over kernel contracts and MUST NOT become a second source of workflow or protocol truth.
 
 ### Web UI product surface completion
 
-The vision (§5.1–§5.3) commits to a conversation-first interface where users manage agents like a real team: who owns what, where each task stands, which communications and handoffs happened, which artifacts are done, and when human intervention is needed — plus the config interface for agents, runtimes, environments, and preferences. The posture spec fixes the projection boundary; the actual product design (information architecture, task and communication tracking surfaces, Action Center presentation, notebook views over the Knowledge Store) is a 0.x milestone per the README roadmap. Prerequisite: stable protocol, App API, and the workflow mechanism layer in real MCP-first use.
+The vision (§5.1–§5.3) commits to a conversation-first interface where users manage agents like a real team: who owns what, where each task stands, which communications and handoffs happened, which artifacts are done, and when human intervention is needed — plus the config interface for agents, runtimes, environments, and preferences. The posture spec fixes the projection boundary; the actual product design (information architecture, task and communication tracking surfaces, Action Center presentation, notebook views over the Knowledge Store) is a 0.x milestone per the README roadmap. Prerequisite: stable protocol, App API, and workflow mechanisms proven through the end-user Agent Skill Interface.
 
 ### Artifacts presentation and interactive rendering
 
-The vision (§5.2) references LibreChat-style artifact interaction: structured outputs and work products rendered as first-class reviewable objects rather than chat text. Artifact records, storage, and review flows exist at the kernel layer; the presentation contract — which artifact kinds get rich rendering, preview versus export behavior, and how artifact review actions map to the human-attention model — is undesigned. Belongs with Web UI completion but is called out separately because MCP and desktop channels also consume artifact presentation metadata.
+The vision (§5.2) references LibreChat-style artifact interaction: structured outputs and work products rendered as first-class reviewable objects rather than chat text. Artifact records, storage, and review flows exist at the kernel layer; the presentation contract — which artifact kinds get rich rendering, preview versus export behavior, and how artifact review actions map to the human-attention model — is undesigned. Belongs with Web UI completion but is called out separately because the Agent Skill Interface and future desktop channels also consume artifact presentation metadata.
 
 ### Generative UI
 
@@ -91,7 +95,7 @@ OpenKit-authored Skills ship in-repo today (`skills/README.md`), and immutable c
 - Durable recurring scheduler and event-trigger design: `docs/specs/20260711-scheduler_recurring_event_triggers.md`.
 - Immutable Skill catalog version identity, pinning, and promotion: `docs/specs/20260711-skill_catalog_versioning_pinning.md`.
 - Worker sandbox freedom and explicit process, filesystem, network, credential, and review boundaries: `docs/specs/20260709-worker_sandbox_freedom_policy.md`.
-- Worker runtime sub-agent provenance, trusted inference identity, and runtime-cache lineage design currently being authored: `docs/specs/20260711-worker_runtime_subagent_provenance.md`.
+- Worker runtime sub-agent provenance, trusted inference identity, and runtime-cache lineage design accepted and in phased implementation: `docs/specs/20260711-worker_runtime_subagent_provenance.md`.
 - Vault injection, audit import, and NGAC policy enforcement mechanics via OpenShell mechanism borrowing with internalized definitions: `docs/specs/20260703-openshell_mechanism_internalization.md`.
 - Knowledge Store implementation with pinned OKF 0.1: `docs/specs/20260703-knowledge_store_implementation.md`.
 - Durable scheduler design: `docs/specs/20260703-durable_scheduler_design.md`.
@@ -100,8 +104,8 @@ OpenKit-authored Skills ship in-repo today (`skills/README.md`), and immutable c
 - Goal Mode coordination: `docs/specs/20260704-goal_mode_coordination.md`.
 - Workflow Coordinator internal agent: `docs/specs/20260704-workflow_coordinator_internal_agent.md`.
 - Knowledge Manager internal agent runtime: `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md`.
-- MCP plane of the unified proxy, for worker tool supply: `docs/specs/20260704-worker_mcp_tool_supply.md`.
-- Capability usage gateway foundation for durable LLM and MCP usage producers: `docs/specs/20260704-capability_usage_gateway_foundation.md`.
+- Worker MCP tool-supply design remains accepted, while implementation has returned to the deferred worker-capability entry above: `docs/specs/20260704-worker_mcp_tool_supply.md`.
+- Shared capability usage ledger and durable LLM producers are active; the worker MCP producer remains pending: `docs/specs/20260704-capability_usage_gateway_foundation.md`.
 - NanoCore boot, readiness, and recovery: `docs/specs/20260704-nanocore_bootstrap_readiness.md`.
 - Remote auth bootstrap and channel credential storage: `docs/specs/20260704-remote_auth_credential_bootstrap.md`.
 - Vault backends (OS keychain and encrypted local store): `docs/specs/20260704-vault_backend_implementation.md`.

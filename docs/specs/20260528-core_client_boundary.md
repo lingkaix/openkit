@@ -158,7 +158,7 @@ Turn feedback submissions use the strict shared `SubmitTurnFeedbackRequestSchema
 
 ## Current Implementation Projection
 
-The composed `@openkit/core-client` surface, shared `@openkit/app-api-schemas` package, NanoCore App API validation path, Web consumption path, and MCP facade all follow this boundary.
+The composed `@openkit/core-client` surface, shared `@openkit/app-api-schemas` package, NanoCore App API validation path, and Web consumption path follow this boundary. The accepted bundled CLI must follow the same boundary when implemented; the current MCP facade is temporary legacy evidence only.
 
 The boundary is guarded by package tests that keep App API schemas runtime-neutral and OpenAPI tests that prevent first-party clients from reversing direction and consuming the generated OpenAPI artifact as the source contract.
 

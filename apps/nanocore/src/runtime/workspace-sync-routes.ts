@@ -11,7 +11,6 @@ import {
   ListWorkspaceMaterializationRecordsResponseSchema,
   ListWorkspaceQuarantineRecordsResponseSchema,
   ListWorkspaceReconciliationRecordsResponseSchema,
-  ListWorkspaceSyncEvidenceBundlesResponseSchema,
   ListWorkspaceSyncReviewsResponseSchema,
   SubmitWorkspaceRecoveryDecisionRequestSchema,
   SubmitWorkspaceRecoveryDecisionResponseSchema,
@@ -44,7 +43,6 @@ import {
   listWorkspaceSyncReviewArtifacts,
   listWorkspaceSyncReviewsForRead,
 } from './workspace-review-application.js';
-import { listWorkspaceSyncEvidenceBundles } from './workspace-sync-evidence-bundles.js';
 import {
   getWorkspaceSyncReview,
   listBackendWorkspaceHandles,
@@ -373,10 +371,6 @@ export function registerWorkspaceSyncRoutes({
                 decision: input.decision,
                 decidedAt,
                 workerOutputManifests: listWorkerOutputManifests(workspaceDb, workspaceId),
-                workspaceSyncEvidenceBundles: listWorkspaceSyncEvidenceBundles(
-                  workspaceDb,
-                  workspaceId
-                ),
               }),
             };
           } finally {
@@ -420,23 +414,6 @@ export function registerWorkspaceSyncRoutes({
         const items = listWorkspaceQuarantineRecords(workspaceDb, workspaceId);
 
         return c.json(ListWorkspaceQuarantineRecordsResponseSchema.parse({ items }));
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-    } catch (error) {
-      return asApiError((error as Error).message);
-    }
-  });
-
-  registerAppApiRoute(app, 'listWorkspaceSyncEvidenceBundles', (c) => {
-    try {
-      const workspaceId = c.req.param('workspaceId');
-      const store = requestStore(c);
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-      try {
-        const items = listWorkspaceSyncEvidenceBundles(workspaceDb, workspaceId);
-
-        return c.json(ListWorkspaceSyncEvidenceBundlesResponseSchema.parse({ items }));
       } finally {
         workspaceDb.sqlite.close();
       }

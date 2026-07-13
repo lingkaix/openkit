@@ -1,20 +1,21 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
 import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
   type WorkerSandboxAccess,
 } from '@openkit/config-schema';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
 import {
   OpenShellWorkerGovernanceBackend,
   type OpenShellWorkerGovernanceClient,
+  type WorkerGovernanceMaterializationContext,
 } from './worker-governance-backend.js';
 import { importWorkerTranscript } from './worker-transcript.js';
 
@@ -29,20 +30,60 @@ describe('OpenShellWorkerGovernanceBackend', () => {
 
     expect(await backend.describeCapabilities()).toMatchObject({
       kind: 'openshell',
-      version: '0.0.63',
+      version: '0.0.80',
       capabilities: expect.arrayContaining([
         'container',
         'filesystem-policy',
         'network-policy',
         'process-policy',
         'transcript-sink',
-        'sidecar-control-endpoint',
-        'sidecar-capability-endpoint',
+        'worker-control',
         'provider-attachments',
         'nanocore-inference-upstream',
         'audit-export',
       ]),
     });
+    expect((await backend.describeCapabilities()).capabilities).not.toContain('control-relay');
+    expect((await backend.describeCapabilities()).capabilities).not.toContain(
+      'sidecar-control-endpoint'
+    );
+    expect((await backend.describeCapabilities()).capabilities).not.toContain(
+      'sidecar-capability-endpoint'
+    );
+    expect((await backend.describeCapabilities()).capabilities).not.toContain(
+      'trusted-worker-inference-relay'
+    );
+    expect((await backend.describeCapabilities()).capabilities).not.toContain(
+      'worker.runtime-provenance.v1'
+    );
+  });
+
+  it('declares trusted worker inference only after executable relay verification', async () => {
+    const backend = new OpenShellWorkerGovernanceBackend({
+      cli: new FakeOpenShellClient(),
+      gatewayName: 'openshell',
+      retainSandboxes: true,
+      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
+      trustedWorkerInferenceRelayEnabled: true,
+    });
+
+    expect((await backend.describeCapabilities()).capabilities).toContain(
+      'trusted-worker-inference-relay'
+    );
+    expect((await backend.describeCapabilities()).capabilities).toContain(
+      'worker.runtime-provenance.v1'
+    );
+  });
+
+  it('rejects capability claims from any OpenShell version other than the pinned target', async () => {
+    const backend = new OpenShellWorkerGovernanceBackend({
+      cli: new FakeOpenShellClient({ version: '0.0.81' }),
+      gatewayName: 'openshell',
+      retainSandboxes: true,
+      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
+    });
+
+    await expect(backend.describeCapabilities()).rejects.toThrow('requires exactly 0.0.80');
   });
 
   it('declares remote OpenShell transport capabilities for remote placement', async () => {
@@ -67,37 +108,73 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     });
   });
 
-  it('validates OpenKit sidecar control packages and rejects inference.local control endpoints', async () => {
+  it('validates direct NanoCore control packages and rejects inference.local control endpoints', async () => {
     const backend = new OpenShellWorkerGovernanceBackend({
       cli: new FakeOpenShellClient(),
       gatewayName: 'openshell',
       retainSandboxes: true,
       sandboxSource: 'ghcr.io/openkit/codex-worker:test',
     });
-    const validPackage = createOpenShellPackage();
+    const basePackage = createOpenShellPackage();
+    const validPackage = AgentEnvironmentPackageSchema.parse({
+      ...basePackage,
+      capabilities: {
+        mode: 'disabled',
+        protocol: 'openkit-worker-capability-v1',
+        routes: [],
+      },
+      control: {
+        ...basePackage.control,
+        adapter: {
+          ...basePackage.control.adapter,
+          targetTransport: 'outbound-https',
+        },
+        auth: {
+          credentialVisibility: 'environment',
+          kind: 'sandbox-session-token',
+          tokenRef: 'runtime://openkit/control-token',
+        },
+        channels: {
+          artifacts: 'batch',
+          commands: true,
+          events: 'batch',
+          heartbeats: true,
+          logs: 'summary-only',
+        },
+        commands: ['interrupt', 'terminal-command'],
+        endpoint: {
+          baseUrl: 'https://nanocore.local/api/worker-control',
+          implementation: 'direct-nanocore',
+          kind: 'direct-url',
+          required: true,
+        },
+        mode: 'direct-nanocore',
+      },
+    });
     const invalidPackage = AgentEnvironmentPackageSchema.parse({
       ...validPackage,
       control: {
         ...validPackage.control,
         endpoint: {
           ...validPackage.control.endpoint,
-          baseUrl: 'https://inference.local/v1/worker-control',
+          baseUrl: 'https://inference.local/api/worker-control',
         },
       },
     });
 
     expect(await backend.validatePackage(validPackage)).toEqual([]);
-    expect(await backend.validatePackage(invalidPackage)).toEqual(
+    const diagnostics = await backend.validatePackage(invalidPackage);
+
+    expect(diagnostics).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          code: 'openshell_control_endpoint_must_be_control_local',
-          path: '$.control.endpoint.baseUrl',
-        }),
         expect.objectContaining({
           code: 'openshell_control_must_not_use_inference_local',
           path: '$.control.endpoint.baseUrl',
         }),
       ])
+    );
+    expect(diagnostics.map((diagnostic) => diagnostic.code)).not.toContain(
+      'openshell_control_endpoint_must_be_control_local'
     );
   });
 
@@ -123,6 +200,7 @@ describe('OpenShellWorkerGovernanceBackend', () => {
         command: environmentPackage.runtime.command.argv,
         env: expect.objectContaining({
           OPENKIT_AGENT_SESSION_ID: environmentPackage.scope.agentSessionId,
+          OPENKIT_CONTROL_BASE_URL: 'https://nanocore.local/api/worker-control',
           OPENKIT_CONTROL_TOKEN: 'token_openshell_control_1',
           OPENKIT_PACKAGE_SNAPSHOT_ID: environmentPackage.snapshotId,
           OPENKIT_REQUEST_ID: environmentPackage.scope.requestId,
@@ -133,11 +211,12 @@ describe('OpenShellWorkerGovernanceBackend', () => {
         from: 'ghcr.io/openkit/codex-worker:test',
         gateway: 'openshell',
         labels: expect.objectContaining({
-          'openkit.openshellMappingVersion': 'openshell-v2',
+          'openkit.openshellMappingVersion': 'openshell-v4',
           'openkit.openshellSnapshotId': 'openshell-0.0.80-2026-07-11',
         }),
         name: `openkit-${environmentPackage.scope.agentSessionId}`,
         policyPath: expect.stringMatching(/policy\.yaml$/),
+        providers: [],
         uploads: [
           expect.objectContaining({
             targetPath: '/openkit/config/package.json',
@@ -154,7 +233,7 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     expect(materialization).toMatchObject({
       backendKind: 'openshell',
       packageSnapshotId: environmentPackage.snapshotId,
-      controlMode: 'sidecar',
+      controlMode: 'direct-nanocore',
       sandbox: {
         name: `openkit-${environmentPackage.scope.agentSessionId}`,
         source: 'ghcr.io/openkit/codex-worker:test',
@@ -164,13 +243,18 @@ describe('OpenShellWorkerGovernanceBackend', () => {
         gatewayName: 'openshell',
         gatewayEndpoint: 'https://127.0.0.1:17670',
         health: 'ready',
-        version: '0.0.63',
+        version: '0.0.80',
       },
     });
     expect(serialized).not.toContain('/Users/m5pro');
     expect(serialized).not.toContain('token_openshell_control_1');
     expect(serialized).not.toContain('containerId');
     expect(serialized).not.toContain('backendSessionId');
+    const sandboxCommand = cli.createSandboxCalls[0]?.command.join(' ') ?? '';
+    expect(sandboxCommand).not.toContain('openkit-worker-sidecar');
+    expect(sandboxCommand).not.toContain('wait -n');
+    expect(sandboxCommand).not.toContain("'env' '-u' 'OPENKIT_CONTROL_TOKEN'");
+    expect(cli.createSandboxCalls[0]?.env).not.toHaveProperty('OPENKIT_CONTROL_RELAY_UPSTREAM');
     expect(workerControlGateway.getSessionSnapshot(environmentPackage.snapshotId)).toMatchObject({
       agentSessionId: environmentPackage.scope.agentSessionId,
       packageSnapshotId: environmentPackage.snapshotId,
@@ -285,9 +369,7 @@ describe('OpenShellWorkerGovernanceBackend', () => {
         providerType: 'github_mcp',
       },
     ]);
-    expect(cli.createSandboxCalls[0]?.providers).toEqual(
-      expect.arrayContaining(['provider_github_read'])
-    );
+    expect(cli.createSandboxCalls[0]?.providers).toEqual(['provider_github_read']);
     expect(JSON.stringify(cli.createSandboxCalls)).not.toContain('ghp_backend_secret');
   });
 
@@ -408,6 +490,587 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     expect(policy).toContain('host: chatgpt.com');
     expect(policy).toContain('mcp_deepwiki:');
     expect(policy).toContain('host: mcp.deepwiki.com');
+  });
+
+  it('materializes distinct verified relay providers without direct credentials or egress', async () => {
+    const cli = new FakeOpenShellClient();
+    const configDirectory = mkdtempSync(join(tmpdir(), 'openkit-relay-codex-config-'));
+    const authPath = join(configDirectory, 'auth.json');
+    const configPath = join(configDirectory, 'config.toml');
+    const controlTokens = ['relay_token_one', 'relay_token_two'];
+
+    writeFileSync(authPath, '{"tokens":{"openai":"direct_auth_secret"}}', 'utf8');
+    writeFileSync(configPath, 'model_provider = "direct"\n', 'utf8');
+    const workerControlGateway = new WorkerControlGateway({
+      createToken: () => controlTokens.shift() ?? 'unexpected_relay_token',
+    });
+    const backend = new OpenShellWorkerGovernanceBackend({
+      cli,
+      codexAuthJsonPath: authPath,
+      codexConfigTomlPath: configPath,
+      extraNetworkEndpoints: [
+        {
+          access: 'read-write',
+          binaries: ['/usr/local/bin/codex'],
+          host: 'api.example.com',
+          name: 'custom_direct_api',
+          port: 443,
+          protocol: 'rest',
+        },
+      ],
+      gatewayName: 'openshell',
+      retainSandboxes: true,
+      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
+      trustedWorkerInferenceRelayEnabled: true,
+      workerControlGateway,
+    });
+    const firstPackage = createTrustedRelayOpenShellPackage('as_relay_backend_1');
+    const secondPackage = createTrustedRelayOpenShellPackage('as_relay_backend_2');
+
+    await backend.materialize(firstPackage);
+    await backend.materialize(secondPackage);
+
+    expect(cli.ensureProviderProfileCalls).toHaveLength(2);
+    const relayProfileIds = cli.ensureProviderProfileCalls.map((call) => call.id);
+    const relayProfileId = relayProfileIds[0] ?? '';
+
+    expect(relayProfileId).toMatch(/^okp-local-worker-inference-[0-9a-f]{16}$/);
+    expect(new Set(relayProfileIds)).toEqual(new Set([relayProfileId]));
+    for (const call of cli.ensureProviderProfileCalls) {
+      expect(call).toMatchObject({
+        gateway: 'openshell',
+        id: relayProfileId,
+        path: expect.stringMatching(/worker-inference-provider-profile\.json$/),
+      });
+      const profile = JSON.parse(readFileSync(call.path, 'utf8')) as Record<string, unknown>;
+
+      expect(profile).toEqual({
+        binaries: ['/usr/local/bin/codex', '/usr/local/lib/codex/bin/codex'],
+        category: 'inference',
+        credentials: [
+          {
+            auth_style: 'bearer',
+            description: 'Package-bound scheduler lease token',
+            env_vars: ['OPENKIT_WORKER_INFERENCE_TOKEN'],
+            header_name: 'Authorization',
+            name: 'session_token',
+            query_param: '',
+            required: true,
+          },
+        ],
+        description: 'Package-bound NanoCore worker inference relay',
+        display_name: 'OpenKit Worker Inference',
+        endpoints: [
+          {
+            enforcement: 'enforce',
+            host: 'nanocore.local',
+            port: 443,
+            protocol: 'rest',
+            rules: [
+              {
+                allow: {
+                  method: 'POST',
+                  path: '/api/worker-inference/v1/chat/completions',
+                },
+              },
+              {
+                allow: {
+                  method: 'POST',
+                  path: '/api/worker-inference/v1/responses',
+                },
+              },
+            ],
+          },
+        ],
+        id: relayProfileId,
+        inference_capable: false,
+      });
+      expect(JSON.stringify(profile)).not.toContain('access');
+      expect(JSON.stringify(profile)).not.toContain('relay_token_one');
+      expect(JSON.stringify(profile)).not.toContain('relay_token_two');
+    }
+    expect(cli.upsertProviderCalls).toEqual([
+      expect.objectContaining({
+        credentialKey: 'OPENKIT_WORKER_INFERENCE_TOKEN',
+        credentialValue: 'relay_token_one',
+        providerType: relayProfileId,
+      }),
+      expect.objectContaining({
+        credentialKey: 'OPENKIT_WORKER_INFERENCE_TOKEN',
+        credentialValue: 'relay_token_two',
+        providerType: relayProfileId,
+      }),
+    ]);
+    expect(cli.operations).toEqual([
+      `profile:${relayProfileId}`,
+      expect.stringMatching(/^provider:openkit-worker-inference-/),
+      expect.stringMatching(/^sandbox:openkit-as_/),
+      `profile:${relayProfileId}`,
+      expect.stringMatching(/^provider:openkit-worker-inference-/),
+      expect.stringMatching(/^sandbox:openkit-as_/),
+    ]);
+    const relayProviderNames = cli.upsertProviderCalls.map((call) => call.name);
+
+    expect(relayProviderNames[0]).toMatch(/^openkit-worker-inference-[0-9a-f]{16}$/);
+    expect(relayProviderNames[1]).toMatch(/^openkit-worker-inference-[0-9a-f]{16}$/);
+    expect(relayProviderNames[0]).not.toBe(relayProviderNames[1]);
+    expect(cli.createSandboxCalls.map((call) => call.providers)).toEqual([
+      [relayProviderNames[0]],
+      [relayProviderNames[1]],
+    ]);
+    expect(cli.createSandboxCalls[0]?.env).not.toHaveProperty('OPENKIT_WORKER_INFERENCE_TOKEN');
+    const uploadTargets = cli.createSandboxCalls[0]?.uploads?.map((upload) => upload.targetPath);
+
+    expect(uploadTargets).not.toContain('/sandbox/.codex/auth.json');
+    expect(uploadTargets).not.toContain('/sandbox/.codex/config.toml');
+    const policy = readFileSync(cli.createSandboxCalls[0]?.policyPath ?? '', 'utf8');
+
+    expect(policy).not.toContain('openkit_worker_inference');
+    expect(policy).not.toContain('chatgpt.com');
+    expect(policy).not.toContain('mcp.deepwiki.com');
+    expect(policy).not.toContain('api.example.com');
+    expect(policy).not.toContain('relay_token_one');
+
+    await backend.teardown(firstPackage.snapshotId);
+    await backend.teardown(secondPackage.snapshotId);
+
+    expect(cli.detachProviderCalls.map((call) => call.provider)).toEqual(relayProviderNames);
+    expect(cli.deleteProviderCalls.map((call) => call.name)).toEqual(relayProviderNames);
+    expect(workerControlGateway.getSessionSnapshot(firstPackage.snapshotId)).toBeNull();
+    expect(workerControlGateway.getSessionSnapshot(secondPackage.snapshotId)).toBeNull();
+  });
+
+  it('fails before control registration when immutable relay profile setup fails', async () => {
+    const profileFailure = new Error('profile collision');
+    const cli = new FakeOpenShellClient({ ensureProviderProfileFailure: profileFailure });
+    const workerControlGateway = new WorkerControlGateway({
+      createToken: () => 'relay_profile_failure_token',
+    });
+    const registerSession = vi.spyOn(workerControlGateway, 'registerSession');
+    const backend = new OpenShellWorkerGovernanceBackend({
+      cli,
+      gatewayName: 'openshell',
+      retainSandboxes: true,
+      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
+      trustedWorkerInferenceRelayEnabled: true,
+      workerControlGateway,
+    });
+    const environmentPackage = createTrustedRelayOpenShellPackage('as_relay_profile_failure_1');
+
+    await expect(backend.materialize(environmentPackage)).rejects.toBe(profileFailure);
+    expect(cli.ensureProviderProfileCalls).toHaveLength(1);
+    expect(existsSync(dirname(cli.ensureProviderProfileCalls[0]?.path ?? ''))).toBe(false);
+    expect(registerSession).not.toHaveBeenCalled();
+    expect(cli.upsertProviderCalls).toEqual([]);
+    expect(cli.createSandboxCalls).toEqual([]);
+    expect(cli.detachProviderCalls).toEqual([]);
+    expect(cli.deleteProviderCalls).toEqual([]);
+  });
+
+  it('rejects backend-private direct credentials for verified relay packages', async () => {
+    const cli = new FakeOpenShellClient();
+    const backend = new OpenShellWorkerGovernanceBackend({
+      cli,
+      gatewayName: 'openshell',
+      retainSandboxes: true,
+      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
+      trustedWorkerInferenceRelayEnabled: true,
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'relay_direct_credential_token',
+      }),
+    });
+
+    const directCredentialContexts: WorkerGovernanceMaterializationContext[] = [
+      {
+        providerCredentials: [
+          {
+            credentialKey: 'OPENAI_API_KEY',
+            credentialValue: 'direct_provider_secret',
+            providerInstanceId: 'direct-provider',
+            providerType: 'generic',
+          },
+        ],
+        workspaceRoots: [],
+      },
+      {
+        runtimeEnvCredentials: [
+          { credentialValue: 'direct_env_secret', targetEnvVarName: 'OPENAI_API_KEY' },
+        ],
+        workspaceRoots: [],
+      },
+      {
+        runtimeFileCredentials: [
+          {
+            credentialValue: 'direct_file_secret',
+            targetPath: '/sandbox/.codex/auth.json',
+          },
+        ],
+        workspaceRoots: [],
+      },
+    ];
+
+    for (const [index, context] of directCredentialContexts.entries()) {
+      await expect(
+        backend.materialize(
+          createTrustedRelayOpenShellPackage(`as_relay_direct_credential_${index + 1}`),
+          context
+        )
+      ).rejects.toThrow('does not allow backend-private direct credentials');
+    }
+    expect(cli.upsertProviderCalls).toEqual([]);
+    expect(cli.createSandboxCalls).toEqual([]);
+  });
+
+  it('cleans up a transient relay provider when sandbox creation fails', async () => {
+    const cli = new FakeOpenShellClient({
+      createSandboxFailure: new Error('sandbox create failed'),
+      detachFailures: [new Error('sandbox not found')],
+    });
+    const workerControlGateway = new WorkerControlGateway({
+      createToken: () => 'relay_create_failure_token',
+    });
+    const backend = new OpenShellWorkerGovernanceBackend({
+      cli,
+      gatewayName: 'openshell',
+      retainSandboxes: true,
+      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
+      trustedWorkerInferenceRelayEnabled: true,
+      workerControlGateway,
+    });
+    const environmentPackage = createTrustedRelayOpenShellPackage('as_relay_create_failure_1');
+
+    await expect(backend.materialize(environmentPackage)).rejects.toThrow('sandbox create failed');
+    expect(cli.detachProviderCalls).toEqual([
+      expect.objectContaining({ provider: cli.upsertProviderCalls[0]?.name }),
+    ]);
+    expect(cli.deleteProviderCalls).toEqual([
+      expect.objectContaining({ name: cli.upsertProviderCalls[0]?.name }),
+    ]);
+    expect(workerControlGateway.getSessionSnapshot(environmentPackage.snapshotId)).toBeNull();
+  });
+
+  it('preserves creation and cleanup failures while revoking the relay session', async () => {
+    const createFailure = new Error('sandbox create failed');
+    const detachFailure = new Error('gateway authentication failed');
+    const deleteFailure = new Error('provider delete failed');
+    const cli = new FakeOpenShellClient({
+      createSandboxFailure: createFailure,
+      deleteProviderFailures: [deleteFailure],
+      detachFailures: [detachFailure],
+    });
+    const workerControlGateway = new WorkerControlGateway({
+      createToken: () => 'relay_failed_cleanup_token',
+    });
+    const backend = new OpenShellWorkerGovernanceBackend({
+      cli,
+      gatewayName: 'openshell',
+      retainSandboxes: true,
+      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
+      trustedWorkerInferenceRelayEnabled: true,
+      workerControlGateway,
+    });
+    const environmentPackage = createTrustedRelayOpenShellPackage('as_relay_failed_cleanup_1');
+    const error = await backend.materialize(environmentPackage).catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toEqual([createFailure, detachFailure, deleteFailure]);
+    expect(workerControlGateway.getSessionSnapshot(environmentPackage.snapshotId)).toBeNull();
+  });
+
+  it('deletes a sandbox after a failed create attempt and preserves every cleanup failure', async () => {
+    const createFailure = new Error('sandbox create failed');
+    const detachFailure = new Error('gateway authentication failed');
+    const providerDeleteFailure = new Error('provider delete failed');
+    const sandboxDeleteFailure = new Error('sandbox delete failed');
+    const cli = new FakeOpenShellClient({
+      createSandboxFailure: createFailure,
+      deleteProviderFailures: [providerDeleteFailure],
+      detachFailures: [detachFailure],
+    });
+    const deleteSandbox = vi.spyOn(cli, 'deleteSandbox').mockRejectedValue(sandboxDeleteFailure);
+    const backend = new OpenShellWorkerGovernanceBackend({
+      cli,
+      gatewayName: 'openshell',
+      retainSandboxes: false,
+      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
+      trustedWorkerInferenceRelayEnabled: true,
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'relay_failed_sandbox_cleanup_token',
+      }),
+    });
+    const environmentPackage = createTrustedRelayOpenShellPackage(
+      'as_relay_failed_sandbox_cleanup_1'
+    );
+    const error = await backend.materialize(environmentPackage).catch((reason: unknown) => reason);
+
+    expect(deleteSandbox).toHaveBeenCalledOnce();
+    expect(deleteSandbox).toHaveBeenCalledWith({
+      gateway: 'openshell',
+      name: 'openkit-as_relay_failed_sandbox_cleanup_1',
+    });
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toEqual([
+      createFailure,
+      detachFailure,
+      providerDeleteFailure,
+      sandboxDeleteFailure,
+    ]);
+  });
+
+  it('revokes teardown tokens, attempts every cleanup, and permits cleanup retry', async () => {
+    const deleteFailure = new Error('provider delete failed');
+    const cli = new FakeOpenShellClient({ deleteProviderFailures: [deleteFailure] });
+    const workerControlGateway = new WorkerControlGateway({
+      createToken: () => 'relay_teardown_failure_token',
+    });
+    const backend = new OpenShellWorkerGovernanceBackend({
+      cli,
+      gatewayName: 'openshell',
+      retainSandboxes: false,
+      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
+      trustedWorkerInferenceRelayEnabled: true,
+      workerControlGateway,
+    });
+    const environmentPackage = createTrustedRelayOpenShellPackage('as_relay_teardown_failure_1');
+
+    await backend.materialize(environmentPackage);
+    await expect(backend.teardown(environmentPackage.snapshotId)).rejects.toThrow(
+      'transient provider cleanup failed'
+    );
+    expect(workerControlGateway.getSessionSnapshot(environmentPackage.snapshotId)).toBeNull();
+    expect(cli.deleteSandboxCalls).toHaveLength(1);
+
+    await expect(backend.teardown(environmentPackage.snapshotId)).resolves.toMatchObject({
+      kind: 'openshell.teardown.completed',
+    });
+    expect(cli.deleteProviderCalls).toHaveLength(2);
+    expect(cli.deleteSandboxCalls).toHaveLength(1);
+  });
+
+  it('treats a missing sandbox during relay detachment as idempotent teardown', async () => {
+    const cli = new FakeOpenShellClient({ detachFailures: [new Error('sandbox not found')] });
+    const backend = new OpenShellWorkerGovernanceBackend({
+      cli,
+      detachRetryDelayMs: 0,
+      gatewayName: 'openshell',
+      retainSandboxes: true,
+      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
+      trustedWorkerInferenceRelayEnabled: true,
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'relay_missing_sandbox_token',
+      }),
+    });
+    const environmentPackage = createTrustedRelayOpenShellPackage('as_relay_missing_sandbox_1');
+
+    await backend.materialize(environmentPackage);
+
+    await expect(backend.teardown(environmentPackage.snapshotId)).resolves.toMatchObject({
+      kind: 'openshell.teardown.completed',
+    });
+    expect(cli.deleteProviderCalls).toHaveLength(1);
+  });
+
+  it('rejects duplicate active relay materialization before rotating its provider', async () => {
+    const cli = new FakeOpenShellClient();
+    const backend = new OpenShellWorkerGovernanceBackend({
+      cli,
+      gatewayName: 'openshell',
+      retainSandboxes: true,
+      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
+      trustedWorkerInferenceRelayEnabled: true,
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'relay_duplicate_token',
+      }),
+    });
+    const environmentPackage = createTrustedRelayOpenShellPackage('as_relay_duplicate_1');
+
+    await backend.materialize(environmentPackage);
+    await expect(backend.materialize(environmentPackage)).rejects.toThrow('already materialized');
+    expect(cli.upsertProviderCalls).toHaveLength(1);
+    expect(cli.createSandboxCalls).toHaveLength(1);
+    expect(cli.detachProviderCalls).toEqual([]);
+    expect(cli.deleteProviderCalls).toEqual([]);
+  });
+
+  it('rejects concurrent materialization of the same relay package', async () => {
+    let releaseCreate: (() => void) | null = null;
+    const createSandboxGate = new Promise<void>((resolve) => {
+      releaseCreate = resolve;
+    });
+    const cli = new FakeOpenShellClient({ createSandboxGate });
+    const backend = new OpenShellWorkerGovernanceBackend({
+      cli,
+      gatewayName: 'openshell',
+      retainSandboxes: true,
+      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
+      trustedWorkerInferenceRelayEnabled: true,
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'relay_concurrent_token',
+      }),
+    });
+    const environmentPackage = createTrustedRelayOpenShellPackage('as_relay_concurrent_1');
+    const firstMaterialization = backend.materialize(environmentPackage);
+
+    await vi.waitFor(() => expect(cli.createSandboxCalls).toHaveLength(1));
+    const secondMaterialization = backend.materialize(environmentPackage);
+    const secondExpectation = expect(secondMaterialization).rejects.toThrow('already materialized');
+
+    releaseCreate?.();
+    await firstMaterialization;
+    await secondExpectation;
+
+    expect(cli.upsertProviderCalls).toHaveLength(1);
+    expect(cli.createSandboxCalls).toHaveLength(1);
+  });
+
+  it('rejects relay packages until executable verification enables the capability', async () => {
+    const cli = new FakeOpenShellClient();
+    const backend = new OpenShellWorkerGovernanceBackend({
+      cli,
+      gatewayName: 'openshell',
+      retainSandboxes: true,
+      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'relay_unverified_token',
+      }),
+    });
+
+    await expect(
+      backend.materialize(createTrustedRelayOpenShellPackage('as_relay_unverified_1'))
+    ).rejects.toThrow('does not support required capability');
+    expect(cli.upsertProviderCalls).toEqual([]);
+    expect(cli.createSandboxCalls).toEqual([]);
+  });
+
+  it('rejects an incompatible gateway before verified relay materialization', async () => {
+    const cli = new FakeOpenShellClient({ gatewayVersion: '0.0.63' });
+    const backend = new OpenShellWorkerGovernanceBackend({
+      cli,
+      gatewayName: 'openshell',
+      retainSandboxes: true,
+      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
+      trustedWorkerInferenceRelayEnabled: true,
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'relay_gateway_version_token',
+      }),
+    });
+
+    await expect(
+      backend.materialize(createTrustedRelayOpenShellPackage('as_relay_gateway_version_1'))
+    ).rejects.toThrow('requires exactly 0.0.80');
+    expect(cli.upsertProviderCalls).toEqual([]);
+    expect(cli.createSandboxCalls).toEqual([]);
+  });
+
+  it('rejects a verified relay when the target gateway version is unavailable', async () => {
+    const cli = new FakeOpenShellClient({ gatewayVersion: null });
+    const backend = new OpenShellWorkerGovernanceBackend({
+      cli,
+      gatewayName: 'openshell',
+      retainSandboxes: true,
+      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
+      trustedWorkerInferenceRelayEnabled: true,
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'relay_missing_gateway_version_token',
+      }),
+    });
+
+    await expect(
+      backend.materialize(createTrustedRelayOpenShellPackage('as_relay_missing_version_1'))
+    ).rejects.toThrow('requires an OpenShell gateway version');
+    expect(cli.upsertProviderCalls).toEqual([]);
+    expect(cli.createSandboxCalls).toEqual([]);
+  });
+
+  it('rejects a verified relay without worker-control token registration', async () => {
+    const cli = new FakeOpenShellClient();
+    const backend = new OpenShellWorkerGovernanceBackend({
+      cli,
+      gatewayName: 'openshell',
+      retainSandboxes: true,
+      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
+      trustedWorkerInferenceRelayEnabled: true,
+    });
+
+    await expect(
+      backend.materialize(createTrustedRelayOpenShellPackage('as_relay_missing_control_1'))
+    ).rejects.toThrow('worker control gateway is required');
+    expect(cli.upsertProviderCalls).toEqual([]);
+    expect(cli.createSandboxCalls).toEqual([]);
+    expect(cli.detachProviderCalls).toEqual([]);
+    expect(cli.deleteProviderCalls).toEqual([]);
+  });
+
+  it('does not clean up a relay provider before token registration permits its upsert', async () => {
+    const cli = new FakeOpenShellClient();
+    const backend = new OpenShellWorkerGovernanceBackend({
+      cli,
+      gatewayName: 'openshell',
+      retainSandboxes: true,
+      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
+      trustedWorkerInferenceRelayEnabled: true,
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'unused_relay_token',
+      }),
+    });
+    const environmentPackage = createTrustedRelayOpenShellPackage('as_relay_auth_none_1');
+    const packageWithoutTokenAuth = {
+      ...environmentPackage,
+      control: {
+        ...environmentPackage.control,
+        auth: { credentialVisibility: 'none', kind: 'none' },
+      },
+    } as AgentEnvironmentPackage;
+
+    await expect(backend.materialize(packageWithoutTokenAuth)).rejects.toThrow(
+      'requires a worker control registration token'
+    );
+    expect(cli.upsertProviderCalls).toEqual([]);
+    expect(cli.createSandboxCalls).toEqual([]);
+    expect(cli.detachProviderCalls).toEqual([]);
+    expect(cli.deleteProviderCalls).toEqual([]);
+  });
+
+  it('rejects non-canonical relay network rules at the backend boundary', async () => {
+    const cli = new FakeOpenShellClient();
+    const backend = new OpenShellWorkerGovernanceBackend({
+      cli,
+      gatewayName: 'openshell',
+      retainSandboxes: true,
+      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
+      trustedWorkerInferenceRelayEnabled: true,
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'relay_network_bypass_token',
+      }),
+    });
+    const environmentPackage = createTrustedRelayOpenShellPackage('as_relay_network_bypass_1');
+    const bypassPackage = {
+      ...environmentPackage,
+      policy: {
+        ...environmentPackage.policy,
+        network: {
+          ...environmentPackage.policy.network,
+          rules: [
+            ...(environmentPackage.policy.network?.rules ?? []),
+            {
+              access: 'read-write',
+              action: 'allow',
+              binaries: ['/usr/local/bin/codex'],
+              host: 'control.local',
+              id: 'codex-control-bypass',
+              port: 3000,
+              protocol: 'rest',
+            },
+          ],
+        },
+      },
+    } as AgentEnvironmentPackage;
+
+    await expect(backend.materialize(bypassPackage)).rejects.toThrow(
+      'non-canonical trusted relay network rule'
+    );
+    expect(cli.upsertProviderCalls).toEqual([]);
+    expect(cli.createSandboxCalls).toEqual([]);
   });
 
   it('adds user-declared sandbox network and filesystem grants to generated OpenShell policies', async () => {
@@ -1157,6 +1820,8 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     });
 
     const transcript = await backend.collectTranscript(environmentPackage.snapshotId);
+    expect(Object.keys(transcript).sort()).toEqual(['artifactsJsonl', 'eventsJsonl', 'itemsJsonl']);
+    expect(transcript).not.toHaveProperty('runtimeProvenance');
     const importResult = importWorkerTranscript(importStore, environmentPackage, transcript);
 
     expect(importResult).toMatchObject({
@@ -1164,6 +1829,149 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       artifactIds: [expect.stringMatching(/^ar_worker_/)],
       diagnostics: [],
     });
+  });
+
+  it('collects declared runtime provenance as bounded session-owned files without raw payload text', async () => {
+    const environmentPackage = createTrustedRelayOpenShellPackage('as_runtime_provenance_collect');
+    const lineage = {
+      agentSessionId: environmentPackage.scope.agentSessionId,
+      packageSnapshotId: environmentPackage.snapshotId,
+      requestId: environmentPackage.scope.requestId,
+      threadId: environmentPackage.scope.threadId,
+      turnId: environmentPackage.scope.turnId,
+      workspaceId: environmentPackage.scope.workspaceId,
+    };
+    const rawCanary = 'runtime-raw-canary-'.repeat(65_536);
+    const manifest = JSON.stringify({
+      adapterVersion: '0.144.1',
+      captureStatus: 'complete',
+      lineage,
+      primaryStreamRef: 'stream-0000.jsonl',
+      runtimeFamily: 'codex',
+      schemaVersion: 1,
+      streams: [
+        {
+          bytes: rawCanary.length,
+          captureStatus: 'complete',
+          frameCount: 1,
+          sha256: `sha256:${'a'.repeat(64)}`,
+          sourceKind: 'primary',
+          stableTerminal: true,
+          streamRef: 'stream-0000.jsonl',
+        },
+        {
+          bytes: 3,
+          captureStatus: 'complete',
+          frameCount: 1,
+          sha256: `sha256:${'b'.repeat(64)}`,
+          sourceKind: 'runtime-thread',
+          stableTerminal: true,
+          streamRef: 'stream-0001.jsonl',
+        },
+      ],
+    });
+    const cli = new FakeOpenShellClient({
+      downloads: {
+        '/sandbox/openkit/session/runtime/native-origin-index.jsonl':
+          '{"streamRef":"stream-0000.jsonl","nativeThreadId":"native-thread-canary"}\n',
+        '/sandbox/openkit/session/runtime/raw-streams.json': manifest,
+        '/sandbox/openkit/session/runtime/raw/stream-0000.jsonl': rawCanary,
+        '/sandbox/openkit/session/runtime/raw/stream-0001.jsonl': '{}\n',
+      },
+    });
+    const backend = new OpenShellWorkerGovernanceBackend({
+      cli,
+      gatewayName: 'openshell',
+      retainSandboxes: true,
+      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
+      trustedWorkerInferenceRelayEnabled: true,
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'token_openshell_control_1',
+      }),
+    });
+
+    await backend.materialize(environmentPackage);
+    enableRuntimeProvenanceCollection(environmentPackage);
+    const transcript = (await backend.collectTranscript(
+      environmentPackage.snapshotId
+    )) as unknown as {
+      runtimeProvenance?: {
+        diagnostics: Array<{ code: string; message: string; path: string }>;
+        manifestPath: string;
+        missingPaths: string[];
+        nativeOriginIndexPath: string;
+        rawStreamPaths: Record<string, string>;
+      };
+    };
+    const runtimeProvenance = transcript.runtimeProvenance;
+
+    expect(runtimeProvenance).toEqual({
+      diagnostics: [],
+      manifestPath: expect.any(String),
+      missingPaths: [],
+      nativeOriginIndexPath: expect.any(String),
+      rawStreamPaths: {
+        'stream-0000.jsonl': expect.any(String),
+        'stream-0001.jsonl': expect.any(String),
+      },
+    });
+    const sessionDirectory = dirname(cli.createSandboxCalls[0]?.uploads?.[0]?.sourcePath ?? '');
+    const collectedPaths = [
+      runtimeProvenance?.manifestPath,
+      runtimeProvenance?.nativeOriginIndexPath,
+      ...Object.values(runtimeProvenance?.rawStreamPaths ?? {}),
+    ];
+    expect(collectedPaths.every((path) => path?.startsWith(sessionDirectory))).toBe(true);
+    expect(readFileSync(runtimeProvenance?.manifestPath ?? '', 'utf8')).toBe(manifest);
+    expect(readFileSync(runtimeProvenance?.rawStreamPaths['stream-0000.jsonl'] ?? '', 'utf8')).toBe(
+      rawCanary
+    );
+    expect(JSON.stringify(transcript)).not.toContain(rawCanary);
+    expect(JSON.stringify(transcript)).not.toContain('native-thread-canary');
+    expect(cli.downloadFileCalls.map((call) => call.sandboxPath)).toEqual(
+      expect.arrayContaining([
+        '/sandbox/openkit/session/runtime/raw-streams.json',
+        '/sandbox/openkit/session/runtime/raw/stream-0000.jsonl',
+        '/sandbox/openkit/session/runtime/raw/stream-0001.jsonl',
+        '/sandbox/openkit/session/runtime/native-origin-index.jsonl',
+      ])
+    );
+  });
+
+  it('rejects an oversized runtime provenance manifest before parsing or collecting its files', async () => {
+    const environmentPackage = createTrustedRelayOpenShellPackage(
+      'as_runtime_provenance_manifest_limit'
+    );
+    const cli = new FakeOpenShellClient({
+      downloads: {
+        '/sandbox/openkit/session/runtime/raw-streams.json': ' '.repeat(1024 * 1024 + 1),
+      },
+    });
+    const backend = new OpenShellWorkerGovernanceBackend({
+      cli,
+      gatewayName: 'openshell',
+      retainSandboxes: true,
+      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
+      trustedWorkerInferenceRelayEnabled: true,
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'token_openshell_control_1',
+      }),
+    });
+
+    await backend.materialize(environmentPackage);
+    enableRuntimeProvenanceCollection(environmentPackage);
+    const transcript = await backend.collectTranscript(environmentPackage.snapshotId);
+
+    expect(transcript.runtimeProvenance).toMatchObject({
+      diagnostics: [expect.objectContaining({ code: 'runtime_provenance_manifest_size_exceeded' })],
+      nativeOriginIndexPath: null,
+      rawStreamPaths: {},
+    });
+    expect(
+      cli.downloadFileCalls
+        .map((call) => call.sandboxPath)
+        .filter((path) => path.includes('/runtime/'))
+    ).toEqual(['/sandbox/openkit/session/runtime/raw-streams.json']);
   });
 
   it('downloads worker-session patch payloads referenced by workspace change manifests', async () => {
@@ -1283,14 +2091,10 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       {
         gateway: 'openshell',
         name: `openkit-${environmentPackage.scope.agentSessionId}`,
-        provider: 'codex',
-      },
-      {
-        gateway: 'openshell',
-        name: `openkit-${environmentPackage.scope.agentSessionId}`,
         provider: 'provider_github_read',
       },
     ]);
+    expect(cli.deleteProviderCalls).toEqual([]);
     expect(cli.deleteSandboxCalls).toEqual([]);
   });
 
@@ -1329,7 +2133,7 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     await expect(backend.teardown(environmentPackage.snapshotId)).resolves.toMatchObject({
       kind: 'openshell.teardown.completed',
     });
-    expect(cli.detachProviderCalls).toHaveLength(3);
+    expect(cli.detachProviderCalls).toHaveLength(2);
     expect(cli.detachProviderCalls[0]).toEqual(cli.detachProviderCalls[1]);
   });
 
@@ -1410,12 +2214,19 @@ describe('OpenShellWorkerGovernanceBackend', () => {
 });
 
 class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
+  public readonly operations: string[] = [];
   public readonly createSandboxCalls: Parameters<
     OpenShellWorkerGovernanceClient['createSandbox']
   >[0][] = [];
   public readonly deleteSandboxCalls: Parameters<
     OpenShellWorkerGovernanceClient['deleteSandbox']
   >[0][] = [];
+  public readonly deleteProviderCalls: Array<{
+    gateway?: string;
+    gatewayEndpoint?: string;
+    gatewayInsecure?: boolean;
+    name: string;
+  }> = [];
   public readonly detachProviderCalls: Parameters<
     OpenShellWorkerGovernanceClient['detachProvider']
   >[0][] = [];
@@ -1428,23 +2239,41 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
   public readonly upsertProviderCalls: Parameters<
     OpenShellWorkerGovernanceClient['upsertProvider']
   >[0][] = [];
+  public readonly ensureProviderProfileCalls: Parameters<
+    OpenShellWorkerGovernanceClient['ensureProviderProfile']
+  >[0][] = [];
   private readonly doctor: Awaited<ReturnType<OpenShellWorkerGovernanceClient['doctorCheck']>>;
+  private readonly createSandboxGate: Promise<void> | null;
+  private readonly createSandboxFailure: Error | null;
+  private readonly deleteProviderFailures: Error[];
   private readonly downloads: Record<string, string>;
   private readonly endpoint: string;
+  private readonly ensureProviderProfileFailure: Error | null;
+  private readonly gatewayVersion: string | null;
   private readonly detachFailures: Error[];
   private readonly providerOutputs: Record<string, string>;
   private readonly refreshStatusOutputs: Record<string, string>;
+  private readonly openShellVersion: string;
 
   public constructor(
     options: {
+      createSandboxGate?: Promise<void>;
+      createSandboxFailure?: Error;
+      deleteProviderFailures?: Error[];
       doctor?: Awaited<ReturnType<OpenShellWorkerGovernanceClient['doctorCheck']>>;
       detachFailures?: Error[];
       downloads?: Record<string, string>;
       endpoint?: string;
+      ensureProviderProfileFailure?: Error;
+      gatewayVersion?: string | null;
       providerOutputs?: Record<string, string>;
       refreshStatusOutputs?: Record<string, string>;
+      version?: string;
     } = {}
   ) {
+    this.createSandboxGate = options.createSandboxGate ?? null;
+    this.createSandboxFailure = options.createSandboxFailure ?? null;
+    this.deleteProviderFailures = [...(options.deleteProviderFailures ?? [])];
     this.doctor = options.doctor ?? {
       docker: 'ok (version 29.4.0)',
       ok: true,
@@ -1452,12 +2281,18 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
     this.detachFailures = [...(options.detachFailures ?? [])];
     this.downloads = options.downloads ?? {};
     this.endpoint = options.endpoint ?? 'https://127.0.0.1:17670';
+    this.ensureProviderProfileFailure = options.ensureProviderProfileFailure ?? null;
+    this.gatewayVersion =
+      options.gatewayVersion === null
+        ? null
+        : (options.gatewayVersion ?? options.version ?? '0.0.80');
     this.providerOutputs = options.providerOutputs ?? {};
     this.refreshStatusOutputs = options.refreshStatusOutputs ?? {};
+    this.openShellVersion = options.version ?? '0.0.80';
   }
 
   public async version(): Promise<string> {
-    return '0.0.63';
+    return this.openShellVersion;
   }
 
   public async status(): Promise<Awaited<ReturnType<OpenShellWorkerGovernanceClient['status']>>> {
@@ -1465,7 +2300,7 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
       gateway: 'openshell',
       server: this.endpoint,
       status: 'connected',
-      version: '0.0.63',
+      version: this.gatewayVersion,
     };
   }
 
@@ -1490,6 +2325,12 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
     input: Parameters<OpenShellWorkerGovernanceClient['createSandbox']>[0]
   ): Promise<Awaited<ReturnType<OpenShellWorkerGovernanceClient['createSandbox']>>> {
     this.createSandboxCalls.push(input);
+    this.operations.push(`sandbox:${input.name}`);
+    await this.createSandboxGate;
+
+    if (this.createSandboxFailure) {
+      throw this.createSandboxFailure;
+    }
 
     return {
       name: input.name,
@@ -1501,8 +2342,21 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
     input: Parameters<OpenShellWorkerGovernanceClient['upsertProvider']>[0]
   ): Promise<Awaited<ReturnType<OpenShellWorkerGovernanceClient['upsertProvider']>>> {
     this.upsertProviderCalls.push(input);
+    this.operations.push(`provider:${input.name}`);
 
     return { name: input.name };
+  }
+
+  public async ensureProviderProfile(
+    input: Parameters<OpenShellWorkerGovernanceClient['ensureProviderProfile']>[0]
+  ): Promise<Awaited<ReturnType<OpenShellWorkerGovernanceClient['ensureProviderProfile']>>> {
+    this.ensureProviderProfileCalls.push(input);
+    this.operations.push(`profile:${input.id}`);
+    if (this.ensureProviderProfileFailure) {
+      throw this.ensureProviderProfileFailure;
+    }
+
+    return { id: input.id };
   }
 
   public async getProvider(input: {
@@ -1568,6 +2422,22 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
       stdout: 'deleted',
     };
   }
+
+  public async deleteProvider(input: {
+    gateway?: string;
+    gatewayEndpoint?: string;
+    gatewayInsecure?: boolean;
+    name: string;
+  }): Promise<{ stdout: string }> {
+    this.deleteProviderCalls.push(input);
+    const failure = this.deleteProviderFailures.shift();
+
+    if (failure) {
+      throw failure;
+    }
+
+    return { stdout: 'provider deleted' };
+  }
 }
 
 function createOpenShellPackage(
@@ -1592,7 +2462,7 @@ function createOpenShellPackage(
       agentSessionId: 'as_openshell_1',
       userId: 'user_local',
       backend: {
-        controlRelayUpstream: 'https://nanocore.local/api/worker-control',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
       },
@@ -1602,6 +2472,64 @@ function createOpenShellPackage(
       turn,
       workspaceCwd: '/Users/m5pro/Documents/AI/openkit',
       workspaceRoots,
+    })
+  );
+}
+
+/**
+ * Enables the deliberately unadvertised runtime-provenance collection branch after materialization.
+ *
+ * @param environmentPackage Materialized trusted-relay package retained by the backend fixture.
+ */
+function enableRuntimeProvenanceCollection(environmentPackage: AgentEnvironmentPackage): void {
+  environmentPackage.backend.requiredCapabilities.push('worker.runtime-provenance.v1');
+  if (!environmentPackage.control.transcript) {
+    throw new Error('Runtime provenance test fixture requires a transcript declaration.');
+  }
+  environmentPackage.control.transcript.runtimeProvenance = {
+    maxStreamCount: 64,
+    maxTotalBytes: 256 * 1024 * 1024,
+    nativeOriginIndexPath: '/openkit/session/runtime/native-origin-index.jsonl',
+    rawStreamsRoot: '/openkit/session/runtime/raw',
+    streamManifestPath: '/openkit/session/runtime/raw-streams.json',
+  };
+}
+
+/**
+ * Creates one relay-required OpenShell package with immutable provider selection.
+ *
+ * @param agentSessionId Agent session id used to derive unique package lineage.
+ * @returns Relay-required OpenShell package fixture.
+ */
+function createTrustedRelayOpenShellPackage(agentSessionId: string): AgentEnvironmentPackage {
+  const store = createDemoStore();
+  const turn = store.createTurn('ws_demo', 'th_demo', 'Materialize trusted inference relay');
+  const agent = store.getAgent('ws_demo', 'agent_codex_host');
+
+  return AgentEnvironmentPackageSchema.parse(
+    resolveAgentEnvironmentPackage({
+      agent,
+      agentSessionId,
+      backend: {
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+        kind: 'openshell',
+        sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
+      },
+      backendRequirements: {
+        allowedKinds: ['openshell'],
+        preferred: 'openshell',
+        requiredCapabilities: ['trusted-worker-inference-relay'],
+      },
+      createdAt: '2026-07-13T00:00:00.000Z',
+      providerSelection: {
+        model: 'openai/gpt-5.2',
+        providerId: 'agent-openrouter',
+      },
+      requestId: `req_${agentSessionId}`,
+      turn,
+      userId: 'user_local',
+      workspaceCwd: '/workspace/openkit',
+      workspaceRoots: [],
     })
   );
 }

@@ -6,6 +6,7 @@ import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
   finishCapabilityCall,
+  listWorkspaceCapabilityCalls,
   recordUsage,
   recoverRunningCapabilityCalls,
   startCapabilityCall,
@@ -26,9 +27,12 @@ describe('capability usage ledger', () => {
         family: 'llm',
         itemId: null,
         operation: 'responses.create',
+        packageSnapshotId: 'aepsnap_demo',
         providerRef: 'provider_openai',
         redactionClass: 'metadata-only',
         requestId: '00000000-0000-4000-8000-000000000001',
+        runtimeCacheLineageRef: `rcl_${'b'.repeat(24)}`,
+        runtimeOriginRef: `rto_${'a'.repeat(24)}`,
         serviceRef: null,
         sourceIds: ['repo_default'],
         summary: 'LLM responses call',
@@ -66,6 +70,9 @@ describe('capability usage ledger', () => {
         capability_id: 'llm.responses',
         family: 'llm',
         operation: 'responses.create',
+        package_snapshot_id: 'aepsnap_demo',
+        runtime_cache_lineage_ref: `rcl_${'b'.repeat(24)}`,
+        runtime_origin_ref: `rto_${'a'.repeat(24)}`,
         source_ids_json: '["repo_default"]',
         status: 'succeeded',
       });
@@ -80,6 +87,12 @@ describe('capability usage ledger', () => {
           unit: 'tokens',
         }),
       ]);
+      expect(listWorkspaceCapabilityCalls(workspaceDb, 'ws_demo')[0]).toMatchObject({
+        packageSnapshotId: 'aepsnap_demo',
+        runtimeCacheLineageRef: `rcl_${'b'.repeat(24)}`,
+        runtimeOriginRef: `rto_${'a'.repeat(24)}`,
+      });
+      expect(usageRows(workspaceDb, call.id)[0]).not.toHaveProperty('package_snapshot_id');
       expect(auditRows(workspaceDb, call.id)).toEqual([
         expect.objectContaining({
           action: 'capability.finish',
@@ -97,6 +110,7 @@ describe('capability usage ledger', () => {
           workspace_id: 'ws_demo',
         }),
       ]);
+      expect(auditRows(workspaceDb, call.id)[0]).not.toHaveProperty('runtime_origin_ref');
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -320,8 +334,11 @@ describe('capability usage ledger', () => {
         capabilityId: 'llm.responses',
         family: 'llm',
         operation: 'responses.create',
+        packageSnapshotId: 'aepsnap_first',
         redactionClass: 'metadata-only',
         requestId: '00000000-0000-4000-8000-000000000003',
+        runtimeCacheLineageRef: `rcl_${'c'.repeat(24)}`,
+        runtimeOriginRef: `rto_${'d'.repeat(24)}`,
         workspaceDb,
         workspaceId: 'ws_demo',
       });
@@ -329,10 +346,19 @@ describe('capability usage ledger', () => {
         capabilityId: 'llm.responses',
         family: 'llm',
         operation: 'responses.create',
+        packageSnapshotId: 'aepsnap_second',
         redactionClass: 'metadata-only',
         requestId: '00000000-0000-4000-8000-000000000003',
+        runtimeCacheLineageRef: `rcl_${'e'.repeat(24)}`,
+        runtimeOriginRef: `rto_${'f'.repeat(24)}`,
         workspaceDb,
         workspaceId: 'ws_demo',
+      });
+
+      expect(second.context).toMatchObject({
+        packageSnapshotId: 'aepsnap_first',
+        runtimeCacheLineageRef: `rcl_${'c'.repeat(24)}`,
+        runtimeOriginRef: `rto_${'d'.repeat(24)}`,
       });
 
       for (const call of [first, second]) {

@@ -4,10 +4,12 @@ import type {
   WorkerLineage,
 } from '@openkit/worker-protocol';
 
+const WORKER_CONTROL_REQUEST_TIMEOUT_MS = 10_000;
+
 /**
- * Minimal fetch response surface used by the worker control relay client.
+ * Minimal fetch response surface used by the worker control client.
  */
-export interface WorkerControlRelayFetchResponse {
+export interface WorkerControlFetchResponse {
   /** Whether the HTTP response was successful. */
   ok: boolean;
   /** HTTP response status. */
@@ -21,9 +23,9 @@ export interface WorkerControlRelayFetchResponse {
 }
 
 /**
- * Minimal fetch function shape used by the worker control relay client.
+ * Minimal fetch function shape used by the worker control client.
  */
-export type WorkerControlRelayFetch = (
+export type WorkerControlFetch = (
   url: string,
   init: {
     /** HTTP method. */
@@ -32,27 +34,31 @@ export type WorkerControlRelayFetch = (
     headers: Record<string, string>;
     /** Serialized JSON request body. */
     body: string;
+    /** Optional supervisor cancellation signal. */
+    signal?: AbortSignal | undefined;
   }
-) => Promise<WorkerControlRelayFetchResponse>;
+) => Promise<WorkerControlFetchResponse>;
 
 /**
- * Worker control relay client construction options.
+ * Worker control client construction options.
  */
-export interface WorkerControlRelayClientOptions {
+export interface WorkerControlClientOptions {
   /** NanoCore worker-control route base URL. */
-  upstreamBaseUrl: string;
+  baseUrl: string;
   /** Sandbox bearer token injected by NanoCore. */
   token: string;
   /** Lineage attached to every worker control request. */
   lineage: WorkerLineage;
   /** Optional fetch implementation for tests or alternate runtimes. */
-  fetch?: WorkerControlRelayFetch;
+  fetch?: WorkerControlFetch;
+  /** Optional supervisor cancellation signal. */
+  signal?: AbortSignal | undefined;
 }
 
 /**
- * Heartbeat request accepted by the worker control relay client.
+ * Heartbeat request accepted by the worker control client.
  */
-export interface WorkerControlRelayHeartbeatInput {
+export interface WorkerControlHeartbeatInput {
   /** Worker sequence number. */
   sequence: number;
   /** Worker lifecycle status. */
@@ -69,9 +75,9 @@ export interface WorkerControlRelayHeartbeatInput {
 }
 
 /**
- * Artifact notice request accepted by the worker control relay client.
+ * Artifact notice request accepted by the worker control client.
  */
-export interface WorkerControlRelayArtifactInput {
+export interface WorkerControlArtifactInput {
   /** Worker sequence number. */
   sequence: number;
   /** Artifact candidate. */
@@ -88,7 +94,7 @@ export interface WorkerControlRelayArtifactInput {
 /**
  * Command poll response returned by NanoCore.
  */
-export interface WorkerControlRelayCommandPoll {
+export interface WorkerControlCommandPoll {
   /** Commands delivered to the worker. */
   commands: Array<Record<string, unknown>>;
   /** Optional server poll timestamp. */
@@ -96,9 +102,9 @@ export interface WorkerControlRelayCommandPoll {
 }
 
 /**
- * Terminal result request accepted by the worker control relay client.
+ * Terminal result request accepted by the worker control client.
  */
-export interface WorkerControlRelayTerminalResultInput {
+export interface WorkerControlTerminalResultInput {
   /** Terminal command id. */
   terminalCommandId: string;
   /** Process exit code. */
@@ -112,24 +118,24 @@ export interface WorkerControlRelayTerminalResultInput {
 }
 
 /**
- * Error raised when NanoCore rejects a worker control relay request.
+ * Error raised when NanoCore rejects a worker control request.
  */
-export class WorkerControlRelayError extends Error {
+export class WorkerControlError extends Error {
   /** Stable upstream error code when provided. */
   public readonly code: string;
   /** HTTP response status. */
   public readonly status: number;
 
   /**
-   * Creates a worker control relay error.
+   * Creates a worker control error.
    *
    * @param code Stable error code.
    * @param status HTTP response status.
    * @param upstreamMessage Optional upstream message.
    */
   public constructor(code: string, status: number, upstreamMessage: string | null) {
-    super(`Worker control relay request failed: ${code}`);
-    this.name = 'WorkerControlRelayError';
+    super(`Worker control request failed: ${code}`);
+    this.name = 'WorkerControlError';
     this.code = code;
     this.status = status;
     this.cause = upstreamMessage ?? undefined;
@@ -137,24 +143,26 @@ export class WorkerControlRelayError extends Error {
 }
 
 /**
- * HTTP relay client used by sandbox-local worker shims to reach NanoCore control routes.
+ * HTTP control client used by sandbox-local worker shims to reach NanoCore control routes.
  */
-export class WorkerControlRelayClient {
-  private readonly fetch: WorkerControlRelayFetch;
+export class WorkerControlClient {
+  private readonly fetch: WorkerControlFetch;
   private readonly lineage: WorkerLineage;
+  private readonly signal: AbortSignal | undefined;
   private readonly token: string;
-  private readonly upstreamBaseUrl: string;
+  private readonly baseUrl: string;
 
   /**
-   * Creates a worker control relay client.
+   * Creates a worker control client.
    *
    * @param options Upstream URL, sandbox token, lineage, and optional fetch implementation.
    */
-  public constructor(options: WorkerControlRelayClientOptions) {
+  public constructor(options: WorkerControlClientOptions) {
     this.fetch = options.fetch ?? defaultFetch();
     this.lineage = options.lineage;
+    this.signal = options.signal;
     this.token = options.token;
-    this.upstreamBaseUrl = options.upstreamBaseUrl.replace(/\/+$/, '');
+    this.baseUrl = options.baseUrl.replace(/\/+$/, '');
   }
 
   /**
@@ -163,7 +171,7 @@ export class WorkerControlRelayClient {
    * @param input Heartbeat payload.
    * @returns Parsed NanoCore response.
    */
-  public async recordHeartbeat(input: WorkerControlRelayHeartbeatInput): Promise<unknown> {
+  public async recordHeartbeat(input: WorkerControlHeartbeatInput): Promise<unknown> {
     return this.postJson('/heartbeat', input);
   }
 
@@ -173,7 +181,7 @@ export class WorkerControlRelayClient {
    * @param input Artifact notice payload.
    * @returns Parsed NanoCore response.
    */
-  public async recordArtifactNotice(input: WorkerControlRelayArtifactInput): Promise<unknown> {
+  public async recordArtifactNotice(input: WorkerControlArtifactInput): Promise<unknown> {
     return this.postJson('/artifacts', input);
   }
 
@@ -182,8 +190,18 @@ export class WorkerControlRelayClient {
    *
    * @returns Command poll response.
    */
-  public async pollCommands(): Promise<WorkerControlRelayCommandPoll> {
-    return this.postJson<WorkerControlRelayCommandPoll>('/commands/poll', {});
+  public async pollCommands(): Promise<WorkerControlCommandPoll> {
+    return this.postJson<WorkerControlCommandPoll>('/commands/poll', {});
+  }
+
+  /**
+   * Acknowledges one handled non-terminal worker command.
+   *
+   * @param commandId NanoCore-issued command id.
+   * @returns Parsed NanoCore response.
+   */
+  public async acknowledgeCommand(commandId: string): Promise<unknown> {
+    return this.postJson('/commands/ack', { commandId });
   }
 
   /**
@@ -192,16 +210,14 @@ export class WorkerControlRelayClient {
    * @param input Terminal result payload.
    * @returns Parsed NanoCore response.
    */
-  public async recordTerminalResult(
-    input: WorkerControlRelayTerminalResultInput
-  ): Promise<unknown> {
+  public async recordTerminalResult(input: WorkerControlTerminalResultInput): Promise<unknown> {
     return this.postJson('/terminal-results', input);
   }
 
   /**
    * Appends one canonical worker event to NanoCore.
    *
-   * @param record Canonical event record emitted by the sidecar.
+   * @param record Canonical event record emitted by the control.
    * @returns Parsed worker-control response envelope.
    */
   public async appendEvent(
@@ -218,29 +234,80 @@ export class WorkerControlRelayClient {
    * @returns Parsed JSON response.
    */
   private async postJson<T = unknown>(path: string, body: object): Promise<T> {
-    const response = await this.fetch(`${this.upstreamBaseUrl}${path}`, {
-      body: JSON.stringify({ ...body, lineage: this.lineage }),
-      headers: {
-        authorization: `Bearer ${this.token}`,
-        'content-type': 'application/json',
-      },
-      method: 'POST',
+    this.signal?.throwIfAborted();
+    const requestController = new AbortController();
+    let abortParent: (() => void) | null = null;
+    const abortFailure = new Promise<never>((_resolve, reject) => {
+      /** Rejects the in-flight request with the parent cancellation reason. */
+      const abort = () => {
+        const reason = abortSignalReason(this.signal);
+        requestController.abort(reason);
+        reject(reason);
+      };
+      abortParent = abort;
+
+      if (this.signal?.aborted) {
+        abort();
+        return;
+      }
+      this.signal?.addEventListener('abort', abort, { once: true });
     });
-    const text = await response.text();
-    const parsed = parseJson(text);
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const timeoutFailure = new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(() => {
+        const error = new Error('Worker control request timed out.');
+        requestController.abort(error);
+        reject(error);
+      }, WORKER_CONTROL_REQUEST_TIMEOUT_MS);
+    });
 
-    if (!response.ok) {
-      const code = readErrorCode(parsed, response.status);
-      const message =
-        parsed && typeof parsed === 'object' && 'message' in parsed
-          ? String((parsed as { message?: unknown }).message ?? '')
-          : null;
+    try {
+      /** Performs the complete fetch and response-body read under one deadline. */
+      const request = async () => {
+        const response = await this.fetch(`${this.baseUrl}${path}`, {
+          body: JSON.stringify({ ...body, lineage: this.lineage }),
+          headers: {
+            authorization: `Bearer ${this.token}`,
+            'content-type': 'application/json',
+          },
+          method: 'POST',
+          signal: requestController.signal,
+        });
+        return { response, text: await response.text() };
+      };
+      const { response, text } = await Promise.race([request(), abortFailure, timeoutFailure]);
+      const parsed = parseJson(text);
 
-      throw new WorkerControlRelayError(code, response.status, message);
+      if (!response.ok) {
+        const code = readErrorCode(parsed, response.status);
+        const message =
+          parsed && typeof parsed === 'object' && 'message' in parsed
+            ? String((parsed as { message?: unknown }).message ?? '')
+            : null;
+
+        throw new WorkerControlError(code, response.status, message);
+      }
+
+      return parsed as T;
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      if (abortParent) {
+        this.signal?.removeEventListener('abort', abortParent);
+      }
     }
-
-    return parsed as T;
   }
+}
+
+/**
+ * Resolves a stable rejection reason for one aborted control request.
+ *
+ * @param signal Optional parent signal.
+ * @returns Parent reason or a standard abort error.
+ */
+function abortSignalReason(signal: AbortSignal | undefined): unknown {
+  return signal?.reason ?? new DOMException('The operation was aborted.', 'AbortError');
 }
 
 /**
@@ -249,14 +316,14 @@ export class WorkerControlRelayClient {
  * @returns Fetch function.
  * @throws Error when fetch is unavailable.
  */
-function defaultFetch(): WorkerControlRelayFetch {
+function defaultFetch(): WorkerControlFetch {
   const candidate = (globalThis as { fetch?: unknown }).fetch;
 
   if (typeof candidate !== 'function') {
-    throw new Error('Worker control relay requires a fetch implementation.');
+    throw new Error('Worker control requires a fetch implementation.');
   }
 
-  return candidate as WorkerControlRelayFetch;
+  return candidate as WorkerControlFetch;
 }
 
 /**

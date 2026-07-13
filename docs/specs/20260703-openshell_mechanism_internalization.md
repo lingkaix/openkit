@@ -80,7 +80,7 @@ OpenKit internalizes the definition layer and borrows the mechanism layer.
 
 - NanoCore MUST be able to regenerate every OpenShell provider profile, provider instance definition, and derived policy artifact from `VaultReference`, `VaultGrant`, `InjectionPlan`, `PermissionDecision`, AEP snapshot, and workspace records alone.
 - Generated OpenShell artifacts MUST NOT be edited in place on the gateway as a way of changing OpenKit behavior. The change path is: change NanoCore records, regenerate, re-derive.
-- Public App API, MCP, Web UI, and Action Center surfaces MUST expose only NanoCore record ids and redacted summaries, never OpenShell profile ids, instance names, policy YAML, gateway internals, or placeholder variable values.
+- Public App API, end-user CLI, Web UI, and Action Center surfaces MUST expose only NanoCore record ids and redacted summaries, never OpenShell profile ids, instance names, policy YAML, gateway internals, or placeholder variable values.
 - The mapping layer (the code that renders NanoCore records into OpenShell artifacts and imports OpenShell evidence back) MUST carry an explicit mapping version, and every derived artifact and imported record MUST record the mapping version and the schema snapshot id used.
 
 ### Derivation Contract

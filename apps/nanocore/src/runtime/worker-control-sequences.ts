@@ -58,6 +58,7 @@ export function acceptWorkerControlSequence(
     }
 
     return {
+      duplicate: true,
       nextExpectedSequence: nextExpectedSequence(coreDb, input),
       status: 'accepted',
     };
@@ -105,6 +106,7 @@ export function acceptWorkerControlSequence(
     );
 
   return {
+    duplicate: false,
     nextExpectedSequence: nextExpectedSequence(coreDb, input),
     status: 'accepted',
   };

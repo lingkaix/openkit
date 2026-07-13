@@ -20,8 +20,6 @@ import {
   ConsumeOpenKitBootstrapTokenResponseSchema,
   ConvertRecoveryPendingUserTurnToFollowUpResponseSchema,
   CreateAutomationRequestSchema,
-  CreateEvidenceBundleRequestSchema,
-  CreateEvidenceBundleResponseSchema,
   CreateInterruptedRecoveryStateResponseSchema,
   CreateOpenAICodexOAuthAccountRequestSchema,
   CreateOpenKitAccessTokenRequestSchema,
@@ -85,7 +83,6 @@ import {
   ListWorkspaceReconciliationRecordsResponseSchema,
   ListWorkspaceRepositoriesResponseSchema,
   ListWorkspaceRuntimeEvidenceResponseSchema,
-  ListWorkspaceSyncEvidenceBundlesResponseSchema,
   ListWorkspaceSyncReviewsResponseSchema,
   ListWorkspaceVaultGrantsResponseSchema,
   ListWorkspaceVaultUseRecordsResponseSchema,
@@ -3226,39 +3223,6 @@ export function createAppOpenApiDocument() {
         },
       },
       '/api/app/workspaces/{workspaceId}/evidence-bundles': {
-        post: {
-          operationId: 'createEvidenceBundle',
-          tags: ['diagnostics'],
-          summary: 'Create one workspace evidence bundle.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/CreateEvidenceBundleRequest' },
-              },
-            },
-          },
-          responses: {
-            '201': {
-              description: 'Created evidence bundle.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/CreateEvidenceBundleResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
         get: {
           operationId: 'listWorkspaceEvidenceBundles',
           tags: ['diagnostics'],
@@ -3948,35 +3912,6 @@ export function createAppOpenApiDocument() {
                 [JSON_CONTENT_TYPE]: {
                   schema: {
                     $ref: '#/components/schemas/ListWorkspaceQuarantineRecordsResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/workspace-sync/evidence-bundles': {
-        get: {
-          operationId: 'listWorkspaceSyncEvidenceBundles',
-          tags: ['workspace-sync'],
-          summary: 'List durable workspace synchronization evidence bundles for one workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Workspace synchronization evidence bundles.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/ListWorkspaceSyncEvidenceBundlesResponse',
                   },
                 },
               },
@@ -4920,8 +4855,6 @@ export function createAppOpenApiDocument() {
           ConsumeOpenKitBootstrapTokenResponseSchema
         ),
         CreateAutomationRequest: toJsonSchema(CreateAutomationRequestSchema),
-        CreateEvidenceBundleRequest: toJsonSchema(CreateEvidenceBundleRequestSchema),
-        CreateEvidenceBundleResponse: toJsonSchema(CreateEvidenceBundleResponseSchema),
         CreateInterruptedRecoveryStateResponse: toJsonSchema(
           CreateInterruptedRecoveryStateResponseSchema
         ),
@@ -5037,9 +4970,6 @@ export function createAppOpenApiDocument() {
         ),
         ListWorkspaceQuarantineRecordsResponse: toJsonSchema(
           ListWorkspaceQuarantineRecordsResponseSchema
-        ),
-        ListWorkspaceSyncEvidenceBundlesResponse: toJsonSchema(
-          ListWorkspaceSyncEvidenceBundlesResponseSchema
         ),
         ListWorkspaceApplyResultsResponse: toJsonSchema(ListWorkspaceApplyResultsResponseSchema),
         ListWorkspaceChangeSetsResponse: toJsonSchema(ListWorkspaceChangeSetsResponseSchema),

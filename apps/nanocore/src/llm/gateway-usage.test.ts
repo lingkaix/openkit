@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { GatewayUsageTracker, parseUsage } from './gateway-usage.js';
 
@@ -181,5 +181,33 @@ describe('GatewayUsageTracker', () => {
       inputTokens: 50,
       requestCount: 1,
     });
+  });
+
+  it('cancels the upstream stream exactly once when the observed stream is cancelled', async () => {
+    const cancel = vi.fn();
+    let pulled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      cancel,
+      pull(controller) {
+        if (!pulled) {
+          pulled = true;
+          controller.enqueue(
+            new TextEncoder().encode('data: {"type":"response.output_text.delta"}\n\n')
+          );
+        }
+      },
+    });
+    const observed = new GatewayUsageTracker().observeSseUsage(stream, {
+      endpoint: 'responses',
+      model: 'gpt-5.1',
+      provider: providerConfig(),
+    });
+    const reader = observed.getReader();
+
+    await reader.read();
+    await reader.cancel('consumer disconnected');
+
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledWith('consumer disconnected');
   });
 });

@@ -376,6 +376,76 @@ function createLoopPromptMessages(
 }
 
 /**
+ * Downstream provider cancellation and stable loop failure race.
+ */
+interface InternalAgentProviderBounds {
+  /** Aborts downstream provider work without changing the selected loop outcome. */
+  readonly abort: () => void;
+  /** Stable timeout or caller-abort failure raced against provider work. */
+  readonly failure: Promise<never>;
+  /** Signal passed only to the downstream provider transport. */
+  readonly signal: AbortSignal;
+  /** Removes the caller listener and timeout after the provider path settles. */
+  readonly dispose: () => void;
+}
+
+/**
+ * Creates one downstream signal whose first caller-abort or timeout keeps its stable loop error.
+ *
+ * @param definition Internal agent definition that owns the timeout budget.
+ * @param callerSignal Optional caller cancellation signal.
+ * @returns Provider signal, stable failure promise, and cleanup callback.
+ */
+function createProviderBounds(
+  definition: InternalAgentDefinition,
+  callerSignal: AbortSignal | undefined
+): InternalAgentProviderBounds {
+  const controller = new AbortController();
+  let settled = false;
+  let abortListener: (() => void) | null = null;
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  const failure = new Promise<never>((_resolve, reject) => {
+    const fail = (error: Error) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      reject(error);
+      controller.abort(error);
+    };
+
+    timeout = setTimeout(() => {
+      fail(new InternalAgentLoopTimeoutError(definition.displayName, definition.limits.timeoutMs));
+    }, definition.limits.timeoutMs);
+
+    if (callerSignal) {
+      abortListener = () => fail(new InternalAgentLoopAbortError());
+      if (callerSignal.aborted) {
+        abortListener();
+      } else {
+        callerSignal.addEventListener('abort', abortListener, { once: true });
+      }
+    }
+  });
+
+  return {
+    abort: () => controller.abort(new InternalAgentLoopAbortError()),
+    failure,
+    signal: controller.signal,
+    dispose: () => {
+      settled = true;
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      if (callerSignal && abortListener) {
+        callerSignal.removeEventListener('abort', abortListener);
+      }
+    },
+  };
+}
+
+/**
  * Calls the provider while enforcing caller abort and internal timeout bounds.
  *
  * @param loopInput Provider-selected internal-agent loop input.
@@ -389,44 +459,21 @@ async function callProviderWithLoopBounds(
   effects: InternalAgentLoopEffects
 ): Promise<OpenAICompatibleChatCompletionResponse> {
   const { definition, input, model, providerId, signal } = loopInput;
-  let timeout: ReturnType<typeof setTimeout> | null = null;
-  let abortListener: (() => void) | null = null;
-  const timeoutPromise = new Promise<never>((_resolve, reject) => {
-    timeout = setTimeout(() => {
-      reject(
-        new InternalAgentLoopTimeoutError(definition.displayName, definition.limits.timeoutMs)
-      );
-    }, definition.limits.timeoutMs);
-  });
-  const abortPromise = new Promise<never>((_resolve, reject) => {
-    if (!signal) {
-      return;
-    }
-
-    abortListener = () => reject(new InternalAgentLoopAbortError());
-    signal.addEventListener('abort', abortListener, { once: true });
-  });
+  assertLoopNotAborted(signal);
+  const bounds = createProviderBounds(definition, signal);
 
   try {
-    assertLoopNotAborted(signal);
-
     return await Promise.race([
       effects.callProvider({
         providerId,
         request: createLoopCompletionRequest(definition, input, model),
         ...(input.dispatchContext ? { context: input.dispatchContext } : {}),
-        ...(signal ? { signal } : {}),
+        signal: bounds.signal,
       }),
-      timeoutPromise,
-      abortPromise,
+      bounds.failure,
     ]);
   } finally {
-    if (timeout) {
-      clearTimeout(timeout);
-    }
-    if (signal && abortListener) {
-      signal.removeEventListener('abort', abortListener);
-    }
+    bounds.dispose();
   }
 }
 
@@ -618,54 +665,50 @@ async function* callProviderStreamWithLoopBounds(
     return;
   }
 
-  let timeout: ReturnType<typeof setTimeout> | null = null;
-  let abortListener: (() => void) | null = null;
-  const timeoutPromise = new Promise<never>((_resolve, reject) => {
-    timeout = setTimeout(() => {
-      reject(
-        new InternalAgentLoopTimeoutError(definition.displayName, definition.limits.timeoutMs)
-      );
-    }, definition.limits.timeoutMs);
-  });
-  const abortPromise = new Promise<never>((_resolve, reject) => {
-    if (!signal) {
-      return;
-    }
-
-    abortListener = () => reject(new InternalAgentLoopAbortError());
-    signal.addEventListener('abort', abortListener, { once: true });
-  });
+  assertLoopNotAborted(signal);
+  const bounds = createProviderBounds(definition, signal);
+  let iterator: AsyncIterator<InternalAgentLoopStreamDelta> | null = null;
+  let iteratorDone = false;
+  let providerStream: Promise<AsyncIterable<InternalAgentLoopStreamDelta>> | null = null;
 
   try {
-    assertLoopNotAborted(signal);
-
-    const deltas = await Promise.race([
+    providerStream = Promise.resolve(
       effects.callProviderStream({
         providerId,
         request: createLoopCompletionRequest(definition, input, model, true),
         ...(input.dispatchContext ? { context: input.dispatchContext } : {}),
-        ...(signal ? { signal } : {}),
-      }),
-      timeoutPromise,
-      abortPromise,
-    ]);
-    const iterator = deltas[Symbol.asyncIterator]();
+        signal: bounds.signal,
+      })
+    );
+    const deltas = await Promise.race([providerStream, bounds.failure]);
+    iterator = deltas[Symbol.asyncIterator]();
 
     while (true) {
-      const result = await Promise.race([iterator.next(), timeoutPromise, abortPromise]);
+      const result = await Promise.race([iterator.next(), bounds.failure]);
 
       if (result.done) {
+        iteratorDone = true;
         break;
       }
 
       yield result.value;
     }
   } finally {
-    if (timeout) {
-      clearTimeout(timeout);
-    }
-    if (signal && abortListener) {
-      signal.removeEventListener('abort', abortListener);
+    bounds.dispose();
+    if (!iterator && providerStream) {
+      bounds.abort();
+      void providerStream
+        .then(async (lateStream) => {
+          await lateStream[Symbol.asyncIterator]().return?.();
+        })
+        .catch(() => undefined);
+    } else if (iterator && !iteratorDone) {
+      bounds.abort();
+      try {
+        void iterator.return?.().catch(() => undefined);
+      } catch {
+        // Iterator cleanup is best effort after the stable loop outcome is fixed.
+      }
     }
   }
 }

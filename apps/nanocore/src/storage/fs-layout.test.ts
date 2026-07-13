@@ -6,6 +6,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
@@ -137,6 +138,32 @@ describe('ensureLayout', () => {
       'users/user_local/logs',
       'users/user_local/workspaces',
     ]);
+  });
+
+  it('clears managed Codex runtime scratch before restart validation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'openkit-layout-codex-scratch-'));
+    const codexHome = join(
+      root,
+      'server',
+      'files',
+      'oauth',
+      'openai-codex',
+      'accounts',
+      'default',
+      'codex-home'
+    );
+    const commandShimRoot = join(codexHome, 'tmp', 'arg0', 'codex-arg0-test');
+
+    ensureLayout(root);
+    mkdirSync(commandShimRoot, { recursive: true });
+    writeFileSync(join(commandShimRoot, '.lock'), '');
+    for (const name of ['apply_patch', 'applypatch', 'codex-execve-wrapper']) {
+      symlinkSync(process.execPath, join(commandShimRoot, name));
+    }
+
+    expect(() => ensureLayout(root)).not.toThrow();
+    expect(existsSync(join(codexHome, 'tmp'))).toBe(false);
+    expect(() => ensureLayout(root)).not.toThrow();
   });
 
   it('creates stable distinct deployment identities for fresh data roots', async () => {

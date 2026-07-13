@@ -85,12 +85,13 @@ describe('scoped storage databases', () => {
         'workspace_quarantine_records',
         'workspace_reconciliation_records',
         'workspace_repository_resources',
-        'workspace_sync_evidence_bundles',
       ]);
       expect(listMigrationIds(workspaceDb.sqlite)).toEqual([
         'workspace_0000_baseline',
         'workspace_0001_goal_review_resolution_snapshot',
         'workspace_0002_idempotency_requests',
+        'workspace_0003_drop_sync_evidence_bundles',
+        'workspace_0004_capability_runtime_correlation',
       ]);
     } finally {
       workspaceDb.sqlite.close();

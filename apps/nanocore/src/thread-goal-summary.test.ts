@@ -16,8 +16,14 @@ import {
   updateGoalStatus,
 } from './runtime/goal-store.js';
 import { createGoalVerificationRecord } from './runtime/goal-verification-records.js';
-import type { TurnExecutor } from './runtime/types.js';
+import type { TurnExecutor, TurnStartRuntimeContext } from './runtime/types.js';
 import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
+import {
+  ensureLocalhostSchedulerBaseline,
+  listSchedulerAdmissionEntriesForWorkspace,
+  requireSchedulerSessionLease,
+  upsertSchedulerCapacityRecord,
+} from './scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -74,9 +80,12 @@ function createWorkspaceDb(coreDb: CoreDb): WorkspaceDb {
 /**
  * Creates a synchronous worker fixture that completes every started turn with artifact evidence.
  *
+ * @param startContexts Optional collector for scheduler-owned start contexts.
  * @returns Turn executor suitable for repeated live Goal Mode steps.
  */
-function createCompletingGoalTurnExecutor(): TurnExecutor {
+function createCompletingGoalTurnExecutor(
+  startContexts: TurnStartRuntimeContext[] = []
+): TurnExecutor {
   return {
     capabilities: {
       approvals: true,
@@ -87,7 +96,8 @@ function createCompletingGoalTurnExecutor(): TurnExecutor {
       questions: true,
     },
     eventFamilies: [],
-    async startTurn(workerStore, turnId, input) {
+    async startTurn(workerStore, turnId, input, context = { requestId: null, workspaceRoots: [] }) {
+      startContexts.push(context);
       const turn = workerStore.getTurnById(turnId);
       const timestamp = turn.startedAt ?? '2026-05-31T00:00:00.000Z';
       const artifact = workerStore.createArtifact({
@@ -122,6 +132,44 @@ function createCompletingGoalTurnExecutor(): TurnExecutor {
         completedAt: timestamp,
         durationMs: 0,
       });
+    },
+  };
+}
+
+/**
+ * Creates a worker fixture that persists a failed turn before rejecting startup.
+ *
+ * @param startContexts Optional collector for scheduler-owned start contexts.
+ * @returns Turn executor that models a governed worker startup failure.
+ */
+function createFailingGoalTurnExecutor(
+  startContexts: TurnStartRuntimeContext[] = []
+): TurnExecutor {
+  return {
+    capabilities: {
+      approvals: true,
+      interrupts: true,
+      artifacts: true,
+      workspaceConfig: true,
+      workspaceKnowledgeEditing: true,
+      questions: true,
+    },
+    eventFamilies: [],
+    async startTurn(
+      workerStore,
+      turnId,
+      _input,
+      context = { requestId: null, workspaceRoots: [] }
+    ) {
+      startContexts.push(context);
+      const turn = workerStore.getTurnById(turnId);
+      workerStore.updateTurn(turnId, {
+        status: 'failed',
+        error: { code: 'worker_start_failed', message: 'Worker start failed.' },
+        completedAt: turn.startedAt ?? '2026-05-31T00:00:00.000Z',
+        durationMs: 0,
+      });
+      throw new Error('injected worker start failure');
     },
   };
 }
@@ -466,6 +514,50 @@ describe('thread goal summary app API', () => {
       } finally {
         workspaceDb.sqlite.close();
       }
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('starts the first goal in two workspaces without reusing the objective item identity', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore();
+    const firstThread = store.createThread('ws_demo', 'First workspace goal');
+    const secondWorkspace = store.createWorkspace('Second goal workspace');
+    const secondThread = store.createThread(secondWorkspace.id, 'Second workspace goal');
+    const app = createApp({ coreDb, store });
+
+    try {
+      const firstRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${firstThread.id}/goal`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ objective: 'Complete the first workspace goal.' }),
+        }
+      );
+      const secondRes = await app.request(
+        `/api/app/workspaces/${secondWorkspace.id}/threads/${secondThread.id}/goal`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ objective: 'Complete the second workspace goal.' }),
+        }
+      );
+
+      expect(firstRes.status).toBe(200);
+      expect(secondRes.status).toBe(200);
+      const first = (await firstRes.json()) as {
+        goal: { goalId: string };
+        objectiveItemId: string;
+      };
+      const second = (await secondRes.json()) as {
+        goal: { goalId: string };
+        objectiveItemId: string;
+      };
+      expect(first.goal.goalId).toBe('goal_1');
+      expect(second.goal.goalId).toBe('goal_1');
+      expect(first.objectiveItemId).not.toBe(second.objectiveItemId);
     } finally {
       coreDb.sqlite.close();
     }
@@ -1069,7 +1161,8 @@ describe('thread goal summary app API', () => {
         now: () => '2026-05-31T00:00:00.000Z',
       });
 
-      const turnExecutor = createCompletingGoalTurnExecutor();
+      const startContexts: TurnStartRuntimeContext[] = [];
+      const turnExecutor = createCompletingGoalTurnExecutor(startContexts);
       const app = createApp({ coreDb, store, turnExecutor });
       const stepRes = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
@@ -1139,6 +1232,36 @@ describe('thread goal summary app API', () => {
           reason: 'Worker result needs review.',
         },
       });
+      expect(startContexts).toEqual([
+        expect.objectContaining({
+          agentSessionId: expect.any(String),
+          requestId: 'req_goal_step',
+          sandboxBindingRef: expect.stringMatching(/^lease-binding:/),
+        }),
+      ]);
+      const sandboxBindingRef = startContexts[0]!.sandboxBindingRef!;
+      const lease = requireSchedulerSessionLease(
+        coreDb,
+        sandboxBindingRef.slice('lease-binding:'.length)
+      );
+      const admissions = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+        userId: LOCAL_USER_ID,
+        workspaceId: 'ws_demo',
+        statuses: ['admitted'],
+      });
+
+      expect(lease).toMatchObject({
+        sandboxBindingRef,
+        status: 'released',
+        releaseReason: 'turn-completed',
+        turnId: stepPayload.worker.turnId,
+      });
+      expect(admissions).toEqual([
+        expect.objectContaining({
+          requestedAgentId: 'agent_codex_host',
+          turnId: stepPayload.worker.turnId,
+        }),
+      ]);
       const unresolvedReviews = listGoalReviewRecordsForTask(workspaceDb, {
         workspaceId: 'ws_demo',
         threadId: thread.id,
@@ -1192,6 +1315,236 @@ describe('thread goal summary app API', () => {
       expect(
         getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, stepPayload.worker.turnId)
       ).toBeNull();
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('fails the Goal task and releases scheduler capacity when worker startup fails', async () => {
+    const coreDb = createCoreDb();
+    const workspaceDb = createWorkspaceDb(coreDb);
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Failing goal step thread');
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-failing-goal-step-repo-'));
+    mkdirSync(join(repositoryPath, '.git'));
+
+    try {
+      seedReadyRepository(coreDb, repositoryPath);
+      const contextTurn = store.createTurn('ws_demo', thread.id, 'Provide failure context');
+      store.createItem({
+        id: `it_context_${thread.id}`,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        turnId: contextTurn.id,
+        type: 'user-message',
+        status: 'completed',
+        text: 'Start the worker and preserve failure evidence.',
+        createdAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
+        completedAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
+      });
+      store.updateTurn(contextTurn.id, {
+        status: 'completed',
+        completedAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
+        durationMs: 0,
+      });
+      createGoalRecord(workspaceDb, {
+        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
+        goalId: 'goal_failing_step',
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        title: 'Fail one worker step',
+        objective: 'Preserve terminal state when worker startup fails.',
+        status: 'running',
+      });
+      createGoalTask(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_failing_step',
+        taskId: 'task_failing_step',
+        title: 'Start the failing worker',
+        objective: 'Start one worker that fails during startup.',
+        orderIndex: 0,
+        dependsOnTaskIds: [],
+        acceptanceCriteria: ['Failure state is durable.'],
+        contextBudgetTokens: 12_000,
+        verificationChecks: [{ kind: 'manual', description: 'Review failure state.' }],
+        status: 'ready',
+      });
+
+      const startContexts: TurnStartRuntimeContext[] = [];
+      const app = createApp({
+        coreDb,
+        store,
+        turnExecutor: createFailingGoalTurnExecutor(startContexts),
+      });
+      const stepRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: 'req_goal_failing_step' }),
+        }
+      );
+
+      expect(stepRes.status).toBe(400);
+      await expect(stepRes.json()).resolves.toMatchObject({ code: 'goal_step_failed' });
+      expect(
+        listGoalRecordsForThread(workspaceDb, { workspaceId: 'ws_demo', threadId: thread.id })
+      ).toEqual([
+        expect.objectContaining({
+          goalId: 'goal_failing_step',
+          status: 'failed',
+          terminalStopReason: 'error',
+        }),
+      ]);
+      expect(
+        listGoalTasks(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: 'goal_failing_step',
+        })
+      ).toEqual([expect.objectContaining({ taskId: 'task_failing_step', status: 'failed' })]);
+
+      const admission = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+        userId: LOCAL_USER_ID,
+        workspaceId: 'ws_demo',
+        statuses: ['admitted'],
+      })[0]!;
+      const sandboxBindingRef = startContexts[0]!.sandboxBindingRef!;
+      const lease = requireSchedulerSessionLease(
+        coreDb,
+        sandboxBindingRef.slice('lease-binding:'.length)
+      );
+
+      expect(lease).toMatchObject({
+        status: 'failed',
+        releaseReason: 'turn-start-failed',
+        recoveryState: 'needs-evidence',
+        turnId: admission.turnId,
+      });
+      expect(
+        getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, admission.turnId)
+      ).toMatchObject({
+        stage: 'failed',
+        stopReason: 'error',
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT in_use_count AS inUseCount
+             FROM scheduler_capacity_records
+             WHERE target_id = 'target_local'`
+          )
+          .get()
+      ).toEqual({ inUseCount: 0 });
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('cancels a deferred Goal admission instead of leaving a background worker launch', async () => {
+    const coreDb = createCoreDb();
+    const workspaceDb = createWorkspaceDb(coreDb);
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Deferred goal step thread');
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-deferred-goal-step-repo-'));
+    mkdirSync(join(repositoryPath, '.git'));
+
+    try {
+      seedReadyRepository(coreDb, repositoryPath);
+      const contextTurn = store.createTurn('ws_demo', thread.id, 'Provide deferred context');
+      store.createItem({
+        id: `it_context_${thread.id}`,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        turnId: contextTurn.id,
+        type: 'user-message',
+        status: 'completed',
+        text: 'Do not launch this worker after the synchronous step fails.',
+        createdAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
+        completedAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
+      });
+      store.updateTurn(contextTurn.id, {
+        status: 'completed',
+        completedAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
+        durationMs: 0,
+      });
+      createGoalRecord(workspaceDb, {
+        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
+        goalId: 'goal_deferred_step',
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        title: 'Defer one worker step',
+        objective: 'Cancel a worker admission that cannot dispatch immediately.',
+        status: 'running',
+      });
+      createGoalTask(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_deferred_step',
+        taskId: 'task_deferred_step',
+        title: 'Attempt a saturated worker',
+        objective: 'Attempt one worker while scheduler capacity is saturated.',
+        orderIndex: 0,
+        dependsOnTaskIds: [],
+        acceptanceCriteria: ['No queued worker remains.'],
+        contextBudgetTokens: 12_000,
+        verificationChecks: [{ kind: 'manual', description: 'Review scheduler state.' }],
+        status: 'ready',
+      });
+      ensureLocalhostSchedulerBaseline(coreDb);
+      upsertSchedulerCapacityRecord(coreDb, {
+        targetId: 'target_local',
+        poolId: 'pool_local',
+        capacityClass: 'local',
+        concurrencyCeiling: 2,
+        inUseCount: 2,
+        queueDepth: 0,
+        observationSource: 'configured',
+        observedAt: '2026-05-31T00:00:00.000Z',
+      });
+
+      const startContexts: TurnStartRuntimeContext[] = [];
+      const app = createApp({
+        coreDb,
+        store,
+        turnExecutor: createCompletingGoalTurnExecutor(startContexts),
+      });
+      const stepRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: 'req_goal_deferred_step' }),
+        }
+      );
+
+      expect(stepRes.status).toBe(400);
+      await expect(stepRes.json()).resolves.toMatchObject({ code: 'goal_step_failed' });
+      expect(startContexts).toEqual([]);
+      expect(
+        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          userId: LOCAL_USER_ID,
+          workspaceId: 'ws_demo',
+          statuses: ['queued'],
+        })
+      ).toEqual([]);
+      expect(
+        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          userId: LOCAL_USER_ID,
+          workspaceId: 'ws_demo',
+          statuses: ['cancelled'],
+        })
+      ).toEqual([expect.objectContaining({ requestId: 'req_goal_deferred_step' })]);
+      expect(
+        listGoalTasks(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: 'goal_deferred_step',
+        })
+      ).toEqual([expect.objectContaining({ taskId: 'task_deferred_step', status: 'failed' })]);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();

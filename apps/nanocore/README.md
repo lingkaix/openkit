@@ -87,7 +87,7 @@ The restore command refuses to run when `server/runtime/nanocore.lock` exists, v
 
 The Codex ChatGPT subscription login app API is available under `/api/app/oauth/openai-codex/accounts/*`. Every status, login, cancel, and logout action is scoped to an explicit account slot; each server-owned account slot uses its own `DATA_ROOT/server/files/oauth/openai-codex/accounts/<slot>/codex-home` as `CODEX_HOME`, and public payloads contain only sanitized login state, URLs, device codes, account label, plan type, and non-secret provider bindings. This server-owned OAuth surface accepts only the implicit local actor or a `server-admin` bearer token; a valid Better Auth session is not deployment-admin authority.
 
-The agent-facing LLM Gateway exposes `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`, and `GET /health`. The `/v1/*` surface uses the same actor authentication and workspace-scope checks as product APIs in server mode; local mode uses the implicit local actor. Provider diagnostics show whether each provider supports Chat Completions and Responses natively or through a bridge. The Gateway preserves OpenAI-compatible `prompt_cache_key` and `prompt_cache_retention` fields, ensures every upstream native Chat Completions or Responses request has a `prompt_cache_key`, and reports process-local cached input token summaries in Settings Diagnostics. Workspace-attributed capability calls and usage rows can be read through `GET /api/app/workspaces/:workspaceId/capability-usage`, workspace evidence bundles can be created and read through `POST /api/app/workspaces/:workspaceId/evidence-bundles` and `GET /api/app/workspaces/:workspaceId/evidence-bundles`, workspace audit events can be read through `GET /api/app/workspaces/:workspaceId/audit/events`, server audit events can be read through deployment-admin `GET /api/app/audit/events`, workspace permission decisions can be read through `GET /api/app/workspaces/:workspaceId/permission-decisions`, and server permission decisions can be read through deployment-admin `GET /api/app/permission-decisions`. It does not expose `POST /v1/completions` or the superseded `/internal/v1/chat/completions` facade. The `openai_codex` provider uses Codex-managed ChatGPT subscription auth for native Responses calls and supports Chat Completions through the text-only bridge.
+The agent-facing LLM Gateway exposes `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`, and `GET /health`. The `/v1/*` surface uses the same actor authentication and workspace-scope checks as product APIs in server mode; local mode uses the implicit local actor. The separate internal `POST /api/worker-inference/v1/chat/completions` and `POST /api/worker-inference/v1/responses` routes accept only a live scheduler lease token bound to a hydrated trusted-relay AEP, derive provider/model/lineage from that package, reject caller authority and provider-side state, and require a fresh durable capability call before dispatch. Provenance-required packages must also supply the pinned canonical runtime hint; NanoCore derives product-safe origin and cache refs, strips every native value before dispatch, and reconciles provisional origin refs against the verified turn-end provenance index. Provider diagnostics show whether each provider supports Chat Completions and Responses natively or through a bridge. The public Gateway preserves OpenAI-compatible `prompt_cache_key` and `prompt_cache_retention` fields, ensures every upstream native Chat Completions or Responses request has a `prompt_cache_key`, and reports process-local cached input token summaries in Settings Diagnostics. Workspace-attributed capability calls and usage rows can be read through `GET /api/app/workspaces/:workspaceId/capability-usage`; CapabilityCall owns the authorizing package snapshot plus optional product-safe runtime-origin and cache-lineage refs, while linked usage and audit rows remain unchanged. NanoCore-owned domain producers write workspace evidence bundles and consumers read them through `GET /api/app/workspaces/:workspaceId/evidence-bundles`; workspace audit events can be read through `GET /api/app/workspaces/:workspaceId/audit/events`; server audit events can be read through deployment-admin `GET /api/app/audit/events`; workspace permission decisions can be read through `GET /api/app/workspaces/:workspaceId/permission-decisions`; and server permission decisions can be read through deployment-admin `GET /api/app/permission-decisions`. It does not expose `POST /v1/completions` or the superseded `/internal/v1/chat/completions` facade. The `openai_codex` provider uses Codex-managed ChatGPT subscription auth for native Responses calls and supports Chat Completions through the text-only bridge.
 
 Pi-ai-routed requests observe one provider-native terminal usage payload before public OpenAI normalization. Workspace-attributed calls write positive input, output, cache-read, and cache-write token rows plus one `unit: "usd"` cost-estimate row when reported; that estimate is telemetry, not billing truth. Public responses, SSE, errors, and diagnostics keep the existing OpenAI-compatible vocabulary and never expose raw cost objects or prompt-cache keys.
 
@@ -224,17 +224,20 @@ pnpm -w verify:release
 
 That command runs L0-L2 verification, nanocore e2e, and built-artifact smoke tests. Use `pnpm -w verify:full` only for explicit full local validation that also includes web Playwright e2e and deterministic story acceptance tests. The real Codex smoke spec is skipped unless explicitly enabled, so the normal gate succeeds without host credentials.
 
-Run the real Codex Goal Mode L6 preflight only when accepting real Codex and provider quota usage:
+Run the real Codex Goal Mode L6 kernel story only when accepting real Codex and provider quota usage and after starting the remote OpenShell topology documented below:
 
 ```bash
 OPENKIT_L6_REAL_CODEX=1 \
 OPENKIT_L6_ALLOW_PROVIDER_QUOTA=1 \
+OPENKIT_L6_NANOCORE_URL=http://127.0.0.1:54101 \
+OPENKIT_L6_NANOCORE_DATA_ROOT=/absolute/path/to/nanocore-data \
 OPENKIT_L6_GOAL_REPO_ROOT=/absolute/path/to/disposable/git/repository \
 OPENKIT_L6_EVIDENCE_DIR=/absolute/path/to/evidence \
+OPENKIT_NANOCORE_TOKEN='server-admin-token-when-required' \
 pnpm -w test:stories:real-codex
 ```
 
-The preflight defaults `OPENKIT_L6_CODEX_OAUTH_ACCOUNT_DIR` to `/Users/m5pro/nano-data/server/files/oauth/openai-codex/accounts/default` on this developer machine.
+The runner requires built `@openkit/core-client` and `@openkit/mcp` artifacts, `codex app-server` on the NanoCore host for the account-status probe, a clean disposable repository with one baseline commit, local access to the target data root, and non-interactive `ssh a1`. It streams A1 auth directly into NanoCore's new server-owned default OAuth account file with mode `0600`, configures the `openai_codex` provider and Codex agent, and then runs the public MCP Goal flow. The auth content is never placed in command arguments, environment variables, logs, evidence, a vault grant, an AEP credential declaration, or the worker sandbox.
 
 ## Server Mode Auth
 
@@ -270,7 +273,7 @@ Use the returned session cookie for protected APIs such as `/api/workspaces`. Si
 
 NanoCore runs real Goal Mode worker turns through governed containers. The first backend is OpenShell.
 
-For ChatGPT-account based Codex workers, bootstrap `auth.json` into the NanoCore vault through `POST /api/app/vault/bootstrap/codex-auth-json`, then provide the non-secret Codex config from a host `CODEX_HOME` that already works with `codex exec`:
+For the trusted worker-inference path, NanoCore owns the Codex OAuth account and provider call. The worker receives one package-scoped placeholder route to NanoCore and must not receive host Codex auth, a provider attachment, vault material, or an external provider endpoint:
 
 ```bash
 OPENKIT_WORKER_RUNTIME=container \
@@ -278,14 +281,11 @@ OPENKIT_CONTAINER_PLACEMENT=local \
 OPENKIT_CONTAINER_BACKEND=openshell \
 OPENKIT_OPENSHELL_GATEWAY=openshell \
 OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev \
-OPENKIT_OPENSHELL_CONTROL_RELAY_UPSTREAM=http://host.openshell.internal:3000/api/worker-control \
-OPENKIT_OPENSHELL_CODEX_CONFIG_TOML=/home/ubuntu/.codex/config.toml \
+OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:3000/api/worker-control \
 pnpm --filter @openkit/nanocore start
 ```
 
-Use `OPENKIT_OPENSHELL_CODEX_MODEL` only when a deployment intentionally overrides the model from `config.toml`.
-
-If OpenShell network policy is enforced, also configure `OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS` with the HTTPS endpoints required by the selected Codex account and provider.
+Do not set `OPENKIT_OPENSHELL_CODEX_AUTH_JSON`, `OPENKIT_OPENSHELL_CODEX_CONFIG_TOML`, or provider-specific extra network endpoints for the real Goal kernel story. A relay-required AEP receives one package-scoped transient OpenShell generic provider containing only the short-lived worker placeholder; its policy permits only the two internal worker-inference POST paths for the two pinned Codex binaries, explicitly disables Codex provider-side web search, rejects backend-private direct credentials, and revokes the placeholder plus deletes the provider during failure or teardown. Token-only route authentication, restart hydration, AEP-owned request authority, durable per-call attribution, bounded identity and Zstd decoding, JSON and SSE dispatch, client cancellation, Codex turn-state continuity, provider-drift failure accounting, privileged provider-state denial, and cancellation-safe ledger termination are implemented. The worker boundary also validates Codex 0.144.1 canonical turn metadata, verifies its request kind plus session, thread, parent, sub-agent, and request-header projections, and removes raw runtime and cache hints before provider dispatch.
 
 ### Remote OpenShell Verification
 
@@ -294,22 +294,32 @@ Remote container placement keeps NanoCore as the source of truth while creating 
 Run NanoCore with a remote OpenShell gateway by setting:
 
 ```bash
+BETTER_AUTH_SECRET='replace-with-at-least-32-random-characters' \
+OPENKIT_CORE_MODE=server \
+OPENKIT_DATA_ROOT=/absolute/path/to/nanocore-data \
+PORT=54101 \
 OPENKIT_WORKER_RUNTIME=container \
 OPENKIT_CONTAINER_PLACEMENT=remote \
 OPENKIT_CONTAINER_BACKEND=openshell \
 OPENKIT_OPENSHELL_GATEWAY=a1-openkit \
 OPENKIT_OPENSHELL_GATEWAY_URL=https://127.0.0.1:54003 \
 OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev \
-OPENKIT_OPENSHELL_CONTROL_RELAY_UPSTREAM=http://host.openshell.internal:54002/api/worker-control \
+OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:54002/api/worker-control \
 pnpm --filter @openkit/nanocore start
 ```
+
+Before startup, build NanoCore and confirm `openkit/worker-codex:dev` exists in the A1 OpenShell image store. Before running the real Goal story, also build `@openkit/core-client` and `@openkit/mcp`, establish the SSH tunnel below, create or select a project workspace, set `OPENKIT_L6_GOAL_WORKSPACE_ID` to its returned id, and issue a server-admin bearer token when server authentication is enabled.
 
 For the current `a1` development topology, keep the OpenShell mTLS profile in the local OpenShell config as `a1-openkit`, expose the remote gateway with a local SSH tunnel, and expose the local worker-control server back to the remote sandbox with a reverse tunnel:
 
 ```bash
-ssh -N -L 127.0.0.1:54003:127.0.0.1:17670 a1
-ssh -N -R 127.0.0.1:54002:127.0.0.1:54101 a1
+ssh -o ExitOnForwardFailure=yes -N \
+  -L 127.0.0.1:54003:127.0.0.1:17670 \
+  -R 172.20.0.1:54002:127.0.0.1:54101 \
+  a1
 ```
+
+The reverse listener uses the A1 OpenShell host bridge because `host.openshell.internal` resolves to `172.20.0.1` from worker sandboxes; a listener bound only to A1 loopback is not reachable from the sandbox network.
 
 Do not set `OPENKIT_OPENSHELL_GATEWAY_INSECURE=1` for the `a1-openkit` mTLS profile. The profile authenticates with the gateway client certificate and the insecure direct-endpoint mode does not carry that profile authentication.
 
@@ -320,15 +330,15 @@ OPENKIT_E2E_REMOTE_OPENSHELL=1 \
 OPENKIT_E2E_REMOTE_OPENSHELL_GATEWAY=a1-openkit \
 OPENKIT_E2E_REMOTE_OPENSHELL_GATEWAY_URL=https://127.0.0.1:54003 \
 OPENKIT_E2E_REMOTE_OPENSHELL_LOCAL_RELAY_PORT=54101 \
-OPENKIT_E2E_REMOTE_OPENSHELL_CONTROL_RELAY_UPSTREAM=http://host.openshell.internal:54002/api/worker-control \
+OPENKIT_E2E_REMOTE_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:54002/api/worker-control \
 pnpm --filter @openkit/nanocore exec vitest run src/runtime/openshell-cli.e2e.test.ts
 ```
 
 The remote test starts a local NanoCore worker-control server on `OPENKIT_E2E_REMOTE_OPENSHELL_LOCAL_RELAY_PORT`, creates a remote OpenShell sandbox through `OPENKIT_E2E_REMOTE_OPENSHELL_GATEWAY`, uploads a temporary Git workspace, runs a bounded worker command, downloads the transcript and patch evidence, asserts a pending staged review, and tears down the sandbox.
 
-The verified loop-0 deployment allowed `api.openai.com`, `chatgpt.com`, `chat.openai.com`, and `auth.openai.com` for `/usr/local/bin/codex` and `/usr/local/lib/codex/codex/codex`.
+The verified loop-0 deployment allowed `api.openai.com`, `chatgpt.com`, `chat.openai.com`, and `auth.openai.com` for `/usr/local/bin/codex` and `/usr/local/lib/codex/bin/codex`.
 
-When the worker step also needs GitHub access, include `github.com` and `api.github.com` for Git and Codex-owned GitHub calls. The generated policy default includes `/usr/bin/git`, `/usr/lib/git-core/git-remote-http`, `/usr/lib/git-core/git-remote-https`, `/usr/local/bin/codex`, and `/usr/local/lib/codex/codex/codex` for extra endpoints unless an endpoint overrides `binaries`.
+When the worker step also needs GitHub access, include `github.com` and `api.github.com` for Git and Codex-owned GitHub calls. The generated policy default includes `/usr/bin/git`, `/usr/lib/git-core/git-remote-http`, `/usr/lib/git-core/git-remote-https`, `/usr/local/bin/codex`, and `/usr/local/lib/codex/bin/codex` for extra endpoints unless an endpoint overrides `binaries`.
 
 The intended pair is:
 

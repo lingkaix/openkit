@@ -35,13 +35,12 @@ FROM node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26c
 
 LABEL org.openkit.image="worker-codex"
 LABEL org.openkit.worker-shim="/usr/local/bin/openkit-codex-shim"
-LABEL org.openkit.worker-sidecar="/usr/local/bin/openkit-worker-sidecar"
 LABEL org.openkit.smoke="/usr/local/bin/openkit-worker-codex-smoke"
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 ARG TARGETARCH
-ARG CODEX_CLI_VERSION="0.130.0"
+ARG CODEX_CLI_VERSION="0.144.1"
 
 ENV HOME="/sandbox"
 ENV OPENKIT_SESSION_DIR="/openkit/session"
@@ -73,7 +72,7 @@ RUN set -eux; \
     "@openai/codex-linux-${codex_npm_arch}@npm:@openai/codex@${CODEX_CLI_VERSION}-${codex_npm_tag}"; \
   mkdir -p /usr/local/lib/codex; \
   cp -R "/tmp/codex-native/node_modules/@openai/codex-linux-${codex_npm_arch}/vendor/${codex_target}/." /usr/local/lib/codex/; \
-  ln -sf /usr/local/lib/codex/codex/codex /usr/local/bin/codex; \
+  ln -sf /usr/local/lib/codex/bin/codex /usr/local/bin/codex; \
   codex --version; \
   codex app-server --help >/dev/null; \
   rm -rf /tmp/codex-native
@@ -83,15 +82,49 @@ COPY containers/worker-codex/smoke.sh /usr/local/bin/openkit-worker-codex-smoke
 
 RUN printf '%s\n' \
   '#!/usr/bin/env bash' \
-  'exec node /usr/local/lib/openkit/worker-shim/dist/bin/openkit-codex-shim.js "$@"' \
+  'set -euo pipefail' \
+  'exec 3<<<"${OPENKIT_CONTROL_TOKEN:-}"' \
+  'exec env -i \' \
+  '  ALL_PROXY="${ALL_PROXY:-}" \' \
+  '  CODEX_HOME="${CODEX_HOME:-}" \' \
+  '  COLORTERM="${COLORTERM:-}" \' \
+  '  HOME="${HOME:-/sandbox}" \' \
+  '  HTTPS_PROXY="${HTTPS_PROXY:-}" \' \
+  '  HTTP_PROXY="${HTTP_PROXY:-}" \' \
+  '  LANG="${LANG:-C.UTF-8}" \' \
+  '  LC_ALL="${LC_ALL:-}" \' \
+  '  LC_CTYPE="${LC_CTYPE:-}" \' \
+  '  LOGNAME="${LOGNAME:-sandbox}" \' \
+  '  NODE_USE_ENV_PROXY=1 \' \
+  '  OPENKIT_AGENT_SESSION_ID="${OPENKIT_AGENT_SESSION_ID:-}" \' \
+  '  OPENKIT_ARTIFACT_DIR="${OPENKIT_ARTIFACT_DIR:-/openkit/artifacts}" \' \
+  '  OPENKIT_CODEX_COMMAND="${OPENKIT_CODEX_COMMAND:-}" \' \
+  '  OPENKIT_CONTROL_BASE_URL="${OPENKIT_CONTROL_BASE_URL:-}" \' \
+  '  OPENKIT_CONTROL_TOKEN_FD=3 \' \
+  '  OPENKIT_PACKAGE_SNAPSHOT_ID="${OPENKIT_PACKAGE_SNAPSHOT_ID:-}" \' \
+  '  OPENKIT_REQUEST_ID="${OPENKIT_REQUEST_ID:-}" \' \
+  '  OPENKIT_SESSION_DIR="${OPENKIT_SESSION_DIR:-/openkit/session}" \' \
+  '  OPENKIT_THREAD_ID="${OPENKIT_THREAD_ID:-}" \' \
+  '  OPENKIT_TURN_ID="${OPENKIT_TURN_ID:-}" \' \
+  '  OPENKIT_WORKER_INFERENCE_TOKEN="${OPENKIT_WORKER_INFERENCE_TOKEN:-}" \' \
+  '  OPENKIT_WORKSPACE_ID="${OPENKIT_WORKSPACE_ID:-}" \' \
+  '  NO_PROXY="${NO_PROXY:-}" \' \
+  '  PATH="${PATH:-/usr/local/bin:/usr/bin:/bin}" \' \
+  '  SHELL="${SHELL:-/bin/bash}" \' \
+  '  SSL_CERT_DIR="${SSL_CERT_DIR:-}" \' \
+  '  SSL_CERT_FILE="${SSL_CERT_FILE:-}" \' \
+  '  TEMP="${TEMP:-}" \' \
+  '  TERM="${TERM:-}" \' \
+  '  TMP="${TMP:-}" \' \
+  '  TMPDIR="${TMPDIR:-/tmp}" \' \
+  '  USER="${USER:-sandbox}" \' \
+  '  http_proxy="${http_proxy:-}" \' \
+  '  https_proxy="${https_proxy:-}" \' \
+  '  no_proxy="${no_proxy:-}" \' \
+  '  node /usr/local/lib/openkit/worker-shim/dist/bin/openkit-codex-shim.js "$@"' \
   > /usr/local/bin/openkit-codex-shim
 
-RUN printf '%s\n' \
-  '#!/usr/bin/env bash' \
-  'exec node /usr/local/lib/openkit/worker-shim/dist/bin/openkit-worker-sidecar.js "$@"' \
-  > /usr/local/bin/openkit-worker-sidecar
-
-RUN chmod +x /usr/local/bin/openkit-codex-shim /usr/local/bin/openkit-worker-sidecar /usr/local/bin/openkit-worker-codex-smoke \
+RUN chmod +x /usr/local/bin/openkit-codex-shim /usr/local/bin/openkit-worker-codex-smoke \
   && groupadd --system sandbox \
   && useradd --system --gid sandbox --home-dir /sandbox --create-home --shell /bin/bash sandbox \
   && mkdir -p /sandbox/openkit/session /sandbox/openkit/artifacts /sandbox/openkit/config /workspace \

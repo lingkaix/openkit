@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -6,8 +6,6 @@ import {
   acceptSchedulerLeaseHeartbeat,
   createSchedulerAdmissionEntry,
   dispatchNextSchedulerEntry,
-  recordSchedulerSupplyRefreshAck,
-  schedulerLeaseHasAppliedSupplyRefreshAck,
   upsertSchedulerCapacityRecord,
   upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
@@ -98,6 +96,21 @@ function dispatchLease(coreDb: ReturnType<typeof createMigratedCoreDb>, suffix: 
 }
 
 describe('scheduler lease maintenance service', () => {
+  it('wires bounded production renewal without requiring a same-snapshot refresh ack', () => {
+    const source = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
+    const maintenanceStart = source.indexOf(
+      'schedulerLeaseMaintenance = startSchedulerLeaseMaintenanceService(coreDb, {'
+    );
+    const maintenanceEnd = source.indexOf('schedulerHealthProbe =', maintenanceStart);
+    const wiring = source.slice(maintenanceStart, maintenanceEnd);
+
+    expect(maintenanceStart).toBeGreaterThan(-1);
+    expect(maintenanceEnd).toBeGreaterThan(maintenanceStart);
+    expect(wiring).toContain('maxTotalLeaseMs: SCHEDULER_LEASE_MAX_TOTAL_MS');
+    expect(wiring).toContain('renewalDurationMs: SCHEDULER_LEASE_RENEWAL_DURATION_MS');
+    expect(wiring).not.toContain('canRenewPackageSnapshot');
+  });
+
   it('runs lease watch before renewal in one maintenance iteration', () => {
     const coreDb = createMigratedCoreDb();
 
@@ -131,56 +144,6 @@ describe('scheduler lease maintenance service', () => {
         { leaseId: 'lease_renew', renewalCount: 1, status: 'active' },
         { leaseId: 'lease_startup', renewalCount: 0, status: 'failed' },
       ]);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('uses durable supply refresh declarations as the renewal gate', () => {
-    const coreDb = createMigratedCoreDb();
-
-    try {
-      dispatchLease(coreDb, 'safe_refresh');
-      acceptSchedulerLeaseHeartbeat(coreDb, {
-        heartbeatTimeoutMs: 900_000,
-        leaseId: 'lease_safe_refresh',
-        now: () => '2026-07-05T00:00:10.000Z',
-        workerSequence: 1,
-      });
-
-      const blocked = runSchedulerLeaseMaintenanceOnce(coreDb, {
-        maxTotalLeaseMs: 7_200_000,
-        now: () => '2026-07-05T00:10:30.000Z',
-        renewalDurationMs: 1_800_000,
-        renewalLeadMs: 300_000,
-        canRenewPackageSnapshot: (lease) => schedulerLeaseHasAppliedSupplyRefreshAck(coreDb, lease),
-      });
-
-      recordSchedulerSupplyRefreshAck(coreDb, {
-        acknowledgedAt: '2026-07-05T00:10:31.000Z',
-        agentSessionId: 'as_safe_refresh',
-        message: null,
-        packageSnapshotId: 'aepsnap_turn_safe_refresh_as_safe_refresh',
-        refreshId: 'refresh_safe_refresh',
-        sequence: 2,
-        status: 'applied',
-        threadId: 'thread_safe_refresh',
-        turnId: 'turn_safe_refresh',
-        workspaceId: 'ws_demo',
-      });
-
-      const renewed = runSchedulerLeaseMaintenanceOnce(coreDb, {
-        maxTotalLeaseMs: 7_200_000,
-        now: () => '2026-07-05T00:10:32.000Z',
-        renewalDurationMs: 1_800_000,
-        renewalLeadMs: 300_000,
-        canRenewPackageSnapshot: (lease) => schedulerLeaseHasAppliedSupplyRefreshAck(coreDb, lease),
-      });
-
-      expect(blocked.renewal.packageRefreshBlocked.map((lease) => lease.leaseId)).toEqual([
-        'lease_safe_refresh',
-      ]);
-      expect(renewed.renewal.renewed.map((lease) => lease.leaseId)).toEqual(['lease_safe_refresh']);
     } finally {
       coreDb.sqlite.close();
     }

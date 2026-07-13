@@ -67,6 +67,42 @@
         }
       ]
     },
+    "packageSnapshotId": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "runtimeOriginRef": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^rto_[a-f0-9]{24}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "runtimeCacheLineageRef": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^rcl_[a-f0-9]{24}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "requestId": {
       "default": null,
       "anyOf": [
@@ -155,6 +191,9 @@
     "itemId",
     "agentId",
     "agentSessionId",
+    "packageSnapshotId",
+    "runtimeOriginRef",
+    "runtimeCacheLineageRef",
     "requestId",
     "sourceIds",
     "capabilityId",

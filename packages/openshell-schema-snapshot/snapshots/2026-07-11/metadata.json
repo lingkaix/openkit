@@ -9,21 +9,21 @@
   "sourcePaths": [
     "proto/openshell.proto",
     "crates/openshell-core/src/secrets.rs",
+    "crates/openshell-cli/src/run.rs",
     "crates/openshell-providers/src/profiles.rs",
     "crates/openshell-supervisor-network/src/l7/mod.rs",
     "crates/openshell-cli/src/main.rs",
+    "proto/sandbox.proto",
+    "docs/reference/policy-schema.mdx",
     "providers/*.yaml"
   ],
-  "mappingVersion": "openshell-v2",
-  "refreshedAt": "2026-07-11",
-  "compatibleGatewayRange": {
-    "min": "0.0.80",
-    "maxExclusive": "0.1.0"
-  },
+  "mappingVersion": "openshell-v4",
+  "refreshedAt": "2026-07-13",
+  "requiredGatewayVersion": "0.0.80",
   "checksums": {
-    "provider-profile-surface.json": "da585b51596eb05e1826604c605271cc77993e1c149683d78bf9cdf8016d1bdf",
-    "policy-surface.json": "7981b08fd81152b8c4924624518fa2a13d9f0c6254638ed667fcaf8b93b73aca",
-    "cli-surface.json": "9111611213395ef1f53b5e140f95290ec6e99d593ad3d85ec1358dabc85333ed"
+    "provider-profile-surface.json": "87b856a2ffabdb1eef5ff041f4a2be29b46863affe60ffde334a337118ef486d",
+    "policy-surface.json": "865f9a3db00a60f9a761a7d85c8b54791eb15a917ae230d6e514857fbb9b6348",
+    "cli-surface.json": "d31f36bb36a053f7ab36ad482e313bc246eabeb8325d6f8ca614597d09387efd"
   },
   "maintenanceNote": "The snapshot separates the full upstream provider and policy surface from the narrower OpenKit-emitted mapping. Refresh only as an explicit external-boundary update after reviewing tagged OpenShell profile, policy, and CLI source."
 }

@@ -55,7 +55,7 @@ In core vocabulary, the authored manifest is the concrete setup document for an 
 - Do not preserve compact or historical manifest shapes.
 - Do not define Codex, OpenCode, or Pi Agent native config file formats.
 - Do not let workspace or user config expand beyond server policy.
-- Do not make worker-side MCP supply the same thing as the user-facing `@openkit/mcp` channel.
+- Do not make worker-side MCP supply the same thing as the end-user Agent Skill Interface.
 - Do not implement scheduling in this spec; see the runtime scheduling spec.
 
 ## Background
@@ -247,7 +247,7 @@ The AEP snapshot must carry:
 
 The snapshot is immutable. Any material change creates a new snapshot.
 
-The AEP snapshot is the only launch contract passed to worker governance backends. Runtime-native files, environment variables, command arguments, sidecar configs, policy files, MCP configs, and provider endpoint configs are generated from the snapshot.
+The AEP snapshot is the only launch contract passed to worker governance backends. Runtime-native files, environment variables, command arguments, shim config, policy files, MCP configs, and provider endpoint configs are generated from the snapshot.
 
 ## Readiness States
 
@@ -326,7 +326,7 @@ The current implementation is the accepted V1 projection of this target:
 - `apps/nanocore/src/config/runtime-config.ts` treats agent config changes as restart-required because the production scheduler captures authored agent inputs at startup; reload never claims that future sessions use a snapshot which the active dispatcher has not adopted.
 - `packages/config-schema/src/agent-environment.ts` defines a strict `AgentEnvironmentPackageSchema` with `scope`, `agent`, `runtime`, `workspace`, `supply`, `control`, `capabilities`, `providers`, `vault`, `policy`, `llm`, `resources`, `observability`, `backend`, and extension sections. It also rejects raw-secret-shaped values.
 - `apps/nanocore/src/runtime/agent-environment.ts` currently resolves only OpenShell container-backed AEP snapshots and rejects host AEP backends.
-- Current OpenShell AEP resolution derives package and snapshot IDs from turn and agent-session lineage, binds the policy block to the worker-launch policy snapshot id, projects workspace roots, generates `/openkit/config/package.json`, provides `control.local`, `capability.local`, and `inference.local` endpoint projections, and declares worker-visible transcript, artifact, policy, provider, vault, LLM, observability, and backend sections.
+- Current OpenShell AEP resolution derives package and snapshot IDs from turn and agent-session lineage, binds the policy block to the worker-launch policy snapshot id, projects workspace roots, generates `/openkit/config/package.json`, requires direct NanoCore worker control, declares the worker capability plane disabled with no routes, selects backend-local inference or an exact NanoCore worker-inference projection bound to the selected provider/model, and declares worker-visible transcript, artifact, policy, provider, vault, LLM, observability, and backend sections.
 - Current turn orchestration passes authored backend requirements from resolved setup into AEP resolution, and current OpenShell AEP resolution merges those required backend capabilities into the package backend envelope before worker-governance backend validation.
 - Current OpenShell AEP resolution can project explicit workspace root `sourceRef` bindings through the workspace data source catalog into immutable workspace input source snapshots that include source id, source kind, non-secret locator, optional vault grant reference, and catalog entry digest.
 - Repository-backed product turns now pass the selected repository sourceRef context through scheduler dispatch, turn orchestration, WorkerGovernance, and HostAdapter launch paths instead of requiring manual resolver parameters.
@@ -334,7 +334,7 @@ The current implementation is the accepted V1 projection of this target:
 - Turn orchestration resolves matching source refs before creating the turn and returns a typed `workspace_data_source_blocked` error for missing catalogs, missing sources, disabled sources, slot denials, or access widening.
 - Workspace input snapshot and workspace materialization records built from resolved AEP workspace inputs now preserve the catalog `sourceId` for source-level lineage.
 - Current worker Skill and MCP supply catalogs are static in `apps/nanocore/src/runtime/agent-environment.ts`, resolve by requested ids, require approved review status, enforce runtime-adapter allowlists, and project catalog entries into AEP supply.
-- Current AEP snapshots include `knowledge.search` and `knowledge.read` capability route families as the worker-visible Knowledge projection.
+- Current AEP snapshots expose no worker capability route families. The accepted future Knowledge projection remains `knowledge.search` and `knowledge.read` after the capability plane is rebuilt.
 - Current runtime state stores redacted AEP snapshots for diagnostics and replay context, and worker-governance launch now persists redacted AEP snapshots to the workspace-scoped `agent_environment_package_snapshots` ledger.
 
 The accepted V1 resolver is implemented for server-owned authored setup loading, required-feature fail-closed handling, durable resolved-setup ledgers, readiness blockers, scheduler launch lineage, OpenShell AEP generation, static approved supply catalogs, workspace data source references, backend capability requirements, vault-backed provider and runtime-file attachment, redacted AEP snapshots, and App API/Core Client/OpenAPI/MCP readback. Workspace policy layering, user preference layering, policy-reviewed workspace-local agent definitions, richer readiness remediation, catalog-backed dynamic supply resolution, warm-pool intent, and multi-backend negotiation remain future extensions over the same manifest-to-resolved-setup-to-AEP pipeline.

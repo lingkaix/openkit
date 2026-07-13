@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   ApproveThreadGoalPlanRequestSchema,
   ApproveThreadGoalPlanResponseSchema,
@@ -30,7 +32,6 @@ import type { z } from 'zod';
 import { asApiError, asInvalidRequestError } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
 import type { CoreMode } from './config/mode.js';
-import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
 import { redactInternalAgentText } from './internal-agents/redaction.js';
 import {
   createWorkerCoordinatorDecision,
@@ -67,14 +68,10 @@ import { startGoalTaskWorkerTurn } from './runtime/goal-worker-start.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 import type { PreparedNextTurn } from './runtime/prepare-next-turn.js';
 import { stopReasonForTurnStatus } from './runtime/stop-after-turn.js';
-import {
-  materializeWorkspaceRootsForTurn,
-  resolveWorkspaceRepositoryForTurn,
-  workspaceSourceContextForTurn,
-} from './runtime/turn-workspace-context.js';
 import type { TurnExecutor } from './runtime/types.js';
 import { clearWorkerCheckpointAfterTerminalState } from './runtime/worker-recovery.js';
 import { runWorkerTurnLoop } from './runtime/worker-turn-loop.js';
+import { completeSchedulerLeaseForTerminalTurn } from './scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 
 /** Parsed turn read model used by Goal worker lifecycle guards. */
@@ -675,7 +672,7 @@ export function startGoalModeObjective(input: {
     const turn = input.store.createTurn(input.workspaceId, input.threadId, input.objective);
     const timestamp = turn.startedAt ?? new Date().toISOString();
     const objectiveItem = input.store.createItem({
-      id: `it_goal_objective_${goalId}`,
+      id: `it_goal_objective_${turn.id}`,
       workspaceId: input.workspaceId,
       threadId: input.threadId,
       turnId: turn.id,
@@ -745,7 +742,7 @@ export function registerGoalRoutes({
   mode,
   repositoryWorkspaceDb,
   requestStore,
-  runtimeConfig,
+  startModeWorkerTurn,
   turnExecutor,
   workerCoordinatorCandidates,
 }: {
@@ -764,8 +761,16 @@ export function registerGoalRoutes({
   readonly repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb;
   /** Resolves request-scoped storage. */
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
-  /** Returns the current runtime configuration snapshot. */
-  readonly runtimeConfig: () => RuntimeConfigSnapshot;
+  /** Starts one reserved worker turn through the durable scheduler. */
+  readonly startModeWorkerTurn: (input: {
+    readonly store: FsStore;
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly prompt: string;
+    readonly requestId: string;
+    readonly requestedAgentId: string;
+    readonly reservedTurnId: string;
+  }) => Promise<z.infer<typeof TurnSchema>>;
   /** Starts and observes governed worker turns. */
   readonly turnExecutor: TurnExecutor;
   /** Projects the workspace agent catalog into Coordinator candidates. */
@@ -1325,12 +1330,6 @@ export function registerGoalRoutes({
           return asApiError('Goal does not have a ready task.', 'goal_no_ready_task', 409);
         }
 
-        const repository = resolveWorkspaceRepositoryForTurn(
-          coreDb,
-          workspaceId,
-          store.getUserId()
-        );
-
         const coordinator = createGoalModeStepDelegation({
           store,
           workerCoordinatorCandidates,
@@ -1339,22 +1338,6 @@ export function registerGoalRoutes({
           task,
         });
         const reviewRequired = parsed.data.reviewPolicyOverride !== 'none';
-
-        const snapshot = runtimeConfig();
-        const workspaceRoots = materializeWorkspaceRootsForTurn(
-          snapshot,
-          store,
-          workspaceId,
-          repository
-        );
-        const workspaceSourceContext = workspaceSourceContextForTurn(
-          coreDb,
-          snapshot,
-          store,
-          workspaceId,
-          repository,
-          workspaceRoots
-        );
 
         const loop = await runWorkerTurnLoop({
           workspaceDb,
@@ -1381,12 +1364,8 @@ export function registerGoalRoutes({
               steeringMessages: queues.steeringMessages,
               followUpInputs: queues.followUpInputs,
             }),
-          createTurn: ({ prepared }) => {
-            const turn = store.createTurn(
-              workspaceId,
-              threadId,
-              prepared.delegationRequest.objective
-            );
+          reserveTurn: () => {
+            const turnId = `turn_${randomUUID()}`;
             updateGoalTask(workspaceDb, {
               workspaceId,
               threadId,
@@ -1402,14 +1381,17 @@ export function registerGoalRoutes({
               currentTaskId: task.taskId,
             });
 
-            return { turnId: turn.id };
+            return { turnId };
           },
           startWorker: async ({ turnId, prepared }) => {
-            await turnExecutor.startTurn(store, turnId, prepared.delegationRequest.objective, {
+            await startModeWorkerTurn({
+              store,
+              workspaceId,
+              threadId,
+              prompt: prepared.delegationRequest.objective,
               requestId: parsed.data.requestId,
-              workspaceRoots,
-              ...workspaceSourceContext,
-              workspaceCwd: prepared.repository.localPath,
+              requestedAgentId: coordinator.worker.agentId,
+              reservedTurnId: turnId,
             });
             const session = turnExecutor.getAgentSession?.(store, workspaceId, threadId) ?? null;
 
@@ -1417,6 +1399,7 @@ export function registerGoalRoutes({
           },
           awaitWorker: async ({ turnId }) => {
             const turn = await waitForWorkerTurnTerminalState(store, turnId);
+            completeSchedulerLeaseForTerminalTurn(coreDb, turn);
             const evidence = collectWorkerTurnEvidence(
               store.listThreadItems(workspaceId, threadId),
               turnId
@@ -1549,7 +1532,7 @@ export function registerGoalRoutes({
           evidence: loop.evidence,
         });
 
-        clearWorkerCheckpointAfterTerminalState(workspaceDb, {
+        await clearWorkerCheckpointAfterTerminalState(workspaceDb, {
           workspaceId,
           threadId,
           turnId: loop.turnId,
@@ -1598,13 +1581,31 @@ export function registerGoalRoutes({
             ) ?? null;
 
           if (goal) {
-            updateGoalStatus(workspaceDb, {
-              workspaceId,
-              threadId,
-              goalId: goal.goalId,
-              status: 'failed',
-              terminalStopReason: 'error',
-            });
+            workspaceDb.sqlite.transaction(() => {
+              for (const task of listGoalTasks(workspaceDb, {
+                workspaceId,
+                threadId,
+                goalId: goal.goalId,
+              })) {
+                if (task.status === 'running') {
+                  updateGoalTask(workspaceDb, {
+                    workspaceId,
+                    threadId,
+                    goalId: goal.goalId,
+                    taskId: task.taskId,
+                    status: 'failed',
+                  });
+                }
+              }
+
+              updateGoalStatus(workspaceDb, {
+                workspaceId,
+                threadId,
+                goalId: goal.goalId,
+                status: 'failed',
+                terminalStopReason: 'error',
+              });
+            })();
           }
         } finally {
           workspaceDb.sqlite.close();
