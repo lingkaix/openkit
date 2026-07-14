@@ -2075,6 +2075,11 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
 
     return WorkspaceMaterializationRecordSchema.parse({
       ...parsed,
+      packageSnapshotId: requiredMapValue(
+        context.agentEnvironmentPackageSnapshotIds,
+        parsed.packageSnapshotId,
+        'agent environment package snapshot'
+      ),
       materializedRootRef: rewriteWorkspaceReference(
         parsed.materializedRootRef,
         report.exportedWorkspaceId,
@@ -2091,6 +2096,11 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
 
     return BackendWorkspaceHandleSchema.parse({
       ...parsed,
+      packageSnapshotId: requiredMapValue(
+        context.agentEnvironmentPackageSnapshotIds,
+        parsed.packageSnapshotId,
+        'agent environment package snapshot'
+      ),
       transportRefs: parsed.transportRefs.map((transportRef) => ({
         ...transportRef,
         ref: rewriteWorkspaceReference(

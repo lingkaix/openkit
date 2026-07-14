@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import {
+  expireReleasingSchedulerLeases,
+  listSchedulerLeasesNeedingWorkspaceRecovery,
+} from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
+import { recordWorkspaceRecoveryTriggersForLeases } from './scheduler-lease-maintenance-service.js';
 
 /** Input for scheduler restart recovery. */
 export interface RunSchedulerRestartRecoveryInput {
@@ -9,7 +14,7 @@ export interface RunSchedulerRestartRecoveryInput {
 
 /** Result of scheduler restart recovery. */
 export interface SchedulerRestartRecoveryResult {
-  /** Live leases adopted by the new scheduler epoch. */
+  /** Non-terminal leases adopted by the new scheduler epoch. */
   readonly adoptedLeaseIds: string[];
   /** Pre-launch leases failed and requeued. */
   readonly preLaunchFailedLeaseIds: string[];
@@ -28,6 +33,7 @@ interface LeaseRecoveryRow {
   readonly agent_session_id: string;
   readonly status: string;
   readonly package_snapshot_id: string;
+  readonly release_reason: string | null;
   readonly target_id: string;
   readonly thread_id: string;
   readonly turn_id: string;
@@ -47,6 +53,10 @@ export function runSchedulerRestartRecovery(
 ): SchedulerRestartRecoveryResult {
   const timestamp = input.now?.() ?? new Date().toISOString();
   const schedulerEpoch = nextSchedulerEpoch(coreDb);
+  expireReleasingSchedulerLeases(coreDb, {
+    now: () => timestamp,
+    schedulerEpoch,
+  });
   const rows = coreDb.sqlite
     .prepare(
       `SELECT
@@ -57,13 +67,14 @@ export function runSchedulerRestartRecovery(
         turn_id,
         agent_session_id,
         package_snapshot_id,
+        release_reason,
         pool_id,
         target_id,
         status,
         heartbeat_deadline,
         last_accepted_heartbeat_at
       FROM scheduler_session_leases
-      WHERE status IN ('planned', 'acquired', 'starting', 'active', 'idle')
+      WHERE status IN ('planned', 'acquired', 'starting', 'active', 'idle', 'stale', 'releasing')
       ORDER BY lease_id ASC`
     )
     .all() as LeaseRecoveryRow[];
@@ -74,9 +85,21 @@ export function runSchedulerRestartRecovery(
   coreDb.sqlite.exec('BEGIN IMMEDIATE');
   try {
     for (const row of rows) {
+      if (row.status === 'stale') {
+        continue;
+      }
+
       if (isPreLaunchLease(row)) {
         failPreLaunchLease(coreDb, row, schedulerEpoch);
         preLaunchFailedLeaseIds.push(row.lease_id);
+        continue;
+      }
+
+      if (row.status === 'releasing') {
+        coreDb.sqlite
+          .prepare('UPDATE scheduler_session_leases SET scheduler_epoch = ? WHERE lease_id = ?')
+          .run(schedulerEpoch, row.lease_id);
+        adoptedLeaseIds.push(row.lease_id);
         continue;
       }
 
@@ -97,6 +120,12 @@ export function runSchedulerRestartRecovery(
     coreDb.sqlite.exec('ROLLBACK');
     throw error;
   }
+
+  recordWorkspaceRecoveryTriggersForLeases(
+    coreDb,
+    listSchedulerLeasesNeedingWorkspaceRecovery(coreDb),
+    () => timestamp
+  );
 
   return { adoptedLeaseIds, preLaunchFailedLeaseIds, schedulerEpoch, staleLeaseIds };
 }

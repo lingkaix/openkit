@@ -37,6 +37,7 @@ import type { FilesystemSnapshotManifest } from './filesystem-workspace-sync.js'
 import type {
   OpenShellDoctorStatus,
   OpenShellGatewayInfo,
+  OpenShellGatewayTargetInput,
   OpenShellProviderDeleteInput,
   OpenShellProviderDetachInput,
   OpenShellProviderGetInput,
@@ -401,9 +402,10 @@ export interface OpenShellWorkerGovernanceClient {
   /**
    * Reads the selected OpenShell gateway status.
    *
+   * @param input Optional gateway target.
    * @returns Gateway status summary.
    */
-  status(): Promise<OpenShellStatus>;
+  status(input?: OpenShellGatewayTargetInput): Promise<OpenShellStatus>;
 
   /**
    * Reads the selected OpenShell gateway metadata.
@@ -411,14 +413,15 @@ export interface OpenShellWorkerGovernanceClient {
    * @param input Optional gateway lookup input.
    * @returns Gateway info summary.
    */
-  gatewayInfo(input?: {
-    /** Optional gateway name to inspect instead of the active gateway. */
-    gateway?: string;
-    /** Optional direct remote gateway endpoint URL. */
-    gatewayEndpoint?: string;
-    /** Whether to skip TLS verification for the direct gateway endpoint. */
-    gatewayInsecure?: boolean;
-  }): Promise<OpenShellGatewayInfo>;
+  gatewayInfo(input?: OpenShellGatewayTargetInput): Promise<OpenShellGatewayInfo>;
+
+  /**
+   * Reads the gateway-global Providers v2 activation state.
+   *
+   * @param input Optional gateway target.
+   * @returns True or false for an explicit setting, or null when unset.
+   */
+  providersV2Enabled(input?: OpenShellGatewayTargetInput): Promise<boolean | null>;
 
   /**
    * Runs local OpenShell prerequisite checks.
@@ -530,8 +533,6 @@ export interface OpenShellWorkerGovernanceBackendOptions {
   retainSandboxes: boolean;
   /** Sandbox image, Dockerfile/build context, or OpenShell community name. */
   sandboxSource: string;
-  /** Whether the trusted worker inference path is enabled for this backend. */
-  trustedWorkerInferenceRelayEnabled?: boolean | undefined;
   /** Worker control gateway used to mint sandbox bearer tokens. */
   workerControlGateway?: OpenShellWorkerControlGateway;
 }
@@ -551,7 +552,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
   private readonly placement: 'local' | 'remote';
   private readonly retainSandboxes: boolean;
   private readonly sandboxSource: string;
-  private readonly trustedWorkerInferenceRelayEnabled: boolean;
   private readonly workerControlGateway: OpenShellWorkerControlGateway | null;
   private readonly materializedSessions = new Map<string, OpenShellMaterializedSessionState>();
   private readonly materializingPackageSnapshotIds = new Set<string>();
@@ -576,7 +576,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
     this.placement = options.placement ?? 'local';
     this.retainSandboxes = options.retainSandboxes;
     this.sandboxSource = options.sandboxSource;
-    this.trustedWorkerInferenceRelayEnabled = options.trustedWorkerInferenceRelayEnabled ?? false;
     this.workerControlGateway = options.workerControlGateway ?? null;
   }
 
@@ -1032,6 +1031,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
     const patchPayload = await this.downloadWorkspacePatchPayload(session, changeSet);
     const review = stageWorkspaceChangeSet(changeSet, {
       createdAt: new Date().toISOString(),
+      patchPayload,
       reviewId: `swr_${changeSet.id}`,
       stagingRef: `staging://workspace/${changeSet.id}`,
     });
@@ -1147,9 +1147,8 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
         'provider-attachments',
         'credential-placeholder',
         'nanocore-inference-upstream',
-        ...(this.trustedWorkerInferenceRelayEnabled
-          ? ['trusted-worker-inference-relay' as const, WORKER_RUNTIME_PROVENANCE_FEATURE]
-          : []),
+        'trusted-worker-inference-relay',
+        WORKER_RUNTIME_PROVENANCE_FEATURE,
         'audit-export',
         ...remoteCapabilities,
       ],
@@ -1172,14 +1171,15 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
     health: 'ready' | 'unavailable' | 'unknown';
     version: string | null;
   }> {
+    const gatewayTarget: OpenShellGatewayTargetInput = {
+      gateway: this.gatewayName,
+      ...(this.gatewayUrl ? { gatewayEndpoint: this.gatewayUrl } : {}),
+      ...(this.gatewayInsecure ? { gatewayInsecure: true } : {}),
+    };
     const [version, status, gatewayInfo] = await Promise.all([
       this.cli.version(),
-      this.cli.status(),
-      this.cli.gatewayInfo({
-        gateway: this.gatewayName,
-        ...(this.gatewayUrl ? { gatewayEndpoint: this.gatewayUrl } : {}),
-        ...(this.gatewayInsecure ? { gatewayInsecure: true } : {}),
-      }),
+      this.cli.status(gatewayTarget),
+      this.cli.gatewayInfo(gatewayTarget),
     ]);
 
     if (status.status !== 'connected') {
@@ -1197,6 +1197,11 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
         throw new Error('Trusted worker inference requires an OpenShell gateway version.');
       }
       assertRequiredOpenShellVersion(status.version);
+      if ((await this.cli.providersV2Enabled(gatewayTarget)) !== true) {
+        throw new Error(
+          'Trusted worker inference requires OpenShell global providers_v2_enabled=true.'
+        );
+      }
     }
 
     if (this.placement === 'local') {

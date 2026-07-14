@@ -15,11 +15,24 @@ const WORKER_CREDENTIAL_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const WORKER_SANDBOX_ACCESS_ID_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 const TRUSTED_WORKER_INFERENCE_RELAY_CAPABILITY = 'trusted-worker-inference-relay';
 
+/** Exact NanoCore worker-control POST paths available to governed workers. */
+export const OPENKIT_WORKER_CONTROL_POST_PATHS = [
+  '/api/worker-control/heartbeat',
+  '/api/worker-control/artifacts',
+  '/api/worker-control/commands/poll',
+  '/api/worker-control/commands/ack',
+  '/api/worker-control/terminal-results',
+  '/api/worker-control/events/append',
+  '/api/worker-control/final-status',
+  '/api/worker-control/supply-refresh-ack',
+  '/api/worker-control/capability-summary',
+  '/api/worker-control/knowledge-proposal-summary',
+] as const;
+
 export { WORKER_RUNTIME_PROVENANCE_FEATURE } from '@openkit/worker-protocol';
 
 const TRUSTED_WORKER_CONTROL_NETWORK_RULE_SCHEMA = z
   .object({
-    access: z.literal('read-write'),
     action: z.literal('allow'),
     binaries: z.tuple([
       z.literal('/usr/local/bin/node'),
@@ -29,6 +42,20 @@ const TRUSTED_WORKER_CONTROL_NETWORK_RULE_SCHEMA = z
     id: z.literal('openkit-worker-control'),
     port: z.number().int().min(1).max(65535),
     protocol: z.literal('rest'),
+    rules: z
+      .array(
+        z
+          .object({
+            method: z.literal('POST'),
+            path: z.enum(OPENKIT_WORKER_CONTROL_POST_PATHS),
+          })
+          .strict()
+      )
+      .length(OPENKIT_WORKER_CONTROL_POST_PATHS.length)
+      .refine(
+        (rules) => new Set(rules.map((rule) => rule.path)).size === rules.length,
+        'Trusted worker control paths must be unique.'
+      ),
   })
   .strict();
 const TRUSTED_WORKER_INFERENCE_NETWORK_RULE_SCHEMA = z

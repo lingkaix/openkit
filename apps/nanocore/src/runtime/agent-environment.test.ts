@@ -283,6 +283,26 @@ describe('agent environment package resolver', () => {
     expect(resolved.providers.attachments).toEqual([]);
     expect(resolved.policy.network?.rules).toEqual(
       expect.arrayContaining([
+        {
+          action: 'allow',
+          binaries: ['/usr/local/bin/node', '/usr/local/bin/openkit-codex-shim'],
+          host: 'host.openshell.internal',
+          id: 'openkit-worker-control',
+          port: 3000,
+          protocol: 'rest',
+          rules: [
+            { method: 'POST', path: '/api/worker-control/heartbeat' },
+            { method: 'POST', path: '/api/worker-control/artifacts' },
+            { method: 'POST', path: '/api/worker-control/commands/poll' },
+            { method: 'POST', path: '/api/worker-control/commands/ack' },
+            { method: 'POST', path: '/api/worker-control/terminal-results' },
+            { method: 'POST', path: '/api/worker-control/events/append' },
+            { method: 'POST', path: '/api/worker-control/final-status' },
+            { method: 'POST', path: '/api/worker-control/supply-refresh-ack' },
+            { method: 'POST', path: '/api/worker-control/capability-summary' },
+            { method: 'POST', path: '/api/worker-control/knowledge-proposal-summary' },
+          ],
+        },
         expect.objectContaining({
           binaries: ['/usr/local/bin/codex', '/usr/local/lib/codex/bin/codex'],
           host: 'host.openshell.internal',

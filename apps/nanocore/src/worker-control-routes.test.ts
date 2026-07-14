@@ -10,17 +10,21 @@ import { createApp, createDefaultWorkerControlGateway } from './app.js';
 import type { FsStore } from './lib/store.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
+import { runSchedulerLeaseMaintenanceOnce } from './runtime/scheduler-lease-maintenance-service.js';
 import {
   WorkerControlGateway,
   type WorkerControlGatewayError,
   type WorkerControlLineage,
 } from './runtime/worker-control-gateway.js';
 import { listWorkerControlRejectedEvidenceForWorkspace } from './runtime/worker-control-rejected-evidence.js';
+import { listWorkspaceReconciliationRecords } from './runtime/workspace-reconciliation-records.js';
 import {
   listBackendWorkspaceHandles,
   recordWorkspaceMaterializationRecords,
 } from './runtime/workspace-sync-records.js';
 import {
+  acceptSchedulerLeaseHeartbeat,
+  completeSchedulerLeaseForTerminalTurn,
   completeSchedulerSessionLease,
   createSchedulerAdmissionEntry,
   dispatchNextSchedulerEntry,
@@ -837,7 +841,64 @@ describe('worker control routes', () => {
     expect(response.status).toBe(500);
   });
 
-  it('marks durable scheduler leases releasing when final status arrives', async () => {
+  it.each([
+    ['missing', {}],
+    ['null', { stopReason: null }],
+    ['empty', { stopReason: '' }],
+    ['whitespace', { stopReason: '   ' }],
+  ])('rejects %s final-status stopReason', async (_label, bodyOverride) => {
+    const { app, environmentPackage, gateway, lineage, token } = createWorkerControlRouteFixture();
+    const response = await app.request('/api/worker-control/final-status', {
+      body: JSON.stringify({
+        body: { status: 'completed', ...bodyOverride },
+        lineage,
+        operation: 'final_status',
+        schemaVersion: 1,
+        sequence: 7,
+      }),
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+    });
+    const responseBody = (await response.json()) as { code: string };
+
+    expect(response.status).toBe(400);
+    expect(responseBody.code).toBe('invalid_request');
+    expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.events).toEqual([]);
+  });
+
+  it.each([
+    'turn.completed',
+    'turn.failed',
+  ] as const)('rejects direct %s event append outside final status', async (eventType) => {
+    const { app, environmentPackage, gateway, lineage, token } = createWorkerControlRouteFixture();
+    const response = await app.request('/api/worker-control/events/append', {
+      body: JSON.stringify({
+        lineage,
+        record: {
+          event: { data: { stopReason: 'completed' }, type: eventType },
+          kind: 'event',
+          lineage,
+          schemaVersion: 1,
+          sequence: 7,
+        },
+      }),
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+    });
+    const responseBody = (await response.json()) as { code: string };
+
+    expect(response.status).toBe(400);
+    expect(responseBody.code).toBe('worker_control_terminal_event_requires_final_status');
+    expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.events).toEqual([]);
+  });
+
+  it('rolls back final status atomically before a successful restart retry', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-final-')));
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Final status thread');
@@ -873,6 +934,10 @@ describe('worker control routes', () => {
     const gateway = createDefaultWorkerControlGateway(coreDb);
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, lineage.workspaceId);
     applyScopedMigrations(workspaceDb);
+    recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      createdAt: environmentPackage.createdAt,
+      environmentPackage,
+    });
     recordWorkspaceMaterializationRecords(workspaceDb, [
       {
         backendKind: 'openshell',
@@ -881,11 +946,12 @@ describe('worker control routes', () => {
         id: 'wmr_final_status',
         inputSnapshotId: 'wis_final_status',
         materializedRootRef: 'workspace://ws_demo/repo_default',
+        packageSnapshotId: lineage.packageSnapshotId,
         policyDigest: 'sha256:policy',
         readinessEvidence: [{ kind: 'backend.ready', ref: 'version:0.0.63' }],
         sourceId: 'repo_default',
         strategy: 'git',
-        workerSessionId: lineage.agentSessionId,
+        workerSessionId: 'sandbox_final_status',
         workspaceId: lineage.workspaceId,
       },
     ]);
@@ -926,6 +992,7 @@ describe('worker control routes', () => {
       priorityClass: 'interactive',
       profileRef: 'profile_worker',
       queueEntryId: 'queue_final_status',
+      requestId: lineage.requestId,
       requestedAgentId: 'agent_worker',
       requiredPoolConstraints: ['openshell.local'],
       threadId: lineage.threadId,
@@ -946,23 +1013,79 @@ describe('worker control routes', () => {
       sandboxBindingRef: 'lease-binding:lease_final_status',
       schedulerEpoch: 1,
       startupTimeoutMs: 120_000,
+      now: () => '2099-07-05T00:00:02.000Z',
+    });
+    acceptSchedulerLeaseHeartbeat(coreDb, {
+      heartbeatTimeoutMs: 30_000,
+      leaseId: 'lease_final_status',
+      now: () => '2099-07-05T00:00:10.000Z',
+      workerSequence: 1,
     });
     const registration = gateway.registerSession(environmentPackage, {
       sandboxBindingRef: 'lease-binding:lease_final_status',
     });
     const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
+    const finalStatusBody = JSON.stringify({
+      schemaVersion: 1,
+      lineage,
+      operation: 'final_status',
+      sequence: 7,
+      body: {
+        status: 'completed',
+        stopReason: 'completed',
+      },
+    });
 
-    const res = await app.request('/api/worker-control/final-status', {
-      body: JSON.stringify({
-        schemaVersion: 1,
-        lineage,
-        operation: 'final_status',
-        sequence: 7,
-        body: {
-          status: 'completed',
-          stopReason: 'completed',
-        },
-      }),
+    coreDb.sqlite.exec(`
+      CREATE TRIGGER reject_final_status_release
+      BEFORE UPDATE OF status ON scheduler_session_leases
+      WHEN OLD.lease_id = 'lease_final_status' AND NEW.status = 'releasing'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected final status release failure');
+      END
+    `);
+    const failed = await app.request('/api/worker-control/final-status', {
+      body: finalStatusBody,
+      headers: {
+        authorization: `Bearer ${registration.token}`,
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+    });
+    const recordsAfterFailure = coreDb.sqlite
+      .prepare(
+        `SELECT operation
+           FROM worker_control_records
+          WHERE turn_id = ? AND operation IN ('event_append', 'final_status')
+          ORDER BY operation`
+      )
+      .all(lineage.turnId);
+    const fingerprintsAfterFailure = coreDb.sqlite
+      .prepare(
+        `SELECT operation
+           FROM worker_control_sequence_fingerprints
+          WHERE turn_id = ? AND operation IN ('event_append', 'final_status')
+          ORDER BY operation`
+      )
+      .all(lineage.turnId);
+
+    expect(failed.status).toBe(500);
+    expect.soft(recordsAfterFailure).toEqual([]);
+    expect.soft(fingerprintsAfterFailure).toEqual([]);
+    expect(requireSchedulerSessionLease(coreDb, 'lease_final_status')).toMatchObject({
+      status: 'active',
+    });
+
+    coreDb.sqlite.exec('DROP TRIGGER reject_final_status_release');
+    const rebuiltGateway = createDefaultWorkerControlGateway(coreDb);
+    const rebuiltApp = createApp({
+      coreDb,
+      mode: 'server',
+      store,
+      workerControlGateway: rebuiltGateway,
+    });
+    const accepted = await rebuiltApp.request('/api/worker-control/final-status', {
+      body: finalStatusBody,
       headers: {
         authorization: `Bearer ${registration.token}`,
         'content-type': 'application/json',
@@ -974,17 +1097,45 @@ describe('worker control routes', () => {
         'SELECT status, release_reason AS releaseReason FROM scheduler_session_leases WHERE lease_id = ?'
       )
       .get('lease_final_status') as { releaseReason: string; status: string };
+    const acceptedRecords = coreDb.sqlite
+      .prepare(
+        `SELECT operation, COUNT(*) AS count
+           FROM worker_control_records
+          WHERE turn_id = ? AND operation IN ('event_append', 'final_status')
+          GROUP BY operation
+          ORDER BY operation`
+      )
+      .all(lineage.turnId);
+    const acceptedFingerprints = coreDb.sqlite
+      .prepare(
+        `SELECT operation, COUNT(*) AS count
+           FROM worker_control_sequence_fingerprints
+          WHERE turn_id = ? AND operation IN ('event_append', 'final_status')
+          GROUP BY operation
+          ORDER BY operation`
+      )
+      .all(lineage.turnId);
 
-    expect(res.status).toBe(200);
+    expect(accepted.status).toBe(200);
+    expect.soft(acceptedRecords).toEqual([
+      { count: 1, operation: 'event_append' },
+      { count: 1, operation: 'final_status' },
+    ]);
+    expect.soft(acceptedFingerprints).toEqual([
+      { count: 1, operation: 'event_append' },
+      { count: 1, operation: 'final_status' },
+    ]);
     expect(lease).toEqual({
       releaseReason: 'worker-final-status',
       status: 'releasing',
     });
+
     expect(listBackendWorkspaceHandles(workspaceDb, lineage.workspaceId)).toEqual([
       expect.objectContaining({
         cleanupStatus: 'retained',
         id: 'bwh_wmr_final_status',
-        workerSessionId: lineage.agentSessionId,
+        packageSnapshotId: lineage.packageSnapshotId,
+        workerSessionId: 'sandbox_final_status',
       }),
     ]);
     expect(
@@ -994,8 +1145,154 @@ describe('worker control routes', () => {
       })
     ).toEqual({ status: 'rejected', reason: 'lease-not-live' });
 
+    const maintenance = runSchedulerLeaseMaintenanceOnce(coreDb, {
+      maxTotalLeaseMs: 7_200_000,
+      now: () => new Date(Date.now() + 60_000).toISOString(),
+      renewalDurationMs: 1_800_000,
+      renewalLeadMs: 300_000,
+    });
+
+    expect(maintenance.leaseWatch.stale).toEqual([]);
+    expect(listWorkspaceReconciliationRecords(workspaceDb, lineage.workspaceId)).toEqual([]);
+    expect(requireSchedulerSessionLease(coreDb, 'lease_final_status')).toMatchObject({
+      heartbeatDeadline: '2099-07-05T00:00:40.000Z',
+      releaseReason: 'worker-final-status',
+      status: 'releasing',
+    });
+    expect(
+      coreDb.sqlite
+        .prepare(
+          'SELECT in_use_count AS inUseCount, version FROM scheduler_capacity_records WHERE target_id = ?'
+        )
+        .get('target_final_status')
+    ).toEqual({ inUseCount: 1, version: 2 });
+
+    const completedTurn = {
+      id: lineage.turnId,
+      status: 'completed' as const,
+      threadId: lineage.threadId,
+      workspaceId: lineage.workspaceId,
+    };
+    completeSchedulerLeaseForTerminalTurn(coreDb, completedTurn);
+    completeSchedulerLeaseForTerminalTurn(coreDb, completedTurn);
+
+    expect(requireSchedulerSessionLease(coreDb, 'lease_final_status')).toMatchObject({
+      releaseReason: 'turn-completed',
+      status: 'released',
+    });
+    expect(
+      coreDb.sqlite
+        .prepare(
+          'SELECT in_use_count AS inUseCount, version FROM scheduler_capacity_records WHERE target_id = ?'
+        )
+        .get('target_final_status')
+    ).toEqual({ inUseCount: 0, version: 3 });
+
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
+  });
+
+  it('replays only exact final status while its lease is releasing', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-replay-')));
+    const { environmentPackage, lineage, store } = createWorkerControlRouteFixture();
+
+    try {
+      applyMigrations(coreDb);
+      const binding = createDurableWorkerControlLease(
+        coreDb,
+        environmentPackage,
+        lineage,
+        'final_status_replay'
+      );
+      const gateway = createDefaultWorkerControlGateway(coreDb);
+      const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
+      const authorization = `Bearer ${binding}`;
+      const finalStatusBody = JSON.stringify({
+        body: { status: 'completed', stopReason: 'completed' },
+        lineage,
+        operation: 'final_status',
+        schemaVersion: 1,
+        sequence: 7,
+      });
+      const accepted = await app.request('/api/worker-control/final-status', {
+        body: finalStatusBody,
+        headers: { authorization, 'content-type': 'application/json' },
+        method: 'POST',
+      });
+
+      expect(accepted.status).toBe(200);
+      expect(requireSchedulerSessionLease(coreDb, 'lease_final_status_replay')).toMatchObject({
+        releaseReason: 'worker-final-status',
+        status: 'releasing',
+      });
+
+      const sameProcessReplay = await app.request('/api/worker-control/final-status', {
+        body: finalStatusBody,
+        headers: { authorization, 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      const restartedGateway = createDefaultWorkerControlGateway(coreDb);
+      const restartedApp = createApp({
+        coreDb,
+        mode: 'server',
+        store,
+        workerControlGateway: restartedGateway,
+      });
+      const restartedReplay = await restartedApp.request('/api/worker-control/final-status', {
+        body: finalStatusBody,
+        headers: { authorization, 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      const rejectedEventAppend = await restartedApp.request('/api/worker-control/events/append', {
+        body: JSON.stringify({
+          lineage,
+          record: {
+            event: {
+              data: { evidenceManifestDigests: {}, stopReason: 'completed' },
+              type: 'turn.completed',
+            },
+            kind: 'event',
+            lineage,
+            schemaVersion: 1,
+            sequence: 7,
+          },
+        }),
+        headers: { authorization, 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      const acceptedRecords = coreDb.sqlite
+        .prepare(
+          `SELECT operation, COUNT(*) AS count
+             FROM worker_control_records
+            WHERE turn_id = ? AND operation IN ('event_append', 'final_status')
+            GROUP BY operation
+            ORDER BY operation`
+        )
+        .all(lineage.turnId);
+      const acceptedFingerprints = coreDb.sqlite
+        .prepare(
+          `SELECT operation, COUNT(*) AS count
+             FROM worker_control_sequence_fingerprints
+            WHERE turn_id = ? AND operation IN ('event_append', 'final_status')
+            GROUP BY operation
+            ORDER BY operation`
+        )
+        .all(lineage.turnId);
+
+      expect.soft(sameProcessReplay.status).toBe(200);
+      expect.soft(restartedReplay.status).toBe(200);
+      expect(rejectedEventAppend.status).not.toBe(200);
+      expect.soft(acceptedRecords).toEqual([
+        { count: 1, operation: 'event_append' },
+        { count: 1, operation: 'final_status' },
+      ]);
+      expect.soft(acceptedFingerprints).toEqual([
+        { count: 1, operation: 'event_append' },
+        { count: 1, operation: 'final_status' },
+      ]);
+    } finally {
+      coreDb.sqlite.close();
+    }
   });
 
   it('accepts supply refresh acknowledgements through the control envelope', async () => {

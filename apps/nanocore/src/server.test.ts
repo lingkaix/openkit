@@ -157,6 +157,7 @@ import {
   recordDataRootDeploymentMove,
 } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
 import { createVaultGrant, listVaultGrants } from './vault/vault-grants.js';
 import {
   createVaultReference,
@@ -828,6 +829,13 @@ async function createGitWorkspaceReviewFixture(input: {
     createdAt: timestamp,
     updatedAt: timestamp,
   });
+
+  const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
+  try {
+    recordTestWorkspaceReviewMaterialization(workspaceDb, review);
+  } finally {
+    workspaceDb.sqlite.close();
+  }
 
   return { app, artifactId, baseCommit, coreDb, repoDir, review, store, workspaceId: workspace.id };
 }
@@ -2501,6 +2509,20 @@ describe('nanocore server', () => {
         turnId: 'turn_route_1',
       }
     );
+    store.createAgentSession({
+      agentId: 'agent_codex_host',
+      createdAt: sourceReview.changeSet.createdAt,
+      id: 'as_dashboard_control_1',
+      message: null,
+      status: 'busy',
+      threadId: sourceTurn.threadId,
+      updatedAt: sourceReview.changeSet.createdAt,
+      workspaceId: sourceTurn.workspaceId,
+    });
+    const environmentPackage = AgentEnvironmentPackageSchema.parse({
+      ...createOpenShellWorkerControlPackage(store, sourceTurn.id),
+      snapshotId: `aepsnap_test_${sourceReview.changeSet.materializationRecordId}`,
+    });
     store.createArtifact({
       id: sourceReview.artifactId,
       workspaceId: 'ws_demo',
@@ -2516,6 +2538,11 @@ describe('nanocore server', () => {
       updatedAt: sourceReview.review.updatedAt,
     });
     try {
+      recordAgentEnvironmentPackageSnapshot(sourceDb, {
+        createdAt: sourceReview.changeSet.createdAt,
+        environmentPackage,
+      });
+      recordTestWorkspaceReviewMaterialization(sourceDb, sourceReview);
       recordWorkspaceSyncReview(sourceDb, { item: sourceReview });
     } finally {
       sourceDb.sqlite.close();
@@ -2621,6 +2648,20 @@ describe('nanocore server', () => {
         turnId: 'turn_route_1',
       }
     );
+    store.createAgentSession({
+      agentId: 'agent_codex_host',
+      createdAt: sourceReview.changeSet.createdAt,
+      id: 'as_dashboard_control_1',
+      message: null,
+      status: 'busy',
+      threadId: sourceTurn.threadId,
+      updatedAt: sourceReview.changeSet.createdAt,
+      workspaceId: sourceTurn.workspaceId,
+    });
+    const environmentPackage = AgentEnvironmentPackageSchema.parse({
+      ...createOpenShellWorkerControlPackage(store, sourceTurn.id),
+      snapshotId: `aepsnap_test_${sourceReview.changeSet.materializationRecordId}`,
+    });
     store.createArtifact({
       id: sourceReview.artifactId,
       workspaceId: 'ws_demo',
@@ -2636,6 +2677,11 @@ describe('nanocore server', () => {
       updatedAt: sourceReview.review.updatedAt,
     });
     try {
+      recordAgentEnvironmentPackageSnapshot(sourceDb, {
+        createdAt: sourceReview.changeSet.createdAt,
+        environmentPackage,
+      });
+      recordTestWorkspaceReviewMaterialization(sourceDb, sourceReview);
       recordWorkspaceSyncReview(sourceDb, { item: sourceReview });
       recordWorkspaceApplyResult(sourceDb, {
         requestId: '00000000-0000-4000-8000-00000000d771',
@@ -3099,9 +3145,11 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const item = workspaceSyncReviewRouteItem();
 
     try {
-      recordWorkspaceSyncReview(workspaceDb, { item: workspaceSyncReviewRouteItem() });
+      recordTestWorkspaceReviewMaterialization(workspaceDb, item);
+      recordWorkspaceSyncReview(workspaceDb, { item });
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -4765,57 +4813,57 @@ describe('nanocore server', () => {
         });
         const reviewId = `swr_task_${turnId}`;
         const workspaceDb = openTestWorkspaceDb(coreDb, turn.workspaceId);
+        const item: Parameters<typeof recordWorkspaceSyncReview>[1]['item'] = {
+          artifactId: artifact.id,
+          changeSet: {
+            artifactIds: [artifact.id],
+            base: { commit: 'abc123', contentDigest: null },
+            bundle: null,
+            changedPaths: [{ binary: false, path: 'docs/task.md', status: 'modified' }],
+            createdAt: timestamp,
+            evidenceRefs: [{ kind: 'worker', ref: turnId }],
+            head: { commit: 'def456', contentDigest: null },
+            id: `wcs_${turnId}`,
+            inputSnapshotId: `wis_${turnId}`,
+            materializationRecordId: `wmr_${turnId}`,
+            patch: {
+              bytes: Buffer.byteLength(patchText, 'utf8'),
+              digest: patchDigest,
+              ref: `artifact://${artifact.id}`,
+            },
+            redaction: { notes: [], status: 'redacted' },
+            resourceId: 'repo_default',
+            strategy: 'git',
+            workspaceId: turn.workspaceId,
+          },
+          patchPayload: {
+            bytes: Buffer.byteLength(patchText, 'utf8'),
+            digest: patchDigest,
+            mediaType: 'text/x-diff',
+            text: patchText,
+          },
+          review: {
+            actionCenterRowId: `workspace-review:${reviewId}`,
+            changeSetId: `wcs_${turnId}`,
+            createdAt: timestamp,
+            diffSummary: { additions: 1, deletions: 0, filesChanged: 1 },
+            id: reviewId,
+            riskSummary: '1 changed path staged for human review.',
+            staging: {
+              branch: `openkit/review/${reviewId}`,
+              ref: `staging://workspace/${turnId}`,
+              strategy: 'git_worktree',
+            },
+            status: 'pending',
+            updatedAt: timestamp,
+            validation: [],
+            workspaceId: turn.workspaceId,
+          },
+        };
 
         try {
-          recordWorkspaceSyncReview(workspaceDb, {
-            item: {
-              artifactId: artifact.id,
-              changeSet: {
-                artifactIds: [artifact.id],
-                base: { commit: 'abc123', contentDigest: null },
-                bundle: null,
-                changedPaths: [{ binary: false, path: 'docs/task.md', status: 'modified' }],
-                createdAt: timestamp,
-                evidenceRefs: [{ kind: 'worker', ref: turnId }],
-                head: { commit: 'def456', contentDigest: null },
-                id: `wcs_${turnId}`,
-                inputSnapshotId: `wis_${turnId}`,
-                materializationRecordId: `wmr_${turnId}`,
-                patch: {
-                  bytes: Buffer.byteLength(patchText, 'utf8'),
-                  digest: patchDigest,
-                  ref: `artifact://${artifact.id}`,
-                },
-                redaction: { notes: [], status: 'redacted' },
-                resourceId: 'repo_default',
-                strategy: 'git',
-                workspaceId: turn.workspaceId,
-              },
-              patchPayload: {
-                bytes: Buffer.byteLength(patchText, 'utf8'),
-                digest: patchDigest,
-                mediaType: 'text/x-diff',
-                text: patchText,
-              },
-              review: {
-                actionCenterRowId: `workspace-review:${reviewId}`,
-                changeSetId: `wcs_${turnId}`,
-                createdAt: timestamp,
-                diffSummary: { additions: 1, deletions: 0, filesChanged: 1 },
-                id: reviewId,
-                riskSummary: '1 changed path staged for human review.',
-                staging: {
-                  branch: `openkit/review/${reviewId}`,
-                  ref: `staging://workspace/${turnId}`,
-                  strategy: 'git_worktree',
-                },
-                status: 'pending',
-                updatedAt: timestamp,
-                validation: [],
-                workspaceId: turn.workspaceId,
-              },
-            },
-          });
+          recordTestWorkspaceReviewMaterialization(workspaceDb, item);
+          recordWorkspaceSyncReview(workspaceDb, { item });
         } finally {
           workspaceDb.sqlite.close();
         }
@@ -6676,8 +6724,10 @@ describe('nanocore server', () => {
     });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     try {
+      const item = { artifactId: 'ar_workspace_changes_1', ...workspaceReview };
+      recordTestWorkspaceReviewMaterialization(workspaceDb, item);
       recordWorkspaceSyncReview(workspaceDb, {
-        item: { artifactId: 'ar_workspace_changes_1', ...workspaceReview },
+        item,
       });
     } finally {
       workspaceDb.sqlite.close();
@@ -6833,6 +6883,7 @@ describe('nanocore server', () => {
 
     const workspaceDb = openTestWorkspaceDb(coreDb, item.review.workspaceId);
     try {
+      recordTestWorkspaceReviewMaterialization(workspaceDb, item);
       recordWorkspaceSyncReview(workspaceDb, { item });
     } finally {
       workspaceDb.sqlite.close();
@@ -6916,6 +6967,7 @@ describe('nanocore server', () => {
     try {
       const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
       try {
+        recordTestWorkspaceReviewMaterialization(workspaceDb, item);
         recordWorkspaceSyncReview(workspaceDb, { item });
         updateWorkspaceSyncReviewDecision(workspaceDb, {
           requestId: 'durable-review-read-precedence',
@@ -6954,61 +7006,59 @@ describe('nanocore server', () => {
     const timestamp = new Date().toISOString();
     const patchText = 'diff --git a/docs/decision.md b/docs/decision.md\n';
     const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
+    const item: Parameters<typeof recordWorkspaceSyncReview>[1]['item'] = {
+      artifactId: 'ar_missing_workspace_review_decision',
+      changeSet: {
+        id: 'wcs_durable_review_decision',
+        materializationRecordId: 'wmr_durable_review_decision',
+        inputSnapshotId: 'wis_durable_review_decision',
+        workspaceId: workspace.id,
+        resourceId: 'repo_default',
+        strategy: 'git',
+        base: { commit: 'abc123', contentDigest: null },
+        head: { commit: 'def456', contentDigest: null },
+        changedPaths: [{ path: 'docs/decision.md', status: 'modified', binary: false }],
+        patch: {
+          ref: 'artifact://patch',
+          digest: patchDigest,
+          bytes: Buffer.byteLength(patchText, 'utf8'),
+        },
+        bundle: null,
+        artifactIds: ['ar_missing_workspace_review_decision'],
+        evidenceRefs: [{ kind: 'worker', ref: 'turn_durable_review_decision' }],
+        redaction: { status: 'redacted', notes: [] },
+        createdAt: timestamp,
+      },
+      patchPayload: {
+        mediaType: 'text/x-diff',
+        text: patchText,
+        digest: patchDigest,
+        bytes: Buffer.byteLength(patchText, 'utf8'),
+      },
+      review: {
+        id: 'swr_durable_review_decision',
+        changeSetId: 'wcs_durable_review_decision',
+        workspaceId: workspace.id,
+        status: 'pending',
+        staging: {
+          strategy: 'git_worktree',
+          ref: 'staging://workspace/wcs_durable_review_decision',
+          branch: null,
+        },
+        diffSummary: { filesChanged: 1, additions: 0, deletions: 0 },
+        riskSummary: '1 changed path staged for human review.',
+        validation: [{ command: 'worker', status: 'passed', ref: 'turn_durable_review_decision' }],
+        actionCenterRowId: 'workspace-review:swr_durable_review_decision',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+    };
 
     try {
       const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
       try {
-        recordWorkspaceSyncReview(workspaceDb, {
-          item: {
-            artifactId: 'ar_missing_workspace_review_decision',
-            changeSet: {
-              id: 'wcs_durable_review_decision',
-              materializationRecordId: 'wmr_durable_review_decision',
-              inputSnapshotId: 'wis_durable_review_decision',
-              workspaceId: workspace.id,
-              resourceId: 'repo_default',
-              strategy: 'git',
-              base: { commit: 'abc123', contentDigest: null },
-              head: { commit: 'def456', contentDigest: null },
-              changedPaths: [{ path: 'docs/decision.md', status: 'modified', binary: false }],
-              patch: {
-                ref: 'artifact://patch',
-                digest: patchDigest,
-                bytes: Buffer.byteLength(patchText, 'utf8'),
-              },
-              bundle: null,
-              artifactIds: ['ar_missing_workspace_review_decision'],
-              evidenceRefs: [{ kind: 'worker', ref: 'turn_durable_review_decision' }],
-              redaction: { status: 'redacted', notes: [] },
-              createdAt: timestamp,
-            },
-            patchPayload: {
-              mediaType: 'text/x-diff',
-              text: patchText,
-              digest: patchDigest,
-              bytes: Buffer.byteLength(patchText, 'utf8'),
-            },
-            review: {
-              id: 'swr_durable_review_decision',
-              changeSetId: 'wcs_durable_review_decision',
-              workspaceId: workspace.id,
-              status: 'pending',
-              staging: {
-                strategy: 'git_worktree',
-                ref: 'staging://workspace/wcs_durable_review_decision',
-                branch: null,
-              },
-              diffSummary: { filesChanged: 1, additions: 0, deletions: 0 },
-              riskSummary: '1 changed path staged for human review.',
-              validation: [
-                { command: 'worker', status: 'passed', ref: 'turn_durable_review_decision' },
-              ],
-              actionCenterRowId: 'workspace-review:swr_durable_review_decision',
-              createdAt: timestamp,
-              updatedAt: timestamp,
-            },
-          },
-        });
+        recordTestWorkspaceReviewMaterialization(workspaceDb, item);
+        recordWorkspaceSyncReview(workspaceDb, { item });
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -7155,29 +7205,29 @@ describe('nanocore server', () => {
     const workspace = store.createWorkspace('Workspace recovery resume');
     const timestamp = new Date().toISOString();
     const routeItem = workspaceSyncReviewRouteItem();
+    const item: Parameters<typeof recordWorkspaceSyncReview>[1]['item'] = {
+      ...routeItem,
+      changeSet: {
+        ...routeItem.changeSet,
+        id: 'wcs_resume_route',
+        inputSnapshotId: 'wis_resume_route',
+        materializationRecordId: 'wmr_resume_route',
+        workspaceId: workspace.id,
+      },
+      review: {
+        ...routeItem.review,
+        actionCenterRowId: 'workspace-review:swr_resume_route',
+        changeSetId: 'wcs_resume_route',
+        id: 'swr_resume_route',
+        workspaceId: workspace.id,
+      },
+    };
 
     try {
       const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
       try {
-        recordWorkspaceSyncReview(workspaceDb, {
-          item: {
-            ...routeItem,
-            changeSet: {
-              ...routeItem.changeSet,
-              id: 'wcs_resume_route',
-              inputSnapshotId: 'wis_resume_route',
-              materializationRecordId: 'wmr_resume_route',
-              workspaceId: workspace.id,
-            },
-            review: {
-              ...routeItem.review,
-              actionCenterRowId: 'workspace-review:swr_resume_route',
-              changeSetId: 'wcs_resume_route',
-              id: 'swr_resume_route',
-              workspaceId: workspace.id,
-            },
-          },
-        });
+        recordTestWorkspaceReviewMaterialization(workspaceDb, item);
+        recordWorkspaceSyncReview(workspaceDb, { item });
         recordWorkspaceReconciliationRecord(workspaceDb, {
           id: 'wrr_resume_route',
           workspaceId: workspace.id,
@@ -7468,6 +7518,7 @@ describe('nanocore server', () => {
 
     const workspaceDb = openTestWorkspaceDb(coreDb, item.review.workspaceId);
     try {
+      recordTestWorkspaceReviewMaterialization(workspaceDb, item);
       recordWorkspaceSyncReview(workspaceDb, { item });
     } finally {
       workspaceDb.sqlite.close();
@@ -7575,6 +7626,7 @@ describe('nanocore server', () => {
 
     const workspaceDb = openTestWorkspaceDb(coreDb, item.review.workspaceId);
     try {
+      recordTestWorkspaceReviewMaterialization(workspaceDb, item);
       recordWorkspaceSyncReview(workspaceDb, { item });
     } finally {
       workspaceDb.sqlite.close();
@@ -7645,6 +7697,7 @@ describe('nanocore server', () => {
 
     const workspaceDb = openTestWorkspaceDb(coreDb, item.review.workspaceId);
     try {
+      recordTestWorkspaceReviewMaterialization(workspaceDb, item);
       recordWorkspaceSyncReview(workspaceDb, { item });
     } finally {
       workspaceDb.sqlite.close();
@@ -7726,6 +7779,7 @@ describe('nanocore server', () => {
 
     const workspaceDb = openTestWorkspaceDb(coreDb, item.review.workspaceId);
     try {
+      recordTestWorkspaceReviewMaterialization(workspaceDb, item);
       recordWorkspaceSyncReview(workspaceDb, { item });
     } finally {
       workspaceDb.sqlite.close();
@@ -7828,6 +7882,7 @@ describe('nanocore server', () => {
 
     const workspaceDb = openTestWorkspaceDb(coreDb, item.review.workspaceId);
     try {
+      recordTestWorkspaceReviewMaterialization(workspaceDb, item);
       recordWorkspaceSyncReview(workspaceDb, { item });
     } finally {
       workspaceDb.sqlite.close();
@@ -8139,6 +8194,13 @@ describe('nanocore server', () => {
       updatedAt: timestamp,
     });
 
+    const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
+    try {
+      recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReview);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+
     expect(linkRes.status).toBe(200);
 
     const acceptRes = await app.request(
@@ -8442,6 +8504,13 @@ describe('nanocore server', () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     });
+
+    const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
+    try {
+      recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReview);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
 
     const initialBranch = execFileSync('git', ['branch', '--show-current'], {
       cwd: repoDir,
@@ -8782,6 +8851,13 @@ describe('nanocore server', () => {
       updatedAt: timestamp,
     });
 
+    const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
+    try {
+      recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReview);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+
     const acceptRes = await app.request(
       `/api/app/workspaces/${workspace.id}/artifacts/ar_workspace_rollback_1/review`,
       {
@@ -8877,6 +8953,7 @@ describe('nanocore server', () => {
 
     const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
     try {
+      recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReview);
       recordFilesystemWorkspaceStagingRoot(workspaceDb, {
         before,
         changeSetId: changeSet.id,
@@ -9027,6 +9104,7 @@ describe('nanocore server', () => {
       };
       const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
       try {
+        recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReview);
         recordWorkspaceSyncReview(workspaceDb, { item: workspaceReview });
         recordFilesystemWorkspaceStagingRoot(workspaceDb, {
           before,

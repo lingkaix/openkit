@@ -170,6 +170,7 @@ describe('workspace materializer records', () => {
         id: 'wmr_pkg_1_repo',
         inputSnapshotId: 'wis_pkg_1_repo',
         materializedRootRef: '/workspace/openkit',
+        packageSnapshotId: 'pkg_1',
         strategy: 'git',
         workerSessionId: 'sandbox_pkg_1',
       }),
@@ -238,6 +239,17 @@ describe('workspace materializer records', () => {
   });
 
   it('stages parsed change sets as pending workspace reviews', () => {
+    const patchText = [
+      'diff --git a/docs/spec.md b/docs/spec.md',
+      '--- a/docs/spec.md',
+      '+++ b/docs/spec.md',
+      '@@ -1 +1,3 @@',
+      '-Old finding',
+      '+- Root finding',
+      '+- First child finding',
+      '+- Second child finding',
+      '',
+    ].join('\n');
     const changeSet = parseWorkspaceChangeSetManifest(
       JSON.stringify({
         id: 'wcs_1',
@@ -261,13 +273,19 @@ describe('workspace materializer records', () => {
     expect(
       stageWorkspaceChangeSet(changeSet, {
         createdAt: '2026-06-27T01:05:00.000Z',
+        patchPayload: {
+          bytes: Buffer.byteLength(patchText, 'utf8'),
+          digest: 'sha256:patch',
+          mediaType: 'text/x-diff',
+          text: patchText,
+        },
         reviewId: 'swr_1',
         stagingRef: 'staging://workspace/swr_1',
       })
     ).toMatchObject({
       actionCenterRowId: 'workspace-review:swr_1',
       changeSetId: 'wcs_1',
-      diffSummary: { additions: 0, deletions: 0, filesChanged: 1 },
+      diffSummary: { additions: 3, deletions: 1, filesChanged: 1 },
       status: 'pending',
     });
   });
@@ -311,6 +329,7 @@ describe('workspace materializer records', () => {
     );
     const review = stageWorkspaceChangeSet(changeSet, {
       createdAt: '2026-06-27T01:05:00.000Z',
+      patchPayload: null,
       reviewId: 'swr_binary',
       stagingRef: 'staging://workspace/swr_binary',
     });

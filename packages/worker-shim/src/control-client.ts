@@ -118,6 +118,18 @@ export interface WorkerControlTerminalResultInput {
 }
 
 /**
+ * Final bounded-step status reported by the worker control client.
+ */
+export interface WorkerControlFinalStatusInput {
+  /** Final transcript sequence for the bounded worker step. */
+  sequence: number;
+  /** Worker-local bounded-step outcome. */
+  status: 'blocked' | 'cancelled' | 'completed' | 'degraded' | 'failed' | 'interrupted' | 'lost';
+  /** Product-safe reason the worker stopped. */
+  stopReason: string;
+}
+
+/**
  * Error raised when NanoCore rejects a worker control request.
  */
 export class WorkerControlError extends Error {
@@ -212,6 +224,26 @@ export class WorkerControlClient {
    */
   public async recordTerminalResult(input: WorkerControlTerminalResultInput): Promise<unknown> {
     return this.postJson('/terminal-results', input);
+  }
+
+  /**
+   * Reports the final bounded-step status to NanoCore.
+   *
+   * @param input Terminal sequence, outcome, and stop reason.
+   * @returns Parsed worker-control response envelope.
+   */
+  public async recordFinalStatus(
+    input: WorkerControlFinalStatusInput
+  ): Promise<WorkerControlResponseEnvelope> {
+    return this.postJson<WorkerControlResponseEnvelope>('/final-status', {
+      body: {
+        status: input.status,
+        stopReason: input.stopReason,
+      },
+      operation: 'final_status',
+      schemaVersion: 1,
+      sequence: input.sequence,
+    });
   }
 
   /**

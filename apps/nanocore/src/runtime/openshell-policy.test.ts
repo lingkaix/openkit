@@ -25,8 +25,23 @@ describe('renderOpenShellWorkerPolicy', () => {
     expect(policy).toContain('port: 3000');
     expect(policy).toContain('protocol: rest');
     expect(policy).toContain('enforcement: enforce');
-    expect(policy).toContain('access: read-write');
-    expect(policy).not.toContain('rules:');
+    expect(policy).not.toContain('access: read-write');
+    expect(policy.match(/method: POST/g)).toHaveLength(10);
+    for (const path of [
+      '/api/worker-control/heartbeat',
+      '/api/worker-control/artifacts',
+      '/api/worker-control/commands/poll',
+      '/api/worker-control/commands/ack',
+      '/api/worker-control/terminal-results',
+      '/api/worker-control/events/append',
+      '/api/worker-control/final-status',
+      '/api/worker-control/supply-refresh-ack',
+      '/api/worker-control/capability-summary',
+      '/api/worker-control/knowledge-proposal-summary',
+    ]) {
+      expect(policy).toContain(`path: ${path}`);
+    }
+    expect(policy).not.toContain('/api/worker-inference/');
   });
 
   it('can override authorized binaries when the OpenShell image path changes', () => {

@@ -16,6 +16,9 @@ import type {
 /** Worker-reported supply refresh acknowledgement status used by renewal gates. */
 export type SchedulerSupplyRefreshAckStatus = 'applied' | 'rejected' | 'unsupported';
 
+/** Maximum evidence-finalization grace after a lease starts releasing. */
+const SCHEDULER_RELEASE_GRACE_MS = 300_000;
+
 /** Durable scheduler admission queue entry. */
 export interface SchedulerAdmissionEntryRecord {
   /** Stable queue entry id. */
@@ -742,6 +745,14 @@ export interface MarkExpiredSchedulerLeasesStaleInput {
   readonly now?: () => string;
 }
 
+/** Input used to terminalize releasing leases whose evidence grace elapsed. */
+export interface ExpireReleasingSchedulerLeasesInput {
+  /** Optional deterministic clock. */
+  readonly now?: () => string;
+  /** Optional scheduler epoch assigned during restart recovery. */
+  readonly schedulerEpoch?: number;
+}
+
 /** Input used to fail scheduler leases that missed startup. */
 export interface MarkStartupTimedOutSchedulerLeasesFailedInput {
   /** Optional deterministic clock. */
@@ -762,6 +773,8 @@ export interface RenewSchedulerSessionLeaseInput {
 export interface MarkSchedulerSessionLeaseReleasingInput {
   /** Stable session lease id. */
   readonly leaseId: string;
+  /** Optional deterministic clock. */
+  readonly now?: () => string;
   /** Typed release reason. */
   readonly releaseReason: string;
   /** Recovery state while evidence is collected. */
@@ -1541,6 +1554,82 @@ export function markExpiredSchedulerLeasesStale(
 }
 
 /**
+ * Terminalizes releasing leases after their durable release grace expires.
+ *
+ * @param coreDb Open Core database handle.
+ * @param input Expiry clock and optional restart epoch.
+ * @returns Leases moved atomically to lost with capacity released.
+ */
+export function expireReleasingSchedulerLeases(
+  coreDb: CoreDb,
+  input: ExpireReleasingSchedulerLeasesInput = {}
+): SchedulerSessionLeaseRecord[] {
+  const timestamp = input.now?.() ?? new Date().toISOString();
+  let expiredLeases: SchedulerSessionLeaseRecord[] = [];
+
+  coreDb.sqlite.exec('BEGIN IMMEDIATE');
+  try {
+    const rows = coreDb.sqlite
+      .prepare(
+        `${schedulerSessionLeaseSelectSql()}
+        WHERE status = 'releasing' AND expires_at <= ?
+        ORDER BY expires_at ASC, lease_id ASC`
+      )
+      .all(timestamp) as SchedulerSessionLeaseRow[];
+    expiredLeases = rows.map(mapSchedulerSessionLeaseRow);
+
+    if (expiredLeases.length === 0) {
+      coreDb.sqlite.exec('COMMIT');
+      return [];
+    }
+
+    for (const lease of expiredLeases) {
+      completeSchedulerSessionLeaseInTransaction(
+        coreDb,
+        lease,
+        {
+          leaseId: lease.leaseId,
+          recoveryState: 'needs-evidence',
+          releaseReason: 'release-grace-timeout',
+          terminalStatus: 'lost',
+        },
+        input.schedulerEpoch ?? lease.schedulerEpoch
+      );
+    }
+    coreDb.sqlite.exec('COMMIT');
+  } catch (error) {
+    coreDb.sqlite.exec('ROLLBACK');
+    throw error;
+  }
+
+  return expiredLeases.map((lease) => requireSchedulerSessionLease(coreDb, lease.leaseId));
+}
+
+/**
+ * Lists durable scheduler leases whose workspace recovery projection may still be missing.
+ *
+ * @param coreDb Open Core database handle.
+ * @returns Stale and release-timeout leases requiring workspace evidence.
+ */
+export function listSchedulerLeasesNeedingWorkspaceRecovery(
+  coreDb: CoreDb
+): SchedulerSessionLeaseRecord[] {
+  const rows = coreDb.sqlite
+    .prepare(
+      `${schedulerSessionLeaseSelectSql()}
+      WHERE recovery_state = 'needs-evidence'
+        AND (
+          status = 'stale'
+          OR (status = 'lost' AND release_reason = 'release-grace-timeout')
+        )
+      ORDER BY lease_id ASC`
+    )
+    .all() as SchedulerSessionLeaseRow[];
+
+  return rows.map(mapSchedulerSessionLeaseRow);
+}
+
+/**
  * Fails leases that missed startup before the first accepted heartbeat.
  *
  * @param coreDb Open Core database handle.
@@ -1723,6 +1812,7 @@ export function markSchedulerSessionLeaseReleasing(
   input: MarkSchedulerSessionLeaseReleasingInput
 ): SchedulerSessionLeaseRecord {
   const lease = requireSchedulerSessionLease(coreDb, input.leaseId);
+  const timestamp = input.now?.() ?? new Date().toISOString();
 
   if (!canAcceptHeartbeat(lease.status)) {
     throw new Error(`Scheduler session lease ${input.leaseId} is not live.`);
@@ -1732,15 +1822,19 @@ export function markSchedulerSessionLeaseReleasing(
     throw new Error(`Scheduler session lease ${input.leaseId} requires a release reason.`);
   }
 
+  const releaseDeadline = addMilliseconds(timestamp, SCHEDULER_RELEASE_GRACE_MS);
+  const expiresAt = lease.expiresAt <= releaseDeadline ? lease.expiresAt : releaseDeadline;
+
   coreDb.sqlite
     .prepare(
       `UPDATE scheduler_session_leases
       SET status = 'releasing',
+          expires_at = ?,
           release_reason = ?,
           recovery_state = ?
       WHERE lease_id = ?`
     )
-    .run(input.releaseReason, input.recoveryState ?? 'needs-evidence', input.leaseId);
+    .run(expiresAt, input.releaseReason, input.recoveryState ?? 'needs-evidence', input.leaseId);
 
   return requireSchedulerSessionLease(coreDb, input.leaseId);
 }
@@ -1769,39 +1863,7 @@ export function completeSchedulerSessionLease(
 
   coreDb.sqlite.exec('BEGIN IMMEDIATE');
   try {
-    coreDb.sqlite
-      .prepare(
-        `UPDATE scheduler_session_leases
-        SET status = ?,
-            release_reason = ?,
-            recovery_state = ?
-        WHERE lease_id = ?`
-      )
-      .run(input.terminalStatus, input.releaseReason, input.recoveryState ?? null, input.leaseId);
-    coreDb.sqlite
-      .prepare("UPDATE scheduler_placement_plans SET status = 'completed' WHERE plan_id = ?")
-      .run(lease.planId);
-    coreDb.sqlite
-      .prepare(
-        `UPDATE scheduler_capacity_records
-        SET in_use_count = CASE
-              WHEN in_use_count > 0 THEN in_use_count - 1
-              ELSE 0
-            END,
-            version = version + 1
-        WHERE target_id = ? AND pool_id = ?`
-      )
-      .run(lease.targetId, lease.poolId);
-    coreDb.sqlite
-      .prepare(
-        `UPDATE scheduler_worker_pools
-        SET current_admitted_session_count = CASE
-              WHEN current_admitted_session_count > 0 THEN current_admitted_session_count - 1
-              ELSE 0
-            END
-        WHERE pool_id = ?`
-      )
-      .run(lease.poolId);
+    completeSchedulerSessionLeaseInTransaction(coreDb, lease, input, lease.schedulerEpoch);
     coreDb.sqlite.exec('COMMIT');
   } catch (error) {
     coreDb.sqlite.exec('ROLLBACK');
@@ -1809,6 +1871,68 @@ export function completeSchedulerSessionLease(
   }
 
   return requireSchedulerSessionLease(coreDb, input.leaseId);
+}
+
+/**
+ * Applies one terminal lease transition inside the caller's transaction.
+ *
+ * @param coreDb Open Core database handle.
+ * @param lease Non-terminal lease snapshot being completed.
+ * @param input Terminal transition input.
+ * @param schedulerEpoch Scheduler epoch stamped on the terminal row.
+ * @throws Error when the lease changed before the terminal write.
+ */
+function completeSchedulerSessionLeaseInTransaction(
+  coreDb: CoreDb,
+  lease: SchedulerSessionLeaseRecord,
+  input: CompleteSchedulerSessionLeaseInput,
+  schedulerEpoch: number
+): void {
+  const transition = coreDb.sqlite
+    .prepare(
+      `UPDATE scheduler_session_leases
+      SET status = ?,
+          release_reason = ?,
+          recovery_state = ?,
+          scheduler_epoch = ?
+      WHERE lease_id = ? AND status NOT IN ('released', 'lost', 'failed')`
+    )
+    .run(
+      input.terminalStatus,
+      input.releaseReason,
+      input.recoveryState ?? null,
+      schedulerEpoch,
+      input.leaseId
+    );
+
+  if (transition.changes !== 1) {
+    throw new Error(`Scheduler session lease ${input.leaseId} changed before completion.`);
+  }
+
+  coreDb.sqlite
+    .prepare("UPDATE scheduler_placement_plans SET status = 'completed' WHERE plan_id = ?")
+    .run(lease.planId);
+  coreDb.sqlite
+    .prepare(
+      `UPDATE scheduler_capacity_records
+      SET in_use_count = CASE
+            WHEN in_use_count > 0 THEN in_use_count - 1
+            ELSE 0
+          END,
+          version = version + 1
+      WHERE target_id = ? AND pool_id = ?`
+    )
+    .run(lease.targetId, lease.poolId);
+  coreDb.sqlite
+    .prepare(
+      `UPDATE scheduler_worker_pools
+      SET current_admitted_session_count = CASE
+            WHEN current_admitted_session_count > 0 THEN current_admitted_session_count - 1
+            ELSE 0
+          END
+      WHERE pool_id = ?`
+    )
+    .run(lease.poolId);
 }
 
 /**

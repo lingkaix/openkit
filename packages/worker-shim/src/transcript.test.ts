@@ -33,7 +33,7 @@ describe('WorkerTranscriptWriter', () => {
       path: '/workspace/output/summary.md',
       title: 'Patch Summary',
     });
-    await writer.writeTerminalOutcome({
+    const terminalRecord = await writer.writeTerminalOutcome({
       status: 'completed',
     });
 
@@ -93,6 +93,7 @@ describe('WorkerTranscriptWriter', () => {
     for (const record of [...events, ...items, ...artifacts]) {
       expect(WorkerTranscriptRecordSchema.safeParse(record).success).toBe(true);
     }
+    expect(terminalRecord).toEqual(events.at(-1));
   });
 });
 

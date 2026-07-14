@@ -13,7 +13,9 @@ import {
   denySchedulerAdmissionEntry,
   dispatchNextSchedulerEntry,
   ensureLocalhostSchedulerBaseline,
+  expireReleasingSchedulerLeases,
   listQueuedSchedulerAdmissionEntries,
+  listSchedulerLeasesNeedingWorkspaceRecovery,
   markExpiredSchedulerLeasesStale,
   markSchedulerSessionLeaseReleasing,
   markStartupTimedOutSchedulerLeasesFailed,
@@ -1157,6 +1159,7 @@ describe('scheduler records', () => {
 
       const releasing = markSchedulerSessionLeaseReleasing(coreDb, {
         leaseId: 'lease_releasing',
+        now: () => '2026-07-05T00:00:10.000Z',
         releaseReason: 'worker-final-status',
       });
       const capacity = coreDb.sqlite
@@ -1167,6 +1170,7 @@ describe('scheduler records', () => {
 
       expect(releasing).toMatchObject({
         leaseId: 'lease_releasing',
+        expiresAt: '2026-07-05T00:05:10.000Z',
         status: 'releasing',
         releaseReason: 'worker-final-status',
         recoveryState: 'needs-evidence',
@@ -1184,6 +1188,81 @@ describe('scheduler records', () => {
           },
         })
       ).toEqual({ status: 'rejected', reason: 'lease-not-live' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('preserves an earlier lease expiry when entering release grace', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      createDispatchedLease(coreDb, 'lease_short_release');
+      coreDb.sqlite
+        .prepare('UPDATE scheduler_session_leases SET expires_at = ? WHERE lease_id = ?')
+        .run('2026-07-05T00:03:00.000Z', 'lease_short_release');
+
+      expect(
+        markSchedulerSessionLeaseReleasing(coreDb, {
+          leaseId: 'lease_short_release',
+          now: () => '2026-07-05T00:00:10.000Z',
+          releaseReason: 'worker-final-status',
+        }).expiresAt
+      ).toBe('2026-07-05T00:03:00.000Z');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('lists durable stale and release-timeout leases that still need workspace recovery', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      createDispatchedLease(coreDb, 'lease_recovery_stale');
+      createDispatchedLease(coreDb, 'lease_recovery_release');
+      createDispatchedLease(coreDb, 'lease_recovery_startup');
+      acceptSchedulerLeaseHeartbeat(coreDb, {
+        heartbeatTimeoutMs: 30_000,
+        leaseId: 'lease_recovery_stale',
+        now: () => '2026-07-05T00:00:10.000Z',
+        workerSequence: 1,
+      });
+      markExpiredSchedulerLeasesStale(coreDb, {
+        now: () => '2026-07-05T00:03:00.000Z',
+      });
+      markSchedulerSessionLeaseReleasing(coreDb, {
+        leaseId: 'lease_recovery_release',
+        now: () => '2026-07-05T00:00:10.000Z',
+        releaseReason: 'worker-final-status',
+      });
+      expireReleasingSchedulerLeases(coreDb, {
+        now: () => '2026-07-05T00:05:11.000Z',
+      });
+      markStartupTimedOutSchedulerLeasesFailed(coreDb, {
+        now: () => '2026-07-05T00:03:00.000Z',
+      });
+
+      expect(
+        listSchedulerLeasesNeedingWorkspaceRecovery(coreDb).map((lease) => ({
+          leaseId: lease.leaseId,
+          recoveryState: lease.recoveryState,
+          releaseReason: lease.releaseReason,
+          status: lease.status,
+        }))
+      ).toEqual([
+        {
+          leaseId: 'lease_recovery_release',
+          recoveryState: 'needs-evidence',
+          releaseReason: 'release-grace-timeout',
+          status: 'lost',
+        },
+        {
+          leaseId: 'lease_recovery_stale',
+          recoveryState: 'needs-evidence',
+          releaseReason: 'heartbeat-timeout',
+          status: 'stale',
+        },
+      ]);
     } finally {
       coreDb.sqlite.close();
     }

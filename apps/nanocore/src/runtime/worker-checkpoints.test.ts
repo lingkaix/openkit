@@ -9,7 +9,10 @@ import {
 } from '../capability/usage-ledger.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
-import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
+import {
+  listWorkspaceRuntimeEvidence,
+  recordWorkerBackendTeardownEvidence,
+} from './runtime-evidence.js';
 import {
   clearWorkerCheckpoint,
   createWorkerCheckpointEvidenceDiagnostics,
@@ -277,6 +280,122 @@ describe('worker checkpoint storage', () => {
           source: 'worker-checkpoint-terminal',
           recordedAt: '2026-05-31T00:10:00.000Z',
         },
+      ]);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('does not duplicate authoritative backend teardown evidence at checkpoint completion', () => {
+    const workspaceDb = createWorkspaceDb();
+
+    try {
+      upsertWorkerCheckpoint(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: 'turn_backend_evidence',
+        goalId: 'goal_backend',
+        taskId: 'task_backend',
+        stage: 'running_worker',
+        iteration: 1,
+        workerSessionId: 'session_backend',
+        now: () => '2026-05-31T00:00:00.000Z',
+      });
+      recordWorkerBackendTeardownEvidence(workspaceDb, {
+        agentSessionId: 'session_backend',
+        backendType: 'openshell',
+        backendVersion: '0.0.80',
+        completedAt: '2026-05-31T00:09:00.000Z',
+        outcome: 'succeeded',
+        packageSnapshotId: 'aepsnap_backend',
+        placement: 'remote',
+        stopReason: 'completed',
+        threadId: 'th_demo',
+        turnId: 'turn_backend_evidence',
+        workerImage: 'openkit/worker-codex:dev',
+        workspaceId: 'ws_demo',
+      });
+
+      updateWorkerCheckpoint(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: 'turn_backend_evidence',
+        stage: 'completed',
+        stopReason: 'completed',
+        now: () => '2026-05-31T00:10:00.000Z',
+      });
+
+      expect(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo').filter(
+          (record) => record.phase === 'teardown'
+        )
+      ).toEqual([
+        expect.objectContaining({
+          agentSessionId: 'session_backend',
+          backendType: 'openshell',
+          backendVersion: '0.0.80',
+          goalId: 'goal_backend',
+          outcome: 'succeeded',
+          stopReason: 'completed',
+          summary: 'Worker backend teardown succeeded.',
+          taskId: 'task_backend',
+        }),
+      ]);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('does not duplicate backend teardown evidence when a failed checkpoint lacks a session id', () => {
+    const workspaceDb = createWorkspaceDb();
+
+    try {
+      upsertWorkerCheckpoint(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: 'turn_backend_failure',
+        goalId: 'goal_backend',
+        taskId: 'task_backend',
+        stage: 'running_worker',
+        iteration: 1,
+        now: () => '2026-05-31T00:00:00.000Z',
+      });
+      recordWorkerBackendTeardownEvidence(workspaceDb, {
+        agentSessionId: 'session_backend_failure',
+        backendType: 'openshell',
+        backendVersion: '0.0.80',
+        completedAt: '2026-05-31T00:09:00.000Z',
+        outcome: 'failed',
+        packageSnapshotId: 'aepsnap_backend_failure',
+        placement: 'remote',
+        stopReason: 'error',
+        threadId: 'th_demo',
+        turnId: 'turn_backend_failure',
+        workerImage: 'openkit/worker-codex:dev',
+        workspaceId: 'ws_demo',
+      });
+
+      updateWorkerCheckpoint(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: 'turn_backend_failure',
+        stage: 'failed',
+        stopReason: 'error',
+        now: () => '2026-05-31T00:10:00.000Z',
+      });
+
+      expect(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo').filter(
+          (record) => record.phase === 'teardown'
+        )
+      ).toEqual([
+        expect.objectContaining({
+          agentSessionId: 'session_backend_failure',
+          goalId: 'goal_backend',
+          outcome: 'failed',
+          stopReason: 'error',
+          taskId: 'task_backend',
+        }),
       ]);
     } finally {
       workspaceDb.sqlite.close();

@@ -41,7 +41,7 @@ Verify that the public OpenKit MCP facade can plan, execute, review, and complet
 - Confirm the repository is clean, has a baseline commit, and does not contain `docs/l6-real-goal-proof.md`.
 - Ask NanoCore to materialize its default OpenAI Codex OAuth account slot.
 - When the server-owned account file is absent, stream the A1 auth file directly into a new `0600` file; when it already exists, require a regular file owned by the runner user with mode `0600` and validate `logged_in` through the public OAuth status without transferring auth again. Never place auth content in process arguments, environment variables, logs, evidence, or the worker sandbox.
-- Create the `openai_codex` OAuth provider for `openai-codex/gpt-5.1-codex` only when absent, update it by revision only when it differs, and bind `agent_codex_host` only when its selection differs.
+- Create the `openai_codex` OAuth provider for `openai-codex/gpt-5.5` only when absent, update it by revision only when it differs, and bind `agent_codex_host` only when its selection differs.
 - If the strict reload reports only provider or agent restart-required changes, stop before MCP execution, provider quota, or evidence, restart NanoCore, and rerun. After restart, consume only an exact `workspaceDataSources` session-scoped deferral when present, then require the strict dry-run response to be an exact no-op before continuing.
 - Confirm NanoCore accepts product work, the provider registry contains `openai_codex`, provider diagnostics are not blocked, and the linked repository is ready.
 
@@ -79,7 +79,7 @@ The only repository change must be `docs/l6-real-goal-proof.md` with this exact 
 - The Goal review advances the one-task graph to `complete_goal`.
 - Final Goal state is `completed`, exactly one task is complete, and a terminal summary exists.
 - The thread contains exactly one completed outer assistant message for the worker turn.
-- The turn AEP uses OpenShell, Codex, `direct-nanocore` control, one NanoCore Gateway route, provider `openai_codex`, model `openai-codex/gpt-5.1-codex`, placeholder credential visibility, no direct credential declarations, no provider attachments, no vault material, and `policy.secrets.visibility: none`.
+- The turn AEP uses OpenShell, Codex, `direct-nanocore` control, one NanoCore Gateway route, provider `openai_codex`, model `openai-codex/gpt-5.5`, placeholder credential visibility, no direct credential declarations, no provider attachments, no vault material, and `policy.secrets.visibility: none`.
 - At least one successful `worker-inference-gateway` LLM CapabilityCall is linked to matching provider and model usage, a successful audit event, an EvidenceBundle, and successful RuntimeEvidence.
 - `git diff --check` succeeds, the baseline commit is unchanged, and final git status contains only the untracked proof file.
 - Preserved evidence excludes OAuth content, bearer tokens, authorization headers, private account labels, account-file paths, and the NanoCore data-root path.

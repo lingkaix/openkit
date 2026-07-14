@@ -2,15 +2,15 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
+import { serve } from '@hono/node-server';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from './app.js';
-import {
-  OpenAICompatibleProviderError,
-  type OpenAICompatibleChatCompletionRequest,
-  type OpenAICompatibleResponsesRequest,
-  type OpenAICompatibleResponsesResponse,
+import type {
+  OpenAICompatibleChatCompletionRequest,
+  OpenAICompatibleResponsesRequest,
+  OpenAICompatibleResponsesResponse,
 } from './llm/openai-compatible-client.js';
 import type {
   LLMGatewayDispatchContext,
@@ -837,6 +837,87 @@ describe('worker inference routes', () => {
     }
   });
 
+  it('emits a bounded SSE heartbeat while worker inference is idle', async () => {
+    vi.useFakeTimers();
+    const fixture = createWorkerInferenceRouteFixture();
+    fixture.dispatcher.shouldHoldResponsesStream = true;
+    const response = await postWorkerResponses(fixture, {
+      input: 'Wait through one idle interval',
+      model: 'openai/gpt-5.2',
+      stream: true,
+    });
+    const reader = response.body!.getReader();
+
+    try {
+      await expect(reader.read()).resolves.toMatchObject({ done: false });
+      let heartbeat: ReadableStreamReadResult<Uint8Array> | null = null;
+      void reader.read().then((result) => {
+        heartbeat = result;
+      });
+
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(heartbeat).toEqual({
+        done: false,
+        value: new TextEncoder().encode(': openkit-worker-inference-heartbeat\n\n'),
+      });
+    } finally {
+      await reader.cancel('heartbeat test completed');
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels the upstream stream when a real HTTP consumer disconnects', async () => {
+    const fixture = createWorkerInferenceRouteFixture();
+    fixture.dispatcher.shouldHoldResponsesStream = true;
+    const server = serve({ fetch: fixture.app.fetch, hostname: '127.0.0.1', port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.once('listening', resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Worker inference network test did not bind a TCP address.');
+    }
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${address.port}/api/worker-inference/v1/responses`,
+        {
+          body: JSON.stringify({
+            input: 'Wait for network cancellation',
+            model: 'openai/gpt-5.2',
+            stream: true,
+          }),
+          headers: {
+            authorization: `Bearer ${fixture.token}`,
+            'content-type': 'application/json',
+          },
+          method: 'POST',
+        }
+      );
+      const reader = response.body!.getReader();
+
+      expect(response.status).toBe(200);
+      await expect(reader.read()).resolves.toMatchObject({ done: false });
+      await reader.cancel('network consumer disconnected');
+      await vi.waitFor(() => {
+        expect(fixture.dispatcher.responsesStreamCancellations).toHaveLength(1);
+      });
+      expect(readWorkerInferenceCapabilityCalls(fixture)).toEqual([
+        expect.objectContaining({
+          errorCode: 'worker_inference_cancelled',
+          status: 'cancelled',
+        }),
+      ]);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
   it.each([
     {
       caseName: 'request-signal cancellation',
@@ -1267,36 +1348,6 @@ describe('worker inference routes', () => {
     expect(readWorkerInferenceCapabilityCalls(serializationFailure)).toEqual([
       expect.objectContaining({ errorCode: 'worker_inference_failed', status: 'failed' }),
     ]);
-  });
-
-  it('projects typed provider request failures as redacted worker errors', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
-    fixture.dispatcher.responseError = new OpenAICompatibleProviderError({
-      code: 'model_not_supported',
-      message: 'Unsupported model token=tok_secret',
-      status: 400,
-      type: 'provider_error',
-    });
-
-    const response = await postWorkerResponses(fixture, {
-      input: 'Hello',
-      model: 'openai/gpt-5.2',
-    });
-    const body = await response.json();
-    const calls = readWorkerInferenceCapabilityCalls(fixture);
-
-    expect(response.status).toBe(400);
-    expect(body).toMatchObject({
-      error: {
-        code: 'gateway_provider_request_invalid',
-        message: 'Unsupported model token=[redacted]',
-        type: 'provider_error',
-      },
-    });
-    expect(calls).toEqual([
-      expect.objectContaining({ errorCode: 'worker_inference_failed', status: 'failed' }),
-    ]);
-    expect(JSON.stringify({ body, calls })).not.toContain('tok_secret');
   });
 
   it('marks post-start stream read failures before emitting terminal SSE', async () => {

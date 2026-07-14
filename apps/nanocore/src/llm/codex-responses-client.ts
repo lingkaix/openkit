@@ -4,19 +4,49 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir, platform as osPlatform } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { Agent, fetch as undiciFetch } from 'undici';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type { GetAccountResponse } from '../runtime/codex/protocol.js';
-import {
-  OpenAICompatibleProviderError,
-  type OpenAICompatibleResponsesRequest,
-  type OpenAICompatibleResponsesResponse,
+import type {
+  OpenAICompatibleResponsesRequest,
+  OpenAICompatibleResponsesResponse,
 } from './openai-compatible-client.js';
 import type { LLMGatewayTransportContext } from './provider-dispatcher.js';
 
 const DEFAULT_CODEX_BASE_URL = 'https://chatgpt.com/backend-api';
 const CODEX_RESPONSES_PATH = 'codex/responses';
+const CODEX_RESPONSES_TIMEOUT_MS = 0;
 const KEYCHAIN_SERVICE = 'Codex Auth';
 const execFile = promisify(execFileCallback);
+const codexResponsesDispatcher = new Agent({
+  bodyTimeout: CODEX_RESPONSES_TIMEOUT_MS,
+  headersTimeout: CODEX_RESPONSES_TIMEOUT_MS,
+});
+
+/**
+ * Sends one Codex request through the process-local long-running dispatcher.
+ *
+ * @param input Request URL or request object.
+ * @param init Optional request initialization.
+ * @returns Upstream Codex response.
+ */
+const fetchCodexResponse: typeof fetch = async (input, init) => {
+  const request = input instanceof Request ? input : new Request(input, init);
+  const body = request.body ? new Uint8Array(await request.arrayBuffer()) : undefined;
+  const headers: Record<string, string> = {};
+  request.headers.forEach((value, name) => {
+    headers[name] = value;
+  });
+
+  return (await undiciFetch(request.url, {
+    dispatcher: codexResponsesDispatcher,
+    headers,
+    method: request.method,
+    redirect: request.redirect,
+    signal: request.signal,
+    ...(body ? { body } : {}),
+  })) as Response;
+};
 
 /**
  * Account-store surface needed for private Codex token resolution.
@@ -182,7 +212,7 @@ export class CodexResponsesClient {
   public constructor(options: CodexResponsesClientOptions) {
     this.tokenResolver = options.tokenResolver ?? null;
     this.tokenResolverForProvider = options.tokenResolverForProvider ?? null;
-    this.fetchImpl = options.fetch ?? fetch;
+    this.fetchImpl = options.fetch ?? fetchCodexResponse;
   }
 
   /**
@@ -315,13 +345,6 @@ export class CodexResponsesClient {
     }
   }
 
-  /**
-   * Parses one Codex JSON response and normalizes an upstream failure.
-   *
-   * @param response Upstream Codex response.
-   * @returns Parsed successful response payload.
-   * @throws {OpenAICompatibleProviderError} When Codex returns a non-success response.
-   */
   private async readJsonResponse<T>(response: Response): Promise<T> {
     const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
 
@@ -331,16 +354,9 @@ export class CodexResponsesClient {
       const message =
         typeof detail.message === 'string'
           ? detail.message
-          : typeof payload.detail === 'string'
-            ? payload.detail
-            : `OpenAI Codex provider request failed with status ${response.status}.`;
+          : `OpenAI Codex provider request failed with status ${response.status}.`;
 
-      throw new OpenAICompatibleProviderError({
-        code: typeof detail.code === 'string' ? detail.code : 'provider_error',
-        message,
-        status: response.status,
-        type: typeof detail.type === 'string' ? detail.type : null,
-      });
+      throw new Error(message);
     }
 
     return payload as T;

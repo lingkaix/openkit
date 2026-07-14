@@ -3,6 +3,7 @@ import {
   type AgentEnvironmentCredentialDeclaration,
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
+  OPENKIT_WORKER_CONTROL_POST_PATHS,
   planSessionWorkspaceMaterialization,
   resolveWorkspaceDataSourceReference,
   type SessionWorkspaceMaterializationPlan,
@@ -678,7 +679,6 @@ function resolveOpenShellAgentEnvironmentPackage(
         enforcement: 'openshell',
         rules: [
           {
-            access: 'read-write',
             action: 'allow',
             binaries: ['/usr/local/bin/node', '/usr/local/bin/openkit-codex-shim'],
             host: workerControlUrl.hostname,
@@ -687,6 +687,7 @@ function resolveOpenShellAgentEnvironmentPackage(
               workerControlUrl.port || (workerControlUrl.protocol === 'https:' ? '443' : '80')
             ),
             protocol: 'rest',
+            rules: OPENKIT_WORKER_CONTROL_POST_PATHS.map((path) => ({ method: 'POST', path })),
           },
           ...(trustedInferenceRequired
             ? [
@@ -887,6 +888,7 @@ function workspaceInputSource(
     return {
       kind: root.sourceKind,
       pathRef: `workspace-root://${root.id}`,
+      ...(root.sourceCommit ? { commit: root.sourceCommit } : {}),
     };
   }
 
@@ -909,6 +911,7 @@ function workspaceInputSource(
     sensitivity: resolved.sensitivity,
     sourceId: resolved.sourceId,
     sourceRef,
+    ...(root.sourceCommit ? { commit: root.sourceCommit } : {}),
     ...(resolved.vaultGrantRef ? { vaultGrantRef: resolved.vaultGrantRef } : {}),
   };
 }

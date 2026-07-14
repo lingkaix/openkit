@@ -359,13 +359,24 @@ function trustedWorkerInferenceRelayPackageFixture(): Record<string, unknown> {
         enforcement: 'openshell',
         rules: [
           {
-            access: 'read-write',
             action: 'allow',
             binaries: ['/usr/local/bin/node', '/usr/local/bin/openkit-codex-shim'],
             host: 'nanocore.local',
             id: 'openkit-worker-control',
             port: 443,
             protocol: 'rest',
+            rules: [
+              { method: 'POST', path: '/api/worker-control/heartbeat' },
+              { method: 'POST', path: '/api/worker-control/artifacts' },
+              { method: 'POST', path: '/api/worker-control/commands/poll' },
+              { method: 'POST', path: '/api/worker-control/commands/ack' },
+              { method: 'POST', path: '/api/worker-control/terminal-results' },
+              { method: 'POST', path: '/api/worker-control/events/append' },
+              { method: 'POST', path: '/api/worker-control/final-status' },
+              { method: 'POST', path: '/api/worker-control/supply-refresh-ack' },
+              { method: 'POST', path: '/api/worker-control/capability-summary' },
+              { method: 'POST', path: '/api/worker-control/knowledge-proposal-summary' },
+            ],
           },
           {
             action: 'allow',
@@ -990,6 +1001,26 @@ describe('agent environment package schema', () => {
         }),
       }),
     ]);
+    expect(parsed.policy.network?.rules[0]).toEqual({
+      action: 'allow',
+      binaries: ['/usr/local/bin/node', '/usr/local/bin/openkit-codex-shim'],
+      host: 'nanocore.local',
+      id: 'openkit-worker-control',
+      port: 443,
+      protocol: 'rest',
+      rules: [
+        { method: 'POST', path: '/api/worker-control/heartbeat' },
+        { method: 'POST', path: '/api/worker-control/artifacts' },
+        { method: 'POST', path: '/api/worker-control/commands/poll' },
+        { method: 'POST', path: '/api/worker-control/commands/ack' },
+        { method: 'POST', path: '/api/worker-control/terminal-results' },
+        { method: 'POST', path: '/api/worker-control/events/append' },
+        { method: 'POST', path: '/api/worker-control/final-status' },
+        { method: 'POST', path: '/api/worker-control/supply-refresh-ack' },
+        { method: 'POST', path: '/api/worker-control/capability-summary' },
+        { method: 'POST', path: '/api/worker-control/knowledge-proposal-summary' },
+      ],
+    });
   });
 
   it('accepts bounded runtime provenance outputs behind the trusted relay feature', () => {
@@ -1301,6 +1332,7 @@ describe('agent environment package schema', () => {
     const fixture = trustedWorkerInferenceRelayPackageFixture();
     const policy = fixture.policy as Record<string, unknown>;
     const network = policy.network as { rules: Array<Record<string, unknown>> };
+    const controlRule = network.rules[0] as Record<string, unknown>;
     const inferenceRule = network.rules[1] as Record<string, unknown>;
 
     expect(() =>
@@ -1318,6 +1350,42 @@ describe('agent environment package schema', () => {
                 id: 'direct-provider-egress',
               },
             ],
+          },
+        },
+      })
+    ).toThrow();
+    expect(() =>
+      AgentEnvironmentPackageSchema.parse({
+        ...fixture,
+        policy: {
+          ...policy,
+          network: {
+            ...network,
+            rules: network.rules.map((rule, index) =>
+              index === 0
+                ? {
+                    ...controlRule,
+                    rules: [
+                      { method: 'POST', path: '/api/worker-control/heartbeat' },
+                      { method: 'POST', path: '/api/worker-inference/v1/responses' },
+                    ],
+                  }
+                : rule
+            ),
+          },
+        },
+      })
+    ).toThrow();
+    expect(() =>
+      AgentEnvironmentPackageSchema.parse({
+        ...fixture,
+        policy: {
+          ...policy,
+          network: {
+            ...network,
+            rules: network.rules.map((rule, index) =>
+              index === 0 ? { ...controlRule, access: 'read-write', rules: undefined } : rule
+            ),
           },
         },
       })

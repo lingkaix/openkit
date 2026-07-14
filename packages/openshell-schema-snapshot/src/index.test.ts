@@ -24,7 +24,7 @@ const snapshotRoot = join(packageRoot, 'snapshots', '2026-07-11');
 describe('OpenShell schema snapshot', () => {
   it('pins metadata and checksums for every snapshot artifact', () => {
     expect(OPEN_SHELL_SCHEMA_SNAPSHOT_ID).toBe('openshell-0.0.80-2026-07-11');
-    expect(OPEN_SHELL_MAPPING_VERSION).toBe('openshell-v4');
+    expect(OPEN_SHELL_MAPPING_VERSION).toBe('openshell-v5');
 
     for (const [fileName, checksum] of Object.entries(OPEN_SHELL_SCHEMA_SNAPSHOT.checksums)) {
       expect(sha256File(join(snapshotRoot, fileName))).toBe(checksum);
@@ -256,6 +256,9 @@ network_policies:
     ).not.toThrow();
     expect(() =>
       assertOpenShellCliCommandConformant(['provider', 'profile', 'export', 'worker-relay'])
+    ).not.toThrow();
+    expect(() =>
+      assertOpenShellCliCommandConformant(['settings', 'get', '--global', '--json'])
     ).not.toThrow();
     expect(() =>
       assertOpenShellCliCommandConformant([

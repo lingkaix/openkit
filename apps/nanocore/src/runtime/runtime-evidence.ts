@@ -83,6 +83,32 @@ export interface RecordWorkerRuntimeProvenanceEvidenceInput {
   collectedAt: string;
 }
 
+/** Input for one normalized physical worker backend teardown record. */
+export interface RecordWorkerBackendTeardownEvidenceInput {
+  /** Agent session whose backend resources were torn down. */
+  readonly agentSessionId: string;
+  /** Governance backend family. */
+  readonly backendType: string;
+  /** Governance backend version when reported. */
+  readonly backendVersion: string | null;
+  /** Timestamp of the final teardown attempt. */
+  readonly completedAt: string;
+  /** Final physical teardown outcome after retries. */
+  readonly outcome: Extract<RuntimeEvidenceRecord['outcome'], 'succeeded' | 'failed'>;
+  /** Agent Environment Package snapshot that owned the backend resources. */
+  readonly packageSnapshotId: string;
+  /** Governance backend placement. */
+  readonly placement: RuntimeEvidenceRecord['placement'];
+  /** Thread that owns the worker turn. */
+  readonly threadId: string;
+  /** Turn whose backend resources were torn down. */
+  readonly turnId: string;
+  /** Worker image used by the backend. */
+  readonly workerImage: string | null;
+  /** Workspace that owns the worker turn. */
+  readonly workspaceId: string;
+}
+
 /**
  * Records package-scoped transcript collection evidence for worker runtime provenance.
  *
@@ -137,6 +163,83 @@ export function recordWorkerRuntimeProvenanceEvidence(
 }
 
 /**
+ * Records the final physical teardown outcome for one governed worker backend.
+ *
+ * @param workspaceDb Open workspace database handle.
+ * @param input Product-safe backend teardown identity and outcome.
+ * @returns Stored runtime evidence record.
+ */
+export function recordWorkerBackendTeardownEvidence(
+  workspaceDb: WorkspaceDb,
+  input: RecordWorkerBackendTeardownEvidenceInput
+): RuntimeEvidenceRecord {
+  const checkpointLineage = workspaceDb.sqlite
+    .prepare(
+      `SELECT goal_id, task_id
+      FROM worker_turn_checkpoints
+      WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
+      LIMIT 1`
+    )
+    .get(input.workspaceId, input.threadId, input.turnId) as
+    | { goal_id: string | null; task_id: string | null }
+    | undefined;
+  const succeeded = input.outcome === 'succeeded';
+  const stopReason = succeeded ? 'completed' : 'error';
+  const record = RuntimeEvidenceRecordSchema.parse({
+    id: createRuntimeEvidenceId(`worker-backend-teardown:${input.packageSnapshotId}`),
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    turnId: input.turnId,
+    goalId: checkpointLineage?.goal_id ?? null,
+    taskId: checkpointLineage?.task_id ?? null,
+    agentSessionId: input.agentSessionId,
+    backendType: input.backendType,
+    backendVersion: input.backendVersion,
+    placement: input.placement,
+    phase: 'teardown',
+    summary: `Worker backend teardown ${succeeded ? 'succeeded' : 'failed'}.`,
+    policyDigest: null,
+    workerImage: input.workerImage,
+    sandboxSummary: null,
+    capabilitySummary: 'worker backend teardown',
+    uploadManifest: [],
+    downloadManifest: [],
+    transcriptSummary: null,
+    workspaceChangeSummary: null,
+    controlSummary: `Backend cleanup ${succeeded ? 'completed' : 'failed'}.`,
+    outcome: input.outcome,
+    exitCode: null,
+    signal: null,
+    stopReason,
+    errorCode: succeeded ? null : 'worker_backend_teardown_failed',
+    errorMessage: succeeded ? null : 'Worker backend teardown failed.',
+    redactedStdoutSummary: null,
+    redactedStderrSummary: null,
+    evidenceBundleIds: [],
+    contentDigests: [
+      `sha256:${createHash('sha256')
+        .update(
+          JSON.stringify({
+            backendType: input.backendType,
+            backendVersion: input.backendVersion,
+            outcome: input.outcome,
+            packageSnapshotId: input.packageSnapshotId,
+            stopReason,
+          })
+        )
+        .digest('hex')}`,
+    ],
+    requiredFeatures: ['runtime.evidence.v1'],
+    createdAt: input.completedAt,
+    startedAt: null,
+    completedAt: input.completedAt,
+    collectedAt: input.completedAt,
+  });
+
+  return insertRuntimeEvidence(workspaceDb, record);
+}
+
+/**
  * Records normalized runtime evidence for a terminal worker checkpoint.
  *
  * @param workspaceDb Open workspace database handle.
@@ -147,6 +250,16 @@ export function recordWorkerCheckpointRuntimeEvidence(
   workspaceDb: WorkspaceDb,
   checkpoint: WorkerCheckpointRecord
 ): RuntimeEvidenceRecord {
+  const backendTeardown = findWorkerTeardownRuntimeEvidence(
+    workspaceDb,
+    checkpoint.workspaceId,
+    checkpoint.threadId,
+    checkpoint.turnId,
+    checkpoint.workerSessionId
+  );
+  if (backendTeardown) {
+    return backendTeardown;
+  }
   const record = RuntimeEvidenceRecordSchema.parse({
     id: createRuntimeEvidenceId(checkpoint.checkpointId),
     workspaceId: checkpoint.workspaceId,
@@ -278,6 +391,42 @@ export function importWorkspaceRuntimeEvidence(
   for (const record of records) {
     insertRuntimeEvidence(workspaceDb, ImportedRuntimeEvidenceRecordSchema.parse(record));
   }
+}
+
+/**
+ * Finds authoritative teardown evidence for one worker turn and agent session.
+ *
+ * @param workspaceDb Open workspace database handle.
+ * @param workspaceId Workspace that owns the turn.
+ * @param threadId Thread that owns the turn.
+ * @param turnId Worker turn id.
+ * @param agentSessionId Agent session id, or null when no session was materialized.
+ * @returns Existing teardown evidence, or null when checkpoint fallback is required.
+ */
+function findWorkerTeardownRuntimeEvidence(
+  workspaceDb: WorkspaceDb,
+  workspaceId: string,
+  threadId: string,
+  turnId: string,
+  agentSessionId: string | null
+): RuntimeEvidenceRecord | null {
+  const row = workspaceDb.sqlite
+    .prepare(
+      `SELECT *
+      FROM runtime_evidence
+      WHERE workspace_id = ?
+        AND thread_id = ?
+        AND turn_id = ?
+        AND (? IS NULL OR agent_session_id = ?)
+        AND phase = 'teardown'
+      ORDER BY created_at, runtime_evidence_id
+      LIMIT 1`
+    )
+    .get(workspaceId, threadId, turnId, agentSessionId, agentSessionId) as
+    | RuntimeEvidenceRow
+    | undefined;
+
+  return row ? runtimeEvidenceFromRow(row) : null;
 }
 
 function createRuntimeEvidenceId(checkpointId: string): string {

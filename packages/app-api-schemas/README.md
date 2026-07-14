@@ -8,6 +8,10 @@ Workspace export response schemas reuse the format version owned by `@openkit/co
 
 Agent-session backend summaries expose only the canonical `direct-nanocore` worker-control mode or `null`; retired control transports are not public read-model states.
 
+Materialized linked-repository roots carry the full NanoCore-captured Git base commit so AEP, input-snapshot, materialization, and review records can enforce one immutable lineage.
+
+Workspace materialization records and backend workspace handles carry AEP package snapshot lineage separately from the backend worker session id so terminal events, teardown, and recovery target the same materialization without treating backend-native ids as scheduler identity.
+
 Do not add stable Core protocol records here. Core records, commands, events, errors, and conformance fixtures belong in `@openkit/protocol`.
 
 ## Commands

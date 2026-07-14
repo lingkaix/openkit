@@ -77,7 +77,7 @@ const WorkerControlFinalStatusBodySchema = z
       'interrupted',
       'lost',
     ]),
-    stopReason: z.string().min(1).nullable().optional(),
+    stopReason: z.string().trim().min(1),
     evidenceManifestDigests: z.record(z.string(), z.string().min(1)).optional(),
   })
   .strict();
@@ -306,22 +306,14 @@ export function registerWorkerControlRoutes({
 
     try {
       return c.json(
-        workerControlGateway.appendEvent({
+        workerControlGateway.recordFinalStatus({
           authorization: c.req.header('authorization') ?? null,
+          evidenceManifestDigests: body.data.evidenceManifestDigests ?? {},
           lineage: parsed.data.lineage,
-          record: WorkerCanonicalEventRecordSchema.parse({
-            event: {
-              data: {
-                evidenceManifestDigests: body.data.evidenceManifestDigests ?? {},
-                stopReason: body.data.stopReason ?? body.data.status,
-              },
-              type: body.data.status === 'completed' ? 'turn.completed' : 'turn.failed',
-            },
-            kind: 'event',
-            lineage: parsed.data.lineage,
-            schemaVersion: parsed.data.schemaVersion,
-            sequence: parsed.data.sequence,
-          }),
+          schemaVersion: parsed.data.schemaVersion,
+          sequence: parsed.data.sequence,
+          status: body.data.status,
+          stopReason: body.data.stopReason,
         })
       );
     } catch (error) {

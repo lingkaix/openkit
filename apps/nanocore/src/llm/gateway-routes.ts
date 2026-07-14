@@ -68,6 +68,8 @@ const GatewayResponsesRequestSchema = z
   })
   .passthrough();
 const WORKER_INFERENCE_BODY_LIMIT_BYTES = 16 * 1024 * 1024;
+const WORKER_INFERENCE_HEARTBEAT_INTERVAL_MS = 1000;
+const WORKER_INFERENCE_HEARTBEAT_SSE = ': openkit-worker-inference-heartbeat\n\n';
 
 /** Public LLM gateway lineage accepted from `metadata.openkit`. */
 interface PublicLlmGatewayLineage {
@@ -1124,6 +1126,8 @@ interface GatewayTerminalStreamOptions {
   readonly failureCode?: string;
   /** Optional product-safe SSE message that hides internal provider details. */
   readonly failureMessage?: string;
+  /** Optional interval that emits worker-safe SSE comments while the upstream is idle. */
+  readonly heartbeatIntervalMs?: number;
   /** Request cancellation signal used to distinguish aborts from provider failures. */
   readonly signal?: AbortSignal;
 }
@@ -1143,6 +1147,7 @@ function normalizeGatewayTerminalStream(
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   const reader = stream.getReader();
+  let pendingRead: Promise<ReadableStreamReadResult<Uint8Array>> | null = null;
   let released = false;
   let terminal = false;
 
@@ -1181,9 +1186,18 @@ function normalizeGatewayTerminalStream(
         return;
       }
 
-      let result: ReadableStreamReadResult<Uint8Array>;
+      let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
+      let result: ReadableStreamReadResult<Uint8Array> | null;
       try {
-        result = await reader.read();
+        pendingRead ??= reader.read();
+        result = options.heartbeatIntervalMs
+          ? await Promise.race([
+              pendingRead,
+              new Promise<null>((resolve) => {
+                heartbeatTimer = setTimeout(resolve, options.heartbeatIntervalMs, null);
+              }),
+            ])
+          : await pendingRead;
       } catch (error) {
         if (terminal) {
           return;
@@ -1214,11 +1228,20 @@ function normalizeGatewayTerminalStream(
         );
         controller.close();
         return;
+      } finally {
+        if (heartbeatTimer) {
+          clearTimeout(heartbeatTimer);
+        }
       }
 
       if (terminal) {
         return;
       }
+      if (result === null) {
+        controller.enqueue(encoder.encode(WORKER_INFERENCE_HEARTBEAT_SSE));
+        return;
+      }
+      pendingRead = null;
       if (result.done) {
         terminal = true;
         try {
@@ -1629,6 +1652,7 @@ function workerInferenceStreamResponse(
       durableCall,
       failureCode: 'worker_inference_stream_failed',
       failureMessage: 'Worker inference stream failed.',
+      heartbeatIntervalMs: WORKER_INFERENCE_HEARTBEAT_INTERVAL_MS,
       signal,
     }),
     {

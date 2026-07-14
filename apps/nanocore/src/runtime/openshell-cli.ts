@@ -65,10 +65,10 @@ export interface OpenShellGatewayInfo {
 }
 
 /**
- * Inputs for reading OpenShell gateway metadata.
+ * OpenShell gateway target selected for one command.
  */
-export interface OpenShellGatewayInfoInput {
-  /** Optional gateway name to inspect instead of the active gateway. */
+export interface OpenShellGatewayTargetInput {
+  /** Optional gateway name to use instead of the active gateway. */
   gateway?: string;
   /** Optional direct gateway endpoint URL. */
   gatewayEndpoint?: string;
@@ -413,12 +413,20 @@ export class OpenShellCli {
   }
 
   /**
-   * Reads active gateway status.
+   * Reads gateway status.
    *
+   * @param input Optional gateway target.
    * @returns Parsed status summary; failed connectivity returns `unavailable`.
    */
-  public async status(): Promise<OpenShellStatus> {
-    const result = await this.runner.run(['status']);
+  public async status(input: OpenShellGatewayTargetInput = {}): Promise<OpenShellStatus> {
+    const args = ['status'];
+
+    if (input.gateway) {
+      args.push('-g', input.gateway);
+    }
+    appendOpenShellGatewayFlags(args, input);
+
+    const result = await this.runner.run(args);
     const fields = parseCliFields(result.stdout);
 
     if (result.exitCode !== 0) {
@@ -444,7 +452,7 @@ export class OpenShellCli {
    *
    * @returns Parsed gateway info.
    */
-  public async gatewayInfo(input: OpenShellGatewayInfoInput = {}): Promise<OpenShellGatewayInfo> {
+  public async gatewayInfo(input: OpenShellGatewayTargetInput = {}): Promise<OpenShellGatewayInfo> {
     const args = ['gateway', 'info'];
 
     if (input.gateway) {
@@ -464,6 +472,51 @@ export class OpenShellCli {
       endpoint: fields.get('gateway endpoint') ?? null,
       gateway: fields.get('gateway') ?? null,
     };
+  }
+
+  /**
+   * Reads the gateway-global Providers v2 activation state.
+   *
+   * @param input Optional gateway target.
+   * @returns True or false for an explicit setting, or null when unset.
+   * @throws When the command fails or the pinned JSON shape is malformed.
+   */
+  public async providersV2Enabled(
+    input: OpenShellGatewayTargetInput = {}
+  ): Promise<boolean | null> {
+    const args = ['settings', 'get', '--global', '--json'];
+
+    if (input.gateway) {
+      args.push('-g', input.gateway);
+    }
+    appendOpenShellGatewayFlags(args, input);
+    const result = await this.runner.run(args);
+
+    if (result.exitCode !== 0) {
+      throw new Error(`OpenShell global settings check failed: ${safeErrorText(result)}`);
+    }
+
+    const parsed = parseOpenShellJsonObject(result.stdout, 'global settings');
+    const settings = parsed.settings;
+
+    if (typeof settings !== 'object' || settings === null || Array.isArray(settings)) {
+      throw new Error('OpenShell global settings omitted the settings object.');
+    }
+    const value = (settings as Record<string, unknown>).providers_v2_enabled;
+
+    if (typeof value !== 'string') {
+      throw new Error('OpenShell global settings omitted providers_v2_enabled.');
+    }
+    if (value === 'true') {
+      return true;
+    }
+    if (value === 'false') {
+      return false;
+    }
+    if (value === '<unset>') {
+      return null;
+    }
+    throw new Error('OpenShell global settings returned an invalid providers_v2_enabled value.');
   }
 
   /**
@@ -504,7 +557,7 @@ export class OpenShellCli {
   public async ensureProviderProfile(
     input: OpenShellProviderProfileEnsureInput
   ): Promise<OpenShellProviderProfileEnsureResult> {
-    const desiredProfile = parseOpenShellProviderProfileJson(
+    const desiredProfile = parseOpenShellJsonObject(
       await readFile(input.path, 'utf8'),
       'generated provider profile'
     );
@@ -910,14 +963,14 @@ function compileOpenShellProviderProfileImportArgs(
 }
 
 /**
- * Parses one OpenShell provider profile JSON object.
+ * Parses one OpenShell JSON object.
  *
  * @param value JSON text.
  * @param label Product-safe source label.
  * @returns Parsed JSON object.
  * @throws When the text is not a JSON object.
  */
-function parseOpenShellProviderProfileJson(value: string, label: string): Record<string, unknown> {
+function parseOpenShellJsonObject(value: string, label: string): Record<string, unknown> {
   let parsed: unknown;
 
   try {
@@ -944,10 +997,7 @@ function assertOpenShellProviderProfileMatches(
   desiredProfile: Record<string, unknown>,
   exportedJson: string
 ): void {
-  const exportedProfile = parseOpenShellProviderProfileJson(
-    exportedJson,
-    'exported provider profile'
-  );
+  const exportedProfile = parseOpenShellJsonObject(exportedJson, 'exported provider profile');
 
   delete exportedProfile.resource_version;
   if (!isDeepStrictEqual(exportedProfile, desiredProfile)) {

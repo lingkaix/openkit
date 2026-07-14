@@ -17,13 +17,13 @@
     "docs/reference/policy-schema.mdx",
     "providers/*.yaml"
   ],
-  "mappingVersion": "openshell-v4",
-  "refreshedAt": "2026-07-13",
+  "mappingVersion": "openshell-v5",
+  "refreshedAt": "2026-07-14",
   "requiredGatewayVersion": "0.0.80",
   "checksums": {
     "provider-profile-surface.json": "87b856a2ffabdb1eef5ff041f4a2be29b46863affe60ffde334a337118ef486d",
     "policy-surface.json": "865f9a3db00a60f9a761a7d85c8b54791eb15a917ae230d6e514857fbb9b6348",
-    "cli-surface.json": "d31f36bb36a053f7ab36ad482e313bc246eabeb8325d6f8ca614597d09387efd"
+    "cli-surface.json": "936f913d581984b316b267aae74a85de1a37fa5dbdb4a0abe158326d054044e2"
   },
   "maintenanceNote": "The snapshot separates the full upstream provider and policy surface from the narrower OpenKit-emitted mapping. Refresh only as an explicit external-boundary update after reviewing tagged OpenShell profile, policy, and CLI source."
 }

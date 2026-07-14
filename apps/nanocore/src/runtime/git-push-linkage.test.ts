@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { evaluateGitPushLinkage } from './git-push-linkage.js';
 import { recordWorkspaceApplyResult } from './workspace-apply-results.js';
 import { recordWorkspaceSyncReview } from './workspace-sync-records.js';
@@ -86,55 +87,55 @@ describe('Git push linkage', () => {
     const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
 
     try {
-      recordWorkspaceSyncReview(workspaceDb, {
-        item: {
-          artifactId: 'ar_swr_branch',
-          changeSet: {
-            artifactIds: ['ar_swr_branch'],
-            base: { commit: 'base_commit', contentDigest: null },
-            bundle: null,
-            changedPaths: [{ binary: false, path: 'README.md', status: 'modified' }],
-            createdAt: '2026-07-05T00:00:00.000Z',
-            evidenceRefs: [{ kind: 'worker', ref: 'turn_1' }],
-            head: { commit: 'staged_branch_commit', contentDigest: null },
-            id: 'wcs_branch',
-            inputSnapshotId: 'wis_branch',
-            materializationRecordId: 'wmr_branch',
-            patch: {
-              bytes: Buffer.byteLength(patchText, 'utf8'),
-              digest: patchDigest,
-              ref: 'artifact://patch',
-            },
-            redaction: { notes: [], status: 'redacted' },
-            resourceId: 'repo_default',
-            strategy: 'git',
-            workspaceId: 'ws_demo',
-          },
-          patchPayload: {
+      const item: Parameters<typeof recordWorkspaceSyncReview>[1]['item'] = {
+        artifactId: 'ar_swr_branch',
+        changeSet: {
+          artifactIds: ['ar_swr_branch'],
+          base: { commit: 'base_commit', contentDigest: null },
+          bundle: null,
+          changedPaths: [{ binary: false, path: 'README.md', status: 'modified' }],
+          createdAt: '2026-07-05T00:00:00.000Z',
+          evidenceRefs: [{ kind: 'worker', ref: 'turn_1' }],
+          head: { commit: 'staged_branch_commit', contentDigest: null },
+          id: 'wcs_branch',
+          inputSnapshotId: 'wis_branch',
+          materializationRecordId: 'wmr_branch',
+          patch: {
             bytes: Buffer.byteLength(patchText, 'utf8'),
             digest: patchDigest,
-            mediaType: 'text/x-diff',
-            text: patchText,
+            ref: 'artifact://patch',
           },
-          review: {
-            actionCenterRowId: 'workspace-review:swr_branch',
-            changeSetId: 'wcs_branch',
-            createdAt: '2026-07-05T00:00:00.000Z',
-            diffSummary: { additions: 1, deletions: 0, filesChanged: 1 },
-            id: 'swr_branch',
-            riskSummary: '1 changed path staged for human review.',
-            staging: {
-              branch: 'openkit/review/swr_branch',
-              ref: 'staging://workspace/wcs_branch',
-              strategy: 'git_worktree',
-            },
-            status: 'pending',
-            updatedAt: '2026-07-05T00:00:00.000Z',
-            validation: [],
-            workspaceId: 'ws_demo',
-          },
+          redaction: { notes: [], status: 'redacted' },
+          resourceId: 'repo_default',
+          strategy: 'git',
+          workspaceId: 'ws_demo',
         },
-      });
+        patchPayload: {
+          bytes: Buffer.byteLength(patchText, 'utf8'),
+          digest: patchDigest,
+          mediaType: 'text/x-diff',
+          text: patchText,
+        },
+        review: {
+          actionCenterRowId: 'workspace-review:swr_branch',
+          changeSetId: 'wcs_branch',
+          createdAt: '2026-07-05T00:00:00.000Z',
+          diffSummary: { additions: 1, deletions: 0, filesChanged: 1 },
+          id: 'swr_branch',
+          riskSummary: '1 changed path staged for human review.',
+          staging: {
+            branch: 'openkit/review/swr_branch',
+            ref: 'staging://workspace/wcs_branch',
+            strategy: 'git_worktree',
+          },
+          status: 'pending',
+          updatedAt: '2026-07-05T00:00:00.000Z',
+          validation: [],
+          workspaceId: 'ws_demo',
+        },
+      };
+      recordTestWorkspaceReviewMaterialization(workspaceDb, item);
+      recordWorkspaceSyncReview(workspaceDb, { item });
 
       expect(
         evaluateGitPushLinkage(workspaceDb, {

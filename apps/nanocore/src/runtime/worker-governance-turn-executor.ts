@@ -9,6 +9,7 @@ import type {
 import type {
   AgentEnvironmentPackage,
   SessionWorkspaceMaterializationPlan,
+  WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
 import type { FsStore } from '../lib/store.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
@@ -24,6 +25,7 @@ import {
   type ResolvedAgentEnvironmentRuntimeFileCredential,
   resolveAgentEnvironmentPackage,
 } from './agent-environment.js';
+import { recordWorkerBackendTeardownEvidence } from './runtime-evidence.js';
 import { generateUuidV7 } from './session-id.js';
 import type {
   AgentSessionReadModel,
@@ -159,7 +161,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     let agentSessionId: string | null = context.agentSessionId ?? null;
     let workspaceDb: WorkspaceDb | null = null;
     let backendActive = false;
+    let backendCapabilities: WorkerGovernanceBackendCapabilities | null = null;
+    let environmentPackage: AgentEnvironmentPackage | null = null;
     let backendSnapshotId: string | null = null;
+    let finalTeardownCompletedAt: string | null = null;
+    let finalTeardownOutcome: 'succeeded' | 'failed' | null = null;
     let primaryFailed = false;
     let primaryError: unknown;
 
@@ -170,7 +176,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       const providerCredentials: ResolvedAgentEnvironmentProviderCredential[] = [];
       const runtimeEnvCredentials: ResolvedAgentEnvironmentRuntimeEnvCredential[] = [];
       const runtimeFileCredentials: ResolvedAgentEnvironmentRuntimeFileCredential[] = [];
-      const environmentPackage = resolveAgentEnvironmentPackage({
+      environmentPackage = resolveAgentEnvironmentPackage({
         agent,
         agentSessionId: resolvedAgentSessionId,
         backend: this.environmentBackend,
@@ -246,7 +252,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         });
       }
 
-      const backendCapabilities = await this.backend.describeCapabilities();
+      backendCapabilities = await this.backend.describeCapabilities();
       const backendKind = toWorkspaceSynchronizationBackendKind(backendCapabilities.kind);
       const inputSnapshots = workspaceDb
         ? recordWorkspaceInputSnapshots(
@@ -344,7 +350,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       );
       await this.backend.collectArtifacts(environmentPackage.snapshotId);
       try {
-        await this.backend.teardown(environmentPackage.snapshotId);
+        const teardown = await this.backend.teardown(environmentPackage.snapshotId);
+        finalTeardownCompletedAt = teardown.timestamp;
+        finalTeardownOutcome = 'succeeded';
       } catch (error) {
         try {
           this.markBackendWorkspaceHandlesCleanupStatus(
@@ -377,16 +385,21 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     const errors: unknown[] = primaryFailed ? [primaryError] : [];
     if (backendActive) {
       let cleanupStatus: 'cleaned' | 'failed' = 'failed';
+      let teardownCompletedAt: string | null = null;
       if (!backendSnapshotId) {
         errors.push(new Error('The active governed worker is missing its backend snapshot id.'));
       } else {
         try {
-          await this.backend.teardown(backendSnapshotId);
+          const teardown = await this.backend.teardown(backendSnapshotId);
+          teardownCompletedAt = teardown.timestamp;
           backendActive = false;
           cleanupStatus = 'cleaned';
         } catch (error) {
+          teardownCompletedAt = this.now();
           errors.push(error);
         }
+        finalTeardownCompletedAt = teardownCompletedAt;
+        finalTeardownOutcome = cleanupStatus === 'cleaned' ? 'succeeded' : 'failed';
         try {
           this.markBackendWorkspaceHandlesCleanupStatus(
             workspaceDb,
@@ -397,6 +410,23 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         } catch (error) {
           errors.push(error);
         }
+      }
+    }
+    if (finalTeardownOutcome && finalTeardownCompletedAt) {
+      if (environmentPackage && backendCapabilities) {
+        try {
+          this.recordBackendTeardownEvidence(
+            workspaceDb,
+            environmentPackage,
+            backendCapabilities,
+            finalTeardownOutcome,
+            finalTeardownCompletedAt
+          );
+        } catch (error) {
+          errors.push(error);
+        }
+      } else if (workspaceDb) {
+        errors.push(new Error('Backend teardown evidence is missing its runtime lineage.'));
       }
     }
     try {
@@ -508,17 +538,52 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   }
 
   /**
+   * Persists one normalized physical backend teardown outcome.
+   *
+   * @param workspaceDb Optional workspace database handle.
+   * @param environmentPackage Agent Environment Package that owned the backend resources.
+   * @param backendCapabilities Backend identity captured before materialization.
+   * @param outcome Final physical teardown outcome after retries.
+   * @param completedAt Timestamp of the final teardown attempt.
+   */
+  private recordBackendTeardownEvidence(
+    workspaceDb: WorkspaceDb | null,
+    environmentPackage: AgentEnvironmentPackage,
+    backendCapabilities: WorkerGovernanceBackendCapabilities,
+    outcome: 'succeeded' | 'failed',
+    completedAt: string
+  ): void {
+    if (!workspaceDb) {
+      return;
+    }
+
+    recordWorkerBackendTeardownEvidence(workspaceDb, {
+      agentSessionId: environmentPackage.scope.agentSessionId,
+      backendType: backendCapabilities.kind,
+      backendVersion: backendCapabilities.version ?? null,
+      completedAt,
+      outcome,
+      packageSnapshotId: environmentPackage.snapshotId,
+      placement: this.environmentBackend.placement ?? 'local',
+      threadId: environmentPackage.scope.threadId,
+      turnId: environmentPackage.scope.turnId,
+      workerImage: environmentPackage.runtime.image.ref,
+      workspaceId: environmentPackage.scope.workspaceId,
+    });
+  }
+
+  /**
    * Updates persisted backend workspace handles after teardown.
    *
    * @param workspaceDb Optional workspace database handle.
    * @param workspaceId Workspace id.
-   * @param workerSessionId Worker session id stored on backend handles.
+   * @param packageSnapshotId AEP package snapshot id stored on backend handles.
    * @param cleanupStatus Cleanup outcome.
    */
   private markBackendWorkspaceHandlesCleanupStatus(
     workspaceDb: WorkspaceDb | null,
     workspaceId: string,
-    workerSessionId: string,
+    packageSnapshotId: string,
     cleanupStatus: 'cleaned' | 'failed'
   ): void {
     if (!workspaceDb) {
@@ -528,7 +593,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     updateBackendWorkspaceHandleCleanupStatus(
       workspaceDb,
       workspaceId,
-      workerSessionId,
+      packageSnapshotId,
       cleanupStatus,
       this.now()
     );

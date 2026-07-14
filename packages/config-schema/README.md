@@ -14,6 +14,8 @@ Agent Environment Packages may require `worker.runtime-provenance.v1` only toget
 
 Workspace config currently covers `workspace.roots` and `workspace.assistant.repositoryInspection`. The Assistant repository inspection policy defaults to enabled and lets a workspace disable Chat Mode repository reads or exclude exact repository-relative path prefixes without changing worker roots.
 
+NanoCore-created linked-repository roots add a full `sourceCommit` object id before AEP projection. The AEP source, durable input snapshot, and materialization record preserve that exact base so worker change manifests cannot substitute a different repository lineage.
+
 ## Commands
 
 - `pnpm --filter @openkit/config-schema test`

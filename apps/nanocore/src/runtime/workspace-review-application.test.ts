@@ -18,6 +18,7 @@ import { openWorkspaceDb } from '../storage/db.js';
 import { LOCAL_USER_ID } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { upsertWorkspaceRepositoryResource } from '../workspace/repository-store.js';
 import {
   buildFilesystemWorkspaceChangeSet,
@@ -92,30 +93,30 @@ describe('workspace review application', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, LOCAL_USER_ID, workspaceId);
     applyScopedMigrations(workspaceDb);
     try {
-      recordWorkspaceSyncReview(workspaceDb, {
-        item: {
-          artifactId: `ar_filesystem_lineage_${suffix}`,
-          changeSet,
-          patchPayload: null,
-          review: {
-            actionCenterRowId: `workspace-review:${reviewId}`,
-            changeSetId,
-            createdAt: timestamp,
-            diffSummary: { additions: 0, deletions: 0, filesChanged: 1 },
-            id: reviewId,
-            riskSummary: '1 changed path staged for human review.',
-            staging: {
-              branch: null,
-              ref: `filesystem-staging://${reviewId}`,
-              strategy: 'filesystem_staging',
-            },
-            status: 'pending',
-            updatedAt: timestamp,
-            validation: [],
-            workspaceId,
+      const item: Parameters<typeof recordWorkspaceSyncReview>[1]['item'] = {
+        artifactId: `ar_filesystem_lineage_${suffix}`,
+        changeSet,
+        patchPayload: null,
+        review: {
+          actionCenterRowId: `workspace-review:${reviewId}`,
+          changeSetId,
+          createdAt: timestamp,
+          diffSummary: { additions: 0, deletions: 0, filesChanged: 1 },
+          id: reviewId,
+          riskSummary: '1 changed path staged for human review.',
+          staging: {
+            branch: null,
+            ref: `filesystem-staging://${reviewId}`,
+            strategy: 'filesystem_staging',
           },
+          status: 'pending',
+          updatedAt: timestamp,
+          validation: [],
+          workspaceId,
         },
-      });
+      };
+      recordTestWorkspaceReviewMaterialization(workspaceDb, item);
+      recordWorkspaceSyncReview(workspaceDb, { item });
       recordFilesystemWorkspaceStagingRoot(workspaceDb, {
         before: {
           ...before,
@@ -200,30 +201,30 @@ describe('workspace review application', () => {
     applyScopedMigrations(workspaceDb);
 
     try {
-      recordWorkspaceSyncReview(workspaceDb, {
-        item: {
-          artifactId: 'ar_filesystem_cleanup',
-          changeSet,
-          patchPayload: null,
-          review: {
-            actionCenterRowId: `workspace-review:${reviewId}`,
-            changeSetId: changeSet.id,
-            createdAt: timestamp,
-            diffSummary: { additions: 1, deletions: 0, filesChanged: 1 },
-            id: reviewId,
-            riskSummary: '1 changed path staged for human review.',
-            staging: {
-              branch: null,
-              ref: `filesystem-staging://${reviewId}`,
-              strategy: 'filesystem_staging',
-            },
-            status: 'pending',
-            updatedAt: timestamp,
-            validation: [],
-            workspaceId,
+      const item: Parameters<typeof recordWorkspaceSyncReview>[1]['item'] = {
+        artifactId: 'ar_filesystem_cleanup',
+        changeSet,
+        patchPayload: null,
+        review: {
+          actionCenterRowId: `workspace-review:${reviewId}`,
+          changeSetId: changeSet.id,
+          createdAt: timestamp,
+          diffSummary: { additions: 1, deletions: 0, filesChanged: 1 },
+          id: reviewId,
+          riskSummary: '1 changed path staged for human review.',
+          staging: {
+            branch: null,
+            ref: `filesystem-staging://${reviewId}`,
+            strategy: 'filesystem_staging',
           },
+          status: 'pending',
+          updatedAt: timestamp,
+          validation: [],
+          workspaceId,
         },
-      });
+      };
+      recordTestWorkspaceReviewMaterialization(workspaceDb, item);
+      recordWorkspaceSyncReview(workspaceDb, { item });
       const staging = recordFilesystemWorkspaceStagingRoot(workspaceDb, {
         before,
         changeSetId: changeSet.id,
@@ -306,6 +307,7 @@ describe('workspace review application', () => {
     applyScopedMigrations(workspaceDb);
 
     try {
+      recordTestWorkspaceReviewMaterialization(workspaceDb, item);
       recordWorkspaceSyncReview(workspaceDb, { item });
 
       await expect(
@@ -337,6 +339,7 @@ describe('workspace review application', () => {
     applyScopedMigrations(workspaceDb);
 
     try {
+      recordTestWorkspaceReviewMaterialization(workspaceDb, item);
       recordWorkspaceSyncReview(workspaceDb, { item });
 
       await expect(
@@ -419,6 +422,7 @@ describe('workspace review application', () => {
     applyScopedMigrations(workspaceDb);
 
     try {
+      recordTestWorkspaceReviewMaterialization(workspaceDb, item);
       upsertWorkspaceRepositoryResource(workspaceDb, {
         displayName: 'Fallback ownership repository',
         git: {
@@ -506,6 +510,7 @@ describe('workspace review application', () => {
     applyScopedMigrations(workspaceDb);
 
     try {
+      recordTestWorkspaceReviewMaterialization(workspaceDb, item);
       upsertWorkspaceRepositoryResource(workspaceDb, {
         displayName: 'Branchless fallback repository',
         git: {
@@ -621,6 +626,7 @@ describe('workspace review application', () => {
           head: { ...unstagedItem.changeSet.head, commit: stagedCommit },
         },
       };
+      recordTestWorkspaceReviewMaterialization(workspaceDb, item);
       expect(getWorkspaceSyncReview(workspaceDb, workspaceId, review.id)).toBeNull();
       workspaceDb.sqlite.exec(`
         CREATE TRIGGER fail_workspace_review_decision

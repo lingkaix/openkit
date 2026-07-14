@@ -40,6 +40,8 @@ describe('OpenShellWorkerGovernanceBackend', () => {
         'worker-control',
         'provider-attachments',
         'nanocore-inference-upstream',
+        'trusted-worker-inference-relay',
+        'worker.runtime-provenance.v1',
         'audit-export',
       ]),
     });
@@ -49,29 +51,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     );
     expect((await backend.describeCapabilities()).capabilities).not.toContain(
       'sidecar-capability-endpoint'
-    );
-    expect((await backend.describeCapabilities()).capabilities).not.toContain(
-      'trusted-worker-inference-relay'
-    );
-    expect((await backend.describeCapabilities()).capabilities).not.toContain(
-      'worker.runtime-provenance.v1'
-    );
-  });
-
-  it('declares trusted worker inference only after executable relay verification', async () => {
-    const backend = new OpenShellWorkerGovernanceBackend({
-      cli: new FakeOpenShellClient(),
-      gatewayName: 'openshell',
-      retainSandboxes: true,
-      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
-      trustedWorkerInferenceRelayEnabled: true,
-    });
-
-    expect((await backend.describeCapabilities()).capabilities).toContain(
-      'trusted-worker-inference-relay'
-    );
-    expect((await backend.describeCapabilities()).capabilities).toContain(
-      'worker.runtime-provenance.v1'
     );
   });
 
@@ -211,7 +190,7 @@ describe('OpenShellWorkerGovernanceBackend', () => {
         from: 'ghcr.io/openkit/codex-worker:test',
         gateway: 'openshell',
         labels: expect.objectContaining({
-          'openkit.openshellMappingVersion': 'openshell-v4',
+          'openkit.openshellMappingVersion': 'openshell-v5',
           'openkit.openshellSnapshotId': 'openshell-0.0.80-2026-07-11',
         }),
         name: `openkit-${environmentPackage.scope.agentSessionId}`,
@@ -521,7 +500,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       gatewayName: 'openshell',
       retainSandboxes: true,
       sandboxSource: 'ghcr.io/openkit/codex-worker:test',
-      trustedWorkerInferenceRelayEnabled: true,
       workerControlGateway,
     });
     const firstPackage = createTrustedRelayOpenShellPackage('as_relay_backend_1');
@@ -530,6 +508,10 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     await backend.materialize(firstPackage);
     await backend.materialize(secondPackage);
 
+    expect(cli.providersV2EnabledCalls).toEqual([
+      { gateway: 'openshell' },
+      { gateway: 'openshell' },
+    ]);
     expect(cli.ensureProviderProfileCalls).toHaveLength(2);
     const relayProfileIds = cli.ensureProviderProfileCalls.map((call) => call.id);
     const relayProfileId = relayProfileIds[0] ?? '';
@@ -652,7 +634,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       gatewayName: 'openshell',
       retainSandboxes: true,
       sandboxSource: 'ghcr.io/openkit/codex-worker:test',
-      trustedWorkerInferenceRelayEnabled: true,
       workerControlGateway,
     });
     const environmentPackage = createTrustedRelayOpenShellPackage('as_relay_profile_failure_1');
@@ -674,7 +655,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       gatewayName: 'openshell',
       retainSandboxes: true,
       sandboxSource: 'ghcr.io/openkit/codex-worker:test',
-      trustedWorkerInferenceRelayEnabled: true,
       workerControlGateway: new WorkerControlGateway({
         createToken: () => 'relay_direct_credential_token',
       }),
@@ -734,7 +714,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       gatewayName: 'openshell',
       retainSandboxes: true,
       sandboxSource: 'ghcr.io/openkit/codex-worker:test',
-      trustedWorkerInferenceRelayEnabled: true,
       workerControlGateway,
     });
     const environmentPackage = createTrustedRelayOpenShellPackage('as_relay_create_failure_1');
@@ -766,7 +745,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       gatewayName: 'openshell',
       retainSandboxes: true,
       sandboxSource: 'ghcr.io/openkit/codex-worker:test',
-      trustedWorkerInferenceRelayEnabled: true,
       workerControlGateway,
     });
     const environmentPackage = createTrustedRelayOpenShellPackage('as_relay_failed_cleanup_1');
@@ -793,7 +771,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       gatewayName: 'openshell',
       retainSandboxes: false,
       sandboxSource: 'ghcr.io/openkit/codex-worker:test',
-      trustedWorkerInferenceRelayEnabled: true,
       workerControlGateway: new WorkerControlGateway({
         createToken: () => 'relay_failed_sandbox_cleanup_token',
       }),
@@ -828,7 +805,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       gatewayName: 'openshell',
       retainSandboxes: false,
       sandboxSource: 'ghcr.io/openkit/codex-worker:test',
-      trustedWorkerInferenceRelayEnabled: true,
       workerControlGateway,
     });
     const environmentPackage = createTrustedRelayOpenShellPackage('as_relay_teardown_failure_1');
@@ -855,7 +831,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       gatewayName: 'openshell',
       retainSandboxes: true,
       sandboxSource: 'ghcr.io/openkit/codex-worker:test',
-      trustedWorkerInferenceRelayEnabled: true,
       workerControlGateway: new WorkerControlGateway({
         createToken: () => 'relay_missing_sandbox_token',
       }),
@@ -877,7 +852,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       gatewayName: 'openshell',
       retainSandboxes: true,
       sandboxSource: 'ghcr.io/openkit/codex-worker:test',
-      trustedWorkerInferenceRelayEnabled: true,
       workerControlGateway: new WorkerControlGateway({
         createToken: () => 'relay_duplicate_token',
       }),
@@ -903,7 +877,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       gatewayName: 'openshell',
       retainSandboxes: true,
       sandboxSource: 'ghcr.io/openkit/codex-worker:test',
-      trustedWorkerInferenceRelayEnabled: true,
       workerControlGateway: new WorkerControlGateway({
         createToken: () => 'relay_concurrent_token',
       }),
@@ -923,25 +896,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     expect(cli.createSandboxCalls).toHaveLength(1);
   });
 
-  it('rejects relay packages until executable verification enables the capability', async () => {
-    const cli = new FakeOpenShellClient();
-    const backend = new OpenShellWorkerGovernanceBackend({
-      cli,
-      gatewayName: 'openshell',
-      retainSandboxes: true,
-      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
-      workerControlGateway: new WorkerControlGateway({
-        createToken: () => 'relay_unverified_token',
-      }),
-    });
-
-    await expect(
-      backend.materialize(createTrustedRelayOpenShellPackage('as_relay_unverified_1'))
-    ).rejects.toThrow('does not support required capability');
-    expect(cli.upsertProviderCalls).toEqual([]);
-    expect(cli.createSandboxCalls).toEqual([]);
-  });
-
   it('rejects an incompatible gateway before verified relay materialization', async () => {
     const cli = new FakeOpenShellClient({ gatewayVersion: '0.0.63' });
     const backend = new OpenShellWorkerGovernanceBackend({
@@ -949,7 +903,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       gatewayName: 'openshell',
       retainSandboxes: true,
       sandboxSource: 'ghcr.io/openkit/codex-worker:test',
-      trustedWorkerInferenceRelayEnabled: true,
       workerControlGateway: new WorkerControlGateway({
         createToken: () => 'relay_gateway_version_token',
       }),
@@ -962,6 +915,49 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     expect(cli.createSandboxCalls).toEqual([]);
   });
 
+  it.each([
+    {
+      caseName: 'disabled',
+      providersV2Enabled: false,
+      providersV2EnabledFailure: undefined,
+    },
+    {
+      caseName: 'unset',
+      providersV2Enabled: null,
+      providersV2EnabledFailure: undefined,
+    },
+    {
+      caseName: 'malformed',
+      providersV2Enabled: true,
+      providersV2EnabledFailure: new Error('OpenShell global settings are malformed.'),
+    },
+  ])('rejects a verified relay when providers v2 is $caseName before runtime side effects', async ({
+    providersV2Enabled,
+    providersV2EnabledFailure,
+  }) => {
+    const cli = new FakeOpenShellClient({
+      providersV2Enabled,
+      ...(providersV2EnabledFailure ? { providersV2EnabledFailure } : {}),
+    });
+    const backend = new OpenShellWorkerGovernanceBackend({
+      cli,
+      gatewayName: 'openshell',
+      retainSandboxes: true,
+      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'relay_provider_v2_preflight_token',
+      }),
+    });
+
+    await expect(
+      backend.materialize(createTrustedRelayOpenShellPackage('as_relay_provider_v2_preflight_1'))
+    ).rejects.toThrow(/global settings|providers[_ ]v2/i);
+    expect(cli.providersV2EnabledCalls).toEqual([{ gateway: 'openshell' }]);
+    expect(cli.ensureProviderProfileCalls).toEqual([]);
+    expect(cli.upsertProviderCalls).toEqual([]);
+    expect(cli.createSandboxCalls).toEqual([]);
+  });
+
   it('rejects a verified relay when the target gateway version is unavailable', async () => {
     const cli = new FakeOpenShellClient({ gatewayVersion: null });
     const backend = new OpenShellWorkerGovernanceBackend({
@@ -969,7 +965,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       gatewayName: 'openshell',
       retainSandboxes: true,
       sandboxSource: 'ghcr.io/openkit/codex-worker:test',
-      trustedWorkerInferenceRelayEnabled: true,
       workerControlGateway: new WorkerControlGateway({
         createToken: () => 'relay_missing_gateway_version_token',
       }),
@@ -989,7 +984,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       gatewayName: 'openshell',
       retainSandboxes: true,
       sandboxSource: 'ghcr.io/openkit/codex-worker:test',
-      trustedWorkerInferenceRelayEnabled: true,
     });
 
     await expect(
@@ -1008,7 +1002,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       gatewayName: 'openshell',
       retainSandboxes: true,
       sandboxSource: 'ghcr.io/openkit/codex-worker:test',
-      trustedWorkerInferenceRelayEnabled: true,
       workerControlGateway: new WorkerControlGateway({
         createToken: () => 'unused_relay_token',
       }),
@@ -1038,7 +1031,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       gatewayName: 'openshell',
       retainSandboxes: true,
       sandboxSource: 'ghcr.io/openkit/codex-worker:test',
-      trustedWorkerInferenceRelayEnabled: true,
       workerControlGateway: new WorkerControlGateway({
         createToken: () => 'relay_network_bypass_token',
       }),
@@ -1421,6 +1413,13 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     expect(serialized).not.toContain('token=raw');
     expect(serialized).not.toContain('/private');
     expect(cli.gatewayInfoCalls).toEqual([
+      {
+        gateway: 'a1-openshell',
+        gatewayEndpoint: 'https://user:secret@a1.example.com:17670/private?token=raw#frag',
+        gatewayInsecure: true,
+      },
+    ]);
+    expect(cli.statusCalls).toEqual([
       {
         gateway: 'a1-openshell',
         gatewayEndpoint: 'https://user:secret@a1.example.com:17670/private?token=raw#frag',
@@ -1884,7 +1883,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       gatewayName: 'openshell',
       retainSandboxes: true,
       sandboxSource: 'ghcr.io/openkit/codex-worker:test',
-      trustedWorkerInferenceRelayEnabled: true,
       workerControlGateway: new WorkerControlGateway({
         createToken: () => 'token_openshell_control_1',
       }),
@@ -1952,7 +1950,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       gatewayName: 'openshell',
       retainSandboxes: true,
       sandboxSource: 'ghcr.io/openkit/codex-worker:test',
-      trustedWorkerInferenceRelayEnabled: true,
       workerControlGateway: new WorkerControlGateway({
         createToken: () => 'token_openshell_control_1',
       }),
@@ -1979,7 +1976,17 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       ...createOpenShellPackage(),
       snapshotId: 'pkg_workspace_patch',
     });
-    const patchText = 'diff --git a/docs/report.md b/docs/report.md\n';
+    const patchText = [
+      'diff --git a/docs/report.md b/docs/report.md',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ b/docs/report.md',
+      '@@ -0,0 +1,3 @@',
+      '+- Root finding',
+      '+- First child finding',
+      '+- Second child finding',
+      '',
+    ].join('\n');
     const cli = new FakeOpenShellClient({
       downloads: {
         '/sandbox/openkit/session/workspace-changes.json': JSON.stringify({
@@ -1993,7 +2000,11 @@ describe('OpenShellWorkerGovernanceBackend', () => {
           id: 'wcs_patch',
           inputSnapshotId: 'wis_patch',
           materializationRecordId: 'wmr_patch',
-          patch: { bytes: 41, digest: 'sha256:patch', ref: 'worker-session://workspace.patch' },
+          patch: {
+            bytes: Buffer.byteLength(patchText, 'utf8'),
+            digest: 'sha256:patch',
+            ref: 'worker-session://workspace.patch',
+          },
           redaction: { notes: [], status: 'redacted' },
           resourceId: 'repo',
           strategy: 'git',
@@ -2018,11 +2029,14 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       expect.objectContaining({
         changeSet: expect.objectContaining({ id: 'wcs_patch' }),
         patchPayload: {
-          bytes: 41,
+          bytes: Buffer.byteLength(patchText, 'utf8'),
           digest: 'sha256:patch',
           mediaType: 'text/x-diff',
           text: patchText,
         },
+        review: expect.objectContaining({
+          diffSummary: { additions: 3, deletions: 0, filesChanged: 1 },
+        }),
       }),
     ]);
     expect(cli.downloadFileCalls.map((call) => call.sandboxPath)).toEqual(
@@ -2215,6 +2229,12 @@ describe('OpenShellWorkerGovernanceBackend', () => {
 
 class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
   public readonly operations: string[] = [];
+  /** Gateway targets inspected for the global providers v2 preflight. */
+  public readonly providersV2EnabledCalls: Array<{
+    gateway?: string;
+    gatewayEndpoint?: string;
+    gatewayInsecure?: boolean;
+  }> = [];
   public readonly createSandboxCalls: Parameters<
     OpenShellWorkerGovernanceClient['createSandbox']
   >[0][] = [];
@@ -2234,6 +2254,11 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
     OpenShellWorkerGovernanceClient['downloadFile']
   >[0][] = [];
   public readonly gatewayInfoCalls: Array<{ gateway?: string }> = [];
+  public readonly statusCalls: Array<{
+    gateway?: string;
+    gatewayEndpoint?: string;
+    gatewayInsecure?: boolean;
+  }> = [];
   public readonly getProviderCalls: Array<{ gateway?: string; name: string }> = [];
   public readonly getProviderRefreshStatusCalls: Array<{ gateway?: string; name: string }> = [];
   public readonly upsertProviderCalls: Parameters<
@@ -2252,6 +2277,8 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
   private readonly gatewayVersion: string | null;
   private readonly detachFailures: Error[];
   private readonly providerOutputs: Record<string, string>;
+  private readonly providersV2EnabledFailure: Error | null;
+  private readonly providersV2EnabledValue: boolean | null;
   private readonly refreshStatusOutputs: Record<string, string>;
   private readonly openShellVersion: string;
 
@@ -2267,6 +2294,10 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
       ensureProviderProfileFailure?: Error;
       gatewayVersion?: string | null;
       providerOutputs?: Record<string, string>;
+      /** Error raised while reading the global providers v2 setting. */
+      providersV2EnabledFailure?: Error;
+      /** Parsed global providers v2 setting, where null means unset. */
+      providersV2Enabled?: boolean | null;
       refreshStatusOutputs?: Record<string, string>;
       version?: string;
     } = {}
@@ -2287,6 +2318,9 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
         ? null
         : (options.gatewayVersion ?? options.version ?? '0.0.80');
     this.providerOutputs = options.providerOutputs ?? {};
+    this.providersV2EnabledFailure = options.providersV2EnabledFailure ?? null;
+    this.providersV2EnabledValue =
+      options.providersV2Enabled === undefined ? true : options.providersV2Enabled;
     this.refreshStatusOutputs = options.refreshStatusOutputs ?? {};
     this.openShellVersion = options.version ?? '0.0.80';
   }
@@ -2295,7 +2329,10 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
     return this.openShellVersion;
   }
 
-  public async status(): Promise<Awaited<ReturnType<OpenShellWorkerGovernanceClient['status']>>> {
+  public async status(
+    input: { gateway?: string; gatewayEndpoint?: string; gatewayInsecure?: boolean } = {}
+  ): Promise<Awaited<ReturnType<OpenShellWorkerGovernanceClient['status']>>> {
+    this.statusCalls.push(input);
     return {
       gateway: 'openshell',
       server: this.endpoint,
@@ -2313,6 +2350,22 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
       endpoint: this.endpoint,
       gateway: 'openshell',
     };
+  }
+
+  /**
+   * Reads the configured global providers v2 state for backend preflight tests.
+   *
+   * @param input Gateway target selected by the backend.
+   * @returns True, false, or null when the setting is unset.
+   */
+  public async providersV2Enabled(
+    input: { gateway?: string; gatewayEndpoint?: string; gatewayInsecure?: boolean } = {}
+  ): Promise<boolean | null> {
+    this.providersV2EnabledCalls.push(input);
+    if (this.providersV2EnabledFailure) {
+      throw this.providersV2EnabledFailure;
+    }
+    return this.providersV2EnabledValue;
   }
 
   public async doctorCheck(): Promise<
@@ -2477,7 +2530,7 @@ function createOpenShellPackage(
 }
 
 /**
- * Enables the deliberately unadvertised runtime-provenance collection branch after materialization.
+ * Enables runtime-provenance collection after materialization.
  *
  * @param environmentPackage Materialized trusted-relay package retained by the backend fixture.
  */

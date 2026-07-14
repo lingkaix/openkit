@@ -5,6 +5,7 @@ import type {
 } from '@openkit/worker-protocol';
 import {
   listRestorableSchedulerSessionLeases,
+  requireSchedulerSessionLease,
   requireSchedulerSessionLeaseAdmissionContext,
   type SchedulerSessionLeaseRecord,
 } from '../scheduler-records.js';
@@ -43,7 +44,12 @@ export function rebuildWorkerControlGatewaySessions(
   coreDb: CoreDb,
   gateway: WorkerControlGateway
 ): void {
-  for (const lease of listRestorableSchedulerSessionLeases(coreDb)) {
+  const leases = [
+    ...listRestorableSchedulerSessionLeases(coreDb),
+    ...listFinalStatusReplayLeases(coreDb),
+  ];
+
+  for (const lease of leases) {
     if (!lease.sandboxBindingRef) {
       continue;
     }
@@ -82,6 +88,45 @@ export function rebuildWorkerControlGatewaySessions(
       token: lease.sandboxBindingRef,
     });
   }
+}
+
+/**
+ * Lists releasing leases that retain one durable final status within release grace.
+ *
+ * @param coreDb Server-scope Core database.
+ * @returns Leases restorable only for exact final-status replay.
+ */
+function listFinalStatusReplayLeases(coreDb: CoreDb): SchedulerSessionLeaseRecord[] {
+  const table = coreDb.sqlite
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get('scheduler_session_leases');
+
+  if (!table) {
+    return [];
+  }
+
+  const rows = coreDb.sqlite
+    .prepare(
+      `SELECT lease_id AS leaseId
+         FROM scheduler_session_leases AS lease
+        WHERE lease.status = 'releasing'
+          AND lease.sandbox_binding_ref IS NOT NULL
+          AND lease.expires_at > ?
+          AND EXISTS (
+            SELECT 1
+              FROM worker_control_records AS record
+             WHERE record.workspace_id = lease.workspace_id
+               AND record.thread_id = lease.thread_id
+               AND record.turn_id = lease.turn_id
+               AND record.agent_session_id = lease.agent_session_id
+               AND record.package_snapshot_id = lease.package_snapshot_id
+               AND record.operation = 'final_status'
+          )
+        ORDER BY lease.acquired_at ASC, lease.lease_id ASC`
+    )
+    .all(new Date().toISOString()) as Array<{ leaseId: string }>;
+
+  return rows.map((row) => requireSchedulerSessionLease(coreDb, row.leaseId));
 }
 
 /**

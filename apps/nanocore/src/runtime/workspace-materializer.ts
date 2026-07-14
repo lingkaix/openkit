@@ -10,6 +10,7 @@ import {
   type WorkspaceMaterializationRecord,
   WorkspaceMaterializationRecordSchema,
   type WorkspaceSynchronizationBackendKind,
+  type WorkspaceSyncReviewPatchPayload,
 } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 
@@ -66,6 +67,8 @@ export interface ParseWorkspaceChangeSetManifestOptions {
 export interface StageWorkspaceChangeSetOptions {
   /** ISO timestamp used for created and updated fields. */
   createdAt: string;
+  /** Trusted unified patch payload used to derive exact review line counts. */
+  patchPayload: WorkspaceSyncReviewPatchPayload | null;
   /** Stable staged workspace review id. */
   reviewId: string;
   /** Product-safe reference to the staged diff. */
@@ -151,6 +154,7 @@ export function buildWorkspaceMaterializationRecords(
       materializedRootRef:
         targetsByInputId.get(snapshot.resourceId) ??
         `workspace://${snapshot.workspaceId}/${snapshot.resourceId}`,
+      packageSnapshotId: input.materialization.packageSnapshotId,
       policyDigest,
       readinessEvidence: materializationReadinessEvidence(input.materialization),
       strategy: snapshot.strategy,
@@ -212,11 +216,7 @@ export function stageWorkspaceChangeSet(
       ref: options.stagingRef,
       strategy: changeSet.strategy === 'git' ? 'git_worktree' : 'filesystem_staging',
     },
-    diffSummary: {
-      additions: 0,
-      deletions: 0,
-      filesChanged: changeSet.changedPaths.length,
-    },
+    diffSummary: workspaceDiffSummary(changeSet, options.patchPayload),
     riskSummary: reviewRiskSummary(changeSet),
     validation: [
       ...changeSet.evidenceRefs.map((evidence) => ({
@@ -230,6 +230,40 @@ export function stageWorkspaceChangeSet(
     createdAt: options.createdAt,
     updatedAt: options.createdAt,
   });
+}
+
+/**
+ * Derives product review line counts from a trusted unified patch payload.
+ *
+ * @param changeSet Parsed workspace change set that owns the changed-path count.
+ * @param patchPayload Downloaded unified patch payload, or null for non-patch reviews.
+ * @returns Exact text additions and deletions plus the manifest-owned file count.
+ */
+function workspaceDiffSummary(
+  changeSet: WorkspaceChangeSet,
+  patchPayload: WorkspaceSyncReviewPatchPayload | null
+): StagedWorkspaceReview['diffSummary'] {
+  let additions = 0;
+  let deletions = 0;
+  let insideHunk = false;
+
+  for (const line of patchPayload?.text.split('\n') ?? []) {
+    if (line.startsWith('diff --git ')) {
+      insideHunk = false;
+    } else if (line.startsWith('@@ ')) {
+      insideHunk = true;
+    } else if (insideHunk && line.startsWith('+')) {
+      additions += 1;
+    } else if (insideHunk && line.startsWith('-')) {
+      deletions += 1;
+    }
+  }
+
+  return {
+    additions,
+    deletions,
+    filesChanged: changeSet.changedPaths.length,
+  };
 }
 
 /**

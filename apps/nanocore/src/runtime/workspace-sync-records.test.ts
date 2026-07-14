@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
 import {
   getWorkspaceSyncReview,
@@ -28,12 +29,42 @@ const workspacePatchText = 'diff --git a/docs/loop.md b/docs/loop.md\n';
 const workspacePatchDigest = `sha256:${createHash('sha256').update(workspacePatchText).digest('hex')}`;
 
 describe('workspace sync records', () => {
+  it('rejects reviews without persisted input snapshot lineage', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-missing-input-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      expect(() => recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() })).toThrow(
+        'Workspace synchronization input lineage is missing: wis_1'
+      );
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('rejects reviews without persisted materialization lineage', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-missing-lineage-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      recordWorkspaceInputSnapshots(workspaceDb, [workspaceInputSnapshot()]);
+      expect(() => recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() })).toThrow(
+        'Workspace synchronization materialization lineage is missing: wmr_1'
+      );
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
   it('records one linked audit event when a staged review is first stored', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-review-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
+      recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReviewItem());
 
       recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
       recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
@@ -172,6 +203,7 @@ describe('workspace sync records', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
+      recordWorkspaceInputSnapshots(workspaceDb, [workspaceInputSnapshot()]);
       recordWorkspaceMaterializationRecords(workspaceDb, [workspaceMaterializationRecord()]);
 
       const item = recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
@@ -188,6 +220,7 @@ describe('workspace sync records', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
+      recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReviewItem());
       const item = workspaceReviewItem();
       recordWorkspaceSyncReview(workspaceDb, { item });
       const stored = workspaceDb.sqlite
@@ -212,6 +245,7 @@ describe('workspace sync records', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
+      recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReviewItem());
       const original = recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
       const stored = workspaceDb.sqlite
         .prepare('SELECT * FROM staged_workspace_reviews WHERE review_id = ?')
@@ -277,6 +311,7 @@ describe('workspace sync records', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
+      recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReviewItem());
       const original = recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
       const originalChangeSets = listWorkspaceChangeSets(workspaceDb, 'ws_demo');
       const originalManifests = listWorkerOutputManifests(workspaceDb, 'ws_demo');
@@ -314,6 +349,7 @@ describe('workspace sync records', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
+      recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReviewItem());
       recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
 
       expect(() => recordWorkspaceSyncReview(workspaceDb, { item: replay() })).toThrow(/conflict/i);
@@ -328,6 +364,7 @@ describe('workspace sync records', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
+      recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReviewItem());
       recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
       updateWorkspaceSyncReviewDecision(workspaceDb, {
         requestId: '00000000-0000-4000-8000-000000000001',
@@ -438,6 +475,7 @@ describe('workspace sync records', () => {
           createdAt: timestamp,
           id: 'bwh_wmr_1',
           materializationRecordId: 'wmr_1',
+          packageSnapshotId: 'aepsnap_1',
           retention: 'until-reconciliation',
           transportRefs: [{ kind: 'materialized-root', ref: 'workspace://ws_demo/repo_default' }],
           updatedAt: timestamp,
@@ -461,7 +499,7 @@ describe('workspace sync records', () => {
       updateBackendWorkspaceHandleCleanupStatus(
         workspaceDb,
         'ws_demo',
-        'session_1',
+        'aepsnap_1',
         'retained',
         '2026-07-05T00:01:00.000Z'
       );
@@ -475,14 +513,14 @@ describe('workspace sync records', () => {
       updateBackendWorkspaceHandleCleanupStatus(
         workspaceDb,
         'ws_demo',
-        'session_1',
+        'aepsnap_1',
         'cleaned',
         '2026-07-05T00:02:00.000Z'
       );
       updateBackendWorkspaceHandleCleanupStatus(
         workspaceDb,
         'ws_demo',
-        'session_1',
+        'aepsnap_1',
         'retained',
         '2026-07-05T00:03:00.000Z'
       );
@@ -504,6 +542,7 @@ describe('workspace sync records', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
+      recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReviewItem());
       recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
       recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
 
@@ -521,7 +560,7 @@ describe('workspace sync records', () => {
           materializationRecordId: 'wmr_1',
           strategy: 'git',
           testOutputRefs: [],
-          workerSessionId: 'wmr_1',
+          workerSessionId: 'sandbox_test_wmr_1',
           workspaceId: 'ws_demo',
         },
       ]);
@@ -536,6 +575,7 @@ describe('workspace sync records', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
+      recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReviewItem());
       recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
       const snapshots = listWorkspaceInputSnapshots(workspaceDb, 'ws_demo');
       const materializations = listWorkspaceMaterializationRecords(workspaceDb, 'ws_demo');
@@ -557,6 +597,7 @@ describe('workspace sync records', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
+      recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReviewItem());
       recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
       const stored = listExportableWorkspaceSyncRecords(workspaceDb, 'ws_demo');
 
@@ -734,6 +775,33 @@ function workspaceReviewItem(): Parameters<typeof recordWorkspaceSyncReview>[1][
 }
 
 /**
+ * Builds the trusted input snapshot required by review fixtures.
+ *
+ * @returns Workspace input snapshot test fixture.
+ */
+function workspaceInputSnapshot(): Parameters<typeof recordWorkspaceInputSnapshots>[1][number] {
+  return {
+    backend: {
+      capabilitySummary: [],
+      kind: 'openshell',
+      label: 'test backend',
+    },
+    base: { commit: 'abc123', contentDigest: null },
+    createdAt: timestamp,
+    generatedFiles: [],
+    id: 'wis_1',
+    ignoredPaths: [],
+    pathScope: ['repo_default'],
+    resourceId: 'repo_default',
+    resourceKind: 'git_repository',
+    sourceId: 'repo_default',
+    strategy: 'git',
+    workspaceId: 'ws_demo',
+    writableRoots: ['repo_default'],
+  };
+}
+
+/**
  * Builds a materialization record carrying catalog source lineage.
  *
  * @returns Workspace materialization record test fixture.
@@ -748,6 +816,7 @@ function workspaceMaterializationRecord(): Parameters<
     id: 'wmr_1',
     inputSnapshotId: 'wis_1',
     materializedRootRef: 'workspace://ws_demo/repo_default',
+    packageSnapshotId: 'aepsnap_1',
     policyDigest: 'sha256:policy',
     readinessEvidence: [{ kind: 'backend.ready', ref: 'version:0.0.63' }],
     sourceId: 'repo_default',
@@ -774,6 +843,7 @@ function workspaceSyncImportFixture(): Parameters<typeof importWorkspaceSyncReco
         createdAt: timestamp,
         id: 'bwh_wmr_1',
         materializationRecordId: materializationRecord.id,
+        packageSnapshotId: materializationRecord.packageSnapshotId,
         retention: 'until-reconciliation',
         transportRefs: [
           { kind: 'materialized-root', ref: materializationRecord.materializedRootRef },

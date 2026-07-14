@@ -9,7 +9,7 @@ It is intentionally separate from NanoCore implementation code. NanoCore may val
 - `snapshots/2026-07-11/metadata.json` records the pinned OpenShell release provenance, mapping version, exact required gateway version, source paths, and artifact checksums.
 - `snapshots/2026-07-11/provider-profile-surface.json` separates the upstream provider surface from OpenKit's exact OpenShell 0.0.80 inference-relay profile shape and pins snake-case fields, array declarations, placeholder resolution, and the two exact worker-inference POST rules.
 - `snapshots/2026-07-11/policy-surface.json` separates the upstream protocol, enforcement, and access surface from OpenKit's narrower emitted sandbox policy mapping and pins exact REST `method` and `path` allow rules.
-- `snapshots/2026-07-11/cli-surface.json` records the OpenShell CLI subcommands invoked by NanoCore, including immutable provider-profile export/import and transient provider deletion.
+- `snapshots/2026-07-11/cli-surface.json` records the OpenShell CLI subcommands invoked by NanoCore, including immutable provider-profile export/import, transient provider deletion, and global settings inspection.
 - `src/index.ts` exports small conformance helpers for generated OpenShell artifacts.
 
 ## Refresh Procedure

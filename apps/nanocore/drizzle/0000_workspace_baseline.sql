@@ -171,6 +171,7 @@ CREATE TABLE `workspace_materialization_records` (
 	`materialization_record_id` text NOT NULL,
 	`workspace_id` text NOT NULL,
 	`input_snapshot_id` text NOT NULL,
+	`package_snapshot_id` text NOT NULL,
 	`worker_session_id` text NOT NULL,
 	`strategy` text NOT NULL,
 	`payload_json` text NOT NULL,
@@ -180,6 +181,8 @@ CREATE TABLE `workspace_materialization_records` (
 );
 --> statement-breakpoint
 CREATE INDEX `workspace_materialization_records_input_idx` ON `workspace_materialization_records` (`workspace_id`,`input_snapshot_id`,`created_at`,`materialization_record_id`);
+--> statement-breakpoint
+CREATE INDEX `workspace_materialization_records_package_idx` ON `workspace_materialization_records` (`workspace_id`,`package_snapshot_id`,`created_at`,`materialization_record_id`);
 --> statement-breakpoint
 CREATE TABLE `workspace_change_sets` (
 	`change_set_id` text NOT NULL,
@@ -516,6 +519,7 @@ CREATE TABLE `backend_workspace_handles` (
 	`workspace_id` text NOT NULL,
 	`materialization_record_id` text NOT NULL,
 	`backend_kind` text NOT NULL,
+	`package_snapshot_id` text NOT NULL,
 	`worker_session_id` text NOT NULL,
 	`payload_json` text NOT NULL,
 	`created_at` text NOT NULL,
@@ -524,6 +528,8 @@ CREATE TABLE `backend_workspace_handles` (
 );
 --> statement-breakpoint
 CREATE INDEX `backend_workspace_handles_materialization_idx` ON `backend_workspace_handles` (`workspace_id`,`materialization_record_id`,`created_at`,`backend_workspace_handle_id`);
+--> statement-breakpoint
+CREATE INDEX `backend_workspace_handles_package_idx` ON `backend_workspace_handles` (`workspace_id`,`package_snapshot_id`,`created_at`,`backend_workspace_handle_id`);
 --> statement-breakpoint
 CREATE TABLE `worker_output_manifests` (
 	`worker_output_manifest_id` text NOT NULL,

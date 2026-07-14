@@ -39,6 +39,7 @@ import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../s
 import { LOCAL_USER_ID, workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
@@ -396,7 +397,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const completedAt = new Date(
       new Date(turn.startedAt ?? Date.now()).getTime() + 1000
     ).toISOString();
-    const backend = new FakeWorkerGovernanceBackend();
+    const backend = new FakeWorkerGovernanceBackend({ sandboxName: 'sandbox_governance_1' });
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
       coreDb,
@@ -486,13 +487,33 @@ describe('WorkerGovernanceTurnExecutor', () => {
         id: expect.stringMatching(/^wmr_/),
         inputSnapshotId: expect.stringMatching(/^wis_/),
         materializedRootRef: '/workspace/openkit/worktrees/main',
-        workerSessionId: expect.any(String),
+        workerSessionId: 'sandbox_governance_1',
       }),
     ]);
     expect(listBackendWorkspaceHandles(workspaceDb, 'ws_demo')).toEqual([
       expect.objectContaining({
         cleanupStatus: 'cleaned',
-        workerSessionId: `aepsnap_${turn.id}_as_governance_1`,
+        packageSnapshotId: `aepsnap_${turn.id}_as_governance_1`,
+        workerSessionId: 'sandbox_governance_1',
+      }),
+    ]);
+    expect(
+      listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo').filter(
+        (record) => record.phase === 'teardown'
+      )
+    ).toEqual([
+      expect.objectContaining({
+        agentSessionId: 'as_governance_1',
+        backendType: 'openshell',
+        backendVersion: '0.0.63',
+        outcome: 'succeeded',
+        phase: 'teardown',
+        placement: 'local',
+        stopReason: 'completed',
+        summary: 'Worker backend teardown succeeded.',
+        threadId: 'th_demo',
+        turnId: turn.id,
+        workerImage: 'openkit/worker-codex:dev',
       }),
     ]);
     expect(listWorkspaceChangeSets(workspaceDb, 'ws_demo')).toEqual([]);
@@ -818,7 +839,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       );
       const runtimeEvidence = ListWorkspaceRuntimeEvidenceResponseSchema.parse(
         await runtimeEvidenceResponse.json()
-      ).runtimeEvidence;
+      ).runtimeEvidence.filter((record) => record.phase === 'transcript-collection');
       expect(runtimeEvidence).toEqual([
         expect.objectContaining({
           outcome: 'succeeded',
@@ -920,7 +941,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
           sourceKind: 'worker-runtime-provenance-raw',
         }),
       ]);
-      const runtimeEvidence = listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo');
+      const runtimeEvidence = listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo').filter(
+        (record) => record.phase === 'transcript-collection'
+      );
       expect(runtimeEvidence).toEqual([
         expect.objectContaining({
           outcome: 'failed',
@@ -994,6 +1017,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'list',
       '--porcelain',
     ]);
+
+    recordTestWorkspaceReviewMaterialization(fixture.workspaceDb, {
+      artifactId: fixture.artifactId,
+      ...fixture.record,
+    });
 
     await ingestWorkspaceChangeFixture(fixture, fixture.record);
 
@@ -1195,6 +1223,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       }
       return created;
     };
+
+    recordTestWorkspaceReviewMaterialization(fixture.workspaceDb, {
+      artifactId: fixture.artifactId,
+      ...fixture.record,
+    });
 
     await expect(ingestWorkspaceChangeFixture(fixture, fixture.record)).rejects.toThrow(
       'artifact persistence failed after write'
@@ -1505,6 +1538,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const createArtifact = vi.spyOn(fixture.store, 'createArtifact');
 
     try {
+      recordTestWorkspaceReviewMaterialization(fixture.workspaceDb, {
+        artifactId: fixture.artifactId,
+        ...fixture.record,
+      });
       await ingestWorkspaceChangeFixture(fixture, fixture.record);
 
       expect(createArtifact.mock.calls.length).toBe(0);
@@ -1591,8 +1628,20 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     const store = createDemoStore();
     const turn = store.createTurn('ws_demo', 'th_demo', 'Run in OpenShell');
-    const backend = new FakeWorkerGovernanceBackend();
+    const backend = new FakeWorkerGovernanceBackend({ sandboxName: 'sandbox_teardown_fail_1' });
     backend.failTeardown = true;
+    let teardownAttempt = 0;
+    let currentTime = '2026-06-16T00:00:00.000Z';
+    const teardown = backend.teardown.bind(backend);
+    const teardownSpy = vi.spyOn(backend, 'teardown').mockImplementation(async () => {
+      try {
+        return await teardown();
+      } catch (error) {
+        teardownAttempt += 1;
+        currentTime = `2026-06-16T00:00:0${teardownAttempt}.000Z`;
+        throw error;
+      }
+    });
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
       coreDb,
@@ -1602,29 +1651,47 @@ describe('WorkerGovernanceTurnExecutor', () => {
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
+      now: () => currentTime,
     });
 
-    await expect(
-      executor.startTurn(store, turn.id, 'Run in OpenShell', {
-        requestId: '00000000-0000-4000-8000-000000000205',
-        workspaceRoots: [
-          {
-            access: 'read-write',
-            id: 'repo',
-            sourceKind: 'host-dir',
-            sourcePath: '/Users/m5pro/Documents/AI/openkit',
-            workerPath: '/workspace/openkit',
-          },
-        ],
-      })
-    ).rejects.toThrow('teardown failed');
+    try {
+      await expect(
+        executor.startTurn(store, turn.id, 'Run in OpenShell', {
+          requestId: '00000000-0000-4000-8000-000000000205',
+          workspaceRoots: [
+            {
+              access: 'read-write',
+              id: 'repo',
+              sourceKind: 'host-dir',
+              sourcePath: '/Users/m5pro/Documents/AI/openkit',
+              workerPath: '/workspace/openkit',
+            },
+          ],
+        })
+      ).rejects.toThrow('teardown failed');
+    } finally {
+      teardownSpy.mockRestore();
+    }
 
     const workspaceDb = openTestWorkspaceDb(coreDb);
 
     expect(listBackendWorkspaceHandles(workspaceDb, 'ws_demo')).toEqual([
       expect.objectContaining({
         cleanupStatus: 'failed',
-        workerSessionId: `aepsnap_${turn.id}_as_teardown_fail_1`,
+        workerSessionId: 'sandbox_teardown_fail_1',
+      }),
+    ]);
+    expect(
+      listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo').filter(
+        (record) => record.phase === 'teardown'
+      )
+    ).toEqual([
+      expect.objectContaining({
+        agentSessionId: 'as_teardown_fail_1',
+        completedAt: '2026-06-16T00:00:02.000Z',
+        outcome: 'failed',
+        stopReason: 'error',
+        summary: 'Worker backend teardown failed.',
       }),
     ]);
 
@@ -1638,7 +1705,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     const store = createDemoStore();
     const turn = store.createTurn('ws_demo', 'th_demo', 'Retry OpenShell teardown');
-    const backend = new FakeWorkerGovernanceBackend();
+    const backend = new FakeWorkerGovernanceBackend({ sandboxName: 'sandbox_teardown_retry_1' });
     backend.teardownFailuresRemaining = 1;
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
@@ -1672,7 +1739,19 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(listBackendWorkspaceHandles(workspaceDb, 'ws_demo')).toEqual([
       expect.objectContaining({
         cleanupStatus: 'cleaned',
-        workerSessionId: `aepsnap_${turn.id}_as_teardown_retry_1`,
+        workerSessionId: 'sandbox_teardown_retry_1',
+      }),
+    ]);
+    expect(
+      listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo').filter(
+        (record) => record.phase === 'teardown'
+      )
+    ).toEqual([
+      expect.objectContaining({
+        agentSessionId: 'as_teardown_retry_1',
+        outcome: 'succeeded',
+        stopReason: 'completed',
+        summary: 'Worker backend teardown succeeded.',
       }),
     ]);
     workspaceDb.sqlite.close();
@@ -2852,15 +2931,20 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
   private readonly materializationStatus:
     | WorkerGovernanceMaterializationRecord['backendStatus']
     | undefined;
+  /** Optional sandbox id distinct from package lineage. */
+  private readonly sandboxName: string | undefined;
 
   public constructor(
     options: {
       capabilities?: string[];
       materializationStatus?: WorkerGovernanceMaterializationRecord['backendStatus'];
+      /** Product-safe sandbox name returned by materialization. */
+      sandboxName?: string;
     } = {}
   ) {
     this.capabilities = options.capabilities ?? ['container', 'transcript-sink', 'worker-control'];
     this.materializationStatus = options.materializationStatus;
+    this.sandboxName = options.sandboxName;
   }
 
   public async describeCapabilities(): Promise<WorkerGovernanceBackendCapabilities> {
@@ -2895,6 +2979,15 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
       packageSnapshotId: environmentPackage.snapshotId,
       requiredCapabilities: environmentPackage.backend.requiredCapabilities,
       ...(this.materializationStatus ? { backendStatus: this.materializationStatus } : {}),
+      ...(this.sandboxName
+        ? {
+            sandbox: {
+              name: this.sandboxName,
+              source: 'openkit/worker-codex:dev',
+              state: 'created' as const,
+            },
+          }
+        : {}),
       workspaceInputs: environmentPackage.workspace.inputs.map((input) => ({
         access: input.access,
         id: input.id,

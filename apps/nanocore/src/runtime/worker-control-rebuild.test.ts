@@ -137,6 +137,17 @@ function createRestorableWorkerControlFixture(
 }
 
 describe('worker control gateway restart hydration', () => {
+  it('skips restart hydration before the scheduler schema exists', () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-empty-rebuild-')));
+    const gateway = new WorkerControlGateway();
+
+    try {
+      expect(() => rebuildWorkerControlGatewaySessions(coreDb, gateway)).not.toThrow();
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('restores the owning AEP for token-only package authentication', () => {
     const fixture = createRestorableWorkerControlFixture();
     const gateway = new WorkerControlGateway({

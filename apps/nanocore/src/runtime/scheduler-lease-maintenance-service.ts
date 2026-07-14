@@ -1,6 +1,10 @@
+import {
+  listSchedulerLeasesNeedingWorkspaceRecovery,
+  requireSchedulerSessionLeaseAdmissionContext,
+  type SchedulerSessionLeaseRecord,
+} from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 import { openWorkspaceDb } from '../storage/db.js';
-import { LOCAL_USER_ID } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
   type RunSchedulerLeaseRenewalLoopInput,
@@ -11,7 +15,10 @@ import {
   runSchedulerLeaseWatchLoop,
   type SchedulerLeaseWatchLoopResult,
 } from './scheduler-lease-watch-loop.js';
-import { recordWorkspaceReconciliationRecord } from './workspace-reconciliation-records.js';
+import {
+  listWorkspaceReconciliationRecords,
+  recordWorkspaceReconciliationRecord,
+} from './workspace-reconciliation-records.js';
 import { listBackendWorkspaceHandles } from './workspace-sync-records.js';
 
 /** Result of one lease-maintenance iteration. */
@@ -62,34 +69,53 @@ export function runSchedulerLeaseMaintenanceOnce(
   const leaseWatch = runSchedulerLeaseWatchLoop(coreDb, {
     ...(input.now ? { now: input.now } : {}),
   });
-  recordWorkspaceRecoveryTriggersForStaleLeases(coreDb, leaseWatch.stale, input.now);
+  recordWorkspaceRecoveryTriggersForLeases(
+    coreDb,
+    listSchedulerLeasesNeedingWorkspaceRecovery(coreDb),
+    input.now
+  );
   const renewal = runSchedulerLeaseRenewalLoop(coreDb, input);
 
   return { leaseWatch, renewal };
 }
 
 /**
- * Records workspace synchronization recovery triggers for newly stale leases.
+ * Records workspace synchronization recovery triggers for leases needing backend recovery.
  *
  * @param coreDb Open Core database handle.
- * @param leases Leases marked stale by this maintenance iteration.
+ * @param leases Leases requiring backend recovery after scheduler transition.
  * @param now Optional deterministic clock.
  */
-function recordWorkspaceRecoveryTriggersForStaleLeases(
+export function recordWorkspaceRecoveryTriggersForLeases(
   coreDb: CoreDb,
-  leases: SchedulerLeaseWatchLoopResult['stale'],
+  leases: readonly SchedulerSessionLeaseRecord[],
   now?: () => string
 ): void {
   const timestamp = now?.() ?? new Date().toISOString();
 
   for (const lease of leases) {
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, lease.workspaceId);
+    const { userId } = requireSchedulerSessionLeaseAdmissionContext(coreDb, lease.leaseId);
+    const stateBefore = lease.status === 'lost' ? 'lease-releasing' : 'lease-stale';
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, userId, lease.workspaceId);
     try {
       applyScopedMigrations(workspaceDb);
       for (const handle of listBackendWorkspaceHandles(workspaceDb, lease.workspaceId)) {
+        const retainedReleaseTimeout =
+          handle.cleanupStatus === 'retained' &&
+          stateBefore === 'lease-releasing' &&
+          lease.releaseReason === 'release-grace-timeout';
         if (
-          handle.workerSessionId !== lease.packageSnapshotId ||
-          handle.cleanupStatus !== 'pending'
+          handle.packageSnapshotId !== lease.packageSnapshotId ||
+          (handle.cleanupStatus !== 'pending' && !retainedReleaseTimeout)
+        ) {
+          continue;
+        }
+
+        const reconciliationRecordId = `wrr_${lease.leaseId}_${handle.id}`;
+        if (
+          listWorkspaceReconciliationRecords(workspaceDb, lease.workspaceId).some(
+            (record) => record.id === reconciliationRecordId
+          )
         ) {
           continue;
         }
@@ -110,13 +136,13 @@ function recordWorkspaceRecoveryTriggersForStaleLeases(
           collectedOutputManifestIds: [],
           evidenceBundleIds: [`evb_workspace_materialization_${handle.materializationRecordId}`],
           finishedAt: null,
-          id: `wrr_${lease.leaseId}_${handle.id}`,
+          id: reconciliationRecordId,
           quarantineRefs: [],
           requiredHumanDecision: 'inspect_recovery',
           retentionDecision: 'retain-backend',
           startedAt: timestamp,
           stateAfter: 'requires-human',
-          stateBefore: 'lease-stale',
+          stateBefore,
           triggerReason: 'backend_takeover',
           workspaceId: lease.workspaceId,
         });

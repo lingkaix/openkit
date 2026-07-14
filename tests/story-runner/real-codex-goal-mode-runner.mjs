@@ -49,7 +49,7 @@ export const DEFAULT_REAL_CODEX_GOAL_MODE_STORY_PATH = resolve(
 );
 
 /** Model used by the real Goal kernel acceptance run. */
-export const REAL_CODEX_GOAL_MODEL = 'openai-codex/gpt-5.6-sol';
+export const REAL_CODEX_GOAL_MODEL = 'openai-codex/gpt-5.5';
 
 /** Repository-relative proof file owned by the bounded real Goal story. */
 export const REAL_CODEX_GOAL_PROOF_PATH = 'docs/l6-real-goal-proof.md';

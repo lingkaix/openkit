@@ -5,6 +5,7 @@ This directory owns explicit reusable NanoCore test fixtures and no production b
 ## Boundaries
 
 - `demo-store.ts` creates an isolated `FsStore` and explicitly seeds the Demo Workspace fixture.
+- `workspace-sync.ts` records deterministic trusted input and materialization lineage for review fixtures.
 - Fixtures must use production public paths where practical, stay deterministic, and avoid silently changing production defaults.
 - Add shared helpers only when multiple tests repeat the same fixture knowledge.
 

@@ -44,6 +44,8 @@ export const workspaceMaterializationRecords = sqliteTable(
     workspaceId: text('workspace_id').notNull(),
     /** Input snapshot used to create the materialization. */
     inputSnapshotId: text('input_snapshot_id').notNull(),
+    /** AEP package snapshot that owns the materialization. */
+    packageSnapshotId: text('package_snapshot_id').notNull(),
     /** Worker session associated with the materialization. */
     workerSessionId: text('worker_session_id').notNull(),
     /** Synchronization strategy selected by NanoCore. */
@@ -60,6 +62,12 @@ export const workspaceMaterializationRecords = sqliteTable(
     index('workspace_materialization_records_input_idx').on(
       table.workspaceId,
       table.inputSnapshotId,
+      table.createdAt,
+      table.materializationRecordId
+    ),
+    index('workspace_materialization_records_package_idx').on(
+      table.workspaceId,
+      table.packageSnapshotId,
       table.createdAt,
       table.materializationRecordId
     ),
@@ -80,6 +88,8 @@ export const backendWorkspaceHandles = sqliteTable(
     materializationRecordId: text('materialization_record_id').notNull(),
     /** Worker backend kind. */
     backendKind: text('backend_kind').notNull(),
+    /** AEP package snapshot that owns the backend handle. */
+    packageSnapshotId: text('package_snapshot_id').notNull(),
     /** Worker session associated with the backend handle. */
     workerSessionId: text('worker_session_id').notNull(),
     /** Schema-validated redacted payload JSON. */
@@ -94,6 +104,12 @@ export const backendWorkspaceHandles = sqliteTable(
     index('backend_workspace_handles_materialization_idx').on(
       table.workspaceId,
       table.materializationRecordId,
+      table.createdAt,
+      table.backendWorkspaceHandleId
+    ),
+    index('backend_workspace_handles_package_idx').on(
+      table.workspaceId,
+      table.packageSnapshotId,
       table.createdAt,
       table.backendWorkspaceHandleId
     ),

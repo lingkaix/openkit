@@ -133,3 +133,10 @@ RUN chmod +x /usr/local/bin/openkit-codex-shim /usr/local/bin/openkit-worker-cod
 
 ENTRYPOINT ["tini", "-g", "--"]
 CMD ["openkit-codex-shim", "--package", "/openkit/config/package.json"]
+
+FROM runtime AS relay-probe
+
+RUN rm -f /usr/local/bin/codex \
+  && cp /usr/local/bin/node /usr/local/bin/codex
+
+FROM runtime AS production

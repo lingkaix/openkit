@@ -157,6 +157,27 @@ export interface WorkerControlSupplyRefreshAck {
   acknowledgedAt: string;
 }
 
+/** Durable final status accepted from one worker turn. */
+export interface WorkerControlFinalStatus {
+  /** Worker sequence number shared with the canonical terminal event. */
+  readonly sequence: number;
+  /** Worker-reported terminal status. */
+  readonly status:
+    | 'blocked'
+    | 'cancelled'
+    | 'completed'
+    | 'degraded'
+    | 'failed'
+    | 'interrupted'
+    | 'lost';
+  /** Required terminal stop reason. */
+  readonly stopReason: string;
+  /** Product-safe evidence manifest digests available at finalization time. */
+  readonly evidenceManifestDigests: Readonly<Record<string, string>>;
+  /** ISO timestamp when NanoCore accepted the status. */
+  readonly acceptedAt: string;
+}
+
 /**
  * Product-safe knowledge proposal summary reported by a worker runtime adapter.
  */
@@ -253,8 +274,14 @@ export interface WorkerControlGatewayOptions {
   sequenceRecorder?: WorkerControlSequenceRecorder;
   /** Optional transaction boundary for atomic heartbeat persistence. */
   runHeartbeatTransaction?: <T>(operation: () => T) => T;
-  /** Optional hook called after a terminal canonical event is accepted. */
-  onTerminalEventAccepted?: WorkerControlTerminalEventAcceptedHook;
+  /** Optional transaction boundary for atomic final-status acceptance. */
+  runFinalStatusTransaction?: <T>(operation: () => T) => T;
+  /** Optional binding resolver that narrowly admits exact final-status replay. */
+  resolveFinalStatusTokenBinding?: WorkerControlFinalStatusTokenBindingResolver;
+  /** Optional Core-state hook called inside final-status acceptance. */
+  onFinalStatusAccepted?: WorkerControlFinalStatusAcceptedHook;
+  /** Optional post-commit hook for idempotent workspace finalization. */
+  onFinalStatusCommitted?: WorkerControlFinalStatusAcceptedHook;
   /** Optional hook called after a new heartbeat is accepted. */
   onHeartbeatAccepted?: WorkerControlHeartbeatAcceptedHook;
 }
@@ -312,6 +339,26 @@ export type WorkerControlTokenBindingResolution =
 export type WorkerControlTokenBindingResolver = (
   input: WorkerControlTokenBindingInput
 ) => WorkerControlTokenBindingResolution;
+
+/** Binding resolution used only by the final-status operation. */
+export type WorkerControlFinalStatusTokenBindingResolution =
+  | {
+      /** Binding is valid for this final-status request. */
+      readonly status: 'accepted';
+      /** True when only an exact already-accepted final status may replay. */
+      readonly replayOnly: boolean;
+    }
+  | {
+      /** Binding cannot authorize this final-status request. */
+      readonly status: 'rejected';
+      /** Stable rejection reason. */
+      readonly reason: 'binding-not-found' | 'lineage-mismatch' | 'lease-not-live';
+    };
+
+/** Resolves live acceptance or narrow releasing replay for final status. */
+export type WorkerControlFinalStatusTokenBindingResolver = (
+  input: WorkerControlTokenBindingInput
+) => WorkerControlFinalStatusTokenBindingResolution;
 
 /** Input used to record one durable worker-control sequence fingerprint. */
 export interface WorkerControlSequenceRecorderInput {
@@ -419,23 +466,23 @@ export interface WorkerControlCommandDeliveryRecorder {
   markAcknowledged(input: WorkerControlCommandDeliveryStatusInput): void;
 }
 
-/** Input passed to the terminal event accepted hook. */
-export interface WorkerControlTerminalEventAcceptedInput {
+/** Input passed to final-status lifecycle hooks. */
+export interface WorkerControlFinalStatusAcceptedInput {
   /** Non-secret sandbox binding reference presented as the worker bearer token. */
   readonly sandboxBindingRef: string;
   /** Worker-provided lineage for request binding. */
   readonly lineage: WorkerControlLineage;
-  /** Accepted canonical terminal event type. */
+  /** Canonical terminal event type. */
   readonly eventType: 'turn.completed' | 'turn.failed';
 }
 
 /**
- * Observes accepted terminal worker events.
+ * Observes one accepted or exactly replayed final status.
  *
- * @param input Accepted terminal event metadata.
+ * @param input Final-status metadata.
  */
-export type WorkerControlTerminalEventAcceptedHook = (
-  input: WorkerControlTerminalEventAcceptedInput
+export type WorkerControlFinalStatusAcceptedHook = (
+  input: WorkerControlFinalStatusAcceptedInput
 ) => void;
 
 /**
@@ -504,9 +551,12 @@ export class WorkerControlGateway {
   private readonly now: () => string;
   private readonly acceptedRecordRecorder: WorkerControlAcceptedRecordRecorder | null;
   private readonly commandDeliveryRecorder: WorkerControlCommandDeliveryRecorder | null;
+  private readonly onFinalStatusAccepted: WorkerControlFinalStatusAcceptedHook | null;
+  private readonly onFinalStatusCommitted: WorkerControlFinalStatusAcceptedHook | null;
   private readonly onHeartbeatAccepted: WorkerControlHeartbeatAcceptedHook | null;
-  private readonly onTerminalEventAccepted: WorkerControlTerminalEventAcceptedHook | null;
+  private readonly resolveFinalStatusTokenBinding: WorkerControlFinalStatusTokenBindingResolver | null;
   private readonly resolveTokenBinding: WorkerControlTokenBindingResolver | null;
+  private readonly runFinalStatusTransaction: (<T>(operation: () => T) => T) | null;
   private readonly runHeartbeatTransaction: (<T>(operation: () => T) => T) | null;
   private readonly sequenceRecorder: WorkerControlSequenceRecorder | null;
   private readonly sessionsByToken = new Map<string, WorkerControlSessionState>();
@@ -522,9 +572,12 @@ export class WorkerControlGateway {
     this.now = options.now ?? (() => new Date().toISOString());
     this.acceptedRecordRecorder = options.acceptedRecordRecorder ?? null;
     this.commandDeliveryRecorder = options.commandDeliveryRecorder ?? null;
+    this.onFinalStatusAccepted = options.onFinalStatusAccepted ?? null;
+    this.onFinalStatusCommitted = options.onFinalStatusCommitted ?? null;
     this.onHeartbeatAccepted = options.onHeartbeatAccepted ?? null;
-    this.onTerminalEventAccepted = options.onTerminalEventAccepted ?? null;
+    this.resolveFinalStatusTokenBinding = options.resolveFinalStatusTokenBinding ?? null;
     this.resolveTokenBinding = options.resolveTokenBinding ?? null;
+    this.runFinalStatusTransaction = options.runFinalStatusTransaction ?? null;
     this.runHeartbeatTransaction = options.runHeartbeatTransaction ?? null;
     this.sequenceRecorder = options.sequenceRecorder ?? null;
   }
@@ -1274,67 +1327,145 @@ export class WorkerControlGateway {
       );
     }
 
-    const fingerprint = stableJson(record);
-    const existingFingerprint = state.eventFingerprintsBySequence.get(record.sequence);
-
-    if (existingFingerprint) {
-      if (existingFingerprint !== fingerprint) {
-        throw new WorkerControlGatewayError(
-          'worker_control_sequence_conflict',
-          `Worker event sequence already accepted with different content: ${record.sequence}`,
-          409
-        );
-      }
-
-      return WorkerControlResponseEnvelopeSchema.parse({
-        accepted: true,
-        diagnostics: [],
-        nextExpectedSequence: nextExpectedEventSequence(state),
-        schemaVersion: 1,
-      });
-    }
-
-    if (state.highestEventSequence !== null && record.sequence < state.highestEventSequence) {
+    if (record.event.type === 'turn.completed' || record.event.type === 'turn.failed') {
       throw new WorkerControlGatewayError(
-        'worker_control_sequence_stale',
-        `Worker event sequence is older than the latest accepted event: ${record.sequence}`,
-        409
+        'worker_control_terminal_event_requires_final_status',
+        'Terminal worker events must use the atomic final-status operation.',
+        400
       );
     }
 
-    const durableSequence = this.sequenceRecorder?.accept({
-      fingerprint,
-      lineage: record.lineage,
-      operation: 'event_append',
-      sequence: record.sequence,
-    });
+    this.acceptCanonicalEvent(state, input.lineage, record);
 
-    if (durableSequence && durableSequence.status !== 'accepted') {
-      throw new WorkerControlGatewayError(durableSequence.code, durableSequence.message, 409);
+    return WorkerControlResponseEnvelopeSchema.parse({
+      accepted: true,
+      diagnostics: [],
+      nextExpectedSequence: nextExpectedEventSequence(state),
+      schemaVersion: 1,
+    });
+  }
+
+  /**
+   * Atomically accepts one terminal status and its canonical event.
+   *
+   * @param input Authenticated final-status request.
+   * @returns Worker-control response envelope with the next expected event sequence.
+   */
+  public recordFinalStatus(
+    input: AuthenticatedWorkerControlInput & {
+      /** Worker sequence shared by both durable operation streams. */
+      readonly sequence: number;
+      /** Worker terminal status. */
+      readonly status: WorkerControlFinalStatus['status'];
+      /** Required terminal stop reason. */
+      readonly stopReason: string;
+      /** Product-safe evidence manifest digests. */
+      readonly evidenceManifestDigests?: Readonly<Record<string, string>>;
+      /** Worker-control schema version. */
+      readonly schemaVersion: number;
+    }
+  ): WorkerControlResponseEnvelope {
+    const stopReason = input.stopReason.trim();
+
+    if (stopReason.length === 0) {
+      throw new WorkerControlGatewayError(
+        'worker_control_invalid_final_status',
+        'Worker final status requires a non-empty stop reason.',
+        400
+      );
     }
 
-    state.eventFingerprintsBySequence.set(record.sequence, fingerprint);
-    state.highestEventSequence =
-      state.highestEventSequence === null
-        ? record.sequence
-        : Math.max(state.highestEventSequence, record.sequence);
-    state.snapshot.events.push(cloneCanonicalEventRecord(record));
-    this.recordAcceptedRecord({
-      acceptedAt: this.now(),
+    const { replayOnly, state } = this.requireFinalStatusSession(input);
+    const evidenceManifestDigests = { ...(input.evidenceManifestDigests ?? {}) };
+    const eventType = input.status === 'completed' ? 'turn.completed' : 'turn.failed';
+    const eventRecord = WorkerCanonicalEventRecordSchema.parse({
+      event: {
+        data: { evidenceManifestDigests, stopReason },
+        type: eventType,
+      },
+      kind: 'event',
       lineage: input.lineage,
-      operation: 'event_append',
-      record,
-      recordKey: String(record.sequence),
-      sequence: record.sequence,
+      schemaVersion: input.schemaVersion,
+      sequence: input.sequence,
     });
+    const fingerprintPayload = {
+      evidenceManifestDigests,
+      lineage: input.lineage,
+      sequence: input.sequence,
+      status: input.status,
+      stopReason,
+    };
+    const acceptedAt = this.now();
+    const finalStatus: WorkerControlFinalStatus = {
+      acceptedAt,
+      evidenceManifestDigests,
+      sequence: input.sequence,
+      status: input.status,
+      stopReason,
+    };
+    const hadEventFingerprint = state.eventFingerprintsBySequence.has(input.sequence);
+    const hadFinalStatusFingerprint =
+      state.operationFingerprintsBySequence.get('final_status')?.has(input.sequence) ?? false;
+    const accept = (): void => {
+      const finalStatusSequence = acceptSequencedControlOperation(
+        state,
+        'final_status',
+        input.sequence,
+        fingerprintPayload,
+        input.lineage,
+        this.sequenceRecorder
+      );
+      const eventAcceptance = this.acceptCanonicalEvent(state, input.lineage, eventRecord);
 
-    if (record.event.type === 'turn.completed' || record.event.type === 'turn.failed') {
-      this.onTerminalEventAccepted?.({
-        eventType: record.event.type,
-        lineage: input.lineage,
-        sandboxBindingRef: state.token,
-      });
+      if (replayOnly && (!finalStatusSequence.duplicate || !eventAcceptance.duplicate)) {
+        throw new WorkerControlGatewayError(
+          'worker_control_lease_not_live',
+          'A releasing lease accepts only an exact final-status replay.',
+          403
+        );
+      }
+
+      if (!finalStatusSequence.duplicate) {
+        this.recordAcceptedRecord({
+          acceptedAt,
+          lineage: input.lineage,
+          operation: 'final_status',
+          record: finalStatus,
+          recordKey: String(input.sequence),
+          sequence: input.sequence,
+        });
+      }
+
+      if (!replayOnly) {
+        this.onFinalStatusAccepted?.({
+          eventType,
+          lineage: input.lineage,
+          sandboxBindingRef: state.token,
+        });
+      }
+    };
+
+    try {
+      if (this.runFinalStatusTransaction) {
+        this.runFinalStatusTransaction(accept);
+      } else {
+        accept();
+      }
+    } catch (error) {
+      if (!hadFinalStatusFingerprint) {
+        rollbackSequencedControlOperation(state, 'final_status', input.sequence);
+      }
+      if (!hadEventFingerprint) {
+        rollbackCanonicalEvent(state, input.sequence);
+      }
+      throw error;
     }
+
+    this.onFinalStatusCommitted?.({
+      eventType,
+      lineage: input.lineage,
+      sandboxBindingRef: state.token,
+    });
 
     return WorkerControlResponseEnvelopeSchema.parse({
       accepted: true,
@@ -1376,6 +1507,108 @@ export class WorkerControlGateway {
     }
 
     return null;
+  }
+
+  /**
+   * Accepts one canonical event without applying terminal lifecycle effects.
+   *
+   * @param state Mutable worker-control session state.
+   * @param lineage Authenticated request lineage.
+   * @param record Validated canonical event record.
+   * @returns Whether the exact event was already accepted.
+   */
+  private acceptCanonicalEvent(
+    state: WorkerControlSessionState,
+    lineage: WorkerControlLineage,
+    record: WorkerCanonicalEventRecord
+  ): { readonly duplicate: boolean } {
+    const fingerprint = stableJson(record);
+    const existingFingerprint = state.eventFingerprintsBySequence.get(record.sequence);
+
+    if (existingFingerprint) {
+      if (existingFingerprint !== fingerprint) {
+        throw new WorkerControlGatewayError(
+          'worker_control_sequence_conflict',
+          `Worker event sequence already accepted with different content: ${record.sequence}`,
+          409
+        );
+      }
+
+      return { duplicate: true };
+    }
+
+    if (state.highestEventSequence !== null && record.sequence < state.highestEventSequence) {
+      throw new WorkerControlGatewayError(
+        'worker_control_sequence_stale',
+        `Worker event sequence is older than the latest accepted event: ${record.sequence}`,
+        409
+      );
+    }
+
+    const durableSequence = this.sequenceRecorder?.accept({
+      fingerprint,
+      lineage: record.lineage,
+      operation: 'event_append',
+      sequence: record.sequence,
+    });
+
+    if (durableSequence && durableSequence.status !== 'accepted') {
+      throw new WorkerControlGatewayError(durableSequence.code, durableSequence.message, 409);
+    }
+
+    state.eventFingerprintsBySequence.set(record.sequence, fingerprint);
+    state.highestEventSequence =
+      state.highestEventSequence === null
+        ? record.sequence
+        : Math.max(state.highestEventSequence, record.sequence);
+    state.snapshot.events.push(cloneCanonicalEventRecord(record));
+    this.recordAcceptedRecord({
+      acceptedAt: this.now(),
+      lineage,
+      operation: 'event_append',
+      record,
+      recordKey: String(record.sequence),
+      sequence: record.sequence,
+    });
+
+    return { duplicate: durableSequence?.duplicate ?? false };
+  }
+
+  /**
+   * Resolves one final-status session with narrow releasing replay authority.
+   *
+   * @param input Authenticated final-status request.
+   * @returns Mutable session state and whether only an exact replay is allowed.
+   */
+  private requireFinalStatusSession(input: AuthenticatedWorkerControlInput): {
+    readonly replayOnly: boolean;
+    readonly state: WorkerControlSessionState;
+  } {
+    const { state, token } = this.requireTokenSession(input.authorization);
+
+    if (!sameSessionLineage(input.lineage, state.lineage)) {
+      throw new WorkerControlGatewayError(
+        'worker_control_lineage_mismatch',
+        'Worker control request lineage does not match the registered package snapshot.',
+        403
+      );
+    }
+
+    if (!this.resolveFinalStatusTokenBinding) {
+      this.assertTokenBinding(token, input.lineage);
+      return { replayOnly: false, state };
+    }
+
+    const resolution = this.resolveFinalStatusTokenBinding({
+      lineage: input.lineage,
+      sandboxBindingRef: token,
+    });
+
+    if (resolution.status === 'rejected') {
+      this.throwTokenBindingRejection(resolution.reason);
+    }
+
+    return { replayOnly: resolution.replayOnly, state };
   }
 
   /**
@@ -1479,12 +1712,23 @@ export class WorkerControlGateway {
     }
 
     const resolution = this.resolveTokenBinding({ lineage, sandboxBindingRef });
-
     if (resolution.status === 'accepted') {
       return;
     }
 
-    if (resolution.reason === 'binding-not-found') {
+    this.throwTokenBindingRejection(resolution.reason);
+  }
+
+  /**
+   * Projects one durable binding rejection into the stable gateway error surface.
+   *
+   * @param reason Durable binding rejection reason.
+   * @throws WorkerControlGatewayError Always.
+   */
+  private throwTokenBindingRejection(
+    reason: 'binding-not-found' | 'lineage-mismatch' | 'lease-not-live'
+  ): never {
+    if (reason === 'binding-not-found') {
       throw new WorkerControlGatewayError(
         'worker_control_unauthorized',
         'Worker control request is missing a valid sandbox token.',
@@ -1492,7 +1736,7 @@ export class WorkerControlGateway {
       );
     }
 
-    if (resolution.reason === 'lineage-mismatch') {
+    if (reason === 'lineage-mismatch') {
       throw new WorkerControlGatewayError(
         'worker_control_lineage_mismatch',
         'Worker control request lineage does not match the durable lease binding.',
@@ -1698,6 +1942,26 @@ function rollbackSequencedControlOperation(
   }
 
   state.highestOperationSequenceByOperation.set(operation, Math.max(...fingerprints.keys()));
+}
+
+/**
+ * Rolls back one process-local canonical event publication after transaction failure.
+ *
+ * @param state Mutable worker-control session state.
+ * @param sequence Canonical event sequence to remove.
+ */
+function rollbackCanonicalEvent(state: WorkerControlSessionState, sequence: number): void {
+  state.eventFingerprintsBySequence.delete(sequence);
+  const eventIndex = state.snapshot.events.findIndex((event) => event.sequence === sequence);
+
+  if (eventIndex !== -1) {
+    state.snapshot.events.splice(eventIndex, 1);
+  }
+
+  state.highestEventSequence =
+    state.eventFingerprintsBySequence.size === 0
+      ? null
+      : Math.max(...state.eventFingerprintsBySequence.keys());
 }
 
 /**

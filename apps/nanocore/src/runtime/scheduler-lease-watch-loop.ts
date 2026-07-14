@@ -1,4 +1,5 @@
 import {
+  expireReleasingSchedulerLeases,
   markExpiredSchedulerLeasesStale,
   markStartupTimedOutSchedulerLeasesFailed,
   type SchedulerSessionLeaseRecord,
@@ -13,6 +14,8 @@ export interface RunSchedulerLeaseWatchLoopInput {
 
 /** Result of one scheduler lease-watch loop iteration. */
 export interface SchedulerLeaseWatchLoopResult {
+  /** Releasing leases lost after evidence grace elapsed. */
+  readonly releaseTimedOut: SchedulerSessionLeaseRecord[];
   /** Leases failed because startup never reached the first heartbeat. */
   readonly startupTimedOut: SchedulerSessionLeaseRecord[];
   /** Live leases marked stale because lease or heartbeat deadlines elapsed. */
@@ -32,6 +35,7 @@ export function runSchedulerLeaseWatchLoop(
 ): SchedulerLeaseWatchLoopResult {
   const startupTimedOut = markStartupTimedOutSchedulerLeasesFailed(coreDb, input);
   const stale = markExpiredSchedulerLeasesStale(coreDb, input);
+  const releaseTimedOut = expireReleasingSchedulerLeases(coreDb, input);
 
-  return { startupTimedOut, stale };
+  return { releaseTimedOut, startupTimedOut, stale };
 }

@@ -2170,6 +2170,7 @@ describe('app api schemas', () => {
       inputSnapshotId: inputSnapshot.id,
       workspaceId: 'ws_demo',
       backendKind: 'openshell',
+      packageSnapshotId: 'aepsnap_1',
       workerSessionId: 'session_1',
       strategy: 'git',
       materializedRootRef: 'worker-root://repo',
@@ -2183,6 +2184,7 @@ describe('app api schemas', () => {
       workspaceId: 'ws_demo',
       materializationRecordId: materialization.id,
       backendKind: 'openshell',
+      packageSnapshotId: 'aepsnap_1',
       workerSessionId: 'session_1',
       transportRefs: [{ kind: 'worker-root', ref: 'worker-root://repo' }],
       cleanupStatus: 'pending',
@@ -2259,6 +2261,15 @@ describe('app api schemas', () => {
     });
 
     expect(changeSet.sourceId).toBe('repo_default');
+    const {
+      packageSnapshotId: materializationPackageSnapshotId,
+      ...materializationWithoutPackageSnapshotId
+    } = materialization;
+    expect(materializationPackageSnapshotId).toBe('aepsnap_1');
+    expect(
+      WorkspaceMaterializationRecordSchema.safeParse(materializationWithoutPackageSnapshotId)
+        .success
+    ).toBe(false);
     expect(changeSet.changedPaths[2]?.binaryReview).toMatchObject({
       mediaType: 'image/png',
       mode: 'artifact-only',
@@ -2267,6 +2278,11 @@ describe('app api schemas', () => {
     expect(backendHandle.transportRefs).toEqual([
       { kind: 'worker-root', ref: 'worker-root://repo' },
     ]);
+    const { packageSnapshotId, ...backendHandleWithoutPackageSnapshotId } = backendHandle;
+    expect(packageSnapshotId).toBe('aepsnap_1');
+    expect(
+      BackendWorkspaceHandleSchema.safeParse(backendHandleWithoutPackageSnapshotId).success
+    ).toBe(false);
     expect(outputManifest.changedPaths.map((path) => path.path)).toEqual([
       'docs/spec.md',
       'docs/new.md',
@@ -2436,6 +2452,7 @@ describe('app api schemas', () => {
             inputSnapshotId: 'wis_1',
             workspaceId: 'ws_demo',
             backendKind: 'openshell',
+            packageSnapshotId: 'aepsnap_1',
             workerSessionId: 'session_1',
             strategy: 'git',
             materializedRootRef: 'workspace://ws_demo/repo_default',
@@ -2456,6 +2473,7 @@ describe('app api schemas', () => {
             createdAt: timestamp,
             id: 'bwh_1',
             materializationRecordId: 'wmr_1',
+            packageSnapshotId: 'aepsnap_1',
             retention: 'until-reconciliation',
             transportRefs: [{ kind: 'materialized-root', ref: 'workspace://ws_demo/repo_default' }],
             updatedAt: timestamp,

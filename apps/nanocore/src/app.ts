@@ -101,7 +101,10 @@ import {
   type WorkerControlLineage,
 } from './runtime/worker-control-gateway.js';
 import { rebuildWorkerControlGatewaySessions } from './runtime/worker-control-rebuild.js';
-import { createWorkerControlAcceptedRecordRecorder } from './runtime/worker-control-records.js';
+import {
+  createWorkerControlAcceptedRecordRecorder,
+  resolveWorkerControlFinalStatusTokenBinding,
+} from './runtime/worker-control-records.js';
 import { registerWorkerControlRoutes } from './runtime/worker-control-routes.js';
 import { createWorkerControlSequenceRecorder } from './runtime/worker-control-sequences.js';
 import { registerWorkerRecoveryRoutes } from './runtime/worker-recovery-routes.js';
@@ -374,7 +377,23 @@ export function createDefaultWorkerControlGateway(coreDb?: CoreDb): WorkerContro
         throw error;
       }
     },
-    onTerminalEventAccepted: (input) => {
+    onFinalStatusAccepted: (input) => {
+      const resolution = resolveSchedulerLeaseTokenBinding(coreDb, input);
+
+      if (resolution.status !== 'accepted') {
+        throw new WorkerControlGatewayError(
+          'worker_control_lease_not_live',
+          'Worker control request lease is not live.',
+          403
+        );
+      }
+
+      markSchedulerSessionLeaseReleasing(coreDb, {
+        leaseId: resolution.lease.leaseId,
+        releaseReason: 'worker-final-status',
+      });
+    },
+    onFinalStatusCommitted: (input) => {
       const workspaceDb = openWorkspaceDb(
         coreDb.dataRoot,
         LOCAL_USER_ID,
@@ -385,24 +404,18 @@ export function createDefaultWorkerControlGateway(coreDb?: CoreDb): WorkerContro
         updateBackendWorkspaceHandleCleanupStatus(
           workspaceDb,
           input.lineage.workspaceId,
-          input.lineage.agentSessionId,
+          input.lineage.packageSnapshotId,
           'retained',
           new Date().toISOString()
         );
       } finally {
         workspaceDb.sqlite.close();
       }
-
-      const resolution = resolveSchedulerLeaseTokenBinding(coreDb, input);
-
-      if (resolution.status === 'accepted') {
-        markSchedulerSessionLeaseReleasing(coreDb, {
-          leaseId: resolution.lease.leaseId,
-          releaseReason: 'worker-final-status',
-        });
-      }
     },
+    resolveFinalStatusTokenBinding: (input) =>
+      resolveWorkerControlFinalStatusTokenBinding(coreDb, input),
     resolveTokenBinding: (input) => resolveSchedulerLeaseTokenBinding(coreDb, input),
+    runFinalStatusTransaction: (operation) => coreDb.sqlite.transaction(operation)(),
     runHeartbeatTransaction: (operation) => coreDb.sqlite.transaction(operation)(),
     sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
   });

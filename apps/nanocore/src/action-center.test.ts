@@ -2,7 +2,10 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ListHumanAttentionResponseSchema } from '@openkit/app-api-schemas';
+import {
+  ListHumanAttentionResponseSchema,
+  type WorkspaceSyncReviewItem,
+} from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 import { createApp } from './app.js';
 import { createGoalReviewRecord, resolveGoalReviewRecord } from './runtime/goal-review-records.js';
@@ -19,6 +22,7 @@ import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './st
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
 
 const timestamp = '2026-05-31T00:00:00.000Z';
 
@@ -45,6 +49,20 @@ function openTestWorkspaceDb(coreDb: CoreDb, workspaceId: string): WorkspaceDb {
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, workspaceId);
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
+}
+
+/**
+ * Persists a manually assembled workspace review with its trusted materialization fixture.
+ *
+ * @param workspaceDb Workspace database owned by the test.
+ * @param input Durable workspace review fixture.
+ */
+function recordTestWorkspaceSyncReview(
+  workspaceDb: WorkspaceDb,
+  input: { item: WorkspaceSyncReviewItem }
+): void {
+  recordTestWorkspaceReviewMaterialization(workspaceDb, input.item);
+  recordWorkspaceSyncReview(workspaceDb, input);
 }
 
 describe('action center app API', () => {
@@ -1030,7 +1048,7 @@ describe('action center app API', () => {
     try {
       const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
       try {
-        recordWorkspaceSyncReview(workspaceDb, {
+        recordTestWorkspaceSyncReview(workspaceDb, {
           item: {
             artifactId: 'ar_missing_workspace_review',
             changeSet: {
@@ -1147,7 +1165,7 @@ describe('action center app API', () => {
         createdAt: timestamp,
         updatedAt: timestamp,
       });
-      recordWorkspaceSyncReview(workspaceDb, {
+      recordTestWorkspaceSyncReview(workspaceDb, {
         item: {
           artifactId,
           changeSet: {

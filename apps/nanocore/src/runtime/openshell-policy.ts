@@ -1,3 +1,4 @@
+import { OPENKIT_WORKER_CONTROL_POST_PATHS } from '@openkit/config-schema';
 import { assertOpenShellPolicyConformant } from '@openkit/openshell-schema-snapshot';
 
 /**
@@ -101,7 +102,12 @@ export function renderOpenShellWorkerPolicy(input: RenderOpenShellWorkerPolicyIn
     `        port: ${endpoint.port}`,
     '        protocol: rest',
     '        enforcement: enforce',
-    '        access: read-write',
+    '        rules:',
+    ...OPENKIT_WORKER_CONTROL_POST_PATHS.flatMap((path) => [
+      '          - allow:',
+      '              method: POST',
+      `              path: ${path}`,
+    ]),
     ...additionalNetworkPolicies,
     '',
   ].join('\n');

@@ -130,6 +130,8 @@ export interface MaterializedWorkspaceRoot {
   sourceKind: 'host-dir' | 'materialized-dir';
   /** Host path resolved under the workspace root. */
   sourcePath: string;
+  /** Immutable Git commit captured for a linked repository root. */
+  sourceCommit?: string;
   /** Worker-visible path for V1 host workers. */
   workerPath: string;
   /** Declared access intent. */

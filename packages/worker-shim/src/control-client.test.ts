@@ -191,6 +191,45 @@ describe('WorkerControlClient', () => {
     ]);
   });
 
+  it('posts final status as a canonical control envelope', async () => {
+    const { fetch, requests } = createFetchFixture([
+      { body: { accepted: true, diagnostics: [], nextExpectedSequence: 5, schemaVersion: 1 } },
+    ]);
+    const client = new WorkerControlClient({
+      baseUrl: 'https://nanocore.local/api/worker-control',
+      fetch,
+      lineage,
+      token: 'token_control_1',
+    });
+
+    await expect(
+      client.recordFinalStatus({
+        sequence: 4,
+        status: 'failed',
+        stopReason: 'Codex process exited with code 7.',
+      })
+    ).resolves.toMatchObject({ accepted: true, nextExpectedSequence: 5 });
+    expect(requests).toEqual([
+      {
+        body: {
+          body: {
+            status: 'failed',
+            stopReason: 'Codex process exited with code 7.',
+          },
+          lineage,
+          operation: 'final_status',
+          schemaVersion: 1,
+          sequence: 4,
+        },
+        headers: {
+          authorization: 'Bearer token_control_1',
+          'content-type': 'application/json',
+        },
+        url: 'https://nanocore.local/api/worker-control/final-status',
+      },
+    ]);
+  });
+
   it('does not start a request after the supervisor signal is already aborted', async () => {
     const controller = new AbortController();
     const abortReason = new Error('supervisor already stopped');

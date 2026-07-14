@@ -23,6 +23,10 @@ export const MaterializedWorkspaceRootSchema = z.object({
   id: z.string().min(1),
   sourceKind: z.enum(['host-dir', 'materialized-dir']),
   sourcePath: z.string().min(1),
+  sourceCommit: z
+    .string()
+    .regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/)
+    .optional(),
   workerPath: z.string().min(1),
   access: z.enum(['read-only', 'read-write']),
 });

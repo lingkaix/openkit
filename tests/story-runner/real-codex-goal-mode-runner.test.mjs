@@ -35,6 +35,10 @@ import {
 const fakeSecret = 'fake-access-token-that-must-not-leak';
 
 describe('real Codex Goal Mode L6 runner', () => {
+  it('pins the acceptance run to the current ChatGPT-backed Codex model', () => {
+    assert.equal(REAL_CODEX_GOAL_MODEL, 'openai-codex/gpt-5.5');
+  });
+
   it('preserves only the safe restart instruction in CLI failure classification', () => {
     const restartMessage =
       'Real Codex runtime configuration requires a NanoCore restart. Restart NanoCore and rerun the story.';
@@ -622,13 +626,8 @@ setInterval(() => {}, 1000);
       )
     );
 
-    const expectedModel = 'openai-codex/gpt-5.6-sol';
-    const providerConfig = JSON.parse(runtimeConfig.providerContent);
-
     assert.equal(runtimeConfig.providerContent, canonicalCodexProviderContent());
-    assert.equal(providerConfig.defaultModel, expectedModel);
-    assert.deepEqual(providerConfig.models, [expectedModel]);
-    assert.equal(JSON.parse(runtimeConfig.agentContent).provider.model, expectedModel);
+    assert.equal(JSON.parse(runtimeConfig.agentContent).provider.model, REAL_CODEX_GOAL_MODEL);
     assert.deepEqual(
       calls.filter((call) => call.surface.startsWith('core-config-')).map((call) => call.surface),
       [

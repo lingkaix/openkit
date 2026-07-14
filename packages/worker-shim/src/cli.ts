@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { closeSync, readSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -10,7 +10,11 @@ import {
   type WorkerControlCommandPoll,
   type WorkerControlFetch,
 } from './control-client.js';
-import { type WorkerLineage, WorkerTranscriptWriter } from './transcript.js';
+import {
+  type WorkerLineage,
+  type WorkerTerminalOutcomeInput,
+  WorkerTranscriptWriter,
+} from './transcript.js';
 import {
   prepareWorkspaceGitSnapshots,
   publishWorkspaceGitSnapshots,
@@ -19,6 +23,7 @@ import {
 
 const WORKER_CONTROL_READINESS_TIMEOUT_MS = 10_000;
 const WORKER_CONTROL_TOKEN_MAX_BYTES = 4096;
+const CODEX_FINAL_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
 const SAFE_WORKER_CHILD_ENVIRONMENT_KEYS = [
   'ALL_PROXY',
   'CODEX_HOME',
@@ -342,9 +347,20 @@ export function parseCodexShimArgs(argv: string[]): CodexShimArgs {
  * Runs the Codex shim CLI entrypoint.
  *
  * @param argv Argument vector after the binary name.
+ * @param write Output sink for command help.
  * @returns Promise that resolves when the command finishes.
  */
-export async function runCodexShimCli(argv: string[]): Promise<void> {
+export async function runCodexShimCli(
+  argv: string[],
+  write: (line: string) => void = (line) => process.stdout.write(line)
+): Promise<void> {
+  if (argv.includes('--help')) {
+    write(
+      'Usage: openkit-codex-shim --package <path> [--session-dir <path>] [--artifact-dir <path>] [--dry-run]\n'
+    );
+    return;
+  }
+
   const args = parseCodexShimArgs(argv);
 
   if (!args.dryRun && process.env.OPENKIT_CONTROL_TOKEN) {
@@ -446,6 +462,8 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
   });
   let failureReason = 'worker-supervisor-failed';
   let terminalOutcomeAttempted = false;
+  let finalStatusClient: WorkerControlClient | null = null;
+  let workerControlReady = false;
   const controlAbortController = new AbortController();
   const codexAbortController = new AbortController();
   let interrupted = false;
@@ -464,11 +482,18 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
   }
 
   try {
+    const controlToken = requireWorkerControlToken(options.controlToken);
     const controlClient = new WorkerControlClient({
       ...(options.fetch ? { fetch: options.fetch } : {}),
       lineage,
       signal: controlAbortController.signal,
-      token: requireWorkerControlToken(options.controlToken),
+      token: controlToken,
+      baseUrl: controlBaseUrl,
+    });
+    finalStatusClient = new WorkerControlClient({
+      ...(options.fetch ? { fetch: options.fetch } : {}),
+      lineage,
+      token: controlToken,
       baseUrl: controlBaseUrl,
     });
     const commandRunner = options.commandRunner ?? new ChildProcessWorkerControlCommandRunner();
@@ -493,6 +518,7 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
         () => pollWorkerControl(controlClient, writer, nextHeartbeatSequence),
         controlAbortController
       );
+      workerControlReady = true;
     } catch (error) {
       if (!(options.signal?.aborted && error === options.signal.reason)) {
         throw error;
@@ -522,7 +548,7 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
 
     if (interrupted || options.signal?.aborted) {
       terminalOutcomeAttempted = true;
-      await writer.writeTerminalOutcome({
+      await writeAndReportTerminalOutcome(writer, workerControlReady ? finalStatusClient : null, {
         reason: interrupted ? 'worker-interrupt-command' : 'worker-parent-aborted',
         status: 'interrupted',
       });
@@ -577,6 +603,7 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
         : null;
 
     let result: CodexProcessRunResult;
+    let controlPromise: Promise<void> | null = null;
 
     try {
       const processPromise = (options.runner ?? new ChildProcessCodexProcessRunner()).run({
@@ -588,7 +615,7 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
           ? { writeStdout: (chunk: Uint8Array) => provenanceCapture.writePrimaryChunk(chunk) }
           : {}),
       });
-      const controlPromise = runWorkerControlLoop(
+      controlPromise = runWorkerControlLoop(
         controlClient,
         writer,
         commandRunner,
@@ -613,13 +640,6 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
       throw error;
     }
 
-    await provenanceCapture?.finalize();
-    await publishWorkspaceGitSnapshots({
-      bases: workspaceBases,
-      inputs: workspaceInputs,
-      lineage,
-      sessionDir: options.args.sessionDir,
-    });
     await writer.writeEvent({
       data: {
         exitCode: result.exitCode,
@@ -629,21 +649,15 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
       },
       type: 'worker.heartbeat',
     });
-    const status =
+    failureReason = 'worker-final-message-collection-failed';
+    const assistantText = await readCodexResultMessage(resultMessagePath);
+    failureReason = 'worker-runtime-failed';
+    let status: CodexShimRunResult['status'] =
       interrupted || options.signal?.aborted
         ? 'interrupted'
         : result.exitCode === 0
           ? 'completed'
           : 'failed';
-    terminalOutcomeAttempted = true;
-    await writer.writeTerminalOutcome({
-      ...(status === 'failed' && !provenanceCapture
-        ? { diagnostics: codexFailureDiagnostics(result) }
-        : {}),
-      ...(status === 'failed' ? { reason: codexExitReason(result) } : {}),
-      status,
-    });
-    const assistantText = await readCodexResultMessage(resultMessagePath);
 
     if (assistantText && status !== 'interrupted') {
       await writer.writeAssistantMessage({
@@ -651,6 +665,33 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
         text: assistantText,
       });
     }
+
+    status =
+      interrupted || options.signal?.aborted
+        ? 'interrupted'
+        : result.exitCode === 0
+          ? 'completed'
+          : 'failed';
+    terminalOutcomeAttempted = true;
+    await writeAndReportTerminalOutcome(writer, finalStatusClient, {
+      ...(status === 'failed' && !provenanceCapture
+        ? { diagnostics: codexFailureDiagnostics(result) }
+        : {}),
+      ...(status === 'failed' ? { reason: codexExitReason(result) } : {}),
+      ...(status === 'interrupted'
+        ? { reason: interrupted ? 'worker-interrupt-command' : 'worker-parent-aborted' }
+        : {}),
+      status,
+    });
+    controlAbortController.abort();
+    await controlPromise.catch(() => undefined);
+    await provenanceCapture?.finalize();
+    await publishWorkspaceGitSnapshots({
+      bases: workspaceBases,
+      inputs: workspaceInputs,
+      lineage,
+      sessionDir: options.args.sessionDir,
+    });
 
     return {
       exitCode: result.exitCode,
@@ -660,15 +701,37 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
   } catch (error) {
     if (!terminalOutcomeAttempted) {
       terminalOutcomeAttempted = true;
-      await writer
-        .writeTerminalOutcome({ reason: failureReason, status: 'failed' })
-        .catch(() => undefined);
+      await writeAndReportTerminalOutcome(writer, workerControlReady ? finalStatusClient : null, {
+        reason: failureReason,
+        status: 'failed',
+      }).catch(() => undefined);
     }
     throw error;
   } finally {
     options.signal?.removeEventListener('abort', abortForParent);
     abortChildren();
   }
+}
+
+/**
+ * Persists one terminal transcript record and reports its exact final sequence to NanoCore.
+ *
+ * @param writer Durable worker transcript writer.
+ * @param client Live final-status client, or null when control readiness never completed.
+ * @param input Worker-local terminal outcome.
+ */
+async function writeAndReportTerminalOutcome(
+  writer: WorkerTranscriptWriter,
+  client: WorkerControlClient | null,
+  input: WorkerTerminalOutcomeInput
+): Promise<void> {
+  const record = await writer.writeTerminalOutcome(input);
+
+  await client?.recordFinalStatus({
+    sequence: record.sequence,
+    status: input.status,
+    stopReason: input.reason ?? input.status,
+  });
 }
 
 /**
@@ -706,17 +769,18 @@ async function superviseCodexProcess(
   ]);
   const interruptedAtWinner = supervision.isInterrupted();
 
-  if (first.kind === 'process-complete' || first.kind === 'process-failed') {
+  if (first.kind === 'process-complete') {
+    return first.result;
+  }
+
+  if (first.kind === 'process-failed') {
     supervision.controlAbortController.abort();
     await controlPromise.catch(() => undefined);
-    if (first.kind === 'process-failed') {
-      if (interruptedAtWinner) {
-        return interruptedCodexProcessResult();
-      }
-      supervision.onFailureOwner('runtime');
-      throw first.error;
+    if (interruptedAtWinner) {
+      return interruptedCodexProcessResult();
     }
-    return first.result;
+    supervision.onFailureOwner('runtime');
+    throw first.error;
   }
 
   supervision.codexAbortController.abort();
@@ -1408,15 +1472,35 @@ function resolveCodexResultMessagePath(
  *
  * @param resultMessagePath Worker-visible final-message path.
  * @returns Trimmed assistant text, or null when no final message exists.
+ * @throws When the final message is not a readable regular file or exceeds the fixed size bound.
  */
 async function readCodexResultMessage(resultMessagePath: string): Promise<string | null> {
-  try {
-    const text = (await readFile(resultMessagePath, 'utf8')).trim();
+  let metadata: Awaited<ReturnType<typeof stat>>;
 
-    return text.length > 0 ? text : null;
-  } catch {
-    return null;
+  try {
+    metadata = await stat(resultMessagePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return null;
+    }
+    throw error;
   }
+
+  if (!metadata.isFile()) {
+    throw new Error('Codex final message path is not a regular file.');
+  }
+  if (metadata.size > CODEX_FINAL_MESSAGE_MAX_BYTES) {
+    throw new Error(`Codex final message exceeds ${CODEX_FINAL_MESSAGE_MAX_BYTES} bytes.`);
+  }
+
+  const raw = await readFile(resultMessagePath, 'utf8');
+
+  if (Buffer.byteLength(raw, 'utf8') > CODEX_FINAL_MESSAGE_MAX_BYTES) {
+    throw new Error(`Codex final message exceeds ${CODEX_FINAL_MESSAGE_MAX_BYTES} bytes.`);
+  }
+  const text = raw.trim();
+
+  return text.length > 0 ? text : null;
 }
 
 /**

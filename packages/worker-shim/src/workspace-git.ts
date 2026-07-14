@@ -203,7 +203,7 @@ export async function publishWorkspaceGitSnapshots(input: {
             bundle: null,
             changedPaths,
             createdAt: new Date().toISOString(),
-            evidenceRefs: [],
+            evidenceRefs: [{ kind: 'worker', ref: input.lineage.turnId }],
             head: { commit: headCommit, contentDigest: null },
             id: `wcs_${input.lineage.packageSnapshotId}_${workspaceInput.id}`,
             inputSnapshotId: `wis_${input.lineage.packageSnapshotId}_${workspaceInput.id}`,

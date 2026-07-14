@@ -7316,6 +7316,10 @@
                         "type": "string",
                         "minLength": 1
                       },
+                      "sourceCommit": {
+                        "type": "string",
+                        "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                      },
                       "workerPath": {
                         "type": "string",
                         "minLength": 1
@@ -50213,6 +50217,10 @@
                     "managed-sandbox"
                   ]
                 },
+                "packageSnapshotId": {
+                  "type": "string",
+                  "minLength": 1
+                },
                 "workerSessionId": {
                   "type": "string",
                   "minLength": 1
@@ -50295,6 +50303,7 @@
                 "inputSnapshotId",
                 "workspaceId",
                 "backendKind",
+                "packageSnapshotId",
                 "workerSessionId",
                 "strategy",
                 "materializedRootRef",
@@ -50342,6 +50351,10 @@
                     "remote-vm",
                     "managed-sandbox"
                   ]
+                },
+                "packageSnapshotId": {
+                  "type": "string",
+                  "minLength": 1
                 },
                 "workerSessionId": {
                   "type": "string",
@@ -50399,6 +50412,7 @@
                 "workspaceId",
                 "materializationRecordId",
                 "backendKind",
+                "packageSnapshotId",
                 "workerSessionId",
                 "transportRefs",
                 "cleanupStatus",
@@ -53744,6 +53758,10 @@
                         "sourcePath": {
                           "type": "string",
                           "minLength": 1
+                        },
+                        "sourceCommit": {
+                          "type": "string",
+                          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
                         },
                         "workerPath": {
                           "type": "string",
@@ -88995,6 +89013,10 @@
                           "type": "string",
                           "minLength": 1
                         },
+                        "sourceCommit": {
+                          "type": "string",
+                          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                        },
                         "workerPath": {
                           "type": "string",
                           "minLength": 1
@@ -104912,5 +104934,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:e2efa8d6549a9793dde7f85455c34ee3967e8c7dfe5f34f87e5a76c395887e27"
+  "x-openkit-source-digest": "sha256:e97d23e7500b5ec9483dcf811227d0d110e23814c80a1418a5d6bd02f91bd64b"
 }

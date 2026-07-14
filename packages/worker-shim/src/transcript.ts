@@ -1,6 +1,7 @@
 import { appendFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  type WorkerCanonicalEventRecord,
   type WorkerLineage,
   type WorkerTextPart,
   WorkerTranscriptArtifactRecordSchema,
@@ -145,9 +146,11 @@ export class WorkerTranscriptWriter {
    * Writes a terminal worker outcome event.
    *
    * @param input Terminal outcome.
-   * @returns Promise that resolves after the line is durable.
+   * @returns Durable canonical terminal event record.
    */
-  public async writeTerminalOutcome(input: WorkerTerminalOutcomeInput): Promise<void> {
+  public async writeTerminalOutcome(
+    input: WorkerTerminalOutcomeInput
+  ): Promise<WorkerCanonicalEventRecord> {
     const eventType = input.status === 'completed' ? 'turn.completed' : 'turn.failed';
     const record = WorkerTranscriptEventRecordSchema.parse({
       ...this.nextBaseRecord('event'),
@@ -161,6 +164,7 @@ export class WorkerTranscriptWriter {
       },
     });
     await this.appendJsonl('events.jsonl', record);
+    return record;
   }
 
   /**

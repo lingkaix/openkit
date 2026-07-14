@@ -155,14 +155,23 @@ export function recordWorkspaceSyncReview(
     changeSet.workspaceId,
     changeSet.inputSnapshotId
   );
-  const inputSnapshot = existingInputSnapshot ?? inferWorkspaceInputSnapshot(changeSet);
+  if (!existingInputSnapshot) {
+    throw new Error(
+      `Workspace synchronization input lineage is missing: ${changeSet.inputSnapshotId}`
+    );
+  }
+  const inputSnapshot = existingInputSnapshot;
   const existingMaterializationRecord = getWorkspaceMaterializationRecord(
     workspaceDb,
     changeSet.workspaceId,
     changeSet.materializationRecordId
   );
-  const materializationRecord =
-    existingMaterializationRecord ?? inferWorkspaceMaterializationRecord(changeSet);
+  if (!existingMaterializationRecord) {
+    throw new Error(
+      `Workspace synchronization materialization lineage is missing: ${changeSet.materializationRecordId}`
+    );
+  }
+  const materializationRecord = existingMaterializationRecord;
   if (
     inputSnapshot.workspaceId !== changeSet.workspaceId ||
     inputSnapshot.resourceId !== changeSet.resourceId ||
@@ -701,17 +710,19 @@ function recordWorkspaceMaterializationRecord(
         materialization_record_id,
         workspace_id,
         input_snapshot_id,
+        package_snapshot_id,
         worker_session_id,
         strategy,
         payload_json,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       parsed.id,
       parsed.workspaceId,
       parsed.inputSnapshotId,
+      parsed.packageSnapshotId,
       parsed.workerSessionId,
       parsed.strategy,
       JSON.stringify(parsed),
@@ -769,11 +780,11 @@ export function listBackendWorkspaceHandles(
 }
 
 /**
- * Updates backend workspace handle cleanup status for one worker session.
+ * Updates backend workspace handle cleanup status for one AEP package.
  *
  * @param workspaceDb Open workspace-scope database handle.
  * @param workspaceId Workspace id.
- * @param workerSessionId Worker session id stored on backend handles.
+ * @param packageSnapshotId AEP package snapshot id stored on backend handles.
  * @param cleanupStatus New cleanup status.
  * @param updatedAt Update timestamp.
  * @returns Updated backend handles in stable order.
@@ -781,7 +792,7 @@ export function listBackendWorkspaceHandles(
 export function updateBackendWorkspaceHandleCleanupStatus(
   workspaceDb: WorkspaceDb,
   workspaceId: string,
-  workerSessionId: string,
+  packageSnapshotId: string,
   cleanupStatus: BackendWorkspaceHandle['cleanupStatus'],
   updatedAt: string
 ): BackendWorkspaceHandle[] {
@@ -789,10 +800,10 @@ export function updateBackendWorkspaceHandleCleanupStatus(
     .prepare(
       `SELECT payload_json
        FROM backend_workspace_handles
-       WHERE workspace_id = ? AND worker_session_id = ?
+       WHERE workspace_id = ? AND package_snapshot_id = ?
        ORDER BY created_at ASC, backend_workspace_handle_id ASC`
     )
-    .all(workspaceId, workerSessionId) as Array<{ payload_json: string }>;
+    .all(workspaceId, packageSnapshotId) as Array<{ payload_json: string }>;
   const updated = rows.map((row) => {
     const handle = BackendWorkspaceHandleSchema.parse(JSON.parse(row.payload_json) as unknown);
     const effectiveCleanupStatus =
@@ -852,17 +863,19 @@ function recordBackendWorkspaceHandle(
         workspace_id,
         materialization_record_id,
         backend_kind,
+        package_snapshot_id,
         worker_session_id,
         payload_json,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       parsed.id,
       parsed.workspaceId,
       parsed.materializationRecordId,
       parsed.backendKind,
+      parsed.packageSnapshotId,
       parsed.workerSessionId,
       JSON.stringify(parsed),
       parsed.createdAt,
@@ -939,6 +952,7 @@ function inferBackendWorkspaceHandle(
     createdAt: record.createdAt,
     id: `bwh_${record.id}`,
     materializationRecordId: record.id,
+    packageSnapshotId: record.packageSnapshotId,
     retention: 'until-reconciliation',
     transportRefs: [{ kind: 'materialized-root', ref: record.materializedRootRef }],
     updatedAt: record.createdAt,
@@ -1082,59 +1096,6 @@ function recordWorkspaceChangeSet(workspaceDb: WorkspaceDb, changeSet: Workspace
       changeSet.createdAt,
       changeSet.createdAt
     );
-}
-
-/**
- * Infers a minimal input snapshot from legacy artifact-backed change sets.
- *
- * @param changeSet Change set carrying snapshot lineage ids.
- * @returns Product-safe input snapshot.
- */
-function inferWorkspaceInputSnapshot(changeSet: WorkspaceChangeSet): WorkspaceInputSnapshot {
-  return WorkspaceInputSnapshotSchema.parse({
-    backend: {
-      capabilitySummary: [],
-      kind: 'openshell',
-      label: 'legacy artifact-backed workspace sync',
-    },
-    base: changeSet.base,
-    createdAt: changeSet.createdAt,
-    generatedFiles: [],
-    id: changeSet.inputSnapshotId,
-    ignoredPaths: [],
-    pathScope: [changeSet.resourceId],
-    resourceId: changeSet.resourceId,
-    ...(changeSet.sourceId ? { sourceId: changeSet.sourceId } : {}),
-    resourceKind: changeSet.strategy === 'git' ? 'git_repository' : 'filesystem',
-    strategy: changeSet.strategy,
-    workspaceId: changeSet.workspaceId,
-    writableRoots: [changeSet.resourceId],
-  });
-}
-
-/**
- * Infers a minimal materialization record from legacy artifact-backed change sets.
- *
- * @param changeSet Change set carrying materialization lineage ids.
- * @returns Product-safe materialization record.
- */
-function inferWorkspaceMaterializationRecord(
-  changeSet: WorkspaceChangeSet
-): WorkspaceMaterializationRecord {
-  return WorkspaceMaterializationRecordSchema.parse({
-    backendKind: 'openshell',
-    base: changeSet.base,
-    createdAt: changeSet.createdAt,
-    id: changeSet.materializationRecordId,
-    inputSnapshotId: changeSet.inputSnapshotId,
-    ...(changeSet.sourceId ? { sourceId: changeSet.sourceId } : {}),
-    materializedRootRef: `workspace://${changeSet.workspaceId}/${changeSet.resourceId}`,
-    policyDigest: 'sha256:legacy-artifact-backed',
-    readinessEvidence: changeSet.evidenceRefs,
-    strategy: changeSet.strategy,
-    workerSessionId: changeSet.materializationRecordId,
-    workspaceId: changeSet.workspaceId,
-  });
 }
 
 /**

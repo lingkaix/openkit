@@ -131,7 +131,13 @@ describe('OpenShellCli', () => {
     const cli = new OpenShellCli({ runner });
 
     await expect(cli.version()).resolves.toBe('0.0.63');
-    await expect(cli.status()).resolves.toEqual({
+    await expect(
+      cli.status({
+        gateway: 'a1-openshell',
+        gatewayEndpoint: 'https://a1.example.com:17670',
+        gatewayInsecure: true,
+      })
+    ).resolves.toEqual({
       gateway: 'openshell',
       server: 'https://127.0.0.1:17670',
       status: 'connected',
@@ -174,7 +180,14 @@ describe('OpenShellCli', () => {
     });
     expect(runner.calls).toEqual([
       ['--version'],
-      ['status'],
+      [
+        'status',
+        '-g',
+        'a1-openshell',
+        '--gateway-endpoint',
+        'https://a1.example.com:17670',
+        '--gateway-insecure',
+      ],
       ['gateway', 'info'],
       ['doctor', 'check'],
       [
@@ -216,6 +229,59 @@ describe('OpenShellCli', () => {
       version: null,
       error: 'Error: tcp connect error',
     });
+  });
+
+  it.each([
+    ['true', true],
+    ['false', false],
+    ['<unset>', null],
+  ])('strictly parses the global providers v2 setting %s', async (providersV2Setting, expected) => {
+    const runner = new FakeOpenShellCommandRunner([
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          scope: 'global',
+          settings: { providers_v2_enabled: providersV2Setting },
+          settings_revision: 1,
+        }),
+      },
+    ]);
+    const cli = new OpenShellCli({ runner });
+
+    await expect(
+      cli.providersV2Enabled({
+        gateway: 'a1-openshell',
+        gatewayEndpoint: 'https://a1.example.com:54013',
+        gatewayInsecure: true,
+      })
+    ).resolves.toBe(expected);
+    expect(runner.calls).toEqual([
+      [
+        'settings',
+        'get',
+        '--global',
+        '--json',
+        '-g',
+        'a1-openshell',
+        '--gateway-endpoint',
+        'https://a1.example.com:54013',
+        '--gateway-insecure',
+      ],
+    ]);
+  });
+
+  it.each([
+    ['invalid JSON', 'not-json'],
+    ['a missing setting', JSON.stringify({ scope: 'global', settings: {} })],
+    [
+      'a non-string setting',
+      JSON.stringify({ scope: 'global', settings: { providers_v2_enabled: true } }),
+    ],
+  ])('fails closed for %s in global settings', async (_caseName, stdout) => {
+    const runner = new FakeOpenShellCommandRunner([{ exitCode: 0, stdout }]);
+    const cli = new OpenShellCli({ runner });
+
+    await expect(cli.providersV2Enabled()).rejects.toThrow(/global settings|providers_v2_enabled/i);
   });
 
   it('reads metadata for an explicitly named gateway', async () => {

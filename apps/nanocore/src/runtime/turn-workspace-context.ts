@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { type MaterializedWorkspaceRoot, materializeWorkspaceRoots } from '@openkit/config-schema';
 
 import { findWorkspaceConfig, type RuntimeConfigSnapshot } from '../config/runtime-config.js';
@@ -77,10 +78,12 @@ export function materializeWorkspaceRootsForTurn(
 ): MaterializedWorkspaceRoot[] {
   const dataRoot = store.getDataRoot();
   const workspaceConfig = findWorkspaceConfig(snapshot, store.getUserId(), workspaceId);
+  const sourceCommit = repository ? readRepositoryHeadCommit(repository.localPath) : null;
   const repositoryRoot = repository
     ? {
         access: 'read-write' as const,
         id: repository.resourceId,
+        ...(sourceCommit ? { sourceCommit } : {}),
         sourceKind: 'host-dir' as const,
         sourcePath: repository.localPath,
         workerPath: '/workspace/openkit',
@@ -108,6 +111,39 @@ export function materializeWorkspaceRootsForTurn(
   }
 
   return [repositoryRoot, ...configuredRoots];
+}
+
+/**
+ * Captures one linked repository HEAD without loading user Git configuration.
+ *
+ * @param repositoryPath Ready linked repository path.
+ * @returns Full Git object id for the current HEAD commit, or null when the linked path has no commit.
+ */
+function readRepositoryHeadCommit(repositoryPath: string): string | null {
+  try {
+    const commit = execFileSync('git', ['rev-parse', '--verify', 'HEAD^{commit}'], {
+      cwd: repositoryPath,
+      encoding: 'utf8',
+      env: {
+        GIT_CONFIG_COUNT: '0',
+        GIT_CONFIG_GLOBAL: '/dev/null',
+        GIT_CONFIG_NOSYSTEM: '1',
+        GIT_OPTIONAL_LOCKS: '0',
+        LC_ALL: 'C',
+        PATH: process.env.PATH ?? '',
+      },
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 20_000,
+    }).trim();
+
+    if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commit)) {
+      return commit;
+    }
+  } catch {
+    // Unavailable Git state stays unpinned and remains fail-closed at worker review ingress.
+  }
+
+  return null;
 }
 
 /**

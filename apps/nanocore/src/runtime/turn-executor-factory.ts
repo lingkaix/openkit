@@ -171,7 +171,6 @@ function createOpenShellTurnExecutor(
       placement,
       retainSandboxes: parseBooleanEnv(env.OPENKIT_OPENSHELL_RETAIN_SANDBOXES, false),
       sandboxSource: sandboxImageRef,
-      trustedWorkerInferenceRelayEnabled: true,
       workerControlGateway,
     }),
     coreDb,

@@ -6,11 +6,12 @@ This directory owns accepted-turn execution, scheduler dispatch integration, wor
 
 - Scheduler records and capacity transitions live in `../scheduler-records.ts`; runtime code consumes that owner instead of duplicating lease state.
 - Product turn HTTP ownership lives in `../turn-routes.ts`; `product-turn-start.ts` owns scheduler admission and dispatch after route validation.
-- Repository, workspace-root, and source-context preparation lives in `turn-workspace-context.ts`.
+- Repository, workspace-root, and source-context preparation lives in `turn-workspace-context.ts`; linked repositories are pinned to a full Git HEAD object id before AEP construction, and that base must match worker review lineage.
 - `agent-environment.ts` owns NanoCore-to-AEP projection. Direct worker control derives its adapter transport from the canonical NanoCore endpoint scheme. Trusted inference packages bind the resolved provider/model, derive the worker-inference URL from that endpoint origin, and leave inference egress ownership to the transient OpenShell provider profile instead of duplicating it in the base sandbox policy.
 - Explicit `worker.runtime-provenance.v1` requirements project bounded raw-stream, manifest, and native-origin-index transcript outputs and require the trusted inference relay. Capture, import, product-safe correlation, and turn-end reconciliation are implemented, but no production backend advertises the feature until the same-target executable and cross-surface conformance gates pass.
 - Worker backends must make their declared `TurnExecutor.capabilities` truthful and reject unsupported operations before store mutation.
 - Runtime-private sessions, host paths, credentials, raw worker payloads, and backend handles must not enter protocol events or public responses.
+- Workspace materialization records and backend handles bind the AEP package snapshot separately from the backend worker session id; terminal events, teardown, and stale-lease recovery correlate by package lineage, and review persistence rejects missing materialization lineage instead of inferring it from a change set.
 - Recovery code must preserve workspace, thread, turn, request, package, and scheduler lineage before changing terminal state.
 
 ## File Groups

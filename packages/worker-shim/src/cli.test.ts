@@ -59,6 +59,22 @@ describe('worker shim CLI parsing', () => {
     });
   });
 
+  it('prints help without requiring a package or installing signal handlers', async () => {
+    const output: string[] = [];
+    const signalListeners = {
+      interrupt: getEventListeners(process, 'SIGINT').length,
+      termination: getEventListeners(process, 'SIGTERM').length,
+    };
+
+    await expect(runCodexShimCli(['--help'], (line) => output.push(line))).resolves.toBeUndefined();
+
+    expect(output).toEqual([
+      'Usage: openkit-codex-shim --package <path> [--session-dir <path>] [--artifact-dir <path>] [--dry-run]\n',
+    ]);
+    expect(getEventListeners(process, 'SIGINT')).toHaveLength(signalListeners.interrupt);
+    expect(getEventListeners(process, 'SIGTERM')).toHaveLength(signalListeners.termination);
+  });
+
   it('rejects missing required arguments with product-safe errors', () => {
     expect(() => parseCodexShimArgs(['--session-dir', '/openkit/session'])).toThrow(
       'Missing required --package argument.'
@@ -292,7 +308,13 @@ describe('worker shim CLI parsing', () => {
     const packagePath = join(sessionDir, 'package.json');
     const order: string[] = [];
     const fetch: WorkerControlFetch = async (url) => {
-      order.push(url.endsWith('/heartbeat') ? 'heartbeat' : 'poll');
+      order.push(
+        url.endsWith('/heartbeat')
+          ? 'heartbeat'
+          : url.endsWith('/commands/poll')
+            ? 'poll'
+            : 'final-status'
+      );
       return {
         ok: true,
         status: 200,
@@ -319,7 +341,7 @@ describe('worker shim CLI parsing', () => {
       runner,
     });
 
-    expect(order).toEqual(['heartbeat', 'poll', 'codex']);
+    expect(order).toEqual(['heartbeat', 'poll', 'codex', 'final-status']);
     expect(
       readJsonl(join(sessionDir, 'events.jsonl')).map(
         (record) => (record as { sequence: number }).sequence
@@ -1733,14 +1755,291 @@ describe('worker shim CLI parsing', () => {
       })
     ).resolves.toMatchObject({ status: 'interrupted' });
     expect(runner.calls).toEqual([]);
+    const terminalRecord = readJsonl(join(sessionDir, 'events.jsonl')).find(
+      (record) => (record as { event?: { type?: string } }).event?.type === 'turn.failed'
+    ) as { sequence: number };
     expect(requests).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           body: expect.objectContaining({ commandId: 'interrupt_1' }),
           url: 'https://nanocore.local/api/worker-control/commands/ack',
         }),
+        expect.objectContaining({
+          body: expect.objectContaining({
+            body: {
+              status: 'interrupted',
+              stopReason: 'worker-interrupt-command',
+            },
+            operation: 'final_status',
+            sequence: terminalRecord.sequence,
+          }),
+          url: 'https://nanocore.local/api/worker-control/final-status',
+        }),
       ])
     );
+  });
+
+  it.each([
+    {
+      exitCode: 0,
+      expectedStatus: 'completed' as const,
+      expectedStopReason: 'completed',
+    },
+    {
+      exitCode: 7,
+      expectedStatus: 'failed' as const,
+      expectedStopReason: 'Codex process exited with code 7.',
+    },
+  ])('reports one $expectedStatus final status with the terminal transcript sequence', async ({
+    exitCode,
+    expectedStatus,
+    expectedStopReason,
+  }) => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-final-status-'));
+    const packagePath = join(sessionDir, 'package.json');
+    const requests: Array<{ body: unknown; url: string }> = [];
+    const fetch: WorkerControlFetch = async (url, init) => {
+      requests.push({ body: JSON.parse(init.body) as unknown, url });
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify(
+            url.endsWith('/commands/poll')
+              ? { commands: [] }
+              : { accepted: true, diagnostics: [], schemaVersion: 1 }
+          ),
+      };
+    };
+    writeFileSync(
+      packagePath,
+      JSON.stringify({ runtime: { command: { workingDirectory: sessionDir } } }),
+      'utf8'
+    );
+
+    await expect(
+      runCodexShim({
+        args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: codexShimEnvironment(),
+        fetch,
+        runner: new FakeCodexProcessRunner({
+          exitCode,
+          signal: null,
+          stderr: '',
+          stdout: '',
+        }),
+      })
+    ).resolves.toMatchObject({ status: expectedStatus });
+
+    const records = [
+      ...readJsonl(join(sessionDir, 'events.jsonl')),
+      ...(existsSync(join(sessionDir, 'items.jsonl'))
+        ? readJsonl(join(sessionDir, 'items.jsonl'))
+        : []),
+    ] as Array<{ event?: { type?: string }; sequence: number }>;
+    const terminalRecord = records.find((record) =>
+      ['turn.completed', 'turn.failed'].includes(record.event?.type ?? '')
+    );
+    const finalStatusRequests = requests.filter((request) => request.url.endsWith('/final-status'));
+
+    expect(terminalRecord).toBeDefined();
+    expect(terminalRecord?.sequence).toBe(Math.max(...records.map((record) => record.sequence)));
+    expect(finalStatusRequests).toEqual([
+      {
+        body: {
+          body: {
+            status: expectedStatus,
+            stopReason: expectedStopReason,
+          },
+          lineage: {
+            agentSessionId: 'as_codex_1',
+            packageSnapshotId: 'pkg_codex_1',
+            requestId: 'req_codex_1',
+            threadId: 'th_codex',
+            turnId: 'turn_codex',
+            workspaceId: 'ws_codex',
+          },
+          operation: 'final_status',
+          schemaVersion: 1,
+          sequence: terminalRecord?.sequence,
+        },
+        url: 'https://nanocore.local/api/worker-control/final-status',
+      },
+    ]);
+  });
+
+  it('keeps heartbeats live until NanoCore accepts final status', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-final-status-heartbeat-'));
+    const packagePath = join(sessionDir, 'package.json');
+    let heartbeatCount = 0;
+    let markFinalStatusStarted: (() => void) | undefined;
+    let releaseFinalStatus: (() => void) | undefined;
+    const finalStatusStarted = new Promise<void>((resolve) => {
+      markFinalStatusStarted = resolve;
+    });
+    const finalStatusRelease = new Promise<void>((resolve) => {
+      releaseFinalStatus = resolve;
+    });
+    const fetch: WorkerControlFetch = async (url) => {
+      if (url.endsWith('/heartbeat')) {
+        heartbeatCount += 1;
+      }
+      if (url.endsWith('/final-status')) {
+        markFinalStatusStarted?.();
+        await finalStatusRelease;
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify(
+            url.endsWith('/commands/poll')
+              ? { commands: [] }
+              : { accepted: true, diagnostics: [], schemaVersion: 1 }
+          ),
+      };
+    };
+    writeFileSync(
+      packagePath,
+      JSON.stringify({ runtime: { command: { workingDirectory: sessionDir } } }),
+      'utf8'
+    );
+    try {
+      const run = runCodexShim({
+        args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: codexShimEnvironment(),
+        fetch,
+        runner: new FakeCodexProcessRunner({
+          exitCode: 0,
+          signal: null,
+          stderr: '',
+          stdout: '',
+        }),
+      });
+      await finalStatusStarted;
+      expect(heartbeatCount).toBe(1);
+
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+      expect(heartbeatCount).toBe(2);
+      releaseFinalStatus?.();
+
+      await expect(run).resolves.toMatchObject({ status: 'completed' });
+    } finally {
+      releaseFinalStatus?.();
+    }
+  });
+
+  it('reports parent cancellation after Codex exit but before terminal commit as interrupted', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-final-status-abort-'));
+    const packagePath = join(sessionDir, 'package.json');
+    const finalMessagePath = join(sessionDir, 'final-message.txt');
+    const controller = new AbortController();
+    const requests: Array<{ body: unknown; url: string }> = [];
+    const fetch: WorkerControlFetch = async (url, init) => {
+      requests.push({ body: JSON.parse(init.body) as unknown, url });
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify(
+            url.endsWith('/commands/poll')
+              ? { commands: [] }
+              : { accepted: true, diagnostics: [], schemaVersion: 1 }
+          ),
+      };
+    };
+    writeFileSync(finalMessagePath, 'x'.repeat(16 * 1024 * 1024), 'utf8');
+    writeFileSync(
+      packagePath,
+      JSON.stringify({
+        extensions: { openkit: { resultMessagePath: finalMessagePath } },
+        runtime: { command: { workingDirectory: sessionDir } },
+      }),
+      'utf8'
+    );
+
+    const result = await runCodexShim({
+      args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+      environment: codexShimEnvironment(),
+      fetch,
+      runner: new FakeCodexProcessRunner(
+        { exitCode: 0, signal: null, stderr: '', stdout: '' },
+        () => setTimeout(() => controller.abort(), 5)
+      ),
+      signal: controller.signal,
+    });
+
+    expect(controller.signal.aborted).toBe(true);
+    expect(result).toMatchObject({ status: 'interrupted' });
+    const terminalRecord = readJsonl(join(sessionDir, 'events.jsonl')).find(
+      (record) => (record as { event?: { type?: string } }).event?.type === 'turn.failed'
+    ) as { sequence: number };
+    expect(requests.filter((request) => request.url.endsWith('/final-status'))).toEqual([
+      expect.objectContaining({
+        body: expect.objectContaining({
+          body: {
+            status: 'interrupted',
+            stopReason: 'worker-parent-aborted',
+          },
+          operation: 'final_status',
+          sequence: terminalRecord.sequence,
+        }),
+      }),
+    ]);
+  });
+
+  it('fails closed when the Codex final message exceeds the bounded transcript size', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-final-message-oversized-'));
+    const packagePath = join(sessionDir, 'package.json');
+    const finalMessagePath = join(sessionDir, 'final-message.txt');
+    const requests: Array<{ body: unknown; url: string }> = [];
+    const fetch: WorkerControlFetch = async (url, init) => {
+      requests.push({ body: JSON.parse(init.body) as unknown, url });
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify(
+            url.endsWith('/commands/poll')
+              ? { commands: [] }
+              : { accepted: true, diagnostics: [], schemaVersion: 1 }
+          ),
+      };
+    };
+    writeFileSync(finalMessagePath, 'x'.repeat(16 * 1024 * 1024 + 1), 'utf8');
+    writeFileSync(
+      packagePath,
+      JSON.stringify({
+        extensions: { openkit: { resultMessagePath: finalMessagePath } },
+        runtime: { command: { workingDirectory: sessionDir } },
+      }),
+      'utf8'
+    );
+
+    await expect(
+      runCodexShim({
+        args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: codexShimEnvironment(),
+        fetch,
+        runner: new FakeCodexProcessRunner({
+          exitCode: 0,
+          signal: null,
+          stderr: '',
+          stdout: '',
+        }),
+      })
+    ).rejects.toThrow('Codex final message exceeds 16777216 bytes.');
+    expect(requests.filter((request) => request.url.endsWith('/final-status'))).toEqual([
+      expect.objectContaining({
+        body: expect.objectContaining({
+          body: {
+            status: 'failed',
+            stopReason: 'worker-final-message-collection-failed',
+          },
+          operation: 'final_status',
+        }),
+      }),
+    ]);
   });
 
   it('supervises a configured Codex process and writes transcript lifecycle records', async () => {
@@ -1864,7 +2163,7 @@ describe('worker shim CLI parsing', () => {
           type: 'turn.completed',
         },
         kind: 'event',
-        sequence: 3,
+        sequence: 4,
       }),
     ]);
     expect(readJsonl(join(sessionDir, 'items.jsonl'))).toEqual([
@@ -1875,7 +2174,7 @@ describe('worker shim CLI parsing', () => {
           type: 'assistant-message',
         },
         kind: 'item',
-        sequence: 4,
+        sequence: 3,
       }),
     ]);
   });
@@ -2057,13 +2356,13 @@ describe('worker shim CLI parsing', () => {
       }),
       expect.objectContaining({
         event: expect.objectContaining({ type: 'turn.completed' }),
-        sequence: 3,
+        sequence: 4,
       }),
     ]);
     expect(readJsonl(join(sessionDir, 'items.jsonl'))).toEqual([
       expect.objectContaining({
         item: expect.objectContaining({ text: 'Codex provenance captured.' }),
-        sequence: 4,
+        sequence: 3,
       }),
     ]);
   });
@@ -2566,6 +2865,7 @@ describe('worker shim CLI parsing', () => {
         { binary: false, path: 'README.md', status: 'modified' },
         { binary: false, path: 'temp/research/worker-report.md', status: 'added' },
       ],
+      evidenceRefs: [{ kind: 'worker', ref: 'turn_codex' }],
       inputSnapshotId: 'wis_pkg_codex_1_repo',
       materializationRecordId: 'wmr_pkg_codex_1_repo',
       patch: {

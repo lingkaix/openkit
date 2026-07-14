@@ -1,14 +1,47 @@
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import {
   CodexAuthTokenResolver,
   CodexResponsesClient,
   type CodexTokenResolutionAccountStore,
 } from './codex-responses-client.js';
-import type { OpenAICompatibleProviderError } from './openai-compatible-client.js';
+
+const undiciAgentConstructions = vi.hoisted(() => ({
+  fetchCalls: [] as Array<{
+    init: (RequestInit & { dispatcher?: object }) | undefined;
+    request: RequestInfo | URL;
+  }>,
+  instances: [] as object[],
+  options: [] as Array<Record<string, unknown>>,
+}));
+
+vi.mock('undici', () => ({
+  /** Minimal Agent fake that records production dispatcher construction. */
+  Agent: class FakeUndiciAgent {
+    /** Records the production Agent options without opening a network connection. */
+    public constructor(options: Record<string, unknown>) {
+      undiciAgentConstructions.instances.push(this);
+      undiciAgentConstructions.options.push(options);
+    }
+  },
+  fetch: async (
+    request: RequestInfo | URL,
+    init: (RequestInit & { dispatcher?: object }) | undefined
+  ) => {
+    undiciAgentConstructions.fetchCalls.push({ init, request });
+    return Response.json({
+      id: 'resp_long',
+      object: 'response',
+      status: 'completed',
+      output: [],
+    });
+  },
+}));
+
+afterEach(() => vi.unstubAllGlobals());
 
 class FakeAccountStore implements CodexTokenResolutionAccountStore {
   public readonly refreshes: boolean[] = [];
@@ -139,6 +172,35 @@ describe('Codex Responses client', () => {
       stream: false,
       store: false,
     });
+  });
+
+  it('uses a local signal-driven Undici dispatcher without transport deadlines', async () => {
+    vi.stubGlobal('fetch', async () => Response.json({ status: 'completed', output: [] }));
+    const controller = new AbortController();
+    const client = new CodexResponsesClient({
+      tokenResolver: {
+        resolve: async () => ({ accessToken: 'access-secret', chatgptAccountId: 'account_123' }),
+      },
+    });
+
+    await client.createResponses(
+      codexProvider(),
+      { model: 'codex', input: 'Long task' },
+      { signal: controller.signal }
+    );
+
+    expect(undiciAgentConstructions.options.at(-1)).toEqual({
+      bodyTimeout: 0,
+      headersTimeout: 0,
+    });
+    expect(undiciAgentConstructions.fetchCalls).toHaveLength(1);
+    expect(undiciAgentConstructions.fetchCalls[0]?.init?.dispatcher).toBe(
+      undiciAgentConstructions.instances.at(-1)
+    );
+    const upstreamSignal = undiciAgentConstructions.fetchCalls[0]?.init?.signal;
+    expect(upstreamSignal?.aborted).toBe(false);
+    controller.abort();
+    expect(upstreamSignal?.aborted).toBe(true);
   });
 
   it('binds the caller signal to the upstream request and skips a 401 retry after abort', async () => {
@@ -310,37 +372,5 @@ describe('Codex Responses client', () => {
       'Bearer access-team_a',
       'Bearer access-team_a',
     ]);
-  });
-
-  it('preserves top-level ChatGPT Codex error detail as a typed provider failure', async () => {
-    const client = new CodexResponsesClient({
-      tokenResolver: {
-        resolve: async () => ({ accessToken: 'access-secret', chatgptAccountId: 'account_123' }),
-      },
-      fetch: async () =>
-        Response.json(
-          {
-            detail:
-              "The 'retired-codex-model' model is not supported when using Codex with a ChatGPT account.",
-          },
-          { status: 400 }
-        ),
-    });
-
-    await expect(
-      client.createResponses(codexProvider(), {
-        model: 'openai-codex/retired-codex-model',
-        input: 'Hello',
-      })
-    ).rejects.toEqual(
-      expect.objectContaining<Partial<OpenAICompatibleProviderError>>({
-        code: 'provider_error',
-        message:
-          "The 'retired-codex-model' model is not supported when using Codex with a ChatGPT account.",
-        name: 'OpenAICompatibleProviderError',
-        status: 400,
-        type: null,
-      })
-    );
   });
 });

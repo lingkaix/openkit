@@ -19,13 +19,6 @@ describe('createConfiguredTurnExecutor', () => {
       kind: 'openshell',
       placement: 'local',
     });
-    expect(
-      (
-        executor as unknown as {
-          backend: { trustedWorkerInferenceRelayEnabled: boolean };
-        }
-      ).backend.trustedWorkerInferenceRelayEnabled
-    ).toBe(true);
   });
 
   it('keeps the deterministic self-check executor override', () => {
