@@ -1,8 +1,7 @@
 import { ApiErrorSchema, SseEventEnvelopeSchema } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
-
-import { createApp } from './app.js';
 import type { FsStore } from './lib/store.js';
+import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 
 /**

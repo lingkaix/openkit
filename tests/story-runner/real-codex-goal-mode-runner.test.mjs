@@ -36,7 +36,7 @@ const fakeSecret = 'fake-access-token-that-must-not-leak';
 
 describe('real Codex Goal Mode L6 runner', () => {
   it('pins the acceptance run to the current ChatGPT-backed Codex model', () => {
-    assert.equal(REAL_CODEX_GOAL_MODEL, 'openai-codex/gpt-5.5');
+    assert.equal(REAL_CODEX_GOAL_MODEL, 'openai-codex/gpt-5.6-sol');
   });
 
   it('preserves only the safe restart instruction in CLI failure classification', () => {
@@ -626,8 +626,13 @@ setInterval(() => {}, 1000);
       )
     );
 
+    const expectedModel = 'openai-codex/gpt-5.6-sol';
+    const providerConfig = JSON.parse(runtimeConfig.providerContent);
+
     assert.equal(runtimeConfig.providerContent, canonicalCodexProviderContent());
-    assert.equal(JSON.parse(runtimeConfig.agentContent).provider.model, REAL_CODEX_GOAL_MODEL);
+    assert.equal(providerConfig.defaultModel, expectedModel);
+    assert.deepEqual(providerConfig.models, [expectedModel]);
+    assert.equal(JSON.parse(runtimeConfig.agentContent).provider.model, expectedModel);
     assert.deepEqual(
       calls.filter((call) => call.surface.startsWith('core-config-')).map((call) => call.surface),
       [
@@ -729,8 +734,15 @@ setInterval(() => {}, 1000);
       REAL_CODEX_GOAL_PROOF_CONTENT
     );
     assert.equal(result.aep.controlMode, 'direct-nanocore');
+    assert.equal(result.aep.imageRef, 'openkit/worker-codex:dev');
+    assert.equal(result.inference.backendType, 'openshell');
+    assert.equal(result.inference.backendVersion, '0.0.80');
     assert.equal(result.inference.providerRef, 'openai_codex');
     assert.equal(result.inference.modelId, REAL_CODEX_GOAL_MODEL);
+    assert.deepEqual(result.runtime, {
+      capabilityCallCount: 1,
+      usageRecordCount: 1,
+    });
     assert.equal(result.reviews.workspaceApplyStatus, 'applied');
     assert.equal(result.reviews.goalAdvanceOutcome, 'complete_goal');
     assert.equal(existsSync(join(evidenceDir, 'goal-mode-real-codex-result.json')), true);
@@ -1060,6 +1072,8 @@ function createFakeGoalClients(input) {
           text: JSON.stringify({
             runtimeEvidence: [
               {
+                backendType: 'openshell',
+                backendVersion: '0.0.80',
                 evidenceBundleIds: ['ev_1'],
                 id: 'runtime_ev_1',
                 outcome: 'succeeded',
@@ -1461,6 +1475,13 @@ function aepFixture() {
       },
       policy: { secrets: { visibility: 'none' } },
       providers: { attachments: [] },
+      runtime: {
+        image: {
+          kind: 'container-image',
+          pullPolicy: 'if-not-present',
+          ref: 'openkit/worker-codex:dev',
+        },
+      },
       vault: { grants: [], references: [] },
     },
     turnId: 'turn_1',
@@ -1468,7 +1489,7 @@ function aepFixture() {
 }
 
 /**
- * Returns one linked worker-inference CapabilityCall and usage record fixture.
+ * Returns linked worker-inference and terminal runtime usage fixtures.
  *
  * @returns {Record<string, any>} Capability usage fixture.
  */
@@ -1484,6 +1505,16 @@ function capabilityUsageFixture() {
         status: 'succeeded',
         turnId: 'turn_1',
       },
+      {
+        capabilityId: 'runtime.worker_turn',
+        family: 'runtime',
+        id: 'cap_runtime_1',
+        operation: 'worker.checkpoint.terminal',
+        providerRef: 'nanocore-runtime',
+        serviceRef: 'worker-checkpoint',
+        status: 'succeeded',
+        turnId: 'turn_1',
+      },
     ],
     usageRecords: [
       {
@@ -1494,6 +1525,15 @@ function capabilityUsageFixture() {
         quantity: 128,
         turnId: 'turn_1',
         unit: 'tokens',
+      },
+      {
+        capabilityCallId: 'cap_runtime_1',
+        category: 'runtime',
+        providerRef: 'nanocore-runtime',
+        quantity: 1,
+        source: 'worker-checkpoint-terminal',
+        turnId: 'turn_1',
+        unit: 'sandbox_sessions',
       },
     ],
   };

@@ -1,7 +1,10 @@
 import { appendFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  buildWorkerCanonicalTerminalEventRecord,
   type WorkerCanonicalEventRecord,
+  type WorkerCanonicalNonTerminalEventType,
+  type WorkerCanonicalTerminalEventDataInput,
   type WorkerLineage,
   type WorkerTextPart,
   WorkerTranscriptArtifactRecordSchema,
@@ -16,7 +19,7 @@ export type { WorkerLineage, WorkerTextPart } from '@openkit/worker-protocol';
  */
 export interface WorkerEventInput {
   /** Stable event type. */
-  type: string;
+  type: WorkerCanonicalNonTerminalEventType;
   /** Product-safe event payload. */
   data?: Record<string, unknown>;
 }
@@ -50,14 +53,7 @@ export interface WorkerArtifactInput {
 /**
  * Worker terminal outcome written to `events.jsonl`.
  */
-export interface WorkerTerminalOutcomeInput {
-  /** Terminal outcome status. */
-  status: 'completed' | 'failed' | 'interrupted' | 'cancelled';
-  /** Optional product-safe diagnostic summary for terminal failures. */
-  diagnostics?: Record<string, string>;
-  /** Optional product-safe terminal reason. */
-  reason?: string;
-}
+export type WorkerTerminalOutcomeInput = WorkerCanonicalTerminalEventDataInput;
 
 /**
  * Worker transcript writer options.
@@ -67,12 +63,17 @@ export interface WorkerTranscriptWriterOptions {
   sessionDir: string;
   /** Lineage fields attached to every record. */
   lineage: WorkerLineage;
+  /** Optional live acceptance callback serialized with each non-terminal transcript event. */
+  appendEvent?: ((record: WorkerCanonicalEventRecord) => Promise<void>) | undefined;
 }
 
 /**
  * Durable transcript writer for sandbox-local worker shims.
  */
 export class WorkerTranscriptWriter {
+  private appendQueue: Promise<void> = Promise.resolve();
+  private readonly appendEvent: ((record: WorkerCanonicalEventRecord) => Promise<void>) | null;
+  private eventsSealed = false;
   private readonly lineage: WorkerLineage;
   private readonly sessionDir: string;
   private sequence = 0;
@@ -83,17 +84,31 @@ export class WorkerTranscriptWriter {
    * @param options Session directory and lineage.
    */
   public constructor(options: WorkerTranscriptWriterOptions) {
+    this.appendEvent = options.appendEvent ?? null;
     this.lineage = options.lineage;
     this.sessionDir = options.sessionDir;
   }
 
   /**
-   * Writes one worker event record.
+   * Reports whether terminal outcome writing has sealed the event transcript.
+   *
+   * @returns True after terminal outcome writing starts.
+   */
+  public get eventTranscriptSealed(): boolean {
+    return this.eventsSealed;
+  }
+
+  /**
+   * Writes one worker event record and waits for configured live acceptance.
    *
    * @param input Worker event.
-   * @returns Promise that resolves after the line is durable.
+   * @returns Durable canonical event record after the line is written.
+   * @throws Error when terminal outcome writing has sealed the event transcript.
    */
-  public async writeEvent(input: WorkerEventInput): Promise<void> {
+  public async writeAndAppendEvent(input: WorkerEventInput): Promise<WorkerCanonicalEventRecord> {
+    if (this.eventsSealed) {
+      throw new Error('Worker transcript events are sealed after the terminal outcome.');
+    }
     const record = WorkerTranscriptEventRecordSchema.parse({
       ...this.nextBaseRecord('event'),
       event: {
@@ -101,7 +116,13 @@ export class WorkerTranscriptWriter {
         type: input.type,
       },
     });
-    await this.appendJsonl('events.jsonl', record);
+    const appendEvent = this.appendEvent;
+    await this.appendJsonl(
+      'events.jsonl',
+      record,
+      appendEvent ? () => appendEvent(record) : undefined
+    );
+    return record;
   }
 
   /**
@@ -151,17 +172,13 @@ export class WorkerTranscriptWriter {
   public async writeTerminalOutcome(
     input: WorkerTerminalOutcomeInput
   ): Promise<WorkerCanonicalEventRecord> {
-    const eventType = input.status === 'completed' ? 'turn.completed' : 'turn.failed';
-    const record = WorkerTranscriptEventRecordSchema.parse({
-      ...this.nextBaseRecord('event'),
-      event: {
-        data: {
-          ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
-          ...(input.reason ? { reason: input.reason } : {}),
-          status: input.status,
-        },
-        type: eventType,
-      },
+    this.eventsSealed = true;
+    const sequence = this.sequence;
+    this.sequence += 1;
+    const record = buildWorkerCanonicalTerminalEventRecord({
+      data: input,
+      lineage: this.lineage,
+      sequence,
     });
     await this.appendJsonl('events.jsonl', record);
     return record;
@@ -172,11 +189,20 @@ export class WorkerTranscriptWriter {
    *
    * @param fileName Session file name.
    * @param record Serializable record.
+   * @param afterAppend Optional effect serialized after the durable file append.
    * @returns Promise that resolves after the record is appended.
    */
-  private async appendJsonl(fileName: string, record: Record<string, unknown>): Promise<void> {
-    await mkdir(this.sessionDir, { recursive: true });
-    await appendFile(join(this.sessionDir, fileName), `${JSON.stringify(record)}\n`, 'utf8');
+  private appendJsonl(
+    fileName: string,
+    record: Record<string, unknown>,
+    afterAppend?: (() => Promise<void>) | undefined
+  ): Promise<void> {
+    this.appendQueue = this.appendQueue.then(async () => {
+      await mkdir(this.sessionDir, { recursive: true });
+      await appendFile(join(this.sessionDir, fileName), `${JSON.stringify(record)}\n`, 'utf8');
+      await afterAppend?.();
+    });
+    return this.appendQueue;
   }
 
   /**

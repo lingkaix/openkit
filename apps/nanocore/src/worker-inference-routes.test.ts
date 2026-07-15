@@ -6,11 +6,11 @@ import { serve } from '@hono/node-server';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createApp } from './app.js';
-import type {
-  OpenAICompatibleChatCompletionRequest,
-  OpenAICompatibleResponsesRequest,
-  OpenAICompatibleResponsesResponse,
+import {
+  type OpenAICompatibleChatCompletionRequest,
+  OpenAICompatibleProviderError,
+  type OpenAICompatibleResponsesRequest,
+  type OpenAICompatibleResponsesResponse,
 } from './llm/openai-compatible-client.js';
 import type {
   LLMGatewayDispatchContext,
@@ -22,6 +22,7 @@ import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
 import { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 
 interface WorkerInferenceDispatchCall {
@@ -1348,6 +1349,36 @@ describe('worker inference routes', () => {
     expect(readWorkerInferenceCapabilityCalls(serializationFailure)).toEqual([
       expect.objectContaining({ errorCode: 'worker_inference_failed', status: 'failed' }),
     ]);
+  });
+
+  it('projects typed provider request failures as redacted worker errors', async () => {
+    const fixture = createWorkerInferenceRouteFixture();
+    fixture.dispatcher.responseError = new OpenAICompatibleProviderError({
+      code: 'model_not_supported',
+      message: 'Unsupported model token=tok_secret',
+      status: 400,
+      type: 'provider_error',
+    });
+
+    const response = await postWorkerResponses(fixture, {
+      input: 'Hello',
+      model: 'openai/gpt-5.2',
+    });
+    const body = await response.json();
+    const calls = readWorkerInferenceCapabilityCalls(fixture);
+
+    expect(response.status).toBe(400);
+    expect(body).toMatchObject({
+      error: {
+        code: 'gateway_provider_request_invalid',
+        message: 'Unsupported model token=[redacted]',
+        type: 'provider_error',
+      },
+    });
+    expect(calls).toEqual([
+      expect.objectContaining({ errorCode: 'worker_inference_failed', status: 'failed' }),
+    ]);
+    expect(JSON.stringify({ body, calls })).not.toContain('tok_secret');
   });
 
   it('marks post-start stream read failures before emitting terminal SSE', async () => {

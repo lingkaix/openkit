@@ -48,6 +48,7 @@ export function registerTurnRoutes({
   runtimeConfig,
   schedulerEpoch,
   turnExecutor,
+  workerPlacement,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
@@ -56,6 +57,7 @@ export function registerTurnRoutes({
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   readonly schedulerEpoch: number;
   readonly turnExecutor: TurnExecutor;
+  readonly workerPlacement: 'local' | 'remote';
 }): void {
   app.post('/api/turns', async (c) => {
     const parsed = SubmitTurnInputRequestSchema.safeParse(await c.req.json().catch(() => ({})));
@@ -134,6 +136,7 @@ export function registerTurnRoutes({
             snapshot: runtimeConfig(),
             store,
             turnExecutor,
+            workerPlacement,
             ...(coreDb ? { coreDb } : {}),
           });
 

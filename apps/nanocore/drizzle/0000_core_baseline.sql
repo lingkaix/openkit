@@ -353,6 +353,7 @@ CREATE TABLE `scheduler_session_leases` (
 	`renewal_count` integer NOT NULL,
 	`scheduler_epoch` integer NOT NULL,
 	`sandbox_binding_ref` text NOT NULL,
+	`backend_anchor_state` text DEFAULT 'unanchored' NOT NULL,
 	`release_reason` text,
 	`recovery_state` text
 );
@@ -364,6 +365,8 @@ CREATE INDEX `scheduler_session_leases_lineage_idx` ON `scheduler_session_leases
 CREATE INDEX `scheduler_session_leases_target_idx` ON `scheduler_session_leases` (`pool_id`,`target_id`,`status`);
 --> statement-breakpoint
 CREATE INDEX `scheduler_session_leases_deadline_idx` ON `scheduler_session_leases` (`status`,`expires_at`,`heartbeat_deadline`);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `scheduler_session_leases_binding_idx` ON `scheduler_session_leases` (`sandbox_binding_ref`);
 --> statement-breakpoint
 CREATE TABLE `scheduler_worker_pools` (
 	`pool_id` text PRIMARY KEY NOT NULL,
@@ -579,3 +582,44 @@ CREATE INDEX `session_snapshots_workspace_idx`
 
 CREATE INDEX `session_snapshots_compatibility_idx`
   ON `session_snapshots` (`session_compatibility_key`, `status`, `expires_at`);
+--> statement-breakpoint
+CREATE TABLE `worker_backend_sessions` (
+	`lease_id` text PRIMARY KEY NOT NULL,
+	`workspace_id` text NOT NULL,
+	`thread_id` text NOT NULL,
+	`turn_id` text NOT NULL,
+	`agent_session_id` text NOT NULL,
+	`package_snapshot_id` text NOT NULL,
+	`backend_kind` text NOT NULL,
+	`deployment_id` text NOT NULL,
+	`backend_version` text,
+	`worker_image` text NOT NULL,
+	`cell_target_id` text NOT NULL,
+	`placement` text NOT NULL,
+	`gateway_name` text NOT NULL,
+	`gateway_endpoint` text,
+	`backend_session_id` text NOT NULL,
+	`staging_directory_ref` text NOT NULL,
+	`transient_provider_instance_id` text,
+	`workspace_handoff_state` text NOT NULL,
+	`state` text NOT NULL,
+	`physical_cleaned_at` text,
+	`created_at` text NOT NULL,
+	`updated_at` text NOT NULL
+);
+--> statement-breakpoint
+CREATE INDEX `worker_backend_sessions_lineage_idx` ON `worker_backend_sessions` (`workspace_id`,`thread_id`,`turn_id`,`agent_session_id`,`package_snapshot_id`);
+--> statement-breakpoint
+CREATE INDEX `worker_backend_sessions_state_idx` ON `worker_backend_sessions` (`state`,`updated_at`);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `worker_backend_sessions_package_idx` ON `worker_backend_sessions` (`package_snapshot_id`);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `worker_backend_sessions_staging_idx` ON `worker_backend_sessions` (`staging_directory_ref`);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `worker_backend_sessions_named_target_idx` ON `worker_backend_sessions` (`backend_kind`,`gateway_name`,`backend_session_id`) WHERE `gateway_endpoint` IS NULL;
+--> statement-breakpoint
+CREATE UNIQUE INDEX `worker_backend_sessions_endpoint_target_idx` ON `worker_backend_sessions` (`backend_kind`,`gateway_endpoint`,`backend_session_id`) WHERE `gateway_endpoint` IS NOT NULL;
+--> statement-breakpoint
+CREATE UNIQUE INDEX `worker_backend_sessions_named_provider_idx` ON `worker_backend_sessions` (`backend_kind`,`gateway_name`,`transient_provider_instance_id`) WHERE `gateway_endpoint` IS NULL AND `transient_provider_instance_id` IS NOT NULL;
+--> statement-breakpoint
+CREATE UNIQUE INDEX `worker_backend_sessions_endpoint_provider_idx` ON `worker_backend_sessions` (`backend_kind`,`gateway_endpoint`,`transient_provider_instance_id`) WHERE `gateway_endpoint` IS NOT NULL AND `transient_provider_instance_id` IS NOT NULL;

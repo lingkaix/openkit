@@ -88,6 +88,7 @@ Workflow, human attention, and verification:
 - [`20260704-knowledge_manager_internal_agent_runtime.md`](./20260704-knowledge_manager_internal_agent_runtime.md)
 - [`20260531-worker_turn_reliability_envelope.md`](./20260531-worker_turn_reliability_envelope.md)
 - [`20260531-human_attention_intervention_model.md`](./20260531-human_attention_intervention_model.md)
+- [`20260713-work_resource_interaction_model.md`](./20260713-work_resource_interaction_model.md)
 - [`20260529-test_strategy.md`](./20260529-test_strategy.md)
 - [`20260529-l6_story_acceptance.md`](./20260529-l6_story_acceptance.md)
 
@@ -98,7 +99,7 @@ Worker runtime, supply, and synchronization:
 - [`20260703-agent_manifest_aep_resolution.md`](./20260703-agent_manifest_aep_resolution.md)
 - [`20260629-worker_runtime_communication_model.md`](./20260629-worker_runtime_communication_model.md)
 - [`20260711-worker_runtime_subagent_provenance.md`](./20260711-worker_runtime_subagent_provenance.md)
-- [`20260627-remote_openshell_gateway.md`](./20260627-remote_openshell_gateway.md)
+- [`20260715-openshell_disposable_cell_lifecycle.md`](./20260715-openshell_disposable_cell_lifecycle.md)
 - [`20260708-container_image_packaging.md`](./20260708-container_image_packaging.md)
 - [`20260704-session_static_workspace_materialization.md`](./20260704-session_static_workspace_materialization.md)
 - [`20260704-workspace_data_source_catalog.md`](./20260704-workspace_data_source_catalog.md)

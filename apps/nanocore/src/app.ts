@@ -88,7 +88,10 @@ import type { InflightIdempotentCommand } from './runtime/idempotent-command.js'
 import { DEFAULT_AGENT_MANIFESTS, TurnStartValidationError } from './runtime/orchestrator.js';
 import { startProductTurn } from './runtime/product-turn-start.js';
 import { registerSchedulerAdmissionRoutes } from './runtime/scheduler-admission-routes.js';
-import { createConfiguredTurnExecutor } from './runtime/turn-executor-factory.js';
+import {
+  createConfiguredTurnExecutor,
+  createConfiguredWorkerLifecycleRuntime,
+} from './runtime/turn-executor-factory.js';
 import {
   materializeWorkspaceRootsForTurn,
   resolveWorkspaceRepositoryForTurn,
@@ -121,7 +124,6 @@ import { registerSearchRoutes } from './search-routes.js';
 import { mapRuntimeCapabilitiesToFlags, registerServiceRoutes } from './service-routes.js';
 import { registerDataRootAdminRoutes } from './storage/data-root-admin-routes.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
-import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import { registerWorkspaceTransferRoutes } from './storage/workspace-transfer-routes.js';
 import { registerThreadRoutes } from './thread-routes.js';
@@ -324,6 +326,8 @@ export interface CreateAppOptions {
   workerControlGateway?: WorkerControlGateway;
   /** Scheduler epoch owned by this app instance. */
   schedulerEpoch?: number;
+  /** Configured disposable Cell placement used for scheduler admission. */
+  workerPlacement?: 'local' | 'remote';
   agentConfigs?: AuthoredAgentConfig[];
   agentManifests?: AgentManifest[];
   /** Boot readiness snapshot for this process. */
@@ -396,7 +400,7 @@ export function createDefaultWorkerControlGateway(coreDb?: CoreDb): WorkerContro
     onFinalStatusCommitted: (input) => {
       const workspaceDb = openWorkspaceDb(
         coreDb.dataRoot,
-        LOCAL_USER_ID,
+        input.ownerUserId,
         input.lineage.workspaceId
       );
       try {
@@ -640,13 +644,19 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const workerControlGateway =
     options.workerControlGateway ?? createDefaultWorkerControlGateway(options.coreDb);
   const schedulerEpoch = options.schedulerEpoch ?? 1;
+  const configuredWorkerRuntime =
+    options.turnExecutor || process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
+      ? null
+      : createConfiguredWorkerLifecycleRuntime({
+          coreDb: options.coreDb,
+          ...(vaultUnlockState ? { vaultBackend: () => vaultUnlockState.backend() } : {}),
+          workerControlGateway,
+        });
   const turnExecutor =
     options.turnExecutor ??
-    createConfiguredTurnExecutor({
-      coreDb: options.coreDb,
-      ...(vaultUnlockState ? { vaultBackend: () => vaultUnlockState.backend() } : {}),
-      workerControlGateway,
-    });
+    configuredWorkerRuntime?.turnExecutor ??
+    createConfiguredTurnExecutor({ workerControlGateway });
+  const workerPlacement = configuredWorkerRuntime?.placement ?? options.workerPlacement ?? 'local';
   let internalAgentRunner = options.internalAgentRunner ?? null;
   const app = new Hono<{ Variables: AuthVariables }>();
 
@@ -901,6 +911,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       snapshot,
       store: input.store,
       turnExecutor,
+      workerPlacement,
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     });
 
@@ -1384,6 +1395,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     runtimeConfig,
     schedulerEpoch,
     turnExecutor,
+    workerPlacement,
   });
 
   registerApprovalRoutes({

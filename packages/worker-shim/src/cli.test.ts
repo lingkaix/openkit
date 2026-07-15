@@ -26,13 +26,57 @@ import {
 } from './cli.js';
 import type { WorkerControlFetch } from './control-client.js';
 
+const finalMessageReadRace = vi.hoisted(() => ({
+  afterOpenOrStat: null as (() => void | Promise<void>) | null,
+  path: null as string | null,
+}));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  /** Runs the configured final-message path replacement after one descriptor or metadata read. */
+  const runRace = async (path: unknown) => {
+    if (String(path) !== finalMessageReadRace.path) {
+      return;
+    }
+    const race = finalMessageReadRace.afterOpenOrStat;
+    finalMessageReadRace.afterOpenOrStat = null;
+    await race?.();
+  };
+
+  return {
+    ...actual,
+    open: async (
+      path: Parameters<typeof actual.open>[0],
+      flags: Parameters<typeof actual.open>[1]
+    ) => {
+      const handle = await actual.open(path, flags);
+      await runRace(path);
+      return handle;
+    },
+    stat: async (path: Parameters<typeof actual.stat>[0]) => {
+      const metadata = await actual.stat(path);
+      await runRace(path);
+      return metadata;
+    },
+  };
+});
+
 describe('worker shim CLI parsing', () => {
   beforeEach(() => {
+    finalMessageReadRace.afterOpenOrStat = null;
+    finalMessageReadRace.path = null;
     vi.stubGlobal('fetch', async (input: unknown) => {
       const url = String(input);
-      return new Response(JSON.stringify(url.endsWith('/commands/poll') ? { commands: [] } : {}), {
-        status: 200,
-      });
+      return new Response(
+        JSON.stringify(
+          url.endsWith('/commands/poll')
+            ? { commands: [] }
+            : url.endsWith('/events/append') || url.endsWith('/final-status')
+              ? { accepted: true, diagnostics: [], schemaVersion: 1 }
+              : {}
+        ),
+        { status: 200 }
+      );
     });
   });
 
@@ -180,7 +224,7 @@ describe('worker shim CLI parsing', () => {
       return {
         ok: true,
         status: 200,
-        text: async () => JSON.stringify({}),
+        text: async () => JSON.stringify(workerControlSuccessBody(url)),
       };
     };
     writeFileSync(
@@ -217,7 +261,10 @@ describe('worker shim CLI parsing', () => {
         }),
       ])
     );
-    expect(readJsonl(join(sessionDir, 'events.jsonl'))).toEqual(
+    const eventRecords = readJsonl(join(sessionDir, 'events.jsonl')) as Array<{
+      event: { type: string };
+    }>;
+    expect(eventRecords).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           event: {
@@ -240,6 +287,15 @@ describe('worker shim CLI parsing', () => {
           sequence: 1,
         }),
       ])
+    );
+    expect(
+      requests
+        .filter((request) => request.url.endsWith('/events/append'))
+        .map((request) => (request.body as { record: unknown }).record)
+    ).toEqual(
+      eventRecords.filter(
+        (record) => !['turn.completed', 'turn.failed'].includes(record.event.type)
+      )
     );
   });
 
@@ -273,7 +329,11 @@ describe('worker shim CLI parsing', () => {
       if (url.endsWith('/terminal-results')) {
         terminalResults.push(JSON.parse(init.body) as unknown);
       }
-      return { ok: true, status: 200, text: async () => JSON.stringify({}) };
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(workerControlSuccessBody(url)),
+      };
     };
     writeFileSync(
       packagePath,
@@ -311,14 +371,16 @@ describe('worker shim CLI parsing', () => {
       order.push(
         url.endsWith('/heartbeat')
           ? 'heartbeat'
-          : url.endsWith('/commands/poll')
-            ? 'poll'
-            : 'final-status'
+          : url.endsWith('/events/append')
+            ? 'event-append'
+            : url.endsWith('/commands/poll')
+              ? 'poll'
+              : 'final-status'
       );
       return {
         ok: true,
         status: 200,
-        text: async () => JSON.stringify(url.endsWith('/commands/poll') ? { commands: [] } : {}),
+        text: async () => JSON.stringify(workerControlSuccessBody(url)),
       };
     };
     const runner = new FakeCodexProcessRunner(
@@ -341,7 +403,15 @@ describe('worker shim CLI parsing', () => {
       runner,
     });
 
-    expect(order).toEqual(['heartbeat', 'poll', 'codex', 'final-status']);
+    expect(order).toEqual([
+      'heartbeat',
+      'event-append',
+      'poll',
+      'event-append',
+      'codex',
+      'event-append',
+      'final-status',
+    ]);
     expect(
       readJsonl(join(sessionDir, 'events.jsonl')).map(
         (record) => (record as { sequence: number }).sequence
@@ -392,8 +462,9 @@ describe('worker shim CLI parsing', () => {
         expect.objectContaining({
           event: {
             data: {
-              reason: 'worker-control-readiness-failed',
+              evidenceManifestDigests: {},
               status: 'failed',
+              stopReason: 'worker-control-readiness-failed',
             },
             type: 'turn.failed',
           },
@@ -508,7 +579,7 @@ describe('worker shim CLI parsing', () => {
                     },
                   ],
                 }
-              : { commands: [] }
+              : workerControlSuccessBody(url)
           ),
       }),
       runner,
@@ -556,7 +627,7 @@ describe('worker shim CLI parsing', () => {
       return {
         ok: true,
         status: 200,
-        text: async () => JSON.stringify(url.endsWith('/commands/poll') ? { commands: [] } : {}),
+        text: async () => JSON.stringify(workerControlSuccessBody(url)),
       };
     };
     writeFileSync(
@@ -584,7 +655,7 @@ describe('worker shim CLI parsing', () => {
         expect.arrayContaining([
           expect.objectContaining({
             event: expect.objectContaining({
-              data: expect.objectContaining({ reason: 'worker-control-runtime-failed' }),
+              data: expect.objectContaining({ stopReason: 'worker-control-runtime-failed' }),
               type: 'turn.failed',
             }),
           }),
@@ -631,8 +702,7 @@ describe('worker shim CLI parsing', () => {
           return {
             ok: true,
             status: 200,
-            text: async () =>
-              JSON.stringify(url.endsWith('/commands/poll') ? { commands: [] } : {}),
+            text: async () => JSON.stringify(workerControlSuccessBody(url)),
           };
         },
         runner: {
@@ -755,7 +825,7 @@ describe('worker shim CLI parsing', () => {
         return {
           ok: true,
           status: 200,
-          text: async () => JSON.stringify(url.endsWith('/commands/poll') ? { commands: [] } : {}),
+          text: async () => JSON.stringify(workerControlSuccessBody(url)),
         };
       },
       runner,
@@ -806,7 +876,9 @@ describe('worker shim CLI parsing', () => {
           status: 200,
           text: async () =>
             JSON.stringify(
-              url.endsWith('/commands/poll') && pollCount++ === 0 ? { commands } : { commands: [] }
+              url.endsWith('/commands/poll') && pollCount++ === 0
+                ? { commands }
+                : workerControlSuccessBody(url)
             ),
         }),
         runner: new FakeCodexProcessRunner({
@@ -924,7 +996,11 @@ describe('worker shim CLI parsing', () => {
           ok: true,
           status: 200,
           text: async () =>
-            JSON.stringify(url.endsWith('/commands/poll') ? { commands: [command] } : {}),
+            JSON.stringify(
+              url.endsWith('/commands/poll')
+                ? { commands: [command] }
+                : workerControlSuccessBody(url)
+            ),
         }),
         runner,
       })
@@ -981,8 +1057,8 @@ describe('worker shim CLI parsing', () => {
         expect.objectContaining({
           event: expect.objectContaining({
             data: expect.objectContaining({
-              reason: 'worker-parent-aborted',
               status: 'interrupted',
+              stopReason: 'worker-parent-aborted',
             }),
             type: 'turn.failed',
           }),
@@ -999,7 +1075,7 @@ describe('worker shim CLI parsing', () => {
     const fetch: WorkerControlFetch = async (url) => ({
       ok: true,
       status: 200,
-      text: async () => JSON.stringify(url.endsWith('/commands/poll') ? { commands: [] } : {}),
+      text: async () => JSON.stringify(workerControlSuccessBody(url)),
     });
     writeFileSync(
       packagePath,
@@ -1048,7 +1124,7 @@ describe('worker shim CLI parsing', () => {
       return {
         ok: true,
         status: 200,
-        text: async () => JSON.stringify(url.endsWith('/commands/poll') ? { commands: [] } : {}),
+        text: async () => JSON.stringify(workerControlSuccessBody(url)),
       };
     };
     writeFileSync(
@@ -1107,7 +1183,7 @@ describe('worker shim CLI parsing', () => {
       return {
         ok: true,
         status: 200,
-        text: async () => JSON.stringify(url.endsWith('/commands/poll') ? { commands: [] } : {}),
+        text: async () => JSON.stringify(workerControlSuccessBody(url)),
       };
     };
     writeFileSync(
@@ -1206,7 +1282,11 @@ describe('worker shim CLI parsing', () => {
             }),
         };
       }
-      return { ok: true, status: 200, text: async () => JSON.stringify({}) };
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(workerControlSuccessBody(url)),
+      };
     };
     writeFileSync(
       packagePath,
@@ -1316,7 +1396,11 @@ describe('worker shim CLI parsing', () => {
             releaseAck = () => resolve({ ok: true, status: 200, text: async () => '{}' });
           });
         }
-        return { ok: true, status: 200, text: async () => '{}' };
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify(workerControlSuccessBody(url)),
+        };
       },
       runner: new FakeCodexProcessRunner({
         exitCode: 0,
@@ -1405,7 +1489,11 @@ describe('worker shim CLI parsing', () => {
             (JSON.parse(init.body) as { terminalCommandId: string }).terminalCommandId
           );
         }
-        return { ok: true, status: 200, text: async () => JSON.stringify({}) };
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify(workerControlSuccessBody(url)),
+        };
       },
       runner: new FakeCodexProcessRunner({
         exitCode: 0,
@@ -1464,7 +1552,7 @@ describe('worker shim CLI parsing', () => {
       fetch: async (url) => ({
         ok: true,
         status: 200,
-        text: async () => JSON.stringify(url.endsWith('/commands/poll') ? { commands: [] } : {}),
+        text: async () => JSON.stringify(workerControlSuccessBody(url)),
       }),
       signal: controller.signal,
     });
@@ -1532,7 +1620,7 @@ describe('worker shim CLI parsing', () => {
       fetch: async (url) => ({
         ok: true,
         status: 200,
-        text: async () => JSON.stringify(url.endsWith('/commands/poll') ? { commands: [] } : {}),
+        text: async () => JSON.stringify(workerControlSuccessBody(url)),
       }),
     });
     void run.then(
@@ -1616,7 +1704,7 @@ describe('worker shim CLI parsing', () => {
                     },
                   ],
                 }
-              : { commands: [] }
+              : workerControlSuccessBody(url)
           ),
       }),
       runner,
@@ -1699,7 +1787,7 @@ describe('worker shim CLI parsing', () => {
                       },
                     ],
                   }
-                : {}
+                : workerControlSuccessBody(url)
             ),
         }),
         runner,
@@ -1733,7 +1821,7 @@ describe('worker shim CLI parsing', () => {
               ? {
                   commands: [{ commandId: 'interrupt_1', kind: 'interrupt', reason: 'user-stop' }],
                 }
-              : {}
+              : workerControlSuccessBody(url)
           ),
       };
     };
@@ -1766,10 +1854,10 @@ describe('worker shim CLI parsing', () => {
         }),
         expect.objectContaining({
           body: expect.objectContaining({
-            body: {
+            body: expect.objectContaining({
               status: 'interrupted',
               stopReason: 'worker-interrupt-command',
-            },
+            }),
             operation: 'final_status',
             sequence: terminalRecord.sequence,
           }),
@@ -1825,32 +1913,41 @@ describe('worker shim CLI parsing', () => {
         runner: new FakeCodexProcessRunner({
           exitCode,
           signal: null,
-          stderr: '',
-          stdout: '',
+          stderr: exitCode === 0 ? '' : 'Product-safe stderr.',
+          stdout: exitCode === 0 ? '' : 'Product-safe stdout.',
         }),
       })
     ).resolves.toMatchObject({ status: expectedStatus });
 
+    const eventRecords = readJsonl(join(sessionDir, 'events.jsonl')) as Array<{
+      event: { data: Record<string, unknown>; type: string };
+      sequence: number;
+    }>;
     const records = [
-      ...readJsonl(join(sessionDir, 'events.jsonl')),
+      ...eventRecords,
       ...(existsSync(join(sessionDir, 'items.jsonl'))
         ? readJsonl(join(sessionDir, 'items.jsonl'))
         : []),
     ] as Array<{ event?: { type?: string }; sequence: number }>;
-    const terminalRecord = records.find((record) =>
-      ['turn.completed', 'turn.failed'].includes(record.event?.type ?? '')
+    const terminalRecord = eventRecords.find((record) =>
+      ['turn.completed', 'turn.failed'].includes(record.event.type)
     );
+    const appendedRecords = requests
+      .filter((request) => request.url.endsWith('/events/append'))
+      .map((request) => (request.body as { record: (typeof eventRecords)[number] }).record);
     const finalStatusRequests = requests.filter((request) => request.url.endsWith('/final-status'));
 
     expect(terminalRecord).toBeDefined();
     expect(terminalRecord?.sequence).toBe(Math.max(...records.map((record) => record.sequence)));
+    expect(appendedRecords).toEqual(
+      eventRecords.filter(
+        (record) => !['turn.completed', 'turn.failed'].includes(record.event.type)
+      )
+    );
     expect(finalStatusRequests).toEqual([
       {
         body: {
-          body: {
-            status: expectedStatus,
-            stopReason: expectedStopReason,
-          },
+          body: terminalRecord?.event.data,
           lineage: {
             agentSessionId: 'as_codex_1',
             packageSnapshotId: 'pkg_codex_1',
@@ -1866,6 +1963,68 @@ describe('worker shim CLI parsing', () => {
         url: 'https://nanocore.local/api/worker-control/final-status',
       },
     ]);
+    expect(terminalRecord?.event.data).toMatchObject({
+      evidenceManifestDigests: {},
+      status: expectedStatus,
+      stopReason: expectedStopReason,
+    });
+  });
+
+  it('retries a rejected final status without writing a second terminal record', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-final-status-retry-'));
+    const packagePath = join(sessionDir, 'package.json');
+    const finalStatusBodies: string[] = [];
+    const fetch: WorkerControlFetch = async (url, init) => {
+      if (url.endsWith('/final-status')) {
+        finalStatusBodies.push(init.body);
+        if (finalStatusBodies.length === 1) {
+          return {
+            ok: false,
+            status: 503,
+            text: async () =>
+              JSON.stringify({ code: 'worker_control_unavailable', message: 'Try again.' }),
+          };
+        }
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify(
+            url.endsWith('/commands/poll')
+              ? { commands: [] }
+              : { accepted: true, diagnostics: [], schemaVersion: 1 }
+          ),
+      };
+    };
+    writeFileSync(
+      packagePath,
+      JSON.stringify({ runtime: { command: { workingDirectory: sessionDir } } }),
+      'utf8'
+    );
+
+    await expect(
+      runCodexShim({
+        args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: codexShimEnvironment(),
+        fetch,
+        runner: new FakeCodexProcessRunner({
+          exitCode: 0,
+          signal: null,
+          stderr: '',
+          stdout: '',
+        }),
+      })
+    ).resolves.toMatchObject({ status: 'completed' });
+    const terminalRecords = readJsonl(join(sessionDir, 'events.jsonl')).filter((record) =>
+      ['turn.completed', 'turn.failed'].includes(
+        (record as { event?: { type?: string } }).event?.type ?? ''
+      )
+    );
+
+    expect(terminalRecords).toHaveLength(1);
+    expect(finalStatusBodies).toHaveLength(2);
+    expect(finalStatusBodies[1]).toBe(finalStatusBodies[0]);
   });
 
   it('keeps heartbeats live until NanoCore accepts final status', async () => {
@@ -1904,8 +2063,9 @@ describe('worker shim CLI parsing', () => {
       JSON.stringify({ runtime: { command: { workingDirectory: sessionDir } } }),
       'utf8'
     );
+    let run: ReturnType<typeof runCodexShim> | undefined;
     try {
-      const run = runCodexShim({
+      run = runCodexShim({
         args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
         environment: codexShimEnvironment(),
         fetch,
@@ -1916,16 +2076,28 @@ describe('worker shim CLI parsing', () => {
           stdout: '',
         }),
       });
+      void run.catch(() => undefined);
       await finalStatusStarted;
       expect(heartbeatCount).toBe(1);
 
-      await new Promise((resolve) => setTimeout(resolve, 1100));
-      expect(heartbeatCount).toBe(2);
+      await new Promise((resolve) => setTimeout(resolve, 3300));
+      expect(heartbeatCount).toBeGreaterThanOrEqual(4);
+      const records = readJsonl(join(sessionDir, 'events.jsonl')) as Array<{
+        event?: { type?: string };
+        sequence: number;
+      }>;
+      const terminalRecord = records.find((record) =>
+        ['turn.completed', 'turn.failed'].includes(record.event?.type ?? '')
+      );
+
+      expect(terminalRecord?.sequence).toBe(Math.max(...records.map((record) => record.sequence)));
+      expect(records.at(-1)).toBe(terminalRecord);
       releaseFinalStatus?.();
 
       await expect(run).resolves.toMatchObject({ status: 'completed' });
     } finally {
       releaseFinalStatus?.();
+      await run?.catch(() => undefined);
     }
   });
 
@@ -1977,10 +2149,10 @@ describe('worker shim CLI parsing', () => {
     expect(requests.filter((request) => request.url.endsWith('/final-status'))).toEqual([
       expect.objectContaining({
         body: expect.objectContaining({
-          body: {
+          body: expect.objectContaining({
             status: 'interrupted',
             stopReason: 'worker-parent-aborted',
-          },
+          }),
           operation: 'final_status',
           sequence: terminalRecord.sequence,
         }),
@@ -2032,12 +2204,64 @@ describe('worker shim CLI parsing', () => {
     expect(requests.filter((request) => request.url.endsWith('/final-status'))).toEqual([
       expect.objectContaining({
         body: expect.objectContaining({
-          body: {
+          body: expect.objectContaining({
             status: 'failed',
             stopReason: 'worker-final-message-collection-failed',
-          },
+          }),
           operation: 'final_status',
         }),
+      }),
+    ]);
+  });
+
+  it.each([
+    {
+      replacementKind: 'another regular file',
+      replacementText: 'replacement final message',
+    },
+    {
+      replacementKind: 'an oversized file',
+      replacementText: 'x'.repeat(16 * 1024 * 1024 + 1),
+    },
+  ])('reads the opened final message when its path becomes $replacementKind', async ({
+    replacementText,
+  }) => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-final-message-race-'));
+    const packagePath = join(sessionDir, 'package.json');
+    const finalMessagePath = join(sessionDir, 'final-message.txt');
+    const openedMessagePath = join(sessionDir, 'opened-final-message.txt');
+    const replacementPath = join(sessionDir, 'replacement-final-message.txt');
+    writeFileSync(finalMessagePath, 'trusted final message', 'utf8');
+    writeFileSync(replacementPath, replacementText, 'utf8');
+    writeFileSync(
+      packagePath,
+      JSON.stringify({
+        extensions: { openkit: { resultMessagePath: finalMessagePath } },
+        runtime: { command: { workingDirectory: sessionDir } },
+      }),
+      'utf8'
+    );
+    finalMessageReadRace.path = finalMessagePath;
+    finalMessageReadRace.afterOpenOrStat = () => {
+      renameSync(finalMessagePath, openedMessagePath);
+      renameSync(replacementPath, finalMessagePath);
+    };
+
+    await expect(
+      runCodexShim({
+        args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: codexShimEnvironment(),
+        runner: new FakeCodexProcessRunner({
+          exitCode: 0,
+          signal: null,
+          stderr: '',
+          stdout: '',
+        }),
+      })
+    ).resolves.toMatchObject({ status: 'completed' });
+    expect(readJsonl(join(sessionDir, 'items.jsonl'))).toEqual([
+      expect.objectContaining({
+        item: expect.objectContaining({ text: 'trusted final message' }),
       }),
     ]);
   });
@@ -2158,7 +2382,9 @@ describe('worker shim CLI parsing', () => {
       expect.objectContaining({
         event: {
           data: {
+            evidenceManifestDigests: {},
             status: 'completed',
+            stopReason: 'completed',
           },
           type: 'turn.completed',
         },
@@ -3493,8 +3719,9 @@ describe('worker shim CLI parsing', () => {
               stderr: 'failed with token=[redacted] and Authorization: Bearer [redacted]',
               stdout: 'stdout mentions [redacted]',
             },
-            reason: 'Codex process exited with code 7.',
+            evidenceManifestDigests: {},
             status: 'failed',
+            stopReason: 'Codex process exited with code 7.',
           },
           type: 'turn.failed',
         },
@@ -3773,6 +4000,23 @@ function codexShimEnvironment(): CodexShimEnvironment & { OPENKIT_CODEX_COMMAND?
     OPENKIT_TURN_ID: 'turn_codex',
     OPENKIT_WORKSPACE_ID: 'ws_codex',
   };
+}
+
+/**
+ * Builds the successful response body for one worker-control test endpoint.
+ *
+ * @param url Worker-control request URL.
+ * @returns Endpoint-specific successful response body.
+ */
+function workerControlSuccessBody(url: string): Record<string, unknown> {
+  if (url.endsWith('/commands/poll')) {
+    return { commands: [] };
+  }
+  if (url.endsWith('/events/append') || url.endsWith('/final-status')) {
+    return { accepted: true, diagnostics: [], schemaVersion: 1 };
+  }
+
+  return {};
 }
 
 /**

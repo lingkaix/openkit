@@ -14,6 +14,7 @@ import {
 import { openCoreDb } from '../storage/db';
 import { applyMigrations } from '../storage/migrate';
 import { runSchedulerLeaseWatchLoop } from './scheduler-lease-watch-loop';
+import { recordWorkerBackendSessionMaterializing } from './worker-backend-sessions';
 
 /**
  * Creates an isolated migrated Core database for scheduler lease-watch tests.
@@ -192,6 +193,62 @@ describe('scheduler lease watch loop', () => {
           },
         })
       ).toEqual({ status: 'rejected', reason: 'lease-not-live' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('routes anchored startup timeouts to recovery without releasing capacity', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      dispatchLease(coreDb, 'anchored_startup');
+      recordWorkerBackendSessionMaterializing(coreDb, {
+        backendVersion: '0.0.80',
+        identity: {
+          agentSessionId: 'as_anchored_startup',
+          backendKind: 'openshell',
+          backendSessionId: 'openkit-as_anchored_startup',
+          backendTarget: {
+            cellTargetId: 'cell-test',
+            gatewayEndpoint: null,
+            gatewayName: 'openshell',
+            placement: 'local',
+          },
+          deploymentId: 'deployment-test',
+          packageSnapshotId: 'aepsnap_turn_anchored_startup_as_anchored_startup',
+          stagingDirectoryRef:
+            'server/runtime/worker-backend-sessions/aepsnap_turn_anchored_startup_as_anchored_startup',
+          transientProviderInstanceId: null,
+        },
+        lineage: {
+          threadId: 'thread_anchored_startup',
+          turnId: 'turn_anchored_startup',
+          workspaceId: 'ws_demo',
+        },
+        now: () => '2026-07-05T00:00:03.000Z',
+        sandboxBindingRef: 'lease-binding:lease_anchored_startup',
+        workerImage: 'openkit/worker-codex:dev',
+      });
+
+      const result = runSchedulerLeaseWatchLoop(coreDb, {
+        now: () => '2026-07-05T00:03:00.000Z',
+      });
+
+      expect(result.startupTimedOut).toEqual([
+        expect.objectContaining({
+          leaseId: 'lease_anchored_startup',
+          recoveryState: 'needs-evidence',
+          releaseReason: 'startup-timeout',
+          status: 'stale',
+        }),
+      ]);
+      expect(result.stale).toEqual([]);
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT in_use_count FROM scheduler_capacity_records WHERE target_id = ?')
+          .get('target_anchored_startup')
+      ).toEqual({ in_use_count: 1 });
     } finally {
       coreDb.sqlite.close();
     }

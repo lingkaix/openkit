@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
 import {
   type AgentEnvironmentCredentialDeclaration,
@@ -883,9 +884,11 @@ function workspaceInputSource(
   input: ResolveAgentEnvironmentPackageInput
 ): Record<string, unknown> {
   const sourceRef = input.workspaceSourceRefs?.[root.id];
+  const commit = root.access === 'read-write' ? readWorkspaceGitCommit(root.sourcePath) : null;
 
   if (!sourceRef) {
     return {
+      ...(commit ? { commit } : {}),
       kind: root.sourceKind,
       pathRef: `workspace-root://${root.id}`,
       ...(root.sourceCommit ? { commit: root.sourceCommit } : {}),
@@ -905,6 +908,7 @@ function workspaceInputSource(
 
   return {
     catalogEntryDigest: resolved.catalogEntryDigest,
+    ...(commit ? { commit } : {}),
     kind: resolved.sourceKind,
     locator: resolved.locator,
     pathRef: `workspace-root://${root.id}`,
@@ -914,6 +918,45 @@ function workspaceInputSource(
     ...(root.sourceCommit ? { commit: root.sourceCommit } : {}),
     ...(resolved.vaultGrantRef ? { vaultGrantRef: resolved.vaultGrantRef } : {}),
   };
+}
+
+/**
+ * Resolves the immutable Git base for one writable workspace root.
+ *
+ * @param sourcePath Host-local repository root.
+ * @returns Full Git object id for the current HEAD commit.
+ * @throws Error when the writable root has no valid Git HEAD commit.
+ */
+function readWorkspaceGitCommit(sourcePath: string): string {
+  let commit: string;
+
+  try {
+    commit = execFileSync('git', ['rev-parse', '--verify', '--end-of-options', 'HEAD^{commit}'], {
+      cwd: sourcePath,
+      encoding: 'utf8',
+      env: {
+        GIT_CONFIG_NOSYSTEM: '1',
+        GIT_NO_REPLACE_OBJECTS: '1',
+        GIT_TERMINAL_PROMPT: '0',
+        LANG: 'C',
+        LC_ALL: 'C',
+        ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
+        ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+        ...(process.env.WINDIR ? { WINDIR: process.env.WINDIR } : {}),
+      },
+      maxBuffer: 64 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5_000,
+    }).trim();
+  } catch {
+    throw new Error('Writable workspace Git base could not be resolved.');
+  }
+
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commit)) {
+    throw new Error('Writable workspace Git base could not be resolved.');
+  }
+
+  return commit;
 }
 
 /**

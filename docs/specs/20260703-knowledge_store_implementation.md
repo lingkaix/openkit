@@ -170,6 +170,8 @@ The `memory` vocabulary has been renamed directly, with no compatibility aliases
 
 ## Current Implementation Projection
 
+References to `@openkit/mcp` in this section describe the current removal-only facade. They are not the target Knowledge interface and must not receive new capability work; the accepted replacement is the transport-neutral operation catalog, bundled CLI, and unified end-user Skill.
+
 - `packages/protocol` exposes minimal `KnowledgeEntry` schemas, workspace knowledge request/response schemas, and `knowledge-injection` item projections.
 - `apps/nanocore/src/app.ts` exposes `/api/workspaces/:workspaceId/knowledge` routes and `/api/app/workspaces/:workspaceId/knowledge/proposals/:proposalId/decision`. The proposal decision route executes first-slice accept, edit, reject, and defer review decisions; edit decisions persist human-edited proposal title and summary before closing the pending review row. NanoCore currently exposes no `/api/worker-capabilities/knowledge/*` routes; worker operations remain accepted target behavior for the future capability plane.
 - `apps/nanocore/src/app.ts` also exposes explicit Knowledge Source identity registration and read surfaces through `/api/app/workspaces/:workspaceId/knowledge/sources` and `/api/app/workspaces/:workspaceId/knowledge/sources/:sourceId`. Registration computes a `sha256:` digest, stores the product-safe source identity record, and copies submitted first-slice text material into `sources/materials/<sourceId>/content.txt`; the API response never returns the submitted content.

@@ -1,9 +1,15 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { MetaResponseSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
-import { createApp } from './app.js';
+import { createApp as createNanoCoreApp } from './app.js';
 import type { FsStore } from './lib/store.js';
 import type { RuntimeCapabilities, RuntimeEventFamily, TurnExecutor } from './runtime/types.js';
+import { openCoreDb } from './storage/db.js';
+import { applyMigrations } from './storage/migrate.js';
+import { createApp } from './test-support/app.js';
 
 class StubTurnExecutor implements TurnExecutor {
   public readonly eventFamilies: readonly RuntimeEventFamily[] = [
@@ -36,21 +42,28 @@ class StubTurnExecutor implements TurnExecutor {
 
 describe('nanocore metadata', () => {
   it('returns protocol metadata for the default container worker executor', async () => {
-    const app = createApp();
-    const res = await app.request('/api/meta');
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-meta-real-worker-')));
+    applyMigrations(coreDb);
 
-    expect(res.status).toBe(200);
+    try {
+      const app = createNanoCoreApp({ coreDb });
+      const res = await app.request('/api/meta');
 
-    const parsed = MetaResponseSchema.parse(await res.json());
+      expect(res.status).toBe(200);
 
-    expect(parsed).toMatchObject({
-      protocolVersion: '0.3.0',
-      capabilities: ['core.artifacts', 'core.agent_session.visible', 'core.stream.replay'],
-      itemTypes: ['user-message', 'assistant-message', 'artifact-reference', 'status'],
-      itemDeltaKinds: [],
-    });
-    expect(parsed.eventFamilies).toContain('item.created');
-    expect(parsed.eventFamilies).toContain('artifact.created');
+      const parsed = MetaResponseSchema.parse(await res.json());
+
+      expect(parsed).toMatchObject({
+        protocolVersion: '0.3.0',
+        capabilities: ['core.artifacts', 'core.agent_session.visible', 'core.stream.replay'],
+        itemTypes: ['user-message', 'assistant-message', 'artifact-reference', 'status'],
+        itemDeltaKinds: [],
+      });
+      expect(parsed.eventFamilies).toContain('item.created');
+      expect(parsed.eventFamilies).toContain('artifact.created');
+    } finally {
+      coreDb.sqlite.close();
+    }
   });
 
   it('maps stubbed executor capabilities and advertised item metadata', async () => {

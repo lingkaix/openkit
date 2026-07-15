@@ -24,9 +24,9 @@ The accepted worker capability and MCP contracts remain the target design in `do
 
 The worker capability plane (`docs/specs/20260703-worker_agent_capability.md`) defers the full capability catalog schema, per-capability rate limits, and budget enforcement. The shared durable usage foundation for LLM gateway producers is active in `docs/specs/20260704-capability_usage_gateway_foundation.md`, but it deliberately does not implement budget or rate-limit policy. The deferred model remains the economic backbone for multi-agent concurrency and is a prerequisite for the proxy planes above. Design should start after at least one non-LLM worker capability family is durably implemented and real usage rows show the required control dimensions.
 
-### Metering beyond the gateway
+### Metering expansion, budgets, and cost projection
 
-`docs/core/metering.md` is an explicit placeholder boundary for resources that do not originate from a gateway call: compute time, sandbox lifetime, storage growth, and network volume. Usage capture for gateway-mediated LLM calls is active through `docs/specs/20260703-audit_usage_evidence_records.md` and the unified pi-ai backend spec. System-wide metering design should start after durable usage producers exist and real dogfooding shows which non-gateway resources actually matter for cost visibility.
+`docs/core/metering.md` now owns an active system-wide measurement model. Durable producers cover gateway usage, terminal worker-session counts, workspace export and import file and byte inventories, and governed Git publication request counts. Continuous sandbox duration, CPU and memory allocation, retained storage, network traffic volume, scheduler reservations, aggregation policy, budget enforcement, and cost projection remain deferred. Expansion should begin only when a concrete producer can observe a meaningful unit with durable attribution and idempotency, and real dogfooding shows that the measurement changes an operational or economic decision.
 
 ### LLM provider gateway later slices
 
@@ -56,9 +56,9 @@ The product vision (§6.8) defines the Generative Kernel: data structure contrac
 
 The product vision (§7.2) sequences knowledge synthesis — extracting task summaries, stable preferences, and agent/task fit from history with confidence, freshness, source traceability, conflict handling, and human override — strictly after v1 retrieval quality is proven. Owned boundaries live in `docs/core/knowledge.md` and the Knowledge Store specs. Deferred until v1 retrieval, proposal, and review loops have real usage history.
 
-### Scheduler scale-out: warm pools and multi-node placement
+### Scheduler release closeout, scale-out, warm-session reuse, and multi-node placement
 
-The durable scheduler design (`docs/specs/20260703-durable_scheduler_design.md`) covers durable records, admission, fairness, leases, and recovery, and explicitly defers warm pool management and multi-node scheduling. These become relevant only with remote multi-target deployments beyond the localhost profile.
+The durable scheduler design (`docs/specs/20260703-durable_scheduler_design.md`) covers durable records, admission, leases, same-snapshot renewal, and initial recovery, and explicitly defers durable release deadlines for stuck `releasing` leases, warm pools, live AEP refresh across immutable snapshots, and multi-node scheduling. Before the accepted 5-minute release grace becomes active, the lease record, watch loop, restart recovery, evidence closeout, and capacity accounting must handle `releasingAt`, `releaseDeadline`, and deadline expiry without leaking capacity. Same-snapshot lease renewal is active and does not require a refresh declaration. The first stock OpenShell runtime is now a single-slot disposable Cell with local and remote placement (`docs/specs/20260715-openshell_disposable_cell_lifecycle.md`); remote placement binds one fixed SSH lifecycle target to one explicit Gateway origin and sandbox-reachable worker-control URL instead of using a naked shared Gateway. Multiple Cells, target selection, warm reuse, and multi-node scheduling remain deferred until each Cell has independent capacity and network identity plus whole-runtime teardown proof. Until a future design defines a NanoCore-issued source-to-target refresh request, adapter and shim support negotiation, atomic lease and token rebinding, rollback, and audit evidence, an incompatible AEP snapshot makes the session stale and the next bounded step requires a new plan and lease. The scale and refresh areas become relevant only after local and remote Cell continuity and release closeout are proven through real OpenShell use.
 
 ## Deferred Design Areas: Product Surface And UI
 
@@ -90,12 +90,15 @@ OpenKit-authored Skills ship in-repo today (`skills/README.md`), and immutable c
 
 ## Recently Activated (moved out of this list)
 
+- Cross-aspect Foundation doctrine, with Metering retained as a separate active Core owner: `docs/core/foundation.md`, `docs/core/metering.md`, and `docs/changes/202607111941330001-core_spec_implementation_alignment_audit.md`.
+- System-wide measurement now has durable non-gateway runtime, storage, and Git network producers; broader resource measurement, budgets, and cost projection remain in the deferred entry above: `docs/core/metering.md`.
 - Unified non-Codex LLM routing through `@earendil-works/pi-ai`: `docs/specs/20260708-pi_ai_unified_llm_backend.md`.
 - Task evaluation and self-improvement through the Reflector, Harness, and Judge design, which is the active path for resolving the Task Evaluator placeholder: `docs/specs/20260710-self_improvement_evaluation_loop.md` and `docs/specs/20260711-evaluation_harness_design.md`.
 - Durable recurring scheduler and event-trigger design: `docs/specs/20260711-scheduler_recurring_event_triggers.md`.
 - Immutable Skill catalog version identity, pinning, and promotion: `docs/specs/20260711-skill_catalog_versioning_pinning.md`.
 - Worker sandbox freedom and explicit process, filesystem, network, credential, and review boundaries: `docs/specs/20260709-worker_sandbox_freedom_policy.md`.
 - Worker runtime sub-agent provenance, trusted inference identity, and runtime-cache lineage design accepted and in phased implementation: `docs/specs/20260711-worker_runtime_subagent_provenance.md`.
+- Local and remote single-slot disposable OpenShell Cells with fixed lifecycle ownership and whole-runtime teardown: `docs/specs/20260715-openshell_disposable_cell_lifecycle.md`.
 - Vault injection, audit import, and NGAC policy enforcement mechanics via OpenShell mechanism borrowing with internalized definitions: `docs/specs/20260703-openshell_mechanism_internalization.md`.
 - Knowledge Store implementation with pinned OKF 0.1: `docs/specs/20260703-knowledge_store_implementation.md`.
 - Durable scheduler design: `docs/specs/20260703-durable_scheduler_design.md`.

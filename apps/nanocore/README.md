@@ -26,7 +26,9 @@
 
 ## Prerequisites
 
-- a configured container worker backend must be available to run governed worker sessions
+- real governed worker sessions require one local or remote disposable OpenShell Cell on a Linux/systemd host
+- the Cell host must provide official, unmodified `/usr/bin/openshell` and `/usr/bin/openshell-gateway` binaries at exactly `0.0.80`, containerd, Docker Engine and CLI, util-linux `flock`, and `curl`; the NanoCore host must provide the official OpenShell CLI `0.0.80` at its platform path
+- the fixed `/usr/local/libexec/openkit-openshell-cell` helper and Cell image cache must be installed as documented in [NanoCore Deployment Modes](../../docs/nanocore-deployment-modes.en.md)
 - the configured Codex account can be prepared through the Settings Diagnostics Codex ChatGPT account panel, or ahead of time with `codex login` in the selected worker environment
 
 ## Commands
@@ -194,7 +196,7 @@ Workspace config is loaded from `DATA_ROOT/users/<userId>/workspaces/<workspaceI
 
 NanoCore also creates and migrates `data/server/db/core.sqlite` on boot. The baseline SQLite schema is managed by Drizzle definitions under `src/storage/schema` and committed SQL migrations under `drizzle/`.
 
-Use a fresh `OPENKIT_DATA_ROOT` for v0.0.2. NanoCore does not automatically migrate v0.0.1 JSON snapshot data.
+Use a fresh `OPENKIT_DATA_ROOT` for the disposable Cell lifecycle. NanoCore does not migrate an earlier worker-lifecycle data root.
 
 In local mode, NanoCore upserts the implicit `user_local` row on boot and accepts requests without auth headers. Local mode binds to `127.0.0.1` by default; set `OPENKIT_BIND_HOST` to override the HTTP bind host.
 
@@ -224,7 +226,7 @@ pnpm -w verify:release
 
 That command runs L0-L2 verification, nanocore e2e, and built-artifact smoke tests. Use `pnpm -w verify:full` only for explicit full local validation that also includes web Playwright e2e and deterministic story acceptance tests. The real Codex smoke spec is skipped unless explicitly enabled, so the normal gate succeeds without host credentials.
 
-Run the real Codex Goal Mode L6 kernel story only when accepting real Codex and provider quota usage and after starting the remote OpenShell topology documented below:
+Run the real Codex Goal Mode L6 kernel story only when accepting real Codex and provider quota usage and after starting NanoCore on the same A1 host as the disposable OpenShell Cell:
 
 ```bash
 OPENKIT_L6_REAL_CODEX=1 \
@@ -237,7 +239,7 @@ OPENKIT_NANOCORE_TOKEN='server-admin-token-when-required' \
 pnpm -w test:stories:real-codex
 ```
 
-The runner requires built `@openkit/core-client` and `@openkit/mcp` artifacts, `codex app-server` on the NanoCore host for the account-status probe, a clean disposable repository with one baseline commit, local access to the target data root, and non-interactive `ssh a1`. It streams A1 auth directly into NanoCore's new server-owned default OAuth account file with mode `0600`, configures the `openai_codex` provider and Codex agent, and then runs the public MCP Goal flow. The auth content is never placed in command arguments, environment variables, logs, evidence, a vault grant, an AEP credential declaration, or the worker sandbox.
+Run the story command from the synchronized checkout on A1. The runner requires built `@openkit/core-client` and `@openkit/mcp` artifacts, `codex app-server` on A1 for the account-status probe, a clean disposable repository with one baseline commit, and local access to the fresh NanoCore data root. A1's Codex auth is imported into NanoCore's server-owned default OAuth account file with mode `0600`, then the runner configures the `openai_codex` provider and Codex agent and runs the public MCP Goal flow. The auth content is never placed in command arguments, environment variables, logs, evidence, a vault grant, an AEP credential declaration, or the worker sandbox.
 
 ## Server Mode Auth
 
@@ -271,7 +273,11 @@ Use the returned session cookie for protected APIs such as `/api/workspaces`. Si
 
 ## OpenShell Worker Mode
 
-NanoCore runs real Goal Mode worker turns through governed containers. The first backend is OpenShell.
+NanoCore runs real Goal Mode worker turns through governed containers. The first backend is one single-slot disposable OpenShell Cell, either co-located with NanoCore or controlled on a remote Linux/systemd host.
+
+The Cell contains the complete effect-capable runtime epoch: one stock OpenShell Gateway `0.0.80`, one dedicated containerd, one dedicated dockerd, fresh runtime roots and authentication material, and at most one active backend session. NanoCore prepares the Cell before materialization and returns scheduler capacity only after whole-Cell recycle creates a verified empty replacement. A sandbox or provider delete is not cleanup proof.
+
+The canonical contract is [OpenShell Disposable Cell Lifecycle](../../docs/specs/20260715-openshell_disposable_cell_lifecycle.md).
 
 For the trusted worker-inference path, NanoCore owns the Codex OAuth account and provider call. The worker receives one package-scoped placeholder route to NanoCore and must not receive host Codex auth, a provider attachment, vault material, or an external provider endpoint:
 
@@ -279,62 +285,24 @@ For the trusted worker-inference path, NanoCore owns the Codex OAuth account and
 OPENKIT_WORKER_RUNTIME=container \
 OPENKIT_CONTAINER_PLACEMENT=local \
 OPENKIT_CONTAINER_BACKEND=openshell \
-OPENKIT_OPENSHELL_GATEWAY=openshell \
 OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev \
 OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:3000/api/worker-control \
 pnpm --filter @openkit/nanocore start
 ```
 
-Do not set `OPENKIT_OPENSHELL_CODEX_AUTH_JSON`, `OPENKIT_OPENSHELL_CODEX_CONFIG_TOML`, or provider-specific extra network endpoints for the real Goal kernel story. A relay-required AEP receives one package-scoped transient OpenShell generic provider containing only the short-lived worker placeholder; its policy permits only the two internal worker-inference POST paths for the two pinned Codex binaries, explicitly disables Codex provider-side web search, rejects backend-private direct credentials, and revokes the placeholder plus deletes the provider during failure or teardown. Token-only route authentication, restart hydration, AEP-owned request authority, durable per-call attribution, bounded identity and Zstd decoding, JSON and SSE dispatch, client cancellation, Codex turn-state continuity, provider-drift failure accounting, privileged provider-state denial, and cancellation-safe ledger termination are implemented. The worker boundary also validates Codex 0.144.1 canonical turn metadata, verifies its request kind plus session, thread, parent, sub-agent, and request-header projections, and removes raw runtime and cache hints before provider dispatch.
+The Cell Gateway and health endpoints remain fixed at `http://127.0.0.1:17670` and `http://127.0.0.1:17671/readyz` on the Cell host. Local placement uses that Gateway directly. Remote placement requires `OPENKIT_OPENSHELL_CELL_SSH_TARGET`, a loopback HTTP `OPENKIT_OPENSHELL_GATEWAY_URL` backed by a separate operator-managed SSH local-forward, and an explicit credential-free HTTP(S) `OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL` ending at `/api/worker-control` and reachable from the remote sandbox; loopback and unspecified worker-control addresses are rejected. The optional `OPENKIT_OPENSHELL_GATEWAY` name must match `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}`. NanoCore's SSH lifecycle command disables forwarding and invokes only the fixed helper action, while every official OpenShell CLI subprocess removes inherited Gateway target overrides before using the validated argv target.
 
-### Remote OpenShell Verification
+Do not start a naked shared Gateway or use a custom binary path, the OpenShell CLI TLS-verification bypass flag, a patched OpenShell artifact, or a forked OpenShell artifact. The Cell Gateway intentionally serves unauthenticated HTTP only on its host loopback address, and remote access preserves that boundary through an authenticated SSH local-forward. The exact local and remote configuration profiles are in [NanoCore Deployment Modes](../../docs/nanocore-deployment-modes.en.md).
 
-Remote container placement keeps NanoCore as the source of truth while creating the worker sandbox through a remote OpenShell gateway.
+Do not set `OPENKIT_OPENSHELL_CODEX_CONFIG_TOML` or provider-specific extra network endpoints for the real Goal kernel story. NanoCore has no host-path Codex auth upload option: non-relay runtime auth may enter a sandbox only through the vault-backed runtime-file path, while a relay-required AEP receives no Codex auth file and instead receives one package-scoped transient OpenShell generic provider containing only the short-lived worker placeholder. Its policy permits only the two internal worker-inference POST paths for the two pinned Codex binaries, explicitly disables Codex provider-side web search, rejects backend-private direct credentials, and revokes process-local placeholder authority before whole-Cell recycle on failure or teardown. Token-only route authentication, restart hydration, AEP-owned request authority, durable per-call attribution, bounded identity and Zstd decoding, JSON and SSE dispatch, client cancellation, Codex turn-state continuity, provider-drift failure accounting, privileged provider-state denial, and cancellation-safe ledger termination are implemented. The worker boundary also validates Codex 0.144.1 canonical turn metadata, verifies its request kind plus session, thread, parent, sub-agent, and request-header projections, and removes raw runtime and cache hints before provider dispatch.
 
-Run NanoCore with a remote OpenShell gateway by setting:
+### A1 Cell Preparation And Verification
 
-```bash
-BETTER_AUTH_SECRET='replace-with-at-least-32-random-characters' \
-OPENKIT_CORE_MODE=server \
-OPENKIT_DATA_ROOT=/absolute/path/to/nanocore-data \
-PORT=54101 \
-OPENKIT_WORKER_RUNTIME=container \
-OPENKIT_CONTAINER_PLACEMENT=remote \
-OPENKIT_CONTAINER_BACKEND=openshell \
-OPENKIT_OPENSHELL_GATEWAY=a1-openkit \
-OPENKIT_OPENSHELL_GATEWAY_URL=https://127.0.0.1:54003 \
-OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev \
-OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:54002/api/worker-control \
-pnpm --filter @openkit/nanocore start
-```
+Synchronize the branch checkout to A1, then build and smoke the worker image on A1 and save it into `/var/lib/openkit/openshell-cell/image-cache`. A fresh Cell starts with an empty dockerd, so its cache must contain the arm64 worker archive and the exact supervisor tag baked into the official Gateway `0.0.80` binary: `ghcr.io/nvidia/openshell/supervisor:709aa0fe3e9e4d2b5fea336b5d6e393b45481898`.
 
-Before startup, build NanoCore and confirm `openkit/worker-codex:dev` exists in the A1 OpenShell image store. Before running the real Goal story, also build `@openkit/core-client` and `@openkit/mcp`, establish the SSH tunnel below, create or select a project workspace, set `OPENKIT_L6_GOAL_WORKSPACE_ID` to its returned id, and issue a server-admin bearer token when server authentication is enabled.
+Install `apps/nanocore/scripts/openshell-cell.sh` as root-owned mode `0700` at `/usr/local/libexec/openkit-openshell-cell`. The A1 `ubuntu` account that runs NanoCore receives passwordless sudo for only `/usr/local/libexec/openkit-openshell-cell prepare *` and `/usr/local/libexec/openkit-openshell-cell recycle *`; do not grant passwordless shell, Docker, containerd, or systemd commands. The full build, cache, install, sudoers, and startup commands are in [NanoCore Deployment Modes](../../docs/nanocore-deployment-modes.en.md).
 
-For the current `a1` development topology, keep the OpenShell mTLS profile in the local OpenShell config as `a1-openkit`, expose the remote gateway with a local SSH tunnel, and expose the local worker-control server back to the remote sandbox with a reverse tunnel:
-
-```bash
-ssh -o ExitOnForwardFailure=yes -N \
-  -L 127.0.0.1:54003:127.0.0.1:17670 \
-  -R 172.20.0.1:54002:127.0.0.1:54101 \
-  a1
-```
-
-The reverse listener uses the A1 OpenShell host bridge because `host.openshell.internal` resolves to `172.20.0.1` from worker sandboxes; a listener bound only to A1 loopback is not reachable from the sandbox network.
-
-Do not set `OPENKIT_OPENSHELL_GATEWAY_INSECURE=1` for the `a1-openkit` mTLS profile. The profile authenticates with the gateway client certificate and the insecure direct-endpoint mode does not carry that profile authentication.
-
-The real remote OpenShell backend e2e test is opt-in because it requires the remote gateway, SSH tunnels, and sandbox image to be ready. It does not consume provider quota by default; the worker command is a local `node -e` probe inside the remote sandbox:
-
-```bash
-OPENKIT_E2E_REMOTE_OPENSHELL=1 \
-OPENKIT_E2E_REMOTE_OPENSHELL_GATEWAY=a1-openkit \
-OPENKIT_E2E_REMOTE_OPENSHELL_GATEWAY_URL=https://127.0.0.1:54003 \
-OPENKIT_E2E_REMOTE_OPENSHELL_LOCAL_RELAY_PORT=54101 \
-OPENKIT_E2E_REMOTE_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:54002/api/worker-control \
-pnpm --filter @openkit/nanocore exec vitest run src/runtime/openshell-cli.e2e.test.ts
-```
-
-The remote test starts a local NanoCore worker-control server on `OPENKIT_E2E_REMOTE_OPENSHELL_LOCAL_RELAY_PORT`, creates a remote OpenShell sandbox through `OPENKIT_E2E_REMOTE_OPENSHELL_GATEWAY`, uploads a temporary Git workspace, runs a bounded worker command, downloads the transcript and patch evidence, asserts a pending staged review, and tears down the sandbox.
+Use a new empty `OPENKIT_DATA_ROOT`; no previous worker-lifecycle data root is migrated. For local acceptance, start NanoCore and run the real Goal story from A1 so NanoCore, the Cell helper, the worker-control endpoint, Cell image cache, and disposable repository are co-located. For remote acceptance, keep NanoCore on its selected host, control A1 through the fixed SSH helper command, and provide separate Gateway and sandbox-reachable worker-control connectivity. Acceptance requires a completed worker turn followed by successful whole-Cell recycle, absence of the old epoch processes, network, and mutable roots, and two stable-empty checks against the replacement Gateway and dockerd. The remote backend materialization path is verified; the full real Codex provenance story is still pending.
 
 The verified loop-0 deployment allowed `api.openai.com`, `chatgpt.com`, `chat.openai.com`, and `auth.openai.com` for `/usr/local/bin/codex` and `/usr/local/lib/codex/bin/codex`.
 

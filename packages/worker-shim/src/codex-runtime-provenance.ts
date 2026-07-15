@@ -54,6 +54,8 @@ export interface CodexRuntimeProvenanceCaptureOptions {
 
 /** Metadata parsed from the first frame of one Codex rollout. */
 interface RolloutCandidate {
+  /** Whether native metadata reports the pinned Codex adapter version. */
+  adapterVersionValid: boolean;
   /** Initial device id used to detect path replacement. */
   initialDev: number;
   /** Initial inode used to detect path replacement. */
@@ -422,7 +424,7 @@ export class CodexRuntimeProvenanceCapture {
     }
 
     for (const path of discovered.paths) {
-      const candidate = await readRolloutCandidate(path);
+      const candidate = await readRolloutCandidate(path, this.options.adapterVersion);
       if (!candidate) {
         continue;
       }
@@ -431,7 +433,9 @@ export class CodexRuntimeProvenanceCapture {
         continue;
       }
       byThread.set(candidate.threadId, candidate);
-      if (!candidate.valid) {
+      if (!candidate.adapterVersionValid) {
+        this.raiseStatus('failed');
+      } else if (!candidate.valid) {
         this.raiseStatus('unstable');
       }
       if (candidate.parentThreadId) {
@@ -547,16 +551,6 @@ export class CodexRuntimeProvenanceCapture {
       this.raiseStatus('failed');
     }
     const payload = objectField(record, 'payload');
-    if (type === 'session_meta' && payload) {
-      const metadata = sessionMetadata(payload);
-      if (originsConflict(context, metadata.origin)) {
-        this.raiseStatus('unstable');
-      }
-      Object.assign(context, metadata.origin);
-      if (!metadata.valid) {
-        this.raiseStatus('unstable');
-      }
-    }
     if (type === 'turn_context' && payload) {
       const rawTurnId = stringField(payload, 'turn_id');
       const turnId = boundedRuntimeValue(rawTurnId);
@@ -895,7 +889,11 @@ function parseJsonFrame(bytes: Uint8Array, truncated: boolean): JsonFrameResult 
 }
 
 /** Extracts session and sub-agent origin fields from a rollout session_meta payload. */
-function sessionMetadata(payload: Record<string, unknown>): {
+function sessionMetadata(
+  payload: Record<string, unknown>,
+  adapterVersion: string
+): {
+  adapterVersionValid: boolean;
   origin: StreamOriginContext;
   valid: boolean;
 } {
@@ -924,6 +922,7 @@ function sessionMetadata(payload: Record<string, unknown>): {
   const threadId = boundedRuntimeValue(rawThreadId);
 
   return {
+    adapterVersionValid: stringField(payload, 'cli_version') === adapterVersion,
     origin: {
       ...(parentThreadId ? { parentThreadId } : {}),
       ...(runtimeDepth === undefined ? {} : { runtimeDepth }),
@@ -949,25 +948,11 @@ function sessionMetadata(payload: Record<string, unknown>): {
   };
 }
 
-/** Returns whether immutable native origin fields disagree across metadata frames. */
-function originsConflict(current: StreamOriginContext, next: StreamOriginContext): boolean {
-  return (
-    optionalValuesConflict(current.parentThreadId, next.parentThreadId) ||
-    optionalValuesConflict(current.runtimeDepth, next.runtimeDepth) ||
-    optionalValuesConflict(current.runtimeNickname, next.runtimeNickname) ||
-    optionalValuesConflict(current.runtimeRole, next.runtimeRole) ||
-    optionalValuesConflict(current.sessionId, next.sessionId) ||
-    optionalValuesConflict(current.threadId, next.threadId)
-  );
-}
-
-/** Returns whether two present immutable values disagree. */
-function optionalValuesConflict<T>(left: T | undefined, right: T | undefined): boolean {
-  return left !== undefined && right !== undefined && left !== right;
-}
-
 /** Reads the bounded first physical line and projects one rollout candidate. */
-async function readRolloutCandidate(path: string): Promise<RolloutCandidate | null> {
+async function readRolloutCandidate(
+  path: string,
+  adapterVersion: string
+): Promise<RolloutCandidate | null> {
   const metadata = await stat(path);
   const handle = await open(path, 'r');
   try {
@@ -986,11 +971,12 @@ async function readRolloutCandidate(path: string): Promise<RolloutCandidate | nu
     if (!payload) {
       return null;
     }
-    const projected = sessionMetadata(payload);
+    const projected = sessionMetadata(payload, adapterVersion);
     if (!projected.origin.sessionId || !projected.origin.threadId) {
       return null;
     }
     return {
+      adapterVersionValid: projected.adapterVersionValid,
       initialCtimeMs: metadata.ctimeMs,
       initialDev: metadata.dev,
       initialIno: metadata.ino,

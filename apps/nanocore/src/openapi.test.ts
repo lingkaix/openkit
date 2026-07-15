@@ -14,8 +14,6 @@ import {
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-
-import { createApp } from './app.js';
 import {
   APP_OPENAPI_ROUTE_COVERAGE_EXCLUSIONS,
   APP_OPENAPI_ROUTE_METHODS,
@@ -24,6 +22,7 @@ import {
   registerAppApiRoute,
 } from './openapi.js';
 import { validateAppOpenApiDocument } from './openapi-validation.js';
+import { createApp } from './test-support/app.js';
 
 const OPENAPI_ROUTE_METHOD_SET = new Set<string>(
   APP_OPENAPI_ROUTE_METHODS.map((method) => method.toUpperCase())

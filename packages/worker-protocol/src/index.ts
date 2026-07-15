@@ -189,23 +189,120 @@ export const WorkerCanonicalEventTypeSchema = z.enum([
   'turn.failed',
 ]);
 
+/** Canonical non-terminal event types accepted through ordinary live append. */
+export const WorkerCanonicalNonTerminalEventTypeSchema = z.enum([
+  'worker.ready',
+  'worker.heartbeat',
+  'item.created',
+  'item.delta',
+  'item.completed',
+  'artifact.created',
+  'artifact.updated',
+]);
+
+/** Canonical terminal event types accepted only through final status. */
+export const WorkerCanonicalTerminalEventTypeSchema = z.enum(['turn.completed', 'turn.failed']);
+
 /**
  * JSON-compatible object payload used for product-safe summaries.
  */
 export const WorkerRecordDataSchema = z.record(z.string(), z.unknown());
+
+/** Worker-local bounded-step outcomes represented by canonical terminal events. */
+export const WorkerCanonicalTerminalStatusSchema = z.enum([
+  'blocked',
+  'cancelled',
+  'completed',
+  'degraded',
+  'failed',
+  'interrupted',
+  'lost',
+]);
+
+/** Strict product-safe data shared by terminal transcript and final-status event records. */
+export const WorkerCanonicalTerminalEventDataSchema = z
+  .object({
+    diagnostics: z.record(z.string().min(1), z.string()).optional(),
+    evidenceManifestDigests: z.record(z.string(), z.string().min(1)).default({}),
+    status: WorkerCanonicalTerminalStatusSchema,
+    stopReason: z.string().trim().min(1),
+  })
+  .strict();
+
+/** Canonical worker event payload discriminated between ordinary and terminal records. */
+const WorkerCanonicalEventSchema = z
+  .discriminatedUnion('type', [
+    z
+      .object({
+        type: WorkerCanonicalNonTerminalEventTypeSchema,
+        data: WorkerRecordDataSchema.default({}),
+      })
+      .strict(),
+    z
+      .object({
+        type: WorkerCanonicalTerminalEventTypeSchema,
+        data: WorkerCanonicalTerminalEventDataSchema,
+      })
+      .strict(),
+  ])
+  .superRefine((event, ctx) => {
+    if (event.type === 'turn.completed' && event.data.status !== 'completed') {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'turn.completed requires completed status.',
+        path: ['data', 'status'],
+      });
+    }
+    if (event.type === 'turn.failed' && event.data.status === 'completed') {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'turn.failed cannot use completed status.',
+        path: ['data', 'status'],
+      });
+    }
+  });
 
 /**
  * Canonical event append record emitted by a worker sidecar.
  */
 export const WorkerCanonicalEventRecordSchema = WorkerRecordBaseSchema.extend({
   kind: z.literal('event'),
-  event: z
-    .object({
-      type: WorkerCanonicalEventTypeSchema,
-      data: WorkerRecordDataSchema.default({}),
-    })
-    .strict(),
+  event: WorkerCanonicalEventSchema,
 }).strict();
+
+/** Input used to build one canonical terminal event record. */
+export interface BuildWorkerCanonicalTerminalEventRecordInput {
+  /** Strict terminal event data, with empty evidence digests supplied by default. */
+  readonly data: z.input<typeof WorkerCanonicalTerminalEventDataSchema>;
+  /** Package-scoped worker lineage. */
+  readonly lineage: WorkerLineage;
+  /** Final worker transcript sequence. */
+  readonly sequence: number;
+}
+
+/**
+ * Builds the byte-stable terminal event shared by transcript and final-status paths.
+ *
+ * @param input Terminal data, lineage, and final worker sequence.
+ * @returns Strict canonical terminal event record.
+ * @throws ZodError when terminal data or lineage is invalid.
+ */
+export function buildWorkerCanonicalTerminalEventRecord(
+  input: BuildWorkerCanonicalTerminalEventRecordInput
+): WorkerCanonicalEventRecord {
+  const data = WorkerCanonicalTerminalEventDataSchema.parse(input.data);
+
+  return WorkerCanonicalEventRecordSchema.parse({
+    event: {
+      data,
+      type: data.status === 'completed' ? 'turn.completed' : 'turn.failed',
+    },
+    kind: 'event',
+    lineage: input.lineage,
+    schemaVersion: 1,
+    sequence: input.sequence,
+  });
+}
 
 /**
  * Text part emitted in a worker assistant-message candidate.
@@ -418,6 +515,20 @@ export type WorkerRuntimeNativeOriginIndexEntry = z.infer<
 export type WorkerTextPart = z.infer<typeof WorkerTextPartSchema>;
 /** Canonical worker event record inferred TypeScript type. */
 export type WorkerCanonicalEventRecord = z.infer<typeof WorkerCanonicalEventRecordSchema>;
+/** Canonical worker event type inferred TypeScript type. */
+export type WorkerCanonicalEventType = z.infer<typeof WorkerCanonicalEventTypeSchema>;
+/** Canonical non-terminal worker event type inferred TypeScript type. */
+export type WorkerCanonicalNonTerminalEventType = z.infer<
+  typeof WorkerCanonicalNonTerminalEventTypeSchema
+>;
+/** Canonical terminal event data inferred TypeScript type. */
+export type WorkerCanonicalTerminalEventData = z.infer<
+  typeof WorkerCanonicalTerminalEventDataSchema
+>;
+/** Canonical terminal event data input inferred TypeScript type. */
+export type WorkerCanonicalTerminalEventDataInput = z.input<
+  typeof WorkerCanonicalTerminalEventDataSchema
+>;
 /** Worker transcript record inferred TypeScript type. */
 export type WorkerTranscriptRecord = z.infer<typeof WorkerTranscriptRecordSchema>;
 /** Worker workspace change manifest inferred TypeScript type. */

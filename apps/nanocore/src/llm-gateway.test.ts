@@ -8,8 +8,6 @@ import {
   fauxToolCall,
 } from '@earendil-works/pi-ai';
 import { describe, expect, it } from 'vitest';
-
-import { createApp } from './app.js';
 import type { ProviderProfile } from './config/providers-loader.js';
 import { CodexResponsesClient, type CodexTokenResolver } from './llm/codex-responses-client.js';
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
@@ -17,6 +15,7 @@ import { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { listVaultUseRecords } from './vault/vault-use-records.js';

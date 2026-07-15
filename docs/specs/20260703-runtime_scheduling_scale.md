@@ -1,7 +1,7 @@
 # Runtime Scheduling And Scale
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
 
 ## Summary
 
@@ -40,7 +40,7 @@ The clean target is that runtime placement is a scheduler decision over declared
 - Define the scheduler concepts needed before multiple workers and remote placements become normal.
 - Keep Core mode separate from worker runtime placement.
 - Define worker pools, session leases, placement plans, affinity, and scale policy.
-- Support local OpenShell and remote OpenShell first without making OpenShell the product model.
+- Support the current local and remote single-slot disposable OpenShell Cell placements without making OpenShell the product model.
 - Make long-running worker steps bounded, resumable, interruptible, and auditable.
 
 ## Non-goals
@@ -53,7 +53,7 @@ The clean target is that runtime placement is a scheduler decision over declared
 
 ## Concepts
 
-`RuntimeTarget` is an available backend target such as local OpenShell or remote OpenShell.
+`RuntimeTarget` is an available backend target such as the configured local or remote disposable OpenShell Cell.
 
 `WorkerPool` is a capacity group for compatible runtime targets.
 
@@ -71,13 +71,17 @@ The clean target is that runtime placement is a scheduler decision over declared
 
 The accepted V1 concept model is implemented through the durable scheduler slice owned by `docs/specs/20260703-durable_scheduler_design.md`.
 
-The current NanoCore implementation now schedules product worker turns through durable admission entries, placement plans, session leases, worker pools, capacity records, target health records, lease renewal gates, restart-recovery evidence, and scheduler-owned worker-control token bindings. The localhost baseline uses one server-owned OpenShell pool and durable FIFO dispatch, while the record model already separates runtime placement from Core mode and preserves workspace, thread, turn, agent-session, AEP package, pool, target, lease, heartbeat, and recovery lineage.
+The current NanoCore implementation now schedules product worker turns through durable admission entries, placement plans, session leases, worker pools, capacity records, target health records, lease renewal gates, restart-recovery evidence, and scheduler-owned worker-control token bindings. The durable baseline uses one server-owned single-slot FIFO target selected from `pool_local`/`target_local` or `pool_remote`/`target_remote`, while the record model separates runtime placement from Core mode and preserves workspace, thread, turn, agent-session, AEP package, pool, target, lease, heartbeat, and recovery lineage.
 
 `apps/nanocore/src/runtime/scheduler-dispatch-loop.ts`, `scheduler-dispatch-service.ts`, `scheduler-lease-watch-loop.ts`, `scheduler-lease-renewal-loop.ts`, `scheduler-lease-maintenance-service.ts`, `scheduler-health-probe-loop.ts`, and `scheduler-restart-recovery.ts` provide the first runtime services over those records. `apps/nanocore/src/scheduler-records.ts` owns the helper layer for queue admission, baseline priority ordering, placement, lease acquisition, heartbeat, renewal, supply-refresh acknowledgement, stale and terminal lease transitions, capacity release, baseline pool initialization, target health updates, and worker-control binding resolution.
 
 `apps/nanocore/src/app.ts` routes new product turn starts through the durable scheduler when a Core database is configured and rejects product turn starts with `scheduler_unavailable` when scheduler storage is absent. Worker-control routes accept heartbeat, final-status, and supply-refresh acknowledgements against scheduler-owned token bindings, and Action Center projects queued or denied admissions plus selected recovery evidence.
 
-The OpenShell turn executor factory still selects the first concrete backend projection for local or remote container placement, but static environment selection is no longer the scheduling model. It is an input into the durable scheduler baseline and backend materialization path.
+The baseline renews heartbeat-live leases under their existing AEP snapshot without any supply-refresh declaration. Supply-refresh acknowledgements are persisted for a future cross-snapshot flow and are not ordinary renewal evidence.
+
+The OpenShell turn executor factory selects local or remote disposable Cell placement. Remote configuration binds a validated SSH lifecycle target to an operator-managed loopback HTTP Gateway origin and an explicit credential-free HTTP(S) `/api/worker-control` URL reachable from the sandbox. Static environment selection creates the matching one-slot `target_local` or `target_remote` durable scheduler baseline and backend materialization path; the scheduler does not yet select among multiple Cells.
+
+Remote backend materialization, sandbox command execution, result collection, durable one-slot target projection, and whole-Cell cleanup pass their focused and opt-in A1 paths with stock OpenShell `0.0.80`; real Codex runtime-provenance acceptance remains incomplete.
 
 ## Core Mode And Runtime Placement
 
@@ -95,7 +99,7 @@ placement: local | remote
 backend: openshell first
 ```
 
-Core mode does not imply placement. Local mode may schedule a local container. Server mode may schedule local or remote containers depending on policy and available capacity.
+Core mode does not imply placement. Local and server modes may each use local or remote container placement depending on configured target, policy, and available capacity.
 
 ## Runtime Target
 
@@ -204,16 +208,21 @@ Leases live in SQLite because they are operational coordination records.
 
 ## First Lease Timing Baseline
 
-The first local OpenShell scheduler should use conservative configurable defaults:
+The implemented baseline OpenShell scheduler uses the following timing defaults:
 
-- heartbeat interval: 30 seconds
-- heartbeat deadline: 90 seconds after the last accepted heartbeat
-- startup deadline: 2 minutes after lease acquisition
-- default bounded-step lease duration: 30 minutes
+- heartbeat interval: 10 seconds
+- heartbeat deadline: 30 seconds after the last accepted heartbeat
+- startup deadline: 25 minutes after lease acquisition for the configured disposable-Cell baseline
+- default initial bounded-step lease duration: 40 minutes for the configured disposable-Cell baseline
 - maximum bounded-step lease duration without explicit policy override: 2 hours
-- release grace after final status or interrupt: 5 minutes
+
+The accepted release target adds a 5-minute grace after final status or interrupt. The current lease record has no durable `releasingAt` or `releaseDeadline`, and the lease watch and restart recovery paths do not yet close a stuck `releasing` lease. Release grace is therefore target behavior, not a current implementation default.
+
+The first OpenShell target has one slot, and cleanup may release that slot only after the owning disposable Cell has been recycled into a fresh ready epoch that reports zero Docker containers and zero OpenShell sandboxes in both required stability checks.
 
 When a heartbeat deadline is missed, NanoCore should mark the lease `stale`, stop reusing the session, attempt evidence collection, and decide whether the turn can continue from collected evidence. Lease expiry should not silently close the canonical turn; the workflow closeout still depends on item, artifact, evidence, checkpoint, and review state.
+
+Lease renewal preserves the lease's package snapshot. It requires live lease and heartbeat state and remains bounded by the recorded policy maximum; it does not require `supply_refresh_ack`.
 
 ## Affinity
 
@@ -225,7 +234,7 @@ Affinity rules:
 - Policy and capability requirements override affinity.
 - A stale or unhealthy session must not be reused for convenience.
 
-Session reuse must bind to compatible AEP snapshots. If the new snapshot changes static supply, secret visibility, backend requirements, or workspace roots, the old session is stale unless the worker shim and runtime adapter support safe refresh.
+Session reuse must bind to compatible AEP snapshots. If the new snapshot changes static supply, secret visibility, backend requirements, or workspace roots, the old session is stale unless the worker shim and runtime adapter support safe refresh. Safe refresh applies only to an explicitly requested source-to-target snapshot transition; an acknowledgement is never evidence for ordinary same-snapshot renewal.
 
 ## Bounded Steps
 
@@ -260,16 +269,15 @@ Scale policy may define:
 
 Agent manifests declare scale intent. Scale policy decides what is allowed.
 
-## Remote OpenShell Strategy
+## Remote Disposable Cell Boundary
 
-Remote OpenShell targets can be:
+The current remote backend target is one single-slot whole Cell controlled by the same fixed helper as local placement.
 
-- deployment-selected external gateways
-- NanoCore-managed local gateway services
+NanoCore invokes the remote helper only through the validated non-interactive SSH command, reaches the Cell host's loopback Gateway through a separate operator-managed local forward, and supplies the credential-free HTTP(S) `/api/worker-control` URL that the sandbox can reach.
 
-The first production-shaped design should prefer deployment-selected external gateways for remote targets and NanoCore-managed gateway services for local development or controlled single-server deployments.
+The Cell owner controls the Gateway, container runtime, network, state roots, sockets, epoch identity, and complete teardown boundary. A naked or shared Gateway, insecure mode, custom binary, resource-delete cleanup, fork, patch, replacement artifact, in-process embedding, or compatibility selector is not an accepted remote target.
 
-In-process OpenShell embedding is not the default target unless OpenShell exposes a stable embedding API or OpenKit owns that integration boundary.
+The remaining scheduler work is to select among multiple independently owned Cells. It does not require another remote control daemon or a new Gateway contract.
 
 ## Remote Target Health Baseline
 
@@ -315,29 +323,35 @@ Human-actionable scheduling failures should create Action Center rows. User-visi
 - Core mode remains only `local` or `server`; worker placement is a separate runtime decision.
 - The product runtime path is container-first; host execution is not a product runtime.
 - OpenShell is the first backend projection, not the product model.
-- Warm pools should not ship before the first multi-worker scheduler release. One-shot or explicitly reused sessions are enough until lease and capacity records exist.
+- Warm pools and session reuse are prohibited for the first disposable OpenShell Cell; each cleanup recycles the complete runtime into a fresh empty epoch before capacity release.
 - Agent manifests may declare scale intent, but scale policy and scheduler decisions decide actual concurrency, queueing, placement, and reuse.
 - Scheduler queueing should begin with server-owned operational queues that preserve workspace, thread, and turn lineage, then enforce per-workspace and per-user limits through policy.
 - A stale or unhealthy session must not be reused for convenience. AEP snapshot incompatibility makes a session stale unless safe refresh is supported.
-- The first local OpenShell lease defaults are 30-second heartbeat interval, 90-second heartbeat deadline, 2-minute startup deadline, 30-minute bounded-step lease duration, 2-hour maximum without policy override, and 5-minute release grace.
-- Remote target health must cover gateway reachability, auth readiness, image or sandbox availability, launch capability, control relay, upload and download support, capability and inference routing, workspace synchronization, clock sanity, and capacity summary.
+- The implemented baseline OpenShell lease defaults are a 10-second heartbeat interval, 30-second heartbeat deadline, 25-minute cold-start deadline, 40-minute initial bounded-step lease duration, 15-minute explicit renewal duration, and 2-hour maximum without policy override. The cold-start deadline covers the bounded disposable-Cell prepare, trusted-relay provider-profile race recovery, provider setup, and sandbox creation path while preserving a normal runtime window. The accepted 5-minute release grace remains pending durable release-deadline and recovery support.
+- Same-snapshot continuation renews a heartbeat-live lease without a supply-refresh declaration; incompatible snapshot transitions require a future explicit source-to-target refresh contract or a new plan and lease at the next bounded step.
+- The first OpenShell pool and target concurrency ceiling is one for either configured placement because recycling the Cell terminates every process and sandbox inside that target.
 
 ## Deferred / Future Work
 
-- Add scaled-profile fairness, weighted round-robin, and richer per-workspace/user caps beyond the localhost baseline.
-- Add warm pool support only after leases and capacity health are durable.
+- Add scaled-profile fairness, weighted round-robin, and richer per-workspace/user caps beyond the single-target baseline.
+- Add multiple independent Cells and warm reuse only after each Cell has distinct ownership, ports, address pools, capacity records, and teardown proof.
 - Add richer Action Center queue-position, pool-saturation, and target-health views for scheduler failures.
-- Expand target health probing from the minimal localhost baseline into full remote OpenShell gateway, auth, image, relay, upload/download, inference, capability, workspace-sync, clock, and capacity checks.
+- Add multiple-Cell target registration and target selection after the current configured single-target contract is proven.
+- Add durable `releasingAt` and `releaseDeadline` fields, lease-watch expiry, restart recovery, evidence closeout, and capacity release for stuck `releasing` leases before activating the accepted 5-minute release grace.
 
 ## Testing Strategy
 
-- Placement fixture tests for local and remote targets.
+- Placement fixture tests for local and remote Cell configuration, including required SSH target, loopback Gateway origin, and sandbox-reachable worker-control URL diagnostics.
 - Lease acquisition and expiry tests.
+- Same-snapshot renewal tests with no refresh declaration, including active and draining pools plus healthy and quarantined targets with fresh worker heartbeats.
+- Incompatible-snapshot tests proving missing, rejected, or unsupported refresh evidence cannot authorize a snapshot transition.
 - Affinity tests for compatible and stale sessions.
 - Capacity denial tests.
 - Policy change tests that mark sessions stale or interrupt them.
 - Bounded step timeout tests.
 - Remote target health degradation tests.
+- Opt-in A1 tests for fixed SSH lifecycle control, stock Gateway preflight, remote sandbox materialization, whole-Cell recycle, and fresh replacement emptiness.
+- Opt-in real Codex provenance acceptance before this spec may return to `Implemented`.
 - Recovery tests after NanoCore restart.
 
 ## Risks & Mitigations
@@ -353,7 +367,7 @@ Human-actionable scheduling failures should create Action Center rows. User-visi
 - `docs/core/agent-session.md`
 - `docs/deployment.md`
 - `docs/core/sandbox.md`
-- `docs/specs/20260627-remote_openshell_gateway.md`
+- `docs/specs/20260715-openshell_disposable_cell_lifecycle.md`
 - `docs/specs/20260629-worker_runtime_communication_model.md`
 - `docs/specs/20260703-worker_control_protocol.md`
 - `docs/specs/20260703-agent_manifest_aep_resolution.md`

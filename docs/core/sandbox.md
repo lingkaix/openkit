@@ -20,6 +20,7 @@ Sandbox is separate from permission and capability.
 - Reusable sandboxes SHOULD separate session-static filesystem layout from turn-dynamic file contents.
 - Secret values, temporary credentials, and ephemeral mounts must stay out of durable snapshot state.
 - Stronger backends may provide stronger isolation, but backend feature differences must be summarized as capabilities or clear launch failures rather than leaking raw backend state.
+- Runtime capacity must not be released until the owning backend teardown boundary has fenced every previously accepted effect; a resource-level delete or point-in-time empty probe is insufficient when the backend cannot prove that an older create has terminated.
 
 ## Backend Ownership Principle
 
@@ -203,3 +204,4 @@ Implementations may expose stable summaries, redacted labels, or Core-issued IDs
 - Runtime backends MUST NOT become the source of truth for product workflow, artifact lineage, audit lineage, or public API semantics.
 - Reusable sandboxes MUST NOT treat dynamic slot contents as canonical workspace truth until NanoCore imports and records them through the owning storage and workspace synchronization contracts.
 - Static sandbox layout changes that the backend cannot apply safely MUST require a replacement sandbox or a blocked launch diagnostic.
+- Runtime capacity MUST remain cleanup-owned when the backend cannot prove that every accepted create path has been terminated.

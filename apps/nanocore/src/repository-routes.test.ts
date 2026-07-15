@@ -2,12 +2,11 @@ import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-
-import { type CreateAppOptions, createApp as createNanoCoreApp } from './app.js';
 import { createDemoWorkspaceForUser, FsStore } from './lib/store.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { type CreateAppOptions, createApp as createNanoCoreApp } from './test-support/app.js';
 import { upsertWorkspaceRepositoryResource } from './workspace/repository-store.js';
 
 /**

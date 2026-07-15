@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createApp } from '../app.js';
 import {
-  ensureLocalhostSchedulerBaseline,
+  ensureConfiguredSchedulerBaseline,
   upsertSchedulerCapacityRecord,
   upsertSchedulerWorkerPool,
 } from '../scheduler-records.js';
@@ -34,7 +34,7 @@ function createCoreDb(): CoreDb {
  * @param capacity Concurrent local lease capacity.
  */
 function configureLocalSchedulerCapacity(coreDb: CoreDb, capacity: number): void {
-  ensureLocalhostSchedulerBaseline(coreDb);
+  ensureConfiguredSchedulerBaseline(coreDb, { placement: 'local' });
   upsertSchedulerWorkerPool(coreDb, {
     allowedBackendKinds: ['openshell'],
     allowedPlacements: ['local'],

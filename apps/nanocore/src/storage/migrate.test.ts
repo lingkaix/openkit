@@ -33,6 +33,7 @@ const CORE_TABLES = [
   'vault_references',
   'vault_use_records',
   'verification',
+  'worker_backend_sessions',
   'worker_control_commands',
   'worker_control_records',
   'worker_control_rejected_evidence',
@@ -205,6 +206,30 @@ describe('storage migrations', () => {
         'created_at',
         'expires_at',
         'status',
+      ]);
+      expect(listColumnNames(coreDb, 'worker_backend_sessions')).toEqual([
+        'lease_id',
+        'workspace_id',
+        'thread_id',
+        'turn_id',
+        'agent_session_id',
+        'package_snapshot_id',
+        'backend_kind',
+        'deployment_id',
+        'backend_version',
+        'worker_image',
+        'cell_target_id',
+        'placement',
+        'gateway_name',
+        'gateway_endpoint',
+        'backend_session_id',
+        'staging_directory_ref',
+        'transient_provider_instance_id',
+        'workspace_handoff_state',
+        'state',
+        'physical_cleaned_at',
+        'created_at',
+        'updated_at',
       ]);
       expect(listTableNames(coreDb)).not.toContain('workspace_repository_resources');
       expect(coreDbPath(dataRoot)).toMatch(/server\/db\/core\.sqlite$/);

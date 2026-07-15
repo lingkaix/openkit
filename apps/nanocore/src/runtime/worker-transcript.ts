@@ -61,8 +61,8 @@ export interface WorkerTranscriptDiagnostic {
  * Result of importing one worker transcript payload.
  */
 export interface WorkerTranscriptImportResult {
-  /** Valid fallback event sequences not already accepted live. */
-  eventSequences: number[];
+  /** Event sequences rejected because durable live acceptance was missing or conflicting. */
+  rejectedEventSequences: number[];
   /** Event sequences skipped because identical live records were already accepted. */
   dedupedEventSequences: number[];
   /** Canonical item IDs created by NanoCore. */
@@ -91,12 +91,15 @@ export function importWorkerTranscript(
     artifactIds: [],
     dedupedEventSequences: [],
     diagnostics: [],
-    eventSequences: [],
     itemIds: [],
+    rejectedEventSequences: [],
   };
   const acceptedLiveEvents = indexAcceptedLiveEvents(options.acceptedLiveEvents ?? []);
 
   importEventRecords(environmentPackage, payload.eventsJsonl ?? '', acceptedLiveEvents, result);
+  if (result.diagnostics.some((diagnostic) => diagnostic.path.startsWith('$.events'))) {
+    return result;
+  }
   importItemRecords(store, environmentPackage, payload.itemsJsonl ?? '', result);
   importArtifactRecords(store, environmentPackage, payload.artifactsJsonl ?? '', result);
 
@@ -104,7 +107,7 @@ export function importWorkerTranscript(
 }
 
 /**
- * Imports canonical event fallback records from JSONL.
+ * Reconciles canonical transcript events against durable live acceptance.
  *
  * @param environmentPackage Expected package lineage.
  * @param jsonl Serialized event JSONL.
@@ -129,7 +132,11 @@ function importEventRecords(
       continue;
     }
 
+    const acceptedFingerprint = acceptedLiveEvents.get(parsed.data.sequence);
+
     if (!matchesPackageLineage(parsed.data.lineage, environmentPackage)) {
+      acceptedLiveEvents.delete(parsed.data.sequence);
+      result.rejectedEventSequences.push(parsed.data.sequence);
       result.diagnostics.push({
         code: 'worker_transcript_lineage_mismatch',
         path: record.path,
@@ -138,23 +145,38 @@ function importEventRecords(
       continue;
     }
 
-    const acceptedFingerprint = acceptedLiveEvents.get(parsed.data.sequence);
     const transcriptFingerprint = stableJson(parsed.data);
 
     if (acceptedFingerprint === undefined) {
-      result.eventSequences.push(parsed.data.sequence);
+      result.rejectedEventSequences.push(parsed.data.sequence);
+      result.diagnostics.push({
+        code: 'worker_transcript_live_event_missing',
+        path: record.path,
+        message: 'Worker transcript event was not accepted through live worker control.',
+      });
       continue;
     }
+    acceptedLiveEvents.delete(parsed.data.sequence);
 
     if (acceptedFingerprint === transcriptFingerprint) {
       result.dedupedEventSequences.push(parsed.data.sequence);
       continue;
     }
 
+    result.rejectedEventSequences.push(parsed.data.sequence);
     result.diagnostics.push({
       code: 'worker_transcript_live_event_conflict',
       path: record.path,
       message: 'Worker transcript event conflicts with an already accepted live event.',
+    });
+  }
+
+  for (const sequence of [...acceptedLiveEvents.keys()].sort((left, right) => left - right)) {
+    result.rejectedEventSequences.push(sequence);
+    result.diagnostics.push({
+      code: 'worker_transcript_live_event_missing_from_transcript',
+      path: '$.events',
+      message: 'A live-accepted worker event is absent from the collected transcript.',
     });
   }
 }
@@ -322,7 +344,8 @@ function matchesPackageLineage(
     record.threadId === environmentPackage.scope.threadId &&
     record.turnId === environmentPackage.scope.turnId &&
     record.agentSessionId === environmentPackage.scope.agentSessionId &&
-    record.packageSnapshotId === environmentPackage.snapshotId
+    record.packageSnapshotId === environmentPackage.snapshotId &&
+    (record.requestId ?? null) === (environmentPackage.scope.requestId ?? null)
   );
 }
 

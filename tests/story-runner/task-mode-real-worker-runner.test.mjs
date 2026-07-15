@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,12 +14,27 @@ import {
   assertTaskModeWorkspaceProof,
   DEFAULT_TASK_MODE_REAL_WORKER_STORY_PATH,
   evaluateTaskModeRealWorkerPrerequisites,
+  runTaskModeRealWorkerCli,
   runTaskModeRealWorkerStory,
   TASK_MODE_REAL_WORKER_PROOF_PATH,
 } from './task-mode-real-worker-runner.mjs';
 
 const rawBundleId = 'evb_0123456789abcdef01234567';
 const indexBundleId = 'evb_89abcdef0123456789abcdef';
+const taskWorkerImageRef = 'openkit/worker-codex:0123456789ab-a1';
+
+/** Returns redacted runtime setup evidence for synthetic runner clients. */
+async function configureTestRuntime() {
+  return {
+    oauth: { accountSlotId: 'default', status: 'logged_in' },
+    runtimeConfig: {
+      agentId: 'agent_codex_host',
+      modelId: 'openai-codex/gpt-5.6-sol',
+      providerId: 'openai_codex',
+      reloadStatus: 'dry-run',
+    },
+  };
+}
 
 /** Returns one complete public provenance surface for runner assertions. */
 function completeProvenanceSurface() {
@@ -118,8 +134,8 @@ function completeProvenanceSurface() {
   };
 }
 
-/** Returns one trusted AEP bound to the disposable repository base. */
-function completeAepSurface(initialHead = 'a'.repeat(40)) {
+/** Returns one trusted AEP bound to the disposable repository base and acceptance image. */
+function completeAepSurface(initialHead = 'a'.repeat(40), imageRef = taskWorkerImageRef) {
   return {
     items: [
       {
@@ -142,14 +158,14 @@ function completeAepSurface(initialHead = 'a'.repeat(40)) {
               {
                 credentialVisibility: 'placeholder',
                 endpoint: { upstream: { kind: 'nanocore-gateway' } },
-                model: 'openai-codex/gpt-5.5',
+                model: 'openai-codex/gpt-5.6-sol',
                 providerInstanceId: 'openai_codex',
               },
             ],
           },
           policy: { secrets: { visibility: 'none' } },
           providers: { attachments: [] },
-          runtime: { image: { ref: 'openkit/worker-codex:dev' } },
+          runtime: { image: { ref: imageRef } },
           vault: { grants: [], references: [] },
           workspace: {
             inputs: [
@@ -359,7 +375,7 @@ describe('real Task Mode worker L6 runner', () => {
     assert.match(result.reason, /OPENKIT_L6_ALLOW_PROVIDER_QUOTA=1/);
   });
 
-  it('requires the local NanoCore data root for scheduler finalization evidence', () => {
+  it('requires the local NanoCore data root for runtime and scheduler evidence', () => {
     const result = evaluateTaskModeRealWorkerPrerequisites({
       env: {
         OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
@@ -372,7 +388,7 @@ describe('real Task Mode worker L6 runner', () => {
     });
 
     assert.equal(result.enabled, false);
-    assert.match(result.reason, /OPENKIT_L6_TASK_NANOCORE_DATA_ROOT/);
+    assert.match(result.reason, /OPENKIT_L6_NANOCORE_DATA_ROOT/);
   });
 
   it('accepts complete explicit real-worker prerequisites', () => {
@@ -380,10 +396,11 @@ describe('real Task Mode worker L6 runner', () => {
       env: {
         OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
         OPENKIT_L6_EVIDENCE_DIR: '/tmp/openkit-task-evidence',
-        OPENKIT_L6_TASK_NANOCORE_DATA_ROOT: '/tmp/openkit-task-data',
+        OPENKIT_L6_NANOCORE_DATA_ROOT: '/tmp/openkit-task-data',
         OPENKIT_L6_TASK_NANOCORE_URL: 'http://127.0.0.1:54001',
         OPENKIT_L6_TASK_REAL_WORKER: '1',
         OPENKIT_L6_TASK_REPO_ROOT: '/tmp/openkit-task-repo',
+        OPENKIT_L6_TASK_WORKER_IMAGE_REF: taskWorkerImageRef,
       },
       fileExists: (path) =>
         path === '/tmp/openkit-task-repo/.git' ||
@@ -395,6 +412,24 @@ describe('real Task Mode worker L6 runner', () => {
     assert.equal(result.enabled, true);
     assert.equal(result.config.nanoCoreDataRoot, '/tmp/openkit-task-data');
     assert.match(result.config.taskInput, /exactly two Codex sub-agents/);
+    assert.equal(result.config.workerImageRef, taskWorkerImageRef);
+  });
+
+  it('requires the exact A1-built worker image reference before quota use', () => {
+    const result = evaluateTaskModeRealWorkerPrerequisites({
+      env: {
+        OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
+        OPENKIT_L6_EVIDENCE_DIR: '/tmp/openkit-task-evidence',
+        OPENKIT_L6_NANOCORE_DATA_ROOT: '/tmp/openkit-task-data',
+        OPENKIT_L6_TASK_NANOCORE_URL: 'http://127.0.0.1:54001',
+        OPENKIT_L6_TASK_REAL_WORKER: '1',
+        OPENKIT_L6_TASK_REPO_ROOT: '/tmp/openkit-task-repo',
+      },
+      fileExists: () => true,
+    });
+
+    assert.equal(result.enabled, false);
+    assert.match(result.reason, /OPENKIT_L6_TASK_WORKER_IMAGE_REF/);
   });
 
   it('writes a skipped result without touching NanoCore when opt-in is absent', async () => {
@@ -417,6 +452,55 @@ describe('real Task Mode worker L6 runner', () => {
     assert.doesNotMatch(source, /\bregistry\b/);
   });
 
+  it('kills the supervised Task process group at the story deadline', {
+    timeout: 5_000,
+  }, async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-real-task-timeout-'));
+    const repositoryRoot = join(tempRoot, 'repo');
+    const evidenceDir = join(tempRoot, 'evidence');
+    const nanoCoreDataRoot = join(tempRoot, 'data');
+    const storyPath = join(tempRoot, 'timeout.story.md');
+    initializeRepository(repositoryRoot);
+    initializeTaskDataRoot(nanoCoreDataRoot);
+    writeFileSync(
+      storyPath,
+      readFileSync(DEFAULT_TASK_MODE_REAL_WORKER_STORY_PATH, 'utf8').replace(
+        'timeout_seconds: 3600',
+        'timeout_seconds: 1'
+      )
+    );
+    const child = new EventEmitter();
+    child.pid = 24_680;
+    let killed = false;
+
+    await assert.rejects(
+      () =>
+        runTaskModeRealWorkerCli({
+          env: {
+            OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
+            OPENKIT_L6_EVIDENCE_DIR: evidenceDir,
+            OPENKIT_L6_NANOCORE_DATA_ROOT: nanoCoreDataRoot,
+            OPENKIT_L6_TASK_NANOCORE_URL: 'http://127.0.0.1:54001',
+            OPENKIT_L6_TASK_REAL_WORKER: '1',
+            OPENKIT_L6_TASK_REPO_ROOT: repositoryRoot,
+            OPENKIT_L6_TASK_WORKER_IMAGE_REF: taskWorkerImageRef,
+          },
+          killProcess: (pid, signal) => {
+            assert.equal(pid, -24_680);
+            assert.equal(signal, 'SIGKILL');
+            killed = true;
+            child.emit('close', null);
+          },
+          spawnProcess: () => child,
+          stdout: () => {},
+          storyPath,
+        }),
+      /configured deadline/i
+    );
+    assert.equal(killed, true);
+    rmSync(tempRoot, { force: true, recursive: true });
+  });
+
   it('rejects a story that does not require real provider and Codex execution', async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-real-task-runner-'));
     const dataRoot = join(tempRoot, 'data');
@@ -435,13 +519,15 @@ describe('real Task Mode worker L6 runner', () => {
     await assert.rejects(
       () =>
         runTaskModeRealWorkerStory({
+          configureRuntime: configureTestRuntime,
           env: {
             OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
             OPENKIT_L6_EVIDENCE_DIR: evidenceDir,
-            OPENKIT_L6_TASK_NANOCORE_DATA_ROOT: dataRoot,
+            OPENKIT_L6_NANOCORE_DATA_ROOT: dataRoot,
             OPENKIT_L6_TASK_NANOCORE_URL: 'http://127.0.0.1:54001',
             OPENKIT_L6_TASK_REAL_WORKER: '1',
             OPENKIT_L6_TASK_REPO_ROOT: repositoryRoot,
+            OPENKIT_L6_TASK_WORKER_IMAGE_REF: taskWorkerImageRef,
           },
           stdout: () => {},
           storyPath,
@@ -505,11 +591,12 @@ describe('real Task Mode worker L6 runner', () => {
     );
   });
 
-  it('requires one trusted gpt-5.5 AEP bound to the exact repository base', () => {
+  it('requires one trusted gpt-5.6-sol AEP bound to the exact repository and image', () => {
     const initialHead = 'a'.repeat(40);
     assert.deepEqual(
       assertTaskModeAgentEnvironment({
         aepRead: completeAepSurface(initialHead),
+        expectedImageRef: taskWorkerImageRef,
         initialHead,
         packageSnapshotId: 'aep_snapshot_1',
         turnId: 'turn_1',
@@ -518,8 +605,8 @@ describe('real Task Mode worker L6 runner', () => {
         agentSessionId: 'ags_1',
         backendKind: 'openshell',
         controlMode: 'direct-nanocore',
-        imageRef: 'openkit/worker-codex:dev',
-        modelId: 'openai-codex/gpt-5.5',
+        imageRef: taskWorkerImageRef,
+        modelId: 'openai-codex/gpt-5.6-sol',
         providerId: 'openai_codex',
         runtimeKind: 'codex',
         snapshotId: 'aep_snapshot_1',
@@ -532,11 +619,24 @@ describe('real Task Mode worker L6 runner', () => {
       () =>
         assertTaskModeAgentEnvironment({
           aepRead: stale,
+          expectedImageRef: taskWorkerImageRef,
           initialHead,
           packageSnapshotId: 'aep_snapshot_1',
           turnId: 'turn_1',
         }),
       /repository base/
+    );
+
+    assert.throws(
+      () =>
+        assertTaskModeAgentEnvironment({
+          aepRead: completeAepSurface(initialHead, 'openkit/worker-codex:dev'),
+          expectedImageRef: taskWorkerImageRef,
+          initialHead,
+          packageSnapshotId: 'aep_snapshot_1',
+          turnId: 'turn_1',
+        }),
+      /acceptance image/
     );
   });
 
@@ -576,6 +676,7 @@ describe('real Task Mode worker L6 runner', () => {
         throw new Error('Runner used the default fetch instead of the injected client factory.');
       };
       await runTaskModeRealWorkerStory({
+        configureRuntime: configureTestRuntime,
         createClients: async (_config, timeoutMs) => {
           clientTimeoutMs = timeoutMs;
           return {
@@ -594,10 +695,11 @@ describe('real Task Mode worker L6 runner', () => {
         env: {
           OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
           OPENKIT_L6_EVIDENCE_DIR: evidenceDir,
-          OPENKIT_L6_TASK_NANOCORE_DATA_ROOT: dataRoot,
+          OPENKIT_L6_NANOCORE_DATA_ROOT: dataRoot,
           OPENKIT_L6_TASK_NANOCORE_URL: 'http://127.0.0.1:54001',
           OPENKIT_L6_TASK_REAL_WORKER: '1',
           OPENKIT_L6_TASK_REPO_ROOT: repositoryRoot,
+          OPENKIT_L6_TASK_WORKER_IMAGE_REF: taskWorkerImageRef,
         },
         stdout: () => {},
       });
@@ -626,6 +728,7 @@ describe('real Task Mode worker L6 runner', () => {
     let closed = false;
 
     const storyRun = runTaskModeRealWorkerStory({
+      configureRuntime: configureTestRuntime,
       createClients: async (_config, _timeoutMs, deadlineSignal) => {
         clientDeadlineSignal = deadlineSignal;
         return {
@@ -642,10 +745,11 @@ describe('real Task Mode worker L6 runner', () => {
       env: {
         OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
         OPENKIT_L6_EVIDENCE_DIR: evidenceDir,
-        OPENKIT_L6_TASK_NANOCORE_DATA_ROOT: dataRoot,
+        OPENKIT_L6_NANOCORE_DATA_ROOT: dataRoot,
         OPENKIT_L6_TASK_NANOCORE_URL: 'http://127.0.0.1:54001',
         OPENKIT_L6_TASK_REAL_WORKER: '1',
         OPENKIT_L6_TASK_REPO_ROOT: repositoryRoot,
+        OPENKIT_L6_TASK_WORKER_IMAGE_REF: taskWorkerImageRef,
       },
       stdout: () => {},
     });
@@ -677,13 +781,15 @@ describe('real Task Mode worker L6 runner', () => {
 
     const result = await runTaskModeRealWorkerStory({
       clients,
+      configureRuntime: configureTestRuntime,
       env: {
         OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
         OPENKIT_L6_EVIDENCE_DIR: evidenceDir,
-        OPENKIT_L6_TASK_NANOCORE_DATA_ROOT: dataRoot,
+        OPENKIT_L6_NANOCORE_DATA_ROOT: dataRoot,
         OPENKIT_L6_TASK_NANOCORE_URL: 'http://127.0.0.1:54001',
         OPENKIT_L6_TASK_REAL_WORKER: '1',
         OPENKIT_L6_TASK_REPO_ROOT: repositoryRoot,
+        OPENKIT_L6_TASK_WORKER_IMAGE_REF: taskWorkerImageRef,
       },
       stdout: () => {},
     });
@@ -692,7 +798,14 @@ describe('real Task Mode worker L6 runner', () => {
     assert.equal(result.cleanup.reviewDecision, 'rejected');
     assert.equal(result.git.headUnchanged, true);
     assert.equal(result.git.statusShort, '');
+    assert.equal(result.runtime.runtimeConfig.modelId, 'openai-codex/gpt-5.6-sol');
     assert.equal(git(repositoryRoot, ['status', '--short', '--untracked-files=all']), '');
+    for (const fileName of [
+      'task-mode-real-worker-result.json',
+      'task-mode-real-worker-redaction-notes.md',
+    ]) {
+      assert.equal(statSync(join(evidenceDir, fileName)).mode & 0o777, 0o600);
+    }
 
     rmSync(tempRoot, { force: true, recursive: true });
   });
@@ -781,13 +894,15 @@ describe('real Task Mode worker L6 runner', () => {
           () =>
             runTaskModeRealWorkerStory({
               clients,
+              configureRuntime: configureTestRuntime,
               env: {
                 OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
                 OPENKIT_L6_EVIDENCE_DIR: evidenceDir,
-                OPENKIT_L6_TASK_NANOCORE_DATA_ROOT: dataRoot,
+                OPENKIT_L6_NANOCORE_DATA_ROOT: dataRoot,
                 OPENKIT_L6_TASK_NANOCORE_URL: 'http://127.0.0.1:54001',
                 OPENKIT_L6_TASK_REAL_WORKER: '1',
                 OPENKIT_L6_TASK_REPO_ROOT: repositoryRoot,
+                OPENKIT_L6_TASK_WORKER_IMAGE_REF: taskWorkerImageRef,
               },
               stdout: () => {},
             }),

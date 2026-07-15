@@ -91,7 +91,7 @@ The first route projection may use family-specific routes such as `/knowledge/se
 
 ## Capability Families
 
-Initial capability families:
+The accepted target capability families are:
 
 - `mcp`: call an MCP tool exposed through NanoCore.
 - `knowledge.search`: search governed knowledge and source indexes.
@@ -99,7 +99,7 @@ Initial capability families:
 - `knowledge.propose`: propose source-traceable knowledge changes discovered during worker execution.
 - `external-api`: call a configured external API through a provider profile. Deferred beyond V1.
 - `network`: access an allowed network target through a proxy policy. Deferred beyond V1.
-- `vault.use`: use a vault-mediated credential without exposing the secret value where possible. V1 implements concrete provider, GitHub MCP, Codex auth JSON runtime-file, and Git push credential paths; generic future credential classes are deferred.
+- `vault.use`: use a vault-mediated credential without exposing the secret value where possible. Current provider attachments, static GitHub MCP attachment, Codex auth JSON runtime-file, and Git push credential paths are separate implementation mechanisms; they do not make this future gateway route active.
 - `llm`: call an LLM through the AEP-resolved backend-local or trusted worker-inference gateway path.
 - `artifact.read`: read declared artifacts as context.
 - `artifact.write-notice`: announce an artifact that must be collected through the data plane.
@@ -171,7 +171,7 @@ Raw provider payloads should not be stored by default.
 
 ## MCP Gateway
 
-Worker-side MCP access uses NanoCore as the mediator.
+Under the accepted target, worker-side MCP access will use NanoCore as the mediator. This section does not describe a currently callable route.
 
 MCP catalog entries may represent:
 
@@ -213,7 +213,7 @@ Raw MCP request or response payloads should not be durable by default. If a task
 
 ## Knowledge Gateway
 
-Knowledge capability calls are retrieval and read operations, not direct notebook access.
+Under the accepted target, Knowledge capability calls are retrieval and read operations, not direct notebook access. Current Workflow Coordinator paths can record selected Knowledge references in delegation metadata, but they do not automatically bind those references or material into the AEP or worker turn. Workers cannot call these operations while the capability plane is disabled.
 
 `knowledge.search` returns ranked, redacted candidates with source references and reasons.
 
@@ -317,7 +317,7 @@ The worker receives an actionable error without raw upstream secrets or backend 
 
 - Rebuild the direct `capability.local` projection, thin worker client, and initial Knowledge, artifact, and diagnostic route families without restoring a sidecar or creating a second control path.
 - Add worker capability routes for external API, network, and future typed tool calls after those roadmap areas are activated.
-- Add generic vault-mediated capability routes for future credential classes not covered by the current provider, GitHub MCP, Codex auth JSON runtime-file, and Git push paths.
+- Add generic vault-mediated capability routes for credential classes not covered by the current non-capability provider attachment, static GitHub MCP attachment, Codex auth JSON runtime-file, and Git push paths.
 - Add capability catalog schema and resolution records that distinguish canonical catalog sources from AEP snapshots.
 - Implement the baseline rate-limit and budget model with stable denied or error records.
 - Decide whether a generic `POST /calls` endpoint is worth adding after family-specific routes stabilize.

@@ -3,10 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ListHumanAttentionResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
-import { createApp } from '../app.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { LOCAL_USER_ID } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { createPolicyApprovalGate } from './approval-gates.js';
 

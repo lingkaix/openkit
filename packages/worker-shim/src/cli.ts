@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process';
 import { closeSync, readSync } from 'node:fs';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
+import { WorkerCanonicalTerminalEventDataSchema } from '@openkit/worker-protocol';
 import { CodexRuntimeProvenanceCapture } from './codex-runtime-provenance.js';
 import {
   WorkerControlClient,
@@ -456,13 +457,19 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
     options.args.sessionDir
   );
   const lineage = workerLineageFromEnvironment(environment);
+  let finalStatusClient: WorkerControlClient | null = null;
   const writer = new WorkerTranscriptWriter({
+    appendEvent: async (record) => {
+      if (!finalStatusClient) {
+        throw new Error('Worker live event append requires initialized direct control.');
+      }
+      await finalStatusClient.appendEvent(record);
+    },
     lineage,
     sessionDir: options.args.sessionDir,
   });
   let failureReason = 'worker-supervisor-failed';
   let terminalOutcomeAttempted = false;
-  let finalStatusClient: WorkerControlClient | null = null;
   let workerControlReady = false;
   const controlAbortController = new AbortController();
   const codexAbortController = new AbortController();
@@ -549,8 +556,8 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
     if (interrupted || options.signal?.aborted) {
       terminalOutcomeAttempted = true;
       await writeAndReportTerminalOutcome(writer, workerControlReady ? finalStatusClient : null, {
-        reason: interrupted ? 'worker-interrupt-command' : 'worker-parent-aborted',
         status: 'interrupted',
+        stopReason: interrupted ? 'worker-interrupt-command' : 'worker-parent-aborted',
       });
       return {
         exitCode: null,
@@ -560,7 +567,7 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
     }
 
     failureReason = 'worker-runtime-failed';
-    await writer.writeEvent({
+    await writer.writeAndAppendEvent({
       data: {
         argv: command,
         cwd,
@@ -640,7 +647,7 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
       throw error;
     }
 
-    await writer.writeEvent({
+    await writer.writeAndAppendEvent({
       data: {
         exitCode: result.exitCode,
         runtime: 'codex',
@@ -677,11 +684,15 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
       ...(status === 'failed' && !provenanceCapture
         ? { diagnostics: codexFailureDiagnostics(result) }
         : {}),
-      ...(status === 'failed' ? { reason: codexExitReason(result) } : {}),
-      ...(status === 'interrupted'
-        ? { reason: interrupted ? 'worker-interrupt-command' : 'worker-parent-aborted' }
-        : {}),
       status,
+      stopReason:
+        status === 'failed'
+          ? codexExitReason(result)
+          : status === 'interrupted'
+            ? interrupted
+              ? 'worker-interrupt-command'
+              : 'worker-parent-aborted'
+            : status,
     });
     controlAbortController.abort();
     await controlPromise.catch(() => undefined);
@@ -702,8 +713,8 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
     if (!terminalOutcomeAttempted) {
       terminalOutcomeAttempted = true;
       await writeAndReportTerminalOutcome(writer, workerControlReady ? finalStatusClient : null, {
-        reason: failureReason,
         status: 'failed',
+        stopReason: failureReason,
       }).catch(() => undefined);
     }
     throw error;
@@ -726,11 +737,11 @@ async function writeAndReportTerminalOutcome(
   input: WorkerTerminalOutcomeInput
 ): Promise<void> {
   const record = await writer.writeTerminalOutcome(input);
+  const terminalData = WorkerCanonicalTerminalEventDataSchema.parse(record.event.data);
 
   await client?.recordFinalStatus({
+    ...terminalData,
     sequence: record.sequence,
-    status: input.status,
-    stopReason: input.reason ?? input.status,
   });
 }
 
@@ -1475,10 +1486,10 @@ function resolveCodexResultMessagePath(
  * @throws When the final message is not a readable regular file or exceeds the fixed size bound.
  */
 async function readCodexResultMessage(resultMessagePath: string): Promise<string | null> {
-  let metadata: Awaited<ReturnType<typeof stat>>;
+  let file: Awaited<ReturnType<typeof open>>;
 
   try {
-    metadata = await stat(resultMessagePath);
+    file = await open(resultMessagePath, 'r');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return null;
@@ -1486,21 +1497,34 @@ async function readCodexResultMessage(resultMessagePath: string): Promise<string
     throw error;
   }
 
-  if (!metadata.isFile()) {
-    throw new Error('Codex final message path is not a regular file.');
-  }
-  if (metadata.size > CODEX_FINAL_MESSAGE_MAX_BYTES) {
-    throw new Error(`Codex final message exceeds ${CODEX_FINAL_MESSAGE_MAX_BYTES} bytes.`);
-  }
+  try {
+    const metadata = await file.stat();
 
-  const raw = await readFile(resultMessagePath, 'utf8');
+    if (!metadata.isFile()) {
+      throw new Error('Codex final message path is not a regular file.');
+    }
+    if (metadata.size > CODEX_FINAL_MESSAGE_MAX_BYTES) {
+      throw new Error(`Codex final message exceeds ${CODEX_FINAL_MESSAGE_MAX_BYTES} bytes.`);
+    }
 
-  if (Buffer.byteLength(raw, 'utf8') > CODEX_FINAL_MESSAGE_MAX_BYTES) {
-    throw new Error(`Codex final message exceeds ${CODEX_FINAL_MESSAGE_MAX_BYTES} bytes.`);
+    const raw = Buffer.allocUnsafe(CODEX_FINAL_MESSAGE_MAX_BYTES + 1);
+    let length = 0;
+    while (length < raw.length) {
+      const { bytesRead } = await file.read(raw, length, raw.length - length, length);
+      if (bytesRead === 0) {
+        break;
+      }
+      length += bytesRead;
+    }
+    if (length > CODEX_FINAL_MESSAGE_MAX_BYTES) {
+      throw new Error(`Codex final message exceeds ${CODEX_FINAL_MESSAGE_MAX_BYTES} bytes.`);
+    }
+    const text = raw.toString('utf8', 0, length).trim();
+
+    return text.length > 0 ? text : null;
+  } finally {
+    await file.close();
   }
-  const text = raw.trim();
-
-  return text.length > 0 ? text : null;
 }
 
 /**
@@ -1747,6 +1771,9 @@ async function runWorkerControlLoop(
         return;
       }
       const commandPoll = await pollWorkerControl(client, transcript, nextHeartbeatSequence);
+      if (transcript.eventTranscriptSealed) {
+        continue;
+      }
       await handleWorkerControlCommands(
         client,
         transcript,
@@ -1835,7 +1862,7 @@ async function handleWorkerControlCommands(
       stdout: result.stdout,
       terminalCommandId: command.commandId,
     });
-    await transcript.writeEvent({
+    await transcript.writeAndAppendEvent({
       data: {
         commandId: command.commandId,
         exitCode: result.exitCode,
@@ -1891,7 +1918,7 @@ async function recordWorkerInterrupt(
   transcript: WorkerTranscriptWriter,
   command: Extract<DirectWorkerControlCommand, { kind: 'interrupt' }>
 ): Promise<void> {
-  await transcript.writeEvent({
+  await transcript.writeAndAppendEvent({
     data: {
       reason: command.reason ?? null,
       status: 'command.interrupt',
@@ -1919,7 +1946,10 @@ async function recordWorkerHeartbeat(
     sequence,
     status,
   });
-  await transcript.writeEvent({
+  if (transcript.eventTranscriptSealed) {
+    return;
+  }
+  await transcript.writeAndAppendEvent({
     data: { status },
     type: 'worker.heartbeat',
   });

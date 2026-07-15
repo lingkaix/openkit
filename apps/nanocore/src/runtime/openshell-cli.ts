@@ -2,6 +2,90 @@ import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
 
+/** Maximum wall time for one read-only OpenShell control command. */
+const OPEN_SHELL_CONTROL_TIMEOUT_MS = 30_000;
+/** Maximum wall time for one retained sandbox command, including CLI shutdown grace. */
+const OPEN_SHELL_EXECUTION_TIMEOUT_MS = 905_000;
+/** Maximum wall time for one backend materialization command. */
+const OPEN_SHELL_MATERIALIZATION_TIMEOUT_MS = 120_000;
+/** Official OpenShell CLI path for supported NanoCore hosts. */
+const OPEN_SHELL_BINARY =
+  process.platform === 'darwin' ? '/opt/homebrew/bin/openshell' : '/usr/bin/openshell';
+/** Grace period between terminating and force-killing a timed-out CLI process group. */
+const OPEN_SHELL_TERMINATION_GRACE_MS = 200;
+/** Grace enforced by the detached command supervisor before force-killing its child group. */
+const OPEN_SHELL_SUPERVISOR_TERMINATION_GRACE_MS = 100;
+/** Detached Node program that retains timeout ownership after the NanoCore process disappears. */
+const OPEN_SHELL_COMMAND_SUPERVISOR_SOURCE = `
+const { spawn } = require('node:child_process');
+const { Socket } = require('node:net');
+const [timeoutValue, graceValue, binary, ...args] = process.argv.slice(1);
+const timeoutMs = Number(timeoutValue);
+const graceMs = Number(graceValue);
+const detached = process.platform !== 'win32';
+const child = spawn(binary, args, {
+  detached,
+  env: process.env,
+  stdio: ['ignore', 'inherit', 'inherit'],
+});
+let finished = false;
+let forceKillTimer = null;
+let parentChannel = null;
+let terminatingExitCode = null;
+const killChild = (signal) => {
+  if (child.pid === undefined) return;
+  try {
+    if (detached) process.kill(-child.pid, signal);
+    else child.kill(signal);
+  } catch {}
+};
+const terminateChild = () => {
+  if (finished) return;
+  killChild('SIGTERM');
+  if (forceKillTimer === null) {
+    forceKillTimer = setTimeout(() => {
+      forceKillTimer = null;
+      killChild('SIGKILL');
+      finish(terminatingExitCode === null ? 1 : terminatingExitCode);
+    }, graceMs);
+  }
+};
+const abortChild = () => {
+  if (finished) return;
+  killChild('SIGKILL');
+};
+const finish = (code) => {
+  if (finished) return;
+  finished = true;
+  clearTimeout(deadline);
+  if (forceKillTimer !== null) clearTimeout(forceKillTimer);
+  process.exit(code);
+};
+const deadline = setTimeout(terminateChild, timeoutMs);
+process.on('SIGTERM', terminateChild);
+process.on('SIGINT', terminateChild);
+try {
+  parentChannel = new Socket({ fd: 3, readable: true, writable: false });
+  parentChannel.resume();
+  parentChannel.once('end', abortChild);
+  parentChannel.once('error', abortChild);
+} catch {
+  abortChild();
+}
+child.once('error', (error) => {
+  process.stderr.write(String(error && error.message ? error.message : error));
+  finish(127);
+});
+child.once('close', (code) => {
+  const exitCode = code === null ? 1 : code;
+  if (forceKillTimer !== null) {
+    terminatingExitCode = exitCode;
+    return;
+  }
+  finish(exitCode);
+});
+`;
+
 /**
  * Completed OpenShell CLI command result.
  */
@@ -39,6 +123,32 @@ export interface OpenShellCommandRunner {
 }
 
 /**
+ * Compiles one timeout-owned command whose detached supervisor survives NanoCore termination.
+ *
+ * @param binary Executable to run.
+ * @param args Exact executable argument vector.
+ * @param timeoutMs Positive command wall-time limit.
+ * @returns Node supervisor command and argument vector.
+ */
+export function compileOpenShellSupervisedCommand(
+  binary: string,
+  args: readonly string[],
+  timeoutMs: number
+): { readonly command: string; readonly args: string[] } {
+  return {
+    args: [
+      '-e',
+      OPEN_SHELL_COMMAND_SUPERVISOR_SOURCE,
+      String(timeoutMs),
+      String(OPEN_SHELL_SUPERVISOR_TERMINATION_GRACE_MS),
+      binary,
+      ...args,
+    ],
+    command: process.execPath,
+  };
+}
+
+/**
  * Parsed `openshell status` summary.
  */
 export interface OpenShellStatus {
@@ -72,8 +182,6 @@ export interface OpenShellGatewayTargetInput {
   gateway?: string;
   /** Optional direct gateway endpoint URL. */
   gatewayEndpoint?: string;
-  /** Whether to skip TLS verification for the direct gateway endpoint. */
-  gatewayInsecure?: boolean;
 }
 
 /** Inputs for creating or updating one OpenShell provider instance. */
@@ -88,8 +196,6 @@ export interface OpenShellProviderUpsertInput {
   gateway?: string;
   /** Optional direct OpenShell gateway endpoint URL. */
   gatewayEndpoint?: string;
-  /** Whether to skip TLS verification for the direct gateway endpoint. */
-  gatewayInsecure?: boolean;
   /** Provider instance name. */
   name: string;
   /** OpenShell provider profile/type id. */
@@ -108,8 +214,6 @@ export interface OpenShellProviderProfileEnsureInput {
   gateway?: string;
   /** Optional direct OpenShell gateway endpoint URL. */
   gatewayEndpoint?: string;
-  /** Whether to skip TLS verification for the direct gateway endpoint. */
-  gatewayInsecure?: boolean;
   /** Content-addressed provider profile id. */
   id: string;
   /** Host-local JSON profile path passed to OpenShell import. */
@@ -128,20 +232,6 @@ export interface OpenShellProviderGetInput {
   gateway?: string;
   /** Optional direct OpenShell gateway endpoint URL. */
   gatewayEndpoint?: string;
-  /** Whether to skip TLS verification for the direct gateway endpoint. */
-  gatewayInsecure?: boolean;
-  /** Provider instance name. */
-  name: string;
-}
-
-/** Inputs for deleting one OpenShell provider instance. */
-export interface OpenShellProviderDeleteInput {
-  /** OpenShell gateway name. */
-  gateway?: string;
-  /** Optional direct OpenShell gateway endpoint URL. */
-  gatewayEndpoint?: string;
-  /** Whether to skip TLS verification for the direct gateway endpoint. */
-  gatewayInsecure?: boolean;
   /** Provider instance name. */
   name: string;
 }
@@ -162,8 +252,6 @@ export interface OpenShellProviderRefreshStatusInput {
   gateway?: string;
   /** Optional direct OpenShell gateway endpoint URL. */
   gatewayEndpoint?: string;
-  /** Whether to skip TLS verification for the direct gateway endpoint. */
-  gatewayInsecure?: boolean;
   /** Provider instance name. */
   name: string;
 }
@@ -174,24 +262,10 @@ export interface OpenShellProviderDetachInput {
   gateway?: string;
   /** Optional direct OpenShell gateway endpoint URL. */
   gatewayEndpoint?: string;
-  /** Whether to skip TLS verification for the direct gateway endpoint. */
-  gatewayInsecure?: boolean;
   /** Sandbox name. */
   name: string;
   /** Provider name to detach from the sandbox. */
   provider: string;
-}
-
-/**
- * Parsed `openshell doctor check` summary.
- */
-export interface OpenShellDoctorStatus {
-  /** Whether all doctor checks passed. */
-  ok: boolean;
-  /** Docker check summary when present. */
-  docker: string | null;
-  /** Product-safe error summary for failed doctor checks. */
-  error?: string;
 }
 
 /**
@@ -210,8 +284,6 @@ export interface OpenShellSandboxCreateInput {
   gateway?: string;
   /** Optional direct OpenShell gateway endpoint URL. */
   gatewayEndpoint?: string;
-  /** Whether to skip TLS verification for the direct gateway endpoint. */
-  gatewayInsecure?: boolean;
   /** Labels attached to the sandbox. */
   labels?: Record<string, string>;
   /** Optional memory limit such as `4Gi`. */
@@ -239,6 +311,26 @@ export interface OpenShellSandboxCreateResult {
 }
 
 /**
+ * Inputs for executing one command in a retained OpenShell sandbox.
+ */
+export interface OpenShellSandboxExecInput {
+  /** Command and arguments to execute inside the sandbox. */
+  command: string[];
+  /** Environment variables to inject into the sandbox command. */
+  env?: Record<string, string>;
+  /** OpenShell gateway name. */
+  gateway?: string;
+  /** Optional direct OpenShell gateway endpoint URL. */
+  gatewayEndpoint?: string;
+  /** Retained sandbox name. */
+  name: string;
+  /** Optional remote command timeout in seconds. */
+  timeoutSeconds?: number;
+  /** Optional working directory inside the sandbox. */
+  workdir?: string;
+}
+
+/**
  * Local file upload passed to OpenShell sandbox creation.
  */
 export interface OpenShellSandboxUploadInput {
@@ -258,26 +350,10 @@ export interface OpenShellSandboxDownloadInput {
   gateway?: string;
   /** Optional direct OpenShell gateway endpoint URL. */
   gatewayEndpoint?: string;
-  /** Whether to skip TLS verification for the direct gateway endpoint. */
-  gatewayInsecure?: boolean;
   /** Sandbox name. */
   name: string;
   /** Worker-visible source path inside the sandbox workspace. */
   sandboxPath: string;
-}
-
-/**
- * Inputs for deleting one OpenShell sandbox.
- */
-export interface OpenShellSandboxDeleteInput {
-  /** OpenShell gateway name. */
-  gateway?: string;
-  /** Optional direct OpenShell gateway endpoint URL. */
-  gatewayEndpoint?: string;
-  /** Whether to skip TLS verification for the direct gateway endpoint. */
-  gatewayInsecure?: boolean;
-  /** Sandbox name. */
-  name: string;
 }
 
 /**
@@ -294,8 +370,6 @@ export interface OpenShellSandboxFileResult {
 export interface OpenShellCliOptions {
   /** OpenShell command runner, injected by tests. */
   runner?: OpenShellCommandRunner;
-  /** OpenShell binary name or absolute path. */
-  binary?: string;
 }
 
 /**
@@ -307,9 +381,9 @@ export class ChildProcessOpenShellRunner implements OpenShellCommandRunner {
   /**
    * Creates a child-process runner for the installed OpenShell CLI.
    *
-   * @param binary OpenShell binary name or path.
+   * @param binary Executable used by focused process-runner tests.
    */
-  public constructor(binary = 'openshell') {
+  public constructor(binary = OPEN_SHELL_BINARY) {
     this.binary = binary;
   }
 
@@ -325,26 +399,46 @@ export class ChildProcessOpenShellRunner implements OpenShellCommandRunner {
     options: OpenShellCommandOptions = {}
   ): Promise<OpenShellCommandResult> {
     return new Promise((resolve, reject) => {
-      const child = spawn(this.binary, args, {
-        env: {
-          ...process.env,
-          ...options.env,
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
+      const childEnv = {
+        ...process.env,
+        ...options.env,
+      };
+      delete childEnv.OPENSHELL_GATEWAY;
+      delete childEnv.OPENSHELL_GATEWAY_ENDPOINT;
+      delete childEnv.OPENSHELL_GATEWAY_INSECURE;
+      const supervisedCommand =
+        options.timeoutMs && options.timeoutMs > 0
+          ? compileOpenShellSupervisedCommand(this.binary, args, options.timeoutMs)
+          : null;
+      const child = spawn(
+        supervisedCommand?.command ?? this.binary,
+        supervisedCommand?.args ?? args,
+        {
+          detached: process.platform !== 'win32',
+          env: childEnv,
+          stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
+        }
+      );
       const stdoutChunks: Buffer[] = [];
       const stderrChunks: Buffer[] = [];
+      const parentLivenessChannel = child.stdio[3];
       let settled = false;
       let timeout: ReturnType<typeof setTimeout> | null = null;
+      let forceKillTimeout: ReturnType<typeof setTimeout> | null = null;
+      let timedOut = false;
 
       if (options.timeoutMs && options.timeoutMs > 0) {
         timeout = setTimeout(() => {
           if (settled) {
             return;
           }
-          settled = true;
-          child.kill('SIGTERM');
-          reject(new Error(`OpenShell command timed out after ${options.timeoutMs}ms.`));
+          timedOut = true;
+          terminateOpenShellProcess(child.pid, () => child.kill('SIGTERM'), 'SIGTERM');
+          forceKillTimeout = setTimeout(() => {
+            if (!settled) {
+              terminateOpenShellProcess(child.pid, () => child.kill('SIGKILL'), 'SIGKILL');
+            }
+          }, OPEN_SHELL_TERMINATION_GRACE_MS);
         }, options.timeoutMs);
       }
 
@@ -354,6 +448,9 @@ export class ChildProcessOpenShellRunner implements OpenShellCommandRunner {
       child.stderr?.on('data', (chunk: Buffer) => {
         stderrChunks.push(chunk);
       });
+      child.once('exit', () => {
+        parentLivenessChannel?.destroy();
+      });
       child.on('error', (error) => {
         if (settled) {
           return;
@@ -361,6 +458,9 @@ export class ChildProcessOpenShellRunner implements OpenShellCommandRunner {
         settled = true;
         if (timeout) {
           clearTimeout(timeout);
+        }
+        if (forceKillTimeout) {
+          clearTimeout(forceKillTimeout);
         }
         reject(error);
       });
@@ -372,6 +472,13 @@ export class ChildProcessOpenShellRunner implements OpenShellCommandRunner {
         if (timeout) {
           clearTimeout(timeout);
         }
+        if (forceKillTimeout) {
+          clearTimeout(forceKillTimeout);
+        }
+        if (timedOut) {
+          reject(new Error(`OpenShell command timed out after ${options.timeoutMs}ms.`));
+          return;
+        }
         resolve({
           exitCode,
           stderr: Buffer.concat(stderrChunks).toString('utf8'),
@@ -379,6 +486,27 @@ export class ChildProcessOpenShellRunner implements OpenShellCommandRunner {
         });
       });
     });
+  }
+}
+
+/** Terminates one CLI process group, falling back to the direct child when unavailable. */
+function terminateOpenShellProcess(
+  pid: number | undefined,
+  fallback: () => boolean,
+  signal: NodeJS.Signals
+): void {
+  if (process.platform !== 'win32' && pid !== undefined) {
+    try {
+      process.kill(-pid, signal);
+      return;
+    } catch {
+      // The process group may already have exited; direct-child termination remains idempotent.
+    }
+  }
+  try {
+    fallback();
+  } catch {
+    // Close/error settles the command; a vanished child needs no additional termination.
   }
 }
 
@@ -391,10 +519,10 @@ export class OpenShellCli {
   /**
    * Creates an OpenShell CLI adapter.
    *
-   * @param options Optional runner or binary override.
+   * @param options Optional test runner.
    */
   public constructor(options: OpenShellCliOptions = {}) {
-    this.runner = options.runner ?? new ChildProcessOpenShellRunner(options.binary);
+    this.runner = options.runner ?? new ChildProcessOpenShellRunner();
   }
 
   /**
@@ -403,7 +531,9 @@ export class OpenShellCli {
    * @returns Semantic version string without the leading binary name.
    */
   public async version(): Promise<string> {
-    const result = await this.runner.run(['--version']);
+    const result = await this.runner.run(['--version'], {
+      timeoutMs: OPEN_SHELL_CONTROL_TIMEOUT_MS,
+    });
 
     if (result.exitCode !== 0) {
       throw new Error(`OpenShell version check failed: ${safeErrorText(result)}`);
@@ -426,7 +556,7 @@ export class OpenShellCli {
     }
     appendOpenShellGatewayFlags(args, input);
 
-    const result = await this.runner.run(args);
+    const result = await this.runner.run(args, { timeoutMs: OPEN_SHELL_CONTROL_TIMEOUT_MS });
     const fields = parseCliFields(result.stdout);
 
     if (result.exitCode !== 0) {
@@ -460,7 +590,7 @@ export class OpenShellCli {
     }
     appendOpenShellGatewayFlags(args, input);
 
-    const result = await this.runner.run(args);
+    const result = await this.runner.run(args, { timeoutMs: OPEN_SHELL_CONTROL_TIMEOUT_MS });
 
     if (result.exitCode !== 0) {
       throw new Error(`OpenShell gateway info failed: ${safeErrorText(result)}`);
@@ -490,7 +620,7 @@ export class OpenShellCli {
       args.push('-g', input.gateway);
     }
     appendOpenShellGatewayFlags(args, input);
-    const result = await this.runner.run(args);
+    const result = await this.runner.run(args, { timeoutMs: OPEN_SHELL_CONTROL_TIMEOUT_MS });
 
     if (result.exitCode !== 0) {
       throw new Error(`OpenShell global settings check failed: ${safeErrorText(result)}`);
@@ -567,7 +697,9 @@ export class OpenShellCli {
     }
 
     const exportArgs = compileOpenShellProviderProfileExportArgs(input);
-    const exported = await this.runner.run(exportArgs);
+    const exported = await this.runner.run(exportArgs, {
+      timeoutMs: OPEN_SHELL_MATERIALIZATION_TIMEOUT_MS,
+    });
 
     if (exported.exitCode === 0) {
       assertOpenShellProviderProfileMatches(input.id, desiredProfile, exported.stdout);
@@ -577,7 +709,9 @@ export class OpenShellCli {
       throw new Error(`OpenShell provider profile export failed: ${safeErrorText(exported)}`);
     }
 
-    const imported = await this.runner.run(compileOpenShellProviderProfileImportArgs(input));
+    const imported = await this.runner.run(compileOpenShellProviderProfileImportArgs(input), {
+      timeoutMs: OPEN_SHELL_MATERIALIZATION_TIMEOUT_MS,
+    });
 
     if (imported.exitCode === 0) {
       return { id: input.id };
@@ -586,7 +720,9 @@ export class OpenShellCli {
     const importError = new Error(
       `OpenShell provider profile import failed: ${safeErrorText(imported)}`
     );
-    const racedExport = await this.runner.run(exportArgs);
+    const racedExport = await this.runner.run(exportArgs, {
+      timeoutMs: OPEN_SHELL_MATERIALIZATION_TIMEOUT_MS,
+    });
 
     if (racedExport.exitCode === 0) {
       try {
@@ -616,7 +752,9 @@ export class OpenShellCli {
    * @returns Product-safe provider inspection result.
    */
   public async getProvider(input: OpenShellProviderGetInput): Promise<OpenShellProviderInfo> {
-    const result = await this.runner.run(compileOpenShellProviderGetArgs(input));
+    const result = await this.runner.run(compileOpenShellProviderGetArgs(input), {
+      timeoutMs: OPEN_SHELL_CONTROL_TIMEOUT_MS,
+    });
 
     if (result.exitCode !== 0) {
       throw new Error(
@@ -627,31 +765,6 @@ export class OpenShellCli {
     return {
       name: input.name,
       stdout: redactProviderOutput(result.stdout),
-    };
-  }
-
-  /**
-   * Deletes one OpenShell provider instance.
-   *
-   * @param input Provider and gateway selection.
-   * @returns Product-safe delete result.
-   * @throws When OpenShell rejects the provider deletion.
-   */
-  public async deleteProvider(
-    input: OpenShellProviderDeleteInput
-  ): Promise<OpenShellSandboxFileResult> {
-    const args = ['provider', 'delete'];
-
-    appendOpenShellProviderGatewayFlags(args, input);
-    args.push(input.name);
-    const result = await this.runner.run(args);
-
-    if (result.exitCode !== 0) {
-      throw new Error(`OpenShell provider delete failed: ${safeErrorText(result)}`);
-    }
-
-    return {
-      stdout: result.stdout,
     };
   }
 
@@ -671,7 +784,7 @@ export class OpenShellCli {
       args.push('--credential-key', input.credentialKey);
     }
     args.push(input.name);
-    const result = await this.runner.run(args);
+    const result = await this.runner.run(args, { timeoutMs: OPEN_SHELL_CONTROL_TIMEOUT_MS });
 
     if (result.exitCode !== 0) {
       throw new Error(
@@ -702,7 +815,7 @@ export class OpenShellCli {
     appendOpenShellGatewayFlags(args, input);
     args.push(input.name, input.provider);
 
-    const result = await this.runner.run(args);
+    const result = await this.runner.run(args, { timeoutMs: OPEN_SHELL_CONTROL_TIMEOUT_MS });
 
     if (result.exitCode !== 0) {
       throw new Error(`OpenShell provider detach failed: ${safeErrorText(result)}`);
@@ -710,29 +823,6 @@ export class OpenShellCli {
 
     return {
       stdout: result.stdout,
-    };
-  }
-
-  /**
-   * Runs OpenShell doctor checks for local prerequisites.
-   *
-   * @returns Parsed doctor summary.
-   */
-  public async doctorCheck(): Promise<OpenShellDoctorStatus> {
-    const result = await this.runner.run(['doctor', 'check']);
-    const docker = parseDoctorLine(result.stdout, 'Docker');
-
-    if (result.exitCode !== 0) {
-      return {
-        docker,
-        error: safeErrorText(result),
-        ok: false,
-      };
-    }
-
-    return {
-      docker,
-      ok: true,
     };
   }
 
@@ -745,7 +835,9 @@ export class OpenShellCli {
   public async createSandbox(
     input: OpenShellSandboxCreateInput
   ): Promise<OpenShellSandboxCreateResult> {
-    const result = await this.runner.run(compileOpenShellSandboxCreateArgs(input));
+    const result = await this.runner.run(compileOpenShellSandboxCreateArgs(input), {
+      timeoutMs: OPEN_SHELL_MATERIALIZATION_TIMEOUT_MS,
+    });
 
     if (result.exitCode !== 0) {
       throw new Error(`OpenShell sandbox create failed: ${safeErrorText(result)}`);
@@ -755,6 +847,29 @@ export class OpenShellCli {
       name: input.name,
       stdout: result.stdout,
     };
+  }
+
+  /**
+   * Executes one command in a retained OpenShell sandbox and waits for it to exit.
+   *
+   * @param input Sandbox execution request.
+   * @returns Captured command result when the remote command succeeds.
+   * @throws When OpenShell or the remote command exits unsuccessfully.
+   */
+  public async execSandbox(input: OpenShellSandboxExecInput): Promise<OpenShellCommandResult> {
+    const result = await this.runner.run(compileOpenShellSandboxExecArgs(input), {
+      timeoutMs: OPEN_SHELL_EXECUTION_TIMEOUT_MS,
+    });
+
+    if (result.exitCode !== 0) {
+      const error = safeErrorText(result);
+
+      throw new Error(
+        `OpenShell sandbox exec failed with exit code ${result.exitCode ?? 'unknown'}${error ? `: ${error}` : '.'}`
+      );
+    }
+
+    return result;
   }
 
   /**
@@ -777,7 +892,9 @@ export class OpenShellCli {
       args.push(input.destinationPath);
     }
 
-    const result = await this.runner.run(args);
+    const result = await this.runner.run(args, {
+      timeoutMs: OPEN_SHELL_MATERIALIZATION_TIMEOUT_MS,
+    });
 
     if (result.exitCode !== 0) {
       throw new Error(`OpenShell sandbox download failed: ${safeErrorText(result)}`);
@@ -789,34 +906,6 @@ export class OpenShellCli {
   }
 
   /**
-   * Deletes one OpenShell sandbox.
-   *
-   * @param input Delete request.
-   * @returns Product-safe delete result.
-   */
-  public async deleteSandbox(
-    input: OpenShellSandboxDeleteInput
-  ): Promise<OpenShellSandboxFileResult> {
-    const args = ['sandbox', 'delete'];
-
-    if (input.gateway) {
-      args.push('--gateway', input.gateway);
-    }
-    appendOpenShellGatewayFlags(args, input);
-    args.push(input.name);
-
-    const result = await this.runner.run(args);
-
-    if (result.exitCode !== 0 && !isOpenShellSandboxNotFound(result)) {
-      throw new Error(`OpenShell sandbox delete failed: ${safeErrorText(result)}`);
-    }
-
-    return {
-      stdout: result.exitCode === 0 ? result.stdout : '',
-    };
-  }
-
-  /**
    * Reads the immutable type of an existing provider.
    *
    * @param input Provider and gateway selection.
@@ -824,7 +913,9 @@ export class OpenShellCli {
    * @throws When inspection fails or omits the immutable type.
    */
   private async existingProviderType(input: OpenShellProviderUpsertInput): Promise<string | null> {
-    const result = await this.runner.run(compileOpenShellProviderGetArgs(input));
+    const result = await this.runner.run(compileOpenShellProviderGetArgs(input), {
+      timeoutMs: OPEN_SHELL_MATERIALIZATION_TIMEOUT_MS,
+    });
 
     if (result.exitCode !== 0) {
       if (isOpenShellProviderNotFound(result)) {
@@ -864,6 +955,7 @@ export class OpenShellCli {
     appendOpenShellProviderGatewayFlags(args, input);
     const result = await this.runner.run(args, {
       env: { [input.credentialKey]: input.credentialValue },
+      timeoutMs: OPEN_SHELL_MATERIALIZATION_TIMEOUT_MS,
     });
 
     if (result.exitCode !== 0) {
@@ -886,6 +978,7 @@ export class OpenShellCli {
     args.push(input.name);
     const result = await this.runner.run(args, {
       env: { [input.credentialKey]: input.credentialValue },
+      timeoutMs: OPEN_SHELL_MATERIALIZATION_TIMEOUT_MS,
     });
 
     if (result.exitCode !== 0) {
@@ -908,7 +1001,9 @@ export class OpenShellCli {
 
     appendOpenShellProviderGatewayFlags(args, input);
     args.push(input.name);
-    const result = await this.runner.run(args);
+    const result = await this.runner.run(args, {
+      timeoutMs: OPEN_SHELL_MATERIALIZATION_TIMEOUT_MS,
+    });
 
     if (result.exitCode !== 0) {
       throw new Error(`OpenShell provider expiry update failed: ${safeErrorText(result)}`);
@@ -1028,16 +1123,6 @@ function isOpenShellProviderNotFound(result: OpenShellCommandResult): boolean {
 }
 
 /**
- * Checks the exact OpenShell 0.0.80 missing-sandbox diagnostic.
- *
- * @param result Failed sandbox deletion result.
- * @returns True only when the target sandbox is already absent.
- */
-function isOpenShellSandboxNotFound(result: OpenShellCommandResult): boolean {
-  return normalizedOpenShellErrorText(result).includes('sandbox not found');
-}
-
-/**
  * Normalizes one product-safe OpenShell error for exact diagnostic matching.
  *
  * @param result Failed OpenShell command result.
@@ -1093,20 +1178,41 @@ export function compileOpenShellSandboxCreateArgs(input: OpenShellSandboxCreateI
 }
 
 /**
+ * Compiles `openshell sandbox exec` arguments for a retained sandbox command.
+ *
+ * @param input Sandbox execution request.
+ * @returns CLI argument vector.
+ */
+export function compileOpenShellSandboxExecArgs(input: OpenShellSandboxExecInput): string[] {
+  const args = ['sandbox', 'exec', '--name', input.name, '--no-tty'];
+
+  if (input.gateway) {
+    args.push('--gateway', input.gateway);
+  }
+  appendOpenShellGatewayFlags(args, input);
+  if (input.workdir) {
+    args.push('--workdir', input.workdir);
+  }
+  if (input.timeoutSeconds !== undefined) {
+    args.push('--timeout', String(input.timeoutSeconds));
+  }
+  for (const [key, value] of Object.entries(input.env ?? {})) {
+    args.push('--env', `${key}=${value}`);
+  }
+  args.push('--', ...input.command);
+
+  return args;
+}
+
+/**
  * Appends direct OpenShell gateway flags shared by gateway and sandbox commands.
  *
  * @param args Mutable argument vector.
  * @param input Gateway endpoint options.
  */
-function appendOpenShellGatewayFlags(
-  args: string[],
-  input: { gatewayEndpoint?: string; gatewayInsecure?: boolean }
-): void {
+function appendOpenShellGatewayFlags(args: string[], input: { gatewayEndpoint?: string }): void {
   if (input.gatewayEndpoint) {
     args.push('--gateway-endpoint', input.gatewayEndpoint);
-  }
-  if (input.gatewayInsecure) {
-    args.push('--gateway-insecure');
   }
 }
 
@@ -1118,7 +1224,7 @@ function appendOpenShellGatewayFlags(
  */
 function appendOpenShellProviderGatewayFlags(
   args: string[],
-  input: { gateway?: string; gatewayEndpoint?: string; gatewayInsecure?: boolean }
+  input: { gateway?: string; gatewayEndpoint?: string }
 ): void {
   if (input.gateway) {
     args.push('--gateway', input.gateway);
@@ -1179,29 +1285,6 @@ function parseCliFields(value: string): Map<string, string> {
   }
 
   return fields;
-}
-
-/**
- * Parses one doctor check line by label.
- *
- * @param value CLI stdout.
- * @param label Doctor check label.
- * @returns Parsed check summary or null.
- */
-function parseDoctorLine(value: string, label: string): string | null {
-  const prefix = label.toLowerCase();
-
-  for (const line of stripAnsi(value).split(/\r?\n/)) {
-    const trimmed = line.trim();
-
-    if (!trimmed.toLowerCase().startsWith(prefix)) {
-      continue;
-    }
-
-    return trimmed.replace(new RegExp(`^${label}\\s*\\.+\\s*`, 'i'), '').trim();
-  }
-
-  return null;
 }
 
 /**

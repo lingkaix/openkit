@@ -212,8 +212,8 @@ Use `vendor: "openai_codex"` with `kind: "oauth"` for a provider instance backed
   "displayName": "Codex Team A",
   "kind": "oauth",
   "vendor": "openai_codex",
-  "models": ["openai-codex/gpt-5.1-codex"],
-  "defaultModel": "openai-codex/gpt-5.1-codex",
+  "models": ["openai-codex/gpt-5.6-sol"],
+  "defaultModel": "openai-codex/gpt-5.6-sol",
   "extensions": {
     "openkit": {
       "codexOAuth": {

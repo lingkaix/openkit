@@ -85,6 +85,12 @@ export type {
   VaultUseResolvingPath,
 } from './vault-use-records.js';
 export { vaultUseRecords } from './vault-use-records.js';
+export type {
+  WorkerBackendSessionPlacement,
+  WorkerBackendSessionState,
+  WorkerBackendWorkspaceHandoffState,
+} from './worker-backend-sessions.js';
+export { workerBackendSessions } from './worker-backend-sessions.js';
 export { workerTurnCheckpoints } from './worker-turn-checkpoints.js';
 export { workspaceApplyPlans } from './workspace-apply-plans.js';
 export type { WorkspaceApplyResultStatus } from './workspace-apply-results.js';

@@ -3,6 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  recordWorkerBackendSessionMaterializing,
+  transitionWorkerBackendSessionState,
+} from './runtime/worker-backend-sessions.js';
+import {
   acceptSchedulerLeaseHeartbeat,
   cancelSchedulerAdmissionEntry,
   completeSchedulerLeaseForTerminalTurn,
@@ -12,18 +16,18 @@ import {
   createSchedulerSessionLease,
   denySchedulerAdmissionEntry,
   dispatchNextSchedulerEntry,
-  ensureLocalhostSchedulerBaseline,
+  ensureConfiguredSchedulerBaseline,
   expireReleasingSchedulerLeases,
   listQueuedSchedulerAdmissionEntries,
   listSchedulerLeasesNeedingWorkspaceRecovery,
   markExpiredSchedulerLeasesStale,
   markSchedulerSessionLeaseReleasing,
-  markStartupTimedOutSchedulerLeasesFailed,
   recordSchedulerSupplyRefreshAck,
   renewSchedulerSessionLease,
   resolveSchedulerLeaseTokenBinding,
   retryDeniedSchedulerAdmissionEntry,
   schedulerLeaseHasAppliedSupplyRefreshAck,
+  transitionStartupTimedOutSchedulerLeases,
   upsertSchedulerCapacityRecord,
   upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
@@ -167,6 +171,102 @@ function createDispatchedLease(coreDb: ReturnType<typeof createMigratedCoreDb>, 
     now: () => '2026-07-05T00:00:02.000Z',
   });
 }
+
+/** Reads every row participating in one terminal scheduler accounting transaction. */
+function terminalAccountingSnapshot(
+  coreDb: ReturnType<typeof createMigratedCoreDb>,
+  suffix: string
+): Record<string, unknown> {
+  return {
+    admission: coreDb.sqlite
+      .prepare('SELECT * FROM scheduler_admission_entries WHERE queue_entry_id = ?')
+      .get(`queue_${suffix}`),
+    capacity: coreDb.sqlite
+      .prepare('SELECT * FROM scheduler_capacity_records WHERE target_id = ?')
+      .get(`target_${suffix}`),
+    lease: coreDb.sqlite
+      .prepare('SELECT * FROM scheduler_session_leases WHERE lease_id = ?')
+      .get(`lease_${suffix}`),
+    plan: coreDb.sqlite
+      .prepare('SELECT * FROM scheduler_placement_plans WHERE plan_id = ?')
+      .get(`plan_${suffix}`),
+    pool: coreDb.sqlite
+      .prepare('SELECT * FROM scheduler_worker_pools WHERE pool_id = ?')
+      .get(`pool_${suffix}`),
+  };
+}
+
+const terminalAccountingCorruptions: ReadonlyArray<{
+  readonly apply: (coreDb: ReturnType<typeof createMigratedCoreDb>, suffix: string) => void;
+  readonly expectedError: RegExp;
+  readonly name: string;
+}> = [
+  {
+    apply: (coreDb, suffix) => {
+      coreDb.sqlite
+        .prepare('DELETE FROM scheduler_placement_plans WHERE plan_id = ?')
+        .run(`plan_${suffix}`);
+    },
+    expectedError: /placement plan/i,
+    name: 'missing placement plan',
+  },
+  {
+    apply: (coreDb, suffix) => {
+      coreDb.sqlite
+        .prepare("UPDATE scheduler_placement_plans SET status = 'completed' WHERE plan_id = ?")
+        .run(`plan_${suffix}`);
+    },
+    expectedError: /placement plan/i,
+    name: 'changed placement plan state',
+  },
+  {
+    apply: (coreDb, suffix) => {
+      coreDb.sqlite
+        .prepare('DELETE FROM scheduler_admission_entries WHERE queue_entry_id = ?')
+        .run(`queue_${suffix}`);
+    },
+    expectedError: /admission/i,
+    name: 'missing admission',
+  },
+  {
+    apply: (coreDb, suffix) => {
+      coreDb.sqlite
+        .prepare('DELETE FROM scheduler_capacity_records WHERE target_id = ?')
+        .run(`target_${suffix}`);
+    },
+    expectedError: /capacity/i,
+    name: 'missing capacity row',
+  },
+  {
+    apply: (coreDb, suffix) => {
+      coreDb.sqlite
+        .prepare('UPDATE scheduler_capacity_records SET in_use_count = 0 WHERE target_id = ?')
+        .run(`target_${suffix}`);
+    },
+    expectedError: /capacity/i,
+    name: 'zero capacity counter',
+  },
+  {
+    apply: (coreDb, suffix) => {
+      coreDb.sqlite
+        .prepare('DELETE FROM scheduler_worker_pools WHERE pool_id = ?')
+        .run(`pool_${suffix}`);
+    },
+    expectedError: /pool/i,
+    name: 'missing worker pool',
+  },
+  {
+    apply: (coreDb, suffix) => {
+      coreDb.sqlite
+        .prepare(
+          'UPDATE scheduler_worker_pools SET current_admitted_session_count = 0 WHERE pool_id = ?'
+        )
+        .run(`pool_${suffix}`);
+    },
+    expectedError: /pool/i,
+    name: 'zero pool counter',
+  },
+];
 
 describe('scheduler records', () => {
   it('records supply refresh acknowledgements as durable renewal declarations', () => {
@@ -943,6 +1043,287 @@ describe('scheduler records', () => {
     }
   });
 
+  it.each(terminalAccountingCorruptions)('rolls back every terminal accounting write for $name', ({
+    apply,
+    expectedError,
+    name,
+  }) => {
+    const coreDb = createMigratedCoreDb();
+    const suffix = `terminal_corrupt_${name.replaceAll(' ', '_')}`;
+
+    try {
+      createDispatchedLease(coreDb, `lease_${suffix}`);
+      apply(coreDb, suffix);
+      const before = terminalAccountingSnapshot(coreDb, suffix);
+
+      expect(() =>
+        completeSchedulerSessionLease(coreDb, {
+          leaseId: `lease_${suffix}`,
+          releaseReason: 'terminal-corruption-test',
+          schedulerEpoch: 9,
+          terminalStatus: 'failed',
+        })
+      ).toThrow(expectedError);
+      expect(terminalAccountingSnapshot(coreDb, suffix)).toEqual(before);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('blocks every terminal capacity release until the backend session is durably cleaned', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      createDispatchedLease(coreDb, 'lease_cleanup_barrier');
+      recordWorkerBackendSessionMaterializing(coreDb, {
+        backendVersion: '0.0.80',
+        workerImage: 'openkit/worker-codex:dev',
+        identity: {
+          agentSessionId: 'session_cleanup_barrier',
+          backendKind: 'openshell',
+          backendSessionId: 'openkit-session_cleanup_barrier',
+          backendTarget: {
+            cellTargetId: 'cell-test',
+            gatewayEndpoint: null,
+            gatewayName: 'openshell',
+            placement: 'local',
+          },
+          deploymentId: 'deployment-test',
+          packageSnapshotId: 'pkg_demo',
+          stagingDirectoryRef: 'server/runtime/worker-backend-sessions/pkg_demo',
+          transientProviderInstanceId: null,
+        },
+        lineage: {
+          threadId: 'thread_cleanup_barrier',
+          turnId: 'turn_cleanup_barrier',
+          workspaceId: 'ws_demo',
+        },
+        now: () => '2026-07-05T00:00:03.000Z',
+        sandboxBindingRef: 'lease-binding:lease_cleanup_barrier',
+      });
+
+      expect(() =>
+        completeSchedulerSessionLease(coreDb, {
+          leaseId: 'lease_cleanup_barrier',
+          releaseReason: 'turn-failed',
+          terminalStatus: 'failed',
+        })
+      ).toThrow('Worker backend session must be cleaned before scheduler lease completion.');
+      completeSchedulerLeaseForTerminalTurn(coreDb, {
+        id: 'turn_cleanup_barrier',
+        status: 'failed',
+        threadId: 'thread_cleanup_barrier',
+        workspaceId: 'ws_demo',
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT leases.status, capacity.in_use_count AS inUseCount
+             FROM scheduler_session_leases AS leases
+             JOIN scheduler_capacity_records AS capacity ON capacity.target_id = leases.target_id
+             WHERE leases.lease_id = ?`
+          )
+          .get('lease_cleanup_barrier')
+      ).toEqual({ inUseCount: 1, status: 'acquired' });
+
+      transitionWorkerBackendSessionState(coreDb, {
+        fromState: 'materializing',
+        leaseId: 'lease_cleanup_barrier',
+        toState: 'cleanup-pending',
+      });
+      transitionWorkerBackendSessionState(coreDb, {
+        fromState: 'cleanup-pending',
+        leaseId: 'lease_cleanup_barrier',
+        toState: 'physical-cleaned',
+      });
+      completeSchedulerLeaseForTerminalTurn(coreDb, {
+        id: 'turn_cleanup_barrier',
+        status: 'failed',
+        threadId: 'thread_cleanup_barrier',
+        workspaceId: 'ws_demo',
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT leases.status, capacity.in_use_count AS inUseCount
+             FROM scheduler_session_leases AS leases
+             JOIN scheduler_capacity_records AS capacity ON capacity.target_id = leases.target_id
+             WHERE leases.lease_id = ?`
+          )
+          .get('lease_cleanup_barrier')
+      ).toEqual({ inUseCount: 1, status: 'acquired' });
+      transitionWorkerBackendSessionState(coreDb, {
+        fromState: 'physical-cleaned',
+        leaseId: 'lease_cleanup_barrier',
+        toState: 'cleaned',
+      });
+      completeSchedulerLeaseForTerminalTurn(coreDb, {
+        id: 'turn_cleanup_barrier',
+        status: 'failed',
+        threadId: 'thread_cleanup_barrier',
+        workspaceId: 'ws_demo',
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT leases.status, capacity.in_use_count AS inUseCount
+             FROM scheduler_session_leases AS leases
+             JOIN scheduler_capacity_records AS capacity ON capacity.target_id = leases.target_id
+             WHERE leases.lease_id = ?`
+          )
+          .get('lease_cleanup_barrier')
+      ).toEqual({ inUseCount: 0, status: 'failed' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'active',
+    'releasing',
+  ] as const)('blocks terminal capacity release for %s leases that are missing their durable backend anchor', (status) => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      createDispatchedLease(coreDb, `lease_missing_anchor_${status}`);
+      if (status === 'active') {
+        acceptSchedulerLeaseHeartbeat(coreDb, {
+          heartbeatTimeoutMs: 30_000,
+          leaseId: `lease_missing_anchor_${status}`,
+          now: () => '2026-07-05T00:00:10.000Z',
+          workerSequence: 1,
+        });
+      } else {
+        markSchedulerSessionLeaseReleasing(coreDb, {
+          leaseId: `lease_missing_anchor_${status}`,
+          now: () => '2026-07-05T00:00:10.000Z',
+          releaseReason: 'worker-final-status',
+        });
+      }
+
+      expect(() =>
+        completeSchedulerSessionLease(coreDb, {
+          leaseId: `lease_missing_anchor_${status}`,
+          releaseReason: 'turn-failed',
+          terminalStatus: 'failed',
+        })
+      ).toThrow('requires a durable backend session anchor before completion');
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT leases.status, capacity.in_use_count AS inUseCount
+               FROM scheduler_session_leases AS leases
+               JOIN scheduler_capacity_records AS capacity ON capacity.target_id = leases.target_id
+               WHERE leases.lease_id = ?`
+          )
+          .get(`lease_missing_anchor_${status}`)
+      ).toEqual({ inUseCount: 1, status });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('requires every scheduler lease to own a unique sandbox binding', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      createDispatchedLease(coreDb, 'lease_binding_owner');
+      createDispatchedLease(coreDb, 'lease_binding_conflict');
+
+      expect(() =>
+        coreDb.sqlite
+          .prepare('UPDATE scheduler_session_leases SET sandbox_binding_ref = ? WHERE lease_id = ?')
+          .run('lease-binding:lease_binding_owner', 'lease_binding_conflict')
+      ).toThrow(/unique constraint failed/i);
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT sandbox_binding_ref AS sandboxBindingRef FROM scheduler_session_leases WHERE lease_id = ?'
+          )
+          .get('lease_binding_conflict')
+      ).toEqual({ sandboxBindingRef: 'lease-binding:lease_binding_conflict' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('skips release-grace expiry while backend cleanup is incomplete', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      createDispatchedLease(coreDb, 'lease_cleanup_grace');
+      recordWorkerBackendSessionMaterializing(coreDb, {
+        backendVersion: '0.0.80',
+        workerImage: 'openkit/worker-codex:dev',
+        identity: {
+          agentSessionId: 'session_cleanup_grace',
+          backendKind: 'openshell',
+          backendSessionId: 'openkit-session_cleanup_grace',
+          backendTarget: {
+            cellTargetId: 'cell-test',
+            gatewayEndpoint: null,
+            gatewayName: 'openshell',
+            placement: 'local',
+          },
+          deploymentId: 'deployment-test',
+          packageSnapshotId: 'pkg_demo',
+          stagingDirectoryRef: 'server/runtime/worker-backend-sessions/pkg_demo',
+          transientProviderInstanceId: null,
+        },
+        lineage: {
+          threadId: 'thread_cleanup_grace',
+          turnId: 'turn_cleanup_grace',
+          workspaceId: 'ws_demo',
+        },
+        now: () => '2026-07-05T00:00:03.000Z',
+        sandboxBindingRef: 'lease-binding:lease_cleanup_grace',
+      });
+      markSchedulerSessionLeaseReleasing(coreDb, {
+        leaseId: 'lease_cleanup_grace',
+        now: () => '2026-07-05T00:00:10.000Z',
+        releaseReason: 'worker-final-status',
+      });
+
+      expect(
+        expireReleasingSchedulerLeases(coreDb, {
+          now: () => '2026-07-05T00:05:11.000Z',
+        })
+      ).toEqual([]);
+      transitionWorkerBackendSessionState(coreDb, {
+        fromState: 'materializing',
+        leaseId: 'lease_cleanup_grace',
+        toState: 'cleanup-pending',
+      });
+      transitionWorkerBackendSessionState(coreDb, {
+        fromState: 'cleanup-pending',
+        leaseId: 'lease_cleanup_grace',
+        toState: 'physical-cleaned',
+      });
+      transitionWorkerBackendSessionState(coreDb, {
+        fromState: 'physical-cleaned',
+        leaseId: 'lease_cleanup_grace',
+        toState: 'cleaned',
+      });
+      expect(
+        expireReleasingSchedulerLeases(coreDb, {
+          now: () => '2026-07-05T00:05:12.000Z',
+        })
+      ).toEqual([]);
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT leases.status, capacity.in_use_count AS inUseCount
+             FROM scheduler_session_leases AS leases
+             JOIN scheduler_capacity_records AS capacity ON capacity.target_id = leases.target_id
+             WHERE leases.lease_id = ?`
+          )
+          .get('lease_cleanup_grace')
+      ).toEqual({ inUseCount: 1, status: 'releasing' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it.each([
     ['completed', 'released', 'turn-completed', null],
     ['interrupted', 'released', 'turn-interrupted', null],
@@ -1043,7 +1424,7 @@ describe('scheduler records', () => {
     try {
       createDispatchedLease(coreDb, 'lease_startup_timeout');
 
-      const failed = markStartupTimedOutSchedulerLeasesFailed(coreDb, {
+      const failed = transitionStartupTimedOutSchedulerLeases(coreDb, {
         now: () => '2026-07-05T00:03:00.000Z',
       });
 
@@ -1072,6 +1453,72 @@ describe('scheduler records', () => {
     }
   });
 
+  it('retains capacity when an anchored startup times out', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      createDispatchedLease(coreDb, 'lease_anchored_startup_timeout');
+      recordWorkerBackendSessionMaterializing(coreDb, {
+        backendVersion: '0.0.80',
+        identity: {
+          agentSessionId: 'session_anchored_startup_timeout',
+          backendKind: 'openshell',
+          backendSessionId: 'openkit-session_anchored_startup_timeout',
+          backendTarget: {
+            cellTargetId: 'cell-test',
+            gatewayEndpoint: null,
+            gatewayName: 'openshell',
+            placement: 'local',
+          },
+          deploymentId: 'deployment-test',
+          packageSnapshotId: 'pkg_demo',
+          stagingDirectoryRef: 'server/runtime/worker-backend-sessions/pkg_demo',
+          transientProviderInstanceId: null,
+        },
+        lineage: {
+          threadId: 'thread_anchored_startup_timeout',
+          turnId: 'turn_anchored_startup_timeout',
+          workspaceId: 'ws_demo',
+        },
+        now: () => '2026-07-05T00:00:03.000Z',
+        sandboxBindingRef: 'lease-binding:lease_anchored_startup_timeout',
+        workerImage: 'openkit/worker-codex:dev',
+      });
+
+      const timedOut = transitionStartupTimedOutSchedulerLeases(coreDb, {
+        now: () => '2026-07-05T00:03:00.000Z',
+      });
+
+      expect(timedOut).toEqual([
+        expect.objectContaining({
+          leaseId: 'lease_anchored_startup_timeout',
+          recoveryState: 'needs-evidence',
+          releaseReason: 'startup-timeout',
+          status: 'stale',
+        }),
+      ]);
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT in_use_count FROM scheduler_capacity_records WHERE target_id = ?')
+          .get('target_anchored_startup_timeout')
+      ).toEqual({ in_use_count: 1 });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT current_admitted_session_count FROM scheduler_worker_pools WHERE pool_id = ?'
+          )
+          .get('pool_anchored_startup_timeout')
+      ).toEqual({ current_admitted_session_count: 1 });
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT status FROM scheduler_placement_plans WHERE plan_id = ?')
+          .get('plan_anchored_startup_timeout')
+      ).toEqual({ status: 'executing' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('does not fail startup deadlines after the first heartbeat is accepted', () => {
     const coreDb = createMigratedCoreDb();
 
@@ -1085,7 +1532,7 @@ describe('scheduler records', () => {
       });
 
       expect(
-        markStartupTimedOutSchedulerLeasesFailed(coreDb, {
+        transitionStartupTimedOutSchedulerLeases(coreDb, {
           now: () => '2026-07-05T00:03:00.000Z',
         })
       ).toEqual([]);
@@ -1214,7 +1661,7 @@ describe('scheduler records', () => {
     }
   });
 
-  it('lists durable stale and release-timeout leases that still need workspace recovery', () => {
+  it('lists stale workspace recovery while refusing to expire an unanchored releasing lease', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
@@ -1235,10 +1682,12 @@ describe('scheduler records', () => {
         now: () => '2026-07-05T00:00:10.000Z',
         releaseReason: 'worker-final-status',
       });
-      expireReleasingSchedulerLeases(coreDb, {
-        now: () => '2026-07-05T00:05:11.000Z',
-      });
-      markStartupTimedOutSchedulerLeasesFailed(coreDb, {
+      expect(() =>
+        expireReleasingSchedulerLeases(coreDb, {
+          now: () => '2026-07-05T00:05:11.000Z',
+        })
+      ).toThrow('requires a durable backend session anchor before completion');
+      transitionStartupTimedOutSchedulerLeases(coreDb, {
         now: () => '2026-07-05T00:03:00.000Z',
       });
 
@@ -1251,18 +1700,17 @@ describe('scheduler records', () => {
         }))
       ).toEqual([
         {
-          leaseId: 'lease_recovery_release',
-          recoveryState: 'needs-evidence',
-          releaseReason: 'release-grace-timeout',
-          status: 'lost',
-        },
-        {
           leaseId: 'lease_recovery_stale',
           recoveryState: 'needs-evidence',
           releaseReason: 'heartbeat-timeout',
           status: 'stale',
         },
       ]);
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT status FROM scheduler_session_leases WHERE lease_id = ?')
+          .get('lease_recovery_release')
+      ).toEqual({ status: 'releasing' });
     } finally {
       coreDb.sqlite.close();
     }
@@ -1452,28 +1900,32 @@ describe('scheduler records', () => {
     }
   });
 
-  it('creates the localhost baseline with two local slots', () => {
+  it.each([
+    'local',
+    'remote',
+  ] as const)('creates the %s baseline with one disposable Cell slot', (placement) => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      ensureLocalhostSchedulerBaseline(coreDb, {
+      ensureConfiguredSchedulerBaseline(coreDb, {
         now: () => '2026-07-05T00:00:00.000Z',
+        placement,
       });
 
       expect(
         coreDb.sqlite
           .prepare(
-            'SELECT max_concurrent_sessions AS maxConcurrentSessions FROM scheduler_worker_pools WHERE pool_id = ?'
+            'SELECT default_timeout_ms AS defaultTimeoutMs, max_concurrent_sessions AS maxConcurrentSessions FROM scheduler_worker_pools WHERE pool_id = ?'
           )
-          .get('pool_local')
-      ).toEqual({ maxConcurrentSessions: 2 });
+          .get(`pool_${placement}`)
+      ).toEqual({ defaultTimeoutMs: 2_400_000, maxConcurrentSessions: 1 });
       expect(
         coreDb.sqlite
           .prepare(
             'SELECT concurrency_ceiling AS concurrencyCeiling FROM scheduler_capacity_records WHERE target_id = ?'
           )
-          .get('target_local')
-      ).toEqual({ concurrencyCeiling: 2 });
+          .get(`target_${placement}`)
+      ).toEqual({ concurrencyCeiling: 1 });
     } finally {
       coreDb.sqlite.close();
     }

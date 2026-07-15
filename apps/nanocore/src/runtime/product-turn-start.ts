@@ -6,9 +6,11 @@ import type { z } from 'zod';
 import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { FsStore } from '../lib/store.js';
 import {
+  CONFIGURED_WORKER_INITIAL_LEASE_DURATION_MS,
+  CONFIGURED_WORKER_STARTUP_TIMEOUT_MS,
   cancelSchedulerAdmissionEntry,
   createSchedulerAdmissionEntry,
-  ensureLocalhostSchedulerBaseline,
+  ensureConfiguredSchedulerBaseline,
 } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 import { resolveModelAgentOverride, TurnStartValidationError } from './orchestrator.js';
@@ -34,6 +36,8 @@ interface StartProductTurnInput {
   readonly store: FsStore;
   /** Runtime executor used to start worker turns. */
   readonly turnExecutor: TurnExecutor;
+  /** Configured disposable Cell placement. */
+  readonly workerPlacement: 'local' | 'remote';
   /** Optional worker id selected by an upper-level coordinator. */
   readonly requestedAgentId?: string | null;
   /** Optional turn id reserved by an upper-level worker loop. */
@@ -92,14 +96,14 @@ export async function startProductTurn(input: StartProductTurnInput) {
   const queueEntryId = `queue_${input.input.requestId}_${suffix}`;
   const turnId = input.reservedTurnId ?? `turn_${input.input.requestId}_${suffix}`;
 
-  ensureLocalhostSchedulerBaseline(input.coreDb);
+  ensureConfiguredSchedulerBaseline(input.coreDb, { placement: input.workerPlacement });
   createSchedulerAdmissionEntry(input.coreDb, {
     priorityClass: 'interactive',
     profileRef: requestedAgentId,
     queueEntryId,
     requestId: input.input.requestId,
     requestedAgentId,
-    requiredPoolConstraints: ['openshell.local'],
+    requiredPoolConstraints: [`openshell.${input.workerPlacement}`],
     threadId: input.input.threadId,
     turnId,
     turnInput: input.input.input,
@@ -120,11 +124,11 @@ export async function startProductTurn(input: StartProductTurnInput) {
     expectedDataPlaneMode: 'openshell-files',
     heartbeatIntervalMs: 10_000,
     heartbeatTimeoutMs: 30_000,
-    leaseDurationMs: 900_000,
+    leaseDurationMs: CONFIGURED_WORKER_INITIAL_LEASE_DURATION_MS,
     maxDispatches: 1,
     providerRegistry: input.snapshot.providerRegistry,
     schedulerEpoch: input.schedulerEpoch,
-    startupTimeoutMs: 120_000,
+    startupTimeoutMs: CONFIGURED_WORKER_STARTUP_TIMEOUT_MS,
     store: input.store,
     turnExecutor: input.turnExecutor,
     configVersion: input.snapshot.version,

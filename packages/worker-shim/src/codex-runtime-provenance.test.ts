@@ -457,6 +457,41 @@ describe('Codex runtime provenance capture', () => {
     });
   });
 
+  it('fails capture when the root rollout omits the pinned Codex CLI version', async () => {
+    const fixture = provenanceFixture();
+    installRollout(fixture.codexHome, 'root.jsonl', [
+      sessionMeta({ cliVersion: null, sessionId: 'session-root', threadId: 'thread-root' }),
+    ]);
+    const capture = new CodexRuntimeProvenanceCapture(fixture.options);
+
+    await capture.writePrimaryChunk(primaryExec('thread-root'));
+    await capture.finalize();
+
+    expect(readJson(fixture.streamManifestPath)).toMatchObject({ captureStatus: 'failed' });
+  });
+
+  it('fails capture when a child rollout reports another Codex CLI version', async () => {
+    const fixture = provenanceFixture();
+    installRollout(fixture.codexHome, 'root.jsonl', [
+      sessionMeta({ sessionId: 'session-root', threadId: 'thread-root' }),
+    ]);
+    installRollout(fixture.codexHome, 'child.jsonl', [
+      sessionMeta({
+        cliVersion: '0.145.0',
+        depth: 1,
+        parentThreadId: 'thread-root',
+        sessionId: 'session-root',
+        threadId: 'thread-child',
+      }),
+    ]);
+    const capture = new CodexRuntimeProvenanceCapture(fixture.options);
+
+    await capture.writePrimaryChunk(primaryExec('thread-root', ['thread-child']));
+    await capture.finalize();
+
+    expect(readJson(fixture.streamManifestPath)).toMatchObject({ captureStatus: 'failed' });
+  });
+
   it('rejects conflicting primary thread.started identities', async () => {
     const fixture = provenanceFixture();
     installRollout(fixture.codexHome, 'root-a.jsonl', [
@@ -477,63 +512,7 @@ describe('Codex runtime provenance capture', () => {
     });
   });
 
-  it.each([
-    {
-      label: 'session id',
-      later: {
-        depth: 1,
-        nickname: 'Curie',
-        parentThreadId: 'thread-root',
-        role: 'researcher',
-        sessionId: 'session-conflict',
-        threadId: 'thread-child',
-      },
-    },
-    {
-      label: 'thread id',
-      later: {
-        depth: 1,
-        nickname: 'Curie',
-        parentThreadId: 'thread-root',
-        role: 'researcher',
-        sessionId: 'session-root',
-        threadId: 'thread-child-conflict',
-      },
-    },
-    {
-      label: 'parent thread id',
-      later: {
-        depth: 1,
-        nickname: 'Curie',
-        parentThreadId: 'thread-parent-conflict',
-        role: 'researcher',
-        sessionId: 'session-root',
-        threadId: 'thread-child',
-      },
-    },
-    {
-      label: 'runtime role',
-      later: {
-        depth: 1,
-        nickname: 'Curie',
-        parentThreadId: 'thread-root',
-        role: 'reviewer',
-        sessionId: 'session-root',
-        threadId: 'thread-child',
-      },
-    },
-    {
-      label: 'runtime nickname',
-      later: {
-        depth: 1,
-        nickname: 'Turing',
-        parentThreadId: 'thread-root',
-        role: 'researcher',
-        sessionId: 'session-root',
-        threadId: 'thread-child',
-      },
-    },
-  ])('rejects a later session_meta with conflicting $label', async ({ later }) => {
+  it('anchors child attribution to the first session_meta when inherited history repeats the root', async () => {
     const fixture = provenanceFixture();
     installRollout(fixture.codexHome, 'root.jsonl', [
       sessionMeta({ sessionId: 'session-root', threadId: 'thread-root' }),
@@ -547,7 +526,8 @@ describe('Codex runtime provenance capture', () => {
         sessionId: 'session-root',
         threadId: 'thread-child',
       }),
-      sessionMeta(later),
+      sessionMeta({ sessionId: 'session-root', threadId: 'thread-root' }),
+      rolloutLine('turn_context', { turn_id: 'native-turn-child' }),
     ]);
     const capture = new CodexRuntimeProvenanceCapture(fixture.options);
 
@@ -555,8 +535,24 @@ describe('Codex runtime provenance capture', () => {
     await capture.finalize();
 
     expect(readJson(fixture.streamManifestPath)).toMatchObject({
-      captureStatus: expect.not.stringMatching(/^complete$/),
+      captureStatus: 'complete',
     });
+    const childEntries = readIndex(fixture.nativeOriginIndexPath).filter(
+      (entry) => entry.streamRef === 'stream-0002.jsonl'
+    );
+    expect(childEntries).toHaveLength(3);
+    expect(childEntries).toEqual(
+      childEntries.map(() =>
+        expect.objectContaining({
+          nativeSessionId: 'session-root',
+          nativeThreadId: 'thread-child',
+          parentNativeThreadId: 'thread-root',
+          runtimeDepth: 1,
+          runtimeNickname: 'Curie',
+          runtimeRole: 'researcher',
+        })
+      )
+    );
   });
 });
 
@@ -597,6 +593,7 @@ function provenanceFixture(overrides: FixtureOverrides = {}) {
 
 /** Native Codex session metadata used by one minimized rollout fixture. */
 interface SessionMetaInput {
+  cliVersion?: string | null;
   depth?: number;
   nickname?: string;
   parentThreadId?: string;
@@ -613,6 +610,7 @@ interface SessionMetaInput {
  */
 function sessionMeta(input: SessionMetaInput): string {
   return rolloutLine('session_meta', {
+    ...(input.cliVersion === null ? {} : { cli_version: input.cliVersion ?? '0.144.1' }),
     cwd: '/workspace/openkit',
     id: input.threadId,
     originator: 'codex_exec',

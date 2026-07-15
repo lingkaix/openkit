@@ -1,7 +1,7 @@
 # Agent Setup And Runtime Supply Contract
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
 
 ## Summary
 
@@ -9,9 +9,9 @@ This spec consolidates the agent setup, profile, manifest loading, and runtime s
 
 This spec is the high-level setup and runtime supply entry point. Exact authored manifest fields, AEP snapshot identity, runtime scheduling, worker capability routes, and backend-specific materialization are owned by the specialized specs linked below.
 
-Runtime placement details are refined by `docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260703-runtime_scheduling_scale.md`, and `docs/specs/20260627-remote_openshell_gateway.md`. Host-local staging and harness behavior are implementation projections; real Worker Agent product paths use container placements.
+Runtime placement details are refined by `docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260703-runtime_scheduling_scale.md`, and `docs/specs/20260715-openshell_disposable_cell_lifecycle.md`. Host-local staging and harness behavior are implementation projections; real Worker Agent product paths use container placements.
 
-The current contract is NanoCore-first. NanoCore owns agent identity, selected profile, runtime placement, resolved worker environment, policy intent, workspace inputs, review outputs, and product-visible readiness. Worker backends such as local OpenShell containers and remote OpenShell containers materialize that contract without becoming product state.
+The current contract is NanoCore-first. NanoCore owns agent identity, selected profile, runtime placement, resolved worker environment, policy intent, workspace inputs, review outputs, and product-visible readiness. The current local and remote disposable OpenShell Cell placements materialize that contract without becoming product state.
 
 Older setup and profile specs remain useful implementation references, but this document is the active entry point for the setup/runtime supply model.
 
@@ -79,15 +79,17 @@ Backends materialize the snapshot. Product surfaces read NanoCore records and re
 
 ## Current Implementation Projection
 
-The high-level setup and runtime supply contract owned by this spec is implemented:
+The high-level setup and runtime supply contract owned by this spec is partially implemented:
 
 - `packages/config-schema/src/agent.ts` defines the current authored agent config schema.
 - `apps/nanocore/src/config/agents-loader.ts` loads `.agent.jsonc` files and maps them into runtime-facing agent manifests.
 - `apps/nanocore/src/agents/setup-resolver.ts` resolves active deployment, provider references, runtime summary, transport, and origin metadata.
 - `apps/nanocore/src/runtime/agent-environment.ts` resolves OpenShell-backed AEP snapshots from selected agent, turn, workspace roots, and backend input.
+- `apps/nanocore/src/runtime/turn-executor-factory.ts` selects local or remote disposable Cell placement. Remote placement requires one fixed SSH lifecycle target, one operator-supplied loopback HTTP Gateway origin, and one explicit credential-free HTTP(S) worker-control URL whose path is `/api/worker-control`.
 - Current AEP resolution includes static worker Skill and MCP catalog fixtures, required direct NanoCore worker control, backend-local inference or an exact trusted NanoCore worker-inference route, transcript paths, workspace roots, provider attachments where allowed, vault references where allowed, policy blocks, and observability blocks.
 - Current AEPs declare `capabilities.mode: disabled` with no routes. Static worker supply does not expose `knowledge.*`, MCP, or any other callable capability family.
 - The full durable server, workspace, user, request, vault, permission, scheduler, and backend capability layer stack remains owned and tracked by `docs/specs/20260703-agent_manifest_aep_resolution.md` rather than by this high-level entry point.
+- The remote backend materialization E2E passes with stock OpenShell `0.0.80`, but the real Codex runtime-provenance acceptance remains pending, so this implementation is not complete.
 
 ## Runtime Placement Mapping
 
@@ -99,9 +101,11 @@ OPENKIT_CONTAINER_PLACEMENT=local|remote
 OPENKIT_CONTAINER_BACKEND=openshell
 ```
 
-Local container placement is currently implemented through the OpenShell backend family.
+Local and remote container placement are implemented through the stock OpenShell `0.0.80` backend family and share one single-slot whole-Cell teardown contract.
 
-Remote container placement is currently implemented through a remote OpenShell gateway target.
+Remote placement is valid only when `OPENKIT_OPENSHELL_CELL_SSH_TARGET`, `OPENKIT_OPENSHELL_GATEWAY_URL`, and `OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL` identify one coherent disposable Cell path. The SSH controller invokes only the fixed privileged helper actions, the Gateway URL is an operator-managed loopback HTTP origin, and the worker-control URL is a credential-free HTTP(S) URL ending at `/api/worker-control` that the sandbox can reach.
+
+A naked or shared Gateway, insecure Gateway mode, custom OpenShell binary, resource-delete cleanup, fork, patch, or historical selector compatibility is not part of the contract.
 
 ## Reference Specs
 
@@ -120,7 +124,7 @@ They remain useful for field-level background, but new work should start from:
 - [Worker Runtime Communication Model](./20260629-worker_runtime_communication_model.md)
 - [Worker Agent Capability](./20260703-worker_agent_capability.md)
 - [Workspace Synchronization](./20260703-workspace_synchronization.md)
-- [Remote OpenShell Gateway](./20260627-remote_openshell_gateway.md)
+- [OpenShell Disposable Cell Lifecycle](./20260715-openshell_disposable_cell_lifecycle.md)
 - [Runtime Scheduling And Scale](./20260703-runtime_scheduling_scale.md)
 - [Runtime Model](../core/runtime-model.md)
 - [Agent Supply](../core/agent-supply.md)

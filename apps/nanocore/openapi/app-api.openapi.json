@@ -33569,6 +33569,7 @@
                     "file-transfer",
                     "transcript-collection",
                     "workspace-change-collection",
+                    "checkpoint",
                     "teardown",
                     "backend-error"
                   ]
@@ -104934,5 +104935,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:e97d23e7500b5ec9483dcf811227d0d110e23814c80a1418a5d6bd02f91bd64b"
+  "x-openkit-source-digest": "sha256:0198d5032e2c7f8af05c59ecc02f265c8383183f7fdd817b3c65f96084107f7c"
 }

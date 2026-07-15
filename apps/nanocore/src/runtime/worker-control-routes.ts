@@ -1,5 +1,6 @@
 import {
   WorkerCanonicalEventRecordSchema,
+  WorkerCanonicalTerminalEventDataSchema,
   WorkerCapabilityCallSummarySchema,
   WorkerControlRequestEnvelopeSchema,
 } from '@openkit/worker-protocol';
@@ -66,21 +67,6 @@ const WorkerControlEventAppendRequestSchema = z.object({
   lineage: WorkerControlLineageRequestSchema,
   record: WorkerCanonicalEventRecordSchema,
 });
-const WorkerControlFinalStatusBodySchema = z
-  .object({
-    status: z.enum([
-      'blocked',
-      'cancelled',
-      'completed',
-      'degraded',
-      'failed',
-      'interrupted',
-      'lost',
-    ]),
-    stopReason: z.string().trim().min(1),
-    evidenceManifestDigests: z.record(z.string(), z.string().min(1)).optional(),
-  })
-  .strict();
 const WorkerControlSupplyRefreshAckBodySchema = z
   .object({
     refreshId: z.string().min(1),
@@ -298,7 +284,7 @@ export function registerWorkerControlRoutes({
       return asInvalidRequestError(new Error('Worker control operation must be final_status.'));
     }
 
-    const body = WorkerControlFinalStatusBodySchema.safeParse(parsed.data.body);
+    const body = WorkerCanonicalTerminalEventDataSchema.safeParse(parsed.data.body);
 
     if (!body.success) {
       return asInvalidRequestError(body.error);
@@ -308,9 +294,9 @@ export function registerWorkerControlRoutes({
       return c.json(
         workerControlGateway.recordFinalStatus({
           authorization: c.req.header('authorization') ?? null,
-          evidenceManifestDigests: body.data.evidenceManifestDigests ?? {},
+          ...(body.data.diagnostics ? { diagnostics: body.data.diagnostics } : {}),
+          evidenceManifestDigests: body.data.evidenceManifestDigests,
           lineage: parsed.data.lineage,
-          schemaVersion: parsed.data.schemaVersion,
           sequence: parsed.data.sequence,
           status: body.data.status,
           stopReason: body.data.stopReason,

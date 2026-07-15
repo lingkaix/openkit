@@ -618,7 +618,7 @@ Restricted trace evidence may hold redacted snippets, raw candidate summaries, o
 
 ## Capability Conformance Requirements
 
-First-slice Knowledge APIs and worker capabilities should enforce conformance levels consistently.
+Current first-slice Knowledge APIs and future worker capabilities should enforce conformance levels consistently.
 
 | Surface | Minimum conformance |
 | --- | --- |
@@ -635,6 +635,8 @@ First-slice Knowledge APIs and worker capabilities should enforce conformance le
 ## Current Implementation Projection
 
 The current implementation is the accepted V1 projection of the target Knowledge Store:
+
+References to `@openkit/mcp` below describe the current removal-only facade. They are not the target Knowledge interface and must not receive new capability work; the accepted replacement is the transport-neutral operation catalog, bundled CLI, and unified end-user Skill.
 
 - `packages/protocol` defines `KnowledgeEntrySchema` with `preference`, `project-context`, and `task-summary` kinds. This is a minimal workspace knowledge record, not the target governed Knowledge Store schema.
 - `packages/protocol/src/models/item.ts` and event schemas expose `knowledge-injection` item projection for product-visible bounded context injection.

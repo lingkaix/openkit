@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { chmod, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import type {
   MaterializedWorkspaceRoot,
   StagedWorkspaceReview,
@@ -34,11 +34,10 @@ import {
   WorkerTranscriptArtifactRecordSchema,
 } from '@openkit/worker-protocol';
 import type { FilesystemSnapshotManifest } from './filesystem-workspace-sync.js';
+import type { OpenShellCellLifecycle } from './openshell-cell.js';
 import type {
-  OpenShellDoctorStatus,
   OpenShellGatewayInfo,
   OpenShellGatewayTargetInput,
-  OpenShellProviderDeleteInput,
   OpenShellProviderDetachInput,
   OpenShellProviderGetInput,
   OpenShellProviderInfo,
@@ -49,8 +48,8 @@ import type {
   OpenShellProviderUpsertResult,
   OpenShellSandboxCreateInput,
   OpenShellSandboxCreateResult,
-  OpenShellSandboxDeleteInput,
   OpenShellSandboxDownloadInput,
+  OpenShellSandboxExecInput,
   OpenShellSandboxFileResult,
   OpenShellSandboxUploadInput,
   OpenShellStatus,
@@ -85,7 +84,6 @@ type OpenShellWorkerControlGateway = Pick<
 
 const CODEX_NETWORK_BINARIES = ['/usr/local/bin/codex', '/usr/local/lib/codex/bin/codex'] as const;
 const OPEN_SHELL_WORKER_INFERENCE_CREDENTIAL_KEY = 'OPENKIT_WORKER_INFERENCE_TOKEN';
-const OPEN_SHELL_WORKER_INFERENCE_PROFILE_PREFIX = 'okp-local-worker-inference-';
 const MAX_RUNTIME_PROVENANCE_MANIFEST_BYTES = 1024 * 1024;
 
 const DEFAULT_CODEX_NETWORK_ENDPOINTS: OpenShellNetworkEndpoint[] = [
@@ -115,8 +113,10 @@ interface OpenShellMaterializedSessionState {
   environmentPackage: AgentEnvironmentPackage;
   /** Product-safe sandbox name. */
   sandboxName: string;
-  /** Whether a non-retained sandbox was already deleted during cleanup. */
-  sandboxDeleted: boolean;
+  /** Deterministic physical identity used by online and restart cleanup. */
+  identity: WorkerGovernanceBackendSessionIdentity;
+  /** Runtime command executed only after the durable launch gate. */
+  launchCommand: string[];
   /** Temporary directory containing generated package, policy, and downloaded transcript files. */
   sessionDirectory: string;
   /** Host-local generated package path uploaded into the sandbox. */
@@ -125,8 +125,35 @@ interface OpenShellMaterializedSessionState {
   policyPath: string;
   /** Provider instance ids attached to the sandbox. */
   providerInstanceIds: string[];
-  /** Per-package relay providers that must be deleted after detachment. */
-  transientProviderInstanceIds: string[];
+}
+
+/** Deterministic physical backend identity planned without external effects. */
+export interface WorkerGovernanceBackendSessionIdentity {
+  /** Data-root deployment that exclusively owns the gateway artifacts. */
+  readonly deploymentId: string;
+  /** Agent-session lineage used to derive the exact sandbox id. */
+  readonly agentSessionId: string;
+  /** Immutable package lineage used to derive cleanup-owned resources. */
+  readonly packageSnapshotId: string;
+  /** Physical backend family. */
+  readonly backendKind: WorkerGovernanceBackendCapabilities['kind'];
+  /** Backend-native physical session id. */
+  readonly backendSessionId: string;
+  /** Exact non-secret backend target. */
+  readonly backendTarget: {
+    /** Stable non-secret binding for the exact Cell lifecycle target. */
+    readonly cellTargetId: string;
+    /** Local or remote placement. */
+    readonly placement: 'local' | 'remote';
+    /** Gateway name used when no direct endpoint is configured. */
+    readonly gatewayName: string;
+    /** Canonical direct gateway origin, when configured. */
+    readonly gatewayEndpoint: string | null;
+  };
+  /** Data-root-relative private staging directory. */
+  readonly stagingDirectoryRef: string;
+  /** Deterministic transient provider removed with the owning Cell epoch. */
+  readonly transientProviderInstanceId: string | null;
 }
 
 /**
@@ -308,6 +335,21 @@ export interface WorkerGovernanceBackend {
   ): Promise<AgentEnvironmentValidationDiagnostic[]>;
 
   /**
+   * Plans the exact physical backend identity without filesystem, gateway, or process effects.
+   *
+   * @param environmentPackage Immutable package that owns the future session.
+   * @returns Deterministic physical identity persisted before materialization.
+   */
+  planSession(environmentPackage: AgentEnvironmentPackage): WorkerGovernanceBackendSessionIdentity;
+
+  /**
+   * Destroys one exact durable physical identity without process-local session state.
+   *
+   * @param identity Durable physical cleanup manifest.
+   */
+  cleanupSession(identity: WorkerGovernanceBackendSessionIdentity): Promise<void>;
+
+  /**
    * Materializes a package into backend-native runtime state.
    *
    * @param environmentPackage Package to materialize.
@@ -378,14 +420,6 @@ export interface WorkerGovernanceBackend {
    * @returns Artifact candidate records.
    */
   collectArtifacts(packageSnapshotId: string): Promise<WorkerGovernanceArtifactRecord[]>;
-
-  /**
-   * Tears down backend runtime state for one package snapshot.
-   *
-   * @param packageSnapshotId Package snapshot id whose runtime state should be torn down.
-   * @returns Evidence emitted during teardown.
-   */
-  teardown(packageSnapshotId: string): Promise<WorkerGovernanceEvidenceRecord>;
 }
 
 /**
@@ -424,19 +458,20 @@ export interface OpenShellWorkerGovernanceClient {
   providersV2Enabled(input?: OpenShellGatewayTargetInput): Promise<boolean | null>;
 
   /**
-   * Runs local OpenShell prerequisite checks.
-   *
-   * @returns Doctor status summary.
-   */
-  doctorCheck(): Promise<OpenShellDoctorStatus>;
-
-  /**
    * Creates one OpenShell sandbox.
    *
    * @param input Sandbox create request.
    * @returns Product-safe sandbox creation summary.
    */
   createSandbox(input: OpenShellSandboxCreateInput): Promise<OpenShellSandboxCreateResult>;
+
+  /**
+   * Executes one command in a retained sandbox.
+   *
+   * @param input Exact sandbox and runtime command.
+   * @returns Captured successful command result.
+   */
+  execSandbox(input: OpenShellSandboxExecInput): Promise<unknown>;
 
   /**
    * Ensures one immutable content-addressed provider profile.
@@ -483,56 +518,38 @@ export interface OpenShellWorkerGovernanceClient {
   detachProvider(input: OpenShellProviderDetachInput): Promise<OpenShellSandboxFileResult>;
 
   /**
-   * Deletes one transient OpenShell provider.
-   *
-   * @param input Provider and gateway selection.
-   * @returns Product-safe delete summary.
-   */
-  deleteProvider(input: OpenShellProviderDeleteInput): Promise<OpenShellSandboxFileResult>;
-
-  /**
    * Downloads one file from an OpenShell sandbox.
    *
    * @param input Download request.
    * @returns Product-safe download summary.
    */
   downloadFile(input: OpenShellSandboxDownloadInput): Promise<OpenShellSandboxFileResult>;
-
-  /**
-   * Deletes one OpenShell sandbox.
-   *
-   * @param input Delete request.
-   * @returns Product-safe delete summary.
-   */
-  deleteSandbox(input: OpenShellSandboxDeleteInput): Promise<OpenShellSandboxFileResult>;
 }
 
 /**
  * OpenShell worker governance backend options.
  */
 export interface OpenShellWorkerGovernanceBackendOptions {
-  /** Optional host Codex auth JSON uploaded into the sandbox when no vault runtime file overrides it. */
-  codexAuthJsonPath?: string | undefined;
+  /** Disposable OpenShell Cell lifecycle that owns physical runtime teardown. */
+  cellLifecycle: OpenShellCellLifecycle;
   /** Optional host Codex config file uploaded into the sandbox when explicitly configured. */
   codexConfigTomlPath?: string | undefined;
   /** Delay between transient provider detach retries. */
   detachRetryDelayMs?: number | undefined;
+  /** NanoCore data root containing deterministic private session staging. */
+  dataRoot: string;
+  /** Stable data-root deployment id used to namespace every gateway artifact. */
+  deploymentId: string;
   /** Extra OpenShell network endpoints authorized for selected worker binaries. */
   extraNetworkEndpoints?: OpenShellNetworkEndpoint[] | undefined;
   /** Real OpenShell CLI adapter or deterministic test client. */
   cli: OpenShellWorkerGovernanceClient;
   /** OpenShell gateway name selected by NanoCore. */
   gatewayName: string;
-  /** Remote OpenShell gateway URL retained as backend-private configuration. */
+  /** Direct local OpenShell gateway URL retained as backend-private configuration. */
   gatewayUrl?: string | undefined;
-  /** Whether TLS verification should be skipped for the direct OpenShell gateway endpoint. */
-  gatewayInsecure?: boolean | undefined;
-  /** Runtime placement for the OpenShell backend. Defaults to `local`. */
+  /** Local or remote disposable Cell placement. */
   placement?: 'local' | 'remote' | undefined;
-  /** Whether created sandboxes should be retained after the initial command exits. */
-  retainSandboxes: boolean;
-  /** Sandbox image, Dockerfile/build context, or OpenShell community name. */
-  sandboxSource: string;
   /** Worker control gateway used to mint sandbox bearer tokens. */
   workerControlGateway?: OpenShellWorkerControlGateway;
 }
@@ -541,17 +558,16 @@ export interface OpenShellWorkerGovernanceBackendOptions {
  * Real OpenShell governance backend backed by the installed OpenShell CLI.
  */
 export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend {
+  private readonly cellLifecycle: OpenShellCellLifecycle;
   private readonly cli: OpenShellWorkerGovernanceClient;
-  private readonly codexAuthJsonPath: string | null;
   private readonly codexConfigTomlPath: string | null;
   private readonly detachRetryDelayMs: number;
+  private readonly dataRoot: string;
+  private readonly deploymentId: string;
   private readonly extraNetworkEndpoints: OpenShellNetworkEndpoint[];
   private readonly gatewayName: string;
   private readonly gatewayUrl: string | null;
-  private readonly gatewayInsecure: boolean;
   private readonly placement: 'local' | 'remote';
-  private readonly retainSandboxes: boolean;
-  private readonly sandboxSource: string;
   private readonly workerControlGateway: OpenShellWorkerControlGateway | null;
   private readonly materializedSessions = new Map<string, OpenShellMaterializedSessionState>();
   private readonly materializingPackageSnapshotIds = new Set<string>();
@@ -562,25 +578,24 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
    * @param options Real CLI adapter, gateway name, retention policy, and sandbox source.
    */
   public constructor(options: OpenShellWorkerGovernanceBackendOptions) {
-    this.codexAuthJsonPath = options.codexAuthJsonPath ?? null;
+    this.cellLifecycle = options.cellLifecycle;
     this.codexConfigTomlPath = options.codexConfigTomlPath ?? null;
     this.cli = options.cli;
+    this.dataRoot = options.dataRoot;
+    this.deploymentId = options.deploymentId;
     this.detachRetryDelayMs = options.detachRetryDelayMs ?? 500;
     this.extraNetworkEndpoints = [
       ...DEFAULT_CODEX_NETWORK_ENDPOINTS,
       ...(options.extraNetworkEndpoints ?? []),
     ];
     this.gatewayName = options.gatewayName;
-    this.gatewayUrl = options.gatewayUrl ?? null;
-    this.gatewayInsecure = options.gatewayInsecure ?? false;
+    this.gatewayUrl = canonicalOpenShellGatewayOrigin(options.gatewayUrl);
     this.placement = options.placement ?? 'local';
-    this.retainSandboxes = options.retainSandboxes;
-    this.sandboxSource = options.sandboxSource;
     this.workerControlGateway = options.workerControlGateway ?? null;
   }
 
   /**
-   * Describes real OpenShell capabilities supported by the configured backend placement.
+   * Describes real OpenShell capabilities supported by the disposable Cell placement.
    *
    * @returns OpenShell backend capability declaration.
    */
@@ -615,6 +630,45 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
     }
 
     return diagnostics;
+  }
+
+  /**
+   * Plans the exact OpenShell sandbox, target, staging, and transient-provider identity without effects.
+   *
+   * @param environmentPackage Immutable package that owns the future physical session.
+   * @returns Deterministic cleanup manifest suitable for durable pre-effect persistence.
+   */
+  public planSession(
+    environmentPackage: AgentEnvironmentPackage
+  ): WorkerGovernanceBackendSessionIdentity {
+    const backendSessionId = openShellSandboxName(
+      this.deploymentId,
+      environmentPackage.scope.agentSessionId
+    );
+    const trustedRelay = environmentPackage.backend.requiredCapabilities.includes(
+      'trusted-worker-inference-relay'
+    );
+
+    const planned = {
+      agentSessionId: environmentPackage.scope.agentSessionId,
+      backendKind: 'openshell',
+      backendSessionId,
+      deploymentId: this.deploymentId,
+      backendTarget: {
+        cellTargetId: this.cellLifecycle.targetId,
+        gatewayEndpoint: this.gatewayUrl,
+        gatewayName: this.gatewayName,
+        placement: this.placement,
+      },
+      packageSnapshotId: environmentPackage.snapshotId,
+      transientProviderInstanceId: trustedRelay
+        ? openShellWorkerInferenceProviderName(this.deploymentId, environmentPackage.snapshotId)
+        : null,
+    } as const;
+    return {
+      ...planned,
+      stagingDirectoryRef: openShellSessionStagingDirectoryRef(planned),
+    };
   }
 
   /**
@@ -686,51 +740,57 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
       throw new Error(`OpenShell package validation failed: ${diagnostics[0]?.message}`);
     }
 
-    const preflight = await this.preflight(trustedRelay);
-
-    if (preflight.health !== 'ready') {
-      throw new Error(`OpenShell preflight failed: ${preflight.error ?? 'gateway unavailable'}`);
-    }
-
-    const sandboxName = openShellSandboxName(environmentPackage.scope.agentSessionId);
-    const redactedPackage = redactLocalHostPaths(
-      redactAgentEnvironmentPackageSnapshot(environmentPackage)
-    ) as AgentEnvironmentPackage;
-    const transientProviderInstanceId = trustedRelay
-      ? openShellWorkerInferenceProviderName(environmentPackage.snapshotId)
-      : null;
-    const transientProviderInstanceIds = transientProviderInstanceId
-      ? [transientProviderInstanceId]
-      : [];
-    const sessionFiles = await writeOpenShellSessionFiles(
-      environmentPackage,
-      trustedRelay ? [] : this.extraNetworkEndpoints
+    const identity = this.planSession(environmentPackage);
+    const sandboxName = identity.backendSessionId;
+    const sessionDirectory = resolveWorkerBackendStagingDirectory(
+      this.dataRoot,
+      identity.stagingDirectoryRef
     );
-    const workspaceBundles = await createOpenShellWorkspaceBundles(
-      environmentPackage,
-      context,
-      sessionFiles.sessionDirectory
-    );
-    const runtimeFileUploads = await createOpenShellRuntimeFileUploads(
-      context.runtimeFileCredentials ?? [],
-      sessionFiles.sessionDirectory
-    );
-    const runtimeFileUploadTargets = new Set(
-      runtimeFileUploads.flatMap((upload) => (upload.targetPath ? [upload.targetPath] : []))
-    );
-    const providerInstanceIds = (context.providerCredentials ?? []).map(
-      (credential) => credential.providerInstanceId
-    );
-    providerInstanceIds.push(...transientProviderInstanceIds);
+    let cellLifecycleOwned = false;
     let controlRegistration: OpenShellWorkerControlRegistration | null = null;
-    let sandboxCreateAttempted = false;
-    let transientProviderUpsertAttempted = false;
 
     try {
+      cellLifecycleOwned = true;
+      await this.cellLifecycle.prepare(identity.backendSessionId);
+      const preflight = await this.preflight(trustedRelay);
+
+      if (preflight.health !== 'ready') {
+        throw new Error(`OpenShell preflight failed: ${preflight.error ?? 'gateway unavailable'}`);
+      }
+
+      const redactedPackage = redactLocalHostPaths(
+        redactAgentEnvironmentPackageSnapshot(environmentPackage)
+      ) as AgentEnvironmentPackage;
+      const transientProviderInstanceId = identity.transientProviderInstanceId;
+      const transientProviderInstanceIds = transientProviderInstanceId
+        ? [transientProviderInstanceId]
+        : [];
+      const sessionFiles = await writeOpenShellSessionFiles(
+        environmentPackage,
+        trustedRelay ? [] : this.extraNetworkEndpoints,
+        sessionDirectory
+      );
+      const workspaceBundles = await createOpenShellWorkspaceBundles(
+        environmentPackage,
+        context,
+        sessionFiles.sessionDirectory
+      );
+      const runtimeFileUploads = await createOpenShellRuntimeFileUploads(
+        context.runtimeFileCredentials ?? [],
+        sessionFiles.sessionDirectory
+      );
+      const runtimeFileUploadTargets = new Set(
+        runtimeFileUploads.flatMap((upload) => (upload.targetPath ? [upload.targetPath] : []))
+      );
+      const providerInstanceIds = (context.providerCredentials ?? []).map(
+        (credential) => credential.providerInstanceId
+      );
+      providerInstanceIds.push(...transientProviderInstanceIds);
       const relayProfileFile = trustedRelay
         ? await writeOpenShellWorkerInferenceProfile(
             environmentPackage,
-            sessionFiles.sessionDirectory
+            sessionFiles.sessionDirectory,
+            this.deploymentId
           )
         : null;
 
@@ -738,7 +798,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
         await this.cli.ensureProviderProfile({
           gateway: this.gatewayName,
           ...(this.gatewayUrl ? { gatewayEndpoint: this.gatewayUrl } : {}),
-          ...(this.gatewayInsecure ? { gatewayInsecure: true } : {}),
           id: relayProfileFile.profile.id,
           path: relayProfileFile.path,
         });
@@ -767,23 +826,20 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
             ]
           : [];
 
-      transientProviderUpsertAttempted = relayProviderCredentials.length > 0;
       await this.upsertProviders([
         ...(context.providerCredentials ?? []),
         ...relayProviderCredentials,
       ]);
-      sandboxCreateAttempted = true;
       await this.cli.createSandbox({
-        command: openShellSandboxCommand(environmentPackage, workspaceBundles),
+        command: ['openkit-codex-shim', '--package', '/openkit/config/package.json', '--dry-run'],
         env: openShellSandboxEnvironment(
           environmentPackage,
           controlRegistration,
           context.runtimeEnvCredentials ?? []
         ),
-        from: this.sandboxSource,
+        from: environmentPackage.runtime.image.ref,
         gateway: this.gatewayName,
         ...(this.gatewayUrl ? { gatewayEndpoint: this.gatewayUrl } : {}),
-        ...(this.gatewayInsecure ? { gatewayInsecure: true } : {}),
         labels: {
           'openkit.agentSessionId': openShellLabelValue(environmentPackage.scope.agentSessionId),
           'openkit.openshellMappingVersion': openShellLabelValue(OPEN_SHELL_MAPPING_VERSION),
@@ -807,81 +863,81 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
             targetPath: bundle.targetPath,
           })),
           ...runtimeFileUploads,
-          ...(trustedRelay ? [] : this.codexAuthUploads(runtimeFileUploadTargets)),
+          ...(trustedRelay ? [] : this.codexConfigUploads(runtimeFileUploadTargets)),
         ],
       });
+
+      this.materializedSessions.set(environmentPackage.snapshotId, {
+        environmentPackage,
+        identity,
+        launchCommand: openShellSandboxCommand(environmentPackage, workspaceBundles),
+        packagePath: sessionFiles.packagePath,
+        policyPath: sessionFiles.policyPath,
+        providerInstanceIds,
+        sandboxName,
+        sessionDirectory: sessionFiles.sessionDirectory,
+      });
+
+      return {
+        backendKind: 'openshell',
+        backendStatus: {
+          gatewayEndpoint: redactGatewayEndpoint(this.gatewayUrl ?? preflight.gatewayEndpoint),
+          gatewayName: preflight.gatewayName,
+          health: preflight.health,
+          version: preflight.version,
+        },
+        command: {
+          argv: redactedPackage.runtime.command.argv,
+          workingDirectory: redactHostPath(redactedPackage.runtime.command.workingDirectory),
+        },
+        controlMode: redactedPackage.control.mode,
+        packageId: redactedPackage.packageId,
+        packageSnapshotId: redactedPackage.snapshotId,
+        requiredCapabilities: redactedPackage.backend.requiredCapabilities,
+        sandbox: {
+          name: sandboxName,
+          source: redactHostPath(environmentPackage.runtime.image.ref),
+          state: 'created',
+        },
+        workspaceInputs: redactedPackage.workspace.inputs.map((input) => ({
+          access: input.access,
+          id: input.id,
+          kind: input.kind,
+          target: redactHostPath(sessionWorkspaceInputTarget(environmentPackage, input.id)),
+        })),
+      };
     } catch (error) {
+      const cleanupErrors: unknown[] = [];
+
+      this.materializedSessions.delete(environmentPackage.snapshotId);
       if (controlRegistration) {
-        this.workerControlGateway?.unregisterSession(environmentPackage.snapshotId);
-      }
-      const cleanupErrors = transientProviderUpsertAttempted
-        ? await this.cleanupTransientProvidersAfterCreateFailure(
-            sandboxName,
-            transientProviderInstanceIds
-          )
-        : [];
-      if (sandboxCreateAttempted && !this.retainSandboxes) {
         try {
-          await this.cli.deleteSandbox({
-            gateway: this.gatewayName,
-            ...(this.gatewayUrl ? { gatewayEndpoint: this.gatewayUrl } : {}),
-            ...(this.gatewayInsecure ? { gatewayInsecure: true } : {}),
-            name: sandboxName,
-          });
+          this.workerControlGateway?.unregisterSession(environmentPackage.snapshotId);
         } catch (cleanupError) {
           cleanupErrors.push(cleanupError);
         }
       }
+      if (cellLifecycleOwned) {
+        try {
+          await this.cellLifecycle.recycle(identity.backendSessionId);
+        } catch (cleanupError) {
+          cleanupErrors.push(cleanupError);
+        }
+      }
+      try {
+        await rm(sessionDirectory, { force: true, recursive: true });
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
 
-      await rm(sessionFiles.sessionDirectory, { force: true, recursive: true });
       if (cleanupErrors.length > 0) {
         throw new AggregateError(
           [error, ...cleanupErrors],
-          'OpenShell sandbox creation failed and cleanup was incomplete.'
+          'OpenShell materialization failed and Cell cleanup was incomplete.'
         );
       }
       throw error;
     }
-
-    this.materializedSessions.set(environmentPackage.snapshotId, {
-      environmentPackage,
-      packagePath: sessionFiles.packagePath,
-      policyPath: sessionFiles.policyPath,
-      providerInstanceIds,
-      sandboxName,
-      sandboxDeleted: false,
-      sessionDirectory: sessionFiles.sessionDirectory,
-      transientProviderInstanceIds,
-    });
-
-    return {
-      backendKind: 'openshell',
-      backendStatus: {
-        gatewayEndpoint: redactGatewayEndpoint(this.gatewayUrl ?? preflight.gatewayEndpoint),
-        gatewayName: preflight.gatewayName,
-        health: preflight.health,
-        version: preflight.version,
-      },
-      command: {
-        argv: redactedPackage.runtime.command.argv,
-        workingDirectory: redactHostPath(redactedPackage.runtime.command.workingDirectory),
-      },
-      controlMode: redactedPackage.control.mode,
-      packageId: redactedPackage.packageId,
-      packageSnapshotId: redactedPackage.snapshotId,
-      requiredCapabilities: redactedPackage.backend.requiredCapabilities,
-      sandbox: {
-        name: sandboxName,
-        source: redactHostPath(this.sandboxSource),
-        state: 'created',
-      },
-      workspaceInputs: redactedPackage.workspace.inputs.map((input) => ({
-        access: input.access,
-        id: input.id,
-        kind: input.kind,
-        target: redactHostPath(sessionWorkspaceInputTarget(environmentPackage, input.id)),
-      })),
-    };
   }
 
   /**
@@ -893,6 +949,15 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
   public async launch(
     materialization: WorkerGovernanceMaterializationRecord
   ): Promise<WorkerGovernanceEvidenceRecord> {
+    const session = this.requireMaterializedSession(materialization.packageSnapshotId);
+    await this.cli.execSandbox({
+      command: session.launchCommand,
+      gateway: session.identity.backendTarget.gatewayName,
+      ...(session.identity.backendTarget.gatewayEndpoint
+        ? { gatewayEndpoint: session.identity.backendTarget.gatewayEndpoint }
+        : {}),
+      name: session.identity.backendSessionId,
+    });
     return {
       data: {
         packageSnapshotId: materialization.packageSnapshotId,
@@ -901,6 +966,58 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
       kind: 'openshell.launch.delegated',
       timestamp: new Date().toISOString(),
     };
+  }
+
+  /**
+   * Irrevocably revokes process-local access and recycles the owning OpenShell Cell.
+   *
+   * @param identity Exact durable sandbox, gateway, provider, and staging identity.
+   * @throws AggregateError after Cell or staging cleanup fails.
+   */
+  public async cleanupSession(identity: WorkerGovernanceBackendSessionIdentity): Promise<void> {
+    assertOwnedOpenShellCleanupIdentity(
+      {
+        cellTargetId: this.cellLifecycle.targetId,
+        deploymentId: this.deploymentId,
+        gatewayEndpoint: this.gatewayUrl,
+        gatewayName: this.gatewayName,
+        placement: this.placement,
+      },
+      identity
+    );
+    const stagingDirectory = resolveWorkerBackendStagingDirectory(
+      this.dataRoot,
+      identity.stagingDirectoryRef
+    );
+    const processSession = this.materializedSessions.get(identity.packageSnapshotId);
+    if (processSession && !isDeepStrictEqual(processSession.identity, identity)) {
+      throw new Error('OpenShell cleanup identity conflicts with the materialized session.');
+    }
+
+    const errors: unknown[] = [];
+    try {
+      this.workerControlGateway?.unregisterSession(identity.packageSnapshotId);
+    } catch (error) {
+      errors.push(error);
+    }
+    this.materializedSessions.delete(identity.packageSnapshotId);
+    this.materializingPackageSnapshotIds.delete(identity.packageSnapshotId);
+
+    try {
+      await this.cellLifecycle.recycle(identity.backendSessionId);
+    } catch (error) {
+      errors.push(error);
+    }
+
+    try {
+      await rm(stagingDirectory, { force: true, recursive: true });
+    } catch (error) {
+      errors.push(error);
+    }
+
+    if (errors.length > 0) {
+      throw new AggregateError(errors, 'OpenShell durable session cleanup failed.');
+    }
   }
 
   /**
@@ -1040,59 +1157,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
   }
 
   /**
-   * Emits an OpenShell teardown placeholder.
-   *
-   * @param packageSnapshotId Package snapshot id whose sandbox should be torn down.
-   * @returns Teardown evidence record.
-   */
-  public async teardown(packageSnapshotId: string): Promise<WorkerGovernanceEvidenceRecord> {
-    const session = this.requireMaterializedSession(packageSnapshotId);
-    const providerCleanupErrors: unknown[] = [];
-
-    this.workerControlGateway?.unregisterSession(packageSnapshotId);
-    try {
-      await this.detachProviders(session);
-    } catch (error) {
-      providerCleanupErrors.push(error);
-    }
-    try {
-      await this.deleteTransientProviders(session.transientProviderInstanceIds);
-    } catch (error) {
-      providerCleanupErrors.push(error);
-    }
-    if (!this.retainSandboxes && !session.sandboxDeleted) {
-      try {
-        await this.cli.deleteSandbox({
-          gateway: this.gatewayName,
-          ...(this.gatewayUrl ? { gatewayEndpoint: this.gatewayUrl } : {}),
-          ...(this.gatewayInsecure ? { gatewayInsecure: true } : {}),
-          name: session.sandboxName,
-        });
-        session.sandboxDeleted = true;
-      } catch (error) {
-        providerCleanupErrors.push(error);
-      }
-    }
-    if (providerCleanupErrors.length > 0) {
-      throw new AggregateError(
-        providerCleanupErrors,
-        'OpenShell transient provider cleanup failed during teardown.'
-      );
-    }
-    this.materializedSessions.delete(packageSnapshotId);
-    await rm(session.sessionDirectory, { force: true, recursive: true });
-
-    return {
-      data: {
-        packageSnapshotId,
-        sandboxName: session.sandboxName,
-      },
-      kind: 'openshell.teardown.completed',
-      timestamp: new Date().toISOString(),
-    };
-  }
-
-  /**
    * Detaches active providers authorized by revoked vault grants.
    *
    * @param grantIds Revoked vault grant ids.
@@ -1124,8 +1188,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
    */
   private capabilities(version: string): WorkerGovernanceBackendCapabilities {
     assertRequiredOpenShellVersion(version);
-
-    const remoteCapabilities =
+    const placementCapabilities =
       this.placement === 'remote'
         ? [
             'remote-gateway',
@@ -1150,7 +1213,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
         'trusted-worker-inference-relay',
         WORKER_RUNTIME_PROVENANCE_FEATURE,
         'audit-export',
-        ...remoteCapabilities,
+        ...placementCapabilities,
       ],
       dynamicCapabilities: [],
       kind: 'openshell',
@@ -1161,7 +1224,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
   /**
    * Checks real OpenShell readiness before sandbox creation.
    *
-   * @param trustedRelay Whether the verified relay requires a compatible gateway version.
+   * @param trustedRelay Whether the verified relay requires the exact pinned gateway version.
    * @returns Product-safe readiness summary.
    */
   private async preflight(trustedRelay: boolean): Promise<{
@@ -1174,7 +1237,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
     const gatewayTarget: OpenShellGatewayTargetInput = {
       gateway: this.gatewayName,
       ...(this.gatewayUrl ? { gatewayEndpoint: this.gatewayUrl } : {}),
-      ...(this.gatewayInsecure ? { gatewayInsecure: true } : {}),
     };
     const [version, status, gatewayInfo] = await Promise.all([
       this.cli.version(),
@@ -1204,22 +1266,9 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
       }
     }
 
-    if (this.placement === 'local') {
-      const doctor = await this.cli.doctorCheck();
-
-      if (!doctor.ok) {
-        return {
-          ...(doctor.error ? { error: doctor.error } : {}),
-          gatewayEndpoint: gatewayInfo.endpoint ?? status.server,
-          gatewayName: gatewayInfo.gateway ?? status.gateway,
-          health: 'unavailable',
-          version,
-        };
-      }
-    }
-
     if (
       this.gatewayUrl &&
+      this.placement === 'local' &&
       !gatewayEndpointMatches(this.gatewayUrl, gatewayInfo.endpoint ?? status.server)
     ) {
       return {
@@ -1282,7 +1331,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
         credentialValue: credential.credentialValue,
         gateway: this.gatewayName,
         ...(this.gatewayUrl ? { gatewayEndpoint: this.gatewayUrl } : {}),
-        ...(this.gatewayInsecure ? { gatewayInsecure: true } : {}),
         name: credential.providerInstanceId,
         providerType: credential.providerType,
       });
@@ -1305,7 +1353,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
         const provider = await this.cli.getProvider({
           gateway: this.gatewayName,
           ...(this.gatewayUrl ? { gatewayEndpoint: this.gatewayUrl } : {}),
-          ...(this.gatewayInsecure ? { gatewayInsecure: true } : {}),
           name: providerInstanceId,
         });
         const providerSummary = summarizeProviderOutput(provider.stdout);
@@ -1359,7 +1406,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
       const refreshStatus = await this.cli.getProviderRefreshStatus({
         gateway: this.gatewayName,
         ...(this.gatewayUrl ? { gatewayEndpoint: this.gatewayUrl } : {}),
-        ...(this.gatewayInsecure ? { gatewayInsecure: true } : {}),
         name: providerInstanceId,
       });
 
@@ -1376,81 +1422,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
     } catch {
       return null;
     }
-  }
-
-  /**
-   * Detaches all providers attached to a materialized OpenShell sandbox.
-   *
-   * @param session Materialized session state.
-   */
-  private async detachProviders(session: OpenShellMaterializedSessionState): Promise<void> {
-    const errors: unknown[] = [];
-
-    for (const provider of [...session.providerInstanceIds]) {
-      try {
-        await this.detachProvider(session, provider);
-      } catch (error) {
-        errors.push(error);
-      }
-    }
-
-    if (errors.length > 0) {
-      throw new AggregateError(errors, 'OpenShell provider detachment failed.');
-    }
-  }
-
-  /**
-   * Best-effort detaches and then deletes relay providers after sandbox creation fails.
-   *
-   * @param sandboxName Deterministic sandbox name passed to OpenShell.
-   * @param providers Transient relay provider names to remove.
-   * @returns Provider deletion errors that indicate possible credential residue.
-   */
-  private async cleanupTransientProvidersAfterCreateFailure(
-    sandboxName: string,
-    providers: readonly string[]
-  ): Promise<unknown[]> {
-    const cleanupErrors: unknown[] = [];
-
-    for (const provider of providers) {
-      try {
-        await this.detachProviderFromSandbox(sandboxName, provider);
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-      try {
-        await this.deleteTransientProvider(provider);
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-    }
-
-    return cleanupErrors;
-  }
-
-  /**
-   * Deletes transient relay providers after they have been detached.
-   *
-   * @param providers Transient provider names owned by one package.
-   */
-  private async deleteTransientProviders(providers: readonly string[]): Promise<void> {
-    for (const provider of providers) {
-      await this.deleteTransientProvider(provider);
-    }
-  }
-
-  /**
-   * Deletes one transient provider through the selected gateway.
-   *
-   * @param provider Transient provider name.
-   */
-  private async deleteTransientProvider(provider: string): Promise<void> {
-    await this.cli.deleteProvider({
-      gateway: this.gatewayName,
-      ...(this.gatewayUrl ? { gatewayEndpoint: this.gatewayUrl } : {}),
-      ...(this.gatewayInsecure ? { gatewayInsecure: true } : {}),
-      name: provider,
-    });
   }
 
   /**
@@ -1477,7 +1448,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
     const input = {
       gateway: this.gatewayName,
       ...(this.gatewayUrl ? { gatewayEndpoint: this.gatewayUrl } : {}),
-      ...(this.gatewayInsecure ? { gatewayInsecure: true } : {}),
       name: sandboxName,
       provider,
     };
@@ -1562,7 +1532,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
         destinationPath,
         gateway: this.gatewayName,
         ...(this.gatewayUrl ? { gatewayEndpoint: this.gatewayUrl } : {}),
-        ...(this.gatewayInsecure ? { gatewayInsecure: true } : {}),
         name: session.sandboxName,
         sandboxPath,
       });
@@ -1712,7 +1681,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
         destinationPath: input.localPath,
         gateway: this.gatewayName,
         ...(this.gatewayUrl ? { gatewayEndpoint: this.gatewayUrl } : {}),
-        ...(this.gatewayInsecure ? { gatewayInsecure: true } : {}),
         name: input.session.sandboxName,
         sandboxPath: toOpenShellSandboxPath(input.workerPath),
       });
@@ -1772,7 +1740,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
    *
    * @returns Upload declarations for explicitly configured Codex config.
    */
-  private codexAuthUploads(
+  private codexConfigUploads(
     excludedTargetPaths: ReadonlySet<string> = new Set()
   ): OpenShellSandboxUploadInput[] {
     const uploads: OpenShellSandboxUploadInput[] = [];
@@ -1784,13 +1752,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
       });
     }
 
-    if (this.codexAuthJsonPath && !excludedTargetPaths.has('/sandbox/.codex/auth.json')) {
-      uploads.push({
-        sourcePath: this.codexAuthJsonPath,
-        targetPath: '/sandbox/.codex/auth.json',
-      });
-    }
-
     return uploads;
   }
 }
@@ -1799,6 +1760,8 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
  * Builds environment variables injected into the OpenShell worker sandbox.
  *
  * @param environmentPackage Package that owns the sandbox.
+ * @param extraNetworkEndpoints Additional backend-configured egress rules.
+ * @param sessionDirectory Deterministic validated package staging directory.
  * @param controlRegistration Optional worker control registration.
  * @param runtimeEnvCredentials Backend-private runtime environment credentials.
  * @returns Sandbox environment variables.
@@ -2009,6 +1972,7 @@ async function createWorkspaceTarBundle(
       },
     }
   );
+  await chmod(bundlePath, 0o600);
 }
 
 /**
@@ -2111,18 +2075,23 @@ function sanitizeOpenShellPathComponent(value: string): string {
  */
 async function writeOpenShellSessionFiles(
   environmentPackage: AgentEnvironmentPackage,
-  extraNetworkEndpoints: OpenShellNetworkEndpoint[]
+  extraNetworkEndpoints: OpenShellNetworkEndpoint[],
+  sessionDirectory: string
 ): Promise<{
   packagePath: string;
   policyPath: string;
   sessionDirectory: string;
 }> {
-  const sessionDirectory = await mkdtemp(join(tmpdir(), 'openkit-openshell-session-'));
+  await mkdir(dirname(sessionDirectory), { mode: 0o700, recursive: true });
+  await mkdir(sessionDirectory, { mode: 0o700 });
   const packagePath = join(sessionDirectory, 'package.json');
   const policyPath = join(sessionDirectory, 'policy.yaml');
 
   await Promise.all([
-    writeFile(packagePath, `${JSON.stringify(environmentPackage, null, 2)}\n`, 'utf8'),
+    writeFile(packagePath, `${JSON.stringify(environmentPackage, null, 2)}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+    }),
     writeFile(
       policyPath,
       renderOpenShellWorkerPolicy({
@@ -2133,7 +2102,7 @@ async function writeOpenShellSessionFiles(
         ],
         controlBaseUrl: requireControlBaseUrl(environmentPackage),
       }),
-      'utf8'
+      { encoding: 'utf8', mode: 0o600 }
     ),
   ]);
 
@@ -2154,7 +2123,8 @@ async function writeOpenShellSessionFiles(
  */
 async function writeOpenShellWorkerInferenceProfile(
   environmentPackage: AgentEnvironmentPackage,
-  sessionDirectory: string
+  sessionDirectory: string,
+  deploymentId: string
 ): Promise<{ path: string; profile: OpenShellProviderProfileArtifact }> {
   const workerBaseUrl = environmentPackage.llm.routes[0]?.endpoint.workerBaseUrl;
 
@@ -2206,7 +2176,7 @@ async function writeOpenShellWorkerInferenceProfile(
   };
   const profile: OpenShellProviderProfileArtifact = {
     ...profileContent,
-    id: `${OPEN_SHELL_WORKER_INFERENCE_PROFILE_PREFIX}${createHash('sha256')
+    id: `${openShellProfileArtifactPrefix(deploymentId)}worker-inference-${createHash('sha256')
       .update(JSON.stringify(profileContent))
       .digest('hex')
       .slice(0, 16)}`,
@@ -2215,7 +2185,10 @@ async function writeOpenShellWorkerInferenceProfile(
   assertOpenShellProviderProfileConformant(profile);
   const path = join(sessionDirectory, 'worker-inference-provider-profile.json');
 
-  await writeFile(path, `${JSON.stringify(profile, null, 2)}\n`, 'utf8');
+  await writeFile(path, `${JSON.stringify(profile, null, 2)}\n`, {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
   return { path, profile };
 }
 
@@ -2515,6 +2488,62 @@ function isOpenShellDetachNotFound(error: unknown): boolean {
 }
 
 /**
+ * Canonicalizes a direct OpenShell endpoint to a non-secret origin.
+ *
+ * @param value Optional configured gateway URL.
+ * @returns Canonical HTTP(S) origin or null for named-gateway routing.
+ * @throws Error when credentials, path, query, fragment, or another protocol is present.
+ */
+function canonicalOpenShellGatewayOrigin(value: string | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+  const url = new URL(value);
+  if (
+    !['http:', 'https:'].includes(url.protocol) ||
+    url.username ||
+    url.password ||
+    (url.pathname !== '' && url.pathname !== '/') ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error('OpenShell gateway URL must be a credential-free HTTP(S) origin.');
+  }
+  return url.origin;
+}
+
+/**
+ * Resolves one canonical staging reference beneath the backend session root.
+ *
+ * @param dataRoot NanoCore data root.
+ * @param stagingDirectoryRef Data-root-relative durable staging reference.
+ * @returns Absolute strict child path safe for recursive cleanup.
+ * @throws Error when the reference is absolute, non-canonical, or escapes the session root.
+ */
+function resolveWorkerBackendStagingDirectory(
+  dataRoot: string,
+  stagingDirectoryRef: string
+): string {
+  if (isAbsolute(stagingDirectoryRef)) {
+    throw new Error('OpenShell staging directory reference must be relative.');
+  }
+  const normalizedDataRoot = resolve(dataRoot);
+  const sessionsRoot = resolve(normalizedDataRoot, 'server', 'runtime', 'worker-backend-sessions');
+  const stagingDirectory = resolve(normalizedDataRoot, stagingDirectoryRef);
+  const childRef = relative(sessionsRoot, stagingDirectory);
+  if (
+    childRef === '' ||
+    isAbsolute(childRef) ||
+    childRef === '..' ||
+    childRef.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) ||
+    relative(normalizedDataRoot, stagingDirectory) !== stagingDirectoryRef
+  ) {
+    throw new Error('OpenShell staging directory reference must be a canonical session child.');
+  }
+  return stagingDirectory;
+}
+
+/**
  * Checks whether OpenShell reported an optimistic-concurrency detach conflict.
  *
  * @param error Detach failure.
@@ -2607,23 +2636,125 @@ function gatewayEndpointMatches(expected: string, actual: string | null): boolea
 /**
  * Builds a stable product-safe OpenShell sandbox name from an agent session id.
  *
+ * @param deploymentId Stable data-root deployment id.
  * @param agentSessionId Agent session id.
  * @returns OpenShell sandbox name.
  */
-function openShellSandboxName(agentSessionId: string): string {
-  return `openkit-${agentSessionId.replace(/[^a-zA-Z0-9_.-]/g, '-')}`;
+function openShellSandboxName(deploymentId: string, agentSessionId: string): string {
+  const prefix = `${openShellSandboxArtifactPrefix(deploymentId)}worker-`;
+  const suffix = agentSessionId.replace(/[^a-zA-Z0-9_.-]/g, '-');
+  const digest = createHash('sha256').update(agentSessionId).digest('hex').slice(0, 12);
+  return `${prefix}${suffix.slice(0, 10)}-${digest}`;
 }
 
 /**
  * Builds the unique transient provider name for one relay-required package.
  *
+ * @param deploymentId Stable data-root deployment id.
  * @param packageSnapshotId Package snapshot that owns the provider.
  * @returns Stable provider name without exposing package lineage.
  */
-function openShellWorkerInferenceProviderName(packageSnapshotId: string): string {
+function openShellWorkerInferenceProviderName(
+  deploymentId: string,
+  packageSnapshotId: string
+): string {
   const digest = createHash('sha256').update(packageSnapshotId).digest('hex').slice(0, 16);
 
-  return `openkit-worker-inference-${digest}`;
+  return `${openShellInstanceArtifactPrefix(deploymentId)}worker-inference-${digest}`;
+}
+
+/** Builds one collision-resistant gateway namespace from the original deployment id. */
+function openShellDeploymentNamespace(deploymentId: string): string {
+  if (!deploymentId) {
+    throw new Error('OpenShell deployment id is required.');
+  }
+  const label =
+    deploymentId
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, '-')
+      .replace(/-+/g, '-')
+      .slice(0, 12) || 'deployment';
+  const digest = createHash('sha256').update(deploymentId).digest('hex').slice(0, 12);
+  return `${label}-${digest}`;
+}
+
+/** Builds the deployment-owned sandbox prefix. */
+function openShellSandboxArtifactPrefix(deploymentId: string): string {
+  return `oks-${openShellDeploymentNamespace(deploymentId)}-`;
+}
+
+/** Builds the deployment-owned provider-instance prefix. */
+function openShellInstanceArtifactPrefix(deploymentId: string): string {
+  return `oki-${openShellDeploymentNamespace(deploymentId)}-`;
+}
+
+/** Builds the deployment-owned immutable provider-profile prefix. */
+function openShellProfileArtifactPrefix(deploymentId: string): string {
+  return `okp-${openShellDeploymentNamespace(deploymentId)}-`;
+}
+
+/** Derives the exact private staging reference from a complete physical identity. */
+function openShellSessionStagingDirectoryRef(
+  identity: Omit<WorkerGovernanceBackendSessionIdentity, 'stagingDirectoryRef'>
+): string {
+  const digest = createHash('sha256')
+    .update(
+      JSON.stringify({
+        agentSessionId: identity.agentSessionId,
+        backendKind: identity.backendKind,
+        backendSessionId: identity.backendSessionId,
+        backendTarget: {
+          cellTargetId: identity.backendTarget.cellTargetId,
+          gatewayEndpoint: identity.backendTarget.gatewayEndpoint,
+          gatewayName: identity.backendTarget.gatewayName,
+          placement: identity.backendTarget.placement,
+        },
+        deploymentId: identity.deploymentId,
+        packageSnapshotId: identity.packageSnapshotId,
+        transientProviderInstanceId: identity.transientProviderInstanceId,
+      })
+    )
+    .digest('hex');
+  return join('server', 'runtime', 'worker-backend-sessions', digest);
+}
+
+/**
+ * Rejects durable cleanup manifests outside the configured disposable Cell lineage.
+ *
+ * @param configured Configured deployment and exact disposable Cell target.
+ * @param identity Durable backend identity to validate.
+ * @throws When the identity is not owned by the configured deployment and Cell placement.
+ */
+function assertOwnedOpenShellCleanupIdentity(
+  configured: {
+    readonly cellTargetId: string;
+    readonly deploymentId: string;
+    readonly gatewayEndpoint: string | null;
+    readonly gatewayName: string;
+    readonly placement: 'local' | 'remote';
+  },
+  identity: WorkerGovernanceBackendSessionIdentity
+): void {
+  const expectedSandbox = openShellSandboxName(configured.deploymentId, identity.agentSessionId);
+  const expectedProvider = openShellWorkerInferenceProviderName(
+    configured.deploymentId,
+    identity.packageSnapshotId
+  );
+  const { stagingDirectoryRef: _stagingDirectoryRef, ...stagingIdentity } = identity;
+  if (
+    identity.backendKind !== 'openshell' ||
+    identity.deploymentId !== configured.deploymentId ||
+    identity.backendSessionId !== expectedSandbox ||
+    identity.backendTarget.cellTargetId !== configured.cellTargetId ||
+    identity.backendTarget.placement !== configured.placement ||
+    identity.backendTarget.gatewayEndpoint !== configured.gatewayEndpoint ||
+    identity.backendTarget.gatewayName !== configured.gatewayName ||
+    identity.stagingDirectoryRef !== openShellSessionStagingDirectoryRef(stagingIdentity) ||
+    (identity.transientProviderInstanceId !== null &&
+      identity.transientProviderInstanceId !== expectedProvider)
+  ) {
+    throw new Error('OpenShell cleanup identity does not match its deployment-owned lineage.');
+  }
 }
 
 /**

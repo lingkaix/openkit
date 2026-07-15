@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import {
   type BackendWorkspaceHandle,
   BackendWorkspaceHandleSchema,
@@ -13,15 +14,21 @@ import {
   WorkspaceInputSnapshotSchema,
   type WorkspaceMaterializationRecord,
   WorkspaceMaterializationRecordSchema,
+  WorkspaceSynchronizationBackendKindSchema,
   type WorkspaceSyncReviewItem,
   WorkspaceSyncReviewItemSchema,
   type WorkspaceSyncReviewPatchPayload,
   WorkspaceSyncReviewPatchPayloadSchema,
 } from '@openkit/app-api-schemas';
+import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import { recordWorkspaceEvidenceBundle } from '../evidence-bundles.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { recordMaterializationRuntimeEvidence } from './runtime-evidence.js';
+import {
+  buildWorkspaceInputSnapshots,
+  buildWorkspaceMaterializationRecords,
+} from './workspace-materializer.js';
 
 /** Durable workspace synchronization review persistence input. */
 export interface RecordWorkspaceSyncReviewInput {
@@ -306,7 +313,35 @@ export function recordWorkspaceMaterializationRecords(
   workspaceDb: WorkspaceDb,
   records: readonly WorkspaceMaterializationRecord[]
 ): WorkspaceMaterializationRecord[] {
-  return records.map((record) => recordWorkspaceMaterializationRecord(workspaceDb, record));
+  return workspaceDb.sqlite.transaction(() =>
+    records.map((record) => recordWorkspaceMaterializationRecord(workspaceDb, record))
+  )();
+}
+
+/**
+ * Atomically publishes the exact input-snapshot and backend-handle handoff for one package.
+ *
+ * @param workspaceDb Open workspace-scope database handle.
+ * @param inputSnapshots Package input snapshots built before materialization.
+ * @param materializationRecords Exact backend materialization records built after creation.
+ * @returns Stored snapshots and materialization records.
+ */
+export function recordWorkspaceBackendHandoff(
+  workspaceDb: WorkspaceDb,
+  inputSnapshots: readonly WorkspaceInputSnapshot[],
+  materializationRecords: readonly WorkspaceMaterializationRecord[]
+): {
+  readonly inputSnapshots: WorkspaceInputSnapshot[];
+  readonly materializationRecords: WorkspaceMaterializationRecord[];
+} {
+  return workspaceDb.sqlite.transaction(() => ({
+    inputSnapshots: inputSnapshots.map((snapshot) =>
+      recordWorkspaceInputSnapshot(workspaceDb, snapshot)
+    ),
+    materializationRecords: materializationRecords.map((record) =>
+      recordWorkspaceMaterializationRecord(workspaceDb, record)
+    ),
+  }))();
 }
 
 /**
@@ -702,41 +737,41 @@ function recordWorkspaceMaterializationRecord(
     if (JSON.stringify(stored) !== JSON.stringify(parsed)) {
       throw new Error(`Workspace materialization replay conflict: ${parsed.id}`);
     }
-    return stored;
-  }
-  const inserted = workspaceDb.sqlite
-    .prepare(
-      `INSERT INTO workspace_materialization_records (
-        materialization_record_id,
-        workspace_id,
-        input_snapshot_id,
-        package_snapshot_id,
-        worker_session_id,
-        strategy,
-        payload_json,
-        created_at,
-        updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      parsed.id,
-      parsed.workspaceId,
-      parsed.inputSnapshotId,
-      parsed.packageSnapshotId,
-      parsed.workerSessionId,
-      parsed.strategy,
-      JSON.stringify(parsed),
-      parsed.createdAt,
-      parsed.createdAt
-    );
-  if (inserted.changes === 0) {
-    throw new Error(`Workspace materialization was not recorded: ${parsed.id}`);
+  } else {
+    const inserted = workspaceDb.sqlite
+      .prepare(
+        `INSERT INTO workspace_materialization_records (
+          materialization_record_id,
+          workspace_id,
+          input_snapshot_id,
+          package_snapshot_id,
+          worker_session_id,
+          strategy,
+          payload_json,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        parsed.id,
+        parsed.workspaceId,
+        parsed.inputSnapshotId,
+        parsed.packageSnapshotId,
+        parsed.workerSessionId,
+        parsed.strategy,
+        JSON.stringify(parsed),
+        parsed.createdAt,
+        parsed.createdAt
+      );
+    if (inserted.changes === 0) {
+      throw new Error(`Workspace materialization was not recorded: ${parsed.id}`);
+    }
   }
   if (options.promoteEvidence === false) {
     return parsed;
   }
 
-  recordBackendWorkspaceHandle(workspaceDb, inferBackendWorkspaceHandle(parsed));
+  recordBackendWorkspaceHandle(workspaceDb, inferBackendWorkspaceHandle(parsed), true);
   recordWorkspaceEvidenceBundle(workspaceDb, {
     id: `evb_workspace_materialization_${parsed.id}`,
     workspaceId: parsed.workspaceId,
@@ -777,6 +812,142 @@ export function listBackendWorkspaceHandles(
     workspaceId,
     BackendWorkspaceHandleSchema
   );
+}
+
+/**
+ * Requires an exact backend-handle handoff for every workspace input in one immutable package.
+ *
+ * @param workspaceDb Workspace database that owns the package.
+ * @param environmentPackage Immutable package whose inputs define the expected handoff set.
+ * @param expectedBackend Optional exact physical backend owner required by cleanup projection.
+ * @returns Exact package-owned backend handles in storage order.
+ * @throws Error when a declared input is missing, duplicated, or joined by an unexpected handle.
+ */
+export function requireCompleteBackendWorkspaceHandleHandoff(
+  workspaceDb: WorkspaceDb,
+  environmentPackage: AgentEnvironmentPackage,
+  expectedBackend?: {
+    /** Exact backend family persisted by the Core anchor. */
+    readonly backendKind: string;
+    /** Exact backend version persisted by the Core anchor. */
+    readonly backendVersion: string | null;
+    /** Exact physical worker session id persisted by the Core anchor. */
+    readonly workerSessionId: string;
+  }
+): BackendWorkspaceHandle[] {
+  const expectedRecordIds = new Set(
+    environmentPackage.workspace.inputs.map(
+      (input) => `wmr_${environmentPackage.snapshotId}_${input.id}`
+    )
+  );
+  const handles = listBackendWorkspaceHandles(
+    workspaceDb,
+    environmentPackage.scope.workspaceId
+  ).filter((handle) => handle.packageSnapshotId === environmentPackage.snapshotId);
+  const actualRecordIds = handles.map((handle) => handle.materializationRecordId);
+  const uniqueActualRecordIds = new Set(actualRecordIds);
+  const materializationRecords = listWorkspaceMaterializationRecords(
+    workspaceDb,
+    environmentPackage.scope.workspaceId
+  ).filter((record) => record.packageSnapshotId === environmentPackage.snapshotId);
+  const materializationRecordsById = new Map(
+    materializationRecords.map((record) => [record.id, record] as const)
+  );
+  const inputSnapshotsById = new Map(
+    listWorkspaceInputSnapshots(workspaceDb, environmentPackage.scope.workspaceId).map(
+      (snapshot) => [snapshot.id, snapshot] as const
+    )
+  );
+  const packageInputsById = new Map(
+    environmentPackage.workspace.inputs.map((input) => [input.id, input] as const)
+  );
+
+  if (
+    actualRecordIds.length !== uniqueActualRecordIds.size ||
+    uniqueActualRecordIds.size !== expectedRecordIds.size ||
+    [...uniqueActualRecordIds].some((recordId) => !expectedRecordIds.has(recordId)) ||
+    materializationRecordsById.size !== expectedRecordIds.size ||
+    handles.some((handle) => {
+      const record = materializationRecordsById.get(handle.materializationRecordId);
+      const inputId = record?.id.replace(`wmr_${environmentPackage.snapshotId}_`, '') ?? '';
+      const packageInput = packageInputsById.get(inputId);
+      const expectedInputSnapshotId = `wis_${environmentPackage.snapshotId}_${inputId}`;
+      const snapshot = inputSnapshotsById.get(expectedInputSnapshotId);
+      const expectedSourceId =
+        packageInput && typeof packageInput.source.sourceId === 'string'
+          ? packageInput.source.sourceId
+          : undefined;
+      const canonicalSnapshot =
+        packageInput && snapshot && expectedBackend
+          ? buildWorkspaceInputSnapshots({
+              backendCapabilities: snapshot.backend.capabilitySummary,
+              backendKind: WorkspaceSynchronizationBackendKindSchema.parse(
+                expectedBackend.backendKind
+              ),
+              createdAt: snapshot.createdAt,
+              environmentPackage: {
+                ...environmentPackage,
+                workspace: { ...environmentPackage.workspace, inputs: [packageInput] },
+              },
+            })[0]
+          : undefined;
+      const canonicalRecord =
+        canonicalSnapshot && expectedBackend && packageInput
+          ? buildWorkspaceMaterializationRecords({
+              createdAt: record?.createdAt ?? '',
+              inputSnapshots: [canonicalSnapshot],
+              materialization: {
+                backendKind: WorkspaceSynchronizationBackendKindSchema.parse(
+                  expectedBackend.backendKind
+                ),
+                backendStatus: { health: 'ready', version: expectedBackend.backendVersion },
+                packageSnapshotId: environmentPackage.snapshotId,
+                requiredCapabilities: environmentPackage.backend.requiredCapabilities,
+                sandbox: { name: expectedBackend.workerSessionId, state: 'created' },
+                workspaceInputs: [{ id: packageInput.id, target: packageInput.target }],
+              },
+            })[0]
+          : undefined;
+      return (
+        !record ||
+        !packageInput ||
+        !snapshot ||
+        handle.id !== `bwh_${record.id}` ||
+        handle.workspaceId !== environmentPackage.scope.workspaceId ||
+        handle.materializationRecordId !== record.id ||
+        handle.packageSnapshotId !== environmentPackage.snapshotId ||
+        handle.retention !== 'until-reconciliation' ||
+        handle.createdAt !== record.createdAt ||
+        record.workspaceId !== environmentPackage.scope.workspaceId ||
+        record.packageSnapshotId !== environmentPackage.snapshotId ||
+        record.inputSnapshotId !== expectedInputSnapshotId ||
+        record.strategy !== snapshot.strategy ||
+        !isDeepStrictEqual(record.base, snapshot.base) ||
+        record.sourceId !== expectedSourceId ||
+        record.backendKind !== handle.backendKind ||
+        record.workerSessionId !== handle.workerSessionId ||
+        snapshot.workspaceId !== environmentPackage.scope.workspaceId ||
+        snapshot.resourceId !== inputId ||
+        snapshot.sourceId !== expectedSourceId ||
+        !isDeepStrictEqual(handle.transportRefs, [
+          { kind: 'materialized-root', ref: record.materializedRootRef },
+        ]) ||
+        (expectedBackend !== undefined &&
+          (!canonicalSnapshot ||
+            !canonicalRecord ||
+            !isDeepStrictEqual(snapshot, canonicalSnapshot) ||
+            !isDeepStrictEqual(record, canonicalRecord) ||
+            handle.backendKind !== expectedBackend.backendKind ||
+            handle.workerSessionId !== expectedBackend.workerSessionId))
+      );
+    })
+  ) {
+    throw new Error(
+      `Workspace backend handle handoff is incomplete for package ${environmentPackage.snapshotId}.`
+    );
+  }
+
+  return handles;
 }
 
 /**
@@ -836,10 +1007,12 @@ export function updateBackendWorkspaceHandleCleanupStatus(
  *
  * @param workspaceDb Open workspace-scope database handle.
  * @param handle Backend handle to persist.
+ * @param preserveCleanupProgress Whether an exact materialization replay may retain mutable cleanup state.
  */
 function recordBackendWorkspaceHandle(
   workspaceDb: WorkspaceDb,
-  handle: BackendWorkspaceHandle
+  handle: BackendWorkspaceHandle,
+  preserveCleanupProgress = false
 ): void {
   const parsed = BackendWorkspaceHandleSchema.parse(handle);
   const existing = workspaceDb.sqlite
@@ -851,7 +1024,10 @@ function recordBackendWorkspaceHandle(
     .get(parsed.workspaceId, parsed.id) as { payload_json: string } | undefined;
   if (existing) {
     const stored = BackendWorkspaceHandleSchema.parse(JSON.parse(existing.payload_json) as unknown);
-    if (JSON.stringify(stored) !== JSON.stringify(parsed)) {
+    const replayed = preserveCleanupProgress
+      ? { ...parsed, cleanupStatus: stored.cleanupStatus, updatedAt: stored.updatedAt }
+      : parsed;
+    if (JSON.stringify(stored) !== JSON.stringify(replayed)) {
       throw new Error(`Backend workspace handle replay conflict: ${parsed.id}`);
     }
     return;

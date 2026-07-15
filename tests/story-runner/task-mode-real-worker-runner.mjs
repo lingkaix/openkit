@@ -1,11 +1,25 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Agent, fetch as undiciFetch } from 'undici';
 
+import {
+  classifyRealCodexRunnerFailure,
+  configureRealCodexRuntime,
+  streamCodexAuthFromSsh,
+} from './real-codex-goal-mode-runner.mjs';
 import { parseStoryDocument, validateStoryMetadata } from './story-metadata.mjs';
 
 const storyRunnerRoot = dirname(fileURLToPath(import.meta.url));
@@ -22,9 +36,13 @@ const RESULT_FILE = 'task-mode-real-worker-result.json';
 const REDACTION_NOTES_FILE = 'task-mode-real-worker-redaction-notes.md';
 const PROVENANCE_SUMMARY_PATTERN =
   /^Worker runtime provenance complete: (\d+) streams, (\d+) frames, (\d+) attributed, (\d+) unattributed, (\d+) roots?, (\d+) children, (\d+)\/(\d+) gateway calls reconciled, gateway complete, bundles (\S+) and (\S+)\.$/;
-const TASK_MODE_WORKER_IMAGE_REF = 'openkit/worker-codex:dev';
 const TASK_MODE_PROVIDER_ID = 'openai_codex';
-const TASK_MODE_MODEL_ID = 'openai-codex/gpt-5.5';
+const TASK_MODE_MODEL_ID = 'openai-codex/gpt-5.6-sol';
+const TASK_STORY_TIMEOUT_MESSAGE = 'Real Task Mode worker story exceeded its configured deadline.';
+const TASK_RUNTIME_RESTART_MESSAGE =
+  'Real Codex runtime configuration requires a NanoCore restart. Restart NanoCore and rerun the story.';
+const SUPERVISED_CHILD_ARG = '--openkit-task-l6-supervised-child';
+const RESTART_REQUIRED_EXIT_CODE = 75;
 
 /** Repository-relative proof file owned by the bounded real Task story. */
 export const TASK_MODE_REAL_WORKER_PROOF_PATH = 'docs/task-mode-runtime-provenance-proof.md';
@@ -32,12 +50,13 @@ export const TASK_MODE_REAL_WORKER_PROOF_PATH = 'docs/task-mode-runtime-provenan
 /**
  * @typedef {object} TaskModeRealWorkerRunnerConfig
  * @property {string} evidenceDir Directory where redacted evidence files are written.
- * @property {string} nanoCoreDataRoot Existing NanoCore data root on the runner host.
+ * @property {string} nanoCoreDataRoot Local data root owned by the target NanoCore process.
  * @property {string} nanoCoreUrl Existing NanoCore endpoint.
  * @property {string} repositoryRoot Disposable repository path visible to NanoCore.
  * @property {string} storyPath Story artifact path.
  * @property {string} taskInput Task Mode input.
  * @property {string | undefined} token Optional NanoCore bearer token.
+ * @property {string} workerImageRef Exact A1-built worker image used by the acceptance run.
  * @property {string} workspaceId Workspace to use for the run.
  */
 
@@ -53,7 +72,7 @@ export function evaluateTaskModeRealWorkerPrerequisites(options = {}) {
   const storyPath = options.storyPath ?? DEFAULT_TASK_MODE_REAL_WORKER_STORY_PATH;
   const config = {
     evidenceDir: env.OPENKIT_L6_EVIDENCE_DIR ?? '',
-    nanoCoreDataRoot: env.OPENKIT_L6_TASK_NANOCORE_DATA_ROOT ?? '',
+    nanoCoreDataRoot: env.OPENKIT_L6_NANOCORE_DATA_ROOT ?? '',
     nanoCoreUrl: env.OPENKIT_L6_TASK_NANOCORE_URL ?? '',
     repositoryRoot: env.OPENKIT_L6_TASK_REPO_ROOT ?? '',
     storyPath,
@@ -61,6 +80,7 @@ export function evaluateTaskModeRealWorkerPrerequisites(options = {}) {
       env.OPENKIT_L6_TASK_INPUT ??
       `Delegate two independent repository inspections to exactly two Codex sub-agents, then create ${TASK_MODE_REAL_WORKER_PROOF_PATH} with exactly three bullet points summarizing the root and child findings. Do not modify any other file. Do not commit.`,
     token: env.OPENKIT_NANOCORE_TOKEN,
+    workerImageRef: env.OPENKIT_L6_TASK_WORKER_IMAGE_REF ?? '',
     workspaceId: env.OPENKIT_L6_TASK_WORKSPACE_ID ?? 'ws_demo',
   };
 
@@ -89,7 +109,7 @@ export function evaluateTaskModeRealWorkerPrerequisites(options = {}) {
   }
 
   if (!config.nanoCoreDataRoot) {
-    return { config, enabled: false, reason: 'set OPENKIT_L6_TASK_NANOCORE_DATA_ROOT' };
+    return { config, enabled: false, reason: 'set OPENKIT_L6_NANOCORE_DATA_ROOT' };
   }
 
   if (!fileExists(join(config.nanoCoreDataRoot, 'server', 'db', 'core.sqlite'))) {
@@ -98,6 +118,10 @@ export function evaluateTaskModeRealWorkerPrerequisites(options = {}) {
       enabled: false,
       reason: `NanoCore database not found under data root: ${config.nanoCoreDataRoot}`,
     };
+  }
+
+  if (!config.workerImageRef) {
+    return { config, enabled: false, reason: 'set OPENKIT_L6_TASK_WORKER_IMAGE_REF' };
   }
 
   if (!config.repositoryRoot) {
@@ -337,7 +361,7 @@ export function assertTaskModeRuntimeProvenance(input) {
 /**
  * Validates the trusted Task worker AEP and its immutable repository base.
  *
- * @param {{ aepRead: Record<string, any>, initialHead: string, packageSnapshotId: string, turnId: string }} input AEP assertion input.
+ * @param {{ aepRead: Record<string, any>, expectedImageRef: string, initialHead: string, packageSnapshotId: string, turnId: string }} input AEP assertion input.
  * @returns {{ agentSessionId: string, backendKind: string, controlMode: string, imageRef: string, modelId: string, providerId: string, runtimeKind: string, snapshotId: string, sourceCommitMatched: true }} Product-safe AEP summary.
  */
 export function assertTaskModeAgentEnvironment(input) {
@@ -360,7 +384,7 @@ export function assertTaskModeAgentEnvironment(input) {
     'Task Mode control is not direct NanoCore.'
   );
   assert(
-    snapshot?.runtime?.image?.ref === TASK_MODE_WORKER_IMAGE_REF,
+    snapshot?.runtime?.image?.ref === input.expectedImageRef,
     'Task Mode worker did not use the acceptance image.'
   );
   assert(
@@ -474,7 +498,7 @@ export function assertTaskModeWorkspaceProof(input) {
 /**
  * Runs the opt-in real OpenShell/Codex Task Mode Core Client story.
  *
- * @param {{ clients?: { core: Record<string, any> }, createClients?: (config: TaskModeRealWorkerRunnerConfig, timeoutMs: number, deadlineSignal: AbortSignal) => Promise<{ close: () => Promise<void>, core: Record<string, any> }>, createDeadlineSignal?: (timeoutMs: number) => AbortSignal, env?: Record<string, string | undefined>, fileExists?: (path: string) => boolean, now?: Date, stdout?: (message: string) => void, storyPath?: string }} options Runner options.
+ * @param {{ clients?: { core: Record<string, any> }, configureRuntime?: (core: Record<string, any>, config: TaskModeRealWorkerRunnerConfig) => Promise<Record<string, any>>, createClients?: (config: TaskModeRealWorkerRunnerConfig, timeoutMs: number, deadlineSignal: AbortSignal) => Promise<{ close: () => Promise<void>, core: Record<string, any> }>, createDeadlineSignal?: (timeoutMs: number) => AbortSignal, env?: Record<string, string | undefined>, fileExists?: (path: string) => boolean, now?: Date, stdout?: (message: string) => void, storyPath?: string }} options Runner options.
  * @returns {Promise<Record<string, unknown>>} Runner result.
  */
 export async function runTaskModeRealWorkerStory(options = {}) {
@@ -503,6 +527,7 @@ export async function runTaskModeRealWorkerStory(options = {}) {
 
   validateStoryMetadata(story.metadata, prerequisites.config.storyPath);
   assertRealTaskModeStory(story.metadata, prerequisites.config.storyPath);
+  prepareTaskEvidenceDirectory(prerequisites.config.evidenceDir);
   const timeoutMs = story.metadata.timeout_seconds * 1_000;
   assert(
     Number.isSafeInteger(timeoutMs) && timeoutMs > 0,
@@ -521,15 +546,22 @@ export async function runTaskModeRealWorkerStory(options = {}) {
 
   try {
     return await runWithinStoryDeadline(
-      () =>
-        executeTaskModeRealWorkerStory({
+      async () => {
+        const runtimeSetup = await (options.configureRuntime ?? configureTaskModeCodexRuntime)(
+          clients.core,
+          prerequisites.config
+        );
+
+        return executeTaskModeRealWorkerStory({
           clients,
           initialHead,
           options,
           prerequisites,
+          runtimeSetup,
           stdout,
           story,
-        }),
+        });
+      },
       deadlineSignal,
       timeoutMs
     );
@@ -578,7 +610,7 @@ function runWithinStoryDeadline(execute, deadlineSignal, timeoutMs) {
 /**
  * Executes the real Task story with an already-created client lifetime.
  *
- * @param {{ clients: { core: Record<string, any> }, initialHead: string, options: Record<string, any>, prerequisites: ReturnType<typeof evaluateTaskModeRealWorkerPrerequisites>, stdout: (message: string) => void, story: ReturnType<typeof parseStoryDocument> }} input Execution dependencies.
+ * @param {{ clients: { core: Record<string, any> }, initialHead: string, options: Record<string, any>, prerequisites: ReturnType<typeof evaluateTaskModeRealWorkerPrerequisites>, runtimeSetup: Record<string, any>, stdout: (message: string) => void, story: ReturnType<typeof parseStoryDocument> }} input Execution dependencies.
  * @returns {Promise<Record<string, unknown>>} Redacted story result.
  */
 async function executeTaskModeRealWorkerStory({
@@ -586,6 +618,7 @@ async function executeTaskModeRealWorkerStory({
   initialHead,
   options,
   prerequisites,
+  runtimeSetup,
   stdout,
   story,
 }) {
@@ -594,7 +627,6 @@ async function executeTaskModeRealWorkerStory({
     diagnostics.boot?.acceptingProductWork === true,
     'Target NanoCore is not accepting product work.'
   );
-
   const thread = await clients.core.core.createThread({
     name: 'Task Mode real worker release',
     workspaceId: prerequisites.config.workspaceId,
@@ -694,6 +726,7 @@ async function executeTaskModeRealWorkerStory({
     });
     aep = assertTaskModeAgentEnvironment({
       aepRead,
+      expectedImageRef: prerequisites.config.workerImageRef,
       initialHead,
       packageSnapshotId: provenance.packageSnapshotId,
       turnId: task.turn.id,
@@ -769,21 +802,239 @@ async function executeTaskModeRealWorkerStory({
     },
     git: gitSummary,
     provenance,
+    runtime: {
+      oauth: runtimeSetup.oauth,
+      runtimeConfig: runtimeSetup.runtimeConfig,
+    },
     status: 'ok',
     workspace,
   };
-  const redactionNotes = buildRedactionNotes(prerequisites.config, story.metadata);
+  const redactionNotes = buildRedactionNotes(story.metadata);
   assertNoRuntimeProvenanceLeak({ redactionNotes, result });
 
-  mkdirSync(prerequisites.config.evidenceDir, { recursive: true });
-  writeFileSync(
+  writeExclusiveEvidenceFile(
     join(prerequisites.config.evidenceDir, RESULT_FILE),
     `${JSON.stringify(result, null, 2)}\n`
   );
-  writeFileSync(join(prerequisites.config.evidenceDir, REDACTION_NOTES_FILE), redactionNotes);
+  writeExclusiveEvidenceFile(
+    join(prerequisites.config.evidenceDir, REDACTION_NOTES_FILE),
+    redactionNotes
+  );
   stdout(JSON.stringify(result, null, 2));
 
   return result;
+}
+
+/**
+ * Runs the real Task story in an isolated Unix process group with a hard deadline.
+ *
+ * @param {{ childEntrypoint?: string, env?: Record<string, string | undefined>, fileExists?: (path: string) => boolean, killProcess?: typeof process.kill, spawnProcess?: typeof spawn, stdout?: (message: string) => void, storyPath?: string }} options Supervisor options.
+ * @returns {Promise<Record<string, unknown>>} Redacted skip or supervised completion result.
+ */
+export async function runTaskModeRealWorkerCli(options = {}) {
+  const env = options.env ?? process.env;
+  const storyPath = options.storyPath ?? DEFAULT_TASK_MODE_REAL_WORKER_STORY_PATH;
+  const stdout = options.stdout ?? ((message) => console.log(message));
+  const prerequisites = evaluateTaskModeRealWorkerPrerequisites({
+    env,
+    fileExists: options.fileExists,
+    storyPath,
+  });
+
+  if (!prerequisites.enabled) {
+    return runTaskModeRealWorkerStory({ ...options, env, storyPath, stdout });
+  }
+
+  const timeoutMs = readTaskModeStoryTimeout(storyPath);
+  prepareTaskEvidenceDirectory(prerequisites.config.evidenceDir);
+  const childEntrypoint = options.childEntrypoint ?? fileURLToPath(import.meta.url);
+  const child = (options.spawnProcess ?? spawn)(
+    process.execPath,
+    [childEntrypoint, SUPERVISED_CHILD_ARG, storyPath],
+    {
+      detached: true,
+      env,
+      shell: false,
+      stdio: 'inherit',
+    }
+  );
+  assert(typeof child.pid === 'number', 'Real Task Mode worker child process did not start.');
+  const outcome = await waitForChildOrDeadline(
+    child,
+    timeoutMs,
+    options.killProcess ?? process.kill
+  );
+
+  if (outcome.kind === 'timeout') {
+    throw new Error(TASK_STORY_TIMEOUT_MESSAGE);
+  }
+  if (outcome.exitCode === RESTART_REQUIRED_EXIT_CODE) {
+    throw new Error(TASK_RUNTIME_RESTART_MESSAGE);
+  }
+  if (outcome.exitCode !== 0) {
+    throw new Error('Real Task Mode worker story failed.');
+  }
+
+  return { status: 'ok' };
+}
+
+/**
+ * Reads and validates the positive timeout declared by one Task story.
+ *
+ * @param {string} storyPath Task story source path.
+ * @returns {number} Positive deadline in milliseconds.
+ */
+function readTaskModeStoryTimeout(storyPath) {
+  const story = parseStoryDocument(readFileSync(storyPath, 'utf8'), storyPath);
+  validateStoryMetadata(story.metadata, storyPath);
+  assertRealTaskModeStory(story.metadata, storyPath);
+  const timeoutSeconds = story.metadata.timeout_seconds;
+  assert(
+    Number.isInteger(timeoutSeconds) && timeoutSeconds > 0,
+    `${storyPath} must declare a positive integer timeout_seconds.`
+  );
+  return timeoutSeconds * 1000;
+}
+
+/**
+ * Waits for one supervised child or kills its entire Unix process group at the deadline.
+ *
+ * @param {import('node:child_process').ChildProcess} child Supervised process-group leader.
+ * @param {number} timeoutMs Positive deadline in milliseconds.
+ * @param {typeof process.kill} killProcess Process signaling implementation.
+ * @returns {Promise<{ kind: 'close', exitCode: number | null } | { kind: 'timeout' }>} Terminal outcome.
+ */
+async function waitForChildOrDeadline(child, timeoutMs, killProcess) {
+  const closed = waitForChildClose(child);
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let timer;
+  let winner;
+
+  try {
+    winner = await Promise.race([
+      closed.then(({ exitCode }) => ({ exitCode, kind: 'close' })),
+      new Promise((resolveWinner) => {
+        timer = setTimeout(() => resolveWinner({ kind: 'timeout' }), timeoutMs);
+      }),
+    ]);
+  } catch (error) {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+    throw error;
+  }
+
+  if (winner.kind === 'close') {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+    return winner;
+  }
+
+  try {
+    killProcess(-child.pid, 'SIGKILL');
+  } catch (error) {
+    if (error && typeof error === 'object' && error.code === 'ESRCH') {
+      const completed = await closed;
+      return { exitCode: completed.exitCode, kind: 'close' };
+    }
+    throw error;
+  }
+  await closed;
+  return { kind: 'timeout' };
+}
+
+/**
+ * Resolves when one supervised child closes and rejects when it cannot start.
+ *
+ * @param {import('node:child_process').ChildProcess} child Spawned child process.
+ * @returns {Promise<{ exitCode: number | null }>} Child close result.
+ */
+function waitForChildClose(child) {
+  return new Promise((resolveClose, rejectClose) => {
+    child.once('error', rejectClose);
+    child.once('close', (exitCode) => resolveClose({ exitCode }));
+  });
+}
+
+/**
+ * Creates and probes the private Task evidence directory before NanoCore mutation.
+ *
+ * @param {string} evidenceDir Evidence directory selected for the run.
+ */
+function prepareTaskEvidenceDirectory(evidenceDir) {
+  const probePath = join(evidenceDir, `.openkit-write-probe-${randomUUID()}`);
+  let fileDescriptor;
+
+  try {
+    mkdirSync(evidenceDir, { mode: 0o700, recursive: true });
+    assert(lstatSync(evidenceDir).isDirectory(), 'Task evidence path is not a direct directory.');
+    for (const fileName of [REDACTION_NOTES_FILE, RESULT_FILE]) {
+      assert(!pathEntryExists(join(evidenceDir, fileName)), 'Task evidence output already exists.');
+    }
+    fileDescriptor = openSync(probePath, 'wx', 0o600);
+    closeSync(fileDescriptor);
+    fileDescriptor = undefined;
+    rmSync(probePath, { force: true });
+  } catch (error) {
+    if (fileDescriptor !== undefined) {
+      closeSync(fileDescriptor);
+    }
+    try {
+      rmSync(probePath, { force: true });
+    } catch {
+      // The stable error below must not expose the rejected local path.
+    }
+    if (
+      error instanceof Error &&
+      (error.message === 'Task evidence path is not a direct directory.' ||
+        error.message === 'Task evidence output already exists.')
+    ) {
+      throw error;
+    }
+    throw new Error('Task evidence directory is not writable.');
+  }
+}
+
+/**
+ * Returns whether one filesystem entry exists without following symbolic links.
+ *
+ * @param {string} entryPath Filesystem path to inspect.
+ * @returns {boolean} Whether the direct entry exists.
+ */
+function pathEntryExists(entryPath) {
+  try {
+    lstatSync(entryPath);
+    return true;
+  } catch (error) {
+    if (error && typeof error === 'object' && error.code === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Writes one owner-only evidence file without replacing an existing entry.
+ *
+ * @param {string} filePath Evidence file path.
+ * @param {string} content Complete evidence content.
+ */
+function writeExclusiveEvidenceFile(filePath, content) {
+  writeFileSync(filePath, content, { flag: 'wx', mode: 0o600 });
+}
+
+/**
+ * Configures A1-backed Codex OAuth and the exact provider and agent selection before quota use.
+ *
+ * @param {Record<string, any>} core Public Core Client.
+ * @param {TaskModeRealWorkerRunnerConfig} config Real Task runner configuration.
+ * @returns {Promise<Record<string, any>>} Redacted OAuth and runtime configuration summary.
+ */
+async function configureTaskModeCodexRuntime(core, config) {
+  return configureRealCodexRuntime(core, config, ({ targetPath }) =>
+    streamCodexAuthFromSsh({ env: process.env, targetPath })
+  );
 }
 
 /**
@@ -866,12 +1117,13 @@ function authHeaders(token) {
  */
 function redactedConfig(config) {
   return {
-    evidenceDir: config.evidenceDir,
-    nanoCoreDataRoot: config.nanoCoreDataRoot,
+    evidenceDirectoryConfigured: Boolean(config.evidenceDir),
+    nanoCoreDataRootConfigured: Boolean(config.nanoCoreDataRoot),
     nanoCoreUrl: config.nanoCoreUrl,
-    repositoryRoot: config.repositoryRoot,
+    repositoryConfigured: Boolean(config.repositoryRoot),
     storyPath: config.storyPath,
     tokenProvided: Boolean(config.token),
+    workerImageRef: config.workerImageRef,
     workspaceId: config.workspaceId,
   };
 }
@@ -1007,18 +1259,13 @@ function assertBuilt(filePath) {
 /**
  * Builds redaction notes for the evidence bundle.
  *
- * @param {TaskModeRealWorkerRunnerConfig} config Runner config.
  * @param {import('./story-metadata.mjs').StoryMetadata} metadata Story metadata.
  * @returns {string} Redaction notes.
  */
-function buildRedactionNotes(config, metadata) {
+function buildRedactionNotes(metadata) {
   return `# Task Mode Real Worker Redaction Notes
 
 Story: ${metadata.id}
-
-Evidence directory: ${config.evidenceDir}
-
-Repository root: ${config.repositoryRoot}
 
 ## Required Redaction Checks
 
@@ -1065,8 +1312,20 @@ function assert(condition, message) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  runTaskModeRealWorkerStory().catch((error) => {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  });
+  if (process.argv[2] === SUPERVISED_CHILD_ARG) {
+    runTaskModeRealWorkerStory({ storyPath: process.argv[3] }).then(
+      () => process.exit(0),
+      (error) =>
+        process.exit(
+          classifyRealCodexRunnerFailure(error).kind === 'restart_required'
+            ? RESTART_REQUIRED_EXIT_CODE
+            : 1
+        )
+    );
+  } else {
+    runTaskModeRealWorkerCli().catch((error) => {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    });
+  }
 }

@@ -1,8 +1,8 @@
 import {
   expireReleasingSchedulerLeases,
   markExpiredSchedulerLeasesStale,
-  markStartupTimedOutSchedulerLeasesFailed,
   type SchedulerSessionLeaseRecord,
+  transitionStartupTimedOutSchedulerLeases,
 } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 
@@ -16,7 +16,7 @@ export interface RunSchedulerLeaseWatchLoopInput {
 export interface SchedulerLeaseWatchLoopResult {
   /** Releasing leases lost after evidence grace elapsed. */
   readonly releaseTimedOut: SchedulerSessionLeaseRecord[];
-  /** Leases failed because startup never reached the first heartbeat. */
+  /** Startup timeouts routed to terminal failure or anchored recovery ownership. */
   readonly startupTimedOut: SchedulerSessionLeaseRecord[];
   /** Live leases marked stale because lease or heartbeat deadlines elapsed. */
   readonly stale: SchedulerSessionLeaseRecord[];
@@ -33,7 +33,7 @@ export function runSchedulerLeaseWatchLoop(
   coreDb: CoreDb,
   input: RunSchedulerLeaseWatchLoopInput = {}
 ): SchedulerLeaseWatchLoopResult {
-  const startupTimedOut = markStartupTimedOutSchedulerLeasesFailed(coreDb, input);
+  const startupTimedOut = transitionStartupTimedOutSchedulerLeases(coreDb, input);
   const stale = markExpiredSchedulerLeasesStale(coreDb, input);
   const releaseTimedOut = expireReleasingSchedulerLeases(coreDb, input);
 

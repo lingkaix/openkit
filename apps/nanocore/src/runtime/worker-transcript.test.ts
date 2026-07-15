@@ -177,8 +177,41 @@ describe('worker transcript import', () => {
     expect(result).toMatchObject({
       dedupedEventSequences: [3],
       diagnostics: [],
-      eventSequences: [],
+      rejectedEventSequences: [],
     });
+  });
+
+  it('rejects event transcript records that were never accepted live', () => {
+    const { environmentPackage, store, turn } = createTranscriptFixture();
+    const eventRecord = {
+      event: {
+        data: { status: 'running' },
+        type: 'worker.heartbeat',
+      },
+      kind: 'event',
+      lineage: {
+        agentSessionId: 'as_transcript_1',
+        packageSnapshotId: environmentPackage.snapshotId,
+        requestId: 'req_transcript_1',
+        threadId: 'th_demo',
+        turnId: turn.id,
+        workspaceId: 'ws_demo',
+      },
+      schemaVersion: 1,
+      sequence: 3,
+    };
+
+    const result = importWorkerTranscript(store, environmentPackage, {
+      eventsJsonl: `${JSON.stringify(eventRecord)}\n`,
+    });
+
+    expect(result.rejectedEventSequences).toEqual([3]);
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        code: 'worker_transcript_live_event_missing',
+        path: '$.events[1]',
+      }),
+    ]);
   });
 
   it('rejects event transcript records that conflict with accepted live events', () => {
@@ -226,11 +259,83 @@ describe('worker transcript import', () => {
       }
     );
 
-    expect(result.eventSequences).toEqual([]);
+    expect(result.rejectedEventSequences).toEqual([3]);
     expect(result.diagnostics).toEqual([
       expect.objectContaining({
         code: 'worker_transcript_live_event_conflict',
         path: '$.events[1]',
+      }),
+    ]);
+  });
+
+  it('rejects transcript events from a different request in the same package scope', () => {
+    const { environmentPackage, store, turn } = createTranscriptFixture();
+    const acceptedRecord = {
+      event: { data: { status: 'running' }, type: 'worker.heartbeat' as const },
+      kind: 'event' as const,
+      lineage: {
+        agentSessionId: 'as_transcript_1',
+        packageSnapshotId: environmentPackage.snapshotId,
+        requestId: 'req_transcript_1',
+        threadId: 'th_demo',
+        turnId: turn.id,
+        workspaceId: 'ws_demo',
+      },
+      schemaVersion: 1 as const,
+      sequence: 3,
+    };
+    const transcriptRecord = {
+      ...acceptedRecord,
+      lineage: { ...acceptedRecord.lineage, requestId: 'req_transcript_other' },
+    };
+
+    const result = importWorkerTranscript(
+      store,
+      environmentPackage,
+      { eventsJsonl: `${JSON.stringify(transcriptRecord)}\n` },
+      { acceptedLiveEvents: [acceptedRecord] }
+    );
+
+    expect(result.rejectedEventSequences).toContain(3);
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'worker_transcript_lineage_mismatch',
+          path: '$.events[1]',
+        }),
+      ])
+    );
+  });
+
+  it('rejects durable live events that are absent from the transcript', () => {
+    const { environmentPackage, store, turn } = createTranscriptFixture();
+    const liveRecord = {
+      event: { data: { status: 'running' }, type: 'worker.heartbeat' as const },
+      kind: 'event' as const,
+      lineage: {
+        agentSessionId: 'as_transcript_1',
+        packageSnapshotId: environmentPackage.snapshotId,
+        requestId: 'req_transcript_1',
+        threadId: 'th_demo',
+        turnId: turn.id,
+        workspaceId: 'ws_demo',
+      },
+      schemaVersion: 1 as const,
+      sequence: 3,
+    };
+
+    const result = importWorkerTranscript(
+      store,
+      environmentPackage,
+      { eventsJsonl: '' },
+      { acceptedLiveEvents: [liveRecord] }
+    );
+
+    expect(result.rejectedEventSequences).toEqual([3]);
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        code: 'worker_transcript_live_event_missing_from_transcript',
+        path: '$.events',
       }),
     ]);
   });

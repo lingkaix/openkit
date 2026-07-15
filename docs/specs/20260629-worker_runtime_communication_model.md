@@ -97,9 +97,7 @@ OPENKIT_CONTAINER_PLACEMENT=local|remote
 OPENKIT_CONTAINER_BACKEND=openshell
 ```
 
-`local-container` and `remote-container` may remain internal labels during implementation, but the public model should be runtime plus placement plus backend.
-
-They must not become separate product semantics.
+Internal and public runtime records use runtime plus placement plus backend. Historical compound labels are not aliases or supported compatibility shapes.
 
 Host execution may exist only as deterministic test doubles, fixture executors, or in-process harnesses that cannot be selected through product configuration, MCP, Web UI, deployment docs, setup Skills, status summaries, or public capability flags.
 
@@ -291,8 +289,9 @@ The current implementation is a partial projection of this model:
 - `apps/nanocore/src/runtime/worker-control-gateway.ts`, `worker-control-records.ts`, `worker-control-sequences.ts`, `worker-control-commands.ts`, `worker-control-rejected-evidence.ts`, and `worker-control-rebuild.ts` provide the durable V1 worker-control state, sequence, command, rejection-evidence, and restart-rebuild surfaces for registered AEP snapshots.
 - `apps/nanocore/src/app.ts` exposes current worker-control routes for heartbeat, artifact notice, command polling and acknowledgement, terminal results, event append, final status, supply-refresh acknowledgement, capability-call summary, and knowledge-proposal summary.
 - NanoCore exposes no `/api/worker-capabilities/*` routes and no worker MCP gateway. `WorkerCapabilityCallSummary` remains a transcript/import schema and does not prove a callable capability route.
-- `apps/nanocore/src/runtime/turn-executor-factory.ts` selects local or remote OpenShell placement from runtime environment configuration and rejects historical host selector shapes.
-- The turn executor factory also rejects the historical `OPENKIT_REMOTE_CONTAINER_BACKEND` selector, keeping the public worker runtime model on `OPENKIT_WORKER_RUNTIME=container`, `OPENKIT_CONTAINER_PLACEMENT=local|remote`, and `OPENKIT_CONTAINER_BACKEND=openshell`.
+- `apps/nanocore/src/runtime/turn-executor-factory.ts` selects local or remote disposable OpenShell Cell placement and rejects historical host selector shapes.
+- Remote placement binds one validated SSH lifecycle target to an operator-managed loopback HTTP Gateway origin and an explicit credential-free HTTP(S) `/api/worker-control` URL reachable from the sandbox.
+- The public worker runtime model has only `OPENKIT_WORKER_RUNTIME=container`, `OPENKIT_CONTAINER_PLACEMENT=local|remote`, and `OPENKIT_CONTAINER_BACKEND=openshell`; historical host selectors are absent rather than recognized as compatibility inputs.
 - `apps/nanocore/src/runtime/worker-governance-backend.ts` validates OpenShell control endpoints, collects transcript and workspace-change data-plane artifacts, and imports product-safe records.
 - `apps/nanocore/src/runtime/filesystem-workspace-sync.ts` and related storage code implement filesystem snapshot, staging, review, and apply records that are now owned by the workspace synchronization spec.
 
@@ -425,9 +424,11 @@ Local and remote container placements share the same Worker-facing contract and 
 
 They may differ only in backend transport and reachability.
 
-Local placement may use a local OpenShell gateway, a worker-reachable direct NanoCore endpoint, local upload and download operations, and local diagnostic commands.
+Local placement uses the stock Gateway inside the co-located disposable Cell, a worker-reachable direct NanoCore endpoint, local upload and download operations, and local diagnostic commands.
 
-Remote placement may use a remote OpenShell gateway URL, a worker-reachable direct NanoCore endpoint, remote upload and download operations, and remote diagnostic commands.
+Remote placement uses the same stock OpenShell `0.0.80` backend inside a remote disposable Cell. NanoCore invokes only the fixed Cell helper actions through non-interactive SSH, reaches the Cell's loopback Gateway through a separate operator-managed local forward, and supplies the exact credential-free HTTP(S) `/api/worker-control` URL that the sandbox can reach.
+
+A naked or shared Gateway, insecure Gateway mode, custom OpenShell binary, resource-delete cleanup, fork, patch, compatibility selector, or host fallback is not a remote placement.
 
 These differences must not leak into Worker records, public App API, end-user CLI operations, Web UI, Goal Mode, Action Center, or review semantics.
 
@@ -502,7 +503,9 @@ The communication model is implemented only when:
 - the future worker capability plane passes governed Knowledge Store, context, MCP, and proposal-flow acceptance before it is advertised
 - terminal commands are narrowly allowlisted and cannot become generic shell access
 - tests prove token, lineage, schema, sequence, idempotency, digest, workspace path, and policy validation
-- e2e smoke proves local-container and remote-container can each run one bounded Goal Mode worker step and produce reviewable evidence
+- e2e smoke proves the local disposable Cell can run one bounded Goal Mode worker step, produce reviewable evidence, recycle the complete runtime, and return a fresh stable-empty Cell
+- remote backend e2e proves fixed SSH prepare and recycle, stock Gateway preflight, sandbox materialization, data transport, and a fresh empty replacement Cell
+- real Codex provenance acceptance proves the complete attributed remote worker path before this spec may become `Implemented`
 - Agent-Skill-driven dogfood loops prove the coordinator can inspect runtime status, run bounded steps, review evidence, and continue/refine/reject/accept without bypassing review gates
 
 ## Testing Strategy
@@ -520,7 +523,8 @@ Required local development machine verification:
 Required remote placement verification:
 
 - run NanoCore in server mode
-- run the OpenShell remote gateway and remote container worker placement
+- run the stock OpenShell `0.0.80` remote disposable Cell through the fixed SSH lifecycle target and operator-managed loopback Gateway forward
+- provide one explicit credential-free HTTP(S) `/api/worker-control` URL that the remote sandbox can reach
 - connect from a Skill-capable agent app through the bundled `openkit` CLI
 - create or resume a real thread
 - run one bounded Goal Mode step through remote container placement
@@ -571,7 +575,7 @@ This overview records the worker runtime communication direction. Detailed imple
 - Worker-side Skill and MCP catalog resolution, approved catalog ids, version or digest resolution, runtime-adapter compatibility, provider and vault references, and generated runtime config materialization are owned by `docs/specs/20260703-agent_manifest_aep_resolution.md` and `docs/specs/20260616-agent_environment_package.md`.
 - Filesystem workspace staging, resolved-path containment, symlink escape rejection, staged review, apply, and recovery behavior are owned by `docs/specs/20260703-workspace_synchronization.md`.
 - End-user coordinator diagnostics must use public NanoCore App API surfaces rather than runtime internals. Concrete Skill guidance and CLI operations are owned by `docs/specs/20260713-openkit_agent_skill_interface.md`.
-- OpenShell network policy defaults, Codex binary allowlists, Git remote helper binary allowlists, and remote gateway transport details are owned by `docs/specs/20260627-remote_openshell_gateway.md`, `docs/specs/20260703-workspace_synchronization.md`, and NanoCore runtime implementation docs.
+- OpenShell network policy defaults, Codex binary allowlists, Git remote helper binary allowlists, and disposable Cell lifecycle details are owned by `docs/specs/20260715-openshell_disposable_cell_lifecycle.md`, `docs/specs/20260703-workspace_synchronization.md`, and NanoCore runtime implementation docs.
 - Restart recovery is split between direct worker-control recovery, workspace synchronization recovery, evidence import, and bounded-step scheduling. Detailed rules are owned by `docs/specs/20260703-worker_control_protocol.md`, `docs/specs/20260703-workspace_synchronization.md`, `docs/specs/20260703-audit_usage_evidence_records.md`, and `docs/specs/20260703-runtime_scheduling_scale.md`.
 
 ## Related Documents
@@ -585,7 +589,7 @@ This overview records the worker runtime communication direction. Detailed imple
 - `docs/core/knowledge.md`
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260713-openkit_agent_skill_interface.md`
-- `docs/specs/20260627-remote_openshell_gateway.md`
+- `docs/specs/20260715-openshell_disposable_cell_lifecycle.md`
 - `docs/specs/20260703-workspace_synchronization.md`
 - `docs/specs/20260628-agent_setup_runtime_supply_contract.md`
 - `docs/specs/20260531-worker_turn_reliability_envelope.md`

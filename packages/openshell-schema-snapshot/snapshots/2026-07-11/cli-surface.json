@@ -1,23 +1,23 @@
 {
-  "schemaVersion": 4,
+  "schemaVersion": 5,
   "cli": {
     "binary": "openshell",
     "requiredVersion": "0.0.80",
     "commands": [
       ["status"],
-      ["doctor", "check"],
       ["gateway", "info"],
       ["provider", "get"],
       ["provider", "create"],
       ["provider", "update"],
-      ["provider", "delete"],
       ["provider", "refresh", "status"],
       ["provider", "profile", "export"],
       ["provider", "profile", "import"],
       ["settings", "get"],
+      ["settings", "set"],
       ["sandbox", "create"],
-      ["sandbox", "delete"],
       ["sandbox", "download"],
+      ["sandbox", "exec"],
+      ["sandbox", "list"],
       ["sandbox", "provider", "detach"]
     ]
   }

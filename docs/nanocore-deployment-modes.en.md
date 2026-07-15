@@ -1,24 +1,26 @@
 # NanoCore Deployment Modes
 
-This guide explains how to deploy, configure, start, and verify NanoCore across supported product modes and governed container worker placements.
+This guide explains how to deploy, configure, start, and verify NanoCore across the supported product modes and the governed container worker runtime.
 
 NanoCore has two independent deployment axes:
 
 - Core mode: `local` or `server`.
-- Worker container placement: `local` or `remote`.
+- Disposable OpenShell Cell placement: `local` or `remote`.
 
 Real Worker Agent execution is container-only. Host execution is not a supported product runtime.
+
+The supported worker runtime is one single-slot disposable OpenShell Cell. Local placement runs the Cell on the NanoCore host; remote placement controls the complete Cell on another host through a fixed SSH helper command and reaches that Cell's loopback Gateway through an operator-managed SSH local-forward exposed as a loopback HTTP origin.
 
 The supported product matrix has four combinations:
 
 | Core mode | Worker runtime | Container placement | Primary use |
 | --- | --- | --- | --- |
-| `local` | `container` | `local` | Single-user local work with local OpenShell container isolation. |
-| `local` | `container` | `remote` | Single-user local product state with worker containers on another machine. |
-| `server` | `container` | `local` | Authenticated shared NanoCore with local OpenShell container isolation. |
-| `server` | `container` | `remote` | Authenticated shared NanoCore with workers in a remote OpenShell gateway. |
+| `local` | `container` | `local` | Single-user operation with a co-located disposable OpenShell Cell. |
+| `local` | `container` | `remote` | Single-user product state with a disposable OpenShell Cell on another host. |
+| `server` | `container` | `local` | Authenticated HTTP operation with a co-located disposable OpenShell Cell. |
+| `server` | `container` | `remote` | Authenticated HTTP operation with a disposable OpenShell Cell on another host. |
 
-`OPENKIT_CORE_MODE` selects the NanoCore product mode. `OPENKIT_WORKER_RUNTIME=container`, `OPENKIT_CONTAINER_PLACEMENT=local|remote`, and `OPENKIT_CONTAINER_BACKEND=openshell` select the real Worker Agent runtime. Keep Core mode separate from worker runtime placement.
+`OPENKIT_CORE_MODE` selects the NanoCore product mode. `OPENKIT_WORKER_RUNTIME=container`, `OPENKIT_CONTAINER_PLACEMENT=local|remote`, and `OPENKIT_CONTAINER_BACKEND=openshell` select the real Worker Agent runtime. Core mode and Cell placement remain independent.
 
 ## Release Images And Container Catalog
 
@@ -61,6 +63,19 @@ Use [Container Image Packaging And Release Publishing](./specs/20260708-containe
 
 ## Shared Prerequisites
 
+Every Cell host must run Linux with systemd, util-linux `flock`, containerd, Docker Engine and CLI, and `curl`. Install the official, unmodified `/usr/bin/openshell` and `/usr/bin/openshell-gateway` binaries at exactly `0.0.80` on that host; a fork, patched binary, replacement Gateway, private protocol, or custom binary path is not supported.
+
+The NanoCore host must also have the official OpenShell CLI `0.0.80` at its platform path: `/usr/bin/openshell` on Linux or `/opt/homebrew/bin/openshell` on macOS. Remote placement additionally requires `/usr/bin/ssh`, a non-interactive SSH target for the Cell host, and separate operator-managed connectivity to the Gateway and worker-control endpoints.
+
+Verify both stock component versions on each Cell host:
+
+```bash
+/usr/bin/openshell --version
+/usr/bin/openshell-gateway --version
+```
+
+Both commands must report `0.0.80`. The Cell helper repeats this check before starting an epoch, enables Providers v2 through the stock CLI, and verifies the setting before readiness.
+
 Install repository dependencies before running from source:
 
 ```bash
@@ -69,12 +84,14 @@ pnpm install
 pnpm --filter @openkit/nanocore build
 ```
 
-Choose a persistent data root:
+Create a new empty persistent data root for this deployment:
 
 ```bash
-export OPENKIT_DATA_ROOT="$HOME/nano-data"
+export OPENKIT_DATA_ROOT="$HOME/nano-data/disposable-cell"
 mkdir -p "$OPENKIT_DATA_ROOT"
 ```
+
+Do not reuse or migrate a data root from an earlier worker lifecycle. NanoCore does not provide a migration path for the previous shared-Gateway topology.
 
 Use `OPENKIT_DATA_ROOT/config/server.jsonc` for durable server, provider, and agent configuration. See [NanoCore DATA_ROOT Config Guide](./nanocore-data-root-config.en.md).
 
@@ -83,6 +100,71 @@ Use `PORT` to select the NanoCore HTTP port. If unset, the development server de
 Use `OPENKIT_BIND_HOST` only when you intentionally expose NanoCore beyond loopback. Local mode defaults to loopback. Server mode defaults to a network-facing bind host unless overridden.
 
 When running from a release app image, mount the persistent data root at `/data/openkit` and keep worker images separate. The app image is not the normal worker runtime bundle.
+
+## Disposable OpenShell Cell Host Setup
+
+The Cell is a single-slot runtime boundary owned by NanoCore. Each epoch contains one stock OpenShell Gateway, one dedicated containerd, one dedicated dockerd, one dedicated Docker network, and fresh mutable runtime roots. Cleanup destroys the entire epoch, removes the epoch network, and starts a verified empty replacement before scheduler capacity becomes available again.
+
+The owning lifecycle and failure contract is [OpenShell Disposable Cell Lifecycle](./specs/20260715-openshell_disposable_cell_lifecycle.md).
+
+On A1, build and smoke the worker image directly from the synchronized repository checkout, then save it into the Cell image cache. Building on A1 avoids transferring a large image archive to the runtime host:
+
+```bash
+docker build --network host \
+  --file containers/worker-codex/Dockerfile \
+  --tag openkit/worker-codex:dev \
+  .
+docker run --rm --network none \
+  openkit/worker-codex:dev \
+  openkit-worker-codex-smoke
+docker pull \
+  ghcr.io/nvidia/openshell/supervisor:709aa0fe3e9e4d2b5fea336b5d6e393b45481898
+test "$(docker image inspect --format '{{.Id}}' \
+  ghcr.io/nvidia/openshell/supervisor:709aa0fe3e9e4d2b5fea336b5d6e393b45481898)" = \
+  'sha256:7c37c367f63d2d160673c41d58363be8a4beb543b82a3de8547d09c0b5be1a2f'
+docker save \
+  --output /tmp/openkit-worker-codex-dev-aarch64.tar \
+  openkit/worker-codex:dev
+docker save \
+  --output /tmp/openshell-supervisor-709aa0fe-aarch64.tar \
+  ghcr.io/nvidia/openshell/supervisor:709aa0fe3e9e4d2b5fea336b5d6e393b45481898
+sudo install -d -o root -g root -m 0755 /var/lib/openkit/openshell-cell/image-cache
+sudo install -o root -g root -m 0600 \
+  /tmp/openkit-worker-codex-dev-aarch64.tar \
+  /var/lib/openkit/openshell-cell/image-cache/openkit-worker-codex-dev-aarch64.tar
+sudo install -o root -g root -m 0600 \
+  /tmp/openshell-supervisor-709aa0fe-aarch64.tar \
+  /var/lib/openkit/openshell-cell/image-cache/openshell-supervisor-709aa0fe-aarch64.tar
+rm /tmp/openkit-worker-codex-dev-aarch64.tar \
+  /tmp/openshell-supervisor-709aa0fe-aarch64.tar
+```
+
+The supervisor tag and source image id above are the exact Linux arm64 identity baked into the official OpenShell `0.0.80` Gateway on A1. Docker `29.6.1` normalizes the saved archive to image id `sha256:d87e54175490a7dc5e75daef1c4aaf43955cf3fc3945827e4f03698ea99faadb` in each fresh Cell, which the helper verifies before starting the Gateway. Other architectures are rejected until their official identity is separately verified.
+
+Install the repository-owned privileged helper at its fixed path:
+
+```bash
+sudo install -d -o root -g root -m 0755 /usr/local/libexec
+sudo install -o root -g root -m 0700 \
+  apps/nanocore/scripts/openshell-cell.sh \
+  /usr/local/libexec/openkit-openshell-cell
+```
+
+On A1, grant only the two helper actions to the `ubuntu` account that runs NanoCore. Create `/etc/sudoers.d/openkit-openshell-cell` with mode `0440` and this content:
+
+```sudoers
+Cmnd_Alias OPENKIT_OPENSHELL_CELL = /usr/local/libexec/openkit-openshell-cell prepare *, /usr/local/libexec/openkit-openshell-cell recycle *
+ubuntu ALL=(root) NOPASSWD: OPENKIT_OPENSHELL_CELL
+```
+
+Validate the rule before starting NanoCore:
+
+```bash
+sudo chmod 0440 /etc/sudoers.d/openkit-openshell-cell
+sudo visudo -cf /etc/sudoers.d/openkit-openshell-cell
+```
+
+Do not grant NanoCore passwordless access to a shell, `systemctl`, Docker, containerd, or an arbitrary helper path. The installed helper accepts exactly `prepare <owner-id>` and `recycle <owner-id>`, requires the owner id to match `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}`, derives every privileged resource from fixed roots, serializes lifecycle changes with a host-wide lock, and recovers a stale idle epoch after a host reboot.
 
 ## Vault Startup
 
@@ -136,20 +218,19 @@ curl -i http://127.0.0.1:3000/api/auth/sign-in/email \
 
 ## Worker Runtime Configuration
 
-### Local Container Runtime
+### Disposable Local Cell
 
-Local container runtime is selected with:
+Select a co-located Cell with:
 
 ```bash
 OPENKIT_WORKER_RUNTIME=container
 OPENKIT_CONTAINER_PLACEMENT=local
 OPENKIT_CONTAINER_BACKEND=openshell
-OPENKIT_OPENSHELL_GATEWAY=openshell
 OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev
 OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:3000/api/worker-control
 ```
 
-Use local container runtime when NanoCore and the OpenShell gateway are reachable from the same machine or local gateway context.
+NanoCore invokes the installed Cell helper with non-interactive `sudo`, and the stock Gateway binds to the fixed loopback endpoint `http://127.0.0.1:17670` with health at `http://127.0.0.1:17671/readyz`. Do not start a shared Gateway separately and do not configure an external Gateway URL.
 
 For a release deployment, replace `OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev` with the published version or digest reference.
 
@@ -168,78 +249,80 @@ OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS='[
 ]'
 ```
 
-### Remote Container Runtime
+### Disposable Remote Cell
 
-Remote container runtime is selected with:
+Select a remote disposable Cell with:
 
 ```bash
 OPENKIT_WORKER_RUNTIME=container
 OPENKIT_CONTAINER_PLACEMENT=remote
 OPENKIT_CONTAINER_BACKEND=openshell
-OPENKIT_OPENSHELL_GATEWAY=a1-openkit
-OPENKIT_OPENSHELL_GATEWAY_URL=https://127.0.0.1:54003
+OPENKIT_OPENSHELL_CELL_SSH_TARGET=ubuntu@a1
+OPENKIT_OPENSHELL_GATEWAY=openshell
+OPENKIT_OPENSHELL_GATEWAY_URL=http://127.0.0.1:27670
 OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev
-OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:54002/api/worker-control
+OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=https://nanocore.example.com/api/worker-control
 ```
 
-Remote container mode requires both `OPENKIT_OPENSHELL_GATEWAY_URL` and `OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL`.
+`OPENKIT_OPENSHELL_CELL_SSH_TARGET` identifies the Cell host and must work non-interactively. NanoCore runs only this fixed command shape through it:
 
-For a release deployment, replace `OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev` with the published version or digest reference.
+```text
+/usr/bin/ssh -T -o BatchMode=yes -o ClearAllForwardings=yes -o ForwardAgent=no -o ForwardX11=no -o PermitLocalCommand=no -o StrictHostKeyChecking=yes -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 <target> /usr/bin/sudo -n /usr/local/libexec/openkit-openshell-cell <prepare|recycle> <owner-id>
+```
 
-`OPENKIT_OPENSHELL_GATEWAY_URL` is the OpenShell gateway endpoint as seen by the NanoCore process.
+`OPENKIT_OPENSHELL_GATEWAY_URL` is the loopback HTTP origin that the NanoCore process uses to reach the stock Gateway through the SSH local-forward. It must use `127.0.0.1` or `localhost` and must not contain credentials, a path, query, or fragment.
 
-`OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL` is the NanoCore worker-control route as seen by the remote worker sandbox.
+`OPENKIT_OPENSHELL_GATEWAY` is optional and defaults to `openshell`. When set, it must match `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}` so it cannot be interpreted as another OpenShell option.
 
-For the current `a1` development topology, expose the remote gateway locally and expose the local worker-control route back to the remote sandbox:
+The Gateway continues to bind only to `127.0.0.1:17670` on the Cell host. One acceptable operator-managed transport is an authenticated SSH tunnel created separately from NanoCore:
 
 ```bash
-ssh -N -L 127.0.0.1:54003:127.0.0.1:17670 a1
-ssh -N -R 127.0.0.1:54002:127.0.0.1:3000 a1
+ssh -o ExitOnForwardFailure=yes -N \
+  -L 127.0.0.1:27670:127.0.0.1:17670 \
+  a1
 ```
 
-Do not set `OPENKIT_OPENSHELL_GATEWAY_INSECURE=1` for an mTLS OpenShell profile such as `a1-openkit`. The profile authentication must be used instead.
+`OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL` is the exact credential-free HTTP(S) NanoCore worker-control route as seen from the remote sandbox. It is mandatory for remote placement, must end at `/api/worker-control`, and must be exposed through a separately authenticated network or tunnel path; loopback and unspecified addresses are rejected, and the local `host.openshell.internal` default is not sufficient.
 
-Use remote container runtime when NanoCore should keep product state locally or on a server while worker execution happens on a separate machine with its own OpenShell gateway and container capacity.
+The SSH target, Gateway origin, and worker-control URL must refer to one coherent placement. NanoCore persists a non-secret digest of the exact Cell controller target and rejects restart cleanup when that digest or the configured Gateway target changes. A remote Gateway without the matching disposable Cell lifecycle target is unsupported, even if the Gateway is reachable.
 
 ## Startup Profiles
 
-### Local Core + Local Container Runtime
+### Local Core + Disposable Cell
 
 ```bash
 OPENKIT_CORE_MODE=local \
 OPENKIT_WORKER_RUNTIME=container \
 OPENKIT_CONTAINER_PLACEMENT=local \
 OPENKIT_CONTAINER_BACKEND=openshell \
-OPENKIT_OPENSHELL_GATEWAY=openshell \
 OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev \
 OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:3000/api/worker-control \
 OPENKIT_DATA_ROOT="$HOME/nano-data/local-container" \
 pnpm --filter @openkit/nanocore dev
 ```
 
-### Local Core + Remote Container Runtime
+### Local Core + Remote Disposable Cell
 
 ```bash
 OPENKIT_CORE_MODE=local \
 OPENKIT_WORKER_RUNTIME=container \
 OPENKIT_CONTAINER_PLACEMENT=remote \
 OPENKIT_CONTAINER_BACKEND=openshell \
-OPENKIT_OPENSHELL_GATEWAY=a1-openkit \
-OPENKIT_OPENSHELL_GATEWAY_URL=https://127.0.0.1:54003 \
+OPENKIT_OPENSHELL_CELL_SSH_TARGET=ubuntu@a1 \
+OPENKIT_OPENSHELL_GATEWAY_URL=http://127.0.0.1:27670 \
 OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev \
-OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:54002/api/worker-control \
-OPENKIT_DATA_ROOT="$HOME/nano-data/local-remote-container" \
+OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=https://nanocore.example.com/api/worker-control \
+OPENKIT_DATA_ROOT="$HOME/nano-data/local-remote-cell" \
 pnpm --filter @openkit/nanocore dev
 ```
 
-### Server Core + Local Container Runtime
+### Server Core + Disposable Cell
 
 ```bash
 OPENKIT_CORE_MODE=server \
 OPENKIT_WORKER_RUNTIME=container \
 OPENKIT_CONTAINER_PLACEMENT=local \
 OPENKIT_CONTAINER_BACKEND=openshell \
-OPENKIT_OPENSHELL_GATEWAY=openshell \
 OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev \
 OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:3000/api/worker-control \
 OPENKIT_BIND_HOST=0.0.0.0 \
@@ -248,20 +331,20 @@ OPENKIT_DATA_ROOT="$HOME/nano-data/server-local-container" \
 pnpm --filter @openkit/nanocore start
 ```
 
-### Server Core + Remote Container Runtime
+### Server Core + Remote Disposable Cell
 
 ```bash
 OPENKIT_CORE_MODE=server \
 OPENKIT_WORKER_RUNTIME=container \
 OPENKIT_CONTAINER_PLACEMENT=remote \
 OPENKIT_CONTAINER_BACKEND=openshell \
-OPENKIT_OPENSHELL_GATEWAY=a1-openkit \
-OPENKIT_OPENSHELL_GATEWAY_URL=https://127.0.0.1:54003 \
+OPENKIT_OPENSHELL_CELL_SSH_TARGET=ubuntu@a1 \
+OPENKIT_OPENSHELL_GATEWAY_URL=http://127.0.0.1:27670 \
 OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev \
-OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:54002/api/worker-control \
+OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=https://nanocore.example.com/api/worker-control \
 OPENKIT_BIND_HOST=0.0.0.0 \
 PORT=3000 \
-OPENKIT_DATA_ROOT="$HOME/nano-data/server-remote-container" \
+OPENKIT_DATA_ROOT="$HOME/nano-data/server-remote-cell" \
 pnpm --filter @openkit/nanocore start
 ```
 
@@ -277,7 +360,7 @@ curl -s http://127.0.0.1:3000/api/app/workspaces/ws_demo/repositories/default \
   --data '{"displayName":"OpenKit","localPath":"/absolute/path/to/git/repository"}'
 ```
 
-For remote server-mode deployments, use the path visible to the NanoCore server, not the path visible only on the desktop client.
+In server mode, use the path visible to the NanoCore host, not a path visible only on a desktop client.
 
 Read repository diagnostics:
 
@@ -299,20 +382,13 @@ Run the deterministic four-case loop matrix from source:
 pnpm --filter @openkit/nanocore exec vitest run src/deployment-mode-matrix.test.ts
 ```
 
-This verifies one bounded Goal Mode step for every Core mode and container placement combination without provider quota.
+This verifies one bounded Goal Mode step for every Core mode and Cell placement combination without provider quota.
 
-Run the reusable opt-in real remote OpenShell backend verification only after the `a1-openkit` gateway profile, local gateway tunnel, reverse worker-control tunnel, and worker image are ready:
+Run real local OpenShell and Goal Mode acceptance on A1 itself. NanoCore, the privileged helper, the stock Gateway, containerd, dockerd, the worker image cache, and the disposable test repository must all be on A1. NanoCore prepares the Cell before materialization and recycles it after success or failure; do not manually delete only the sandbox or provider and treat that as cleanup proof.
 
-```bash
-OPENKIT_E2E_REMOTE_OPENSHELL=1 \
-OPENKIT_E2E_REMOTE_OPENSHELL_GATEWAY=a1-openkit \
-OPENKIT_E2E_REMOTE_OPENSHELL_GATEWAY_URL=https://127.0.0.1:54003 \
-OPENKIT_E2E_REMOTE_OPENSHELL_LOCAL_RELAY_PORT=54101 \
-OPENKIT_E2E_REMOTE_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:54002/api/worker-control \
-pnpm --filter @openkit/nanocore exec vitest run src/runtime/openshell-cli.e2e.test.ts
-```
+For remote acceptance, run NanoCore on the selected NanoCore host, keep the fixed SSH lifecycle target and the operator-managed Gateway transport active, and provide a worker-control URL reachable from the A1 sandbox. The remote backend E2E has already proved stock CLI preflight, Cell prepare, sandbox materialization, and whole-Cell cleanup; full real Codex provenance remains a separate unfinished acceptance gate.
 
-The remote e2e probe starts a local worker-control relay, creates a remote OpenShell sandbox, uploads a temporary Git workspace, runs a no-quota `node -e` worker command, downloads transcript and patch evidence, asserts a pending staged review, and tears down the sandbox.
+Either acceptance result is valid only when the worker completes, NanoCore cleanup succeeds, the old Cell processes, network, and mutable roots are gone, and the replacement Cell reports its exact Gateway service active plus zero Docker containers and zero OpenShell sandboxes in both stable-empty checks.
 
 ## Agent Skill Access
 
@@ -327,9 +403,9 @@ Use [skills/README.md](../skills/README.md), [the Agent Skill Interface spec](./
 ## Operational Notes
 
 - Keep NanoCore as the source of truth for Goal Mode, Action Center, artifacts, workspace change sets, and review decisions.
-- Keep OpenShell as a backend runtime for sandbox lifecycle, file transport, policy, and teardown.
+- Keep stock OpenShell as a backend runtime for sandbox lifecycle, file transport, and policy inside the disposable Cell.
+- Keep the first OpenShell scheduler pool and target at one slot; capacity returns only after whole-Cell recycle and replacement readiness succeed.
+- Bind every remote Gateway origin to the same fixed SSH lifecycle target; never use a naked shared Gateway.
 - Do not expose generic shell execution through the Agent Skill Interface, App API, or Web UI.
-- Do not allow remote workers to push directly to protected branches in the first implementation.
 - Treat Codex auth JSON bootstrap content, `OPENKIT_OPENSHELL_CODEX_CONFIG_TOML`, NanoCore tokens, and provider keys as secrets. Do not write them into repository files.
-- Use fresh `OPENKIT_DATA_ROOT` directories when switching between incompatible internal pre-release layouts.
-- Stop SSH tunnels and remote sandboxes after verification unless the deployment explicitly owns them as services.
+- Use a fresh `OPENKIT_DATA_ROOT` for every deployment of the disposable Cell lifecycle.

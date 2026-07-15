@@ -156,8 +156,8 @@ Provider instances bind to a slot with a non-secret extension:
   "displayName": "Codex Team A",
   "kind": "oauth",
   "vendor": "openai_codex",
-  "models": ["openai-codex/gpt-5.1-codex"],
-  "defaultModel": "openai-codex/gpt-5.1-codex",
+  "models": ["openai-codex/gpt-5.6-sol"],
+  "defaultModel": "openai-codex/gpt-5.6-sol",
   "extensions": {
     "openkit": {
       "codexOAuth": {

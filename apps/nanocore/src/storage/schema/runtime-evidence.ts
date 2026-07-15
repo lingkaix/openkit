@@ -13,6 +13,7 @@ export type RuntimeEvidencePhase =
   | 'file-transfer'
   | 'transcript-collection'
   | 'workspace-change-collection'
+  | 'checkpoint'
   | 'teardown'
   | 'backend-error';
 

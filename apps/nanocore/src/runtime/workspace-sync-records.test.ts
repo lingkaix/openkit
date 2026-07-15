@@ -8,6 +8,7 @@ import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
+import { buildWorkspaceMaterializationRecords } from './workspace-materializer.js';
 import {
   getWorkspaceSyncReview,
   importWorkspaceSyncRecords,
@@ -459,6 +460,131 @@ describe('workspace sync records', () => {
     }
   });
 
+  it('repairs an interrupted materialization handoff on exact replay', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-materialization-replay-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      const materialization = productionWorkspaceMaterializationRecord(
+        'aepsnap_crash_replay',
+        'sandbox_crash_replay'
+      );
+      workspaceDb.sqlite
+        .prepare(
+          `INSERT INTO workspace_materialization_records (
+            materialization_record_id,
+            workspace_id,
+            input_snapshot_id,
+            package_snapshot_id,
+            worker_session_id,
+            strategy,
+            payload_json,
+            created_at,
+            updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          materialization.id,
+          materialization.workspaceId,
+          materialization.inputSnapshotId,
+          materialization.packageSnapshotId,
+          materialization.workerSessionId,
+          materialization.strategy,
+          JSON.stringify(materialization),
+          materialization.createdAt,
+          materialization.createdAt
+        );
+
+      expect(listBackendWorkspaceHandles(workspaceDb, 'ws_demo')).toEqual([]);
+      expect(listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo')).toEqual([]);
+
+      expect(recordWorkspaceMaterializationRecords(workspaceDb, [materialization])).toEqual([
+        materialization,
+      ]);
+      recordWorkspaceMaterializationRecords(workspaceDb, [materialization]);
+
+      expect(listBackendWorkspaceHandles(workspaceDb, 'ws_demo')).toEqual([
+        expect.objectContaining({
+          materializationRecordId: materialization.id,
+          packageSnapshotId: 'aepsnap_crash_replay',
+          workerSessionId: 'sandbox_crash_replay',
+        }),
+      ]);
+      expect(listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo')).toEqual([
+        expect.objectContaining({
+          agentSessionId: 'sandbox_crash_replay',
+          evidenceBundleIds: [`evb_workspace_materialization_${materialization.id}`],
+        }),
+      ]);
+      expect(
+        workspaceDb.sqlite
+          .prepare(
+            `SELECT evidence_bundle_id
+             FROM evidence_bundles
+             WHERE evidence_bundle_id = ?`
+          )
+          .all(`evb_workspace_materialization_${materialization.id}`)
+      ).toEqual([{ evidence_bundle_id: `evb_workspace_materialization_${materialization.id}` }]);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('rolls back the complete materialization handoff when derived evidence fails', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-materialization-atomic-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      const primarySnapshot = workspaceInputSnapshot();
+      const materializations = buildWorkspaceMaterializationRecords({
+        createdAt: timestamp,
+        inputSnapshots: [
+          primarySnapshot,
+          {
+            ...primarySnapshot,
+            id: 'wis_atomic_secondary',
+            pathScope: ['repo_secondary'],
+            resourceId: 'repo_secondary',
+            sourceId: 'repo_secondary',
+            writableRoots: ['repo_secondary'],
+          },
+        ],
+        materialization: {
+          backendKind: 'openshell',
+          backendStatus: { health: 'ready', version: '0.0.80' },
+          packageSnapshotId: 'aepsnap_atomic_failure',
+          requiredCapabilities: ['container', 'workspace-sync'],
+          sandbox: { name: 'sandbox_atomic_failure', state: 'created' },
+          workspaceInputs: [
+            { id: 'repo_default', target: '/workspace/openkit' },
+            { id: 'repo_secondary', target: '/workspace/secondary' },
+          ],
+        },
+      });
+      expect(materializations).toHaveLength(2);
+      workspaceDb.sqlite.exec(
+        `CREATE TRIGGER reject_materialization_evidence
+         BEFORE INSERT ON evidence_bundles
+         WHEN NEW.evidence_bundle_id = 'evb_workspace_materialization_wmr_aepsnap_atomic_failure_repo_secondary'
+         BEGIN
+           SELECT RAISE(ABORT, 'simulated evidence write failure');
+         END`
+      );
+
+      expect(() => recordWorkspaceMaterializationRecords(workspaceDb, materializations)).toThrow(
+        'simulated evidence write failure'
+      );
+
+      expect(listWorkspaceMaterializationRecords(workspaceDb, 'ws_demo')).toEqual([]);
+      expect(listBackendWorkspaceHandles(workspaceDb, 'ws_demo')).toEqual([]);
+      expect(listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo')).toEqual([]);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
   it('records redacted backend workspace handles with materialization records', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-backend-handle-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
@@ -524,6 +650,7 @@ describe('workspace sync records', () => {
         'retained',
         '2026-07-05T00:03:00.000Z'
       );
+      recordWorkspaceMaterializationRecords(workspaceDb, [workspaceMaterializationRecord()]);
 
       expect(listBackendWorkspaceHandles(workspaceDb, 'ws_demo')).toEqual([
         expect.objectContaining({
@@ -824,6 +951,36 @@ function workspaceMaterializationRecord(): Parameters<
     workerSessionId: 'session_1',
     workspaceId: 'ws_demo',
   };
+}
+
+/**
+ * Builds one schema-valid materialization through the production record builder.
+ *
+ * @param packageSnapshotId Package snapshot that owns the materialization.
+ * @param workerSessionId Backend sandbox session id.
+ * @returns Production-built materialization record.
+ * @throws Error when the builder unexpectedly produces no record.
+ */
+function productionWorkspaceMaterializationRecord(
+  packageSnapshotId: string,
+  workerSessionId: string
+): ReturnType<typeof buildWorkspaceMaterializationRecords>[number] {
+  const [materialization] = buildWorkspaceMaterializationRecords({
+    createdAt: timestamp,
+    inputSnapshots: [workspaceInputSnapshot()],
+    materialization: {
+      backendKind: 'openshell',
+      backendStatus: { health: 'ready', version: '0.0.80' },
+      packageSnapshotId,
+      requiredCapabilities: ['container', 'workspace-sync'],
+      sandbox: { name: workerSessionId, state: 'created' },
+      workspaceInputs: [{ id: 'repo_default', target: '/workspace/openkit' }],
+    },
+  });
+  if (!materialization) {
+    throw new Error('Expected one production-built materialization record.');
+  }
+  return materialization;
 }
 
 /**

@@ -2,12 +2,11 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-
-import { createApp } from './app.js';
 import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { createApp } from './test-support/app.js';
 
 function createConfiguredProviderOptions(
   gateway: { allowedProviderIds?: string[]; enabled?: boolean } = {}

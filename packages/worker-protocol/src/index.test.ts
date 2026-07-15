@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildWorkerCanonicalTerminalEventRecord,
   WorkerCanonicalEventRecordSchema,
+  WorkerCanonicalTerminalEventDataSchema,
   WorkerCapabilityCallSummarySchema,
   WorkerControlRequestEnvelopeSchema,
   WorkerControlResponseEnvelopeSchema,
@@ -120,11 +122,104 @@ describe('worker protocol schemas', () => {
         event: {
           type: 'turn.completed',
           data: {
+            evidenceManifestDigests: {},
+            status: 'completed',
             stopReason: 'completed',
           },
         },
       }).kind
     ).toBe('event');
+  });
+
+  it('builds one strict canonical terminal event for transcript and final status paths', () => {
+    const record = buildWorkerCanonicalTerminalEventRecord({
+      data: {
+        diagnostics: { stderr: 'Product-safe failure summary.' },
+        evidenceManifestDigests: { runtime: 'sha256:runtime' },
+        status: 'failed',
+        stopReason: 'worker-runtime-failed',
+      },
+      lineage,
+      sequence: 15,
+    });
+
+    expect(record).toEqual({
+      event: {
+        data: {
+          diagnostics: { stderr: 'Product-safe failure summary.' },
+          evidenceManifestDigests: { runtime: 'sha256:runtime' },
+          status: 'failed',
+          stopReason: 'worker-runtime-failed',
+        },
+        type: 'turn.failed',
+      },
+      kind: 'event',
+      lineage,
+      schemaVersion: 1,
+      sequence: 15,
+    });
+    expect(
+      buildWorkerCanonicalTerminalEventRecord({
+        data: { status: 'completed', stopReason: 'completed' },
+        lineage,
+        sequence: 16,
+      }).event
+    ).toEqual({
+      data: {
+        evidenceManifestDigests: {},
+        status: 'completed',
+        stopReason: 'completed',
+      },
+      type: 'turn.completed',
+    });
+  });
+
+  it('rejects non-canonical terminal event data at every schema boundary', () => {
+    for (const data of [
+      { evidenceManifestDigests: {}, stopReason: 'completed' },
+      { evidenceManifestDigests: {}, status: 'completed', stopReason: '   ' },
+      {
+        evidenceManifestDigests: {},
+        status: 'completed',
+        stopReason: 'completed',
+        unexpected: true,
+      },
+    ]) {
+      expect(() => WorkerCanonicalTerminalEventDataSchema.parse(data)).toThrow();
+      expect(() =>
+        WorkerCanonicalEventRecordSchema.parse({
+          event: { data, type: 'turn.completed' },
+          kind: 'event',
+          lineage,
+          schemaVersion: 1,
+          sequence: 17,
+        })
+      ).toThrow();
+    }
+  });
+
+  it('rejects terminal event types that conflict with their status', () => {
+    for (const [type, status] of [
+      ['turn.completed', 'failed'],
+      ['turn.failed', 'completed'],
+    ] as const) {
+      expect(() =>
+        WorkerCanonicalEventRecordSchema.parse({
+          event: {
+            data: {
+              evidenceManifestDigests: {},
+              status,
+              stopReason: 'terminal-status-mismatch',
+            },
+            type,
+          },
+          kind: 'event',
+          lineage,
+          schemaVersion: 1,
+          sequence: 18,
+        })
+      ).toThrow();
+    }
   });
 
   it('accepts workspace change manifests and rejects unsafe paths', () => {

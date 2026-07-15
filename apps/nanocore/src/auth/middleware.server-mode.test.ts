@@ -4,7 +4,7 @@ import { join, relative } from 'node:path';
 import { ApiErrorSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
-import { createApp } from '../app.js';
+import { createApp } from '../test-support/app.js';
 import { actorFromSession } from './identity.js';
 import type { BetterAuthServer } from './middleware.js';
 

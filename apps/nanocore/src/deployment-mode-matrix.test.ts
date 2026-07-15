@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
@@ -33,7 +34,7 @@ import { createDemoStore } from './test-support/demo-store.js';
 import { upsertWorkspaceRepositoryResource } from './workspace/repository-store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
-/** NanoCore product deployment mode used by the six-mode verification matrix. */
+/** NanoCore product deployment mode used by the verification matrix. */
 type CoreDeploymentMode = 'local' | 'server';
 
 /** Container placement used by the deployment verification matrix. */
@@ -59,8 +60,8 @@ describe('NanoCore deployment mode matrix', () => {
     coreMode,
     runtimePlacement,
   }) => {
-    const turnExecutor = createMatrixTurnExecutor(runtimePlacement);
-    const coreDb = coreMode === 'server' ? createCoreDb() : null;
+    const coreDb = createCoreDb();
+    const turnExecutor = createMatrixTurnExecutor(runtimePlacement, coreDb);
 
     try {
       let authorization: string | undefined;
@@ -93,7 +94,7 @@ describe('NanoCore deployment mode matrix', () => {
       });
       expect(describeTurnExecutorPlacement(turnExecutor)).toEqual(runtimePlacement);
     } finally {
-      coreDb?.sqlite.close();
+      coreDb.sqlite.close();
     }
   });
 
@@ -107,7 +108,17 @@ describe('NanoCore deployment mode matrix', () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', `Loop matrix ${coreMode} ${runtimePlacement}`);
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-loop-matrix-repo-'));
-    mkdirSync(join(repositoryPath, '.git'));
+    execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'openkit@example.invalid'], {
+      cwd: repositoryPath,
+    });
+    execFileSync('git', ['config', 'user.name', 'OpenKit'], { cwd: repositoryPath });
+    writeFileSync(join(repositoryPath, 'README.md'), '# Deployment matrix fixture\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repositoryPath });
+    execFileSync('git', ['commit', '-m', 'initial'], {
+      cwd: repositoryPath,
+      stdio: 'ignore',
+    });
 
     try {
       seedRepositoryAndGoal(coreDb, thread.id, repositoryPath, runtimePlacement);
@@ -184,35 +195,31 @@ describe('NanoCore deployment mode matrix', () => {
  * Creates a turn executor for one runtime placement without starting a real worker process.
  *
  * @param placement Agent runtime placement to configure.
+ * @param coreDb Durable Core database required by the real executor factory.
  * @returns Configured turn executor.
  */
-function createMatrixTurnExecutor(placement: AgentRuntimePlacement): TurnExecutor {
+function createMatrixTurnExecutor(placement: AgentRuntimePlacement, coreDb: CoreDb): TurnExecutor {
   const workerControlGateway = new WorkerControlGateway();
-
-  if (placement === 'local-container') {
-    return createConfiguredTurnExecutor({
-      env: {
-        OPENKIT_CONTAINER_BACKEND: 'openshell',
-        OPENKIT_CONTAINER_PLACEMENT: 'local',
-        OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL:
-          'http://host.openshell.internal:3000/api/worker-control',
-        OPENKIT_OPENSHELL_GATEWAY: 'openshell',
-        OPENKIT_OPENSHELL_WORKER_IMAGE: 'openkit/worker-codex:dev',
-        OPENKIT_WORKER_RUNTIME: 'container',
-      },
-      workerControlGateway,
-    });
-  }
-
+  const remoteEnv =
+    placement === 'remote-container'
+      ? {
+          OPENKIT_OPENSHELL_CELL_SSH_TARGET: 'ubuntu@a1',
+          OPENKIT_OPENSHELL_GATEWAY: 'a1-openkit',
+          OPENKIT_OPENSHELL_GATEWAY_URL: 'http://127.0.0.1:27670',
+        }
+      : {};
   return createConfiguredTurnExecutor({
+    coreDb,
     env: {
       OPENKIT_CONTAINER_BACKEND: 'openshell',
-      OPENKIT_CONTAINER_PLACEMENT: 'remote',
-      OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL: 'https://nanocore.example.com/api/worker-control',
-      OPENKIT_OPENSHELL_GATEWAY: 'a1-openkit',
-      OPENKIT_OPENSHELL_GATEWAY_URL: 'https://a1.example.com:17670',
+      OPENKIT_CONTAINER_PLACEMENT: placement === 'remote-container' ? 'remote' : 'local',
+      OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL:
+        placement === 'remote-container'
+          ? 'https://nanocore.example.com/api/worker-control'
+          : 'http://host.openshell.internal:3000/api/worker-control',
       OPENKIT_OPENSHELL_WORKER_IMAGE: 'openkit/worker-codex:dev',
       OPENKIT_WORKER_RUNTIME: 'container',
+      ...remoteEnv,
     },
     workerControlGateway,
   });
@@ -237,7 +244,7 @@ function createMatrixLoopTurnExecutor(
       placement === 'remote-container'
         ? {
             workerControlBaseUrl: 'https://nanocore.example.com/api/worker-control',
-            gatewayUrl: 'https://a1.example.com:17670',
+            gatewayUrl: 'http://127.0.0.1:27670',
             kind: 'openshell',
             placement: 'remote',
             sandboxImageRef: 'openkit/worker-codex:dev',
@@ -245,6 +252,7 @@ function createMatrixLoopTurnExecutor(
         : {
             workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
             kind: 'openshell',
+            placement: 'local',
             sandboxImageRef: 'openkit/worker-codex:dev',
           },
     now: () => new Date(Date.now() + 60_000).toISOString(),
@@ -386,12 +394,11 @@ function runtimeCapabilities(placement: AgentRuntimePlacement): string[] {
       'change-set-collection',
     ];
   }
-
   return ['container', 'transcript-sink'];
 }
 
 /**
- * Worker-governance backend used by deterministic local-container and remote-container loop tests.
+ * Worker-governance backend used by deterministic local and remote container loop tests.
  */
 class MatrixWorkerGovernanceBackend implements WorkerGovernanceBackend {
   private lastPackage: AgentEnvironmentPackage | null = null;
@@ -426,6 +433,29 @@ class MatrixWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return [];
   }
 
+  /** Plans one deterministic fake backend session without external effects. */
+  public planSession(environmentPackage: AgentEnvironmentPackage) {
+    const remote = this.capabilities.includes('remote-gateway');
+    return {
+      agentSessionId: environmentPackage.scope.agentSessionId,
+      backendKind: 'openshell' as const,
+      backendSessionId: `matrix-${environmentPackage.scope.agentSessionId}`,
+      backendTarget: {
+        cellTargetId: remote ? 'cell-remote-test' : 'cell-local-test',
+        gatewayEndpoint: remote ? 'http://127.0.0.1:27670' : 'http://127.0.0.1:17670',
+        gatewayName: remote ? 'a1-openkit' : 'openshell',
+        placement: remote ? ('remote' as const) : ('local' as const),
+      },
+      deploymentId: 'deployment_matrix',
+      packageSnapshotId: environmentPackage.snapshotId,
+      stagingDirectoryRef: `server/runtime/worker-backend-sessions/${environmentPackage.snapshotId}`,
+      transientProviderInstanceId: null,
+    };
+  }
+
+  /** Cleans one deterministic fake backend session. */
+  public async cleanupSession(): Promise<void> {}
+
   /**
    * Records the generated package and returns a materialization summary.
    *
@@ -449,6 +479,17 @@ class MatrixWorkerGovernanceBackend implements WorkerGovernanceBackend {
       packageId: environmentPackage.packageId,
       packageSnapshotId: environmentPackage.snapshotId,
       requiredCapabilities: environmentPackage.backend.requiredCapabilities,
+      backendStatus: {
+        gatewayEndpoint: null,
+        gatewayName: null,
+        health: 'ready',
+        version: '0.0.63',
+      },
+      sandbox: {
+        name: `matrix-${environmentPackage.scope.agentSessionId}`,
+        source: environmentPackage.runtime.image.ref,
+        state: 'created',
+      },
       workspaceInputs: environmentPackage.workspace.inputs.map((input) => ({
         access: input.access,
         id: input.id,
@@ -561,15 +602,6 @@ class MatrixWorkerGovernanceBackend implements WorkerGovernanceBackend {
    */
   public async collectArtifacts(): Promise<WorkerGovernanceArtifactRecord[]> {
     return [];
-  }
-
-  /**
-   * Emits teardown evidence.
-   *
-   * @returns Teardown evidence record.
-   */
-  public async teardown(): Promise<WorkerGovernanceEvidenceRecord> {
-    return { data: {}, kind: 'matrix.teardown', timestamp: '2026-06-28T00:00:00.000Z' };
   }
 }
 

@@ -3,11 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
-
-import { createApp } from './app.js';
 import type { CodexAccountClient } from './llm/codex-oauth.js';
 import { CodexOAuthAccountManager } from './llm/codex-oauth-accounts.js';
 import type { GetAccountResponse, JsonRpcNotification } from './runtime/codex/protocol.js';
+import { createApp } from './test-support/app.js';
 
 class FakeCodexAccountClient implements CodexAccountClient {
   public readonly requests: Array<{ method: string; params: unknown }> = [];

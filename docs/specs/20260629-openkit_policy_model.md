@@ -102,7 +102,7 @@ The intended flow is:
 4. OpenShell enforces those artifacts inside the selected sandbox and returns backend evidence such as policy apply status, network deny events, supervisor logs, OCSF records, transcript files, artifacts, and collected workspace changes.
 5. NanoCore normalizes backend evidence back into OpenKit audit, usage, review, artifact, and worker session records.
 
-This layering is compatible with the existing OpenShell-first backend strategy. OpenShell remains the first-class local and remote container backend, and it should strongly influence runtime policy materialization, provider vocabulary, endpoint declarations, binary allowlists, and enforcement evidence.
+This layering is compatible with the existing OpenShell-first backend strategy. Official, unmodified OpenShell `0.0.80` remains the first-class local and remote container backend inside one single-slot disposable Cell, and it should strongly influence runtime policy materialization, provider vocabulary, endpoint declarations, binary allowlists, and enforcement evidence. Remote placement is valid only when its fixed SSH lifecycle target, operator-managed loopback HTTP Gateway origin, and explicit credential-free HTTP(S) `/api/worker-control` URL identify one coherent Cell path.
 
 OpenShell must not become the canonical OpenKit permission model. Public App API, end-user CLI, Web UI, Action Center, storage records, and audit records must not require consumers to understand OpenShell-native sandbox ids, gateway names, provider handles, raw policy YAML, supervisor logs, or backend-private environment values.
 
@@ -114,7 +114,9 @@ The unacceptable dependency is durable OpenKit product state or public protocol 
 
 NanoCore owns policy decisions, audit linkage, product lineage, approval workflow, and redacted user-facing explanations.
 
-OpenShell owns runtime enforcement only for OpenShell-backed worker sessions. That enforcement includes sandbox lifecycle, backend isolation, file transport, filesystem policy, process policy, network policy, provider attachment, credential projection, inference routing, and teardown.
+OpenShell owns sandbox-local runtime enforcement only for OpenShell-backed worker sessions. That enforcement includes backend isolation, file transport, filesystem policy, process policy, network policy, provider attachment, credential projection, and inference routing. OpenKit's fixed Cell helper owns whole-runtime prepare and recycle; sandbox or provider deletion is not teardown proof or a fallback success path.
+
+A naked or shared Gateway, insecure Gateway mode, custom OpenShell binary, fork, patch, replacement artifact, or historical compatibility path is outside the runtime-policy contract.
 
 Other backends may enforce the same OpenKit decisions through different artifacts. For example, Docker may use container options and copied workspaces, Kubernetes may use pod security context and network policy, and a hosted sandbox may use provider file APIs and managed egress rules.
 

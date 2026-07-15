@@ -1,7 +1,10 @@
-import type {
-  WorkerCanonicalEventRecord,
-  WorkerControlResponseEnvelope,
-  WorkerLineage,
+import {
+  type WorkerCanonicalEventRecord,
+  type WorkerCanonicalTerminalEventDataInput,
+  WorkerCanonicalTerminalEventDataSchema,
+  type WorkerControlResponseEnvelope,
+  WorkerControlResponseEnvelopeSchema,
+  type WorkerLineage,
 } from '@openkit/worker-protocol';
 
 const WORKER_CONTROL_REQUEST_TIMEOUT_MS = 10_000;
@@ -120,7 +123,7 @@ export interface WorkerControlTerminalResultInput {
 /**
  * Final bounded-step status reported by the worker control client.
  */
-export interface WorkerControlFinalStatusInput {
+export interface WorkerControlFinalStatusInput extends WorkerCanonicalTerminalEventDataInput {
   /** Final transcript sequence for the bounded worker step. */
   sequence: number;
   /** Worker-local bounded-step outcome. */
@@ -235,15 +238,27 @@ export class WorkerControlClient {
   public async recordFinalStatus(
     input: WorkerControlFinalStatusInput
   ): Promise<WorkerControlResponseEnvelope> {
-    return this.postJson<WorkerControlResponseEnvelope>('/final-status', {
-      body: {
-        status: input.status,
-        stopReason: input.stopReason,
-      },
+    const { sequence, ...terminalData } = input;
+    const envelope = {
+      body: WorkerCanonicalTerminalEventDataSchema.parse(terminalData),
       operation: 'final_status',
       schemaVersion: 1,
-      sequence: input.sequence,
-    });
+      sequence,
+    };
+
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return requireAcceptedControlResponse(await this.postJson('/final-status', envelope));
+      } catch (error) {
+        if (
+          attempt === 2 ||
+          this.signal?.aborted ||
+          (error instanceof WorkerControlError && error.status < 500)
+        ) {
+          throw error;
+        }
+      }
+    }
   }
 
   /**
@@ -255,7 +270,7 @@ export class WorkerControlClient {
   public async appendEvent(
     record: WorkerCanonicalEventRecord
   ): Promise<WorkerControlResponseEnvelope> {
-    return this.postJson<WorkerControlResponseEnvelope>('/events/append', { record });
+    return requireAcceptedControlResponse(await this.postJson('/events/append', { record }));
   }
 
   /**
@@ -308,7 +323,19 @@ export class WorkerControlClient {
         return { response, text: await response.text() };
       };
       const { response, text } = await Promise.race([request(), abortFailure, timeoutFailure]);
-      const parsed = parseJson(text);
+      let parsed: unknown;
+
+      try {
+        parsed = parseJson(text);
+      } catch {
+        throw new WorkerControlError(
+          response.ok
+            ? 'worker_control_invalid_response'
+            : `worker_control_http_${response.status}`,
+          response.status,
+          null
+        );
+      }
 
       if (!response.ok) {
         const code = readErrorCode(parsed, response.status);
@@ -370,6 +397,27 @@ function parseJson(text: string): unknown {
   }
 
   return JSON.parse(text) as unknown;
+}
+
+/**
+ * Validates that NanoCore returned an accepted worker-control response envelope.
+ *
+ * @param value Parsed response candidate.
+ * @returns Validated accepted response envelope.
+ * @throws Error when the response is malformed or explicitly rejected.
+ */
+function requireAcceptedControlResponse(value: unknown): WorkerControlResponseEnvelope {
+  const result = WorkerControlResponseEnvelopeSchema.safeParse(value);
+
+  if (!result.success) {
+    throw new WorkerControlError('worker_control_invalid_response', 200, result.error.message);
+  }
+
+  if (!result.data.accepted) {
+    throw new WorkerControlError('worker_control_not_accepted', 200, null);
+  }
+
+  return result.data;
 }
 
 /**

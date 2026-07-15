@@ -4,9 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
-
-import { createApp } from '../app.js';
 import { createDemoWorkspaceForUser, FsStore } from '../lib/store.js';
+import { createApp } from '../test-support/app.js';
 import { openWorkspaceDb } from './db.js';
 import { LOCAL_USER_ID } from './fs-layout.js';
 import { applyScopedMigrations } from './migrate.js';

@@ -2,8 +2,10 @@ import { randomBytes } from 'node:crypto';
 
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import {
+  buildWorkerCanonicalTerminalEventRecord,
   type WorkerCanonicalEventRecord,
   WorkerCanonicalEventRecordSchema,
+  WorkerCanonicalTerminalEventDataSchema,
   type WorkerCapabilityCallSummary,
   WorkerCapabilityCallSummarySchema,
   type WorkerControlResponseEnvelope,
@@ -172,6 +174,8 @@ export interface WorkerControlFinalStatus {
     | 'lost';
   /** Required terminal stop reason. */
   readonly stopReason: string;
+  /** Product-safe terminal diagnostics. */
+  readonly diagnostics?: Readonly<Record<string, string>>;
   /** Product-safe evidence manifest digests available at finalization time. */
   readonly evidenceManifestDigests: Readonly<Record<string, string>>;
   /** ISO timestamp when NanoCore accepted the status. */
@@ -347,6 +351,8 @@ export type WorkerControlFinalStatusTokenBindingResolution =
       readonly status: 'accepted';
       /** True when only an exact already-accepted final status may replay. */
       readonly replayOnly: boolean;
+      /** Store owner resolved through the scheduler admission chain. */
+      readonly ownerUserId: string;
     }
   | {
       /** Binding cannot authorize this final-status request. */
@@ -472,6 +478,8 @@ export interface WorkerControlFinalStatusAcceptedInput {
   readonly sandboxBindingRef: string;
   /** Worker-provided lineage for request binding. */
   readonly lineage: WorkerControlLineage;
+  /** Store owner resolved through the scheduler admission chain. */
+  readonly ownerUserId: string;
   /** Canonical terminal event type. */
   readonly eventType: 'turn.completed' | 'turn.failed';
 }
@@ -1361,52 +1369,68 @@ export class WorkerControlGateway {
       readonly stopReason: string;
       /** Product-safe evidence manifest digests. */
       readonly evidenceManifestDigests?: Readonly<Record<string, string>>;
-      /** Worker-control schema version. */
-      readonly schemaVersion: number;
+      /** Product-safe terminal diagnostics. */
+      readonly diagnostics?: Readonly<Record<string, string>>;
     }
   ): WorkerControlResponseEnvelope {
-    const stopReason = input.stopReason.trim();
-
-    if (stopReason.length === 0) {
-      throw new WorkerControlGatewayError(
-        'worker_control_invalid_final_status',
-        'Worker final status requires a non-empty stop reason.',
-        400
-      );
-    }
-
-    const { replayOnly, state } = this.requireFinalStatusSession(input);
-    const evidenceManifestDigests = { ...(input.evidenceManifestDigests ?? {}) };
-    const eventType = input.status === 'completed' ? 'turn.completed' : 'turn.failed';
-    const eventRecord = WorkerCanonicalEventRecordSchema.parse({
-      event: {
-        data: { evidenceManifestDigests, stopReason },
-        type: eventType,
-      },
-      kind: 'event',
+    const terminalData = WorkerCanonicalTerminalEventDataSchema.parse({
+      ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
+      evidenceManifestDigests: input.evidenceManifestDigests ?? {},
+      status: input.status,
+      stopReason: input.stopReason,
+    });
+    const { state, token } = this.requireFinalStatusSession(input);
+    const eventRecord = buildWorkerCanonicalTerminalEventRecord({
+      data: terminalData,
       lineage: input.lineage,
-      schemaVersion: input.schemaVersion,
       sequence: input.sequence,
     });
+    const eventType = terminalData.status === 'completed' ? 'turn.completed' : 'turn.failed';
     const fingerprintPayload = {
-      evidenceManifestDigests,
+      ...terminalData,
       lineage: input.lineage,
       sequence: input.sequence,
-      status: input.status,
-      stopReason,
     };
     const acceptedAt = this.now();
     const finalStatus: WorkerControlFinalStatus = {
       acceptedAt,
-      evidenceManifestDigests,
+      ...(terminalData.diagnostics ? { diagnostics: terminalData.diagnostics } : {}),
+      evidenceManifestDigests: terminalData.evidenceManifestDigests,
       sequence: input.sequence,
-      status: input.status,
-      stopReason,
+      status: terminalData.status,
+      stopReason: terminalData.stopReason,
     };
     const hadEventFingerprint = state.eventFingerprintsBySequence.has(input.sequence);
     const hadFinalStatusFingerprint =
       state.operationFingerprintsBySequence.get('final_status')?.has(input.sequence) ?? false;
-    const accept = (): void => {
+    const accept = (): string => {
+      let ownerUserId = state.environmentPackage?.scope.userId ?? null;
+      let replayOnly = false;
+
+      if (this.resolveFinalStatusTokenBinding) {
+        const resolution = this.resolveFinalStatusTokenBinding({
+          lineage: input.lineage,
+          sandboxBindingRef: token,
+        });
+
+        if (resolution.status === 'rejected') {
+          this.throwTokenBindingRejection(resolution.reason);
+        }
+
+        ownerUserId = resolution.ownerUserId;
+        replayOnly = resolution.replayOnly;
+      } else {
+        this.assertTokenBinding(token, input.lineage);
+      }
+
+      if (!ownerUserId) {
+        throw new WorkerControlGatewayError(
+          'worker_control_lineage_mismatch',
+          'Worker final status has no durable store owner.',
+          403
+        );
+      }
+
       const finalStatusSequence = acceptSequencedControlOperation(
         state,
         'final_status',
@@ -1440,16 +1464,20 @@ export class WorkerControlGateway {
         this.onFinalStatusAccepted?.({
           eventType,
           lineage: input.lineage,
+          ownerUserId,
           sandboxBindingRef: state.token,
         });
       }
+
+      return ownerUserId;
     };
 
+    let ownerUserId: string;
     try {
       if (this.runFinalStatusTransaction) {
-        this.runFinalStatusTransaction(accept);
+        ownerUserId = this.runFinalStatusTransaction(accept);
       } else {
-        accept();
+        ownerUserId = accept();
       }
     } catch (error) {
       if (!hadFinalStatusFingerprint) {
@@ -1464,6 +1492,7 @@ export class WorkerControlGateway {
     this.onFinalStatusCommitted?.({
       eventType,
       lineage: input.lineage,
+      ownerUserId,
       sandboxBindingRef: state.token,
     });
 
@@ -1562,27 +1591,32 @@ export class WorkerControlGateway {
         ? record.sequence
         : Math.max(state.highestEventSequence, record.sequence);
     state.snapshot.events.push(cloneCanonicalEventRecord(record));
-    this.recordAcceptedRecord({
-      acceptedAt: this.now(),
-      lineage,
-      operation: 'event_append',
-      record,
-      recordKey: String(record.sequence),
-      sequence: record.sequence,
-    });
+    try {
+      this.recordAcceptedRecord({
+        acceptedAt: this.now(),
+        lineage,
+        operation: 'event_append',
+        record,
+        recordKey: String(record.sequence),
+        sequence: record.sequence,
+      });
+    } catch (error) {
+      rollbackCanonicalEvent(state, record.sequence);
+      throw error;
+    }
 
     return { duplicate: durableSequence?.duplicate ?? false };
   }
 
   /**
-   * Resolves one final-status session with narrow releasing replay authority.
+   * Resolves one process-local final-status session before durable authorization.
    *
    * @param input Authenticated final-status request.
-   * @returns Mutable session state and whether only an exact replay is allowed.
+   * @returns Mutable session state and its non-secret sandbox binding.
    */
   private requireFinalStatusSession(input: AuthenticatedWorkerControlInput): {
-    readonly replayOnly: boolean;
     readonly state: WorkerControlSessionState;
+    readonly token: string;
   } {
     const { state, token } = this.requireTokenSession(input.authorization);
 
@@ -1594,21 +1628,7 @@ export class WorkerControlGateway {
       );
     }
 
-    if (!this.resolveFinalStatusTokenBinding) {
-      this.assertTokenBinding(token, input.lineage);
-      return { replayOnly: false, state };
-    }
-
-    const resolution = this.resolveFinalStatusTokenBinding({
-      lineage: input.lineage,
-      sandboxBindingRef: token,
-    });
-
-    if (resolution.status === 'rejected') {
-      this.throwTokenBindingRejection(resolution.reason);
-    }
-
-    return { replayOnly: resolution.replayOnly, state };
+    return { state, token };
   }
 
   /**
@@ -1865,7 +1885,7 @@ function acceptSequencedControlOperation(
     fingerprints = new Map<number, string>();
     state.operationFingerprintsBySequence.set(operation, fingerprints);
   }
-  const fingerprint = stableJson(payload);
+  const fingerprint = sequencedControlFingerprint(payload);
   const existingFingerprint = fingerprints.get(sequence);
 
   if (existingFingerprint !== undefined) {
@@ -1915,6 +1935,22 @@ function acceptSequencedControlOperation(
     nextExpectedSequence:
       durableSequence?.nextExpectedSequence ?? nextExpectedOperationSequence(state, operation),
   };
+}
+
+/**
+ * Creates a stable sequenced-operation fingerprint without retaining transport credentials.
+ *
+ * @param payload Authenticated operation payload used for exact retry comparison.
+ * @returns Stable fingerprint containing every semantic payload field except authorization.
+ */
+function sequencedControlFingerprint(payload: unknown): string {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return stableJson(payload);
+  }
+
+  const canonicalPayload = { ...payload } as Record<string, unknown>;
+  delete canonicalPayload.authorization;
+  return stableJson(canonicalPayload);
 }
 
 /**

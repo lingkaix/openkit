@@ -18,6 +18,8 @@ import type {
   WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
 import {
+  type WorkerCanonicalEventRecord,
+  WorkerCanonicalEventRecordSchema,
   type WorkerLineage,
   type WorkerRuntimeNativeOriginIndexEntry,
   WorkerRuntimeNativeOriginIndexEntrySchema,
@@ -35,6 +37,13 @@ import type {
   LLMGatewayProviderDispatcher,
 } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import {
+  createSchedulerAdmissionEntry,
+  dispatchNextSchedulerEntry,
+  upsertSchedulerCapacityRecord,
+  upsertSchedulerTargetHealthRecord,
+  upsertSchedulerWorkerPool,
+} from '../scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { LOCAL_USER_ID, workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -47,7 +56,9 @@ import { listVaultUseRecords } from '../vault/vault-use-records.js';
 import { upsertWorkspaceRepositoryResource } from '../workspace/repository-store.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
+import { getWorkerBackendSession } from './worker-backend-sessions.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
+import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 import type {
   WorkerGovernanceArtifactRecord,
   WorkerGovernanceBackend,
@@ -87,6 +98,79 @@ function openTestWorkspaceDb(coreDb: CoreDb): WorkspaceDb {
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, 'ws_demo');
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
+}
+
+/** Dispatches the scheduler lease that authorizes one executor fixture. */
+function dispatchExecutorLease(
+  coreDb: CoreDb,
+  input: {
+    readonly agentSessionId: string;
+    readonly packageSnapshotId: string;
+    readonly sandboxBindingRef: string;
+    readonly threadId: string;
+    readonly turnId: string;
+  }
+): void {
+  upsertSchedulerWorkerPool(coreDb, {
+    allowedBackendKinds: ['openshell'],
+    allowedPlacements: ['local'],
+    allowedWorkspaceScopes: ['local'],
+    budgetClass: 'interactive',
+    currentAdmittedSessionCount: 0,
+    currentQueueDepth: 1,
+    defaultTimeoutMs: 900_000,
+    healthSummary: 'ready',
+    maxConcurrentSessions: 1,
+    poolId: 'pool_executor_anchor',
+    queueLimit: 20,
+    status: 'active',
+  });
+  upsertSchedulerCapacityRecord(coreDb, {
+    capacityClass: 'local',
+    concurrencyCeiling: 1,
+    inUseCount: 0,
+    observationSource: 'configured',
+    observedAt: '2026-07-15T00:00:00.000Z',
+    poolId: 'pool_executor_anchor',
+    queueDepth: 0,
+    targetId: 'target_executor_anchor',
+  });
+  upsertSchedulerTargetHealthRecord(coreDb, {
+    checkResults: [],
+    consecutiveFailureCount: 0,
+    consecutiveSuccessCount: 1,
+    healthState: 'healthy',
+    lastProbeAt: '2026-07-15T00:00:00.000Z',
+    nextProbeAt: '2026-07-15T00:01:00.000Z',
+    targetId: 'target_executor_anchor',
+  });
+  createSchedulerAdmissionEntry(coreDb, {
+    priorityClass: 'interactive',
+    profileRef: 'profile_worker',
+    queueEntryId: `queue_${input.turnId}`,
+    requestedAgentId: 'agent_codex_host',
+    requiredPoolConstraints: ['openshell.local'],
+    threadId: input.threadId,
+    turnId: input.turnId,
+    turnInput: 'Run governed worker',
+    workspaceId: 'ws_demo',
+    now: () => '2026-07-15T00:00:01.000Z',
+  });
+  dispatchNextSchedulerEntry(coreDb, {
+    agentSessionId: input.agentSessionId,
+    expectedControlMode: 'poll',
+    expectedDataPlaneMode: 'openshell-files',
+    heartbeatIntervalMs: 10_000,
+    heartbeatTimeoutMs: 30_000,
+    leaseDurationMs: 900_000,
+    leaseId: `lease_${input.turnId}`,
+    now: () => '2026-07-15T00:00:02.000Z',
+    packageSnapshotId: input.packageSnapshotId,
+    planId: `plan_${input.turnId}`,
+    sandboxBindingRef: input.sandboxBindingRef,
+    schedulerEpoch: 1,
+    startupTimeoutMs: 120_000,
+  });
 }
 
 /**
@@ -322,6 +406,10 @@ async function ingestWorkspaceChangeFixture(
   inputStrategy?: 'git' | 'filesystem',
   materializationStrategy?: 'git' | 'filesystem'
 ): Promise<void> {
+  recordTestWorkspaceReviewMaterialization(fixture.workspaceDb, {
+    artifactId: fixture.artifactId,
+    ...record,
+  });
   const executor = fixture.executor as unknown as {
     createWorkspaceChangeArtifacts(
       store: FsStore,
@@ -387,6 +475,88 @@ describe('WorkerGovernanceTurnExecutor', () => {
     ).toEqual([]);
   });
 
+  it.each([
+    { expectedStatus: 'completed', mode: 'exact' },
+    { expectedStatus: 'failed', mode: 'missing' },
+    { expectedStatus: 'failed', mode: 'conflict' },
+  ] as const)('reconciles $mode transcript events against durable live acceptance', async ({
+    expectedStatus,
+    mode,
+  }) => {
+    const coreDb = openCoreDb(
+      mkdtempSync(join(tmpdir(), `openkit-governance-live-events-${mode}-`))
+    );
+    applyMigrations(coreDb);
+    const store = createDemoStore();
+    const turn = store.createTurn('ws_demo', 'th_demo', `Reconcile ${mode} worker events`);
+    const backend = new FakeWorkerGovernanceBackend();
+    backend.eventsJsonlFactory = (environmentPackage) => {
+      const lineage: WorkerLineage = {
+        agentSessionId: environmentPackage.scope.agentSessionId,
+        packageSnapshotId: environmentPackage.snapshotId,
+        requestId: environmentPackage.scope.requestId,
+        threadId: environmentPackage.scope.threadId,
+        turnId: environmentPackage.scope.turnId,
+        workspaceId: environmentPackage.scope.workspaceId,
+      };
+      const transcriptRecord = WorkerCanonicalEventRecordSchema.parse({
+        event: { data: { status: 'running' }, type: 'worker.heartbeat' },
+        kind: 'event',
+        lineage,
+        schemaVersion: 1,
+        sequence: 0,
+      });
+
+      if (mode !== 'missing') {
+        const acceptedRecord: WorkerCanonicalEventRecord =
+          mode === 'conflict'
+            ? WorkerCanonicalEventRecordSchema.parse({
+                ...transcriptRecord,
+                event: { data: { status: 'different' }, type: 'worker.heartbeat' },
+              })
+            : transcriptRecord;
+        recordWorkerControlAcceptedRecord(coreDb, {
+          acceptedAt: '2026-07-15T00:00:00.000Z',
+          lineage,
+          operation: 'event_append',
+          record: acceptedRecord,
+          recordKey: String(acceptedRecord.sequence),
+          sequence: acceptedRecord.sequence,
+        });
+      }
+
+      return `${JSON.stringify(transcriptRecord)}\n`;
+    };
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      createAgentSessionId: () => `as_governance_live_events_${mode}`,
+      environmentBackend: {
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+        kind: 'openshell',
+        sandboxImageRef: 'openkit/worker-codex:dev',
+      },
+      now: () => '2026-07-15T00:00:01.000Z',
+    });
+    const requestId = {
+      conflict: '00000000-0000-4000-8000-000000000233',
+      exact: '00000000-0000-4000-8000-000000000231',
+      missing: '00000000-0000-4000-8000-000000000232',
+    }[mode];
+    const run = executor.startTurn(store, turn.id, `Reconcile ${mode} worker events`, {
+      requestId,
+      workspaceRoots: [],
+    });
+
+    if (mode === 'exact') {
+      await expect(run).resolves.toBeUndefined();
+    } else {
+      await expect(run).rejects.toThrow('Worker transcript event reconciliation failed');
+    }
+    expect(store.getTurnById(turn.id).status).toBe(expectedStatus);
+    coreDb.sqlite.close();
+  });
+
   it('imports worker transcript records and tears down the materialized backend session', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-records-')));
 
@@ -432,7 +602,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'collectTranscript',
       'collectWorkspaceChanges',
       'collectArtifacts',
-      'teardown',
+      'cleanupSession',
     ]);
     expect(backend.lastPackage?.extensions.openkit).toMatchObject({
       codexCommand: expect.arrayContaining(['--model', 'gpt-5-codex']),
@@ -927,7 +1097,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       ).rejects.toThrow();
 
       expect(runtimeProvenanceImporter).toHaveBeenCalledOnce();
-      expect(backend.calls.at(-1)).toBe('teardown');
+      expect(backend.calls.at(-1)).toBe('cleanupSession');
       expect(store.getTurnById(turn.id)).toMatchObject({ status: 'failed' });
       expect(
         store
@@ -1051,6 +1221,31 @@ describe('WorkerGovernanceTurnExecutor', () => {
     fixture.workspaceDb.sqlite.close();
   });
 
+  it('accepts equivalent workspace bases with different object key order', async () => {
+    const fixture = createWorkspaceChangeIngressFixture(
+      'equivalent_base_key_order',
+      'git',
+      'staging-root'
+    );
+    const record = {
+      ...fixture.record,
+      changeSet: {
+        ...fixture.record.changeSet,
+        base: {
+          contentDigest: fixture.record.changeSet.base.contentDigest,
+          commit: fixture.record.changeSet.base.commit,
+        },
+      },
+    } satisfies WorkerGovernanceWorkspaceChangeRecord;
+
+    await ingestWorkspaceChangeFixture(fixture, record);
+
+    expect(listWorkspaceSyncReviews(fixture.workspaceDb, fixture.workspaceId)).toEqual([
+      expect.objectContaining({ review: expect.objectContaining({ id: fixture.reviewId }) }),
+    ]);
+    fixture.workspaceDb.sqlite.close();
+  });
+
   it('keeps Git workspace changes reviewable when durable workspace storage is disabled', async () => {
     const fixture = createWorkspaceChangeIngressFixture('git_without_core_db', 'git', 'missing');
     const backend = new FakeWorkerGovernanceBackend();
@@ -1128,7 +1323,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
         if (!backend.lastPackage) {
           throw new Error('Actor-scoped package was not materialized.');
         }
-        const base = { commit: null, contentDigest: null };
+        const commit = backend.lastPackage.workspace.inputs[0]?.source.commit;
+        if (typeof commit !== 'string') {
+          throw new Error('Actor-scoped package did not capture its Git base.');
+        }
+        const base = { commit, contentDigest: null };
         return [
           {
             ...fixture.record,
@@ -1393,6 +1592,29 @@ describe('WorkerGovernanceTurnExecutor', () => {
     },
   ];
 
+  it('reports a non-secret workspace review actionability reason', async () => {
+    const fixture = createWorkspaceChangeIngressFixture(
+      'actionability_reason',
+      'git',
+      'staging-root'
+    );
+    let ingressError: unknown;
+
+    try {
+      await ingestWorkspaceChangeFixture(fixture, {
+        ...fixture.record,
+        patchPayload: null,
+      });
+    } catch (error) {
+      ingressError = error;
+    }
+
+    expect(ingressError).toMatchObject({
+      message: `Workspace review is not actionable (git_patch_invalid): ${fixture.reviewId}`,
+    });
+    fixture.workspaceDb.sqlite.close();
+  });
+
   it.each(rejectedIngressCases)('rejects $name before review effects', async ({
     inputStrategy,
     materializationStrategy,
@@ -1621,7 +1843,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     coreDb.sqlite.close();
   });
 
-  it('marks backend workspace handles failed when teardown fails', async () => {
+  it('keeps workspace handles pending and omits teardown evidence when cleanup fails', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-teardown-fail-')));
 
     applyMigrations(coreDb);
@@ -1630,18 +1852,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const turn = store.createTurn('ws_demo', 'th_demo', 'Run in OpenShell');
     const backend = new FakeWorkerGovernanceBackend({ sandboxName: 'sandbox_teardown_fail_1' });
     backend.failTeardown = true;
-    let teardownAttempt = 0;
-    let currentTime = '2026-06-16T00:00:00.000Z';
-    const teardown = backend.teardown.bind(backend);
-    const teardownSpy = vi.spyOn(backend, 'teardown').mockImplementation(async () => {
-      try {
-        return await teardown();
-      } catch (error) {
-        teardownAttempt += 1;
-        currentTime = `2026-06-16T00:00:0${teardownAttempt}.000Z`;
-        throw error;
-      }
-    });
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
       coreDb,
@@ -1651,33 +1861,29 @@ describe('WorkerGovernanceTurnExecutor', () => {
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
-      now: () => currentTime,
+      now: () => '2026-06-16T00:00:00.000Z',
     });
 
-    try {
-      await expect(
-        executor.startTurn(store, turn.id, 'Run in OpenShell', {
-          requestId: '00000000-0000-4000-8000-000000000205',
-          workspaceRoots: [
-            {
-              access: 'read-write',
-              id: 'repo',
-              sourceKind: 'host-dir',
-              sourcePath: '/Users/m5pro/Documents/AI/openkit',
-              workerPath: '/workspace/openkit',
-            },
-          ],
-        })
-      ).rejects.toThrow('teardown failed');
-    } finally {
-      teardownSpy.mockRestore();
-    }
+    await expect(
+      executor.startTurn(store, turn.id, 'Run in OpenShell', {
+        requestId: '00000000-0000-4000-8000-000000000205',
+        workspaceRoots: [
+          {
+            access: 'read-write',
+            id: 'repo',
+            sourceKind: 'host-dir',
+            sourcePath: '/Users/m5pro/Documents/AI/openkit',
+            workerPath: '/workspace/openkit',
+          },
+        ],
+      })
+    ).rejects.toThrow('teardown failed');
 
     const workspaceDb = openTestWorkspaceDb(coreDb);
 
     expect(listBackendWorkspaceHandles(workspaceDb, 'ws_demo')).toEqual([
       expect.objectContaining({
-        cleanupStatus: 'failed',
+        cleanupStatus: 'pending',
         workerSessionId: 'sandbox_teardown_fail_1',
       }),
     ]);
@@ -1685,15 +1891,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo').filter(
         (record) => record.phase === 'teardown'
       )
-    ).toEqual([
-      expect.objectContaining({
-        agentSessionId: 'as_teardown_fail_1',
-        completedAt: '2026-06-16T00:00:02.000Z',
-        outcome: 'failed',
-        stopReason: 'error',
-        summary: 'Worker backend teardown failed.',
-      }),
-    ]);
+    ).toEqual([]);
 
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
@@ -1733,7 +1931,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       })
     ).rejects.toThrow('teardown failed');
 
-    expect(backend.calls.filter((call) => call === 'teardown')).toHaveLength(2);
+    expect(backend.calls.filter((call) => call === 'cleanupSession')).toHaveLength(2);
     expect(store.getTurnById(turn.id)).toMatchObject({ status: 'failed' });
     const workspaceDb = openTestWorkspaceDb(coreDb);
     expect(listBackendWorkspaceHandles(workspaceDb, 'ws_demo')).toEqual([
@@ -1812,7 +2010,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         })
       ).rejects.toThrow('cleanup status persistence failed');
 
-      expect(backend.calls.filter((call) => call === 'teardown')).toHaveLength(1);
+      expect(backend.calls.filter((call) => call === 'cleanupSession')).toHaveLength(1);
       expect(store.getTurnById(turn.id)).toMatchObject({ status: 'failed' });
       expect(closeSpy).toHaveBeenCalledTimes(1);
     } finally {
@@ -1824,7 +2022,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(listBackendWorkspaceHandles(workspaceDb, 'ws_demo')).toEqual([
       expect.objectContaining({
         cleanupStatus: 'pending',
-        workerSessionId: `aepsnap_${turn.id}_as_cleanup_status_1`,
+        workerSessionId: 'openkit-as_cleanup_status_1',
       }),
     ]);
     workspaceDb.sqlite.close();
@@ -2414,6 +2612,15 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     const store = createDemoStore();
     const turn = store.createTurn('ws_demo', 'th_demo', 'Run with scheduler binding');
+    const agentSessionId = 'as_governance_binding_1';
+    const sandboxBindingRef = 'lease-binding:executor_1';
+    dispatchExecutorLease(coreDb, {
+      agentSessionId,
+      packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
+      sandboxBindingRef,
+      threadId: turn.threadId,
+      turnId: turn.id,
+    });
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
@@ -2424,12 +2631,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
       },
+      now: () => '2026-07-15T00:00:03.000Z',
     });
 
     await executor.startTurn(store, turn.id, 'Run with scheduler binding', {
-      agentSessionId: 'as_governance_binding_1',
+      agentSessionId,
       requestId: '00000000-0000-4000-8000-000000000214',
-      sandboxBindingRef: 'lease-binding:executor_1',
+      sandboxBindingRef,
       workspaceRoots: [],
     });
 
@@ -2442,6 +2650,249 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     coreDb.sqlite.close();
+  });
+
+  it('writes a package-scoped backend anchor before materialization and cleans it for zero-input turns', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-anchor-order-')));
+    applyMigrations(coreDb);
+    const store = createDemoStore();
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Anchor before effect');
+    const agentSessionId = 'as_anchor_order_1';
+    const packageSnapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
+    const sandboxBindingRef = 'lease-binding:anchor-order';
+    dispatchExecutorLease(coreDb, {
+      agentSessionId,
+      packageSnapshotId,
+      sandboxBindingRef,
+      threadId: turn.threadId,
+      turnId: turn.id,
+    });
+    const backend = new FakeWorkerGovernanceBackend();
+    const materialize = backend.materialize.bind(backend);
+    const materializeSpy = vi.spyOn(backend, 'materialize').mockImplementation(async (...args) => {
+      expect(getWorkerBackendSession(coreDb, `lease_${turn.id}`)).toMatchObject({
+        backendSessionId: `openkit-${agentSessionId}`,
+        packageSnapshotId,
+        state: 'materializing',
+      });
+      return materialize(...args);
+    });
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      createAgentSessionId: () => agentSessionId,
+      environmentBackend: {
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+        kind: 'openshell',
+        sandboxImageRef: 'openkit/worker-codex:dev',
+      },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+
+    try {
+      await executor.startTurn(store, turn.id, 'Anchor before effect', {
+        agentSessionId,
+        requestId: '00000000-0000-4000-8000-000000000250',
+        sandboxBindingRef,
+        workspaceRoots: [],
+      });
+
+      expect(getWorkerBackendSession(coreDb, `lease_${turn.id}`)).toMatchObject({
+        state: 'cleaned',
+      });
+    } finally {
+      materializeSpy.mockRestore();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    ['cleanup succeeds', false, 'cleaned'],
+    ['cleanup fails', true, 'cleanup-failed'],
+  ] as const)('records materialize-after-effect failure when %s', async (_description, failTeardown, expectedState) => {
+    const coreDb = openCoreDb(
+      mkdtempSync(join(tmpdir(), 'openkit-governance-materialize-failure-'))
+    );
+    applyMigrations(coreDb);
+    const store = createDemoStore();
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Fail after materialize effect');
+    const agentSessionId = 'as_materialize_failure_1';
+    const packageSnapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
+    const sandboxBindingRef = 'lease-binding:materialize-failure';
+    dispatchExecutorLease(coreDb, {
+      agentSessionId,
+      packageSnapshotId,
+      sandboxBindingRef,
+      threadId: turn.threadId,
+      turnId: turn.id,
+    });
+    const backend = new FakeWorkerGovernanceBackend();
+    backend.failTeardown = failTeardown;
+    const materialize = backend.materialize.bind(backend);
+    const materializeSpy = vi.spyOn(backend, 'materialize').mockImplementation(async (...args) => {
+      await materialize(...args);
+      throw new Error('materialize failed after external effect');
+    });
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      createAgentSessionId: () => agentSessionId,
+      environmentBackend: {
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+        kind: 'openshell',
+        sandboxImageRef: 'openkit/worker-codex:dev',
+      },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+
+    try {
+      await expect(
+        executor.startTurn(store, turn.id, 'Fail after materialize effect', {
+          agentSessionId,
+          requestId: '00000000-0000-4000-8000-000000000251',
+          sandboxBindingRef,
+          workspaceRoots: [],
+        })
+      ).rejects.toThrow('materialize failed after external effect');
+      expect(getWorkerBackendSession(coreDb, `lease_${turn.id}`)).toMatchObject({
+        state: expectedState,
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT leases.status, capacity.in_use_count AS inUseCount
+               FROM scheduler_session_leases AS leases
+               JOIN scheduler_capacity_records AS capacity ON capacity.target_id = leases.target_id
+               WHERE leases.lease_id = ?`
+          )
+          .get(`lease_${turn.id}`)
+      ).toEqual({ inUseCount: 1, status: 'acquired' });
+    } finally {
+      materializeSpy.mockRestore();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('does not launch when the scheduler lease stops being live during materialization', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-prelaunch-gate-')));
+    applyMigrations(coreDb);
+    const store = createDemoStore();
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Lose lease before launch');
+    const agentSessionId = 'as_prelaunch_gate_1';
+    const packageSnapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
+    const sandboxBindingRef = 'lease-binding:prelaunch-gate';
+    dispatchExecutorLease(coreDb, {
+      agentSessionId,
+      packageSnapshotId,
+      sandboxBindingRef,
+      threadId: turn.threadId,
+      turnId: turn.id,
+    });
+    const backend = new FakeWorkerGovernanceBackend();
+    const materialize = backend.materialize.bind(backend);
+    const materializeSpy = vi.spyOn(backend, 'materialize').mockImplementation(async (...args) => {
+      const result = await materialize(...args);
+      coreDb.sqlite
+        .prepare(
+          "UPDATE scheduler_session_leases SET status = 'stale', release_reason = 'heartbeat-timeout' WHERE lease_id = ?"
+        )
+        .run(`lease_${turn.id}`);
+      return result;
+    });
+    const launchSpy = vi.spyOn(backend, 'launch');
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      createAgentSessionId: () => agentSessionId,
+      environmentBackend: {
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+        kind: 'openshell',
+        sandboxImageRef: 'openkit/worker-codex:dev',
+      },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+
+    try {
+      await expect(
+        executor.startTurn(store, turn.id, 'Lose lease before launch', {
+          agentSessionId,
+          requestId: '00000000-0000-4000-8000-000000000252',
+          sandboxBindingRef,
+          workspaceRoots: [],
+        })
+      ).rejects.toThrow('Scheduler lease is not live for worker backend launch.');
+      expect(launchSpy).not.toHaveBeenCalled();
+      expect(backend.calls.filter((call) => call === 'cleanupSession')).toHaveLength(1);
+      expect(getWorkerBackendSession(coreDb, `lease_${turn.id}`)).toMatchObject({
+        state: 'cleaned',
+      });
+    } finally {
+      launchSpy.mockRestore();
+      materializeSpy.mockRestore();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('does not launch when the startup deadline elapses during materialization', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-deadline-gate-')));
+    applyMigrations(coreDb);
+    const store = createDemoStore();
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Expire before launch');
+    const agentSessionId = 'as_deadline_gate_1';
+    const packageSnapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
+    const sandboxBindingRef = 'lease-binding:deadline-gate';
+    let timestamp = '2026-07-15T00:00:03.000Z';
+    dispatchExecutorLease(coreDb, {
+      agentSessionId,
+      packageSnapshotId,
+      sandboxBindingRef,
+      threadId: turn.threadId,
+      turnId: turn.id,
+    });
+    const backend = new FakeWorkerGovernanceBackend();
+    const materialize = backend.materialize.bind(backend);
+    const materializeSpy = vi.spyOn(backend, 'materialize').mockImplementation(async (...args) => {
+      const result = await materialize(...args);
+      timestamp = '2026-07-15T00:03:00.000Z';
+      return result;
+    });
+    const launchSpy = vi.spyOn(backend, 'launch');
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      createAgentSessionId: () => agentSessionId,
+      environmentBackend: {
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+        kind: 'openshell',
+        sandboxImageRef: 'openkit/worker-codex:dev',
+      },
+      now: () => timestamp,
+    });
+
+    try {
+      await expect(
+        executor.startTurn(store, turn.id, 'Expire before launch', {
+          agentSessionId,
+          requestId: '00000000-0000-4000-8000-000000000253',
+          sandboxBindingRef,
+          workspaceRoots: [],
+        })
+      ).rejects.toThrow('Scheduler lease is not live for worker backend launch.');
+      expect(launchSpy).not.toHaveBeenCalled();
+      expect(backend.calls.filter((call) => call === 'cleanupSession')).toHaveLength(1);
+      expect(getWorkerBackendSession(coreDb, `lease_${turn.id}`)).toMatchObject({
+        state: 'cleaned',
+      });
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT status FROM scheduler_session_leases WHERE lease_id = ?')
+          .get(`lease_${turn.id}`)
+      ).toEqual({ status: 'acquired' });
+    } finally {
+      launchSpy.mockRestore();
+      materializeSpy.mockRestore();
+      coreDb.sqlite.close();
+    }
   });
 
   it('passes vault backend dependencies into worker package resolution', async () => {
@@ -2776,6 +3227,7 @@ function createTurnRuntimeProvenanceCapture(
       .map((entry) => JSON.stringify(entry))
       .join('\n')}\n`
   );
+
   if (failure !== 'missing') {
     writeFileSync(streamManifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   }
@@ -2922,6 +3374,9 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
   public teardownFailuresRemaining = 0;
   public lastContext: Parameters<WorkerGovernanceBackend['materialize']>[1] | null = null;
   public lastPackage: AgentEnvironmentPackage | null = null;
+  /** Optional canonical event transcript factory used by reconciliation tests. */
+  public eventsJsonlFactory: ((environmentPackage: AgentEnvironmentPackage) => string) | null =
+    null;
   public runtimeProvenanceFactory:
     | ((
         environmentPackage: AgentEnvironmentPackage
@@ -2943,7 +3398,12 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
     } = {}
   ) {
     this.capabilities = options.capabilities ?? ['container', 'transcript-sink', 'worker-control'];
-    this.materializationStatus = options.materializationStatus;
+    this.materializationStatus = options.materializationStatus ?? {
+      gatewayEndpoint: null,
+      gatewayName: 'openshell',
+      health: 'ready',
+      version: '0.0.63',
+    };
     this.sandboxName = options.sandboxName;
   }
 
@@ -2958,6 +3418,38 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
 
   public async validatePackage(): Promise<AgentEnvironmentValidationDiagnostic[]> {
     return [];
+  }
+
+  public planSession(environmentPackage: AgentEnvironmentPackage) {
+    return {
+      agentSessionId: environmentPackage.scope.agentSessionId,
+      backendKind: 'openshell' as const,
+      backendSessionId: this.sandboxName ?? `openkit-${environmentPackage.scope.agentSessionId}`,
+      backendTarget: {
+        cellTargetId: 'cell-test',
+        gatewayEndpoint: null,
+        gatewayName: 'openshell',
+        placement: 'local' as const,
+      },
+      deploymentId: 'deployment_fake_executor',
+      packageSnapshotId: environmentPackage.snapshotId,
+      stagingDirectoryRef: `server/runtime/worker-backend-sessions/${environmentPackage.snapshotId}`,
+      transientProviderInstanceId: null,
+    };
+  }
+
+  /** Cleans one exact fake physical session. */
+  public async cleanupSession(): Promise<void> {
+    this.calls.push('cleanupSession');
+
+    if (this.teardownFailuresRemaining > 0) {
+      this.teardownFailuresRemaining -= 1;
+      throw new Error('teardown failed');
+    }
+
+    if (this.failTeardown) {
+      throw new Error('teardown failed');
+    }
   }
 
   public async materialize(
@@ -2979,15 +3471,11 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
       packageSnapshotId: environmentPackage.snapshotId,
       requiredCapabilities: environmentPackage.backend.requiredCapabilities,
       ...(this.materializationStatus ? { backendStatus: this.materializationStatus } : {}),
-      ...(this.sandboxName
-        ? {
-            sandbox: {
-              name: this.sandboxName,
-              source: 'openkit/worker-codex:dev',
-              state: 'created' as const,
-            },
-          }
-        : {}),
+      sandbox: {
+        name: this.sandboxName ?? `openkit-${environmentPackage.scope.agentSessionId}`,
+        source: 'openkit/worker-codex:dev',
+        state: 'created' as const,
+      },
       workspaceInputs: environmentPackage.workspace.inputs.map((input) => ({
         access: input.access,
         id: input.id,
@@ -3031,6 +3519,9 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
 
     return {
+      ...(this.eventsJsonlFactory
+        ? { eventsJsonl: this.eventsJsonlFactory(this.lastPackage) }
+        : {}),
       artifactsJsonl: `${JSON.stringify({
         schemaVersion: 1,
         kind: 'artifact',
@@ -3088,25 +3579,6 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
     this.calls.push('collectArtifacts');
 
     return [];
-  }
-
-  public async teardown(): Promise<WorkerGovernanceEvidenceRecord> {
-    this.calls.push('teardown');
-
-    if (this.teardownFailuresRemaining > 0) {
-      this.teardownFailuresRemaining -= 1;
-      throw new Error('teardown failed');
-    }
-
-    if (this.failTeardown) {
-      throw new Error('teardown failed');
-    }
-
-    return {
-      data: {},
-      kind: 'fake.teardown',
-      timestamp: '2026-06-16T00:00:00.000Z',
-    };
   }
 }
 

@@ -33,7 +33,7 @@ Implementation: Implemented
 - `docs/core/audit.md`
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260629-worker_runtime_communication_model.md`
-- `docs/specs/20260627-remote_openshell_gateway.md`
+- `docs/specs/20260715-openshell_disposable_cell_lifecycle.md`
 - `docs/specs/20260703-worker_control_protocol.md`
 - `docs/specs/20260703-worker_agent_capability.md`
 - `docs/specs/20260703-openshell_mechanism_internalization.md`
@@ -111,7 +111,7 @@ Before this spec was implemented, the repository had three active Dockerfiles sp
 
 The repository also had `scripts/docker/staging-*` helpers and Docker cookbooks under `docs/cookbooks/`. Those files encoded useful implementation details, but the naming treated staging as the central packaging concept.
 
-The active worker runtime design has moved to governed container workers. Host execution is not a real Worker Agent product runtime. The first serious worker backend is OpenShell, and the worker-facing contract requires an OpenKit Worker Sidecar or equivalent shim inside every real worker container.
+The active worker runtime design has moved to governed container workers. Host execution is not a real Worker Agent product runtime. The first serious worker backend is OpenShell, and the worker-facing contract requires one runtime-specific OpenKit worker shim inside every real worker container; a separate sidecar is not part of the design.
 
 The historical `docs/specs/superseded/20260518-staging_docker_distribution.md` is not current guidance. It remains useful background for why the staging image exists, but it still carries host-mode and loopback-agent assumptions that must not shape the new release packaging contract.
 
@@ -604,6 +604,12 @@ Release worker base state:
 - `containers/images.json` pins `worker-codex.baseImage` to `node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5`.
 - `containers/worker-codex/Dockerfile` uses the same digest-pinned Node base for its builder and runtime stages.
 
+Worker launcher state:
+
+- The Codex launcher preserves the OpenShell-provided proxy variables and enables Node environment-proxy support with `NODE_USE_ENV_PROXY=1` so Node `fetch` follows the governed egress path.
+- The launcher preserves inherited `NO_PROXY` and `no_proxy` entries but MUST NOT add `host.openshell.internal`; the authenticated NanoCore worker-control origin remains reachable through the OpenShell policy proxy.
+- The image and launcher MUST provide a writable runtime home through `CODEX_HOME` or `HOME` before runtime provenance starts. Missing home state is a launch-contract failure and MUST fail closed before inference.
+
 ## Alternatives Considered
 
 ### Keep Root Dockerfiles
@@ -678,6 +684,7 @@ Dockerfile static tests:
 - Worker Codex Dockerfile installs a native Codex payload or uses a verified Codex binary path.
 - Worker Codex Dockerfile creates `/openkit/config`, `/openkit/session`, and `/openkit/artifacts`.
 - Worker Codex Dockerfile declares the sandbox user expected by OpenShell.
+- Worker Codex Dockerfile and launcher tests require a writable runtime home and the governed Node proxy contract.
 
 Local build acceptance:
 
@@ -699,10 +706,12 @@ Worker image smoke acceptance:
 - The image contains the runtime binary.
 - The image can read an AEP package from `/openkit/config/package.json`.
 - The image can write session records under `/openkit/session`.
+- The image exposes a writable `CODEX_HOME` or `HOME` to the runtime-specific shim.
 
 OpenShell acceptance:
 
 - The Codex worker image can be used through `openshell sandbox create --from`.
+- A real OpenShell launch proves worker-control readiness and Node egress without bypassing `host.openshell.internal`.
 - The real OpenShell e2e remains opt-in because it requires a gateway and runtime credentials.
 - A release candidate must run the real OpenShell check for each release worker image before the image is treated as supported.
 
@@ -750,7 +759,7 @@ CI acceptance:
 - `docs/specs/README.md`
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260629-worker_runtime_communication_model.md`
-- `docs/specs/20260627-remote_openshell_gateway.md`
+- `docs/specs/20260715-openshell_disposable_cell_lifecycle.md`
 - `docs/specs/20260703-worker_control_protocol.md`
 - `docs/specs/20260703-worker_agent_capability.md`
 - `docs/specs/20260703-openshell_mechanism_internalization.md`

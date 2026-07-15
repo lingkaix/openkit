@@ -567,6 +567,51 @@ describe('WorkerControlGateway', () => {
     expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.events).toHaveLength(1);
   });
 
+  it('retries canonical event persistence before publishing its snapshot', () => {
+    const { environmentPackage, lineage } = createWorkerControlFixture();
+    const persistedRecords: unknown[] = [];
+    let persistenceAttempts = 0;
+    const gateway = new WorkerControlGateway({
+      acceptedRecordRecorder: {
+        record: (record) => {
+          persistenceAttempts += 1;
+
+          if (persistenceAttempts === 1) {
+            throw new Error('event persistence unavailable');
+          }
+
+          persistedRecords.push(record);
+        },
+      },
+      createToken: () => 'token_control_1',
+    });
+    const registration = gateway.registerSession(environmentPackage);
+    const request = {
+      authorization: `Bearer ${registration.token}`,
+      lineage,
+      record: createEventRecord(lineage, 3),
+    };
+
+    expect(() => gateway.appendEvent(request)).toThrow('event persistence unavailable');
+    expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.events).toEqual([]);
+    expect(gateway.appendEvent(request)).toMatchObject({
+      accepted: true,
+      nextExpectedSequence: 4,
+    });
+    expect(persistenceAttempts).toBe(2);
+    expect(persistedRecords).toEqual([
+      expect.objectContaining({
+        operation: 'event_append',
+        record: request.record,
+        recordKey: '3',
+        sequence: 3,
+      }),
+    ]);
+    expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.events).toEqual([
+      request.record,
+    ]);
+  });
+
   it('rejects stale or conflicting canonical event append sequences', () => {
     const { environmentPackage, lineage } = createWorkerControlFixture();
     const gateway = new WorkerControlGateway({ createToken: () => 'token_control_1' });

@@ -1,7 +1,7 @@
 import { GetArtifactResponseSchema, ListArtifactsResponseSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
-import { createApp } from './app.js';
+import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 
 describe('Core artifact routes', () => {

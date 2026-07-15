@@ -8,6 +8,7 @@ import {
   CodexResponsesClient,
   type CodexTokenResolutionAccountStore,
 } from './codex-responses-client.js';
+import type { OpenAICompatibleProviderError } from './openai-compatible-client.js';
 
 const undiciAgentConstructions = vi.hoisted(() => ({
   fetchCalls: [] as Array<{
@@ -372,5 +373,37 @@ describe('Codex Responses client', () => {
       'Bearer access-team_a',
       'Bearer access-team_a',
     ]);
+  });
+
+  it('preserves top-level ChatGPT Codex error detail as a typed provider failure', async () => {
+    const client = new CodexResponsesClient({
+      tokenResolver: {
+        resolve: async () => ({ accessToken: 'access-secret', chatgptAccountId: 'account_123' }),
+      },
+      fetch: async () =>
+        Response.json(
+          {
+            detail:
+              "The 'retired-codex-model' model is not supported when using Codex with a ChatGPT account.",
+          },
+          { status: 400 }
+        ),
+    });
+
+    await expect(
+      client.createResponses(codexProvider(), {
+        model: 'openai-codex/retired-codex-model',
+        input: 'Hello',
+      })
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<OpenAICompatibleProviderError>>({
+        code: 'provider_error',
+        message:
+          "The 'retired-codex-model' model is not supported when using Codex with a ChatGPT account.",
+        name: 'OpenAICompatibleProviderError',
+        status: 400,
+        type: null,
+      })
+    );
   });
 });

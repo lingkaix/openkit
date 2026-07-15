@@ -19,7 +19,7 @@ import { createGoalVerificationRecord } from './runtime/goal-verification-record
 import type { TurnExecutor, TurnStartRuntimeContext } from './runtime/types.js';
 import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import {
-  ensureLocalhostSchedulerBaseline,
+  ensureConfiguredSchedulerBaseline,
   listSchedulerAdmissionEntriesForWorkspace,
   requireSchedulerSessionLease,
   upsertSchedulerCapacityRecord,
@@ -1494,7 +1494,7 @@ describe('thread goal summary app API', () => {
         verificationChecks: [{ kind: 'manual', description: 'Review scheduler state.' }],
         status: 'ready',
       });
-      ensureLocalhostSchedulerBaseline(coreDb);
+      ensureConfiguredSchedulerBaseline(coreDb, { placement: 'local' });
       upsertSchedulerCapacityRecord(coreDb, {
         targetId: 'target_local',
         poolId: 'pool_local',

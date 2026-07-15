@@ -169,6 +169,7 @@ Exit criteria: all scoped removals are complete, all preserved evidence paths pa
 - 2026-07-13: MCP contract commit `257d3f9` and implementation commit `826b464` removed the manual creation tool and synchronization-specific projection while retaining the read-only general evidence resource; commits `2404f44`, `3b676fc`, `c1fd16e`, and `7fbbe92` aligned Skills, Web mocks, deterministic smoke coverage, guides, stories, active specs, and the implementation-alignment ledger with the smaller surface.
 - 2026-07-13: Final residual searches found no reachable deleted writer, route, client method, schema, storage owner, MCP operation, recovery input, or export/import reader. Remaining names are deletion assertions, the one-way table-drop migration, the explicit fail-closed rejection of the retired export path, this historical change record, and a guard in the subsequent provenance plan.
 - 2026-07-13: Full release verification, deterministic MCP and Web story acceptance, the focused NanoCore E2E smoke suite, format and repository checks, generated OpenAPI drift checks, lifecycle validation, and whitespace checks passed.
+- 2026-07-14: A fresh closeout audit re-proved every required invariant against the current branch. It also found and corrected one stale Core Client dashboard fixture in commit `bbb0ef1`; the fixture used the retired `sidecar` control mode even though the shared App API contract permits only `direct-nanocore`. Current release, story, OpenAPI, repository, format, package, and focused smoke gates all pass after that correction.
 
 ## Current Status
 
@@ -186,10 +187,10 @@ Exit criteria: all scoped removals are complete, all preserved evidence paths pa
 
 ## Final Verification Evidence
 
-- Changed-package schema, unit, typecheck, lint, and build gates passed for `@openkit/app-api-schemas`, `@openkit/core-client`, `@openkit/nanocore`, `@openkit/mcp`, and `@openkit/web`; the final NanoCore unit run passed 1,625 tests with 7 environment-gated OpenShell E2E tests skipped.
+- Changed-package schema, unit, typecheck, lint, and build gates passed for `@openkit/app-api-schemas`, `@openkit/core-client`, `@openkit/nanocore`, `@openkit/mcp`, and `@openkit/web`; the current NanoCore unit and coverage runs each pass 1,753 tests with 7 environment-gated OpenShell E2E tests skipped.
 - NanoCore OpenAPI generation, validation, and checked-artifact drift checks passed with the deleted operations and components absent and the general read operation retained.
 - `CI=true mise exec -- pnpm -w verify:release` passed repository L0-L2 checks, package tests and coverage, builds, 20 NanoCore E2E tests with 1 environment-gated skip, and NanoCore and Web built-artifact smoke tests.
-- `CI=true mise exec -- pnpm -w test:stories` passed 36 story-runner tests, all five deterministic MCP story runners, and the Web Playwright story; the Goal Mode smoke exposed 99 tools, omitted `openkit.create_evidence_bundle`, and read the general evidence resource without manufacturing a bundle.
+- `CI=true pnpm -w test:stories` passed 52 story-runner tests, all five deterministic MCP story runners, and the Web Playwright story; the Goal Mode smoke exposed 99 tools, omitted `openkit.create_evidence_bundle`, and read the general evidence resource without manufacturing a bundle.
 - `CI=true pnpm --filter @openkit/nanocore run test:e2e:smoke` passed all 4 focused smoke tests.
 - `CI=true pnpm run format:check`, `CI=true pnpm run check:repo`, the spec lifecycle validator, the changed-document link audit, exact active-spec alignment recount, and `git diff --check` passed.
 - Final CodeGraph and repository searches found no reachable deleted production surface. The only retained old export-path handling is a strict rejection guard, not a compatibility reader.

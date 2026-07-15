@@ -40,6 +40,8 @@ const CODEX_AGENT_FILE_ID = 'agents/codex.agent.jsonc';
 const CODEX_AGENT_ID = 'agent_codex_host';
 const CODEX_AUTH_SOURCE_HOST = 'a1';
 const CODEX_AUTH_SOURCE_PATH = '/home/ubuntu/.codex/auth.json';
+const REAL_CODEX_OPENSHELL_VERSION = '0.0.80';
+const REAL_CODEX_WORKER_IMAGE_REF = 'openkit/worker-codex:dev';
 const TERMINAL_GOAL_STATUSES = new Set(['completed', 'blocked', 'aborted', 'failed']);
 
 /** Default real Codex Goal Mode story artifact. */
@@ -49,7 +51,7 @@ export const DEFAULT_REAL_CODEX_GOAL_MODE_STORY_PATH = resolve(
 );
 
 /** Model used by the real Goal kernel acceptance run. */
-export const REAL_CODEX_GOAL_MODEL = 'openai-codex/gpt-5.5';
+export const REAL_CODEX_GOAL_MODEL = 'openai-codex/gpt-5.6-sol';
 
 /** Repository-relative proof file owned by the bounded real Goal story. */
 export const REAL_CODEX_GOAL_PROOF_PATH = 'docs/l6-real-goal-proof.md';
@@ -534,6 +536,7 @@ async function executeRealCodexGoalModeStory({ config, env, options, stdout, sto
     turnId,
     usage: usageRead.raw,
   });
+  const runtimeSummary = assertTerminalRuntimeUsage({ turnId, usage: usageRead.raw });
   assertNoPublicSecretLeak(publicSurfaces, [config.nanoCoreDataRoot, config.token]);
 
   const gitSummary = assertFinalRepository(config.repositoryRoot, initialHead);
@@ -554,6 +557,7 @@ async function executeRealCodexGoalModeStory({ config, env, options, stdout, sto
       goalAdvanceOutcome: goalDecision.raw.advance.outcome,
       workspaceApplyStatus: workspaceDecision.workspaceApplyResult.status,
     },
+    runtime: runtimeSummary,
     runtimeConfig: runtimeSetup.runtimeConfig,
     status: 'ok',
     story: { id: story.metadata.id, title: story.metadata.title },
@@ -579,7 +583,7 @@ async function executeRealCodexGoalModeStory({ config, env, options, stdout, sto
  * @param {(input: { targetPath: string }) => Promise<void>} syncCodexAuth Auth stream implementation.
  * @returns {Promise<{ oauth: Record<string, any>, publicSurfaces: unknown[], runtimeConfig: Record<string, any> }>} Redacted setup summary and scannable public responses.
  */
-async function configureRealCodexRuntime(core, config, syncCodexAuth) {
+export async function configureRealCodexRuntime(core, config, syncCodexAuth) {
   const targetPath = join(
     config.nanoCoreDataRoot,
     'server/files/oauth/openai-codex/accounts/default/codex-home/auth.json'
@@ -1291,7 +1295,7 @@ function assertCanonicalOuterResult(threadRead, turnId) {
  *
  * @param {Record<string, any>} aepRead MCP AEP list read model.
  * @param {string} turnId Worker turn id.
- * @returns {{ backendKind: string, controlMode: string, runtimeKind: string, snapshotId: string }} AEP summary.
+ * @returns {{ backendKind: string, controlMode: string, imageRef: string, runtimeKind: string, snapshotId: string }} AEP summary.
  */
 function assertTrustedInferenceAep(aepRead, turnId) {
   const records = aepRead?.items ?? [];
@@ -1302,6 +1306,10 @@ function assertTrustedInferenceAep(aepRead, turnId) {
   assert(record.backendKind === 'openshell', 'Goal worker did not use OpenShell.');
   assert(record.runtimeKind === 'codex', 'Goal worker did not use the Codex runtime.');
   assert(snapshot?.control?.mode === 'direct-nanocore', 'AEP control is not direct NanoCore.');
+  assert(
+    snapshot?.runtime?.image?.ref === REAL_CODEX_WORKER_IMAGE_REF,
+    'AEP worker image is not the A1-built acceptance image.'
+  );
   assert(snapshot?.llm?.mode === 'gateway', 'AEP inference is not Gateway mode.');
   assert(route?.providerInstanceId === CODEX_PROVIDER_ID, 'AEP provider selection is incorrect.');
   assert(route?.model === REAL_CODEX_GOAL_MODEL, 'AEP model selection is incorrect.');
@@ -1325,6 +1333,7 @@ function assertTrustedInferenceAep(aepRead, turnId) {
   return {
     backendKind: record.backendKind,
     controlMode: snapshot.control.mode,
+    imageRef: snapshot.runtime.image.ref,
     runtimeKind: record.runtimeKind,
     snapshotId: record.snapshotId,
   };
@@ -1373,15 +1382,63 @@ function assertInferenceEvidence(input) {
       record.evidenceBundleIds?.some((bundleId) => bundleIds.has(bundleId))
   );
   assert(runtimeEvidence.length > 0, 'Goal turn has no linked successful RuntimeEvidence.');
+  const openshellEvidence = runtimeEvidence.filter(
+    (record) =>
+      record.backendType === 'openshell' && record.backendVersion === REAL_CODEX_OPENSHELL_VERSION
+  );
+  assert(
+    openshellEvidence.length > 0,
+    'Goal turn has no linked RuntimeEvidence for the expected A1 OpenShell version.'
+  );
 
   return {
     auditEventCount: auditEvents.length,
+    backendType: 'openshell',
+    backendVersion: REAL_CODEX_OPENSHELL_VERSION,
     capabilityCallCount: calls.length,
     evidenceBundleCount: evidenceBundles.length,
     modelId: REAL_CODEX_GOAL_MODEL,
     providerRef: CODEX_PROVIDER_ID,
     runtimeEvidenceCount: runtimeEvidence.length,
     serviceRef: 'worker-inference-gateway',
+    usageRecordCount: usageRecords.length,
+  };
+}
+
+/**
+ * Validates the terminal worker runtime CapabilityCall and measured session usage.
+ *
+ * @param {{ turnId: string, usage: Record<string, any> }} input Public usage evidence.
+ * @returns {{ capabilityCallCount: number, usageRecordCount: number }} Product-safe counts.
+ */
+function assertTerminalRuntimeUsage(input) {
+  const calls = (input.usage?.capabilityCalls ?? []).filter(
+    (call) =>
+      call.turnId === input.turnId &&
+      call.capabilityId === 'runtime.worker_turn' &&
+      call.family === 'runtime' &&
+      call.operation === 'worker.checkpoint.terminal' &&
+      call.providerRef === 'nanocore-runtime' &&
+      call.serviceRef === 'worker-checkpoint' &&
+      call.status === 'succeeded'
+  );
+  assert(calls.length === 1, 'Goal turn does not have exactly one successful runtime checkpoint.');
+  const usageRecords = (input.usage?.usageRecords ?? []).filter(
+    (record) =>
+      record.capabilityCallId === calls[0].id &&
+      record.category === 'runtime' &&
+      record.providerRef === 'nanocore-runtime' &&
+      record.quantity === 1 &&
+      record.source === 'worker-checkpoint-terminal' &&
+      record.unit === 'sandbox_sessions'
+  );
+  assert(
+    usageRecords.length === 1,
+    'Goal runtime checkpoint does not have exactly one linked sandbox-session measurement.'
+  );
+
+  return {
+    capabilityCallCount: calls.length,
     usageRecordCount: usageRecords.length,
   };
 }

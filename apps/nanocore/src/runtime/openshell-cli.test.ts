@@ -1,9 +1,13 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  ChildProcessOpenShellRunner,
   compileOpenShellSandboxCreateArgs,
+  compileOpenShellSandboxExecArgs,
+  compileOpenShellSupervisedCommand,
   OpenShellCli,
   type OpenShellCommandRunner,
 } from './openshell-cli.js';
@@ -87,26 +91,127 @@ class FakeOpenShellCommandRunner implements OpenShellCommandRunner {
 }
 
 describe('OpenShellCli', () => {
-  it('treats deleting an absent sandbox as an idempotent success', async () => {
-    const runner = new FakeOpenShellCommandRunner([
-      {
-        exitCode: 1,
-        stdout: '',
-        stderr:
-          'Error:   × code: \'Some requested entity was not found\', message: "sandbox not found"\n',
-      },
-    ]);
-    const cli = new OpenShellCli({ runner });
+  it('removes inherited OpenShell target overrides before launching the official CLI', async () => {
+    const runner = new ChildProcessOpenShellRunner(process.execPath);
 
     await expect(
-      cli.deleteSandbox({
-        gateway: 'openshell',
-        name: 'openkit-as-absent',
-      })
-    ).resolves.toEqual({ stdout: '' });
+      runner.run(
+        [
+          '-e',
+          'process.stdout.write(JSON.stringify([process.env.OPENSHELL_GATEWAY??null,process.env.OPENSHELL_GATEWAY_ENDPOINT??null,process.env.OPENSHELL_GATEWAY_INSECURE??null]))',
+        ],
+        {
+          env: {
+            OPENSHELL_GATEWAY: 'untrusted-gateway',
+            OPENSHELL_GATEWAY_ENDPOINT: 'https://untrusted.example.com',
+            OPENSHELL_GATEWAY_INSECURE: '1',
+          },
+        }
+      )
+    ).resolves.toEqual({ exitCode: 0, stderr: '', stdout: '[null,null,null]' });
   });
 
-  it('parses version, status, gateway, and doctor output from the real CLI shape', async () => {
+  it.each([
+    0, 7,
+  ])('returns supervised command exit code %s before its deadline', async (exitCode) => {
+    const runner = new ChildProcessOpenShellRunner(process.execPath);
+
+    await expect(
+      runner.run(['-e', `process.stdout.write('settled');process.exit(${exitCode})`], {
+        timeoutMs: 500,
+      })
+    ).resolves.toEqual({ exitCode, stderr: '', stdout: 'settled' });
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'kills a late command after its NanoCore parent is force-killed',
+    async () => {
+      const testRoot = mkdtempSync(join(tmpdir(), 'openkit-openshell-supervisor-'));
+      const markerPath = join(testRoot, 'late-completion');
+      const readyPath = join(testRoot, 'ready');
+      const supervised = compileOpenShellSupervisedCommand(
+        process.execPath,
+        [
+          '-e',
+          `const fs=require('node:fs');process.on('SIGTERM',()=>{});fs.writeFileSync(${JSON.stringify(readyPath)},'ready');setTimeout(()=>fs.writeFileSync(${JSON.stringify(markerPath)},'late'),50)`,
+        ],
+        10_000
+      );
+      const parent = spawn(
+        process.execPath,
+        [
+          '-e',
+          "const {spawn}=require('node:child_process');const command=JSON.parse(process.env.OPENKIT_TEST_SUPERVISED_COMMAND);const child=spawn(command.command,command.args,{detached:true,stdio:['ignore','ignore','ignore','pipe']});process.stdout.write(String(child.pid)+'\\n');setInterval(()=>{},1000)",
+        ],
+        {
+          env: {
+            ...process.env,
+            OPENKIT_TEST_SUPERVISED_COMMAND: JSON.stringify(supervised),
+          },
+          stdio: ['ignore', 'pipe', 'inherit'],
+        }
+      );
+      const supervisorPid = await new Promise<number>((resolve, reject) => {
+        parent.once('error', reject);
+        parent.stdout.once('data', (chunk: Buffer) => resolve(Number(chunk.toString().trim())));
+      });
+
+      try {
+        for (let attempt = 0; attempt < 100 && !existsSync(readyPath); attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        expect(existsSync(readyPath)).toBe(true);
+        process.kill(parent.pid!, 'SIGKILL');
+        rmSync(markerPath, { force: true });
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        expect(existsSync(markerPath)).toBe(false);
+        expect(() => process.kill(supervisorPid, 0)).toThrow();
+      } finally {
+        try {
+          process.kill(-supervisorPid, 'SIGKILL');
+        } catch {
+          // The supervisor should already have exited after enforcing its deadline.
+        }
+      }
+    }
+  );
+
+  it('waits for a TERM-resistant process to be force-killed before timeout settlement', async () => {
+    const runner = new ChildProcessOpenShellRunner(process.execPath);
+    const startedAt = Date.now();
+
+    await expect(
+      runner.run(
+        [
+          '-e',
+          "process.on('SIGTERM',()=>{});setInterval(()=>process.stdout.write('active\\n'),20)",
+        ],
+        { timeoutMs: 100 }
+      )
+    ).rejects.toThrow('timed out after 100ms');
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(180);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'force-kills same-group descendants after the direct CLI leader exits',
+    async () => {
+      const markerPath = join(
+        mkdtempSync(join(tmpdir(), 'openkit-openshell-descendant-')),
+        'descendant-survived'
+      );
+      const descendantSource = `process.on('SIGTERM',()=>{});setTimeout(()=>require('node:fs').writeFileSync(${JSON.stringify(markerPath)},'late'),350);setInterval(()=>{},1000)`;
+      const leaderSource = `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendantSource)}],{detached:false,stdio:'ignore'});setInterval(()=>{},1000)`;
+      const runner = new ChildProcessOpenShellRunner(process.execPath);
+
+      await expect(runner.run(['-e', leaderSource], { timeoutMs: 150 })).rejects.toThrow(
+        'timed out after 150ms'
+      );
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(existsSync(markerPath)).toBe(false);
+    }
+  );
+
+  it('parses version, status, and gateway output from the real CLI shape', async () => {
     const runner = new FakeOpenShellCommandRunner([
       { exitCode: 0, stdout: 'openshell 0.0.63\n' },
       {
@@ -119,14 +224,8 @@ describe('OpenShellCli', () => {
         stdout:
           'Gateway Info\n\n  Gateway: openshell\n  Gateway endpoint: https://127.0.0.1:17670\n',
       },
-      {
-        exitCode: 0,
-        stdout:
-          'Checking system prerequisites...\n\n  Docker ............. ok (version 29.4.0)\n  DOCKER_HOST ........ (not set, using default socket)\n\nAll checks passed.\n',
-      },
       { exitCode: 0, stdout: 'Download complete\n' },
       { exitCode: 0, stdout: 'Detached provider_github_read from openkit-as-123\n' },
-      { exitCode: 0, stdout: 'Deleted sandbox openkit-as-123\n' },
     ]);
     const cli = new OpenShellCli({ runner });
 
@@ -135,7 +234,6 @@ describe('OpenShellCli', () => {
       cli.status({
         gateway: 'a1-openshell',
         gatewayEndpoint: 'https://a1.example.com:17670',
-        gatewayInsecure: true,
       })
     ).resolves.toEqual({
       gateway: 'openshell',
@@ -146,10 +244,6 @@ describe('OpenShellCli', () => {
     await expect(cli.gatewayInfo()).resolves.toEqual({
       gateway: 'openshell',
       endpoint: 'https://127.0.0.1:17670',
-    });
-    await expect(cli.doctorCheck()).resolves.toEqual({
-      ok: true,
-      docker: 'ok (version 29.4.0)',
     });
     await expect(
       cli.downloadFile({
@@ -170,26 +264,10 @@ describe('OpenShellCli', () => {
     ).resolves.toEqual({
       stdout: 'Detached provider_github_read from openkit-as-123\n',
     });
-    await expect(
-      cli.deleteSandbox({
-        gateway: 'openshell',
-        name: 'openkit-as-123',
-      })
-    ).resolves.toEqual({
-      stdout: 'Deleted sandbox openkit-as-123\n',
-    });
     expect(runner.calls).toEqual([
       ['--version'],
-      [
-        'status',
-        '-g',
-        'a1-openshell',
-        '--gateway-endpoint',
-        'https://a1.example.com:17670',
-        '--gateway-insecure',
-      ],
+      ['status', '-g', 'a1-openshell', '--gateway-endpoint', 'https://a1.example.com:17670'],
       ['gateway', 'info'],
-      ['doctor', 'check'],
       [
         'sandbox',
         'download',
@@ -208,7 +286,13 @@ describe('OpenShellCli', () => {
         'openkit-as-123',
         'provider_github_read',
       ],
-      ['sandbox', 'delete', '--gateway', 'openshell', 'openkit-as-123'],
+    ]);
+    expect(runner.options).toEqual([
+      { timeoutMs: 30_000 },
+      { timeoutMs: 30_000 },
+      { timeoutMs: 30_000 },
+      { timeoutMs: 120_000 },
+      { timeoutMs: 30_000 },
     ]);
   });
 
@@ -252,7 +336,6 @@ describe('OpenShellCli', () => {
       cli.providersV2Enabled({
         gateway: 'a1-openshell',
         gatewayEndpoint: 'https://a1.example.com:54013',
-        gatewayInsecure: true,
       })
     ).resolves.toBe(expected);
     expect(runner.calls).toEqual([
@@ -265,9 +348,9 @@ describe('OpenShellCli', () => {
         'a1-openshell',
         '--gateway-endpoint',
         'https://a1.example.com:54013',
-        '--gateway-insecure',
       ],
     ]);
+    expect(runner.options).toEqual([{ timeoutMs: 30_000 }]);
   });
 
   it.each([
@@ -315,7 +398,6 @@ describe('OpenShellCli', () => {
       cli.gatewayInfo({
         gateway: 'a1-openshell',
         gatewayEndpoint: 'https://a1.example.com:54003',
-        gatewayInsecure: true,
       })
     ).resolves.toEqual({
       endpoint: 'https://a1.example.com:54003',
@@ -329,7 +411,6 @@ describe('OpenShellCli', () => {
         'a1-openshell',
         '--gateway-endpoint',
         'https://a1.example.com:54003',
-        '--gateway-insecure',
       ],
     ]);
   });
@@ -376,7 +457,11 @@ describe('OpenShellCli', () => {
         'provider_github_read',
       ],
     ]);
-    expect(runner.options).toEqual([undefined, { env: { GITHUB_TOKEN: 'ghp_secret' } }, undefined]);
+    expect(runner.options).toEqual([
+      { timeoutMs: 120_000 },
+      { env: { GITHUB_TOKEN: 'ghp_secret' }, timeoutMs: 120_000 },
+      { timeoutMs: 120_000 },
+    ]);
     expect(JSON.stringify(runner.calls)).not.toContain('ghp_secret');
   });
 
@@ -469,6 +554,21 @@ describe('OpenShellCli', () => {
       ['provider', 'profile', 'export', '--output', 'json', '--gateway', 'openshell', input.id],
       ['provider', 'profile', 'import', '--file', input.path, '--gateway', 'openshell'],
     ]);
+    expect(runner.options).toEqual([{ timeoutMs: 120_000 }, { timeoutMs: 120_000 }]);
+  });
+
+  it('bounds retained sandbox creation so lifecycle recovery can regain ownership', async () => {
+    const runner = new FakeOpenShellCommandRunner([{ exitCode: 0, stdout: 'sandbox created\n' }]);
+    const cli = new OpenShellCli({ runner });
+
+    await expect(
+      cli.createSandbox({
+        command: ['openkit-codex-shim', '--dry-run'],
+        from: 'openkit/worker-codex:dev',
+        name: 'openkit-as-timeout',
+      })
+    ).resolves.toMatchObject({ name: 'openkit-as-timeout' });
+    expect(runner.options).toEqual([{ timeoutMs: 120_000 }]);
   });
 
   it('keeps an existing immutable provider profile only when content matches', async () => {
@@ -568,6 +668,7 @@ describe('OpenShellCli', () => {
     expect(runner.calls).toEqual([
       ['provider', 'get', '--gateway', 'openshell', 'provider_github_read'],
     ]);
+    expect(runner.options).toEqual([{ timeoutMs: 30_000 }]);
     expect(provider.stdout).not.toContain('ghp_secret_value');
     expect(provider.stdout).not.toContain('sk-secret-value');
   });
@@ -604,38 +705,9 @@ describe('OpenShellCli', () => {
         'provider_github_read',
       ],
     ]);
+    expect(runner.options).toEqual([{ timeoutMs: 30_000 }]);
     expect(status.stdout).not.toContain('ghp_secret_value');
     expect(status.stdout).not.toContain('sk-secret-value');
-  });
-
-  it('deletes one transient provider through the selected gateway', async () => {
-    const runner = new FakeOpenShellCommandRunner([
-      { exitCode: 0, stdout: 'Deleted provider worker-relay\n' },
-    ]);
-    const cli = new OpenShellCli({ runner });
-
-    await expect(
-      cli.deleteProvider({
-        gateway: 'openshell',
-        gatewayEndpoint: 'https://a1.example.com:54003',
-        gatewayInsecure: true,
-        name: 'worker-relay',
-      })
-    ).resolves.toEqual({
-      stdout: 'Deleted provider worker-relay\n',
-    });
-    expect(runner.calls).toEqual([
-      [
-        'provider',
-        'delete',
-        '--gateway',
-        'openshell',
-        '--gateway-endpoint',
-        'https://a1.example.com:54003',
-        '--gateway-insecure',
-        'worker-relay',
-      ],
-    ]);
   });
 });
 
@@ -652,7 +724,6 @@ describe('compileOpenShellSandboxCreateArgs', () => {
         from: 'ghcr.io/openkit/codex-worker:test',
         gateway: 'openshell',
         gatewayEndpoint: 'https://a1.example.com:54003',
-        gatewayInsecure: true,
         labels: {
           'openkit.agentSessionId': 'as_123',
           'openkit.packageSnapshotId': 'aepsnap_123',
@@ -680,7 +751,6 @@ describe('compileOpenShellSandboxCreateArgs', () => {
       'openshell',
       '--gateway-endpoint',
       'https://a1.example.com:54003',
-      '--gateway-insecure',
       '--policy',
       '/private/tmp/openkit-policy.yml',
       '--cpu',
@@ -704,5 +774,68 @@ describe('compileOpenShellSandboxCreateArgs', () => {
       '--package',
       '/openkit/config/package.json',
     ]);
+  });
+});
+
+describe('OpenShell sandbox exec', () => {
+  it('compiles the pinned retained-sandbox execution command', () => {
+    expect(
+      compileOpenShellSandboxExecArgs({
+        command: ['openkit-codex-shim', '--package', '/openkit/config/package.json'],
+        env: {
+          OPENKIT_CONTROL_TOKEN: 'lease-token',
+          OPENKIT_SESSION_DIR: '/openkit/session',
+        },
+        gateway: 'openshell',
+        gatewayEndpoint: 'https://a1.example.com:54003',
+        name: 'openkit-as-123',
+        timeoutSeconds: 300,
+        workdir: '/workspace',
+      })
+    ).toEqual([
+      'sandbox',
+      'exec',
+      '--name',
+      'openkit-as-123',
+      '--no-tty',
+      '--gateway',
+      'openshell',
+      '--gateway-endpoint',
+      'https://a1.example.com:54003',
+      '--workdir',
+      '/workspace',
+      '--timeout',
+      '300',
+      '--env',
+      'OPENKIT_CONTROL_TOKEN=lease-token',
+      '--env',
+      'OPENKIT_SESSION_DIR=/openkit/session',
+      '--',
+      'openkit-codex-shim',
+      '--package',
+      '/openkit/config/package.json',
+    ]);
+  });
+
+  it('returns the worker command result and propagates a non-zero exit code', async () => {
+    const runner = new FakeOpenShellCommandRunner([
+      { exitCode: 0, stdout: 'worker completed\n' },
+      { exitCode: 17, stdout: '', stderr: 'worker failed\n' },
+    ]);
+    const cli = new OpenShellCli({ runner });
+    const input = {
+      command: ['openkit-codex-shim', '--package', '/openkit/config/package.json'],
+      name: 'openkit-as-123',
+    };
+
+    await expect(cli.execSandbox(input)).resolves.toEqual({
+      exitCode: 0,
+      stderr: '',
+      stdout: 'worker completed\n',
+    });
+    await expect(cli.execSandbox(input)).rejects.toThrow(
+      'OpenShell sandbox exec failed with exit code 17: worker failed'
+    );
+    expect(runner.options).toEqual([{ timeoutMs: 905_000 }, { timeoutMs: 905_000 }]);
   });
 });

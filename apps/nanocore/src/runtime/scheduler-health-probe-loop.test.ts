@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createSchedulerAdmissionEntry,
   dispatchNextSchedulerEntry,
+  ensureConfiguredSchedulerBaseline,
   upsertSchedulerCapacityRecord,
   upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
@@ -61,6 +62,32 @@ function seedLocalTarget(coreDb: ReturnType<typeof createMigratedCoreDb>, suffix
 }
 
 describe('scheduler health probe loop', () => {
+  it('keeps the configured remote Cell target healthy with the default probe', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      ensureConfiguredSchedulerBaseline(coreDb, {
+        now: () => '2026-07-05T00:01:00.000Z',
+        placement: 'remote',
+      });
+
+      const result = runSchedulerHealthProbeLoop(coreDb, {
+        failureThreshold: 1,
+        idleIntervalMs: 300_000,
+        liveIntervalMs: 60_000,
+        now: () => '2026-07-05T00:02:00.000Z',
+        successThreshold: 1,
+      });
+
+      expect(result.probed[0]).toMatchObject({
+        healthState: 'healthy',
+        targetId: 'target_remote',
+      });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('probes due idle targets and schedules the idle cadence', () => {
     const coreDb = createMigratedCoreDb();
 

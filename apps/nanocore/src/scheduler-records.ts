@@ -387,6 +387,7 @@ interface SchedulerSessionLeaseRow {
   readonly sandbox_binding_ref: string;
   readonly release_reason: string | null;
   readonly recovery_state: string | null;
+  readonly backend_anchor_state: 'unanchored' | 'anchored';
 }
 
 /** Raw scheduler orphan-worker evidence row. */
@@ -680,13 +681,21 @@ export interface UpsertSchedulerTargetHealthRecordInput {
   readonly nextProbeAt: string;
 }
 
-/** Input used to initialize the localhost scheduler baseline when missing. */
-export interface EnsureLocalhostSchedulerBaselineInput {
+/** Input used to initialize the configured scheduler baseline when missing. */
+export interface EnsureConfiguredSchedulerBaselineInput {
   /** Optional deterministic clock. */
   readonly now?: () => string;
+  /** Configured disposable Cell placement. */
+  readonly placement: 'local' | 'remote';
 }
 
-/** Input used to dispatch one queued scheduler entry on the localhost baseline. */
+/** Initial lease window that preserves normal runtime after bounded cold Cell startup. */
+export const CONFIGURED_WORKER_INITIAL_LEASE_DURATION_MS = 2_400_000;
+
+/** Startup authority aligned with the bounded disposable Cell and materialization path. */
+export const CONFIGURED_WORKER_STARTUP_TIMEOUT_MS = 1_500_000;
+
+/** Input used to dispatch one queued scheduler entry on the configured baseline. */
 export interface DispatchNextSchedulerEntryInput {
   /** Stable placement plan id. */
   readonly planId: string;
@@ -753,8 +762,8 @@ export interface ExpireReleasingSchedulerLeasesInput {
   readonly schedulerEpoch?: number;
 }
 
-/** Input used to fail scheduler leases that missed startup. */
-export interface MarkStartupTimedOutSchedulerLeasesFailedInput {
+/** Input used to route scheduler leases that missed startup. */
+export interface TransitionStartupTimedOutSchedulerLeasesInput {
   /** Optional deterministic clock. */
   readonly now?: () => string;
 }
@@ -848,6 +857,12 @@ export interface CompleteSchedulerSessionLeaseInput {
   readonly releaseReason: string;
   /** Recovery state after terminal transition. */
   readonly recoveryState?: string | null;
+  /** Placement plan status written in the same capacity-release transaction. */
+  readonly planStatus?: 'completed' | 'abandoned';
+  /** Optional admission status written in the same capacity-release transaction. */
+  readonly admissionStatus?: 'admitted' | 'cancelled';
+  /** Scheduler epoch written atomically with every terminal accounting row. */
+  readonly schedulerEpoch?: number;
 }
 
 /** Input used to complete the non-terminal scheduler lease for one turn. */
@@ -1572,7 +1587,13 @@ export function expireReleasingSchedulerLeases(
     const rows = coreDb.sqlite
       .prepare(
         `${schedulerSessionLeaseSelectSql()}
-        WHERE status = 'releasing' AND expires_at <= ?
+        WHERE status = 'releasing'
+          AND expires_at <= ?
+          AND NOT EXISTS (
+            SELECT 1
+            FROM worker_backend_sessions AS backend_session
+            WHERE backend_session.lease_id = scheduler_session_leases.lease_id
+          )
         ORDER BY expires_at ASC, lease_id ASC`
       )
       .all(timestamp) as SchedulerSessionLeaseRow[];
@@ -1630,15 +1651,47 @@ export function listSchedulerLeasesNeedingWorkspaceRecovery(
 }
 
 /**
- * Fails leases that missed startup before the first accepted heartbeat.
+ * Marks one scheduler lease's workspace recovery projection as durably completed.
+ *
+ * @param coreDb Open Core database handle.
+ * @param leaseId Scheduler lease whose current recovery handles were projected.
+ * @returns Updated scheduler lease.
+ * @throws Error when the lease no longer requires workspace recovery projection.
+ */
+export function markSchedulerLeaseWorkspaceRecoveryProjected(
+  coreDb: CoreDb,
+  leaseId: string
+): SchedulerSessionLeaseRecord {
+  const result = coreDb.sqlite
+    .prepare(
+      `UPDATE scheduler_session_leases
+      SET recovery_state = 'recovery-projected'
+      WHERE lease_id = ?
+        AND recovery_state = 'needs-evidence'
+        AND (
+          status = 'stale'
+          OR (status = 'lost' AND release_reason = 'release-grace-timeout')
+        )`
+    )
+    .run(leaseId);
+
+  if (result.changes !== 1) {
+    throw new Error(`Scheduler lease ${leaseId} no longer requires workspace recovery.`);
+  }
+
+  return requireSchedulerSessionLease(coreDb, leaseId);
+}
+
+/**
+ * Routes startup timeouts to terminal failure or anchored recovery ownership.
  *
  * @param coreDb Open Core database handle.
  * @param input Startup timeout scan input.
- * @returns Leases moved to failed.
+ * @returns Timed-out leases moved to failed or stale recovery ownership.
  */
-export function markStartupTimedOutSchedulerLeasesFailed(
+export function transitionStartupTimedOutSchedulerLeases(
   coreDb: CoreDb,
-  input: MarkStartupTimedOutSchedulerLeasesFailedInput
+  input: TransitionStartupTimedOutSchedulerLeasesInput
 ): SchedulerSessionLeaseRecord[] {
   const timestamp = input.now?.() ?? new Date().toISOString();
   const rows = coreDb.sqlite
@@ -1651,14 +1704,34 @@ export function markStartupTimedOutSchedulerLeasesFailed(
     )
     .all(timestamp) as SchedulerSessionLeaseRow[];
 
-  return rows.map((row) =>
-    completeSchedulerSessionLease(coreDb, {
+  return rows.map((row) => {
+    if (row.backend_anchor_state === 'anchored') {
+      const result = coreDb.sqlite
+        .prepare(
+          `UPDATE scheduler_session_leases
+           SET status = 'stale',
+               release_reason = 'startup-timeout',
+               recovery_state = 'needs-evidence'
+           WHERE lease_id = ?
+             AND status IN ('acquired', 'starting')
+             AND backend_anchor_state = 'anchored'
+             AND last_accepted_heartbeat_at IS NULL
+             AND startup_deadline <= ?`
+        )
+        .run(row.lease_id, timestamp);
+      if (result.changes !== 1) {
+        throw new Error(`Scheduler startup timeout changed concurrently: ${row.lease_id}`);
+      }
+      return requireSchedulerSessionLease(coreDb, row.lease_id);
+    }
+
+    return completeSchedulerSessionLease(coreDb, {
       leaseId: row.lease_id,
       terminalStatus: 'failed',
       releaseReason: 'startup-timeout',
       recoveryState: 'needs-evidence',
-    })
-  );
+    });
+  });
 }
 
 /**
@@ -1863,7 +1936,12 @@ export function completeSchedulerSessionLease(
 
   coreDb.sqlite.exec('BEGIN IMMEDIATE');
   try {
-    completeSchedulerSessionLeaseInTransaction(coreDb, lease, input, lease.schedulerEpoch);
+    completeSchedulerSessionLeaseInTransaction(
+      coreDb,
+      lease,
+      input,
+      input.schedulerEpoch ?? lease.schedulerEpoch
+    );
     coreDb.sqlite.exec('COMMIT');
   } catch (error) {
     coreDb.sqlite.exec('ROLLBACK');
@@ -1888,6 +1966,53 @@ function completeSchedulerSessionLeaseInTransaction(
   input: CompleteSchedulerSessionLeaseInput,
   schedulerEpoch: number
 ): void {
+  const backendSession = coreDb.sqlite
+    .prepare('SELECT state FROM worker_backend_sessions WHERE lease_id = ?')
+    .get(input.leaseId) as { state: string } | undefined;
+
+  if (backendSession && backendSession.state !== 'cleaned') {
+    throw new Error('Worker backend session must be cleaned before scheduler lease completion.');
+  }
+  if (!backendSession) {
+    const anchor = coreDb.sqlite
+      .prepare(
+        'SELECT backend_anchor_state AS state FROM scheduler_session_leases WHERE lease_id = ?'
+      )
+      .get(input.leaseId) as { state: 'unanchored' | 'anchored' } | undefined;
+    const provenPreAnchor =
+      anchor?.state === 'unanchored' &&
+      lease.lastAcceptedHeartbeatAt === null &&
+      (lease.status === 'planned' ||
+        lease.status === 'acquired' ||
+        (lease.status === 'stale' && lease.releaseReason === 'startup-timeout'));
+    if (!provenPreAnchor) {
+      throw new Error(
+        'Scheduler lease requires a durable backend session anchor before completion.'
+      );
+    }
+  }
+
+  const plan = coreDb.sqlite
+    .prepare(
+      `SELECT queue_entry_id AS queueEntryId,
+              status,
+              scheduler_epoch AS schedulerEpoch
+       FROM scheduler_placement_plans
+       WHERE plan_id = ?
+         AND selected_pool_id = ?
+         AND selected_target_id = ?`
+    )
+    .get(lease.planId, lease.poolId, lease.targetId) as
+    | {
+        readonly queueEntryId: string;
+        readonly schedulerEpoch: number;
+        readonly status: SchedulerPlacementPlanStatus;
+      }
+    | undefined;
+  if (!plan || plan.status !== 'executing' || plan.schedulerEpoch !== lease.schedulerEpoch) {
+    throw new Error(`Scheduler placement plan ${lease.planId} changed before completion.`);
+  }
+
   const transition = coreDb.sqlite
     .prepare(
       `UPDATE scheduler_session_leases
@@ -1895,44 +2020,76 @@ function completeSchedulerSessionLeaseInTransaction(
           release_reason = ?,
           recovery_state = ?,
           scheduler_epoch = ?
-      WHERE lease_id = ? AND status NOT IN ('released', 'lost', 'failed')`
+      WHERE lease_id = ? AND status = ? AND scheduler_epoch = ?`
     )
     .run(
       input.terminalStatus,
       input.releaseReason,
       input.recoveryState ?? null,
       schedulerEpoch,
-      input.leaseId
+      input.leaseId,
+      lease.status,
+      lease.schedulerEpoch
     );
 
   if (transition.changes !== 1) {
     throw new Error(`Scheduler session lease ${input.leaseId} changed before completion.`);
   }
 
-  coreDb.sqlite
-    .prepare("UPDATE scheduler_placement_plans SET status = 'completed' WHERE plan_id = ?")
-    .run(lease.planId);
-  coreDb.sqlite
+  const planTransition = coreDb.sqlite
+    .prepare(
+      `UPDATE scheduler_placement_plans
+       SET status = ?, scheduler_epoch = ?
+       WHERE plan_id = ?
+         AND queue_entry_id = ?
+         AND selected_pool_id = ?
+         AND selected_target_id = ?
+         AND status = 'executing'
+         AND scheduler_epoch = ?`
+    )
+    .run(
+      input.planStatus ?? 'completed',
+      schedulerEpoch,
+      lease.planId,
+      plan.queueEntryId,
+      lease.poolId,
+      lease.targetId,
+      lease.schedulerEpoch
+    );
+  if (planTransition.changes !== 1) {
+    throw new Error(`Scheduler placement plan ${lease.planId} changed before completion.`);
+  }
+  const admissionTransition = coreDb.sqlite
+    .prepare(
+      `UPDATE scheduler_admission_entries
+       SET status = ?
+       WHERE queue_entry_id = ? AND status = 'admitted'`
+    )
+    .run(input.admissionStatus ?? 'admitted', plan.queueEntryId);
+  if (admissionTransition.changes !== 1) {
+    throw new Error(`Scheduler admission ${plan.queueEntryId} changed before completion.`);
+  }
+  const capacityTransition = coreDb.sqlite
     .prepare(
       `UPDATE scheduler_capacity_records
-      SET in_use_count = CASE
-            WHEN in_use_count > 0 THEN in_use_count - 1
-            ELSE 0
-          END,
+      SET in_use_count = in_use_count - 1,
           version = version + 1
-      WHERE target_id = ? AND pool_id = ?`
+      WHERE target_id = ? AND pool_id = ? AND in_use_count > 0`
     )
     .run(lease.targetId, lease.poolId);
-  coreDb.sqlite
+  if (capacityTransition.changes !== 1) {
+    throw new Error(`Scheduler capacity ${lease.targetId} changed before completion.`);
+  }
+  const poolTransition = coreDb.sqlite
     .prepare(
       `UPDATE scheduler_worker_pools
-      SET current_admitted_session_count = CASE
-            WHEN current_admitted_session_count > 0 THEN current_admitted_session_count - 1
-            ELSE 0
-          END
-      WHERE pool_id = ?`
+      SET current_admitted_session_count = current_admitted_session_count - 1
+      WHERE pool_id = ? AND current_admitted_session_count > 0`
     )
     .run(lease.poolId);
+  if (poolTransition.changes !== 1) {
+    throw new Error(`Scheduler pool ${lease.poolId} changed before completion.`);
+  }
 }
 
 /**
@@ -1959,6 +2116,13 @@ export function completeSchedulerTurnLease(
     .get(input.workspaceId, input.threadId, input.turnId) as SchedulerSessionLeaseRow | undefined;
 
   if (!row) {
+    return null;
+  }
+
+  const backendSession = coreDb.sqlite
+    .prepare('SELECT state FROM worker_backend_sessions WHERE lease_id = ?')
+    .get(row.lease_id) as { state: string } | undefined;
+  if (backendSession && backendSession.state !== 'cleaned') {
     return null;
   }
 
@@ -2188,16 +2352,18 @@ export function upsertSchedulerTargetHealthRecord(
 }
 
 /**
- * Ensures the default localhost scheduler pool, capacity, and health rows exist.
+ * Ensures the configured scheduler pool, capacity, and health rows exist.
  *
  * @param coreDb Open Core database handle.
- * @param input Optional deterministic clock.
+ * @param input Configured Cell placement and optional deterministic clock.
  */
-export function ensureLocalhostSchedulerBaseline(
+export function ensureConfiguredSchedulerBaseline(
   coreDb: CoreDb,
-  input: EnsureLocalhostSchedulerBaselineInput = {}
+  input: EnsureConfiguredSchedulerBaselineInput
 ): void {
   const timestamp = input.now?.() ?? new Date().toISOString();
+  const poolId = `pool_${input.placement}`;
+  const targetId = `target_${input.placement}`;
   coreDb.sqlite.exec('BEGIN IMMEDIATE');
   try {
     coreDb.sqlite
@@ -2219,13 +2385,13 @@ export function ensureLocalhostSchedulerBaseline(
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`
       )
       .run(
-        'pool_local',
+        poolId,
         JSON.stringify(['openshell']),
-        JSON.stringify(['local']),
-        2,
+        JSON.stringify([input.placement]),
+        1,
         20,
-        900_000,
-        JSON.stringify(['local']),
+        CONFIGURED_WORKER_INITIAL_LEASE_DURATION_MS,
+        JSON.stringify([input.placement]),
         'interactive',
         'ready',
         0,
@@ -2246,7 +2412,7 @@ export function ensureLocalhostSchedulerBaseline(
           version
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run('target_local', 'pool_local', 'local', 2, 0, 0, timestamp, 'configured', 1);
+      .run(targetId, poolId, input.placement, 1, 0, 0, timestamp, 'configured', 1);
     coreDb.sqlite
       .prepare(
         `INSERT OR IGNORE INTO scheduler_target_health_records (
@@ -2261,7 +2427,7 @@ export function ensureLocalhostSchedulerBaseline(
           next_probe_at
         ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)`
       )
-      .run('target_local', 'healthy', JSON.stringify([]), 0, 1, timestamp, timestamp);
+      .run(targetId, 'healthy', JSON.stringify([]), 0, 1, timestamp, timestamp);
     coreDb.sqlite.exec('COMMIT');
   } catch (error) {
     coreDb.sqlite.exec('ROLLBACK');
@@ -2936,7 +3102,8 @@ function schedulerSessionLeaseSelectSql(): string {
     scheduler_epoch,
     sandbox_binding_ref,
     release_reason,
-    recovery_state
+    recovery_state,
+    backend_anchor_state
   FROM scheduler_session_leases`;
 }
 

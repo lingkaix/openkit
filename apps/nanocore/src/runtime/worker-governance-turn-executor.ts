@@ -25,7 +25,6 @@ import {
   type ResolvedAgentEnvironmentRuntimeFileCredential,
   resolveAgentEnvironmentPackage,
 } from './agent-environment.js';
-import { recordWorkerBackendTeardownEvidence } from './runtime-evidence.js';
 import { generateUuidV7 } from './session-id.js';
 import type {
   AgentSessionReadModel,
@@ -36,13 +35,24 @@ import type {
   TurnExecutor,
   TurnStartRuntimeContext,
 } from './types.js';
+import { projectWorkerBackendCleanup } from './worker-backend-cleanup-projection.js';
+import {
+  markWorkerBackendSessionLaunching,
+  markWorkerBackendWorkspaceHandoffComplete,
+  recordWorkerBackendSessionMaterializing,
+  transitionWorkerBackendSessionState,
+  type WorkerBackendSessionRecord,
+} from './worker-backend-sessions.js';
+import { listWorkerControlAcceptedEvents } from './worker-control-records.js';
 import type {
   WorkerGovernanceBackend,
+  WorkerGovernanceBackendSessionIdentity,
   WorkerGovernanceEvidenceRecord,
   WorkerGovernanceWorkspaceChangeRecord,
 } from './worker-governance-backend.js';
 import { importWorkerRuntimeProvenance } from './worker-runtime-provenance.js';
 import { importWorkerTranscript } from './worker-transcript.js';
+import { terminalizeGovernedWorkerTurnFailure } from './worker-turn-failure.js';
 import { recordFilesystemWorkspaceStagingRoot } from './workspace-filesystem-staging.js';
 import {
   buildWorkspaceInputSnapshots,
@@ -51,11 +61,21 @@ import {
 import { stageGitWorkspaceReview } from './workspace-review-git.js';
 import {
   getWorkspaceSyncReview,
-  recordWorkspaceInputSnapshots,
-  recordWorkspaceMaterializationRecords,
+  recordWorkspaceBackendHandoff,
   recordWorkspaceSyncReview,
-  updateBackendWorkspaceHandleCleanupStatus,
 } from './workspace-sync-records.js';
+
+/** Mutable exact-backend lifecycle retained while one turn executes and cleans up. */
+interface WorkerTurnBackendLifecycle {
+  /** Pure physical identity used for every cleanup attempt. */
+  readonly identity: WorkerGovernanceBackendSessionIdentity;
+  /** Durable Core lifecycle record when the turn is scheduler-owned. */
+  session: WorkerBackendSessionRecord | null;
+  /** Stable successful cleanup timestamp retained across workspace projection retries. */
+  physicalCleanedAt: string | null;
+  /** Whether the atomic workspace handoff transaction committed. */
+  workspaceHandoffState: 'pending' | 'complete';
+}
 
 /**
  * Options for the worker-governance-backed turn executor.
@@ -160,12 +180,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     const requestId = context.requestId ?? null;
     let agentSessionId: string | null = context.agentSessionId ?? null;
     let workspaceDb: WorkspaceDb | null = null;
-    let backendActive = false;
     let backendCapabilities: WorkerGovernanceBackendCapabilities | null = null;
+    let backendLifecycle: WorkerTurnBackendLifecycle | null = null;
+    let backendCleanupRequired = false;
     let environmentPackage: AgentEnvironmentPackage | null = null;
-    let backendSnapshotId: string | null = null;
-    let finalTeardownCompletedAt: string | null = null;
-    let finalTeardownOutcome: 'succeeded' | 'failed' | null = null;
     let primaryFailed = false;
     let primaryError: unknown;
 
@@ -255,16 +273,34 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       backendCapabilities = await this.backend.describeCapabilities();
       const backendKind = toWorkspaceSynchronizationBackendKind(backendCapabilities.kind);
       const inputSnapshots = workspaceDb
-        ? recordWorkspaceInputSnapshots(
-            workspaceDb,
-            buildWorkspaceInputSnapshots({
-              backendCapabilities: backendCapabilities.capabilities,
-              backendKind,
-              createdAt: this.now(),
-              environmentPackage,
-            })
-          )
+        ? buildWorkspaceInputSnapshots({
+            backendCapabilities: backendCapabilities.capabilities,
+            backendKind,
+            createdAt: this.now(),
+            environmentPackage,
+          })
         : [];
+      backendLifecycle = {
+        identity: this.backend.planSession(environmentPackage),
+        physicalCleanedAt: null,
+        session: null,
+        workspaceHandoffState: 'pending',
+      };
+      if (this.coreDb && context.sandboxBindingRef) {
+        backendLifecycle.session = recordWorkerBackendSessionMaterializing(this.coreDb, {
+          backendVersion: backendCapabilities.version ?? null,
+          identity: backendLifecycle.identity,
+          lineage: {
+            threadId: environmentPackage.scope.threadId,
+            turnId: environmentPackage.scope.turnId,
+            workspaceId: environmentPackage.scope.workspaceId,
+          },
+          now: this.now,
+          sandboxBindingRef: context.sandboxBindingRef,
+          workerImage: environmentPackage.runtime.image.ref,
+        });
+      }
+      backendCleanupRequired = true;
       const materialization = await this.backend.materialize(environmentPackage, {
         providerCredentials,
         runtimeEnvCredentials,
@@ -272,20 +308,34 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         ...(context.sandboxBindingRef ? { sandboxBindingRef: context.sandboxBindingRef } : {}),
         workspaceRoots: context.workspaceRoots,
       });
-      backendSnapshotId = environmentPackage.snapshotId;
-      backendActive = true;
+      if (backendLifecycle.session) {
+        backendLifecycle.session = transitionWorkerBackendSessionState(this.coreDb!, {
+          fromState: 'materializing',
+          leaseId: backendLifecycle.session.leaseId,
+          now: this.now,
+          toState: 'materialized',
+        });
+      }
 
-      const materializationRecords =
-        workspaceDb && inputSnapshots.length > 0
-          ? recordWorkspaceMaterializationRecords(
-              workspaceDb,
-              buildWorkspaceMaterializationRecords({
-                createdAt: this.now(),
-                inputSnapshots,
-                materialization: { ...materialization, backendKind },
-              })
-            )
-          : [];
+      const builtMaterializationRecords = workspaceDb
+        ? buildWorkspaceMaterializationRecords({
+            createdAt: this.now(),
+            inputSnapshots,
+            materialization: { ...materialization, backendKind },
+          })
+        : [];
+      const handoff = workspaceDb
+        ? recordWorkspaceBackendHandoff(workspaceDb, inputSnapshots, builtMaterializationRecords)
+        : { inputSnapshots, materializationRecords: builtMaterializationRecords };
+      const materializationRecords = handoff.materializationRecords;
+      backendLifecycle.workspaceHandoffState = workspaceDb ? 'complete' : 'pending';
+      if (backendLifecycle.session) {
+        backendLifecycle.session = markWorkerBackendWorkspaceHandoffComplete(this.coreDb!, {
+          leaseId: backendLifecycle.session.leaseId,
+          now: this.now,
+        });
+        backendLifecycle.workspaceHandoffState = backendLifecycle.session.workspaceHandoffState;
+      }
 
       const busySession = store.updateAgentSession(agentSession.id, {
         message: null,
@@ -293,6 +343,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         updatedAt: this.now(),
       });
       this.emitAgentSession(store, environmentPackage, requestId, busySession);
+      if (backendLifecycle.session) {
+        backendLifecycle.session = markWorkerBackendSessionLaunching(this.coreDb!, {
+          leaseId: backendLifecycle.session.leaseId,
+          now: this.now,
+        });
+      }
       await this.backend.launch(materialization);
       await this.backend.collectEvidence(environmentPackage.snapshotId);
       const transcript = await this.backend.collectTranscript(environmentPackage.snapshotId);
@@ -335,7 +391,25 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           throw new Error('Required worker runtime provenance verification failed.');
         }
       }
-      const importResult = importWorkerTranscript(store, environmentPackage, transcript);
+      const acceptedLiveEvents = this.coreDb
+        ? listWorkerControlAcceptedEvents(this.coreDb, {
+            agentSessionId: environmentPackage.scope.agentSessionId,
+            packageSnapshotId: environmentPackage.snapshotId,
+            requestId: environmentPackage.scope.requestId,
+            threadId: environmentPackage.scope.threadId,
+            turnId: environmentPackage.scope.turnId,
+            workspaceId: environmentPackage.scope.workspaceId,
+          })
+        : [];
+      const importResult = importWorkerTranscript(store, environmentPackage, transcript, {
+        acceptedLiveEvents,
+      });
+      if (
+        importResult.rejectedEventSequences.length > 0 ||
+        importResult.diagnostics.some((diagnostic) => diagnostic.path.startsWith('$.events'))
+      ) {
+        throw new Error('Worker transcript event reconciliation failed.');
+      }
       const workspaceChanges = await this.backend.collectWorkspaceChanges(
         environmentPackage.snapshotId
       );
@@ -349,33 +423,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         materializationRecords
       );
       await this.backend.collectArtifacts(environmentPackage.snapshotId);
-      try {
-        const teardown = await this.backend.teardown(environmentPackage.snapshotId);
-        finalTeardownCompletedAt = teardown.timestamp;
-        finalTeardownOutcome = 'succeeded';
-      } catch (error) {
-        try {
-          this.markBackendWorkspaceHandlesCleanupStatus(
-            workspaceDb,
-            turn.workspaceId,
-            environmentPackage.snapshotId,
-            'failed'
-          );
-        } catch (statusError) {
-          throw new AggregateError(
-            [error, statusError],
-            'Backend teardown and cleanup status persistence failed.'
-          );
-        }
-        throw error;
-      }
-      backendActive = false;
-      this.markBackendWorkspaceHandlesCleanupStatus(
+      await this.cleanupBackendLifecycle(
+        backendLifecycle,
         workspaceDb,
-        turn.workspaceId,
-        environmentPackage.snapshotId,
-        'cleaned'
+        environmentPackage,
+        backendCapabilities
       );
+      backendCleanupRequired = false;
       this.emitImportedRecords(store, environmentPackage, requestId, importResult);
     } catch (error) {
       primaryFailed = true;
@@ -383,50 +437,21 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     }
 
     const errors: unknown[] = primaryFailed ? [primaryError] : [];
-    if (backendActive) {
-      let cleanupStatus: 'cleaned' | 'failed' = 'failed';
-      let teardownCompletedAt: string | null = null;
-      if (!backendSnapshotId) {
-        errors.push(new Error('The active governed worker is missing its backend snapshot id.'));
+    if (backendCleanupRequired) {
+      if (!backendLifecycle || !environmentPackage || !backendCapabilities) {
+        errors.push(new Error('Backend cleanup is missing its durable runtime lineage.'));
       } else {
         try {
-          const teardown = await this.backend.teardown(backendSnapshotId);
-          teardownCompletedAt = teardown.timestamp;
-          backendActive = false;
-          cleanupStatus = 'cleaned';
-        } catch (error) {
-          teardownCompletedAt = this.now();
-          errors.push(error);
-        }
-        finalTeardownCompletedAt = teardownCompletedAt;
-        finalTeardownOutcome = cleanupStatus === 'cleaned' ? 'succeeded' : 'failed';
-        try {
-          this.markBackendWorkspaceHandlesCleanupStatus(
-            workspaceDb,
-            turn.workspaceId,
-            backendSnapshotId,
-            cleanupStatus
-          );
-        } catch (error) {
-          errors.push(error);
-        }
-      }
-    }
-    if (finalTeardownOutcome && finalTeardownCompletedAt) {
-      if (environmentPackage && backendCapabilities) {
-        try {
-          this.recordBackendTeardownEvidence(
+          await this.cleanupBackendLifecycle(
+            backendLifecycle,
             workspaceDb,
             environmentPackage,
-            backendCapabilities,
-            finalTeardownOutcome,
-            finalTeardownCompletedAt
+            backendCapabilities
           );
+          backendCleanupRequired = false;
         } catch (error) {
           errors.push(error);
         }
-      } else if (workspaceDb) {
-        errors.push(new Error('Backend teardown evidence is missing its runtime lineage.'));
       }
     }
     try {
@@ -538,65 +563,100 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   }
 
   /**
-   * Persists one normalized physical backend teardown outcome.
+   * Physically cleans one exact backend identity and atomically projects only proven success.
    *
-   * @param workspaceDb Optional workspace database handle.
-   * @param environmentPackage Agent Environment Package that owned the backend resources.
+   * @param lifecycle Exact physical identity and optional durable Core state.
+   * @param workspaceDb Optional product workspace projection target.
+   * @param environmentPackage Immutable package that owns the session.
    * @param backendCapabilities Backend identity captured before materialization.
-   * @param outcome Final physical teardown outcome after retries.
-   * @param completedAt Timestamp of the final teardown attempt.
+   * @returns Promise settled after physical cleanup and durable projection.
+   * @throws Error when physical cleanup, lifecycle transition, or workspace projection fails.
    */
-  private recordBackendTeardownEvidence(
+  private async cleanupBackendLifecycle(
+    lifecycle: WorkerTurnBackendLifecycle,
     workspaceDb: WorkspaceDb | null,
     environmentPackage: AgentEnvironmentPackage,
-    backendCapabilities: WorkerGovernanceBackendCapabilities,
-    outcome: 'succeeded' | 'failed',
-    completedAt: string
-  ): void {
-    if (!workspaceDb) {
+    backendCapabilities: WorkerGovernanceBackendCapabilities
+  ): Promise<void> {
+    if (lifecycle.session?.state === 'cleaned') {
       return;
     }
 
-    recordWorkerBackendTeardownEvidence(workspaceDb, {
-      agentSessionId: environmentPackage.scope.agentSessionId,
-      backendType: backendCapabilities.kind,
-      backendVersion: backendCapabilities.version ?? null,
-      completedAt,
-      outcome,
-      packageSnapshotId: environmentPackage.snapshotId,
-      placement: this.environmentBackend.placement ?? 'local',
-      threadId: environmentPackage.scope.threadId,
-      turnId: environmentPackage.scope.turnId,
-      workerImage: environmentPackage.runtime.image.ref,
-      workspaceId: environmentPackage.scope.workspaceId,
-    });
-  }
+    if (!lifecycle.physicalCleanedAt) {
+      if (lifecycle.session) {
+        const session = lifecycle.session;
+        if (session.state !== 'cleanup-pending') {
+          lifecycle.session = transitionWorkerBackendSessionState(this.coreDb!, {
+            fromState: session.state,
+            leaseId: session.leaseId,
+            now: this.now,
+            toState: 'cleanup-pending',
+          });
+        }
+      }
 
-  /**
-   * Updates persisted backend workspace handles after teardown.
-   *
-   * @param workspaceDb Optional workspace database handle.
-   * @param workspaceId Workspace id.
-   * @param packageSnapshotId AEP package snapshot id stored on backend handles.
-   * @param cleanupStatus Cleanup outcome.
-   */
-  private markBackendWorkspaceHandlesCleanupStatus(
-    workspaceDb: WorkspaceDb | null,
-    workspaceId: string,
-    packageSnapshotId: string,
-    cleanupStatus: 'cleaned' | 'failed'
-  ): void {
-    if (!workspaceDb) {
-      return;
+      try {
+        await this.backend.cleanupSession(lifecycle.identity);
+      } catch (error) {
+        if (lifecycle.session?.state === 'cleanup-pending') {
+          lifecycle.session = transitionWorkerBackendSessionState(this.coreDb!, {
+            fromState: 'cleanup-pending',
+            leaseId: lifecycle.session.leaseId,
+            now: this.now,
+            toState: 'cleanup-failed',
+          });
+        }
+        throw error;
+      }
+
+      lifecycle.physicalCleanedAt = this.now();
+      if (lifecycle.session?.state === 'cleanup-pending') {
+        lifecycle.session = transitionWorkerBackendSessionState(this.coreDb!, {
+          fromState: 'cleanup-pending',
+          leaseId: lifecycle.session.leaseId,
+          now: () => lifecycle.physicalCleanedAt!,
+          toState: 'physical-cleaned',
+        });
+        lifecycle.physicalCleanedAt = lifecycle.session.physicalCleanedAt;
+      }
     }
 
-    updateBackendWorkspaceHandleCleanupStatus(
-      workspaceDb,
-      workspaceId,
-      packageSnapshotId,
-      cleanupStatus,
-      this.now()
-    );
+    if (workspaceDb) {
+      const projection = projectWorkerBackendCleanup(workspaceDb, {
+        agentSessionId: environmentPackage.scope.agentSessionId,
+        backendSessionId: lifecycle.identity.backendSessionId,
+        backendType: backendCapabilities.kind,
+        backendVersion: backendCapabilities.version ?? null,
+        completedAt: lifecycle.physicalCleanedAt!,
+        environmentPackage,
+        outcome: 'succeeded',
+        packageSnapshotId: environmentPackage.snapshotId,
+        placement: lifecycle.identity.backendTarget.placement,
+        threadId: environmentPackage.scope.threadId,
+        turnId: environmentPackage.scope.turnId,
+        workerImage: environmentPackage.runtime.image.ref,
+        workspaceHandoffState: lifecycle.workspaceHandoffState,
+        workspaceId: environmentPackage.scope.workspaceId,
+      });
+      if (
+        lifecycle.session?.workspaceHandoffState === 'pending' &&
+        projection.workspaceHandoffComplete
+      ) {
+        lifecycle.session = markWorkerBackendWorkspaceHandoffComplete(this.coreDb!, {
+          leaseId: lifecycle.session.leaseId,
+          now: this.now,
+        });
+      }
+    }
+
+    if (lifecycle.session?.state === 'physical-cleaned' && workspaceDb) {
+      lifecycle.session = transitionWorkerBackendSessionState(this.coreDb!, {
+        fromState: 'physical-cleaned',
+        leaseId: lifecycle.session.leaseId,
+        now: this.now,
+        toState: 'cleaned',
+      });
+    }
   }
 
   /**
@@ -695,27 +755,49 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             record.filesystemApply.before.resourceId === record.changeSet.resourceId &&
             record.filesystemApply.before.contentDigest === record.changeSet.base.contentDigest
         );
-      if (
-        record.review.status !== 'pending' ||
-        (record.changeSet.strategy === 'git' &&
-          (record.review.staging.strategy !== 'git_worktree' ||
-            (workspaceDb && !repository) ||
-            record.filesystemApply !== null)) ||
-        (record.changeSet.strategy === 'filesystem' &&
-          (record.review.staging.strategy !== 'filesystem_staging' ||
-            record.review.staging.branch !== null ||
-            record.patchPayload !== null ||
-            record.changeSet.patch !== null)) ||
-        (workspaceDb &&
-          (inputSnapshot?.strategy !== record.changeSet.strategy ||
-            materializationRecord?.strategy !== record.changeSet.strategy ||
-            JSON.stringify(inputSnapshot?.base) !== JSON.stringify(record.changeSet.base) ||
-            JSON.stringify(materializationRecord?.base) !==
-              JSON.stringify(record.changeSet.base))) ||
-        !gitPatchIsValid ||
-        !filesystemApplyIsValid
-      ) {
-        throw new Error(`Workspace review is not actionable: ${record.review.id}`);
+      const actionabilityFailures = [
+        record.review.status !== 'pending' ? 'review_not_pending' : null,
+        record.changeSet.strategy === 'git' && record.review.staging.strategy !== 'git_worktree'
+          ? 'git_staging_invalid'
+          : null,
+        record.changeSet.strategy === 'git' && workspaceDb && !repository
+          ? 'git_repository_missing'
+          : null,
+        record.changeSet.strategy === 'git' && record.filesystemApply !== null
+          ? 'git_filesystem_apply_present'
+          : null,
+        record.changeSet.strategy === 'filesystem' &&
+        record.review.staging.strategy !== 'filesystem_staging'
+          ? 'filesystem_staging_invalid'
+          : null,
+        record.changeSet.strategy === 'filesystem' && record.review.staging.branch !== null
+          ? 'filesystem_branch_present'
+          : null,
+        record.changeSet.strategy === 'filesystem' && record.patchPayload !== null
+          ? 'filesystem_patch_payload_present'
+          : null,
+        record.changeSet.strategy === 'filesystem' && record.changeSet.patch !== null
+          ? 'filesystem_patch_reference_present'
+          : null,
+        workspaceDb && inputSnapshot?.strategy !== record.changeSet.strategy
+          ? 'input_strategy_mismatch'
+          : null,
+        workspaceDb && materializationRecord?.strategy !== record.changeSet.strategy
+          ? 'materialization_strategy_mismatch'
+          : null,
+        workspaceDb && !isDeepStrictEqual(inputSnapshot?.base, record.changeSet.base)
+          ? 'input_base_mismatch'
+          : null,
+        workspaceDb && !isDeepStrictEqual(materializationRecord?.base, record.changeSet.base)
+          ? 'materialization_base_mismatch'
+          : null,
+        !gitPatchIsValid ? 'git_patch_invalid' : null,
+        !filesystemApplyIsValid ? 'filesystem_apply_invalid' : null,
+      ].filter((reason): reason is string => reason !== null);
+      if (actionabilityFailures.length > 0) {
+        throw new Error(
+          `Workspace review is not actionable (${actionabilityFailures.join(', ')}): ${record.review.id}`
+        );
       }
       const item = {
         artifactId,
@@ -1010,216 +1092,16 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     requestId: string | null,
     error: unknown
   ): void {
-    if (
-      store
-        .getTurnEvents(turnScope.id)
-        .some(
-          (event) =>
-            event.event === 'turn.completed' &&
-            event.data.type === 'turn-completed' &&
-            event.data.stopReason === 'completed'
-        )
-    ) {
-      return;
-    }
-
-    const completedAt = this.now();
     const message = error instanceof Error ? error.message : 'The governed worker turn failed.';
-    const stepErrors: unknown[] = [];
-    const sessionPatch = {
+    terminalizeGovernedWorkerTurnFailure({
+      agentSessionId,
+      completedAt: this.now(),
+      errorCode: 'worker_governance_turn_failed',
       message,
-      status: 'failed',
-      updatedAt: completedAt,
-    } as const;
-    const turnPatch = {
-      completedAt,
-      error: {
-        code: 'worker_governance_turn_failed',
-        message,
-      },
-      status: 'failed',
-    } as const;
-    let agentSession: ReturnType<FsStore['createAgentSession']> | null = null;
-
-    if (agentSessionId) {
-      try {
-        agentSession = store.getAgentSession(agentSessionId);
-      } catch {
-        agentSession = null;
-      }
-      if (
-        agentSession &&
-        (agentSession.status !== sessionPatch.status ||
-          agentSession.message !== sessionPatch.message)
-      ) {
-        try {
-          agentSession = store.updateAgentSession(agentSessionId, sessionPatch);
-        } catch (sessionError) {
-          stepErrors.push(sessionError);
-          try {
-            agentSession = store.getAgentSession(agentSessionId);
-          } catch {
-            agentSession = null;
-          }
-          if (
-            !agentSession ||
-            agentSession.status !== sessionPatch.status ||
-            agentSession.message !== sessionPatch.message
-          ) {
-            try {
-              agentSession = store.updateAgentSession(agentSessionId, sessionPatch);
-            } catch (retryError) {
-              stepErrors.push(retryError);
-              try {
-                agentSession = store.getAgentSession(agentSessionId);
-              } catch {
-                agentSession = null;
-              }
-            }
-          }
-        }
-      }
-    }
-
-    let failedTurn = store.getTurnById(turnScope.id);
-    if (
-      failedTurn.status !== turnPatch.status ||
-      failedTurn.error?.code !== turnPatch.error.code ||
-      failedTurn.error.message !== turnPatch.error.message
-    ) {
-      try {
-        failedTurn = store.updateTurn(turnScope.id, turnPatch);
-      } catch (turnError) {
-        stepErrors.push(turnError);
-        failedTurn = store.getTurnById(turnScope.id);
-        if (
-          failedTurn.status !== turnPatch.status ||
-          failedTurn.error?.code !== turnPatch.error.code ||
-          failedTurn.error.message !== turnPatch.error.message
-        ) {
-          try {
-            failedTurn = store.updateTurn(turnScope.id, turnPatch);
-          } catch (retryError) {
-            stepErrors.push(retryError);
-            failedTurn = store.getTurnById(turnScope.id);
-          }
-        }
-      }
-    }
-
-    let sessionEventObserved = Boolean(
-      agentSession &&
-        store
-          .getTurnEvents(turnScope.id)
-          .some(
-            (event) =>
-              event.event === 'agent.session.updated' &&
-              event.data.type === 'agent-session-updated' &&
-              event.data.agentSession.id === agentSessionId &&
-              event.data.agentSession.status === 'failed'
-          )
-    );
-    if (agentSession?.status === 'failed' && !sessionEventObserved) {
-      const sessionEvent = {
-        data: { agentSession, type: 'agent-session-updated' },
-        event: 'agent.session.updated',
-        requestId,
-        threadId: turnScope.threadId,
-        turnId: turnScope.id,
-        workspaceId: turnScope.workspaceId,
-      } as const;
-      try {
-        store.emitTurnEvent(turnScope.id, sessionEvent);
-        sessionEventObserved = true;
-      } catch (sessionEventError) {
-        stepErrors.push(sessionEventError);
-        sessionEventObserved = store
-          .getTurnEvents(turnScope.id)
-          .some(
-            (event) =>
-              event.event === 'agent.session.updated' &&
-              event.data.type === 'agent-session-updated' &&
-              event.data.agentSession.id === agentSessionId &&
-              event.data.agentSession.status === 'failed'
-          );
-        if (!sessionEventObserved) {
-          try {
-            store.emitTurnEvent(turnScope.id, sessionEvent);
-            sessionEventObserved = true;
-          } catch (retryError) {
-            stepErrors.push(retryError);
-            sessionEventObserved = store
-              .getTurnEvents(turnScope.id)
-              .some(
-                (event) =>
-                  event.event === 'agent.session.updated' &&
-                  event.data.type === 'agent-session-updated' &&
-                  event.data.agentSession.id === agentSessionId &&
-                  event.data.agentSession.status === 'failed'
-              );
-          }
-        }
-        if (sessionEventObserved) {
-          try {
-            store.updateTurn(turnScope.id, {});
-          } catch (persistError) {
-            stepErrors.push(persistError);
-          }
-        }
-      }
-    }
-
-    let terminalEventObserved = store
-      .getTurnEvents(turnScope.id)
-      .some((event) => event.event === 'turn.completed' && event.data.type === 'turn-completed');
-    if (failedTurn.status === 'failed' && !terminalEventObserved) {
-      const terminalEvent = {
-        data: { stopReason: 'error', turn: failedTurn, type: 'turn-completed' },
-        event: 'turn.completed',
-        requestId,
-        threadId: turnScope.threadId,
-        turnId: turnScope.id,
-        workspaceId: turnScope.workspaceId,
-      } as const;
-      try {
-        store.emitTurnEvent(turnScope.id, terminalEvent);
-        terminalEventObserved = true;
-      } catch (terminalEventError) {
-        stepErrors.push(terminalEventError);
-        terminalEventObserved = store
-          .getTurnEvents(turnScope.id)
-          .some(
-            (event) => event.event === 'turn.completed' && event.data.type === 'turn-completed'
-          );
-        if (!terminalEventObserved) {
-          try {
-            store.emitTurnEvent(turnScope.id, terminalEvent);
-            terminalEventObserved = true;
-          } catch (retryError) {
-            stepErrors.push(retryError);
-            terminalEventObserved = store
-              .getTurnEvents(turnScope.id)
-              .some(
-                (event) => event.event === 'turn.completed' && event.data.type === 'turn-completed'
-              );
-          }
-        }
-        if (terminalEventObserved) {
-          try {
-            store.updateTurn(turnScope.id, {});
-          } catch (persistError) {
-            stepErrors.push(persistError);
-          }
-        }
-      }
-    }
-
-    if (stepErrors.length > 0) {
-      throw new AggregateError(
-        stepErrors,
-        'Failed turn terminalization encountered partial persistence errors.'
-      );
-    }
+      requestId,
+      store,
+      turnId: turnScope.id,
+    });
   }
 }
 

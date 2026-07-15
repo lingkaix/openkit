@@ -4,18 +4,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
-
-import { createApp } from '../app.js';
 import type { FsStore } from '../lib/store.js';
 import type { TurnExecutor, TurnStartRuntimeContext } from '../runtime/types.js';
 import {
-  ensureLocalhostSchedulerBaseline,
+  ensureConfiguredSchedulerBaseline,
   upsertSchedulerCapacityRecord,
   upsertSchedulerWorkerPool,
 } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createApp } from '../test-support/app.js';
 import { importUnboundWorkspaceVaultReference } from '../vault/vault-references.js';
 import { createBetterAuth } from './better-auth.js';
 
@@ -134,7 +133,7 @@ async function waitForStartCount(
  * @param capacity Concurrent local lease capacity.
  */
 function configureLocalSchedulerCapacity(coreDb: CoreDb, capacity: number): void {
-  ensureLocalhostSchedulerBaseline(coreDb);
+  ensureConfiguredSchedulerBaseline(coreDb, { placement: 'local' });
   upsertSchedulerWorkerPool(coreDb, {
     allowedBackendKinds: ['openshell'],
     allowedPlacements: ['local'],

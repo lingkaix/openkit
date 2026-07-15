@@ -7,7 +7,6 @@ import {
   type WorkspaceSyncReviewItem,
 } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
-import { createApp } from './app.js';
 import { createGoalReviewRecord, resolveGoalReviewRecord } from './runtime/goal-review-records.js';
 import { createGoalRecord, createGoalTask, updateGoalStatus } from './runtime/goal-store.js';
 import { enqueuePendingUserTurn } from './runtime/pending-user-turns.js';
@@ -21,6 +20,7 @@ import { createSchedulerAdmissionEntry, denySchedulerAdmissionEntry } from './sc
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
 

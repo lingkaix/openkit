@@ -13,15 +13,15 @@ requires_real_codex: true
 
 ## Purpose
 
-Verify that the public OpenKit MCP facade can plan, execute, review, and complete one bounded Goal through a real OpenShell Codex worker while NanoCore owns provider credentials, inference routing, workspace synchronization, evidence, usage, and audit.
+Verify through the transitional removal-only OpenKit MCP kernel-test facade that NanoCore can plan, execute, review, and complete one bounded Goal through a real OpenShell Codex worker while NanoCore owns provider credentials, inference routing, workspace synchronization, evidence, usage, and audit.
 
 ## Preconditions
 
-- A fresh NanoCore server deployment is already running and reachable from the runner.
-- The runner can access the NanoCore data root on the same machine.
+- A fresh NanoCore server deployment is already running on the runner host and reachable from the runner.
+- The runner has local access to that NanoCore deployment's data root and disposable repository.
 - The NanoCore host can launch `codex app-server` to probe the streamed account slot.
-- The deployment uses a real OpenShell worker backend and the locally built `openkit/worker-codex:dev` image.
-- `ssh a1` can read `/home/ubuntu/.codex/auth.json` without interactive input.
+- A1 hosts the disposable OpenShell gateway and the ARM64 `openkit/worker-codex:dev` image built natively on A1; NanoCore reaches that gateway through the configured tunnel and A1 reaches the NanoCore worker-control endpoint through the reverse tunnel.
+- `ssh a1` can read `/home/ubuntu/.codex/auth.json` without interactive input. A1 is only the server-owned auth source; the auth file is streamed into the local NanoCore account slot and never copied into the worker image or sandbox.
 - A disposable local git repository with one baseline commit is visible to NanoCore.
 - The story is skipped by default because it consumes real Codex subscription capacity and provider quota.
 
@@ -41,7 +41,7 @@ Verify that the public OpenKit MCP facade can plan, execute, review, and complet
 - Confirm the repository is clean, has a baseline commit, and does not contain `docs/l6-real-goal-proof.md`.
 - Ask NanoCore to materialize its default OpenAI Codex OAuth account slot.
 - When the server-owned account file is absent, stream the A1 auth file directly into a new `0600` file; when it already exists, require a regular file owned by the runner user with mode `0600` and validate `logged_in` through the public OAuth status without transferring auth again. Never place auth content in process arguments, environment variables, logs, evidence, or the worker sandbox.
-- Create the `openai_codex` OAuth provider for `openai-codex/gpt-5.5` only when absent, update it by revision only when it differs, and bind `agent_codex_host` only when its selection differs.
+- Create the `openai_codex` OAuth provider for `openai-codex/gpt-5.6-sol` only when absent, update it by revision only when it differs, and bind `agent_codex_host` only when its selection differs.
 - If the strict reload reports only provider or agent restart-required changes, stop before MCP execution, provider quota, or evidence, restart NanoCore, and rerun. After restart, consume only an exact `workspaceDataSources` session-scoped deferral when present, then require the strict dry-run response to be an exact no-op before continuing.
 - Confirm NanoCore accepts product work, the provider registry contains `openai_codex`, provider diagnostics are not blocked, and the linked repository is ready.
 
@@ -79,14 +79,16 @@ The only repository change must be `docs/l6-real-goal-proof.md` with this exact 
 - The Goal review advances the one-task graph to `complete_goal`.
 - Final Goal state is `completed`, exactly one task is complete, and a terminal summary exists.
 - The thread contains exactly one completed outer assistant message for the worker turn.
-- The turn AEP uses OpenShell, Codex, `direct-nanocore` control, one NanoCore Gateway route, provider `openai_codex`, model `openai-codex/gpt-5.5`, placeholder credential visibility, no direct credential declarations, no provider attachments, no vault material, and `policy.secrets.visibility: none`.
+- The turn AEP uses OpenShell, Codex, `direct-nanocore` control, the A1-built `openkit/worker-codex:dev` image, one NanoCore Gateway route, provider `openai_codex`, model `openai-codex/gpt-5.6-sol`, placeholder credential visibility, no direct credential declarations, no provider attachments, no vault material, and `policy.secrets.visibility: none`.
 - At least one successful `worker-inference-gateway` LLM CapabilityCall is linked to matching provider and model usage, a successful audit event, an EvidenceBundle, and successful RuntimeEvidence.
+- The linked successful RuntimeEvidence identifies OpenShell `0.0.80` as the governance backend used by the A1 run.
+- Exactly one successful terminal `runtime.worker_turn` CapabilityCall is linked to one runtime UsageRecord measured as one `sandbox_sessions` unit for the completed worker checkpoint.
 - `git diff --check` succeeds, the baseline commit is unchanged, and final git status contains only the untracked proof file.
 - Preserved evidence excludes OAuth content, bearer tokens, authorization headers, private account labels, account-file paths, and the NanoCore data-root path.
 
 ## Evidence To Collect
 
-- Redacted story metadata, runtime config summary, OAuth status summary, Goal outcome, review outcomes, AEP boundary summary, inference lineage counts, thread result count, and final git status.
+- Redacted story metadata, runtime config summary, OAuth status summary, Goal outcome, review outcomes, AEP boundary summary including the A1-built image identity, OpenShell backend version, inference and terminal runtime usage counts, thread result count, and final git status.
 - Redaction notes naming every public surface scanned before evidence was written.
 
 ## Cleanup
@@ -94,10 +96,14 @@ The only repository change must be `docs/l6-real-goal-proof.md` with this exact 
 - Stop and remove the disposable NanoCore deployment after evidence has been preserved.
 - Remove its data root, including the streamed server-owned OAuth account file.
 - Restore or delete the disposable repository according to the release validation runbook.
+- Remove any retained A1 sandbox and verify that the A1 OpenShell gateway reports zero residual sandboxes.
+- Stop the SSH forward and reverse tunnels created for the run.
 
 ## Failure Triage Notes
 
-If explicit opt-in, the target deployment, local data root, A1 SSH source, provider quota, or disposable repository is unavailable, classify the result as an environment failure.
+If explicit opt-in, provider quota, the local NanoCore process, local data root, or local disposable repository is unavailable, classify the result as a runner-host environment failure.
+
+If the A1 gateway, A1-built worker image, A1 auth source, or required forward and reverse tunnels are unavailable, classify the result as an A1 execution-environment failure.
 
 If Goal execution, workspace review, Goal review, AEP boundaries, inference attribution, evidence linkage, or repository assertions fail, classify the result by the owning product layer and reduce the defect into the lowest practical L1-L5 regression test.
 

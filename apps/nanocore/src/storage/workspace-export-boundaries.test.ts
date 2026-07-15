@@ -11,9 +11,8 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-
-import { createApp } from '../app.js';
 import { createDemoWorkspaceForUser, FsStore } from '../lib/store.js';
+import { createApp } from '../test-support/app.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';

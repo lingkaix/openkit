@@ -209,7 +209,7 @@ The current implementation realizes the accepted V1 synchronization behavior bel
 - `apps/nanocore/src/app.ts`, `@openkit/core-client`, and `@openkit/mcp` expose workspace-sync read APIs, including redacted backend workspace handle, worker output manifest, workspace apply plan, and workspace reconciliation record readback, and NanoCore applies accepted Git patch or filesystem staging reviews through artifact review decisions.
 - `apps/nanocore/src/runtime/workspace-apply-results.ts` records one linked workspace audit event and one compact `EvidenceBundle` index when a new durable apply result is stored, and skips duplicate audit and evidence rows on idempotent apply-result replay.
 - `apps/nanocore/src/runtime/worker-governance-turn-executor.ts` imports worker workspace changes into review artifacts and durable records.
-- Worker governance tests cover local and remote OpenShell-style evidence persistence.
+- Worker governance tests cover local and remote disposable-Cell OpenShell evidence persistence. The remote materialization and Cell-lifecycle path is active; the full real-Codex remote Goal Mode acceptance story remains required before remote provenance is accepted as complete.
 - Server tests cover review listing, Git patch apply, filesystem staging apply, filesystem permission-change apply, and persisted apply results after app restart.
 - `WorkspaceSynchronizationBackendKindSchema` still includes `host` for host-local staging and deterministic harnesses. It must not be read as permission to reintroduce host execution as a product Worker Agent runtime.
 
@@ -724,7 +724,7 @@ file APIs, object-store transfer, and optional ephemeral Git branch workflows.
 - Runtime tests for input snapshot construction, materialization record construction, manifest parsing, path allowlists, and staged review creation.
 - Git apply tests that validate digest, byte count, `git apply --check`, durable apply result persistence, and restart-readable apply result records.
 - Filesystem apply tests that validate content-addressed manifests, staged copy, conflict preflight, delete handling, and durable apply result persistence.
-- Worker governance tests for local and remote OpenShell-style materialization, evidence persistence, change-set import, review artifact creation, and teardown.
+- Worker governance tests for local disposable-Cell OpenShell materialization, evidence persistence, change-set import, review artifact creation, and whole-Cell recycle.
 - Restart recovery tests for reachable backend session, unreachable backend session, partial collection, digest mismatch, quarantine, and `requires-human`.
 - Binary, permission-change, generated-file, and object-store staged file tests before those paths are marked implemented.
 

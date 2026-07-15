@@ -17,7 +17,9 @@ const lineage: WorkerLineage = {
  * @param responses Responses returned for successive calls.
  * @returns Fake fetch function and captured requests.
  */
-function createFetchFixture(responses: Array<{ body: unknown; ok?: boolean; status?: number }>): {
+function createFetchFixture(
+  responses: Array<{ body?: unknown; ok?: boolean; status?: number; text?: string }>
+): {
   fetch: WorkerControlFetch;
   requests: Array<{ body: unknown; headers: Record<string, string>; url: string }>;
 } {
@@ -38,7 +40,7 @@ function createFetchFixture(responses: Array<{ body: unknown; ok?: boolean; stat
     return {
       ok: response.ok ?? true,
       status: response.status ?? 200,
-      text: async () => JSON.stringify(response.body),
+      text: async () => response.text ?? JSON.stringify(response.body ?? null),
     };
   };
 
@@ -191,6 +193,53 @@ describe('WorkerControlClient', () => {
     ]);
   });
 
+  it.each([
+    {
+      expectedCode: 'worker_control_invalid_response',
+      label: 'an empty response',
+      response: { text: '' },
+    },
+    {
+      expectedCode: 'worker_control_invalid_response',
+      label: 'an empty object',
+      response: { body: {} },
+    },
+    {
+      expectedCode: 'worker_control_invalid_response',
+      label: 'malformed JSON',
+      response: { text: '{' },
+    },
+    {
+      expectedCode: 'worker_control_not_accepted',
+      label: 'an explicit rejection',
+      response: { body: { accepted: false, diagnostics: [], schemaVersion: 1 } },
+    },
+  ])('rejects canonical event append with $label', async ({ expectedCode, response }) => {
+    const { fetch, requests } = createFetchFixture([response]);
+    const client = new WorkerControlClient({
+      baseUrl: 'https://nanocore.local/api/worker-control',
+      fetch,
+      lineage,
+      token: 'token_control_1',
+    });
+    const record: WorkerCanonicalEventRecord = {
+      event: {
+        data: { status: 'running' },
+        type: 'worker.heartbeat',
+      },
+      kind: 'event',
+      lineage,
+      schemaVersion: 1,
+      sequence: 3,
+    };
+
+    await expect(client.appendEvent(record)).rejects.toMatchObject({
+      code: expectedCode,
+      status: 200,
+    });
+    expect(requests).toHaveLength(1);
+  });
+
   it('posts final status as a canonical control envelope', async () => {
     const { fetch, requests } = createFetchFixture([
       { body: { accepted: true, diagnostics: [], nextExpectedSequence: 5, schemaVersion: 1 } },
@@ -204,6 +253,8 @@ describe('WorkerControlClient', () => {
 
     await expect(
       client.recordFinalStatus({
+        diagnostics: { stderr: 'Product-safe failure summary.' },
+        evidenceManifestDigests: { runtime: 'sha256:runtime' },
         sequence: 4,
         status: 'failed',
         stopReason: 'Codex process exited with code 7.',
@@ -213,6 +264,8 @@ describe('WorkerControlClient', () => {
       {
         body: {
           body: {
+            diagnostics: { stderr: 'Product-safe failure summary.' },
+            evidenceManifestDigests: { runtime: 'sha256:runtime' },
             status: 'failed',
             stopReason: 'Codex process exited with code 7.',
           },
@@ -228,6 +281,132 @@ describe('WorkerControlClient', () => {
         url: 'https://nanocore.local/api/worker-control/final-status',
       },
     ]);
+  });
+
+  it.each([
+    {
+      expectedCode: 'worker_control_invalid_response',
+      label: 'an empty response',
+      response: { text: '' },
+    },
+    {
+      expectedCode: 'worker_control_invalid_response',
+      label: 'an empty object',
+      response: { body: {} },
+    },
+    {
+      expectedCode: 'worker_control_invalid_response',
+      label: 'malformed JSON',
+      response: { text: '{' },
+    },
+    {
+      expectedCode: 'worker_control_not_accepted',
+      label: 'an explicit rejection',
+      response: { body: { accepted: false, diagnostics: [], schemaVersion: 1 } },
+    },
+  ])('rejects final status delivery with $label', async ({ expectedCode, response }) => {
+    const { fetch, requests } = createFetchFixture([response, response, response]);
+    const client = new WorkerControlClient({
+      baseUrl: 'https://nanocore.local/api/worker-control',
+      fetch,
+      lineage,
+      token: 'token_control_1',
+    });
+
+    await expect(
+      client.recordFinalStatus({
+        sequence: 4,
+        status: 'completed',
+        stopReason: 'completed',
+      })
+    ).rejects.toMatchObject({ code: expectedCode, status: 200 });
+    expect(requests).toHaveLength(1);
+  });
+
+  it('retries an ambiguous final status failure with the exact same envelope', async () => {
+    const requests: string[] = [];
+    const ambiguousFailure = new TypeError('socket closed after request write');
+    const client = new WorkerControlClient({
+      baseUrl: 'https://nanocore.local/api/worker-control',
+      fetch: async (_url, init) => {
+        requests.push(init.body);
+        if (requests.length === 1) {
+          throw ambiguousFailure;
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({
+              accepted: true,
+              diagnostics: [],
+              nextExpectedSequence: 5,
+              schemaVersion: 1,
+            }),
+        };
+      },
+      lineage,
+      token: 'token_control_1',
+    });
+
+    await expect(
+      client.recordFinalStatus({
+        sequence: 4,
+        status: 'completed',
+        stopReason: 'completed',
+      })
+    ).resolves.toMatchObject({ accepted: true, nextExpectedSequence: 5 });
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toBe(requests[0]);
+  });
+
+  it('bounds ambiguous final status delivery to three total attempts', async () => {
+    const ambiguousFailure = new TypeError('connection reset');
+    let attempts = 0;
+    const client = new WorkerControlClient({
+      baseUrl: 'https://nanocore.local/api/worker-control',
+      fetch: async () => {
+        attempts += 1;
+        throw ambiguousFailure;
+      },
+      lineage,
+      token: 'token_control_1',
+    });
+
+    await expect(
+      client.recordFinalStatus({
+        sequence: 4,
+        status: 'completed',
+        stopReason: 'completed',
+      })
+    ).rejects.toBe(ambiguousFailure);
+    expect(attempts).toBe(3);
+  });
+
+  it('does not retry a definitive final status conflict', async () => {
+    const { fetch, requests } = createFetchFixture([
+      {
+        body: { code: 'worker_control_final_status_conflict', message: 'Payload changed.' },
+        ok: false,
+        status: 409,
+      },
+      { body: { accepted: true, diagnostics: [], schemaVersion: 1 } },
+    ]);
+    const client = new WorkerControlClient({
+      baseUrl: 'https://nanocore.local/api/worker-control',
+      fetch,
+      lineage,
+      token: 'token_control_1',
+    });
+
+    await expect(
+      client.recordFinalStatus({
+        sequence: 4,
+        status: 'completed',
+        stopReason: 'completed',
+      })
+    ).rejects.toThrow('worker_control_final_status_conflict');
+    expect(requests).toHaveLength(1);
   });
 
   it('does not start a request after the supervisor signal is already aborted', async () => {

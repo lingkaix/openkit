@@ -258,22 +258,23 @@ function nextHealthCounters(
 }
 
 /**
- * Default local-baseline probe.
+ * Default configured-baseline probe.
  *
  * @param target Target to probe.
- * @returns Optimistic local probe result.
+ * @returns Optimistic configured-baseline probe result.
  */
 function defaultProbeTarget(target: SchedulerProbeTarget): SchedulerTargetProbeResult {
-  // ponytail: local baseline has no target metadata yet; replace with backend doctor checks when target records name a backend endpoint.
+  // ponytail: configured baselines have no endpoint metadata; replace this id check when target records own probeable endpoints.
+  const registered = target.targetId === 'target_local' || target.targetId === 'target_remote';
   return {
     checks: [
       { status: 'ok', surface: 'scheduler-record' },
       {
-        status: target.targetId === 'target_local' ? 'ok' : 'failed',
+        status: registered ? 'ok' : 'failed',
         surface: 'target-registration',
       },
     ],
-    status: target.targetId === 'target_local' ? 'ok' : 'failed',
+    status: registered ? 'ok' : 'failed',
   };
 }
 

@@ -13,7 +13,7 @@ requires_real_codex: false
 
 ## Purpose
 
-Verify that a user can run a worker task whose resolved Agent Environment Package exposes a catalog-declared MCP server, that the worker can use an allowed MCP tool through NanoCore governance, that approval-required MCP tools raise a human gate before execution, and that audit evidence remains free of credentials and raw tool payloads.
+Define the future acceptance proof that a user can run a worker task whose resolved Agent Environment Package exposes a catalog-declared MCP server, that the worker can use an allowed MCP tool through NanoCore governance, that approval-required MCP tools raise a human gate before execution, and that audit evidence remains free of credentials and raw tool payloads. This story is a target contract, not evidence of a current executable worker MCP path.
 
 ## Preconditions
 

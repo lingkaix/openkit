@@ -32,7 +32,7 @@ Those contracts are owned by the relevant core documents and current active spec
 
 OpenKit needs a canonical way for NanoCore to define what a worker agent should see and what it is allowed to do before a backend materializes that request into a local container, remote container, VM, managed sandbox, or custom worker runtime.
 
-Runtime backend details are refined by `docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260703-runtime_scheduling_scale.md`, and `docs/specs/20260627-remote_openshell_gateway.md`. Host-local staging and harness behavior are implementation projections; real Worker Agent product paths use governed container or sandbox placements.
+Runtime backend details are refined by `docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260703-runtime_scheduling_scale.md`, and `docs/specs/20260715-openshell_disposable_cell_lifecycle.md`. Host-local staging and harness behavior are implementation projections; real Worker Agent product paths use governed container or sandbox placements.
 
 The durable decision is that NanoCore owns the product and governance source of truth, while OpenShell or another worker governance backend owns backend-specific materialization and enforcement.
 
@@ -62,15 +62,19 @@ OpenKit should adopt an OpenShell-inspired provider/profile/policy vocabulary, a
 
 ## Current Implementation Projection
 
-The current NanoCore implementation uses the Agent Environment Package as the concrete V1 contract for worker governance execution. Current code resolves package metadata for local and remote OpenShell container worker paths, including runtime placement, worker-visible workspace roots, generated task context, control endpoint metadata, transcript paths, policy snapshot binding, session workspace layout, workspace synchronization expectations, supply projections, capability projections, vault-backed runtime files, and backend capability requirements. NanoCore also persists redacted workspace-owned package snapshots and exposes them through App API, Core Client, OpenAPI, and MCP readback surfaces for diagnostics, evidence, export/import, and restart investigation.
+The current NanoCore implementation uses the Agent Environment Package as the concrete V1 contract for worker governance execution. Current code resolves package metadata for local and remote disposable OpenShell Cell paths, including runtime placement, worker-visible workspace roots, generated task context, control endpoint metadata, transcript paths, policy snapshot binding, session workspace layout, workspace synchronization expectations, supply projections, capability projections, vault-backed runtime files, and backend capability requirements. NanoCore also persists redacted workspace-owned package snapshots and exposes them through App API, Core Client, OpenAPI, and MCP readback surfaces for diagnostics, evidence, export/import, and restart investigation.
 
 The OpenShell-backed path uses `openkit-codex-shim` as the sandbox entrypoint. The shim supervises Codex and calls the AEP-resolved NanoCore worker-control endpoint directly; the worker image contains no separate control sidecar.
 
 The accepted V1 boundary is implemented for NanoCore-owned AEP resolution and OpenShell-backed materialization. Authored setup can project required backend capabilities into AEP backend requirements, backend materialization validates missing required capabilities before launch, grant-backed provider and runtime-file attachments flow through vault records without storing secret material in the package, and redacted package snapshots can be listed and read without exposing backend-private fields, raw credentials, or host-local runtime references.
 
+Provider attachments in an AEP are declarations, not implicit OpenShell CLI arguments. Runtime-file and runtime-environment materialization does not automatically become `openshell sandbox create --provider`; the backend attaches only provider credentials that were resolved through the provider/vault materialization path or explicit transient provider inputs owned by the launch request.
+
+Current read-write workspace roots are Git-backed: NanoCore resolves and records the full immutable `HEAD` object id before materialization and rejects a writable root without a valid commit. That independent host-side base must match the worker change-set and materialization base before review can become actionable.
+
 Current packages always emit `capabilities: { protocol: "openkit-worker-capability-v1", mode: "disabled", routes: [] }`. The removed worker capability client, NanoCore `/api/worker-capabilities/*` routes, worker MCP gateway, and capability smoke are not part of the current implementation. Skill and MCP supply records may still be resolved as static package inputs, but they do not grant a callable worker capability route. The accepted future capability and MCP contracts remain in `docs/specs/20260703-worker_agent_capability.md` and `docs/specs/20260704-worker_mcp_tool_supply.md` and are sequenced in `docs/roadmap.md`.
 
-The worker-runtime provenance and trusted worker-inference extension remains governed by `docs/specs/20260711-worker_runtime_subagent_provenance.md`; production advertisement still depends on its real OpenShell/Codex proof. Rich Web readiness views, broader provider profiles, object-store mounts, worker capabilities, and deployment-specific OpenShell service-management contracts remain future extensions over the same AEP boundary.
+The worker-runtime provenance and trusted worker-inference extension remains governed by `docs/specs/20260711-worker_runtime_subagent_provenance.md`; production advertisement still depends on its real OpenShell/Codex proof. Rich Web readiness views, broader provider profiles, object-store mounts, worker capabilities, multiple Cell targets, and target selection remain future extensions over the same AEP boundary.
 
 ## Goals / Non-goals
 
@@ -1643,7 +1647,7 @@ Backend capability names should include:
 
 ## OpenShell-First Backend Strategy
 
-OpenShell is the first-class backend for governed local and remote container execution.
+Official, unmodified OpenShell `0.0.80` is the first-class backend for governed local and remote container execution inside one single-slot disposable Cell.
 
 It is also the reference implementation for policy rendering, provider attachments, gateway-mediated inference, sandbox lifecycle evidence, and backend-native file transfer.
 
@@ -1653,7 +1657,7 @@ The canonical design rule is OpenShell-first, OpenKit-owned semantics, capabilit
 
 OpenKit should intentionally use OpenShell's strongest mechanisms where they reduce product risk or implementation cost:
 
-- Gateway and sandbox lifecycle management.
+- Sandbox materialization through stock OpenShell inside the Cell; OpenKit's fixed Cell helper owns whole-runtime prepare and recycle.
 - Network, process, and filesystem policy enforcement where supported.
 - Provider attachment and credential projection.
 - `inference.local` or equivalent local endpoint projection when it can preserve NanoCore usage and audit lineage.
@@ -1779,6 +1783,8 @@ The backend stops the worker session and releases temporary resources.
 
 Teardown should emit final evidence and mark cleanup failures distinctly from worker task failures.
 
+For OpenShell, successful teardown means recycling the complete owning Cell into a fresh verified empty epoch. Sandbox or provider deletion is neither cleanup proof nor a fallback success path.
+
 ## OpenShell Backend Mapping
 
 An OpenShell backend should map OpenKit package fields as follows.
@@ -1813,7 +1819,8 @@ OpenShell-specific constraints:
 - If OpenShell itself owns final `inference.local` provider routing, NanoCore must treat that as `backend-local` mode and require explicit audit and usage preservation checks.
 - The OpenShell materializer must provide the worker-reachable NanoCore control URL directly and allow only approved shim binaries to reach it.
 - OpenShell service forwarding, `inference.local`, and future capability mediation are not worker-control paths.
-- OpenShell Gateway should be managed by NanoCore as a backend service or deployment-selected external service; the integration must not depend on embedding OpenShell Gateway as a stable in-process library.
+- The stock OpenShell Gateway must run inside the same disposable Cell as its container runtime and sandboxes. Local placement invokes the fixed helper through non-interactive sudo; remote placement invokes the same helper through the fixed SSH lifecycle command and reaches the loopback Gateway through a separate operator-managed local forward.
+- A reachable external or shared Gateway without the matching whole-Cell lifecycle target is not a valid backend target, and the integration must not use insecure Gateway mode, a custom binary path, or an embedded, forked, patched, replacement, or private OpenShell artifact.
 - OpenShell file transfer, sandbox filesystem access, or declared output collection can collect `/openkit/session/*.jsonl` after turn completion.
 - OpenShell supervisor and OCSF logs are enforcement evidence and must not be treated as canonical `Item` streams.
 - OpenKit must not assume all Providers v2 roadmap items are implemented by a specific OpenShell version.
@@ -2216,7 +2223,7 @@ NanoCore must know which user, workspace, thread, turn, agent session, provider 
 
 ### Schema Tests
 
-- Accept valid package fixtures for OpenShell container, plain Docker, Kubernetes, VM, remote gateway, and hosted sandbox intents.
+- Accept valid package fixtures for local and remote disposable OpenShell Cells, plain Docker, Kubernetes, VM, and hosted sandbox intents.
 - Reject unknown top-level fields outside `extensions`.
 - Reject raw secret-like fields in package snapshots.
 - Reject control channel configs that lack workspace, thread, turn, agent session, or sandbox session identity binding.
@@ -2285,7 +2292,7 @@ NanoCore must know which user, workspace, thread, turn, agent session, provider 
 
 OpenShell is still evolving.
 
-Mitigation: keep OpenKit canonical schemas independent, store OpenShell compatibility under backend extensions, and pin adapter tests to selected OpenShell versions.
+Mitigation: keep OpenKit canonical schemas independent, pin the current adapter and tests to exact stock OpenShell `0.0.80`, and require a freshly reviewed mapping and acceptance proof for any future version instead of carrying an OpenShell compatibility layer.
 
 ### Risk: Configuration Surface Becomes Too Large
 
@@ -2327,21 +2334,22 @@ Mitigation: materialization preflight must verify the exact URL, scheme-derived 
 
 Treating OpenShell Gateway as an in-process NanoCore library could couple NanoCore to unstable internal OpenShell APIs and make upgrades difficult.
 
-Mitigation: run OpenShell Gateway as a NanoCore-managed backend service or deployment-selected external service first, and add in-process embedding only if OpenShell publishes a stable embedding API or OpenKit forks and owns that integration boundary.
+Mitigation: keep the official OpenShell Gateway out of process inside the disposable Cell and control only the fixed whole-Cell lifecycle. OpenKit must not embed, fork, patch, replace, or publish a private OpenShell artifact.
 
 ## Resolved Decisions
 
 - OpenKit-authored provider profile and AEP config fields use OpenKit-style camelCase. OpenShell-compatible snake_case belongs only in backend extensions or generated OpenShell materialization artifacts.
 - Provider profiles are server-owned by default. Workspace-defined custom profiles require policy-reviewed setup proposals and must not grant authority beyond server and workspace policy.
+- Runtime files and runtime environment values do not imply backend provider attachment. Only a resolved backend provider credential or an explicit transient launch provider may become an OpenShell `--provider` argument.
 - The first provider profile baseline is GitHub/source-control, OpenAI-compatible inference, and OpenAI Codex account slot. PyPI, generic REST API, and object-store profiles are deferred until a concrete worker task requires them.
-- NanoCore should not hard-code an OpenShell version for `inference.local` behavior. The backend must declare or prove required feature flags during preflight, and NanoCore must fail closed or use the OpenKit-owned authenticated internal worker-inference path when lineage, usage, or audit preservation cannot be proven.
+- The current OpenShell backend is pinned to exact stock version `0.0.80` and must prove required feature flags during preflight. A future version change requires fresh whole-Cell and worker-runtime acceptance rather than a compatibility path; NanoCore must fail closed when lineage, usage, or audit preservation cannot be proven.
 - The first object-store target should be a generic S3-compatible contract that can project to S3 and R2 before adding provider-specific GCS, Azure Blob, or Box contracts.
 - Object-store materialization should start with OpenKit-managed staged files or gateway-mediated reads. Backend FUSE, sync-on-demand, and backend-native mounts require separate backend capability declarations and recovery tests.
 - Generated files are runtime files by default. They become artifacts only when they are user-visible outputs, review inputs, or evidence that must survive beyond the worker session.
 - Public App API readiness projections should expose only redacted package, backend, provider, vault, policy, and capability summaries. Full unredacted AEP snapshots remain internal runtime records and must not become public product records.
 - Package snapshots are diagnostics-only by default. NanoCore exposes only redacted durable package snapshots through `/api/app/workspaces/:workspaceId/agent-environment/snapshots`, Core Client, OpenAPI, and MCP; a redacted snapshot or snapshot reference may become a restricted evidence artifact when needed for review, replay, or audit.
 - Backend version negotiation uses backend capability declarations, feature probes, selected backend version, and required feature flags recorded in materialization evidence. Missing required capabilities fail before launch.
-- OpenShell Gateway placement is deployment policy. Local development may use a NanoCore-managed local gateway process, while server, remote, team, and production deployments should use a deployment-managed external gateway unless a later service-management spec says otherwise.
+- OpenShell Gateway placement follows the disposable Cell contract. Local placement uses the Gateway inside the co-located Cell; remote placement binds one fixed SSH lifecycle target to one operator-managed loopback HTTP Gateway origin and one explicit credential-free HTTP(S) `/api/worker-control` URL reachable from the sandbox. A naked or shared external Gateway is invalid.
 - The smallest worker control protocol is owned by `docs/specs/20260703-worker_control_protocol.md`. AEP supplies the direct endpoint, authentication, transcript, channels, commands, and backend capability projection without redefining operation schemas.
 - Governed workers use only the authenticated direct NanoCore worker-control connection. A sandbox-local alias, sidecar, backend relay, capability gateway, or transcript sink must not become a second control path.
 
@@ -2350,7 +2358,7 @@ Mitigation: run OpenShell Gateway as a NanoCore-managed backend service or deplo
 - Provider profile specs for PyPI, generic REST APIs, and object-store providers beyond the first S3-compatible baseline.
 - Backend-native object-store mounts after staged-file and gateway-mediated paths are proven.
 - Rich Web UI package readiness views over redacted App API summaries.
-- Deployment-specific OpenShell Gateway service-management contracts.
+- Multiple independent disposable Cell targets and scheduler-owned target selection.
 
 ## Links
 

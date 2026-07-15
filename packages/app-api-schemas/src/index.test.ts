@@ -1927,7 +1927,7 @@ describe('app api schemas', () => {
       backendType: 'openshell',
       backendVersion: null,
       placement: 'local',
-      phase: 'teardown',
+      phase: 'checkpoint',
       summary: 'Worker checkpoint terminal: completed.',
       policyDigest: 'sha256:9a0f3c8d4b7e5a6c9d2f1b0a3e4c5d6f7a8b9c0d1e2f3456789abcdef0123456',
       workerImage: 'openkit/worker-codex:dev',

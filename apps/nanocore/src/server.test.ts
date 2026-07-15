@@ -157,6 +157,7 @@ import {
   recordDataRootDeploymentMove,
 } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { createApp as createDeterministicTestApp } from './test-support/app.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
 import { createVaultGrant, listVaultGrants } from './vault/vault-grants.js';
 import {
@@ -250,7 +251,7 @@ function createApp(options: CreateAppOptions = {}): ReturnType<typeof createNano
   const store = options.store ?? createDemoStore();
 
   seedDemoWorkspace(store);
-  return createNanoCoreApp({ ...options, store });
+  return createDeterministicTestApp({ ...options, store });
 }
 
 /**
@@ -3219,7 +3220,7 @@ describe('nanocore server', () => {
             threadId: 'th_runtime',
             turnId: 'turn_runtime',
             agentSessionId: 'session_runtime',
-            phase: 'teardown',
+            phase: 'checkpoint',
             outcome: 'succeeded',
             stopReason: 'completed',
             requiredFeatures: ['runtime.evidence.v1'],
@@ -5860,18 +5861,24 @@ describe('nanocore server', () => {
   });
 
   it('reports active container worker capabilities in meta by default', async () => {
-    const app = createApp();
-    const res = await app.request('/api/meta');
+    const coreDb = createCoreDb();
 
-    expect(res.status).toBe(200);
+    try {
+      const app = createNanoCoreApp({ coreDb });
+      const res = await app.request('/api/meta');
 
-    const parsed = MetaResponseSchema.parse(await res.json());
+      expect(res.status).toBe(200);
 
-    expect(parsed.capabilities).toEqual([
-      'core.artifacts',
-      'core.agent_session.visible',
-      'core.stream.replay',
-    ]);
+      const parsed = MetaResponseSchema.parse(await res.json());
+
+      expect(parsed.capabilities).toEqual([
+        'core.artifacts',
+        'core.agent_session.visible',
+        'core.stream.replay',
+      ]);
+    } finally {
+      coreDb.sqlite.close();
+    }
   });
 
   it('clears workspace default model and agent selections with explicit nulls', async () => {

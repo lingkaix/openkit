@@ -238,7 +238,7 @@ describe('worker checkpoint storage', () => {
           goalId: 'goal_demo',
           taskId: 'task_demo',
           agentSessionId: 'session_demo',
-          phase: 'teardown',
+          phase: 'checkpoint',
           summary: 'Worker checkpoint terminal: completed.',
           outcome: 'succeeded',
           stopReason: 'completed',
@@ -286,7 +286,7 @@ describe('worker checkpoint storage', () => {
     }
   });
 
-  it('does not duplicate authoritative backend teardown evidence at checkpoint completion', () => {
+  it('records checkpoint evidence separately from authoritative backend teardown', () => {
     const workspaceDb = createWorkspaceDb();
 
     try {
@@ -309,7 +309,6 @@ describe('worker checkpoint storage', () => {
         outcome: 'succeeded',
         packageSnapshotId: 'aepsnap_backend',
         placement: 'remote',
-        stopReason: 'completed',
         threadId: 'th_demo',
         turnId: 'turn_backend_evidence',
         workerImage: 'openkit/worker-codex:dev',
@@ -325,6 +324,9 @@ describe('worker checkpoint storage', () => {
         now: () => '2026-05-31T00:10:00.000Z',
       });
 
+      expect(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo').map((record) => record.phase)
+      ).toEqual(['teardown', 'checkpoint']);
       expect(
         listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo').filter(
           (record) => record.phase === 'teardown'
@@ -346,7 +348,7 @@ describe('worker checkpoint storage', () => {
     }
   });
 
-  it('does not duplicate backend teardown evidence when a failed checkpoint lacks a session id', () => {
+  it('records failed checkpoint evidence without fabricating backend teardown', () => {
     const workspaceDb = createWorkspaceDb();
 
     try {
@@ -360,21 +362,6 @@ describe('worker checkpoint storage', () => {
         iteration: 1,
         now: () => '2026-05-31T00:00:00.000Z',
       });
-      recordWorkerBackendTeardownEvidence(workspaceDb, {
-        agentSessionId: 'session_backend_failure',
-        backendType: 'openshell',
-        backendVersion: '0.0.80',
-        completedAt: '2026-05-31T00:09:00.000Z',
-        outcome: 'failed',
-        packageSnapshotId: 'aepsnap_backend_failure',
-        placement: 'remote',
-        stopReason: 'error',
-        threadId: 'th_demo',
-        turnId: 'turn_backend_failure',
-        workerImage: 'openkit/worker-codex:dev',
-        workspaceId: 'ws_demo',
-      });
-
       updateWorkerCheckpoint(workspaceDb, {
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
@@ -388,9 +375,14 @@ describe('worker checkpoint storage', () => {
         listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo').filter(
           (record) => record.phase === 'teardown'
         )
+      ).toEqual([]);
+      expect(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo').filter(
+          (record) => record.phase === 'checkpoint'
+        )
       ).toEqual([
         expect.objectContaining({
-          agentSessionId: 'session_backend_failure',
+          agentSessionId: null,
           goalId: 'goal_backend',
           outcome: 'failed',
           stopReason: 'error',

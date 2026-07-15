@@ -253,13 +253,30 @@ network_policies:
     ).not.toThrow();
     expect(() =>
       assertOpenShellCliCommandConformant(['provider', 'delete', 'worker-relay'])
-    ).not.toThrow();
+    ).toThrow('outside the pinned surface');
     expect(() =>
       assertOpenShellCliCommandConformant(['provider', 'profile', 'export', 'worker-relay'])
     ).not.toThrow();
     expect(() =>
       assertOpenShellCliCommandConformant(['settings', 'get', '--global', '--json'])
     ).not.toThrow();
+    expect(() =>
+      assertOpenShellCliCommandConformant([
+        'settings',
+        'set',
+        '--global',
+        '--key',
+        'providers_v2_enabled',
+      ])
+    ).not.toThrow();
+    expect(() => assertOpenShellCliCommandConformant(['sandbox', 'exec', 'worker'])).not.toThrow();
+    expect(() => assertOpenShellCliCommandConformant(['sandbox', 'list', '--names'])).not.toThrow();
+    expect(() => assertOpenShellCliCommandConformant(['sandbox', 'delete', 'worker'])).toThrow(
+      'outside the pinned surface'
+    );
+    expect(() => assertOpenShellCliCommandConformant(['doctor', 'check'])).toThrow(
+      'outside the pinned surface'
+    );
     expect(() =>
       assertOpenShellCliCommandConformant([
         'provider',

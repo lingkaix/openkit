@@ -31,6 +31,7 @@ export const RuntimeEvidenceRecordSchema = z
       'file-transfer',
       'transcript-collection',
       'workspace-change-collection',
+      'checkpoint',
       'teardown',
       'backend-error',
     ]),

@@ -1,26 +1,45 @@
-import { mkdtempSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
+  type MaterializedWorkspaceRoot,
 } from '@openkit/config-schema';
 import { describe, expect, it, vi } from 'vitest';
-import { createApp, createDefaultWorkerControlGateway } from './app.js';
+import { createDefaultWorkerControlGateway } from './app.js';
 import type { FsStore } from './lib/store.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
 import { runSchedulerLeaseMaintenanceOnce } from './runtime/scheduler-lease-maintenance-service.js';
 import {
+  recordWorkerBackendSessionMaterializing,
+  transitionWorkerBackendSessionState,
+} from './runtime/worker-backend-sessions.js';
+import {
   WorkerControlGateway,
   type WorkerControlGatewayError,
   type WorkerControlLineage,
 } from './runtime/worker-control-gateway.js';
+import {
+  createWorkerControlAcceptedRecordRecorder,
+  listWorkerControlAcceptedEvents,
+  resolveWorkerControlFinalStatusTokenBinding,
+} from './runtime/worker-control-records.js';
 import { listWorkerControlRejectedEvidenceForWorkspace } from './runtime/worker-control-rejected-evidence.js';
+import { createWorkerControlSequenceRecorder } from './runtime/worker-control-sequences.js';
+import { importWorkerTranscript } from './runtime/worker-transcript.js';
+import {
+  buildWorkspaceInputSnapshots,
+  buildWorkspaceMaterializationRecords,
+} from './runtime/workspace-materializer.js';
 import { listWorkspaceReconciliationRecords } from './runtime/workspace-reconciliation-records.js';
 import {
   listBackendWorkspaceHandles,
+  recordWorkspaceInputSnapshots,
   recordWorkspaceMaterializationRecords,
+  updateBackendWorkspaceHandleCleanupStatus,
 } from './runtime/workspace-sync-records.js';
 import {
   acceptSchedulerLeaseHeartbeat,
@@ -28,6 +47,7 @@ import {
   completeSchedulerSessionLease,
   createSchedulerAdmissionEntry,
   dispatchNextSchedulerEntry,
+  markSchedulerSessionLeaseReleasing,
   requireSchedulerSessionLease,
   resolveSchedulerLeaseTokenBinding,
   schedulerLeaseHasAppliedSupplyRefreshAck,
@@ -36,16 +56,22 @@ import {
   upsertSchedulerWorkerPool,
 } from './scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
-import { LOCAL_USER_ID } from './storage/fs-layout.js';
+import { coreDbPath, LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 
 /**
  * Creates an app with one registered worker control session.
  *
+ * @param userId Store owner represented by the Agent Environment Package.
+ * @param workspaceRoots Workspace inputs declared by the package fixture.
  * @returns App, gateway, token, package, and lineage fixtures.
  */
-function createWorkerControlRouteFixture(): {
+function createWorkerControlRouteFixture(
+  userId = LOCAL_USER_ID,
+  workspaceRoots: MaterializedWorkspaceRoot[] = []
+): {
   app: ReturnType<typeof createApp>;
   environmentPackage: AgentEnvironmentPackage;
   gateway: WorkerControlGateway;
@@ -60,7 +86,7 @@ function createWorkerControlRouteFixture(): {
     resolveAgentEnvironmentPackage({
       agent,
       agentSessionId: 'as_control_route_1',
-      userId: 'user_local',
+      userId,
       backend: {
         workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
@@ -70,7 +96,7 @@ function createWorkerControlRouteFixture(): {
       requestId: 'req_control_route_1',
       turn,
       workspaceCwd: '/workspace/repo',
-      workspaceRoots: [],
+      workspaceRoots,
     })
   );
   const gateway = new WorkerControlGateway({
@@ -103,13 +129,15 @@ function createWorkerControlRouteFixture(): {
  * @param environmentPackage Durable package snapshot owned by the lease.
  * @param lineage Worker lineage owned by the lease.
  * @param suffix Stable test id suffix.
+ * @param userId Store owner recorded on the scheduler admission.
  * @returns Sandbox binding ref registered on the lease.
  */
 function createDurableWorkerControlLease(
   coreDb: CoreDb,
   environmentPackage: AgentEnvironmentPackage,
   lineage: WorkerControlLineage,
-  suffix: string
+  suffix: string,
+  userId = LOCAL_USER_ID
 ): string {
   const poolId = `pool_${suffix}`;
   const targetId = `target_${suffix}`;
@@ -158,6 +186,7 @@ function createDurableWorkerControlLease(
     threadId: lineage.threadId,
     turnId: lineage.turnId,
     turnInput: 'Run durable worker-control test',
+    userId,
     workspaceId: lineage.workspaceId,
   });
   dispatchNextSchedulerEntry(coreDb, {
@@ -174,7 +203,7 @@ function createDurableWorkerControlLease(
     schedulerEpoch: 1,
     startupTimeoutMs: 120_000,
   });
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, lineage.workspaceId);
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, userId, lineage.workspaceId);
 
   try {
     applyScopedMigrations(workspaceDb);
@@ -187,6 +216,54 @@ function createDurableWorkerControlLease(
   }
 
   return binding;
+}
+
+/** Records the exact durable backend identity owned by one worker-control lease fixture. */
+function recordWorkerControlBackendSession(
+  coreDb: CoreDb,
+  environmentPackage: AgentEnvironmentPackage,
+  lineage: WorkerControlLineage,
+  sandboxBindingRef: string,
+  backendSessionId: string
+): string {
+  return recordWorkerBackendSessionMaterializing(coreDb, {
+    backendVersion: '0.0.80',
+    workerImage: environmentPackage.runtime.image.ref,
+    identity: {
+      agentSessionId: lineage.agentSessionId,
+      backendKind: 'openshell',
+      backendSessionId,
+      backendTarget: {
+        cellTargetId: 'cell-test',
+        gatewayEndpoint: null,
+        gatewayName: 'openshell',
+        placement: 'local',
+      },
+      deploymentId: 'deployment-worker-control-test',
+      packageSnapshotId: lineage.packageSnapshotId,
+      stagingDirectoryRef: `server/runtime/worker-backend-sessions/${lineage.packageSnapshotId}`,
+      transientProviderInstanceId: null,
+    },
+    lineage: {
+      threadId: lineage.threadId,
+      turnId: lineage.turnId,
+      workspaceId: lineage.workspaceId,
+    },
+    sandboxBindingRef,
+  }).leaseId;
+}
+
+/** Advances one test backend identity through successful physical and durable cleanup. */
+function markWorkerControlBackendSessionCleaned(coreDb: CoreDb, leaseId: string): void {
+  const transitions = [
+    ['materializing', 'cleanup-pending'],
+    ['cleanup-pending', 'physical-cleaned'],
+    ['physical-cleaned', 'cleaned'],
+  ] as const;
+
+  for (const [fromState, toState] of transitions) {
+    transitionWorkerBackendSessionState(coreDb, { fromState, leaseId, toState });
+  }
 }
 
 describe('worker control routes', () => {
@@ -440,6 +517,143 @@ describe('worker control routes', () => {
     }
   });
 
+  it('never persists worker bearer tokens in sequenced control state', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-token-redaction-'));
+    const coreDb = openCoreDb(dataRoot);
+    const { environmentPackage, lineage, store } = createWorkerControlRouteFixture();
+    const token = 'okw_sequence_fingerprint_secret';
+
+    try {
+      applyMigrations(coreDb);
+      const gateway = new WorkerControlGateway({
+        acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
+        createToken: () => token,
+        now: () => '2026-07-15T00:00:00.000Z',
+        sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
+      });
+      gateway.registerSession(environmentPackage);
+      const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
+      const requests = [
+        {
+          accepted: { lineage, message: 'alive', sequence: 1, status: 'running' },
+          conflict: { lineage, message: 'changed', sequence: 1, status: 'running' },
+          operation: 'heartbeat',
+          route: '/api/worker-control/heartbeat',
+        },
+        {
+          accepted: {
+            artifact: { path: 'reports/result.md', title: 'Result' },
+            lineage,
+            sequence: 2,
+          },
+          conflict: {
+            artifact: { path: 'reports/result.md', title: 'Changed result' },
+            lineage,
+            sequence: 2,
+          },
+          operation: 'artifact_notice',
+          route: '/api/worker-control/artifacts',
+        },
+        {
+          accepted: {
+            body: { message: 'refreshed', refreshId: 'refresh_token_redaction', status: 'applied' },
+            lineage,
+            operation: 'supply_refresh_ack',
+            schemaVersion: 1,
+            sequence: 3,
+          },
+          conflict: {
+            body: { message: 'changed', refreshId: 'refresh_token_redaction', status: 'applied' },
+            lineage,
+            operation: 'supply_refresh_ack',
+            schemaVersion: 1,
+            sequence: 3,
+          },
+          operation: 'supply_refresh_ack',
+          route: '/api/worker-control/supply-refresh-ack',
+        },
+        {
+          accepted: {
+            body: {
+              proposalId: 'proposal_token_redaction',
+              summary: 'Original summary',
+              title: 'Proposal',
+            },
+            lineage,
+            operation: 'knowledge_proposal_summary',
+            schemaVersion: 1,
+            sequence: 4,
+          },
+          conflict: {
+            body: {
+              proposalId: 'proposal_token_redaction',
+              summary: 'Changed summary',
+              title: 'Proposal',
+            },
+            lineage,
+            operation: 'knowledge_proposal_summary',
+            schemaVersion: 1,
+            sequence: 4,
+          },
+          operation: 'knowledge_proposal_summary',
+          route: '/api/worker-control/knowledge-proposal-summary',
+        },
+      ] as const;
+
+      for (const request of requests) {
+        const send = (body: unknown) =>
+          app.request(request.route, {
+            body: JSON.stringify(body),
+            headers: {
+              authorization: `Bearer ${token}`,
+              'content-type': 'application/json',
+            },
+            method: 'POST',
+          });
+        const accepted = await send(request.accepted);
+        const replay = await send(request.accepted);
+        const conflict = await send(request.conflict);
+
+        expect.soft(accepted.status, request.operation).toBe(200);
+        expect.soft(replay.status, request.operation).toBe(200);
+        expect.soft(conflict.status, request.operation).toBe(409);
+        expect.soft(await conflict.json(), request.operation).toMatchObject({
+          code: 'worker_control_sequence_conflict',
+        });
+      }
+
+      const fingerprints = coreDb.sqlite
+        .prepare(
+          `SELECT operation, fingerprint
+             FROM worker_control_sequence_fingerprints
+            ORDER BY operation`
+        )
+        .all() as Array<{ fingerprint: string; operation: string }>;
+      const records = coreDb.sqlite
+        .prepare(
+          `SELECT operation, record_json AS recordJson
+             FROM worker_control_records
+            ORDER BY operation`
+        )
+        .all() as Array<{ operation: string; recordJson: string }>;
+
+      expect(fingerprints.map(({ operation }) => operation)).toEqual(
+        requests.map(({ operation }) => operation).sort()
+      );
+      expect(records.map(({ operation }) => operation)).toEqual(
+        requests.map(({ operation }) => operation).sort()
+      );
+      expect(JSON.stringify(fingerprints)).not.toContain(token);
+      expect(JSON.stringify(records)).not.toContain(token);
+      coreDb.sqlite.close();
+      expect(readFileSync(coreDbPath(dataRoot)).includes(token)).toBe(false);
+    } finally {
+      if (coreDb.sqlite.open) {
+        coreDb.sqlite.close();
+      }
+    }
+  });
+
   it('records rejected worker-control evidence through the default gateway', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-rejected-')));
     const store = createDemoStore();
@@ -637,6 +851,13 @@ describe('worker control routes', () => {
       schedulerEpoch: 1,
       startupTimeoutMs: 120_000,
     });
+    const backendLeaseId = recordWorkerControlBackendSession(
+      coreDb,
+      environmentPackage,
+      lineage,
+      'lease-binding:lease_default_binding',
+      'sandbox_default_binding'
+    );
     const registration = gateway.registerSession(environmentPackage, {
       sandboxBindingRef: 'lease-binding:lease_default_binding',
     });
@@ -764,6 +985,7 @@ describe('worker control routes', () => {
 
     expect(staleResponse.status).toBe(403);
     expect(staleBody.code).toBe('worker_control_lease_not_live');
+    markWorkerControlBackendSessionCleaned(coreDb, backendLeaseId);
     completeSchedulerSessionLease(coreDb, {
       leaseId: 'lease_default_binding',
       releaseReason: 'completed',
@@ -869,6 +1091,48 @@ describe('worker control routes', () => {
     expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.events).toEqual([]);
   });
 
+  it('records final status as the exact canonical terminal event', async () => {
+    const { app, environmentPackage, gateway, lineage, token } = createWorkerControlRouteFixture();
+    const response = await app.request('/api/worker-control/final-status', {
+      body: JSON.stringify({
+        body: {
+          diagnostics: { stderr: 'Product-safe failure summary.' },
+          evidenceManifestDigests: { runtime: 'sha256:runtime' },
+          status: 'failed',
+          stopReason: 'worker-runtime-failed',
+        },
+        lineage,
+        operation: 'final_status',
+        schemaVersion: 1,
+        sequence: 7,
+      }),
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+    });
+
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.events).toEqual([
+      {
+        event: {
+          data: {
+            diagnostics: { stderr: 'Product-safe failure summary.' },
+            evidenceManifestDigests: { runtime: 'sha256:runtime' },
+            status: 'failed',
+            stopReason: 'worker-runtime-failed',
+          },
+          type: 'turn.failed',
+        },
+        kind: 'event',
+        lineage,
+        schemaVersion: 1,
+        sequence: 7,
+      },
+    ]);
+  });
+
   it.each([
     'turn.completed',
     'turn.failed',
@@ -878,7 +1142,14 @@ describe('worker control routes', () => {
       body: JSON.stringify({
         lineage,
         record: {
-          event: { data: { stopReason: 'completed' }, type: eventType },
+          event: {
+            data: {
+              evidenceManifestDigests: {},
+              status: eventType === 'turn.completed' ? 'completed' : 'failed',
+              stopReason: eventType === 'turn.completed' ? 'completed' : 'failed',
+            },
+            type: eventType,
+          },
           kind: 'event',
           lineage,
           schemaVersion: 1,
@@ -1015,6 +1286,13 @@ describe('worker control routes', () => {
       startupTimeoutMs: 120_000,
       now: () => '2099-07-05T00:00:02.000Z',
     });
+    const backendLeaseId = recordWorkerControlBackendSession(
+      coreDb,
+      environmentPackage,
+      lineage,
+      'lease-binding:lease_final_status',
+      'sandbox_final_status'
+    );
     acceptSchedulerLeaseHeartbeat(coreDb, {
       heartbeatTimeoutMs: 30_000,
       leaseId: 'lease_final_status',
@@ -1115,8 +1393,36 @@ describe('worker control routes', () => {
           ORDER BY operation`
       )
       .all(lineage.turnId);
+    const acceptedEvents = listWorkerControlAcceptedEvents(coreDb, lineage);
+    const transcriptImport = importWorkerTranscript(
+      store,
+      environmentPackage,
+      { eventsJsonl: `${JSON.stringify(acceptedEvents[0])}\n` },
+      { acceptedLiveEvents: acceptedEvents }
+    );
 
     expect(accepted.status).toBe(200);
+    expect.soft(acceptedEvents).toEqual([
+      {
+        event: {
+          data: {
+            evidenceManifestDigests: {},
+            status: 'completed',
+            stopReason: 'completed',
+          },
+          type: 'turn.completed',
+        },
+        kind: 'event',
+        lineage,
+        schemaVersion: 1,
+        sequence: 7,
+      },
+    ]);
+    expect.soft(transcriptImport).toMatchObject({
+      dedupedEventSequences: [7],
+      diagnostics: [],
+      rejectedEventSequences: [],
+    });
     expect.soft(acceptedRecords).toEqual([
       { count: 1, operation: 'event_append' },
       { count: 1, operation: 'final_status' },
@@ -1173,6 +1479,7 @@ describe('worker control routes', () => {
       threadId: lineage.threadId,
       workspaceId: lineage.workspaceId,
     };
+    markWorkerControlBackendSessionCleaned(coreDb, backendLeaseId);
     completeSchedulerLeaseForTerminalTurn(coreDb, completedTurn);
     completeSchedulerLeaseForTerminalTurn(coreDb, completedTurn);
 
@@ -1190,6 +1497,341 @@ describe('worker control routes', () => {
 
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
+  });
+
+  it('resolves a live final-status binding inside its Core transaction', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-live-race-')));
+    const { environmentPackage, lineage, store } = createWorkerControlRouteFixture();
+
+    try {
+      applyMigrations(coreDb);
+      const binding = createDurableWorkerControlLease(
+        coreDb,
+        environmentPackage,
+        lineage,
+        'final_status_live_race'
+      );
+      const gateway = new WorkerControlGateway({
+        acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
+        resolveFinalStatusTokenBinding: (input) =>
+          resolveWorkerControlFinalStatusTokenBinding(coreDb, input),
+        runFinalStatusTransaction: (operation) => {
+          coreDb.sqlite
+            .prepare(
+              'UPDATE scheduler_session_leases SET sandbox_binding_ref = ? WHERE lease_id = ?'
+            )
+            .run('revoked-binding', 'lease_final_status_live_race');
+          return coreDb.sqlite.transaction(operation)();
+        },
+        sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
+      });
+      gateway.registerSession(environmentPackage, { sandboxBindingRef: binding });
+      const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
+      const response = await app.request('/api/worker-control/final-status', {
+        body: JSON.stringify({
+          body: { status: 'completed', stopReason: 'completed' },
+          lineage,
+          operation: 'final_status',
+          schemaVersion: 1,
+          sequence: 7,
+        }),
+        headers: { authorization: `Bearer ${binding}`, 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      const acceptedRecordCount = coreDb.sqlite
+        .prepare(
+          `SELECT COUNT(*) AS count
+             FROM worker_control_records
+            WHERE turn_id = ? AND operation IN ('event_append', 'final_status')`
+        )
+        .get(lineage.turnId) as { count: number };
+      const fingerprintCount = coreDb.sqlite
+        .prepare(
+          `SELECT COUNT(*) AS count
+             FROM worker_control_sequence_fingerprints
+            WHERE turn_id = ? AND operation IN ('event_append', 'final_status')`
+        )
+        .get(lineage.turnId) as { count: number };
+
+      expect(response.status).toBe(401);
+      expect.soft(acceptedRecordCount.count).toBe(0);
+      expect.soft(fingerprintCount.count).toBe(0);
+      expect(requireSchedulerSessionLease(coreDb, 'lease_final_status_live_race')).toMatchObject({
+        releaseReason: null,
+        sandboxBindingRef: 'revoked-binding',
+        status: 'acquired',
+      });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects exact final-status replay when release grace expires at transaction entry', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-replay-race-')));
+    const { environmentPackage, lineage, store } = createWorkerControlRouteFixture();
+    let transactionCount = 0;
+
+    try {
+      applyMigrations(coreDb);
+      const binding = createDurableWorkerControlLease(
+        coreDb,
+        environmentPackage,
+        lineage,
+        'final_status_replay_race'
+      );
+      const backendLeaseId = recordWorkerControlBackendSession(
+        coreDb,
+        environmentPackage,
+        lineage,
+        binding,
+        'sandbox_final_status_replay_race'
+      );
+      const gateway = new WorkerControlGateway({
+        acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
+        onFinalStatusAccepted: (input) => {
+          const resolution = resolveSchedulerLeaseTokenBinding(coreDb, input);
+
+          if (resolution.status !== 'accepted') {
+            throw new Error('Expected a live lease during initial final-status acceptance.');
+          }
+
+          markSchedulerSessionLeaseReleasing(coreDb, {
+            leaseId: resolution.lease.leaseId,
+            releaseReason: 'worker-final-status',
+          });
+        },
+        resolveFinalStatusTokenBinding: (input) =>
+          resolveWorkerControlFinalStatusTokenBinding(coreDb, input),
+        runFinalStatusTransaction: (operation) => {
+          transactionCount += 1;
+          if (transactionCount === 2) {
+            coreDb.sqlite
+              .prepare('UPDATE scheduler_session_leases SET expires_at = ? WHERE lease_id = ?')
+              .run('2000-01-01T00:00:00.000Z', 'lease_final_status_replay_race');
+            markWorkerControlBackendSessionCleaned(coreDb, backendLeaseId);
+            completeSchedulerSessionLease(coreDb, {
+              leaseId: 'lease_final_status_replay_race',
+              recoveryState: 'needs-evidence',
+              releaseReason: 'release-grace-timeout',
+              terminalStatus: 'lost',
+            });
+          }
+          return coreDb.sqlite.transaction(operation)();
+        },
+        sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
+      });
+      gateway.registerSession(environmentPackage, { sandboxBindingRef: binding });
+      const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
+      const request = {
+        body: JSON.stringify({
+          body: { status: 'completed', stopReason: 'completed' },
+          lineage,
+          operation: 'final_status',
+          schemaVersion: 1,
+          sequence: 7,
+        }),
+        headers: { authorization: `Bearer ${binding}`, 'content-type': 'application/json' },
+        method: 'POST' as const,
+      };
+      const accepted = await app.request('/api/worker-control/final-status', request);
+      const replay = await app.request('/api/worker-control/final-status', request);
+      const acceptedRecordCount = coreDb.sqlite
+        .prepare(
+          `SELECT COUNT(*) AS count
+             FROM worker_control_records
+            WHERE turn_id = ? AND operation IN ('event_append', 'final_status')`
+        )
+        .get(lineage.turnId) as { count: number };
+      const fingerprintCount = coreDb.sqlite
+        .prepare(
+          `SELECT COUNT(*) AS count
+             FROM worker_control_sequence_fingerprints
+            WHERE turn_id = ? AND operation IN ('event_append', 'final_status')`
+        )
+        .get(lineage.turnId) as { count: number };
+
+      expect(accepted.status).toBe(200);
+      expect(replay.status).toBe(403);
+      expect.soft(acceptedRecordCount.count).toBe(2);
+      expect.soft(fingerprintCount.count).toBe(2);
+      expect(requireSchedulerSessionLease(coreDb, 'lease_final_status_replay_race')).toMatchObject({
+        expiresAt: '2000-01-01T00:00:00.000Z',
+        recoveryState: 'needs-evidence',
+        releaseReason: 'release-grace-timeout',
+        status: 'lost',
+      });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('retains the backend handle in the admission owner workspace only', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-owner-')));
+    const ownerUserId = 'user_server_owner';
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-final-status-owner-repo-'));
+
+    execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'openkit@example.invalid'], {
+      cwd: repositoryPath,
+    });
+    execFileSync('git', ['config', 'user.name', 'OpenKit'], { cwd: repositoryPath });
+    writeFileSync(join(repositoryPath, 'README.md'), '# Workspace\n', 'utf8');
+    execFileSync('git', ['add', 'README.md'], { cwd: repositoryPath });
+    execFileSync('git', ['commit', '-m', 'initial'], { cwd: repositoryPath, stdio: 'ignore' });
+    const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: repositoryPath,
+      encoding: 'utf8',
+    }).trim();
+    const { environmentPackage, lineage, store } = createWorkerControlRouteFixture(ownerUserId, [
+      {
+        access: 'read-write',
+        id: 'repo_default',
+        sourceCommit,
+        sourceKind: 'host-dir',
+        sourcePath: repositoryPath,
+        workerPath: '/workspace/repo',
+      },
+    ]);
+    const ownerWorkspaceDb = openWorkspaceDb(coreDb.dataRoot, ownerUserId, lineage.workspaceId);
+    const localWorkspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, lineage.workspaceId);
+
+    try {
+      applyMigrations(coreDb);
+      const binding = createDurableWorkerControlLease(
+        coreDb,
+        environmentPackage,
+        lineage,
+        'final_status_owner',
+        ownerUserId
+      );
+      const backendLeaseId = recordWorkerControlBackendSession(
+        coreDb,
+        environmentPackage,
+        lineage,
+        binding,
+        'sandbox_final_status_owner'
+      );
+      applyScopedMigrations(ownerWorkspaceDb);
+      applyScopedMigrations(localWorkspaceDb);
+      const inputSnapshots = buildWorkspaceInputSnapshots({
+        backendCapabilities: environmentPackage.backend.requiredCapabilities,
+        backendKind: 'openshell',
+        createdAt: '2026-06-16T00:00:01.000Z',
+        environmentPackage,
+      });
+      const materializations = buildWorkspaceMaterializationRecords({
+        createdAt: '2026-06-16T00:00:01.000Z',
+        inputSnapshots,
+        materialization: {
+          backendKind: 'openshell',
+          backendStatus: { health: 'ready', version: '0.0.80' },
+          packageSnapshotId: environmentPackage.snapshotId,
+          requiredCapabilities: environmentPackage.backend.requiredCapabilities,
+          sandbox: { name: 'sandbox_final_status_owner', state: 'created' },
+          workspaceInputs: environmentPackage.workspace.inputs.map((input) => ({
+            id: input.id,
+            target: input.target,
+          })),
+        },
+      });
+      recordWorkspaceInputSnapshots(ownerWorkspaceDb, inputSnapshots);
+      recordWorkspaceMaterializationRecords(ownerWorkspaceDb, materializations);
+      recordWorkspaceInputSnapshots(localWorkspaceDb, inputSnapshots);
+      recordWorkspaceMaterializationRecords(localWorkspaceDb, materializations);
+      const gateway = createDefaultWorkerControlGateway(coreDb);
+      const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
+      const request = {
+        body: JSON.stringify({
+          body: { status: 'completed', stopReason: 'completed' },
+          lineage,
+          operation: 'final_status',
+          schemaVersion: 1,
+          sequence: 7,
+        }),
+        headers: { authorization: `Bearer ${binding}`, 'content-type': 'application/json' },
+        method: 'POST' as const,
+      };
+      const response = await app.request('/api/worker-control/final-status', request);
+
+      expect(response.status).toBe(200);
+      expect(listBackendWorkspaceHandles(ownerWorkspaceDb, lineage.workspaceId)).toEqual([
+        expect.objectContaining({ cleanupStatus: 'retained' }),
+      ]);
+      expect(listBackendWorkspaceHandles(localWorkspaceDb, lineage.workspaceId)).toEqual([
+        expect.objectContaining({ cleanupStatus: 'pending' }),
+      ]);
+
+      updateBackendWorkspaceHandleCleanupStatus(
+        ownerWorkspaceDb,
+        lineage.workspaceId,
+        lineage.packageSnapshotId,
+        'pending',
+        '2026-06-16T00:00:02.000Z'
+      );
+      const restartedGateway = createDefaultWorkerControlGateway(coreDb);
+      const restartedApp = createApp({
+        coreDb,
+        mode: 'server',
+        store,
+        workerControlGateway: restartedGateway,
+      });
+      const replay = await restartedApp.request('/api/worker-control/final-status', request);
+
+      expect(replay.status).toBe(200);
+      expect(listBackendWorkspaceHandles(ownerWorkspaceDb, lineage.workspaceId)).toEqual([
+        expect.objectContaining({ cleanupStatus: 'retained' }),
+      ]);
+      expect(listBackendWorkspaceHandles(localWorkspaceDb, lineage.workspaceId)).toEqual([
+        expect.objectContaining({ cleanupStatus: 'pending' }),
+      ]);
+
+      markWorkerControlBackendSessionCleaned(coreDb, backendLeaseId);
+      const releasingLease = requireSchedulerSessionLease(coreDb, 'lease_final_status_owner');
+      completeSchedulerSessionLease(coreDb, {
+        leaseId: releasingLease.leaseId,
+        recoveryState: 'needs-evidence',
+        releaseReason: 'release-grace-timeout',
+        terminalStatus: 'lost',
+      });
+      runSchedulerLeaseMaintenanceOnce(coreDb, {
+        maxTotalLeaseMs: 7_200_000,
+        now: () => new Date(Date.parse(releasingLease.expiresAt) + 1).toISOString(),
+        onError: (error) => {
+          throw error;
+        },
+        renewalDurationMs: 1_800_000,
+        renewalLeadMs: 300_000,
+      });
+
+      expect(listWorkspaceReconciliationRecords(ownerWorkspaceDb, lineage.workspaceId)).toEqual([
+        expect.objectContaining({
+          backendHandleSummary: expect.objectContaining({ cleanupStatus: 'retained' }),
+          backendReachability: expect.objectContaining({ detail: 'release-grace-timeout' }),
+          stateBefore: 'lease-releasing',
+          triggerReason: 'backend_takeover',
+        }),
+      ]);
+      expect(listWorkspaceReconciliationRecords(localWorkspaceDb, lineage.workspaceId)).toEqual([]);
+      expect(listBackendWorkspaceHandles(localWorkspaceDb, lineage.workspaceId)).toEqual([
+        expect.objectContaining({ cleanupStatus: 'pending' }),
+      ]);
+      expect(requireSchedulerSessionLease(coreDb, 'lease_final_status_owner')).toMatchObject({
+        recoveryState: 'recovery-projected',
+        releaseReason: 'release-grace-timeout',
+        status: 'lost',
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT in_use_count AS inUseCount FROM scheduler_capacity_records WHERE target_id = ?'
+          )
+          .get('target_final_status_owner')
+      ).toEqual({ inUseCount: 0 });
+    } finally {
+      ownerWorkspaceDb.sqlite.close();
+      localWorkspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
   });
 
   it('replays only exact final status while its lease is releasing', async () => {
@@ -1248,7 +1890,11 @@ describe('worker control routes', () => {
           lineage,
           record: {
             event: {
-              data: { evidenceManifestDigests: {}, stopReason: 'completed' },
+              data: {
+                evidenceManifestDigests: {},
+                status: 'completed',
+                stopReason: 'completed',
+              },
               type: 'turn.completed',
             },
             kind: 'event',

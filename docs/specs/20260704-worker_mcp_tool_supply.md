@@ -34,7 +34,7 @@ Implementation: Partial
 
 Worker agents need MCP tools, and the product vision routes all worker access to external systems through Core-governed gateways. This spec defines the accepted MCP plane of that unified-proxy direction for worker traffic: workers never connect to MCP servers directly; they will call `mcp.*` routes on `capability.local`, and NanoCore will own the servers, credentials, policy checks, audit trail, and tool schema history.
 
-MCP servers are declared once in a workspace-scoped catalog and referenced by name from agent manifests, mirroring the workspace data source catalog pattern: endpoints and launch configs never appear inline in manifests. Every tool call is one `CapabilityCall` with a `UsageRecord`; tool schemas are snapshotted per server version so calls stay interpretable after servers change; credentials are injected at the gateway with `gateway-only` visibility and never reach worker sandboxes.
+In the accepted target, MCP servers are declared once in a workspace-scoped catalog and referenced by name from agent manifests, mirroring the workspace data source catalog pattern: endpoints and launch configs never appear inline in manifests. Every tool call will be one `CapabilityCall` with a `UsageRecord`; tool schemas will be snapshotted per server version so calls stay interpretable after servers change; credentials will be injected at the gateway with `gateway-only` visibility and never reach worker sandboxes.
 
 ## Goals / Non-goals
 
@@ -92,7 +92,7 @@ Rules:
 
 ### Routes on capability.local
 
-Three routes join the capability plane, using its existing envelope, lineage, authentication, and verification rules (owned by the worker capability spec):
+Three target operations will join the future capability plane, using the envelope, lineage, authentication, and verification rules owned by the worker capability spec:
 
 - `mcp.list_servers`: returns the servers enabled for this agent session — entry names, transport kind, health state, and tool-name summaries only. No endpoints, no launch configs, no credential hints.
 - `mcp.list_tools`: returns the tool schemas for one named server, served from the current `McpToolSchemaSnapshot` (see below), not live from the server, so listing is deterministic per snapshot.

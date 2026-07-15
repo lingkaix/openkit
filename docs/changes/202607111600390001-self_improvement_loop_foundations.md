@@ -111,8 +111,8 @@ Implements the Replay Reconstruction contract of `20260703-worker_context_packag
 Implements `20260711-evaluation_harness_design.md`.
 
 - Evaluation area layout, `EvalTask` and suite snapshot records, harvest tooling fed by Reflector nominations; export-family wiring per the updated backup/export spec.
-- Candidate execution over scheduler-admitted `maintenance` turns with retained-snapshot materialization and fixed budgets; error continuation; mechanical metrics from usage/audit rows; curve recording.
-- Judge sandbox runner with the held-back acceptance zone; Judge LLM dispatch with routing table, blinding, sealed ordering, and A/A injection.
+- Candidate execution over scheduler-admitted `maintenance` turns with retained-snapshot materialization and fixed budgets; error continuation; mechanical metrics from usage/audit rows; curve recording. The first implementation runs candidate work in one disposable Cell epoch and completes its recycle before Judge execution begins.
+- Judge sandbox runner with the held-back acceptance zone in a second fresh disposable Cell epoch; Judge LLM dispatch with routing table, blinding, sealed ordering, and A/A injection. Concurrent candidate and Judge Cells remain blocked until multi-Cell capacity is designed and proved.
 - Run records, evidence bundles, audit categories, read-only projections; harness version and comparability refusal.
 
 ### Stage 7 — Improvement proposal lifecycle (self-improvement Phase 2 completion)
@@ -146,7 +146,7 @@ Implements `20260711-evaluation_harness_design.md`.
 
 - Prompt-template versioning has no substrate spec; Stage 7 may force a follow-up spec, delaying full Phase 2 closure. Mitigation: skill-version proposals do not depend on it; land them first.
 - Replay reconstruction (Stage 5) depends on source-record retention quality; harvested tasks whose sources have drifted retire early, shrinking initial suites. Mitigation: retained snapshots are the primary replay path; reconstruction is the fallback and drift detector.
-- The two-sandbox harness profile adds sandbox-lifecycle load; provisioning cost could dominate minute-scale runs. Mitigation: minimal judge-sandbox profile, mechanical checks before LLM dispatch, warm reuse deferred until measured.
+- The sequential two-Cell harness profile adds sandbox-lifecycle load; provisioning cost could dominate minute-scale runs. Mitigation: minimal Judge profile, mechanical checks before LLM dispatch, and no concurrent or warm reuse until multi-Cell ownership is proved.
 - Metering enforcement does not exist; budget caps rely on the trigger mechanism's deferral stub until it does. Mitigation: consumption is visible from Stage 3 via the usage category, so runaway cost is observable before enforcement lands.
 - Scope breadth: eight stages across scheduler, knowledge, supply, sandbox, and review surfaces invites drift. Mitigation: stage checkpoints in this record, spec-first gap handling, and the option to split Stage 8.
 

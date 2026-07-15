@@ -50,7 +50,16 @@ import {
   startSchedulerLeaseMaintenanceService,
 } from './runtime/scheduler-lease-maintenance-service.js';
 import { runSchedulerRestartRecovery } from './runtime/scheduler-restart-recovery.js';
-import { createConfiguredTurnExecutor } from './runtime/turn-executor-factory.js';
+import {
+  type ConfiguredWorkerLifecycleRuntime,
+  createConfiguredWorkerLifecycleRuntime,
+} from './runtime/turn-executor-factory.js';
+import { terminalizeGovernedWorkerTurnFailure } from './runtime/worker-turn-failure.js';
+import {
+  CONFIGURED_WORKER_INITIAL_LEASE_DURATION_MS,
+  CONFIGURED_WORKER_STARTUP_TIMEOUT_MS,
+  requireSchedulerSessionLeaseAdmissionContext,
+} from './scheduler-records.js';
 import {
   type CoreDb,
   openCoreDbWithIntegrityRecovery,
@@ -90,6 +99,8 @@ let mode: ReturnType<typeof resolveMode> | undefined;
 let bindPort: number | undefined;
 let coreDb: CoreDb | undefined;
 let vaultUnlockState: VaultUnlockState | undefined;
+let bootWorkerControlGateway: ReturnType<typeof createDefaultWorkerControlGateway> | undefined;
+let workerLifecycleRuntime: ConfiguredWorkerLifecycleRuntime | undefined;
 
 process.once('exit', releaseProcessResources);
 
@@ -236,9 +247,48 @@ const bootResult = await runBootPhases({
       name: 'scheduler-restart-recovery',
       subsystem: 'scheduler',
       critical: true,
-      run: () => {
-        schedulerEpoch = runSchedulerRestartRecovery(
-          requireBootValue(coreDb, 'Core database was not initialized.')
+      run: async () => {
+        const recoveryCoreDb = requireBootValue(coreDb, 'Core database was not initialized.');
+        bootWorkerControlGateway = createDefaultWorkerControlGateway(recoveryCoreDb);
+        workerLifecycleRuntime = createConfiguredWorkerLifecycleRuntime({
+          coreDb: recoveryCoreDb,
+          vaultBackend: () =>
+            requireBootValue(vaultUnlockState, 'Vault unlock state was not initialized.').backend(),
+          workerControlGateway: bootWorkerControlGateway,
+        });
+        schedulerEpoch = (
+          await runSchedulerRestartRecovery(recoveryCoreDb, {
+            cleanupBackendSession: workerLifecycleRuntime.cleanupBackendSession,
+            projectRecoveredTurn: async (subject) => {
+              const admission = requireSchedulerSessionLeaseAdmissionContext(
+                recoveryCoreDb,
+                subject.leaseId
+              );
+              const result = terminalizeGovernedWorkerTurnFailure({
+                agentSessionId: subject.agentSessionId,
+                completedAt: new Date().toISOString(),
+                errorCode: 'worker_governance_restart_recovery',
+                message: 'Worker execution stopped during NanoCore restart recovery.',
+                requestId: admission.requestId,
+                store: new FsStore({ dataRoot, userId: admission.userId }),
+                turnId: subject.turnId,
+              });
+
+              if (
+                result.status !== 'completed' &&
+                result.status !== 'failed' &&
+                result.status !== 'interrupted' &&
+                result.status !== 'cancelled' &&
+                result.status !== 'missing'
+              ) {
+                throw new Error(
+                  `Restart recovery left turn ${subject.turnId} non-terminal: ${result.status}.`
+                );
+              }
+
+              return { status: result.status };
+            },
+          })
         ).schedulerEpoch;
         return { status: 'ok' };
       },
@@ -294,12 +344,18 @@ if (mode === 'server') {
     );
   }
 }
-const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
-const turnExecutor = createConfiguredTurnExecutor({
-  coreDb,
-  vaultBackend: () => activeVaultUnlockState.backend(),
-  workerControlGateway,
-});
+const workerControlGateway = requireBootValue(
+  bootWorkerControlGateway,
+  'Worker-control gateway was not initialized.'
+);
+const turnExecutor = requireBootValue(
+  workerLifecycleRuntime,
+  'Worker lifecycle runtime was not initialized.'
+).turnExecutor;
+const workerPlacement = requireBootValue(
+  workerLifecycleRuntime,
+  'Worker lifecycle runtime was not initialized.'
+).placement;
 const refreshStatusCollector = maybeOpenShellRefreshStatusCollector(turnExecutor);
 const schedulerStoresByUserId = new Map<string, FsStore>();
 const auth =
@@ -322,6 +378,7 @@ const app = createApp({
   turnExecutor,
   vaultUnlockState: activeVaultUnlockState,
   workerControlGateway,
+  workerPlacement,
 });
 const hostname = resolveBindHost(process.env, mode, runtimeConfigSnapshot.openKitConfig);
 const port = requireBootValue(bindPort, 'HTTP bind port was not resolved.');
@@ -347,11 +404,11 @@ schedulerDispatchRetry = startSchedulerDispatchRetryService({
   heartbeatIntervalMs: 10_000,
   heartbeatTimeoutMs: 30_000,
   intervalMs: SCHEDULER_DISPATCH_RETRY_INTERVAL_MS,
-  leaseDurationMs: SCHEDULER_LEASE_RENEWAL_DURATION_MS,
+  leaseDurationMs: CONFIGURED_WORKER_INITIAL_LEASE_DURATION_MS,
   maxDispatches: SCHEDULER_DISPATCH_RETRY_MAX_DISPATCHES,
   providerRegistry: runtimeConfigManager.current().providerRegistry,
   schedulerEpoch,
-  startupTimeoutMs: 120_000,
+  startupTimeoutMs: CONFIGURED_WORKER_STARTUP_TIMEOUT_MS,
   storeForUserId: schedulerStoreForUserId,
   turnExecutor,
   onError: (error) => {

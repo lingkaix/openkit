@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 /** Durable scheduler session lease statuses. */
 export type SchedulerSessionLeaseStatus =
@@ -57,6 +57,11 @@ export const schedulerSessionLeases = sqliteTable(
     schedulerEpoch: integer('scheduler_epoch').notNull(),
     /** Non-secret sandbox binding reference. */
     sandboxBindingRef: text('sandbox_binding_ref').notNull(),
+    /** Durable proof that the pre-effect backend anchor transaction completed. */
+    backendAnchorState: text('backend_anchor_state')
+      .$type<'unanchored' | 'anchored'>()
+      .notNull()
+      .default('unanchored'),
     /** Release reason for terminal leases. */
     releaseReason: text('release_reason'),
     /** Recovery state for terminal or takeover leases. */
@@ -75,5 +80,6 @@ export const schedulerSessionLeases = sqliteTable(
       table.expiresAt,
       table.heartbeatDeadline
     ),
+    uniqueIndex('scheduler_session_leases_binding_idx').on(table.sandboxBindingRef),
   ]
 );

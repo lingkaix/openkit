@@ -24,7 +24,7 @@ This directory holds reusable libraries, shared configuration packages, internal
 - `@openkit/config-schema`: shared OpenKit config schemas, policy metadata, and workspace root materialization helpers.
 - `@openkit/policy-kernel`: shared standard-aligned NGAC subset policy kernel for relation-backed authorization decisions and decision traces.
 - `@openkit/worker-protocol`: canonical `Core <-> Worker` schemas for governed container worker records, control envelopes, transcript records, capability summaries, workspace-change manifests, and worker errors.
-- `@openkit/openshell-schema-snapshot`: vendored OpenShell schema snapshot for provider profile, sandbox policy, CLI surface, reserved namespace, and compatibility-range conformance.
+- `@openkit/openshell-schema-snapshot`: vendored exact-version boundary snapshot for the stock OpenShell `0.0.80` provider profile, sandbox policy, CLI surface, and reserved namespace consumed by NanoCore.
 - `@openkit/codex-app-server-schema`: vendored Codex app-server JSON Schema snapshot for the NanoCore host adapter boundary.
 - `@openkit/models-dev-catalog`: vendored `models.dev` catalog snapshots for provider-template traceability.
 

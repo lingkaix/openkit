@@ -103,11 +103,12 @@ interface ImportFixture {
 }
 
 describe('worker runtime provenance import', () => {
-  it('imports a complete primary, root, and sibling-child forest exactly and idempotently', async () => {
+  it('imports a complete forest with inherited parent history exactly and idempotently', async () => {
     const fixture = createImportFixture('openkit-runtime-provenance-import-');
     const capture = createRuntimeCaptureFixture(
       mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-capture-')),
-      fixture.lineage
+      fixture.lineage,
+      { inheritedRootHistory: true }
     );
 
     try {
@@ -285,7 +286,7 @@ describe('worker runtime provenance import', () => {
           ]),
           summary: expect.stringMatching(
             new RegExp(
-              `8 attributed, 0 unattributed, 1 root, 2 children, 0/0 gateway calls reconciled, gateway complete, bundles ${first.rawBundleId} and ${first.indexBundleId}`,
+              `9 attributed, 0 unattributed, 1 root, 2 children, 0/0 gateway calls reconciled, gateway complete, bundles ${first.rawBundleId} and ${first.indexBundleId}`,
               'i'
             )
           ),
@@ -829,6 +830,7 @@ function createRuntimeCaptureFixture(
     readonly childBRole?: string;
     readonly childBRoot?: boolean;
     readonly cycle?: boolean;
+    readonly inheritedRootHistory?: boolean;
     readonly manifestLineageMismatch?: boolean;
     readonly missingFrame?: boolean;
     readonly overlappingFrames?: boolean;
@@ -900,6 +902,21 @@ function createRuntimeCaptureFixture(
           runtimeRole: 'reviewer',
         },
       },
+      ...(options.inheritedRootHistory
+        ? [
+            {
+              record: sessionMeta(ROOT_NATIVE_ID),
+              origin: {
+                nativeSessionId: NATIVE_SESSION_ID,
+                nativeThreadId: CHILD_A_NATIVE_ID,
+                parentNativeThreadId: childAParent,
+                runtimeDepth: 1,
+                runtimeNickname: 'Curie',
+                runtimeRole: 'reviewer',
+              },
+            },
+          ]
+        : []),
       {
         record: turnContext('20000000-0000-4000-8000-000000000002'),
         origin: {

@@ -1,133 +1,165 @@
-import { randomUUID } from 'node:crypto';
+import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import {
-  expireReleasingSchedulerLeases,
-  listSchedulerLeasesNeedingWorkspaceRecovery,
+  completeSchedulerSessionLease,
+  requireSchedulerSessionLeaseAdmissionContext,
 } from '../scheduler-records.js';
-import type { CoreDb } from '../storage/db.js';
-import { recordWorkspaceRecoveryTriggersForLeases } from './scheduler-lease-maintenance-service.js';
+import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import { applyScopedMigrations } from '../storage/migrate.js';
+import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import { projectWorkerBackendCleanup } from './worker-backend-cleanup-projection.js';
+import {
+  getWorkerBackendSession,
+  listWorkerBackendSessions,
+  markWorkerBackendWorkspaceHandoffComplete,
+  transitionWorkerBackendSessionState,
+  type WorkerBackendSessionRecord,
+} from './worker-backend-sessions.js';
+import type { WorkerGovernanceBackendSessionIdentity } from './worker-governance-backend.js';
+
+/** Product turn state established by restart recovery projection. */
+export type RecoveredTurnStatus = 'completed' | 'failed' | 'interrupted' | 'cancelled' | 'missing';
+
+/** Durable lease context presented to product recovery for pre-anchor turns. */
+export interface PreAnchorRecoveryContext {
+  /** Scheduler lease id. */
+  readonly leaseId: string;
+  /** Workspace lineage id. */
+  readonly workspaceId: string;
+  /** Thread lineage id. */
+  readonly threadId: string;
+  /** Turn lineage id. */
+  readonly turnId: string;
+  /** Agent session lineage id. */
+  readonly agentSessionId: string;
+  /** Package snapshot lineage id. */
+  readonly packageSnapshotId: string;
+}
 
 /** Input for scheduler restart recovery. */
 export interface RunSchedulerRestartRecoveryInput {
+  /** Physically destroys one exact durable backend identity. */
+  readonly cleanupBackendSession?: (session: RestartBackendCleanupRequest) => Promise<void>;
   /** Optional deterministic clock. */
   readonly now?: () => string;
+  /** Projects one recovered product turn and returns its authoritative terminal state. */
+  readonly projectRecoveredTurn: (
+    subject: WorkerBackendSessionRecord | PreAnchorRecoveryContext
+  ) => Promise<{ readonly status: RecoveredTurnStatus }>;
+}
+
+/** Exact cleanup request reconstructed only from the durable Core anchor. */
+export interface RestartBackendCleanupRequest extends WorkerGovernanceBackendSessionIdentity {
+  /** Scheduler lease used only for recovery coordination and diagnostics. */
+  readonly leaseId: string;
 }
 
 /** Result of scheduler restart recovery. */
 export interface SchedulerRestartRecoveryResult {
-  /** Non-terminal leases adopted by the new scheduler epoch. */
+  /** Always empty because restart never adopts an unproven physical session. */
   readonly adoptedLeaseIds: string[];
-  /** Pre-launch leases failed and requeued. */
+  /** Pre-anchor leases failed after product projection. */
   readonly preLaunchFailedLeaseIds: string[];
   /** Scheduler epoch minted for this process. */
   readonly schedulerEpoch: number;
-  /** Live leases marked stale during recovery. */
+  /** Always empty because anchored sessions are cleaned instead of adopted. */
   readonly staleLeaseIds: string[];
 }
 
-interface LeaseRecoveryRow {
-  readonly heartbeat_deadline: string;
-  readonly last_accepted_heartbeat_at: string | null;
-  readonly lease_id: string;
-  readonly plan_id: string;
-  readonly pool_id: string;
-  readonly agent_session_id: string;
+/** Raw non-terminal lease fields required by restart recovery. */
+interface LeaseRecoveryRow extends PreAnchorRecoveryContext {
+  readonly backendAnchorState: 'unanchored' | 'anchored';
+  readonly heartbeatDeadline: string;
+  readonly lastAcceptedHeartbeatAt: string | null;
+  readonly planId: string;
+  readonly poolId: string;
   readonly status: string;
-  readonly package_snapshot_id: string;
-  readonly release_reason: string | null;
-  readonly target_id: string;
-  readonly thread_id: string;
-  readonly turn_id: string;
-  readonly workspace_id: string;
+  readonly releaseReason: string | null;
+  readonly targetId: string;
+}
+
+/** Loaded workspace authority used during backend cleanup. */
+interface RecoveryWorkspace {
+  readonly db: WorkspaceDb;
+  readonly environmentPackage: AgentEnvironmentPackage;
+}
+
+/** One failure retained while every independent recovery row is attempted. */
+interface RecoveryFailure {
+  readonly error: unknown;
+  readonly leaseId: string;
 }
 
 /**
- * Recovers durable scheduler lease state after NanoCore restart.
+ * Cleans every durable backend session and terminalizes its scheduler lease before boot accepts work.
  *
  * @param coreDb Open Core database handle.
- * @param input Optional deterministic clock.
- * @returns New epoch and lease ids changed during recovery.
+ * @param input Physical cleanup, product projection, and deterministic clock dependencies.
+ * @returns New scheduler epoch and pre-anchor leases terminalized during recovery.
+ * @throws AggregateError after attempting every independent recovery row when any invariant fails.
  */
-export function runSchedulerRestartRecovery(
+export async function runSchedulerRestartRecovery(
   coreDb: CoreDb,
-  input: RunSchedulerRestartRecoveryInput = {}
-): SchedulerRestartRecoveryResult {
-  const timestamp = input.now?.() ?? new Date().toISOString();
+  input: RunSchedulerRestartRecoveryInput
+): Promise<SchedulerRestartRecoveryResult> {
+  const now = input.now ?? (() => new Date().toISOString());
   const schedulerEpoch = nextSchedulerEpoch(coreDb);
-  expireReleasingSchedulerLeases(coreDb, {
-    now: () => timestamp,
-    schedulerEpoch,
-  });
-  const rows = coreDb.sqlite
-    .prepare(
-      `SELECT
-        lease_id,
-        plan_id,
-        workspace_id,
-        thread_id,
-        turn_id,
-        agent_session_id,
-        package_snapshot_id,
-        release_reason,
-        pool_id,
-        target_id,
-        status,
-        heartbeat_deadline,
-        last_accepted_heartbeat_at
-      FROM scheduler_session_leases
-      WHERE status IN ('planned', 'acquired', 'starting', 'active', 'idle', 'stale', 'releasing')
-      ORDER BY lease_id ASC`
-    )
-    .all() as LeaseRecoveryRow[];
-  const adoptedLeaseIds: string[] = [];
+  const rows = listNonTerminalLeaseRows(coreDb);
+  const failures: RecoveryFailure[] = [];
   const preLaunchFailedLeaseIds: string[] = [];
-  const staleLeaseIds: string[] = [];
 
-  coreDb.sqlite.exec('BEGIN IMMEDIATE');
-  try {
-    for (const row of rows) {
-      if (row.status === 'stale') {
-        continue;
-      }
-
-      if (isPreLaunchLease(row)) {
-        failPreLaunchLease(coreDb, row, schedulerEpoch);
-        preLaunchFailedLeaseIds.push(row.lease_id);
-        continue;
-      }
-
-      if (row.status === 'releasing') {
-        coreDb.sqlite
-          .prepare('UPDATE scheduler_session_leases SET scheduler_epoch = ? WHERE lease_id = ?')
-          .run(schedulerEpoch, row.lease_id);
-        adoptedLeaseIds.push(row.lease_id);
-        continue;
-      }
-
-      if (row.heartbeat_deadline <= timestamp) {
-        markLeaseStale(coreDb, row, schedulerEpoch);
-        staleLeaseIds.push(row.lease_id);
-        continue;
-      }
-
-      coreDb.sqlite
-        .prepare('UPDATE scheduler_session_leases SET scheduler_epoch = ? WHERE lease_id = ?')
-        .run(schedulerEpoch, row.lease_id);
-      adoptedLeaseIds.push(row.lease_id);
+  for (const orphan of listOrphanBackendSessions(coreDb)) {
+    try {
+      await cleanupPhysicalSession(coreDb, orphan, now, input.cleanupBackendSession);
+      failures.push({
+        error: new Error(
+          `Worker backend session ${orphan.leaseId} has no non-terminal scheduler lease owner.`
+        ),
+        leaseId: orphan.leaseId,
+      });
+    } catch (error) {
+      failures.push({ error, leaseId: orphan.leaseId });
     }
-
-    coreDb.sqlite.exec('COMMIT');
-  } catch (error) {
-    coreDb.sqlite.exec('ROLLBACK');
-    throw error;
   }
 
-  recordWorkspaceRecoveryTriggersForLeases(
-    coreDb,
-    listSchedulerLeasesNeedingWorkspaceRecovery(coreDb),
-    () => timestamp
-  );
+  for (const row of rows) {
+    try {
+      const session = getWorkerBackendSession(coreDb, row.leaseId);
+      if (!session) {
+        if (!isProvenPreAnchorLease(row)) {
+          throw new Error(`Scheduler lease ${row.leaseId} has no durable backend session anchor.`);
+        }
+        await recoverPreAnchorLease(coreDb, row, schedulerEpoch, input);
+        preLaunchFailedLeaseIds.push(row.leaseId);
+        continue;
+      }
 
-  return { adoptedLeaseIds, preLaunchFailedLeaseIds, schedulerEpoch, staleLeaseIds };
+      await recoverAnchoredLease(coreDb, row, session, schedulerEpoch, now, input);
+    } catch (error) {
+      failures.push({ error, leaseId: row.leaseId });
+    }
+  }
+
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures.map(({ error, leaseId }) =>
+        error instanceof Error
+          ? new Error(`Scheduler restart recovery failed for ${leaseId}: ${error.message}`, {
+              cause: error,
+            })
+          : new Error(`Scheduler restart recovery failed for ${leaseId}: ${String(error)}`)
+      ),
+      failures
+        .map(({ error }) => (error instanceof Error ? error.message : String(error)))
+        .join('; ')
+    );
+  }
+
+  return {
+    adoptedLeaseIds: [],
+    preLaunchFailedLeaseIds,
+    schedulerEpoch,
+    staleLeaseIds: [],
+  };
 }
 
 /**
@@ -140,152 +172,317 @@ export function nextSchedulerEpoch(coreDb: CoreDb): number {
   const row = coreDb.sqlite
     .prepare(
       `SELECT MAX(epoch) AS maxEpoch
-      FROM (
-        SELECT scheduler_epoch AS epoch FROM scheduler_placement_plans
-        UNION ALL
-        SELECT scheduler_epoch AS epoch FROM scheduler_session_leases
-      )`
+       FROM (
+         SELECT scheduler_epoch AS epoch FROM scheduler_placement_plans
+         UNION ALL
+         SELECT scheduler_epoch AS epoch FROM scheduler_session_leases
+       )`
     )
     .get() as { maxEpoch: number | null };
 
   return (row.maxEpoch ?? 0) + 1;
 }
 
-/**
- * Returns whether a lease never produced launch evidence before restart.
- *
- * @param row Lease row.
- * @returns True when the lease should be failed and requeued.
- */
-function isPreLaunchLease(row: LeaseRecoveryRow): boolean {
+/** Lists every scheduler lease that still owns capacity. */
+function listNonTerminalLeaseRows(coreDb: CoreDb): LeaseRecoveryRow[] {
+  return coreDb.sqlite
+    .prepare(
+      `SELECT lease_id AS leaseId,
+              plan_id AS planId,
+              workspace_id AS workspaceId,
+              thread_id AS threadId,
+              turn_id AS turnId,
+              agent_session_id AS agentSessionId,
+              package_snapshot_id AS packageSnapshotId,
+              backend_anchor_state AS backendAnchorState,
+              pool_id AS poolId,
+              target_id AS targetId,
+              status,
+              release_reason AS releaseReason,
+              heartbeat_deadline AS heartbeatDeadline,
+              last_accepted_heartbeat_at AS lastAcceptedHeartbeatAt
+       FROM scheduler_session_leases
+       WHERE status IN ('planned', 'acquired', 'starting', 'active', 'idle', 'stale', 'releasing')
+       ORDER BY lease_id ASC`
+    )
+    .all() as LeaseRecoveryRow[];
+}
+
+/** Lists backend anchors whose scheduler lease cannot be recovered. */
+function listOrphanBackendSessions(coreDb: CoreDb): WorkerBackendSessionRecord[] {
+  const nonTerminalLeaseIds = new Set(listNonTerminalLeaseRows(coreDb).map((row) => row.leaseId));
+  return listWorkerBackendSessions(coreDb).filter((session) => {
+    if (nonTerminalLeaseIds.has(session.leaseId)) {
+      return false;
+    }
+    const lease = coreDb.sqlite
+      .prepare('SELECT status FROM scheduler_session_leases WHERE lease_id = ?')
+      .get(session.leaseId) as { status: string } | undefined;
+    return !lease || session.state !== 'cleaned';
+  });
+}
+
+/** Returns whether restart can prove that no physical session was ever anchored. */
+function isProvenPreAnchorLease(row: LeaseRecoveryRow): boolean {
   return (
-    (row.status === 'planned' || row.status === 'acquired') &&
-    row.last_accepted_heartbeat_at === null
+    row.backendAnchorState === 'unanchored' &&
+    row.lastAcceptedHeartbeatAt === null &&
+    (row.status === 'planned' ||
+      row.status === 'acquired' ||
+      (row.status === 'stale' && row.releaseReason === 'startup-timeout'))
   );
 }
 
-/**
- * Fails a pre-launch lease, abandons its plan, requeues admission, and releases capacity.
- *
- * @param coreDb Open Core database handle.
- * @param row Lease row.
- * @param schedulerEpoch New scheduler epoch.
- */
-function failPreLaunchLease(coreDb: CoreDb, row: LeaseRecoveryRow, schedulerEpoch: number): void {
-  const plan = coreDb.sqlite
-    .prepare(
-      'SELECT queue_entry_id AS queueEntryId FROM scheduler_placement_plans WHERE plan_id = ?'
-    )
-    .get(row.plan_id) as { queueEntryId: string } | undefined;
+/** Projects and terminalizes one lease that never crossed the durable backend anchor boundary. */
+async function recoverPreAnchorLease(
+  coreDb: CoreDb,
+  row: LeaseRecoveryRow,
+  schedulerEpoch: number,
+  input: RunSchedulerRestartRecoveryInput
+): Promise<void> {
+  const projection = await input.projectRecoveredTurn(row);
+  const status = projection.status;
+  terminalizeRecoveredLease(coreDb, row, status, schedulerEpoch, 'pre-anchor');
+}
 
-  coreDb.sqlite
-    .prepare(
-      `UPDATE scheduler_session_leases
-      SET status = 'failed',
-          release_reason = 'scheduler-restart-pre-launch',
-          recovery_state = 'needs-evidence',
-          scheduler_epoch = ?
-      WHERE lease_id = ?`
-    )
-    .run(schedulerEpoch, row.lease_id);
-  coreDb.sqlite
-    .prepare("UPDATE scheduler_placement_plans SET status = 'abandoned' WHERE plan_id = ?")
-    .run(row.plan_id);
+/** Cleans, projects, and terminalizes one anchored backend session. */
+async function recoverAnchoredLease(
+  coreDb: CoreDb,
+  row: LeaseRecoveryRow,
+  originalSession: WorkerBackendSessionRecord,
+  schedulerEpoch: number,
+  now: () => string,
+  input: RunSchedulerRestartRecoveryInput
+): Promise<void> {
+  let session = await cleanupPhysicalSession(
+    coreDb,
+    getWorkerBackendSession(coreDb, row.leaseId) ?? originalSession,
+    now,
+    input.cleanupBackendSession
+  );
+  assertSessionMatchesLease(session, row);
 
-  if (plan) {
-    coreDb.sqlite
-      .prepare(
-        "UPDATE scheduler_admission_entries SET status = 'queued', denial_reason = NULL WHERE queue_entry_id = ?"
-      )
-      .run(plan.queueEntryId);
+  if (session.state === 'physical-cleaned') {
+    const workspace = openRecoveryWorkspace(coreDb, row);
+    try {
+      assertEnvironmentPackageMatchesSession(workspace.environmentPackage, originalSession);
+      const cleanupProjection = projectCleanup(workspace.db, session, workspace.environmentPackage);
+      if (
+        session.workspaceHandoffState === 'pending' &&
+        cleanupProjection.workspaceHandoffComplete
+      ) {
+        session = markWorkerBackendWorkspaceHandoffComplete(coreDb, {
+          leaseId: row.leaseId,
+          now,
+        });
+      }
+    } finally {
+      workspace.db.sqlite.close();
+    }
   }
 
-  releaseClaimedCapacity(coreDb, row);
+  const projection = await input.projectRecoveredTurn(session);
+  const status = projection.status;
+  if (status === 'missing') {
+    throw new Error(`Anchored scheduler lease ${row.leaseId} has no recoverable product turn.`);
+  }
+  if (session.state === 'physical-cleaned') {
+    session = transitionWorkerBackendSessionState(coreDb, {
+      fromState: 'physical-cleaned',
+      leaseId: row.leaseId,
+      now,
+      toState: 'cleaned',
+    });
+  }
+  terminalizeRecoveredLease(coreDb, row, status, schedulerEpoch, 'backend-cleanup');
 }
 
-/**
- * Marks a live lease stale in the new scheduler epoch.
- *
- * @param coreDb Open Core database handle.
- * @param row Lease row.
- * @param schedulerEpoch New scheduler epoch.
- */
-function markLeaseStale(coreDb: CoreDb, row: LeaseRecoveryRow, schedulerEpoch: number): void {
-  coreDb.sqlite
-    .prepare(
-      `UPDATE scheduler_session_leases
-      SET status = 'stale',
-          release_reason = 'heartbeat-timeout',
-          recovery_state = 'needs-evidence',
-          scheduler_epoch = ?
-      WHERE lease_id = ?`
-    )
-    .run(schedulerEpoch, row.lease_id);
-  coreDb.sqlite
-    .prepare(
-      `INSERT OR IGNORE INTO scheduler_orphan_worker_evidence (
-        evidence_id,
-        lease_id,
-        workspace_id,
-        thread_id,
-        turn_id,
-        agent_session_id,
-        package_snapshot_id,
-        pool_id,
-        target_id,
-        reason,
-        scheduler_epoch,
-        heartbeat_deadline,
-        last_accepted_heartbeat_at,
-        recorded_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      randomUUID(),
-      row.lease_id,
-      row.workspace_id,
-      row.thread_id,
-      row.turn_id,
-      row.agent_session_id,
-      row.package_snapshot_id,
-      row.pool_id,
-      row.target_id,
-      'restart-heartbeat-timeout',
-      schedulerEpoch,
-      row.heartbeat_deadline,
-      row.last_accepted_heartbeat_at,
-      new Date().toISOString()
+/** Cleans one exact durable physical identity and records the stable completion instant. */
+async function cleanupPhysicalSession(
+  coreDb: CoreDb,
+  originalSession: WorkerBackendSessionRecord,
+  now: () => string,
+  cleanupBackendSession: RunSchedulerRestartRecoveryInput['cleanupBackendSession']
+): Promise<WorkerBackendSessionRecord> {
+  if (['physical-cleaned', 'cleaned'].includes(originalSession.state)) {
+    return originalSession;
+  }
+  const session = moveSessionToCleanupPending(coreDb, originalSession, now());
+  if (!cleanupBackendSession) {
+    throw new Error('Scheduler restart recovery requires a backend cleanup implementation.');
+  }
+  try {
+    await cleanupBackendSession(toRestartBackendCleanupRequest(session));
+  } catch (error) {
+    transitionWorkerBackendSessionState(coreDb, {
+      fromState: 'cleanup-pending',
+      leaseId: session.leaseId,
+      now,
+      toState: 'cleanup-failed',
+    });
+    throw error;
+  }
+  return transitionWorkerBackendSessionState(coreDb, {
+    fromState: 'cleanup-pending',
+    leaseId: session.leaseId,
+    now,
+    toState: 'physical-cleaned',
+  });
+}
+
+/** Reconstructs the backend cleanup boundary from the immutable Core manifest. */
+function toRestartBackendCleanupRequest(
+  session: WorkerBackendSessionRecord
+): RestartBackendCleanupRequest {
+  return {
+    agentSessionId: session.agentSessionId,
+    backendKind: parseRestartBackendKind(session.backendKind),
+    backendSessionId: session.backendSessionId,
+    backendTarget: session.backendTarget,
+    deploymentId: session.deploymentId,
+    leaseId: session.leaseId,
+    packageSnapshotId: session.packageSnapshotId,
+    stagingDirectoryRef: session.stagingDirectoryRef,
+    transientProviderInstanceId: session.transientProviderInstanceId,
+  };
+}
+
+/** Parses one persisted backend family before it crosses the destructive cleanup boundary. */
+function parseRestartBackendKind(
+  backendKind: string
+): WorkerGovernanceBackendSessionIdentity['backendKind'] {
+  switch (backendKind) {
+    case 'openshell':
+    case 'docker':
+    case 'kubernetes':
+    case 'vm':
+    case 'managed-sandbox':
+    case 'custom':
+      return backendKind;
+    default:
+      throw new Error(`Unsupported durable worker backend kind: ${backendKind}.`);
+  }
+}
+
+/** Opens the admission owner's workspace and loads its immutable AEP snapshot. */
+function openRecoveryWorkspace(coreDb: CoreDb, row: LeaseRecoveryRow): RecoveryWorkspace {
+  const { userId } = requireSchedulerSessionLeaseAdmissionContext(coreDb, row.leaseId);
+  const db = openWorkspaceDb(coreDb.dataRoot, userId, row.workspaceId);
+  try {
+    applyScopedMigrations(db);
+    return {
+      db,
+      environmentPackage: requireAgentEnvironmentPackageSnapshot(
+        db,
+        row.workspaceId,
+        row.packageSnapshotId
+      ).snapshot,
+    };
+  } catch (error) {
+    db.sqlite.close();
+    throw error;
+  }
+}
+
+/** Advances any effect-owning state to cleanup-pending. */
+function moveSessionToCleanupPending(
+  coreDb: CoreDb,
+  session: WorkerBackendSessionRecord,
+  timestamp: string
+): WorkerBackendSessionRecord {
+  if (session.state === 'cleanup-pending') {
+    return session;
+  }
+  return transitionWorkerBackendSessionState(coreDb, {
+    fromState: session.state,
+    leaseId: session.leaseId,
+    now: () => timestamp,
+    toState: 'cleanup-pending',
+  });
+}
+
+/** Projects one stable physical cleanup attempt into the workspace database. */
+function projectCleanup(
+  workspaceDb: WorkspaceDb,
+  session: WorkerBackendSessionRecord,
+  environmentPackage: AgentEnvironmentPackage
+): ReturnType<typeof projectWorkerBackendCleanup> {
+  if (!session.physicalCleanedAt) {
+    throw new Error(`Worker backend session ${session.leaseId} has no physical cleanup time.`);
+  }
+  return projectWorkerBackendCleanup(workspaceDb, {
+    agentSessionId: session.agentSessionId,
+    backendType: session.backendKind,
+    backendVersion: session.backendVersion,
+    backendSessionId: session.backendSessionId,
+    completedAt: session.physicalCleanedAt,
+    outcome: 'succeeded',
+    environmentPackage,
+    packageSnapshotId: session.packageSnapshotId,
+    placement: session.backendTarget.placement,
+    threadId: session.threadId,
+    turnId: session.turnId,
+    workerImage: session.workerImage,
+    workspaceHandoffState: session.workspaceHandoffState,
+    workspaceId: session.workspaceId,
+  });
+}
+
+/** Verifies that the Core lease and physical anchor have identical authority lineage. */
+function assertSessionMatchesLease(
+  session: WorkerBackendSessionRecord,
+  row: LeaseRecoveryRow
+): void {
+  if (
+    session.leaseId !== row.leaseId ||
+    session.workspaceId !== row.workspaceId ||
+    session.threadId !== row.threadId ||
+    session.turnId !== row.turnId ||
+    session.agentSessionId !== row.agentSessionId ||
+    session.packageSnapshotId !== row.packageSnapshotId
+  ) {
+    throw new Error(`Worker backend session ${session.leaseId} does not match scheduler lineage.`);
+  }
+}
+
+/** Verifies that the immutable package snapshot owns the exact persisted session lineage. */
+function assertEnvironmentPackageMatchesSession(
+  environmentPackage: AgentEnvironmentPackage,
+  session: WorkerBackendSessionRecord
+): void {
+  const { scope } = environmentPackage;
+  if (
+    environmentPackage.snapshotId !== session.packageSnapshotId ||
+    scope.workspaceId !== session.workspaceId ||
+    scope.threadId !== session.threadId ||
+    scope.turnId !== session.turnId ||
+    scope.agentSessionId !== session.agentSessionId ||
+    environmentPackage.backend.preferred !== session.backendKind ||
+    environmentPackage.runtime.image.ref !== session.workerImage
+  ) {
+    throw new Error(
+      `Agent environment package ${environmentPackage.snapshotId} does not match backend session lineage.`
     );
+  }
 }
 
-/**
- * Releases capacity claimed by a failed pre-launch lease.
- *
- * @param coreDb Open Core database handle.
- * @param row Lease row.
- */
-function releaseClaimedCapacity(coreDb: CoreDb, row: LeaseRecoveryRow): void {
-  coreDb.sqlite
-    .prepare(
-      `UPDATE scheduler_capacity_records
-      SET in_use_count = CASE
-            WHEN in_use_count > 0 THEN in_use_count - 1
-            ELSE 0
-          END,
-          version = version + 1
-      WHERE target_id = ? AND pool_id = ?`
-    )
-    .run(row.target_id, row.pool_id);
-  coreDb.sqlite
-    .prepare(
-      `UPDATE scheduler_worker_pools
-      SET current_admitted_session_count = CASE
-            WHEN current_admitted_session_count > 0 THEN current_admitted_session_count - 1
-            ELSE 0
-          END,
-          current_queue_depth = current_queue_depth + 1
-      WHERE pool_id = ?`
-    )
-    .run(row.pool_id);
+/** Applies the authoritative recovered turn outcome and releases scheduler capacity atomically. */
+function terminalizeRecoveredLease(
+  coreDb: CoreDb,
+  row: LeaseRecoveryRow,
+  status: RecoveredTurnStatus,
+  schedulerEpoch: number,
+  reason: 'pre-anchor' | 'backend-cleanup'
+): void {
+  const completed = status === 'completed';
+  const released = completed || status === 'interrupted' || status === 'cancelled';
+  completeSchedulerSessionLease(coreDb, {
+    ...(reason === 'pre-anchor' && !completed ? { admissionStatus: 'cancelled' as const } : {}),
+    leaseId: row.leaseId,
+    planStatus: reason === 'pre-anchor' ? 'abandoned' : 'completed',
+    recoveryState: null,
+    releaseReason: completed ? 'scheduler-restart-turn-completed' : `scheduler-restart-${reason}`,
+    schedulerEpoch,
+    terminalStatus: released ? 'released' : 'failed',
+  });
 }

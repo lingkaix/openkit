@@ -1,7 +1,24 @@
 # Remote OpenShell Gateway
 
-Status: Accepted
-Implementation: Implemented
+Status: Retired
+Implementation: N/A
+Status Changed: 2026-07-15
+Current Guidance: None
+Decision Evidence: `docs/changes/202607111941330001-core_spec_implementation_alignment_audit.md`
+
+Active replacement: `../20260715-openshell_disposable_cell_lifecycle.md` supports both local and remote placement only when the Gateway and its sandboxes are inside one single-slot disposable Cell. This document's naked external-Gateway contract remains retired.
+
+The earlier external remote Gateway path ended because it did not bind the endpoint to a whole-runtime teardown target, and stock OpenShell resource deletion could not prove that an older accepted create had terminated.
+
+The replacement is a new Cell contract rather than compatibility for this archived design. Remote placement now requires a fixed SSH lifecycle target, a loopback HTTP Gateway origin backed by an operator-managed SSH local-forward, and an explicit credential-free HTTP(S) sandbox-reachable worker-control URL; a reachable shared Gateway alone is invalid.
+
+## Lifecycle Reason
+
+The remote external-Gateway contract ended after real stock OpenShell `0.0.80` testing showed that resource-level sandbox deletion could not prove that an older accepted create had terminated before scheduler capacity release. Current remote placement is valid only because the fixed remote helper gives NanoCore the same complete Gateway and container-runtime epoch teardown boundary as local placement.
+
+## Retention Reason
+
+This document preserves the previous remote topology, connectivity, workspace transport, health, and product-boundary decisions so maintainers can interpret historical A1 acceptance work. It is not current guidance for runtime selection, connectivity, or teardown; use the active disposable Cell spec instead.
 
 ## Summary
 
@@ -18,6 +35,8 @@ It is a remote Worker Governance backend target that reuses the same Agent Envir
 NanoCore supports remote container placement through `OPENKIT_WORKER_RUNTIME=container`, `OPENKIT_CONTAINER_PLACEMENT=remote`, and `OPENKIT_CONTAINER_BACKEND=openshell`, and keeps local/server NanoCore mode separate from worker runtime placement.
 
 The accepted V1 implementation has configuration parsing, fail-closed diagnostics, deterministic deployment-mode tests, remote OpenShell target selection, direct worker-control configuration, scheduler-owned lineage, workspace synchronization evidence persistence, redacted backend workspace handles, workspace recovery records, Action Center recovery rows, vault-backed credential attachment, permission/audit linkage, and opt-in remote OpenShell verification paths. Deployment packaging, multi-gateway operations, richer remote health probing, and remote runtime gateway extraction remain future work rather than blockers for the V1 remote OpenShell placement contract.
+
+OpenShell sandbox deletion normalizes the pinned 0.0.80 missing-entity result whose product-safe diagnostic contains `sandbox not found`, because the desired absent state already holds. Any other delete error remains a cleanup failure. Backend teardown itself requires a tracked materialized session: it is retryable after partial cleanup, but a second teardown after successful session removal is not an idempotent operation.
 
 ## Owns
 
@@ -352,11 +371,11 @@ Letting remote containers push directly to GitHub is tempting for Git-backed wor
 
 The first implementation should collect patches or bundles into NanoCore and apply only after review.
 
-### MCP Controls Remote Containers Directly
+### Product Clients Control Remote Containers Directly
 
-This would turn MCP into an admin API and break the product boundary.
+This would turn a public product client into a backend admin API and break the product boundary.
 
-MCP should remain an AI-native user interface over public NanoCore APIs.
+The target operation catalog, bundled CLI, and unified end-user Skill remain projections over public NanoCore APIs and MUST NOT expose direct sandbox administration. The current `@openkit/mcp` facade is removal-only and is not the target interface.
 
 ## Consequences
 
@@ -364,7 +383,7 @@ MCP should remain an AI-native user interface over public NanoCore APIs.
 - Local and remote OpenShell paths can share most backend code.
 - Workspace synchronization remains the hardest and most important acceptance gate.
 - Review gates stay consistent across local and remote container modes.
-- Future backends can implement transport capabilities without changing MCP or Web UI semantics.
+- Future backends can implement transport capabilities without changing the public operation catalog or product-surface semantics.
 
 ## Future Evolution Path
 

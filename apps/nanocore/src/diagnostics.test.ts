@@ -4,7 +4,6 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 import type { AgentManifest, AuthoredAgentConfig } from './agents/manifest.js';
-import { createApp } from './app.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import { parseJsoncObject } from './config/jsonc.js';
 import type { OpenKitConfig } from './config/openkit-config.js';
@@ -14,6 +13,7 @@ import type { InternalAgentLLMClient } from './internal-agents/types.js';
 import { resolveProviderProfileToLLMConfig } from './providers/llm-config.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { ensureLayout } from './storage/fs-layout.js';
+import { createApp } from './test-support/app.js';
 
 /**
  * Creates a minimal Better Auth stub for diagnostics tests.

@@ -20,7 +20,7 @@ Verify that a release owner can use the OpenKit MCP facade to start one bounded 
 - NanoCore is already running and reachable from the machine running this story.
 - `@openkit/mcp`, `@openkit/core-client`, `@openkit/app-api-schemas`, and `nanocore` build outputs exist.
 - A disposable git repository exists at a path visible to the NanoCore process.
-- The NanoCore worker environment has access to a valid Codex auth JSON through the accepted vault or deployment setup path.
+- The local NanoCore data root owns the default server OAuth slot; the runner streams `/home/ubuntu/.codex/auth.json` from A1 only when that server-owned `0600` account file is absent. The worker never receives the auth JSON.
 - The target uses the repository-pinned OpenShell and Codex versions and advertises both `trusted-worker-inference-relay` and `worker.runtime-provenance.v1` only after their same-target executable probe has passed.
 - The story is skipped by default because it may consume real Codex subscription capacity and provider quota.
 
@@ -29,6 +29,7 @@ Verify that a release owner can use the OpenKit MCP facade to start one bounded 
 - `OPENKIT_L6_TASK_REAL_WORKER=1` enables this real Task Mode runner.
 - `OPENKIT_L6_ALLOW_PROVIDER_QUOTA=1` confirms the operator accepts provider or subscription usage.
 - `OPENKIT_L6_TASK_NANOCORE_URL` points to the existing NanoCore endpoint.
+- `OPENKIT_L6_NANOCORE_DATA_ROOT` points to the local data root owned by that NanoCore process.
 - `OPENKIT_L6_TASK_REPO_ROOT` points to the disposable git repository as seen by NanoCore.
 - `OPENKIT_L6_EVIDENCE_DIR` points to a writable directory for redacted evidence.
 
@@ -36,7 +37,8 @@ Verify that a release owner can use the OpenKit MCP facade to start one bounded 
 
 - Build NanoCore and MCP packages before running the story.
 - Start or reuse NanoCore with the real OpenShell worker backend configured.
-- Confirm NanoCore reports that it is accepting product work before consuming provider quota.
+- Let the runner securely materialize the default Codex OAuth account slot, configure `openai_codex` and `agent_codex_host`, and stop for a NanoCore restart when strict reload requires one.
+- Confirm NanoCore reports that it is accepting product work, exposes `openai_codex`, and has no blocked provider diagnostics before consuming provider quota.
 - Confirm the disposable repository has a clean initial git status, has a baseline commit, and does not contain `docs/task-mode-runtime-provenance-proof.md`.
 - Run the MCP runner from an environment that can reach the NanoCore endpoint and repository path.
 
@@ -60,7 +62,7 @@ Verify that a release owner can use the OpenKit MCP facade to start one bounded 
 - The returned state is `completed` or `needs-review`; non-terminal, blocked, failed, human-gated, and escalated states cannot satisfy this completed-turn acceptance story.
 - The thread contains visible Task Mode items.
 - The thread contains exactly one completed outer assistant message from the real worker path; runtime-internal child messages do not become canonical OpenKit items.
-- The turn has exactly one AEP snapshot shared by every worker Gateway call, with OpenShell, Codex, direct NanoCore control, image `openkit/worker-codex:dev`, provider `openai_codex`, model `openai-codex/gpt-5.5`, one placeholder NanoCore Gateway route, no credential or vault projection, no secret visibility, and both trusted relay and runtime provenance capabilities.
+- The turn has exactly one AEP snapshot shared by every worker Gateway call, with OpenShell, Codex, direct NanoCore control, image `openkit/worker-codex:dev`, provider `openai_codex`, model `openai-codex/gpt-5.6-sol`, one placeholder NanoCore Gateway route, no credential or vault projection, no secret visibility, and both trusted relay and runtime provenance capabilities.
 - The AEP has exactly one read-write Git workspace input whose source commit equals the repository baseline commit.
 - RuntimeEvidence identifies the actual backend as OpenShell 0.0.80 and reports exactly one root, exactly two children, four or more retained streams, exactly three distinct runtime origins, and complete reconciliation of at least three authenticated worker Gateway calls.
 - RuntimeEvidence contains exactly one successful terminal teardown record for the authoritative worker session.

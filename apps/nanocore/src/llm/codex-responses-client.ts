@@ -7,9 +7,10 @@ import { promisify } from 'node:util';
 import { Agent, fetch as undiciFetch } from 'undici';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type { GetAccountResponse } from '../runtime/codex/protocol.js';
-import type {
-  OpenAICompatibleResponsesRequest,
-  OpenAICompatibleResponsesResponse,
+import {
+  OpenAICompatibleProviderError,
+  type OpenAICompatibleResponsesRequest,
+  type OpenAICompatibleResponsesResponse,
 } from './openai-compatible-client.js';
 import type { LLMGatewayTransportContext } from './provider-dispatcher.js';
 
@@ -345,6 +346,13 @@ export class CodexResponsesClient {
     }
   }
 
+  /**
+   * Parses one Codex JSON response and normalizes an upstream failure.
+   *
+   * @param response Upstream Codex response.
+   * @returns Parsed successful response payload.
+   * @throws {OpenAICompatibleProviderError} When Codex returns a non-success response.
+   */
   private async readJsonResponse<T>(response: Response): Promise<T> {
     const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
 
@@ -354,9 +362,16 @@ export class CodexResponsesClient {
       const message =
         typeof detail.message === 'string'
           ? detail.message
-          : `OpenAI Codex provider request failed with status ${response.status}.`;
+          : typeof payload.detail === 'string'
+            ? payload.detail
+            : `OpenAI Codex provider request failed with status ${response.status}.`;
 
-      throw new Error(message);
+      throw new OpenAICompatibleProviderError({
+        code: typeof detail.code === 'string' ? detail.code : 'provider_error',
+        message,
+        status: response.status,
+        type: typeof detail.type === 'string' ? detail.type : null,
+      });
     }
 
     return payload as T;

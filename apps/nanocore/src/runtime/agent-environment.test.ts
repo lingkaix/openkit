@@ -1,4 +1,5 @@
-import { mkdtempSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
@@ -732,6 +733,19 @@ describe('agent environment package resolver', () => {
   });
 
   it('records catalog-resolved workspace source lineage in the AEP snapshot', () => {
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-aep-source-base-'));
+    execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'openkit@example.invalid'], {
+      cwd: repositoryPath,
+    });
+    execFileSync('git', ['config', 'user.name', 'OpenKit'], { cwd: repositoryPath });
+    writeFileSync(join(repositoryPath, 'README.md'), '# AEP source base\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repositoryPath });
+    execFileSync('git', ['commit', '-m', 'initial'], { cwd: repositoryPath, stdio: 'ignore' });
+    const baseCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: repositoryPath,
+      encoding: 'utf8',
+    }).trim();
     const store = createDemoStore();
     const turn = store.createTurn('ws_demo', 'th_demo', 'Use catalog source');
     const agent = store.getAgent('ws_demo', 'agent_codex_host');
@@ -770,7 +784,7 @@ describe('agent environment package resolver', () => {
             access: 'read-write',
             id: 'repo',
             sourceKind: 'host-dir',
-            sourcePath: '/Users/m5pro/Documents/AI/openkit',
+            sourcePath: repositoryPath,
             workerPath: '/workspace/openkit',
           },
         ],
@@ -780,6 +794,7 @@ describe('agent environment package resolver', () => {
 
     expect(resolved.workspace.inputs[0]?.source).toMatchObject({
       catalogEntryDigest: expect.stringMatching(/^sha256:/),
+      commit: baseCommit,
       kind: 'git',
       locator: { defaultRef: 'main', url: 'https://github.com/openkit/openkit.git' },
       sourceId: 'main-repo',

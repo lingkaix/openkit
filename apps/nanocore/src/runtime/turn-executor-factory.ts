@@ -1,45 +1,40 @@
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import type { CoreDb } from '../storage/db.js';
+import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
+import { OpenShellCellController } from './openshell-cell.js';
 import { OpenShellCli } from './openshell-cli.js';
 import type { OpenShellNetworkEndpoint } from './openshell-policy.js';
 import type { TurnExecutor } from './types.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
-import { OpenShellWorkerGovernanceBackend } from './worker-governance-backend.js';
+import {
+  OpenShellWorkerGovernanceBackend,
+  type WorkerGovernanceBackendSessionIdentity,
+} from './worker-governance-backend.js';
 import { WorkerGovernanceTurnExecutor } from './worker-governance-turn-executor.js';
 
 /** Environment variables used by NanoCore turn executor selection. */
 export interface TurnExecutorFactoryEnv {
   /** Deterministic internal self-check executor switch used by tests and smoke runs. */
   OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR?: string | undefined;
-  /** Deprecated production executor selector rejected by container-only NanoCore. */
-  OPENKIT_TURN_EXECUTOR?: string | undefined;
   /** Worker runtime selector. Supported product value: `container`. */
   OPENKIT_WORKER_RUNTIME?: string | undefined;
   /** Container placement selected for real Worker Agent execution. */
   OPENKIT_CONTAINER_PLACEMENT?: string | undefined;
   /** Container backend family selected for real Worker Agent execution. */
   OPENKIT_CONTAINER_BACKEND?: string | undefined;
-  /** Deprecated remote container backend selector rejected by container-only NanoCore. */
-  OPENKIT_REMOTE_CONTAINER_BACKEND?: string | undefined;
-  /** OpenShell gateway name used by the local-container executor. */
-  OPENKIT_OPENSHELL_GATEWAY?: string | undefined;
-  /** Remote OpenShell gateway URL used by the remote-container executor. */
-  OPENKIT_OPENSHELL_GATEWAY_URL?: string | undefined;
-  /** Whether remote OpenShell gateway TLS verification should be skipped. */
-  OPENKIT_OPENSHELL_GATEWAY_INSECURE?: string | undefined;
   /** Worker image or source passed to `openshell sandbox create`. */
   OPENKIT_OPENSHELL_WORKER_IMAGE?: string | undefined;
-  /** Whether OpenShell sandboxes should be retained after turn completion. */
-  OPENKIT_OPENSHELL_RETAIN_SANDBOXES?: string | undefined;
   /** Direct NanoCore worker-control URL reached by the sandbox worker. */
   OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL?: string | undefined;
-  /** OpenShell binary path or command name. */
-  OPENKIT_OPENSHELL_BINARY?: string | undefined;
+  /** SSH destination that owns the remote disposable Cell lifecycle helper. */
+  OPENKIT_OPENSHELL_CELL_SSH_TARGET?: string | undefined;
+  /** OpenShell gateway name used for remote placement. */
+  OPENKIT_OPENSHELL_GATEWAY?: string | undefined;
+  /** OpenShell gateway endpoint used for remote placement. */
+  OPENKIT_OPENSHELL_GATEWAY_URL?: string | undefined;
   /** Optional host Codex config file uploaded into explicitly configured OpenShell workers. */
   OPENKIT_OPENSHELL_CODEX_CONFIG_TOML?: string | undefined;
-  /** Optional host Codex auth JSON uploaded into explicitly configured OpenShell workers. */
-  OPENKIT_OPENSHELL_CODEX_AUTH_JSON?: string | undefined;
   /** Optional Codex model used by one-shot OpenShell worker commands. */
   OPENKIT_OPENSHELL_CODEX_MODEL?: string | undefined;
   /** JSON array of additional OpenShell network endpoints authorized for selected worker binaries. */
@@ -60,6 +55,18 @@ export interface CreateConfiguredTurnExecutorOptions {
   vaultBackend?: (() => VaultBackend) | undefined;
 }
 
+/** Shared real-worker lifecycle selected from NanoCore runtime configuration. */
+export interface ConfiguredWorkerLifecycleRuntime {
+  /** Cleans one exact durable backend identity during restart or online recovery. */
+  readonly cleanupBackendSession: (
+    identity: WorkerGovernanceBackendSessionIdentity
+  ) => Promise<void>;
+  /** Configured disposable Cell placement. */
+  readonly placement: 'local' | 'remote';
+  /** Product turn executor backed by the same cleanup owner. */
+  readonly turnExecutor: TurnExecutor;
+}
+
 /**
  * Creates the turn executor selected by NanoCore runtime configuration.
  *
@@ -71,13 +78,26 @@ export function createConfiguredTurnExecutor(
   options: CreateConfiguredTurnExecutorOptions = {}
 ): TurnExecutor {
   const env = options.env ?? process.env;
-  const workerControlGateway = options.workerControlGateway ?? new WorkerControlGateway();
 
   if (env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1') {
     return new SimulatedTurnExecutor();
   }
 
-  rejectDeprecatedRuntimeEnv(env);
+  return createConfiguredWorkerLifecycleRuntime(options).turnExecutor;
+}
+
+/**
+ * Creates one shared physical-backend owner for execution and durable cleanup recovery.
+ *
+ * @param options Environment, Core database, and shared worker-control gateway.
+ * @returns Turn executor and exact cleanup callback backed by one backend instance.
+ * @throws Error when runtime configuration is unsupported or Core storage is unavailable.
+ */
+export function createConfiguredWorkerLifecycleRuntime(
+  options: CreateConfiguredTurnExecutorOptions = {}
+): ConfiguredWorkerLifecycleRuntime {
+  const env = options.env ?? process.env;
+  const workerControlGateway = options.workerControlGateway ?? new WorkerControlGateway();
 
   const runtime = normalizeEnvValue(env.OPENKIT_WORKER_RUNTIME) ?? 'container';
   if (runtime !== 'container') {
@@ -89,8 +109,11 @@ export function createConfiguredTurnExecutor(
     throw new Error(`Unsupported OPENKIT_CONTAINER_BACKEND: ${backend}.`);
   }
 
-  const placement = normalizeContainerPlacement(env.OPENKIT_CONTAINER_PLACEMENT);
-  return createOpenShellTurnExecutor(
+  const placement = parseContainerPlacement(env.OPENKIT_CONTAINER_PLACEMENT);
+  if (!options.coreDb) {
+    throw new Error('Real worker execution requires the durable Core database.');
+  }
+  return createOpenShellWorkerLifecycleRuntime(
     env,
     workerControlGateway,
     options.coreDb,
@@ -100,29 +123,13 @@ export function createConfiguredTurnExecutor(
 }
 
 /**
- * Rejects runtime selector environment variables removed from the product surface.
- *
- * @param env Environment variables to read.
- * @throws Error when a deprecated runtime selector is present.
- */
-function rejectDeprecatedRuntimeEnv(env: TurnExecutorFactoryEnv): void {
-  if (normalizeEnvValue(env.OPENKIT_TURN_EXECUTOR)) {
-    throw new Error('OPENKIT_TURN_EXECUTOR is no longer supported.');
-  }
-
-  if (normalizeEnvValue(env.OPENKIT_REMOTE_CONTAINER_BACKEND)) {
-    throw new Error('OPENKIT_REMOTE_CONTAINER_BACKEND is no longer supported.');
-  }
-}
-
-/**
- * Parses the real worker container placement.
+ * Parses the real worker Cell placement.
  *
  * @param value Raw placement environment value.
- * @returns Container placement, defaulting to local.
+ * @returns Local or remote Cell placement.
  * @throws Error when the placement is unsupported.
  */
-function normalizeContainerPlacement(value: string | undefined): 'local' | 'remote' {
+function parseContainerPlacement(value: string | undefined): 'local' | 'remote' {
   const placement = normalizeEnvValue(value) ?? 'local';
 
   if (placement === 'local' || placement === 'remote') {
@@ -133,117 +140,206 @@ function normalizeContainerPlacement(value: string | undefined): 'local' | 'remo
 }
 
 /**
- * Creates the OpenShell-backed local-container turn executor.
+ * Creates the OpenShell-backed worker lifecycle runtime.
  *
  * @param env Environment variables to read.
  * @param workerControlGateway Shared worker-control gateway for direct worker sessions.
- * @returns Worker governance turn executor.
+ * @param coreDb Durable Core database and deployment identity source.
+ * @param placement Local or remote disposable Cell placement.
+ * @param vaultBackend Optional vault backend used for runtime provider grants.
+ * @returns Shared worker lifecycle runtime.
  */
-function createOpenShellTurnExecutor(
+function createOpenShellWorkerLifecycleRuntime(
   env: TurnExecutorFactoryEnv,
   workerControlGateway: WorkerControlGateway,
-  coreDb?: CoreDb | undefined,
-  placement: 'local' | 'remote' = 'local',
+  coreDb: CoreDb,
+  placement: 'local' | 'remote',
   vaultBackend?: (() => VaultBackend) | undefined
-): WorkerGovernanceTurnExecutor {
+): ConfiguredWorkerLifecycleRuntime {
   const sandboxImageRef =
     normalizeEnvValue(env.OPENKIT_OPENSHELL_WORKER_IMAGE) ?? 'openkit/worker-codex:dev';
-  const workerControlBaseUrl =
-    normalizeEnvValue(env.OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL) ??
-    defaultWorkerControlBaseUrl(env, placement);
-  const gatewayName = normalizeEnvValue(env.OPENKIT_OPENSHELL_GATEWAY) ?? 'openshell';
-  const gatewayUrl = parseOpenShellGatewayUrl(env, placement);
-  const gatewayInsecure = parseBooleanEnv(env.OPENKIT_OPENSHELL_GATEWAY_INSECURE, false);
-  const openshellBinary = normalizeEnvValue(env.OPENKIT_OPENSHELL_BINARY) ?? 'openshell';
+  const sshTarget =
+    placement === 'remote'
+      ? readRequiredRemoteEnv(
+          'OPENKIT_OPENSHELL_CELL_SSH_TARGET',
+          env.OPENKIT_OPENSHELL_CELL_SSH_TARGET
+        )
+      : undefined;
+  const gatewayName =
+    placement === 'remote' ? parseRemoteGatewayName(env.OPENKIT_OPENSHELL_GATEWAY) : 'openshell';
+  const gatewayUrl =
+    placement === 'remote'
+      ? parseRemoteGatewayUrl(
+          readRequiredRemoteEnv('OPENKIT_OPENSHELL_GATEWAY_URL', env.OPENKIT_OPENSHELL_GATEWAY_URL)
+        )
+      : 'http://127.0.0.1:17670';
+  const workerControlBaseUrl = resolveWorkerControlBaseUrl(env, placement);
   const codexModel = normalizeEnvValue(env.OPENKIT_OPENSHELL_CODEX_MODEL);
-
-  return new WorkerGovernanceTurnExecutor({
-    backend: new OpenShellWorkerGovernanceBackend({
-      codexAuthJsonPath: normalizeEnvValue(env.OPENKIT_OPENSHELL_CODEX_AUTH_JSON),
-      codexConfigTomlPath: normalizeEnvValue(env.OPENKIT_OPENSHELL_CODEX_CONFIG_TOML),
-      cli: new OpenShellCli({ binary: openshellBinary }),
-      extraNetworkEndpoints: parseExtraNetworkEndpoints(
-        env.OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS
-      ),
-      gatewayName,
-      ...(gatewayUrl ? { gatewayUrl } : {}),
-      gatewayInsecure,
-      placement,
-      retainSandboxes: parseBooleanEnv(env.OPENKIT_OPENSHELL_RETAIN_SANDBOXES, false),
-      sandboxSource: sandboxImageRef,
-      workerControlGateway,
-    }),
-    coreDb,
-    environmentBackend: {
-      ...(codexModel ? { codexModel } : {}),
-      workerControlBaseUrl,
-      ...(gatewayUrl ? { gatewayUrl } : {}),
-      kind: 'openshell',
-      placement,
-      sandboxImageRef,
-    },
-    ...(vaultBackend ? { vaultBackend } : {}),
+  const layoutMarker = readDataRootLayoutMarker(coreDb.dataRoot);
+  const backend = new OpenShellWorkerGovernanceBackend({
+    codexConfigTomlPath: normalizeEnvValue(env.OPENKIT_OPENSHELL_CODEX_CONFIG_TOML),
+    cellLifecycle: new OpenShellCellController(sshTarget ? { sshTarget } : {}),
+    cli: new OpenShellCli(),
+    dataRoot: coreDb.dataRoot,
+    deploymentId: layoutMarker.deploymentId,
+    extraNetworkEndpoints: parseExtraNetworkEndpoints(
+      env.OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS
+    ),
+    gatewayName,
+    gatewayUrl,
+    placement,
+    workerControlGateway,
   });
+
+  return {
+    cleanupBackendSession: (identity) => backend.cleanupSession(identity),
+    placement,
+    turnExecutor:
+      env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
+        ? new SimulatedTurnExecutor()
+        : new WorkerGovernanceTurnExecutor({
+            backend,
+            coreDb,
+            environmentBackend: {
+              ...(codexModel ? { codexModel } : {}),
+              workerControlBaseUrl,
+              gatewayUrl,
+              kind: 'openshell',
+              placement,
+              sandboxImageRef,
+            },
+            ...(vaultBackend ? { vaultBackend } : {}),
+          }),
+  };
 }
 
 /**
- * Builds the default worker-control URL for local OpenShell placement only.
+ * Resolves the worker-control URL for one Cell placement.
  *
  * @param env Environment variables to read.
- * @param placement OpenShell runtime placement.
- * @returns Local worker-control URL.
- * @throws Error when remote placement omits an explicit worker-control URL.
+ * @param placement Local or remote Cell placement.
+ * @returns Worker-control URL reached by the sandbox.
+ * @throws When remote placement omits the required URL.
  */
-function defaultWorkerControlBaseUrl(
+function resolveWorkerControlBaseUrl(
   env: TurnExecutorFactoryEnv,
   placement: 'local' | 'remote'
 ): string {
+  const configured = normalizeEnvValue(env.OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL);
+
+  if (configured) {
+    return parseWorkerControlBaseUrl(configured, placement);
+  }
   if (placement === 'remote') {
     throw new Error(
       'OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL is required when OPENKIT_CONTAINER_PLACEMENT=remote.'
     );
   }
-
   return `http://host.openshell.internal:${normalizeEnvValue(env.PORT) ?? '3000'}/api/worker-control`;
 }
 
 /**
- * Parses the optional remote OpenShell gateway URL.
+ * Validates the direct worker-control base URL injected into one sandbox.
  *
- * @param env Environment variables to read.
- * @param placement OpenShell runtime placement.
- * @returns Gateway URL for remote placement, otherwise undefined.
- * @throws Error when remote placement omits or malforms the gateway URL.
+ * @param value Configured worker-control URL.
+ * @param placement Local or remote Cell placement.
+ * @returns Canonical credential-free HTTP(S) URL.
+ * @throws When the URL cannot identify the public worker-control route.
  */
-function parseOpenShellGatewayUrl(
-  env: TurnExecutorFactoryEnv,
-  placement: 'local' | 'remote'
-): string | undefined {
-  const gatewayUrl = normalizeEnvValue(env.OPENKIT_OPENSHELL_GATEWAY_URL);
-
-  if (placement === 'local') {
-    return gatewayUrl;
-  }
-
-  if (!gatewayUrl) {
-    throw new Error(
-      'OPENKIT_OPENSHELL_GATEWAY_URL is required when OPENKIT_CONTAINER_PLACEMENT=remote.'
-    );
-  }
+function parseWorkerControlBaseUrl(value: string, placement: 'local' | 'remote'): string {
+  let url: URL;
 
   try {
-    const parsed = new URL(gatewayUrl);
-
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      throw new Error('unsupported protocol');
-    }
+    url = new URL(value);
   } catch (error) {
-    throw new Error('OPENKIT_OPENSHELL_GATEWAY_URL must be a valid HTTP(S) URL.', {
+    throw new Error(
+      'OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL must be a credential-free HTTP(S) /api/worker-control URL.',
+      { cause: error }
+    );
+  }
+  if (
+    (url.protocol !== 'http:' && url.protocol !== 'https:') ||
+    url.username ||
+    url.password ||
+    url.pathname !== '/api/worker-control' ||
+    url.search ||
+    url.hash ||
+    (placement === 'remote' &&
+      (url.hostname === 'localhost' ||
+        url.hostname === '[::1]' ||
+        url.hostname === '[::]' ||
+        url.hostname === '0.0.0.0' ||
+        /^127(?:\.[0-9]{1,3}){3}$/.test(url.hostname)))
+  ) {
+    throw new Error(
+      'OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL must be a credential-free HTTP(S) /api/worker-control URL.'
+    );
+  }
+  return `${url.origin}/api/worker-control`;
+}
+
+/**
+ * Validates the remote OpenShell Gateway name before it reaches CLI argv.
+ *
+ * @param value Raw optional Gateway name.
+ * @returns Safe Gateway name or the stock default.
+ * @throws When the name could be interpreted as an option or path.
+ */
+function parseRemoteGatewayName(value: string | undefined): string {
+  const gatewayName = normalizeEnvValue(value) ?? 'openshell';
+
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(gatewayName)) {
+    throw new Error('OPENKIT_OPENSHELL_GATEWAY must be a safe OpenShell gateway name.');
+  }
+  return gatewayName;
+}
+
+/**
+ * Reads one required remote Cell environment value.
+ *
+ * @param name Environment variable name.
+ * @param value Raw environment value.
+ * @returns Trimmed value.
+ * @throws When the value is absent.
+ */
+function readRequiredRemoteEnv(name: string, value: string | undefined): string {
+  const normalized = normalizeEnvValue(value);
+
+  if (!normalized) {
+    throw new Error(`${name} is required when OPENKIT_CONTAINER_PLACEMENT=remote.`);
+  }
+  return normalized;
+}
+
+/**
+ * Validates one loopback OpenShell Gateway origin reached through an operator SSH tunnel.
+ *
+ * @param value Gateway URL.
+ * @returns Canonical Gateway origin.
+ * @throws When the URL is not a credential-free loopback HTTP origin.
+ */
+function parseRemoteGatewayUrl(value: string): string {
+  let url: URL;
+
+  try {
+    url = new URL(value);
+  } catch (error) {
+    throw new Error('OPENKIT_OPENSHELL_GATEWAY_URL must be a loopback HTTP origin.', {
       cause: error,
     });
   }
-
-  return gatewayUrl;
+  if (
+    url.protocol !== 'http:' ||
+    (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost') ||
+    url.username ||
+    url.password ||
+    url.pathname !== '/' ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error('OPENKIT_OPENSHELL_GATEWAY_URL must be a loopback HTTP origin.');
+  }
+  return url.origin;
 }
 
 /**
@@ -441,21 +537,4 @@ function normalizeEnvValue(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
 
   return trimmed ? trimmed : undefined;
-}
-
-/**
- * Parses a boolean environment switch.
- *
- * @param value Raw environment value.
- * @param defaultValue Value returned when the env var is absent.
- * @returns Parsed boolean.
- */
-function parseBooleanEnv(value: string | undefined, defaultValue: boolean): boolean {
-  const normalized = normalizeEnvValue(value)?.toLowerCase();
-
-  if (normalized === undefined) {
-    return defaultValue;
-  }
-
-  return ['1', 'true', 'yes', 'on'].includes(normalized);
 }

@@ -94,14 +94,19 @@ class RecordingTurnExecutor implements TurnExecutor {
  *
  * @param executor Turn executor installed in the app.
  * @param slug Stable temporary-directory label.
+ * @param workerPlacement Configured worker Cell placement.
  * @returns App, stores, databases, and repository fixture.
  */
-async function createSchedulerFixture(executor: RecordingTurnExecutor, slug: string) {
+async function createSchedulerFixture(
+  executor: RecordingTurnExecutor,
+  slug: string,
+  workerPlacement: 'local' | 'remote' = 'local'
+) {
   const dataRoot = mkdtempSync(join(tmpdir(), `openkit-turn-routes-${slug}-`));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const store = createDemoStore();
-  const app = createApp({ coreDb, store, turnExecutor: executor });
+  const app = createApp({ coreDb, store, turnExecutor: executor, workerPlacement });
   const repositoryPath = mkdtempSync(join(tmpdir(), `openkit-turn-repository-${slug}-`));
   mkdirSync(join(repositoryPath, '.git'));
 
@@ -329,6 +334,103 @@ describe('generic turn routes', () => {
       expect(readTurnLease(fixture.coreDb, turn.id)).toEqual({
         releaseReason: 'turn-completed',
         status: 'released',
+      });
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('admits a remote product turn into the configured remote Cell target', async () => {
+    const executor = new RecordingTurnExecutor();
+    const fixture = await createSchedulerFixture(executor, 'remote-placement', 'remote');
+
+    try {
+      const response = await fixture.app.request('/api/turns', {
+        method: 'POST',
+        body: JSON.stringify({
+          input: 'Run in the remote Cell',
+          requestId: '00000000-0000-4000-8000-000000000309',
+          threadId: 'th_demo',
+          workspaceId: 'ws_demo',
+        }),
+        headers: { 'content-type': 'application/json' },
+      });
+      const admission = fixture.coreDb.sqlite
+        .prepare(
+          `SELECT required_pool_constraints_json AS requiredPoolConstraints
+           FROM scheduler_admission_entries
+           WHERE request_id = ?`
+        )
+        .get('00000000-0000-4000-8000-000000000309') as {
+        readonly requiredPoolConstraints: string;
+      };
+      const placementPlan = fixture.coreDb.sqlite
+        .prepare(
+          `SELECT selected_pool_id AS selectedPoolId, selected_target_id AS selectedTargetId
+           FROM scheduler_placement_plans
+           WHERE queue_entry_id = (
+             SELECT queue_entry_id FROM scheduler_admission_entries WHERE request_id = ?
+           )`
+        )
+        .get('00000000-0000-4000-8000-000000000309');
+      const pool = fixture.coreDb.sqlite
+        .prepare(
+          `SELECT allowed_placements_json AS allowedPlacements,
+                  max_concurrent_sessions AS maxConcurrentSessions
+           FROM scheduler_worker_pools
+           WHERE pool_id = 'pool_remote'`
+        )
+        .get() as { readonly allowedPlacements: string; readonly maxConcurrentSessions: number };
+      const target = fixture.coreDb.sqlite
+        .prepare(
+          `SELECT capacity.capacity_class AS capacityClass,
+                  capacity.concurrency_ceiling AS concurrencyCeiling,
+                  health.health_state AS healthState
+           FROM scheduler_capacity_records AS capacity
+           JOIN scheduler_target_health_records AS health USING (target_id)
+           WHERE capacity.target_id = 'target_remote'`
+        )
+        .get();
+      const leaseTiming = fixture.coreDb.sqlite
+        .prepare(
+          `SELECT acquired_at AS acquiredAt,
+                  expires_at AS expiresAt,
+                  startup_deadline AS startupDeadline
+           FROM scheduler_session_leases
+           WHERE plan_id = (
+             SELECT plan_id FROM scheduler_placement_plans
+             WHERE queue_entry_id = (
+               SELECT queue_entry_id FROM scheduler_admission_entries WHERE request_id = ?
+             )
+           )`
+        )
+        .get('00000000-0000-4000-8000-000000000309') as {
+        readonly acquiredAt: string;
+        readonly expiresAt: string;
+        readonly startupDeadline: string;
+      };
+
+      expect({
+        admissionConstraint: JSON.parse(admission.requiredPoolConstraints),
+        allowedPlacements: JSON.parse(pool.allowedPlacements),
+        executorStarts: executor.startCalls,
+        leaseDurationMs: Date.parse(leaseTiming.expiresAt) - Date.parse(leaseTiming.acquiredAt),
+        placementPlan,
+        poolConcurrency: pool.maxConcurrentSessions,
+        responseStatus: response.status,
+        startupTimeoutMs:
+          Date.parse(leaseTiming.startupDeadline) - Date.parse(leaseTiming.acquiredAt),
+        target,
+      }).toEqual({
+        admissionConstraint: ['openshell.remote'],
+        allowedPlacements: ['remote'],
+        executorStarts: 1,
+        leaseDurationMs: 2_400_000,
+        placementPlan: { selectedPoolId: 'pool_remote', selectedTargetId: 'target_remote' },
+        poolConcurrency: 1,
+        responseStatus: 202,
+        startupTimeoutMs: 1_500_000,
+        target: { capacityClass: 'remote', concurrencyCeiling: 1, healthState: 'healthy' },
       });
     } finally {
       fixture.coreDb.sqlite.close();

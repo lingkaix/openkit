@@ -18,12 +18,12 @@
     "providers/*.yaml"
   ],
   "mappingVersion": "openshell-v5",
-  "refreshedAt": "2026-07-14",
+  "refreshedAt": "2026-07-15",
   "requiredGatewayVersion": "0.0.80",
   "checksums": {
     "provider-profile-surface.json": "87b856a2ffabdb1eef5ff041f4a2be29b46863affe60ffde334a337118ef486d",
     "policy-surface.json": "865f9a3db00a60f9a761a7d85c8b54791eb15a917ae230d6e514857fbb9b6348",
-    "cli-surface.json": "936f913d581984b316b267aae74a85de1a37fa5dbdb4a0abe158326d054044e2"
+    "cli-surface.json": "041d1400e07850f697df1c4376b8bb0068f5bc57e9be3ca79ac98ef4e91e206f"
   },
   "maintenanceNote": "The snapshot separates the full upstream provider and policy surface from the narrower OpenKit-emitted mapping. Refresh only as an explicit external-boundary update after reviewing tagged OpenShell profile, policy, and CLI source."
 }

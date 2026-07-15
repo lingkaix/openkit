@@ -95,10 +95,11 @@ Descriptive text can explain intent, but stable protocol, model, ownership, and 
 
 ## Required Core Aspect Set
 
-The current required core aspect set contains 19 documents. Future merge or retirement work should first migrate canonical definitions, update cross-references, and update this inventory.
+The current required core aspect set contains 20 documents. Future merge or retirement work should first migrate canonical definitions, update cross-references, and update this inventory.
 
 ### Foundation
 
+- `foundation.md` — cross-aspect doctrine, human final authority, execution accountability, durable product truth, governed projections, source-traceable learning, and explicit trust boundaries.
 - `core-concepts.md` — shared vocabulary and object boundaries.
 - `work-model.md` — user-facing work model.
 - `architecture.md` — stable system architecture and layer boundaries.
@@ -125,7 +126,7 @@ The current required core aspect set contains 19 documents. Future merge or reti
 - `permissions.md` — authorization, policy, roles, attributes, grants, and enforcement.
 - `sandbox.md` — execution isolation, runtime environments, containment, snapshots, and resource boundaries.
 - `audit.md` — stable audit projections over items, permission decisions, capability calls, vault use, and runtime events.
-- `metering.md` — future system-wide metering direction beyond agent-capability-mediated usage.
+- `metering.md` — system-wide measurement principles, current non-gateway usage categories, aggregation boundaries, and future budget and cost direction.
 
 ### Evolution And Compliance
 
@@ -137,6 +138,7 @@ This index routes readers to the owner of each canonical term family. The owner 
 
 | Term family | Canonical owner |
 | --- | --- |
+| Human final authority, execution accountability, durable product truth, governed projection, source-traceable learning, explicit trust boundary | `foundation.md` |
 | CoreServer, Workspace, Thread, Turn, Item, Artifact, ApprovalRequest, Channel, TriggerSource | `core-concepts.md` |
 | Product-facing task, chat mode, quick reply, task mode, goal mode projection, plan mode projection, Action Center projection, human attention projection, steering, review, redo, refinement, handoff projection, context compact projection, deliverable projection | `work-model.md` |
 | App, Core, Agent, Agent Adapter, Agent Runtime, workspace service, generative kernel, internal Core agent, Core Assistant, Workflow Coordinator, Task Evaluator | `architecture.md` |
@@ -153,7 +155,7 @@ This index routes readers to the owner of each canonical term family. The owner 
 | AgentCapability, CapabilityCall, gateway projection, gateway routing, transformer pipeline, capability traffic, rate limits | `agent-capability.md` |
 | AuditEvent, audit projection, audit producer boundary | `audit.md` |
 | UsageRecord, usage unit, attribution, cost projection | `agent-capability.md` |
-| Future non-gateway metering, runtime and storage consumption direction | `metering.md` |
+| System-wide measurement, non-gateway runtime, storage and network consumption, aggregation and cost direction | `metering.md` |
 | Agent session continuity, snapshot, resume, fork, clone, rollback, crash recovery | `agent-session.md` |
 | Agent Workflow, Workflow Mechanism, Workflow Mode, Workflow Recipe, Default Workflow Setup, Goal Mode, Intent, Objective, Phase, Plan, Planning Phase, Plan Approval, Bounded Step, Workflow Loop, Gate, Human Attention Gate, Review Gate, Decision, Checkpoint, Context Compaction, Stop Condition, Workflow Evidence, Workflow Graph, dependency, attempt, branch, join, lineage | `agent-workflow.md` |
 | Contract evolution, strict parsing, compatibility change rules, conformance levels, fixture expectations | `contract-evolution.md` |
@@ -162,25 +164,26 @@ This index routes readers to the owner of each canonical term family. The owner 
 
 Discuss and promote the core docs in this order:
 
-1. `core-concepts.md`
-2. `work-model.md`
-3. `architecture.md`
-4. `runtime-model.md`
-5. `agent-supply.md`
-6. `agent-session.md`
-7. `agent-workflow.md`
-8. `protocol.md`
-9. `communication.md`
-10. `storage.md`
-11. `identity.md`
-12. `vault.md`
-13. `agent-capability.md`
-14. `permissions.md`
-15. `sandbox.md`
-16. `knowledge.md`
-17. `audit.md`
-18. `metering.md`
-19. `contract-evolution.md`
+1. `foundation.md`
+2. `core-concepts.md`
+3. `work-model.md`
+4. `architecture.md`
+5. `runtime-model.md`
+6. `agent-supply.md`
+7. `agent-session.md`
+8. `agent-workflow.md`
+9. `protocol.md`
+10. `communication.md`
+11. `storage.md`
+12. `identity.md`
+13. `vault.md`
+14. `agent-capability.md`
+15. `permissions.md`
+16. `sandbox.md`
+17. `knowledge.md`
+18. `audit.md`
+19. `metering.md`
+20. `contract-evolution.md`
 
 ## Promotion And Retirement Rules
 

@@ -27,7 +27,7 @@ OpenKit keeps externally sourced runtime and catalog artifacts in dedicated work
 
 `@openkit/models-dev-catalog` owns vendored `models.dev` API snapshots and provider-template traceability checks as an external model-catalog boundary.
 
-`@openkit/openshell-schema-snapshot` owns vendored OpenShell provider profile, sandbox policy, CLI surface, reserved namespace, checksum, and compatibility-range snapshots as an external sandbox-mechanism boundary.
+`@openkit/openshell-schema-snapshot` owns the vendored exact-version OpenShell provider profile, sandbox policy, CLI surface, reserved namespace, and checksum snapshot as an external sandbox-mechanism boundary. The current boundary is the unmodified stock `0.0.80` release, not a compatibility range.
 
 The core rule is that these artifacts are read-only boundary snapshots at runtime, not OpenKit canonical protocol definitions and not live network dependencies.
 
@@ -59,7 +59,7 @@ The models.dev package includes package-local validation that checks snapshot me
 
 OpenShell schema snapshots live in `packages/openshell-schema-snapshot/snapshots/YYYY-MM-DD/`.
 
-The OpenShell package includes package-local conformance helpers and validation tests for snapshot metadata, checksums, provider profile reserved namespaces, sandbox policy enum values, CLI command surface, and compatible gateway range.
+The OpenShell package includes package-local conformance helpers and validation tests for snapshot metadata, checksums, provider profile reserved namespaces, sandbox policy enum values, the exact NanoCore-consumed CLI command surface, and the exact required CLI and Gateway version.
 
 `@openkit/protocol` remains limited to OpenKit's own `UI <-> Core` contract.
 
@@ -94,6 +94,8 @@ Reviewers should treat generated or vendored artifact diffs as source updates fr
 `packages/models-dev-catalog/` contains dated `models.dev` snapshots, snapshot metadata, checksum validation, provider-template traceability validation, package-local maintenance guidance, and package-local agent rules.
 
 `packages/openshell-schema-snapshot/` contains dated OpenShell schema snapshots, snapshot metadata, checksum validation, provider profile and sandbox policy conformance helpers, package-local maintenance guidance, and package-local agent rules.
+
+The active OpenShell snapshot pins the official unmodified `0.0.80` release and the exact CLI surface consumed by NanoCore and the fixed Cell helper. It contains no sandbox-delete, provider-delete, host-doctor, custom-binary, insecure-Gateway, or version-range contract. Resource teardown belongs to the whole-Cell recycle contract in `docs/specs/20260715-openshell_disposable_cell_lifecycle.md`, not to the vendor snapshot.
 
 These packages expose package-local `test`, `lint`, and `format` scripts through their `package.json` files; packages with TypeScript helper exports also expose `typecheck` and `build`.
 
@@ -137,7 +139,7 @@ Future snapshot refreshes should follow the package-local refresh procedures rat
 
 `@openkit/models-dev-catalog` validates metadata, checksum, snapshot parseability, and provider-template traceability.
 
-`@openkit/openshell-schema-snapshot` validates metadata, checksums, provider profile namespace rules, sandbox policy enum values, CLI command surface, and compatible gateway version range.
+`@openkit/openshell-schema-snapshot` validates metadata, checksums, provider profile namespace rules, sandbox policy enum values, the retained non-delete CLI command surface, and exact stock OpenShell `0.0.80` identity.
 
 NanoCore tests continue to validate runtime behavior against provider templates and Codex adapter code.
 

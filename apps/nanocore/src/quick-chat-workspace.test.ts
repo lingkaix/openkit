@@ -1,9 +1,8 @@
 import { ListWorkspacesResponseSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
-
-import { createApp } from './app.js';
 import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { ProviderRegistry } from './providers/registry.js';
+import { createApp } from './test-support/app.js';
 
 describe('quick-chat workspace mode', () => {
   it('seeds a special lightweight workspace for simple provider-backed prompts', async () => {

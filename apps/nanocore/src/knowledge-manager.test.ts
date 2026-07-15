@@ -24,7 +24,6 @@ import {
   ResolveKnowledgeConflictResponseSchema,
 } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
-import { createApp } from './app.js';
 import { ensureLocalUser } from './auth/identity.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
@@ -33,6 +32,7 @@ import {
 import { createKnowledgeContextPackageDigest } from './knowledge-manager.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 
 const requestId = '00000000-0000-4000-8000-000000000111';

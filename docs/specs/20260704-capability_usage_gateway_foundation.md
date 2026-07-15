@@ -210,7 +210,7 @@ The shared foundation owns:
 
 ```text
 worker or gateway client
-  -> AEP-resolved inference or capability.local route
+  -> AEP-resolved inference route (current) or capability.local route (future)
   -> resolve GatewayCallContext
   -> start CapabilityCall
   -> feature adapter
@@ -227,28 +227,28 @@ NanoCore should keep this as a small service used directly by the existing route
 
 ## Implementation Plan
 
-### Phase 1: Shared ledger skeleton
+### Phase 1: Shared ledger skeleton (partial: ledger active, worker context pending)
 
 - Add protocol/storage tests for the minimum `CapabilityCall` and `UsageRecord` shapes needed by LLM and MCP.
 - Add NanoCore storage tables or repositories for capability calls and usage rows, following existing migration patterns.
 - Add `GatewayCallContext` construction helpers for LLM gateway requests and worker capability requests.
 - Add redaction checks proving no prompt, tool payload, token, or raw cache key enters ledger rows.
 
-### Phase 2: pi-ai LLM usage producer
+### Phase 2: pi-ai LLM usage producer (implemented)
 
 - Wire pi-ai-routed calls to start and finish capability calls.
 - Normalize pi-ai usage into durable `UsageRecord` rows.
 - Keep process-local `gateway-usage` diagnostics as a derived consumer of the same normalized data.
 - Verify failed and aborted pi-ai-routed calls record partial usage when pi-ai reports it.
 
-### Phase 3: Worker MCP usage producer
+### Phase 3: Worker MCP usage producer (pending)
 
 - Wire `mcp.call_tool` to the same recorder.
 - Record tool-call usage rows and schema snapshot ids.
 - Record no usage for list operations.
 - Verify MCP policy denials produce denied capability calls with no usage.
 
-### Phase 4: Cross-producer conformance
+### Phase 4: Cross-producer conformance (pending)
 
 - Add one shared conformance test fixture set covering success, denied, failed, timed out, and aborted calls for both `llm` and `mcp`.
 - Add a leak check that scans public responses, protocol records, usage rows, audit rows, and diagnostics for pi-ai-native names, MCP-native stack traces, canary secrets, and raw payloads.
