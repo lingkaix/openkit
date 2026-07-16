@@ -1,7 +1,7 @@
 # Work Resource Interaction Model
 
 Type: change-plan
-Status: planned
+Status: in-progress
 Canonical Spec: `docs/specs/20260713-work_resource_interaction_model.md`
 
 ## Intent
@@ -23,7 +23,7 @@ This record starts with documentation authority and implementation planning. No 
 - Artifact remains the durable user-visible output role, while Knowledge remains a cross-cutting semantic layer.
 - The current implementation phase covers only Workspace-native Material and begins with one Markdown or plain-text document explicitly bound to a Thread.
 - A stable revision of a bound material is queued visibly for the next worker turn without requiring a separate user message.
-- The worker consumes an immutable revision snapshot, exact receipt is recorded through Context Package or applied Steering Input provenance, and worker changes use staged review plus conflict-safe expected-base apply.
+- The worker consumes an immutable revision snapshot, exact availability is proven through an accepted Context Package, and worker changes use staged review plus conflict-safe expected-base apply.
 - OpenKit Web must complete the Plane 1 experience without requiring Codex or another desktop agent application.
 - Managed assets, professional workbenches, binary bundles, external-system interaction, and external writeback remain defined boundaries but deferred implementation.
 
@@ -51,14 +51,14 @@ This record starts with documentation authority and implementation planning. No 
 - Let the user see, exclude, restore, or explicitly send the queued revision.
 - Freeze exact revision ids and digests at turn acceptance.
 - Project the selected material into the Context Package and worker workspace with material id, revision id, parent, digest, media type, inclusion reason, sensitivity, and package-relative path.
-- Derive the last worker-seen revision from Context Package and applied active-turn Item provenance rather than creating a second receipt authority.
+- Derive the last worker-seen revision from the accepted Context Package and verified materialization provenance rather than creating a second receipt authority.
 
 ### Grounded feedback and active-turn input
 
 - Support document-level, heading or block-level, and text-range locators against exact revisions.
-- Support the Plane 1 subset of compare, annotate, keep, change, remove, patch, accept, reject, and redo.
+- Support document comparison as a product operation and the exact Phase 1 intents `annotate`, `change`, `patch`, `accept`, `reject`, and `redo`.
 - Represent `Send now` as ordinary Steering Input carrying an exact material revision and grounded delta, summary, or selected content.
-- Report applied, queued, or follow-up delivery truthfully and never mutate the frozen initial Context Package or live worker filesystem.
+- Report rejected, queued, applied, follow-up, or cancelled delivery truthfully and never mutate the frozen initial Context Package or live worker filesystem.
 
 ### Worker proposal, review, and apply
 
@@ -117,13 +117,17 @@ This record starts with documentation authority and implementation planning. No 
 
 - Core already defines Artifact as a durable user-visible output and keeps Artifact events item-backed.
 - Core communication already separates Control, Workspace, Artifact, and Capability planes.
-- Core already treats active-turn steering as ordinary input applied at safe points.
+- Core requires accepted Steering Input to have one owning delivery path and authoritative outcome without prescribing adapter mechanics.
 - NanoCore already exposes human attention through approval, elicitation, steering, review, and Action Center projections.
-- Context Packages already support workspace files, Artifacts, Knowledge, Sources, content digests, selection traces, materialization, and replay.
+- The generic direct-Turn path now returns typed `thread_busy` before recording implicit input when another Turn owns the Thread.
+- Goal steering now fails closed with `goal_steering_delivery_unavailable`, creates no business records, and has no Web submission control because the real worker launch receives only the objective and cannot persist the generic immutable Context Package trace required for delivery proof.
+- Generic queue selection retains pending rows rather than deleting them before proof; Goal-specific pending ownership, replay, terminal conversion, and cancellation remain unimplemented rather than being simulated through the generic recovery path.
+- Turn-bound Artifact creation and revision maintain one exact versioned `artifact-reference` Item, handled write failures restore prior state, and refinement or redo rejects an unrelated active Turn before claiming the review. Workspace-only import or registration provenance and explicit introduction into a Thread remain unimplemented S16 work.
+- Knowledge-specific Context Packages support workspace files, Artifacts, Knowledge, Sources, content digests, selection traces, materialization, and replay, but the generic worker-Turn `context-package.json` owner remains S39 work.
 - Workspace Synchronization already owns input snapshots, worker materialization, change sets, staged review, preflight, conflict detection, apply, evidence, and recovery.
 - Workspace Data Source, Vault, Agent Capability, audit, and usage contracts already provide foundations for future external-system work.
 - The current Artifact protocol remains an inline text or JSON shape and is not suitable as a universal binary bundle contract.
-- The repository does not currently expose the complete Workspace Material identity, immutable revision, explicit Thread binding, visible next-turn queue, and exact worker-receipt flow required by Phase 1.
+- The repository does not currently expose the complete Workspace Material identity, immutable revision, explicit Thread binding, visible next-turn queue, and exact worker-availability proof required by Phase 1.
 
 ## Impacted Surfaces
 
@@ -164,7 +168,7 @@ This record starts with documentation authority and implementation planning. No 
 - Freeze queued revisions during turn acceptance.
 - Materialize the exact content and digest into the Context Package and worker workspace.
 - Include a delta or summary from the last worker-seen revision when useful without replacing the full selected revision.
-- Implement `Send now` through ordinary Steering Input and applied-input acknowledgement.
+- Implement `Send now` through the existing Goal pending-input owner and accepted Context Package proof; return typed busy for a direct Turn with no delivery owner.
 - Keep later saves queued and never rewrite the running turn's initial Context Package.
 
 ### Stage 4: Worker proposal and conflict-safe apply
@@ -201,10 +205,10 @@ This record starts with documentation authority and implementation planning. No 
 
 - L1 schema, revision, digest, locator, queue, idempotency, and concurrency tests.
 - L2 App API, Core Client, Context Package, Item reference, staged review, and read-model conformance tests.
-- L3 NanoCore black-box tests for automatic next-turn inclusion, explicit exclusion, send-now routing, restart, digest failure, stale apply, and workspace isolation.
+- L3 NanoCore black-box tests for automatic next-turn inclusion, explicit exclusion, send-now routing, restart, digest failure, expected-base conflict, and workspace isolation.
 - L4 browser tests for editing, binding, status, compare, annotation, send-now, and proposal review.
 - L5 revision integrity, provenance, export, import, backup, recovery, and health checks.
-- L6 agent-first story proving revision 1 receipt, user-only revision 2 save, automatic next-turn receipt, concurrent revision 3 conflict, and restart recovery.
+- L6 agent-first story proving revision 1 availability, user-only revision 2 save, automatic next-turn availability, concurrent revision 3 conflict, and restart recovery.
 - Repository-wide lint, typecheck, test, build, smoke, artifact-health, and story gates required by the accepted L0-L6 model.
 
 ## Expected Handoff Points
@@ -212,8 +216,8 @@ This record starts with documentation authority and implementation planning. No 
 - Stage 0 ends the documentation-only checkpoint and hands the accepted contract into test-first implementation planning.
 - Stage 1 must finish before Material, Revision, or Thread Binding production code is written.
 - Stage 2 must establish authoritative persistence and public operations before Web implementation begins.
-- Stage 3 must prove exact worker receipt before the UI may claim a revision was seen.
-- Stage 4 must prove stale writes cannot clobber user work before proposal apply is exposed broadly.
+- Stage 3 must prove exact worker availability before the UI may claim a revision was seen.
+- Stage 4 must prove expected-base conflicts cannot clobber user work before proposal apply is exposed broadly.
 - Stage 5 must remain within the Markdown or plain-text slice.
 - Stage 6 must pass before Plane 2 or Plane 3 design is promoted into implementation.
 
@@ -221,7 +225,7 @@ This record starts with documentation authority and implementation planning. No 
 
 - **Scope expansion:** the three-plane taxonomy may be mistaken for authorization to build all three planes. Mitigation: only Plane 1 appears in current implementation stages and acceptance criteria.
 - **Artifact boundary drift:** implementation may try to reuse the existing Artifact schema for editable materials. Mitigation: keep Artifact as output and introduce only the minimal app-local Material contracts.
-- **Duplicate truth:** a convenient read model may become a second worker-receipt ledger. Mitigation: derive receipt from Context Package traces and applied active-turn Items.
+- **Duplicate truth:** a convenient read model may become a second worker-availability ledger. Mitigation: derive availability from accepted Context Package and materialization provenance.
 - **Implicit inclusion confusion:** users may not understand why a change reached a worker. Mitigation: explicit Thread binding, visible queued revision, exclusion, and a stop rule that falls back to explicit `Publish to Thread`.
 - **Concurrent overwrite:** worker output may be based on an older revision. Mitigation: base revision and digest, staged review, expected-base apply, and conflict preservation.
 - **Premature abstraction:** a universal resource or locator system may be added for predicted formats. Mitigation: implement only text locators and Phase 1 records, then generalize from evidence.
@@ -230,7 +234,7 @@ This record starts with documentation authority and implementation planning. No 
 ## Stop Rules
 
 - If visible automatic inclusion remains confusing during dogfooding, replace it with explicit `Publish to Thread` rather than adding heuristics.
-- If safe active-turn receipt cannot be proven, route `Send now` into a queued follow-up rather than mutating live worker state.
+- Reject Goal `Send now` with `goal_steering_delivery_unavailable` until the real worker path can persist its accepted Context Package trace; reject a direct Turn with no delivery owner using typed busy rather than mutating live worker state.
 - If later complex asset types do not share useful bundle and annotation primitives, do not build a universal Plane 2 protocol.
 - If external integration requires mirrored domain ownership, pause and re-review the architecture before implementation.
 
@@ -242,3 +246,5 @@ This record starts with documentation authority and implementation planning. No 
 - 2026-07-13 — Accepted OpenKit Web as a complete Plane 1 interaction host independent of desktop worker applications.
 - 2026-07-13 — Restricted the current implementation phase to the complete Workspace-native Material chain, beginning with one Thread-bound Markdown or plain-text material.
 - 2026-07-13 — Documentation authority checkpoint completed; implementation remains planned.
+- 2026-07-16 — Selective rehydration restored only decision-grade contracts: immutable Artifact origin, exact Thread introduction, logical Artifact/reference commit, input-delivery predicates, refine and redo concurrency, unique Material authorities, stable idempotency scope, restart ordering, and partial-failure behavior. Repeated rationale, rollout steps, speculative future-plane protocols, and generalized workbench machinery remain deleted.
+- 2026-07-16 — C02 completed the turn-bound Artifact lineage, handled rollback, active-Turn refinement guard, and direct-Turn busy fallback. Independent real-worker tracing proved that Goal steering had no delivery-proof owner, so the route and Web now fail closed and the unsupported slice shrank by more than 1,500 net lines across implementation, tests, UI, and generated schema. Real Goal delivery remains owned by S05, S13, S39, and this Partial specification.

@@ -55,6 +55,10 @@ Documentation should cover purpose, parameters, return values, and error behavio
 - Every material change record must link related core architecture, product design, and spec docs where relevant, especially `docs/core/architecture.md`, `docs/core/work-model.md`, `docs/product-vision.md`, and applicable `docs/specs/` files.
 - Use `docs/working_logs/` for archived release PRDs, task lists, and progress logs from long-run agent cycles.
 - Keep spec and change record aligned with implementation.
+- Apply the selective-rehydration rule in `docs/change-tracking.md` whenever documentation is compressed, split, promoted, or reconciled.
+- Keep Core documents short and normative, specifications precise and narrow, and change plans execution-focused; keep curated execution evidence in change plans without treating it as design authority.
+- Do not remove a criterion whose absence could materially change implementation, tests, failure behavior, recovery, ownership, or responsibility. Compression is safe only when two independent implementers reading the remaining authoritative documents would make the same material choices.
+- For every material concept, the owning Core and specification set must preserve five decision classes: exact definition and exclusions; unique durable authority and projection boundary; creation, update, termination, retry, and recovery lifecycle; conflict, missing, stale, restart, and dependency-failure semantics; and externally observable acceptance predicates. State explicitly when a class does not apply.
 
 Filename rules:
 
@@ -109,7 +113,18 @@ Allowed types:
 - During large feature work, review each completed slice for dead code, duplicate ownership, pass-through layers, speculative flexibility, and fragmented feature paths; simplify before adding the next slice.
 - Refactor when needed to keep boundaries clear, but stay scoped to the task.
 
-### 7. Keep repository text in English
+### 7. Prevent over-engineering and undocumented scope expansion
+
+- `docs/core/foundation.md` is the canonical owner of the system-wide scope, fallback, and compromise doctrine; the rules below are its repository execution projection.
+- Nothing is perfect. A bounded fallback or explicit system compromise is allowed when it preserves the owning module's documented scope and does not silently broaden responsibility.
+- The whole system and every module, package, service, test harness, and runner must have a clear documented scope. Do not expand one component into a parallel workflow engine, orchestration layer, product surface, or test platform to satisfy one feature or proof requirement.
+- Prefer deletion, direct implementation, and reuse of an existing owner before adding another state machine, abstraction, compatibility path, runner, or framework.
+- Before making an architecture, design, feature, or implementation change, identify the owning document under `docs/core/` or `docs/specs/`. If the proposed behavior or responsibility is not covered there, stop implementation and discuss the design first.
+- After that discussion, update an existing owning document or add and accept a new design or specification before the behavior enters production code, test infrastructure, or public contracts. A change record may track execution, but it does not replace design authority.
+- Do not add undocumented architecture, design, behavior, feature scope, or cross-module responsibility to the system. Implementation and tests must remain inside the accepted documented boundary.
+- A fallback or compromise must state its boundary and failure behavior in the owning documentation. It must remain the smallest mechanism that works and must not become implicit authorization for scope expansion.
+
+### 8. Keep repository text in English
 
 - All code, comments, and documentation must be in English.
 - All documentation must be Markdown.
@@ -121,8 +136,12 @@ Before finishing work, verify:
 - tests were added first for behavior changes
 - maintainability and discoverability were considered before test design
 - post-TDD code-quality review was completed when behavior changed
+- every architecture, design, feature, and implementation change is covered by an owning core or spec document before implementation
+- documentation compression, promotion, and reconciliation passed the selective-rehydration and two-independent-implementers test
 - every new entity has a present, concrete justification
+- every fallback or compromise is bounded, documented, and does not broaden the owning module's scope
 - no dead code, speculative abstraction, duplicate ownership, or unnecessary pass-through layer remains
+- no production or test component gained an undocumented responsibility or became a parallel platform
 - new code is documented
 - specs are updated for non-trivial changes
 - change records are updated

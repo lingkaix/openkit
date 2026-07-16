@@ -1,7 +1,7 @@
 # Audit, Usage, And Evidence Records
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
 
 ## Summary
 
@@ -99,6 +99,7 @@ Every durable audit, usage, capability-call, permission-decision, and vault-use 
 
 - Rows with workspace lineage — turns, items, capability calls, context packages, worker sessions, workspace sync, workspace-scoped vault use — home in `workspace.sqlite`, and their evidence files home under the workspace `evidence/` tree. A workspace backup or export is therefore self-contained, including its own audit history.
 - Server control-plane rows — auth sessions, server config changes, provider account lifecycle, gateway account rotation, scheduler operations, migrations — home in `core.sqlite`, with evidence under `server/evidence/`.
+- Restart recovery armed, exact adoption, recovery timeout, cleanup CAS fence, and terminal capacity release are scheduler control-plane audit events in `core.sqlite`. They carry product-safe lease, scheduler epoch, process-key-hash reference, backend digest, and workspace lineage, but never the raw process key, bearer token, transcript, or backend credential. There is no challenge or settlement-phase event family.
 - Rows that concern only a user identity — login events, user config changes — home in `user.sqlite`.
 
 When one event spans scopes, the primary row homes at the responsibility subject. A workspace turn consuming a server-owned provider account records its usage row at the workspace, because the workspace is the attribution and billing subject; the server side MAY keep a derived aggregate, and derived aggregates MUST be marked derived and rebuildable, never a second source of truth.
@@ -123,8 +124,9 @@ Domain-specific additions owned by this spec:
 - audit event id
 - event category
 - severity
-- actor summary
-- responsible user or automation summary
+- stable `ActorRef` when an actor exists
+- redacted credential kind, credential record id, and channel summary when applicable
+- subject reference when the affected subject differs from the actor
 - workspace id when applicable
 - thread id when applicable
 - turn id when applicable
@@ -155,6 +157,7 @@ Audit events are immutable.
 - turn id when applicable
 - agent session id when applicable
 - capability call id when applicable
+- responsible user id when attributable consumption or an automated effect occurs on behalf of a user
 - provider reference
 - category
 - closed measurement unit, including `tokens` and estimated `usd`
@@ -215,7 +218,7 @@ The current usage schema has durable workspace storage, a shared recorder, inter
 
 Current `UsageRecordSchema` ownership fields include `workspaceId`, optional `threadId`, optional `turnId`, optional `itemId`, optional `capabilityCallId`, optional `agentId`, optional `agentSessionId`, and `sourceIds`.
 
-The usage schema currently has no user ID or automation identity field. User-level attribution must be added intentionally if a producer or billing surface requires it.
+The usage schema currently has no responsible-user field, and the general `AuditEventSchema` lacks the complete shared `ActorRef`, subject, and credential-channel projection. The accepted multi-user target adds responsible-user attribution where consumption or a governed effect is accountable to a user and adds stable actor attribution to shared audit producers; it does not duplicate display names, email addresses, or a full actor object on telemetry already linked to an attributed capability or audit record.
 
 Current measurement fields include `unit`, `quantity`, `category`, `providerRef`, `modelId`, `source`, `recordedAt`, and `requestId`. The closed unit vocabulary includes `usd` only for provider-reported cost estimates; it does not establish billing, currency conversion, or allocation policy.
 
@@ -361,8 +364,9 @@ When a value is needed for correlation, store a stable redacted label or digest.
 NanoCore should emit or import audit and usage records at these boundaries:
 
 - app API command accepted or denied
-- MCP operation accepted or denied
+- bundled CLI, Agent Skill, or worker-supplied tool operation accepted or denied
 - worker session launch
+- worker restart recovery armed, exactly adopted, timed out, cleanup CAS-fenced, and capacity released
 - AEP snapshot materialization
 - sandbox lifecycle changes
 - permission decision
@@ -390,6 +394,8 @@ If a producer is not implemented, diagnostics must not claim that audit or usage
 - Provider-reported cost is stored only as a positive estimated-`usd` usage row with normal capability lineage; it is not an invoice or billing authority.
 - The first retention classes are `ephemeral-diagnostic`, `turn-evidence`, `workspace-audit`, `restricted-raw`, and `legal-hold`.
 - Audit-family rows home in the database of their `ownerScope`; workspace-lineage rows live in `workspace.sqlite` so workspace export and deletion are self-contained.
+- Stable actor references remain historical lineage after membership removal, user disable, or portable import and never reconstruct an access grant.
+- Membership, invitation, owner-transfer, shared-write, approval, review, and user-lifecycle mutations are required audit producer families in the multi-user baseline.
 - Spanning events home at the responsibility subject; server-side copies are derived aggregates, never a second source of truth.
 - Workspace deletion produces a sealed server-owned audit closure export before removal; `legal-hold` blocks deletion.
 - The first OpenShell evidence normalization pass should keep product-safe launch, policy, upload/download, transcript, artifact, workspace-change, control, capability, outcome, and redacted error summaries while leaving raw backend-native payloads as restricted evidence.
@@ -400,6 +406,7 @@ If a producer is not implemented, diagnostics must not claim that audit or usage
 - Add durable usage producers for future knowledge gateway metering, additional storage producers, network producers, broader sandbox lifecycle measurements, and any denied or failed capability attempts where measurable resources are consumed.
 - Extend automatic `EvidenceBundle` promotion and evidence-kind normalization beyond the current producers; extend `RuntimeEvidence` beyond terminal worker checkpoints, materialization readiness, and transcript collection into richer OpenShell launch, heartbeat, file-transfer, workspace-change, teardown, and backend-error normalization.
 - Wire every relevant producer to fill the available permission decision and vault-use audit links.
+- Add shared `ActorRef`, subject, credential-channel, responsible-user, membership, invitation, and ownership-transfer linkage to the general schemas and producers.
 - Extend retention compaction beyond explicit ephemeral-diagnostic and restricted-provenance expiry into scheduled maintenance, workspace policy configuration, and broader retention classes.
 - Normalize broader OpenShell evidence fields beyond the first terminal-checkpoint and materialization-readiness runtime evidence slices.
 - Implement the ownership-scope homing and workspace deletion closure export defined in Storage Scope Homing.
@@ -408,6 +415,7 @@ If a producer is not implemented, diagnostics must not claim that audit or usage
 ## Testing Strategy
 
 - Schema tests for audit, usage, and evidence records.
+- Actor-attribution tests for human, agent, automation, integration, and system actions, including redaction and historical retention after access removal.
 - Producer tests for key NanoCore boundaries.
 - Import tests for OpenShell-style evidence.
 - Redaction tests with provider tokens, host paths, and env vars.
@@ -435,5 +443,6 @@ If a producer is not implemented, diagnostics must not claim that audit or usage
 - `docs/specs/20260629-openkit_policy_model.md`
 - `docs/specs/20260703-storage_layout_record_ownership.md`
 - `docs/specs/20260703-worker_agent_capability.md`
+- `docs/specs/20260715-multi_user_workspace_system.md`
 - [Evidence Surface Simplification](../changes/202607111848520001-evidence_surface_simplification.md)
 - `docs/specs/20260711-worker_runtime_subagent_provenance.md`

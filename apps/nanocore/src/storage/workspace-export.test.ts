@@ -357,6 +357,7 @@ describe('workspace export verifier', () => {
       status: 'completed',
       parentItemId: firstItemRevision.id,
       artifactId: artifact.id,
+      artifactVersion: artifact.version,
       title: artifact.title,
       summary: artifact.summary,
       createdAt: timestamp,
@@ -562,6 +563,7 @@ describe('workspace export verifier', () => {
       expect.soft(importedArtifactItem).toMatchObject({
         parentItemId: importedCurrentItem.id,
         artifactId: importedArtifact.id,
+        artifactVersion: importedArtifact.version,
       });
       expect.soft(importedRevisions).toEqual(
         importedRevisions.map((item) => ({
@@ -651,7 +653,7 @@ describe('workspace export verifier', () => {
         artifacts: [{ ...artifact, turnId: 'tu_stale' }],
       });
       readImportSnapshot(invalidRoot, targetWorkspaceId);
-    }).toThrow(/Artifact .* (missing exported turn|invalid lineage)/);
+    }).toThrow(`Artifact ${artifact.id} has invalid artifact-reference lineage.`);
 
     const staleItemRoot = freshExportRoot('openkit-workspace-history-stale-item-');
     expect(() =>

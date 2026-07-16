@@ -49,15 +49,22 @@ import {
   type SchedulerLeaseMaintenanceService,
   startSchedulerLeaseMaintenanceService,
 } from './runtime/scheduler-lease-maintenance-service.js';
-import { runSchedulerRestartRecovery } from './runtime/scheduler-restart-recovery.js';
+import {
+  type RunSchedulerRestartRecoveryInput,
+  runExpiredSchedulerReconnectCleanup,
+  runSchedulerRestartRecovery,
+} from './runtime/scheduler-restart-recovery.js';
 import {
   type ConfiguredWorkerLifecycleRuntime,
   createConfiguredWorkerLifecycleRuntime,
 } from './runtime/turn-executor-factory.js';
+import { getWorkerBackendSession } from './runtime/worker-backend-sessions.js';
+import type { WorkerControlFinalStatusAcceptedInput } from './runtime/worker-control-gateway.js';
 import { terminalizeGovernedWorkerTurnFailure } from './runtime/worker-turn-failure.js';
 import {
   CONFIGURED_WORKER_INITIAL_LEASE_DURATION_MS,
   CONFIGURED_WORKER_STARTUP_TIMEOUT_MS,
+  completeSchedulerLeaseForTerminalTurn,
   requireSchedulerSessionLeaseAdmissionContext,
 } from './scheduler-records.js';
 import {
@@ -101,6 +108,9 @@ let coreDb: CoreDb | undefined;
 let vaultUnlockState: VaultUnlockState | undefined;
 let bootWorkerControlGateway: ReturnType<typeof createDefaultWorkerControlGateway> | undefined;
 let workerLifecycleRuntime: ConfiguredWorkerLifecycleRuntime | undefined;
+let cleanupExpiredReconnects: (() => Promise<void>) | undefined;
+const restartCloseoutPackageSnapshots = new Set<string>();
+const schedulerStoresByUserId = new Map<string, FsStore>();
 
 process.once('exit', releaseProcessResources);
 
@@ -249,47 +259,68 @@ const bootResult = await runBootPhases({
       critical: true,
       run: async () => {
         const recoveryCoreDb = requireBootValue(coreDb, 'Core database was not initialized.');
-        bootWorkerControlGateway = createDefaultWorkerControlGateway(recoveryCoreDb);
+        bootWorkerControlGateway = createDefaultWorkerControlGateway(
+          recoveryCoreDb,
+          scheduleCommittedFinalStatusCloseout
+        );
         workerLifecycleRuntime = createConfiguredWorkerLifecycleRuntime({
           coreDb: recoveryCoreDb,
           vaultBackend: () =>
             requireBootValue(vaultUnlockState, 'Vault unlock state was not initialized.').backend(),
+          storeForUserId: schedulerStoreForUserId,
           workerControlGateway: bootWorkerControlGateway,
         });
-        schedulerEpoch = (
-          await runSchedulerRestartRecovery(recoveryCoreDb, {
-            cleanupBackendSession: workerLifecycleRuntime.cleanupBackendSession,
-            projectRecoveredTurn: async (subject) => {
-              const admission = requireSchedulerSessionLeaseAdmissionContext(
-                recoveryCoreDb,
-                subject.leaseId
+        const recoveryRuntime = workerLifecycleRuntime;
+        const recoveryInput = {
+          cleanupBackendSession: recoveryRuntime.cleanupBackendSession,
+          projectRecoveredTurn: async (subject) => {
+            const admission = requireSchedulerSessionLeaseAdmissionContext(
+              recoveryCoreDb,
+              subject.leaseId
+            );
+            const result = terminalizeGovernedWorkerTurnFailure({
+              agentSessionId: subject.agentSessionId,
+              completedAt: new Date().toISOString(),
+              errorCode: 'worker_governance_restart_recovery',
+              message: 'Worker execution stopped during NanoCore restart recovery.',
+              requestId: admission.requestId,
+              store: schedulerStoreForUserId(admission.userId),
+              turnId: subject.turnId,
+            });
+
+            if (
+              result.status !== 'completed' &&
+              result.status !== 'failed' &&
+              result.status !== 'interrupted' &&
+              result.status !== 'cancelled' &&
+              result.status !== 'missing'
+            ) {
+              throw new Error(
+                `Restart recovery left turn ${subject.turnId} non-terminal: ${result.status}.`
               );
-              const result = terminalizeGovernedWorkerTurnFailure({
-                agentSessionId: subject.agentSessionId,
-                completedAt: new Date().toISOString(),
-                errorCode: 'worker_governance_restart_recovery',
-                message: 'Worker execution stopped during NanoCore restart recovery.',
-                requestId: admission.requestId,
-                store: new FsStore({ dataRoot, userId: admission.userId }),
-                turnId: subject.turnId,
-              });
+            }
 
-              if (
-                result.status !== 'completed' &&
-                result.status !== 'failed' &&
-                result.status !== 'interrupted' &&
-                result.status !== 'cancelled' &&
-                result.status !== 'missing'
-              ) {
-                throw new Error(
-                  `Restart recovery left turn ${subject.turnId} non-terminal: ${result.status}.`
-                );
-              }
-
-              return { status: result.status };
-            },
-          })
-        ).schedulerEpoch;
+            return { status: result.status };
+          },
+          reconcileAcceptedFinalStatus: async (session) => {
+            const result = await recoveryRuntime.reconcileAcceptedFinalStatus(session);
+            return { status: result.status };
+          },
+          restoreBackendSession: recoveryRuntime.restoreBackendSession,
+        } satisfies RunSchedulerRestartRecoveryInput;
+        schedulerEpoch = (await runSchedulerRestartRecovery(recoveryCoreDb, recoveryInput))
+          .schedulerEpoch;
+        cleanupExpiredReconnects = () =>
+          runExpiredSchedulerReconnectCleanup(recoveryCoreDb, recoveryInput);
+        for (const row of recoveryCoreDb.sqlite
+          .prepare(
+            `SELECT package_snapshot_id AS packageSnapshotId
+             FROM scheduler_session_leases
+             WHERE recovery_state = 'awaiting-reconnect'`
+          )
+          .all() as Array<{ readonly packageSnapshotId: string }>) {
+          restartCloseoutPackageSnapshots.add(row.packageSnapshotId);
+        }
         return { status: 'ok' };
       },
     },
@@ -357,7 +388,6 @@ const workerPlacement = requireBootValue(
   'Worker lifecycle runtime was not initialized.'
 ).placement;
 const refreshStatusCollector = maybeOpenShellRefreshStatusCollector(turnExecutor);
-const schedulerStoresByUserId = new Map<string, FsStore>();
 const auth =
   mode === 'server'
     ? createBetterAuth(coreDb, {
@@ -375,6 +405,7 @@ const app = createApp({
   mode,
   runtimeConfigManager,
   schedulerEpoch,
+  storeFactory: schedulerStoreForUserId,
   turnExecutor,
   vaultUnlockState: activeVaultUnlockState,
   workerControlGateway,
@@ -418,6 +449,10 @@ schedulerDispatchRetry = startSchedulerDispatchRetryService({
   },
 });
 schedulerLeaseMaintenance = startSchedulerLeaseMaintenanceService(coreDb, {
+  cleanupExpiredReconnects: requireBootValue(
+    cleanupExpiredReconnects,
+    'Expired reconnect cleanup was not initialized.'
+  ),
   intervalMs: SCHEDULER_LEASE_MAINTENANCE_INTERVAL_MS,
   maxTotalLeaseMs: SCHEDULER_LEASE_MAX_TOTAL_MS,
   renewalDurationMs: SCHEDULER_LEASE_RENEWAL_DURATION_MS,
@@ -451,6 +486,36 @@ if (refreshStatusCollector) {
         }`
       );
     },
+  });
+}
+
+/** Schedules at most one process-local closeout for an accepted worker final status. */
+function scheduleCommittedFinalStatusCloseout(input: WorkerControlFinalStatusAcceptedInput): void {
+  const database = coreDb;
+  const runtime = workerLifecycleRuntime;
+  const packageSnapshotId = input.lineage.packageSnapshotId;
+  if (!database || !runtime || !restartCloseoutPackageSnapshots.delete(packageSnapshotId)) {
+    return;
+  }
+  void (async () => {
+    const lease = database.sqlite
+      .prepare(
+        'SELECT lease_id AS leaseId FROM scheduler_session_leases WHERE sandbox_binding_ref = ?'
+      )
+      .get(input.sandboxBindingRef) as { readonly leaseId: string } | undefined;
+    const session = lease ? getWorkerBackendSession(database, lease.leaseId) : null;
+    if (!session) {
+      throw new Error('Accepted worker final status has no durable backend session.');
+    }
+    const result = await runtime.reconcileAcceptedFinalStatus(session);
+    completeSchedulerLeaseForTerminalTurn(database, result.turn);
+  })().catch((error) => {
+    restartCloseoutPackageSnapshots.add(packageSnapshotId);
+    console.warn(
+      `Worker final-status closeout failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
   });
 }
 

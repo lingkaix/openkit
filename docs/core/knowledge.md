@@ -62,7 +62,7 @@ OpenKit should preserve context near worker execution without absorbing domain s
 
 `Knowledge Review` is the human, team, or policy decision that accepts, edits, rejects, defers, archives, or supersedes a proposal.
 
-`Knowledge Manager` is the NanoCore internal agent role responsible for primary knowledge maintenance through schema-aware ingest, query support, retrieval support, source-traceable context material preparation, linting, proposal drafting, page organization, naming, deduplication, stale detection, and source-reference repair.
+`Knowledge Manager` is the Internal Core Role responsible for primary knowledge maintenance through schema-aware ingest, query support, retrieval support, source-traceable context material preparation, linting, proposal drafting, page organization, naming, deduplication, stale detection, and source-reference repair.
 
 `Observation` is a low-friction agent-recorded signal about work, source material, or repeated behavior.
 
@@ -284,7 +284,7 @@ Agents should not silently read all knowledge.
 
 Core should mediate retrieval and injection through context packages.
 
-`Context Package` is a task-time data projection, not a separate internal agent role.
+`Context Package` is a task-time data projection, not a separate Internal Core Role.
 
 The Knowledge Manager selects, filters, cites, and prepares relevant knowledge or source material for a context package.
 

@@ -164,17 +164,15 @@ Minor versions MAY make breaking schema changes while OpenKit remains in interna
 
 ## IDs
 
-The canonical protocol ID list and ID shape rules live in `docs/core/core-concepts.md`.
+`docs/core/core-concepts.md` owns the stable rule that Core identifiers are opaque and must not encode consumer-visible routing, ownership, storage, provider, or time semantics.
 
-Protocol IDs are opaque strings.
-
-New Core-issued durable protocol IDs MUST be UUIDv7 strings.
+The machine-readable protocol schema and accepted design define the concrete ID fields, encodings, allocation, and validation for each record family. Owning record writers implement that contract. The protocol does not impose one universal ID encoding or reserve speculative IDs for concepts that have no current record.
 
 Imported external IDs and provider-native IDs MUST NOT be reused as core protocol IDs. They may be stored under explicit extension namespaces.
 
 Clients MUST NOT infer physical file paths, database table names, routing behavior, timestamps, or ownership from ID shape.
 
-Core MUST assign durable workspace, thread, turn, item, artifact, approval, agent session, usage, audit, and capability call IDs.
+Core MUST assign the IDs of Core-owned durable records according to their owning schema and accepted specification.
 
 Clients and channel adapters MUST assign `requestId` values for mutating commands.
 
@@ -699,7 +697,7 @@ Secret values and provider-native sensitive payloads must not appear in protocol
 ## Invariants
 
 - Protocol messages that cross process, transport, storage replay, or package boundaries MUST carry `protocolVersion`.
-- Core-issued durable protocol IDs MUST be opaque UUIDv7 strings.
+- Core-issued durable protocol IDs MUST conform to their owning schema and remain opaque to consumers.
 - Clients MUST NOT infer routing, storage paths, timestamps, ownership, or provider identity from ID shape.
 - Raw heterogeneous live events without the core event envelope MUST NOT be part of the core protocol.
 - Mutating and asynchronous commands MUST carry a caller-provided `requestId`.

@@ -116,12 +116,8 @@ export class WorkerTranscriptWriter {
         type: input.type,
       },
     });
-    const appendEvent = this.appendEvent;
-    await this.appendJsonl(
-      'events.jsonl',
-      record,
-      appendEvent ? () => appendEvent(record) : undefined
-    );
+    await this.appendJsonl('events.jsonl', record);
+    await this.appendEvent?.(record);
     return record;
   }
 
@@ -189,18 +185,12 @@ export class WorkerTranscriptWriter {
    *
    * @param fileName Session file name.
    * @param record Serializable record.
-   * @param afterAppend Optional effect serialized after the durable file append.
    * @returns Promise that resolves after the record is appended.
    */
-  private appendJsonl(
-    fileName: string,
-    record: Record<string, unknown>,
-    afterAppend?: (() => Promise<void>) | undefined
-  ): Promise<void> {
+  private appendJsonl(fileName: string, record: Record<string, unknown>): Promise<void> {
     this.appendQueue = this.appendQueue.then(async () => {
       await mkdir(this.sessionDir, { recursive: true });
       await appendFile(join(this.sessionDir, fileName), `${JSON.stringify(record)}\n`, 'utf8');
-      await afterAppend?.();
     });
     return this.appendQueue;
   }

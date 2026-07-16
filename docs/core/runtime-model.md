@@ -78,15 +78,9 @@ Agent is not the raw adapter, process, model provider, tool server, sandbox back
 
 ## AgentProfile
 
-`AgentProfile` is a behavior profile within agent setup.
+`agent-supply.md` owns the `AgentProfile` definition. Runtime resolves one selected profile from agent setup before creating or reusing an agent session.
 
-It can represent a named mode such as coder, reviewer, researcher, browser operator, planner, subagent, handoff target, or tool-oriented agent.
-
-An agent profile can define instructions, model preference within agent policy, skill set, capability subset, routing hints, review preferences, output style, and context injection hints.
-
-Profiles cannot expand the parent agent policy. Core must resolve a selected profile before creating or reusing an agent session.
-
-If setup config declares no profiles, it has one implicit default profile.
+The selected profile may influence runtime inputs but cannot expand the parent agent policy.
 
 ## Runtime
 
@@ -107,23 +101,9 @@ Runtime is separate from permission. Runtime may enforce sandbox constraints, bu
 
 ## AgentSession
 
-`AgentSession` is an initialized, reusable communication and scheduling handle between Core and an agent runtime.
+`agent-session.md` owns the `AgentSession` definition and continuity semantics. Runtime uses an AgentSession as the initialized communication and scheduling handle between Core and an agent runtime.
 
-An agent session can represent a live child process, local container agent, remote agent connection, provider sandbox session, or resumable runtime handle.
-
-Agent session owns runtime liveness and effective setup identity. It may record:
-
-- workspace affinity
-- optional thread affinity
-- selected agent and profile
-- setup snapshot identity
-- runtime kind and deployment mode
-- effective capability summary
-- effective sandbox summary
-- health and readiness state
-- resume handle or snapshot reference when supported
-
-Agent session is not the bottom-level agent-running model. It does not require the agent to expose its private internal task graph.
+Runtime observes liveness, effective setup identity, placement, capabilities, sandbox state, and health through that session projection without exposing the agent's private task graph.
 
 ## Turn
 
@@ -137,9 +117,9 @@ Turn replaces `AgentRun` in the core model. Execution metadata belongs on the tu
 
 ## Item
 
-`Item` is the append-only observation emitted during a turn.
+Runtime observations that require stable communication, replay, audit, approval, artifact lineage, or user-visible history are persisted as `Item` records under the Core Concepts definition.
 
-Agents and adapters translate user-visible or protocol-visible runtime activity into items. Private runtime steps do not need to become items unless they are part of stable communication, replay, audit, approval, artifact lineage, or user-visible history.
+Agents and adapters translate user-visible or protocol-visible runtime activity into items. Private runtime steps do not need to become items.
 
 Task graphs, tool retries, chain-of-thought internals, process logs, native SDK traces, and scheduler traces remain private unless intentionally projected as item summaries or diagnostics.
 

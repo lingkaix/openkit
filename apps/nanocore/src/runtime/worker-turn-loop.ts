@@ -5,11 +5,11 @@ import type { WorkspaceDb } from '../storage/db.js';
 import type { PreparedNextTurn } from './prepare-next-turn.js';
 import { type StopAfterTurnDecision, shouldStopAfterTurn } from './stop-after-turn.js';
 import {
-  drainFollowUpInputs,
-  drainSteeringForSafePoint,
   type FollowUpDrainMode,
   type QueuedFollowUpInput,
   type SafePointSteeringMessage,
+  selectFollowUpInputs,
+  selectSteeringForSafePoint,
 } from './user-turn-queues.js';
 import {
   createWorkerCheckpointContextDiagnostics,
@@ -185,7 +185,7 @@ export interface RunWorkerTurnLoopResult {
 export async function runWorkerTurnLoop(
   input: RunWorkerTurnLoopInput
 ): Promise<RunWorkerTurnLoopResult> {
-  const queues = drainWorkerTurnQueues(input);
+  const queues = selectWorkerTurnQueues(input);
   const prepared = await input.prepare(queues);
   const contextAssembly = createContextAssemblySummary(prepared);
   const turn = await input.reserveTurn({ prepared });
@@ -298,18 +298,18 @@ function createContextAssemblySummary(
 }
 
 /**
- * Drains queued safe-point steering and follow-up inputs for one worker turn.
+ * Selects queued safe-point steering and follow-up inputs without claiming delivery.
  *
  * @param input Worker turn loop input.
  * @returns Queue payload selected for context preparation.
  */
-function drainWorkerTurnQueues(input: RunWorkerTurnLoopInput): WorkerTurnLoopPrepareInput {
+function selectWorkerTurnQueues(input: RunWorkerTurnLoopInput): WorkerTurnLoopPrepareInput {
   return {
-    steeringMessages: drainSteeringForSafePoint(input.workspaceDb, {
+    steeringMessages: selectSteeringForSafePoint(input.workspaceDb, {
       workspaceId: input.workspaceId,
       threadId: input.threadId,
     }),
-    followUpInputs: drainFollowUpInputs(input.workspaceDb, {
+    followUpInputs: selectFollowUpInputs(input.workspaceDb, {
       workspaceId: input.workspaceId,
       threadId: input.threadId,
       drainMode: input.followUpDrainMode ?? 'one_at_a_time',

@@ -251,19 +251,52 @@ export function parseCanonicalWorkspaceHistory(input: {
       throw new Error('Turn items must equal the latest canonical item revisions.');
     }
   }
+  const artifactReferences = new Map<string, Extract<Item, { type: 'artifact-reference' }>>();
+  for (const item of latestItems.values()) {
+    if (item.type !== 'artifact-reference') {
+      continue;
+    }
+    if (artifactReferences.has(item.artifactId)) {
+      throw new Error(`Artifact ${item.artifactId} has duplicate artifact-reference Items.`);
+    }
+    artifactReferences.set(item.artifactId, item);
+  }
   for (const artifact of artifacts) {
     claimGlobalId(artifactIds, artifact.id, 'artifact');
     const thread = artifact.threadId ? threadsById.get(artifact.threadId) : null;
     const turn = artifact.turnId ? turnsById.get(artifact.turnId) : null;
+    const reference = artifactReferences.get(artifact.id);
     if (
       artifact.workspaceId !== workspace.id ||
+      (artifact.threadId === null) !== (artifact.turnId === null) ||
       (artifact.threadId !== null && !thread) ||
       (artifact.turnId !== null &&
-        (!turn || artifact.threadId !== turn.threadId || artifact.workspaceId !== turn.workspaceId))
+        (!turn ||
+          artifact.threadId !== turn.threadId ||
+          artifact.workspaceId !== turn.workspaceId ||
+          !reference ||
+          reference.status === 'declined' ||
+          reference.workspaceId !== artifact.workspaceId ||
+          reference.threadId !== artifact.threadId ||
+          reference.turnId !== artifact.turnId ||
+          reference.artifactVersion !== artifact.version))
     ) {
-      throw new Error(`Artifact ${artifact.id} has invalid lineage.`);
+      throw new Error(`Artifact ${artifact.id} has invalid artifact-reference lineage.`);
     }
     artifactsById.set(artifact.id, artifact);
+  }
+  for (const reference of artifactReferences.values()) {
+    const artifact = artifactsById.get(reference.artifactId);
+    if (
+      (!artifact && reference.status !== 'declined') ||
+      (artifact &&
+        (reference.workspaceId !== artifact.workspaceId ||
+          reference.threadId !== artifact.threadId ||
+          reference.turnId !== artifact.turnId ||
+          reference.artifactVersion !== artifact.version))
+    ) {
+      throw new Error(`Artifact reference ${reference.id} has invalid lineage.`);
+    }
   }
   for (const review of artifactReviews) {
     claimGlobalId(artifactReviewIds, review.artifactId, 'artifact review');

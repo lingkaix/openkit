@@ -67,7 +67,7 @@ The worker capability plane is not currently implemented. `packages/config-schem
 
 The protocol and storage foundations remain: `packages/worker-protocol` defines `WorkerCapabilityCallSummary` as a transcript/import summary schema, `packages/protocol` defines product-level `CapabilityCall`, `UsageRecord`, and `AuditEvent`, and the shared usage ledger supports implemented LLM producers. A worker-reported summary is evidence for import and does not prove that NanoCore offered or executed a capability call.
 
-The generic public LLM gateway and the separately governed worker-inference path are independent of this disabled capability plane. Runtime provenance and trusted worker-inference remain governed by `docs/specs/20260711-worker_runtime_subagent_provenance.md`, including that spec's production proof requirement.
+The generic public LLM gateway and the separately governed worker-inference path are independent of this disabled capability plane. Runtime provenance and trusted worker-inference remain governed by `docs/specs/20260711-worker_runtime_subagent_provenance.md`, whose production proof is complete; that result does not implement or authorize this capability plane.
 
 Network egress, external API routing, generic future credential classes, the full Capability Catalog, baseline rate-limit and budget enforcement, transformer-pipeline routing, Knowledge and artifact routes, diagnostics, and MCP tool supply all remain future implementation work under this accepted contract.
 

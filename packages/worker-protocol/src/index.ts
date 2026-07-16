@@ -466,6 +466,44 @@ export const WorkerControlOperationSchema = z.enum([
   'knowledge_proposal_summary',
 ]);
 
+/** Canonical 256-bit worker process key or SHA-256 digest encoded as unpadded base64url. */
+export const WorkerProcessKeySchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+
+/** Worker lifecycle states accepted by the heartbeat route. */
+export const WorkerControlHeartbeatStatusSchema = z.enum([
+  'starting',
+  'running',
+  'idle',
+  'awaiting_command',
+  'stopping',
+  'completed',
+  'failed',
+]);
+
+/** Canonical heartbeat body persisted and fingerprinted by NanoCore. */
+export const WorkerControlHeartbeatBodySchema = z
+  .object({
+    status: WorkerControlHeartbeatStatusSchema,
+    message: z.string().min(1).nullable().optional(),
+    processKeyHash: WorkerProcessKeySchema.optional(),
+  })
+  .strict();
+
+const WorkerControlHeartbeatEnvelopeBaseSchema = z
+  .object({
+    schemaVersion: WorkerProtocolSchemaVersionSchema,
+    lineage: WorkerLineageSchema,
+    sequence: WorkerSequenceSchema,
+    operation: z.literal('heartbeat'),
+    body: WorkerControlHeartbeatBodySchema,
+  })
+  .strict();
+
+/** Heartbeat request with an optional memory-only reconnect key outside the canonical envelope. */
+export const WorkerControlHeartbeatRequestSchema = WorkerControlHeartbeatEnvelopeBaseSchema.extend({
+  reconnectKey: WorkerProcessKeySchema.optional(),
+}).superRefine(validateWorkerControlHeartbeat);
+
 /**
  * Bounded worker-control request envelope.
  */
@@ -503,6 +541,29 @@ export const WorkerErrorEnvelopeSchema = z
   })
   .strict();
 
+/** Enforces the initial process-key commitment without changing later heartbeat fingerprints. */
+function validateWorkerControlHeartbeat(
+  value: z.infer<typeof WorkerControlHeartbeatEnvelopeBaseSchema>,
+  context: z.RefinementCtx
+): void {
+  const initial = value.sequence === 0;
+
+  if (initial !== (value.body.status === 'starting')) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Only the sequence-zero heartbeat may use starting status.',
+      path: ['sequence'],
+    });
+  }
+  if (initial !== (value.body.processKeyHash !== undefined)) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Only the sequence-zero heartbeat must commit the worker process key hash.',
+      path: ['body', 'processKeyHash'],
+    });
+  }
+}
+
 /** Worker lineage inferred TypeScript type. */
 export type WorkerLineage = z.infer<typeof WorkerLineageSchema>;
 /** Runtime raw stream manifest inferred TypeScript type. */
@@ -535,8 +596,12 @@ export type WorkerTranscriptRecord = z.infer<typeof WorkerTranscriptRecordSchema
 export type WorkerWorkspaceChangeManifest = z.infer<typeof WorkerWorkspaceChangeManifestSchema>;
 /** Worker capability call summary inferred TypeScript type. */
 export type WorkerCapabilityCallSummary = z.infer<typeof WorkerCapabilityCallSummarySchema>;
+/** Worker heartbeat lifecycle status inferred TypeScript type. */
+export type WorkerControlHeartbeatStatus = z.infer<typeof WorkerControlHeartbeatStatusSchema>;
 /** Worker control request envelope inferred TypeScript type. */
 export type WorkerControlRequestEnvelope = z.infer<typeof WorkerControlRequestEnvelopeSchema>;
+/** Complete worker-control heartbeat request inferred TypeScript type. */
+export type WorkerControlHeartbeatRequest = z.infer<typeof WorkerControlHeartbeatRequestSchema>;
 /** Worker control response envelope inferred TypeScript type. */
 export type WorkerControlResponseEnvelope = z.infer<typeof WorkerControlResponseEnvelopeSchema>;
 /** Product-safe worker error envelope inferred TypeScript type. */

@@ -105,7 +105,7 @@ export function updateTurnFeedback(
   const existing =
     store.getDataRoot() && existsSync(feedbackFilePath(store, turn))
       ? readTurnFeedback(store, turnId)
-      : ensureTurnFeedback(store, turn, store.resolveTurnAgentId(turn));
+      : ensureTurnFeedback(store, turn, turn.agentId ?? null);
 
   if (!existing) {
     throw new Error('Turn feedback requires a file-backed data root.');

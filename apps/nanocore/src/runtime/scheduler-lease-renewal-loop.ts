@@ -89,6 +89,7 @@ export function runSchedulerLeaseRenewalLoop(
       JOIN scheduler_worker_pools AS pools ON pools.pool_id = leases.pool_id
       JOIN scheduler_target_health_records AS health ON health.target_id = leases.target_id
       WHERE leases.status IN ('acquired', 'starting', 'active', 'idle')
+        AND leases.recovery_state IS NULL
         AND leases.expires_at > ?
         AND leases.heartbeat_deadline > ?
         AND leases.expires_at <= ?

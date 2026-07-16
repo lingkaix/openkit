@@ -11,7 +11,7 @@
 - unified Human Attention Action Center
 - artifacts
 - agent session visibility
-- Goal Mode start, plan review, progress, steering, terminal evidence, artifacts, risks, and next-step visibility
+- Goal Mode start, plan review, progress, terminal evidence, artifacts, risks, and next-step visibility
 - Codex ChatGPT subscription login controls
 - LLM Gateway endpoint and provider capability diagnostics
 - runtime config editing for server, provider, agent, and workspace config files
@@ -55,7 +55,7 @@ Notes:
   browser-dev proxy path
 - run `pnpm --filter @openkit/web e2e` for the headless browser e2e surface
 - run `pnpm --filter @openkit/web e2e:stories` for the deterministic L6 story acceptance surface backed by `tests/stories/`
-- Goal Mode appears in the thread workbench when a thread is selected. Users can start a goal from an objective, draft and review a plan, approve the plan, run one real bounded worker step, observe current task and progress counts, submit active steering, see pending human attention, and inspect terminal verification evidence, artifact references, risks, and suggested next work.
+- Goal Mode appears in the thread workbench when a thread is selected. Users can start a goal from an objective, draft and review a plan, approve the plan, run one real bounded worker step, observe current task and progress counts, see pending human attention, and inspect terminal verification evidence, artifact references, risks, and suggested next work. Active steering remains hidden until NanoCore can prove delivery through the real worker Context Package path.
 - Settings Diagnostics includes the Codex ChatGPT account-slot panel for adding, renaming, deleting, browser login, device-code login, cancellation, and logout through nanocore
 - Settings Portability includes local repository re-binding and imported workspace vault reference re-binding for restored or imported workspaces
 - Settings Diagnostics shows LLM Gateway endpoints, provider capability chips such as `chat native`, `responses native`, and `responses bridged`, and prompt-cache usage chips with cached input token and cache hit rate summaries

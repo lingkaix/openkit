@@ -2,195 +2,220 @@
 
 Status: Accepted
 
-This document owns how OpenKit core contracts evolve and how implementations are judged against the promoted core model.
+This document owns how OpenKit classifies contract stability, promotes contract surfaces, evolves breaking contracts, and judges implementations against the promoted core model.
 
-This document does not own core-document authoring rules, canonical object definitions, protocol record semantics, transport behavior, storage layout, App API endpoints, or implementation migration plans.
+This document does not own core-document authoring rules, canonical object definitions, protocol record semantics, transport behavior, storage layout, App API endpoints, the current release baseline, or implementation migration plans.
 
 ## Purpose
 
-OpenKit needs stable semantics even while packages, implementations, adapters, and deployment shapes change.
+OpenKit needs durable product truth without turning every user-facing projection into a long-lived compatibility promise.
 
-This model defines the rules for changing current contracts without losing clarity, hiding legacy behavior, or allowing product projections to redefine the core model.
+This model separates how long a contract must remain meaningful from the mechanism used to stabilize that contract. It lets Core semantics, persisted data, authority boundaries, and portable records mature deliberately while release-coupled APIs, clients, Skills, and user interfaces continue to evolve together.
 
 ## Principles
 
+- Stability is an explicit property of a contract surface, not a consequence of being public, typed, documented, or implemented.
 - The clean current contract wins over legacy compatibility during internal development.
-- Breaking changes should be explicit, spec-backed, schema-backed, and test-backed.
-- Removed fields, aliases, route shapes, persisted snapshots, and config shapes should fail clearly instead of being silently repaired or accepted.
-- Conformance means preserving the promoted OpenKit model, not reproducing one package layout, UI shape, runtime backend, or deployment topology.
-- Forward-compatible live parsing is allowed only at bounded edges where unknown future data can remain inspectable without redefining known current records.
-- Future storage and manifest formats should be additive by default after their accepted baseline, while unsupported authority-bearing semantics must fail closed.
+- Durable does not mean immutable. A durable contract may change through an explicit design, version transition, data migration when needed, and matching verification.
+- Release-coupled surfaces may break between coordinated OpenKit releases without deprecation windows, aliases, or compatibility adapters.
+- Experimental and private shapes must not become authority-bearing or persistent dependencies by accident.
+- Product projections must preserve promoted Core meaning without becoming the owner of that meaning.
+- Unknown semantics that affect authority, safety, retention, billing, or product meaning must fail closed.
 
 ## Canonical Terms
 
-`Current contract` means the accepted set of core records, schemas, lifecycle states, commands, events, projection boundaries, and validation behavior that active implementations must follow.
+`Contract surface` means a named set of semantics, schemas, persisted records, operations, events, manifests, identifiers, or validation behavior that a consumer may depend on.
 
-`Contract evolution` means changing a current contract through an accepted design, matching schema updates, implementation updates, fixtures or tests, and documentation updates.
+`Stability class` means the intended lifetime and change discipline of a contract surface.
 
-`Breaking change` means a change that removes, renames, tightens, or reinterprets a field, enum value, command, event, route shape, stored shape, capability flag, or validation rule that existing current-contract consumers could depend on.
+`Stabilization mechanism` means the concrete method used to preserve and verify a contract, such as an owning document, schema version, conformance fixture, migration, required feature, or exact release identity.
 
-`Compatibility shim` means code or schema behavior that accepts an obsolete shape only to preserve old clients, old data, old aliases, or old routes after the current contract has moved on.
+`Current contract` means the accepted contract for the current OpenKit release and every durable contract it consumes.
 
-`Conformance` means an implementation, projection, adapter, or package preserves the relevant OpenKit core contracts and boundaries.
+`Contract evolution` means changing a current contract through the documentation, schema, implementation, migration, and verification required by its stability class and contract kind.
 
-`Conformance fixture` means a machine-readable example used to prove that schemas, parsers, generated JSON Schema, and implementation behavior agree with the current contract.
+`Breaking change` means a change that removes, renames, tightens, or reinterprets a field, enum value, operation, event, stored shape, capability, authority rule, or validation rule that a supported consumer could depend on.
 
-`Required feature` means a declared feature, capability, minimum Core version, or schema requirement that a reader must understand before it can safely process a record, manifest, or storage family.
+`Compatibility shim` means code or schema behavior that accepts an obsolete shape only to preserve an old client, old data shape, old alias, or old route after the current contract has moved on.
+
+`Promotion` means intentionally moving a surface into a stronger stability class after its owner, boundaries, verification, and change mechanism are defined.
+
+`Conformance` means an implementation, projection, adapter, or package preserves the OpenKit contracts it claims to support.
+
+`Conformance fixture` means a machine-readable example used to prove that schemas, parsers, generated projections, and implementation behavior agree with a named contract version.
+
+`Required feature` means a declared capability or semantic requirement that a reader must understand before it can safely process a record, manifest, or storage family.
+
+## Two-Axis Stability Model
+
+Every intentional contract surface is classified on two independent axes:
+
+1. A stability class states how long consumers may depend on its meaning.
+2. A stabilization mechanism states how that meaning is represented, changed, and verified.
+
+A schema is not automatically durable, and a durable semantic contract does not require one universal schema mechanism. The owning baseline or aspect must state both axes when the classification is not obvious from the defaults in this document.
+
+## Stability Classes
+
+| Class | Consumer promise | Breaking-change rule |
+| --- | --- | --- |
+| `Durable` | Meaning remains coherent across ordinary OpenKit releases and persisted or portable history remains processable. | Requires an accepted design, explicit version or feature transition where applicable, migration for affected persisted truth, and matching conformance evidence. No compatibility shim is required unless the accepted design explicitly chooses one. |
+| `Release-coupled` | Supported components work only as one exact OpenKit release set. Cross-release compatibility is not promised. | May break in the next coordinated release when all first-party producers and consumers change together, old shapes are removed, and version mismatch fails with a typed diagnostic. |
+| `Experimental` | The surface is available for bounded learning and may change or disappear without migration or deprecation. | May break or be removed, but must remain visibly marked and must not carry authority or become the only representation of durable product truth. |
+| `Private` | The surface is an implementation detail with no consumer contract. | May change freely inside its owner, but boundary checks must prevent it from leaking into durable, release-coupled, persisted, exported, or user-visible contracts. |
+
+`Durable` is the only class that promises cross-release semantic continuity. `Release-coupled` promises same-release correctness, not a support window. `Experimental` is an intentional learning surface. `Private` is the default for implementation details that have not been deliberately exposed.
+
+## Default Classification
+
+- Accepted Core semantics and invariants are `Durable`.
+- Promoted persisted record families, portable formats, authority boundaries, and cross-release protocol families are `Durable` only when an owning document or accepted baseline explicitly identifies them and defines their evolution mechanism.
+- App APIs, generated API projections, first-party clients, bundled CLIs, unified Skills, Web projections, and other presentation or operation surfaces are `Release-coupled` by default.
+- A surface explicitly labeled experimental is `Experimental` until promotion.
+- Package layout, database engine details, provider-native payloads, adapter-native events, backend handles, local paths, process commands, caches, and diagnostics internals are `Private` unless deliberately promoted.
+- A surface without an intentional owner and classification must not be treated as a contract merely because a consumer can currently observe it.
+
+## Stabilization Mechanisms
+
+| Contract kind | Required stabilization mechanism |
+| --- | --- |
+| Core semantics and lifecycle invariants | One canonical Core owner, normative invariants, explicit promotion, and conformance coverage at every claimed projection. |
+| Durable protocol or schema family | Explicit version identity, strict schemas for known records, generated schema drift checks where applicable, valid and invalid fixtures, and capability or required-feature discovery for additive semantic extensions. |
+| Persisted data and storage ownership | Schema or layout version, source-of-truth declaration, one-way migration for breaking changes, migration report, recovery behavior, and data-continuity verification. |
+| Export, import, backup, and portable manifests | Format version, exact inventory and integrity validation, required-feature handling, import fixtures, round-trip tests, and explicit identity or authority rebinding rules. |
+| Identity, permission, vault, audit, retention, or other authority-bearing semantics | Strict validation, deny-by-default behavior, required-feature or minimum-contract gating for new authority, redaction, durable attribution, and fail-closed handling for unsupported semantics. |
+| Release-coupled operation and presentation surfaces | One source of truth, exact contract identity or digest, same-release contract coverage, typed incompatibility, and removal of superseded aliases or parallel shapes. |
+| Experimental surfaces | Visible experimental marker, bounded owner and purpose, no authority-bearing use, no exclusive ownership of durable truth, and an explicit promotion or removal decision before release. |
+| Private implementation surfaces | Cohesive local ownership and boundary tests that prevent accidental projection into supported contracts. |
+
+## Promotion Rules
+
+A surface may be promoted only when all of the following are true:
+
+- its owner and non-owner boundaries are explicit
+- its intended consumers and stability class are explicit
+- its semantic invariants are settled
+- its schema, version, feature, migration, or release-identity mechanism is defined as applicable
+- its valid, invalid, mismatch, and failure behavior is verifiable
+- authority-bearing unknowns fail closed
+- all existing first-party projections agree with the promoted meaning or are explicitly outside the claim
+
+Promotion from `Experimental` or `Private` is a contract change. Existing accidental consumers do not force promotion and do not create a compatibility obligation.
+
+## Demotion And Removal
+
+- A `Durable` surface may be removed or reinterpreted only through an accepted design and a versioned transition that preserves or explicitly migrates affected durable truth.
+- A `Release-coupled` surface may be replaced in the next coordinated release without a deprecation period, but old producers, consumers, aliases, routes, schemas, and tests must be removed together.
+- An `Experimental` surface may be removed directly after its bounded evidence and any accepted conclusions are retained.
+- A `Private` surface may be changed or deleted inside its owner without a contract process.
+- A surface must not be relabeled to a weaker class merely to avoid the migration or verification obligations created by existing durable data.
 
 ## Boundaries And Non-Goals
 
-This document owns contract-evolution rules, conformance levels, strictness expectations, and the lifecycle of breaking changes.
+This document owns stability classes, stabilization mechanisms, promotion and demotion rules, strictness expectations, conformance dimensions, and the lifecycle of breaking changes.
 
-This document does not define the canonical meaning of `Workspace`, `Thread`, `Turn`, `Item`, protocol envelopes, item delta kinds, storage records, permission decisions, capability calls, usage records, audit events, knowledge records, or deployment shapes.
+This document does not classify the current release's individual contract families. A baseline specification owns that inventory because implementation readiness and current scope change more frequently than Core doctrine.
 
-This document does not define the writing standard for core aspect files. Core documentation structure, canonical-definition routing, requirement keyword usage, and aspect ownership rules belong to `docs/core/README.md` and `docs/core/AGENTS.md`.
+This document does not define the canonical meaning of `Workspace`, `Thread`, `Turn`, `Item`, protocol envelopes, storage records, permission decisions, capability calls, usage records, audit events, knowledge records, or deployment shapes.
 
-This document does not require migration shims for old internal data. A spec may define a one-time migration or diagnostic report, but that is an implementation plan rather than a standing compatibility guarantee.
+This document does not require migration shims for old internal data. A one-time migration preserves durable truth without keeping an obsolete runtime reader.
 
-## Current Contract Surface
-
-The current contract includes the stable portions of:
-
-- shared core object boundaries and naming rules
-- protocol records, commands, command `requestId` behavior, event envelopes, event names, lifecycle semantics, stream cursor semantics, item types, item delta kinds, lifecycle enums, and error code namespaces
-- generated protocol JSON Schema and conformance fixtures
-- App API projections that expose current OpenKit behavior
-- runtime config, provider setup, agent setup, OAuth account-slot, vault, permission, sandbox, agent capability, usage, audit, storage, and identity boundaries when those shapes are promoted into current docs or accepted specs
-
-Current strict parsing rejects:
-
-- turns without explicit `configVersion`
-- command-execution items without explicit `output`
-- SSE envelopes without explicit `protocolVersion`
-- API error payloads without explicit `protocolVersion`
-- item deltas without explicit `itemType`
-- removed protocol alias exports
-- removed app API diagnostics fields
-- removed config fields such as top-level `dataRoot` and inline provider secrets
-- removed OAuth routes that do not include `accountSlotId`
-
-Forward-compatible stream parsing is allowed only for additive future event families or future item types. Known event and item-delta payloads must still satisfy strict current schemas.
-
-Forward-compatible storage and manifest parsing MAY ignore unknown optional fields only when those fields do not affect authority, safety, retention, billing, or product meaning.
-
-Storage tolerance never relaxes protocol strictness. When tolerant storage records project into protocol or App API payloads, the projection layer MUST emit strictly valid current-contract payloads and MUST drop unknown optional storage fields rather than forwarding them.
+This document does not create a compatibility promise for independently versioned third-party clients. Such a promise requires a separately accepted support policy and an explicit promotion of the relevant API surface.
 
 ## Invariants
 
-Current-contract durable records, commands, events, API payloads, generated schemas, and conformance fixtures MUST be validated against their strict current schemas.
+- Every supported surface MUST follow its declared stability class and stabilization mechanism.
+- Compatibility shims MUST NOT remain after an accepted design removes an old shape unless that design explicitly defines a temporary migration path.
+- Product projections, App APIs, adapters, storage layers, runtime bridges, Skills, CLIs, and UI read models MUST NOT redefine Core concepts they only project.
+- Implementation-private payloads, native runtime logs, provider-native events, backend diagnostics, launch commands, absolute local paths, and environment variables MUST NOT become supported contracts by accident.
+- Any change to a promoted aspect MUST update the owning document, matching schemas or fixtures, affected migrations, and the implementation tests that enforce the behavior.
+- Optional unknown fields MAY be ignored only when ignoring them cannot change authority, safety, retention, billing, or product meaning.
+- Release-coupled consumers MUST fail with a typed incompatibility instead of guessing across an unknown contract identity.
 
-Compatibility shims MUST NOT remain after an accepted spec removes an old shape unless the accepted spec explicitly defines a temporary migration path.
+## Conformance Dimensions
 
-Product projections, app APIs, adapters, storage layers, runtime bridges, and UI read models MUST NOT redefine core concepts they only project.
+`Core model conformance` means an implementation preserves the Core object boundaries, naming rules, ownership hierarchy, and contract-evolution rules.
 
-Implementation-private payloads, native runtime logs, provider-native events, backend diagnostics, launch commands, absolute local paths, and environment variables MUST NOT become stable core records by accident.
+`Protocol conformance` means an implementation preserves the claimed protocol version, IDs, request IDs, event envelopes, error shapes, ordering rules, item lifecycle, and schema rules.
 
-Any contract change that affects a promoted aspect MUST update the owning core document, matching schemas or fixtures, and the implementation tests that enforce the behavior.
+`Product projection conformance` means an App API, client, Skill, CLI, UI, adapter, storage layer, or external bridge projects the Core model without redefining it.
 
-Optional unknown fields MAY be ignored only when ignoring them cannot change authority, safety, retention, billing, or product meaning.
+`Boundary conformance` means an implementation does not expose private runtime config, provider state, OAuth state, diagnostics, backend paths, worker-private handles, launch commands, or environment variables as promoted Core contracts.
 
-## Conformance Levels
+Conformance dimensions describe what is being verified. They are not stability levels and must not be used as substitutes for `Durable`, `Release-coupled`, `Experimental`, or `Private`.
 
-`Core model conformance` means an implementation preserves the core object boundaries, naming rules, ownership hierarchy, and contract-evolution rules.
+## Partial Conformance
 
-`Protocol conformance` means an implementation preserves protocol versioning, IDs, request IDs, event envelopes, error shapes, ordering rules, item lifecycle, and schema compatibility.
+An implementation may claim conformance only for the contract families it actually supports.
 
-`Product projection conformance` means an App API, UI, adapter, storage layer, or external bridge projects the core model without redefining it.
-
-`Boundary conformance` means an implementation does not expose app-only runtime config, Settings/Admin schema, diagnostics, provider config, OAuth state, internal-agent diagnostics, dashboard read models, absolute local paths, worker-private paths, launch commands, or environment variables as stable core protocol records.
-
-## Initial Conformance
-
-Early implementations may defer implementation of vault, identity, full permission policy, agent capability gateway projection, usage persistence, audit persistence, remote agents, and hardened sandboxing.
-
-Deferring an implementation does not permit redefining the concept, using conflicting names, or emitting protocol shapes that block later implementation.
+Deferring implementation does not permit redefining a promoted concept, using conflicting names, emitting shapes that block later implementation, or claiming a complete surface when required producers or enforcement points are absent.
 
 ## Schema And Fixture Conformance
 
-Machine-readable protocol schemas should live in the active protocol schema package.
+Strict schemas are the source of truth for known protocol and release-coupled payloads. Forward-compatible live stream readers may preserve unknown optional event or payload families, but fixtures for known records, commands, and events must continue to use strict schemas.
 
-Strict schemas are the source of truth for conformance fixtures. Forward-compatible live stream parsers may accept unknown event or payload shapes, but conformance fixtures for core records, commands, and known events must continue to use strict schemas.
+Conformance coverage should include, where relevant:
 
-Conformance fixtures should cover at least:
-
-- IDs and timestamp shapes
-- command request ID behavior
-- event envelope shape
-- required nullable event envelope request correlation
-- stream sequence ordering
-- item lifecycle events
-- item delta kinds
-- valid and invalid item type to delta kind combinations
-- request delta correlation through `requestRefId`
-- part delta correlation through `partId`
-- API error shape and error code namespace
+- IDs, timestamps, and request correlation
+- event envelope shape and stream ordering
+- item lifecycle and item-delta compatibility
+- valid and invalid schema examples
+- exact contract or protocol identity
 - additive optional field handling
-- export guard behavior for app-only schemas such as runtime config
+- unsupported required-feature handling
+- authority-bearing fail-closed behavior
+- export boundaries for private schemas
+- migration and data-continuity evidence for durable persisted changes
 
-Some coverage areas may be exercised by schema unit tests rather than JSON fixture round-trips when a fixture would not add useful signal.
-
-Minimal agent conformance requires support for `text-delta` and authoritative `item.completed` payload reconciliation.
-
-Other item delta kinds are optional unless the agent advertises or emits item types that require them.
-
-Each conformance fixture file MUST declare the `protocolVersion` it targets.
-
-Fixtures for replay or stream behavior SHOULD include the stream kind and cursor scope.
+Every fixture file that targets a versioned family MUST identify the version or contract identity it targets.
 
 ## Change Rules
 
 | Change | Rule |
 | --- | --- |
-| Add optional field | Requires schema, fixture or test, and docs updates. |
-| Add optional forward-compatible storage or manifest field | Allowed after the accepted baseline when the field is descriptive or ignorable; requires tests for unknown-field tolerance when the owning spec promises tolerance. |
-| Add required field | Breaking; requires an accepted spec and version bump when it affects protocol. |
-| Add authority-bearing field | Requires a required feature, minimum Core version, required capability, or equivalent fail-closed gate. |
-| Remove field | Breaking; remove consumers, tests, generated schemas, and current docs in the same change. |
-| Rename field | Breaking; do not keep aliases unless an accepted spec explicitly introduces a temporary migration path. |
-| Add event family | Requires capability discovery, schema, fixture or test, and docs updates. |
-| Add command family | Requires capability discovery, schema, fixture or test, and docs updates. |
-| Add closed enum value | Requires client handling, docs, tests, and storage or index updates when relevant. |
-| Add extension namespace | Allowed when optional and ignorable, or when an accepted spec makes it required with readiness behavior. |
-| Remove route alias | Breaking; remove clients and tests in the same change. |
-| Remove persisted shape | Breaking; add a clear loader error, one-time migration, or diagnostic report as the accepted spec requires. |
+| Add optional descriptive field | Requires schema, fixture or test, and documentation updates. Durable readers may ignore it only when it cannot affect authority or product meaning. |
+| Add required field | Breaking; requires the transition mechanism of the surface's stability class and a version or exact release identity change. |
+| Add authority-bearing field | Requires an accepted design, a registered required feature or equivalent contract gate, strict validation, and fail-closed behavior. |
+| Remove or rename field | Breaking; update all current consumers and remove aliases in the same release. Persisted durable data requires a one-way migration. |
+| Add event or command family | Requires schema, discovery where relevant, fixture or test, documentation, and an explicit stability classification. |
+| Add closed enum value | Requires consumer handling, documentation, tests, and storage or index updates when relevant. |
+| Add extension namespace | Allowed when optional and safely ignorable, or when a required feature makes it fail closed. |
+| Change release-coupled operation shape | Update all first-party producers and consumers together, advance exact contract identity, and remove the old shape. |
+| Remove persisted durable shape | Requires a one-way migration or an explicit data-retirement decision with a migration report; a permanent legacy reader is not required. |
+| Change private implementation detail | Remains inside its owner and must continue to satisfy boundary tests. |
 
-Adding, removing, or tightening a required field is breaking and requires an accepted spec plus a protocol or App API schema update.
-
-Because the project is internal, breaking changes do not require compatibility adapters unless the accepted spec explicitly asks for a migration.
+Because OpenKit is in internal development, breaking changes do not require deprecation windows or compatibility adapters unless a separately accepted contract explicitly creates that obligation.
 
 ## Extension Namespaces
 
-Provider-native, adapter-native, and experimental fields must live under explicit extension namespaces.
+Provider-native, adapter-native, and experimental fields must live under explicit extension namespaces when they cross an intentional boundary.
 
-Unknown optional extension namespaces may be preserved.
+Unknown optional extension namespaces may be preserved only when they are safely ignorable.
 
 Unknown required extension namespaces must block readiness with an explainable error.
 
-## Protocol Version And Discovery
+## Version And Capability Discovery
 
-Core must expose protocol version and capability discovery before clients enable advanced features.
+Every versioned contract family must expose enough identity for consumers to decide whether they can process it safely.
 
-The protocol field name is `protocolVersion`.
+Discovery may include:
 
-Capability discovery should advertise:
-
-- supported `protocolVersion`
+- protocol or contract version
+- exact release-coupled contract identity or digest
 - supported feature flags
-- supported event families
-- supported item types
-- supported item-delta kinds
-- supported command families when command discovery is promoted
-- permission and sandbox summary support when those areas are promoted
+- supported event, item, delta, and command families
+- required features
+- permission, sandbox, or authority summary support
 
-Exact endpoint shape belongs to app/API documentation.
+The exact endpoint or transport shape belongs to the owning projection.
 
-## Storage, Config, And App API
+## Storage Strictness Versus Live Projection Strictness
 
-Old persisted JSON snapshots, old config files, and old app API payloads are not auto-migrated during internal development unless an accepted spec explicitly adds a migration.
+Durable storage and manifest readers may ignore unknown optional non-authority-bearing fields when their owning contract permits it.
 
-Loaders should fail with a clear error when they encounter removed worker-shaped workspace fields, top-level config `dataRoot`, provider inline secrets, or Codex OAuth providers without explicit account-slot binding.
+Storage tolerance never relaxes protocol, App API, CLI, Skill, or UI projection strictness. A projection MUST emit a strictly valid payload for its exact claimed contract identity and MUST drop safely ignorable storage extensions rather than forwarding unknown fields.
 
-After the accepted storage and manifest baseline, unknown optional non-authority-bearing fields may be ignored, and unsupported required features fail closed across storage records, manifests, AEP snapshots, evidence bundles, vault injection plans, mount declarations, provider attachment modes, and capability families.
+Unsupported authority-bearing semantics, required features, canonical record families, or major format versions must fail closed or enter the quarantine behavior defined by their owner.
 
 ## Relationships To Other Core Aspects
 
@@ -200,19 +225,9 @@ After the accepted storage and manifest baseline, unknown optional non-authority
 
 `communication.md` owns command, event, streaming, and transport projections.
 
-`storage.md`, `identity.md`, `vault.md`, `permissions.md`, `sandbox.md`, `agent-capability.md`, `audit.md`, and `metering.md` own their aspect-specific contract surfaces.
+`storage.md`, `identity.md`, `vault.md`, `permissions.md`, `sandbox.md`, `agent-capability.md`, `audit.md`, and `metering.md` own their aspect-specific semantics and invariants.
 
-`docs/app-api.md` owns App API endpoint and read-model details.
-
-This document owns the cross-aspect rule for how those contracts change and how implementations are judged for conformance.
-
-## Conformance Scope
-
-Protocol and App API fixtures are the default conformance boundary for the current core model.
-
-Additional fixture packages or conformance levels are introduced only when a promoted core aspect cannot be validated through protocol, App API, storage, or existing package tests.
-
-Supported command-family discovery belongs to the communication model and must be advertised through stable discovery records once promoted.
+This document owns the cross-aspect rule for how those contracts are classified, changed, promoted, and judged for conformance.
 
 ## Related Docs
 
@@ -221,6 +236,6 @@ Supported command-family discovery belongs to the communication model and must b
 - `docs/core/protocol.md`
 - `docs/core/communication.md`
 - `docs/core/storage.md`
-- `docs/core/agent-capability.md`
+- `docs/core/identity.md`
+- `docs/core/permissions.md`
 - `docs/core/audit.md`
-- `docs/app-api.md`

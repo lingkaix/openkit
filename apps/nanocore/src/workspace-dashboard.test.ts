@@ -77,6 +77,8 @@ describe('workspace dashboard app API', () => {
     const completedTurn = store.createTurn('ws_demo', completedThread.id, 'Finish review');
     const completedAt = new Date().toISOString();
 
+    store.updateTurn(activeTurn.id, { agentId: 'agent_codex_host' });
+
     const attentionItem = store.createItem({
       id: 'it_workspace_attention',
       workspaceId: 'ws_demo',

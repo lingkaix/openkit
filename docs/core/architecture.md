@@ -2,22 +2,22 @@
 
 Status: Accepted
 
-This document defines the stable OpenKit architecture boundaries.
+This document owns the stable App/Core/Agent layer boundary, the split between Core coordination and agent execution, the adapter translation boundary, internal Core role boundaries, and the workspace-service boundary.
 
-This document owns the stable App/Core/Agent layer boundary, the Core coordination boundary, the agent execution boundary, the adapter translation boundary, internal Core role boundaries, workspace-service boundaries, and top-level data ownership rules.
+This document does not own package layout, App API endpoints, protocol or database record shapes, storage backends, communication transports, runtime session continuity, deployment topology, agent-native protocols, provider mappings, launch commands, or sandbox backend details.
 
-This document does not own package layout, app endpoints, database tables, agent-native protocols, deployment-specific launch commands, protocol record schemas, communication transports, runtime session continuity, or sandbox backend details.
+## Purpose
 
-It consolidates the durable architecture from earlier design docs into the core layer.
+OpenKit coordinates work across changing product surfaces, agent runtimes, adapters, stores, and deployment shapes. This model fixes which layer may decide, execute, translate, and commit product truth so those implementation choices can evolve without creating competing authorities.
 
 ## Principles
 
-- Core coordinates work; agents execute work; adapters translate between Core semantics and runtime-native protocols.
-- Product-visible truth belongs in Core-owned records, item history, artifacts, approvals, knowledge, audit, and stable projections rather than in agent-private state.
-- Implementation packages, backends, launch commands, provider payloads, and UI routes are projections of the architecture, not the architecture itself.
-- Deployment shapes, containers, release artifacts, and managed runtimes are projections of the architecture. They must not change Core ownership or product-state semantics.
-- Internal Core roles are coordination roles. They must not become user-selectable worker agents or hidden execution runtimes by default.
-- Workspace services should expose governed Core APIs instead of raw storage, provider, sandbox, or adapter internals.
+- Core coordinates and governs work; agents execute work; adapters translate between Core semantics and runtime-native operations.
+- Only Core validates and commits durable product truth. Apps, channels, internal roles, adapters, and runtimes may submit inputs, decisions, candidate records, results, or evidence through an owning Core contract.
+- Apps, channels, Skills, CLIs, and API clients are governed projections over Core contracts rather than independent workflow or state owners.
+- Runtime-native commands, events, sessions, provider payloads, and diagnostics remain behind the adapter boundary unless another Core aspect deliberately promotes a stable product projection.
+- Deployment and storage choices must not change product-state ownership, policy authority, review semantics, or trust boundaries.
+- Workspace services expose governed Core contracts rather than raw storage, provider, sandbox, or adapter internals.
 
 ## Architecture Shape
 
@@ -30,193 +30,74 @@ App / Channel
           <-> Agent Runtime
 ```
 
-Core owns coordination. Agents own execution. Adapters translate between Core semantics and runtime-native agent protocols.
+### App And Channel
 
-## Layers
+An App or Channel is a user, operator, integration, or automation interaction surface. This layer includes user interfaces, API clients, end-user Skills and CLIs, messaging channels, and automation entry points.
 
-### App And Channels
-
-Apps and channels are user interaction surfaces.
-
-Examples:
-
-- Web UI
-- desktop app
-- future chat integrations
-- future automation integrations
-
-Apps and channels submit user or system input, render item streams, display artifacts, collect approvals, and expose workspace resources.
-
-They must not redefine core concepts.
+Apps and channels submit intent and commands through public Core contracts and render Core-owned records and projections. They must not reach into storage, adapters, or runtimes; redefine Core concepts; or maintain private workflow truth.
 
 ### Core
 
-Core is the orchestration and coordination layer.
+Core is the coordination and governance plane. It owns admission and routing, scheduling, Core-owned product-record lifecycle transitions, policy and approval gates, durable record validation and commit, storage coordination, and product-safe projections.
 
-Core owns:
-
-- workspace registry
-- thread, turn, and item lifecycle
-- agent selection and scheduling
-- agent session coordination
-- approval flow
-- artifact registration
-- knowledge retrieval and context injection policy
-- permission decisions
-- sandbox policy summary
-- agent capability routing and gateway projection
-- vault reference mediation
-- storage coordination
-- audit and usage records
-
-Core should remain a coordination plane, not a heavy execution runtime.
+Core may coordinate context, capabilities, workspace changes, evidence, audit, and usage through their owning aspects. It must not absorb coding, research, browser operation, shell execution, long-running tool loops, or other heavy domain execution merely because it supervises that work.
 
 ### Agent Adapter
 
-Agent adapters translate Core operations into runtime-native operations.
+An Agent Adapter consumes an already authorized and resolved assignment and translates between Core operations and one runtime's native invocation, control, results, and evidence.
 
-Adapters may own:
+An adapter must not choose product policy, schedule work, own review or workspace-apply decisions, allocate canonical product identity, commit or terminalize Core-owned state, or define public product behavior. Runtime-native details must end at this boundary.
 
-- agent startup
-- native protocol client
-- event translation
-- runtime-specific setup materialization
-- interruption and cancellation translation
-- workspace and artifact plane coordination
-- health checks
-- diagnostics
-
-Adapter-native details must stay behind the adapter boundary unless intentionally projected into stable Core records.
+Adding an agent runtime must not require runtime-specific branches in Core product behavior, workflow, policy, governance, or canonical record schemas. The concrete profile, adapter, image, process harness, and conformance mechanics remain implementation contracts outside Core.
 
 ### Agent Runtime
 
-Agent runtimes execute work.
+An Agent Runtime performs bounded heavy execution under the supplied assignment and authority. It may produce candidate output, evidence, native session state, and effect requests through its adapter.
 
-Runtime families may include coding agents, review agents, browser agents, custom agent processes, containerized agents, and remote managed agents.
-
-Agents produce items, artifacts, approval requests, and status through Core translation. They should not become the source of truth for workspace history.
-
-## Control And Execution Boundary
-
-Core should own coordination:
-
-- intake
-- routing
-- scheduling
-- status tracking
-- handoff coordination
-- result collection
-- review coordination
-- knowledge retrieval and context-package coordination
-- permission and approval gates
-
-Agents should own execution:
-
-- coding
-- research
-- browser operation
-- shell execution
-- long-running tool loops
-- domain-specific workflows
-- artifact production
-
-This boundary keeps Core stable while allowing agent runtimes to evolve independently.
-
-## Agent Capability
-
-Core may supply agent capabilities through gateway projections for agent access to external systems.
-
-Examples:
-
-- LLM provider gateway
-- MCP gateway
-- tool gateway
-- knowledge-base gateway
-- network proxy
-- vault-backed credential injection
-
-Gateways let agents use standard SDKs or local endpoints while Core retains audit, routing, metering, rate limiting, credential control, and policy enforcement.
-
-In container or remote deployments, an explicitly enabled gateway may be projected through a network proxy, runtime adapter, or managed service. Current worker AEPs expose no capability routes.
+Runtime durability does not make runtime-native state authoritative. A runtime must not write Core-owned product state directly or bypass the adapter and Core validation boundary.
 
 ## Workspace Services
 
-Core may provide workspace services that support human and agent collaboration.
+Core may expose governed workspace services for knowledge, artifacts, capabilities, vault mediation, audit, usage, and other workspace-scoped facilities. Each service retains the authority of its owning Core aspect and must not become a raw internal-storage or provider escape hatch.
 
-Examples:
+The Generative Kernel is a reserved future workspace-service boundary for governed durable data used by humans through product projections and by agents through governed interfaces. This boundary does not authorize a current implementation, universal data model, generated application framework, or independent policy and storage plane.
 
-- knowledge retrieval
-- knowledge base or notebook
-- secret vault reference mediation
-- provider and tool gateways
-- artifact registry
-- audit and usage records
-- future data-kernel services for user-generated internal tools
+## Internal Core Roles
 
-Workspace-visible services should expose governed Core APIs rather than raw internal storage.
+Core may use lightweight internal roles for coordination. These roles remain inside Core, are not Agent Runtime entries, are not worker-agent supply, and are not user-selectable execution tools.
 
-Provider registries, gateway defaults, diagnostics policy, and resolved server config are Core-controlled server/runtime concerns. Workspaces may receive projections or policy views of those services, but they are not the default ownership boundary for deployment-level config.
-
-## Generative Kernel
-
-OpenKit may later include a generative kernel for building and operating user-generated internal tools.
-
-The kernel concept means Core can provide durable data contracts, storage, governance, and agent-accessible interfaces so humans and agents can co-create small workspace applications such as internal CRMs, trackers, notebooks, or follow-up systems.
-
-This is a future workspace service area, not part of the current core runtime boundary.
-
-The kernel should follow the same boundaries:
-
-- humans use product or generative UI surfaces
-- agents use skills, CLI tools, or governed APIs
-- Core owns data contracts, storage, audit, and policy
-- agents execute heavy generation or automation work
-- secret values stay in the vault boundary
-- knowledge and context injection remain governed by Core
-
-## Data Boundary
-
-Workspace history uses the `Workspace -> Thread -> Turn -> Item[]` backbone.
-
-Durable data should be assigned to an explicit server-owned, user-owned, or workspace-owned boundary.
-
-Artifacts, approvals, knowledge, item logs, and workspace-local indexes are normally workspace-owned. Provider config, gateway defaults, agent setup sources, resolved server config, scheduler diagnostics, and other control-plane records are server-owned unless a later core model introduces a user- or workspace-owned variant.
-
-Storage is file-system first with SQLite as a companion for indexes and structured query.
-
-Secret values do not belong in normal workspace files, item payloads, manifests, knowledge pages, context packages, or protocol records.
-
-## Internal Core Agents
-
-Core may use internal lightweight agents for coordination tasks.
-
-Internal Core agents stay inside the coordination plane. They do not become worker agents, agent supply entries, agent runtimes, or user-selectable execution tools by default.
-
-The stable internal role set is:
-
-| Role | Responsibility | Boundary |
+| Role | Stable responsibility | Prohibited ownership |
 | --- | --- | --- |
-| Core Assistant | Provides the lightweight user-facing entry role for quick replies, clarification, simple state queries, and triage. | It must not silently become the workflow coordinator, directly call worker agents, or own long-running task progress. |
-| Workflow Coordinator | Coordinates non-trivial worker-agent work by selecting workflow modes or recipes, preparing plans, advancing bounded steps, choosing worker agents, composing final worker prompts, handling gates, collecting evidence, and closing or refining work. | It must not maintain the Knowledge Store directly, bypass Core workflow records, or become the heavy execution runtime. |
-| Knowledge Manager | Projects the internal knowledge-maintenance role owned by `docs/core/knowledge.md` into the Core coordination plane. | It must not own the whole task workflow or compose the final worker prompt by itself. |
-| Task Evaluator | Future internal role for evaluating task outcomes, workflow or Skill updates, verification evidence, and measurable improvement before changes are accepted. | This role is a placeholder until the evaluation, test, verification, and measurement model is designed. |
+| Core Assistant | Lightweight reply, clarification, state-query, and triage coordination. | Non-trivial worker execution or long-running workflow progression. |
+| Workflow Coordinator | Coordination of non-trivial workflow routing, bounded progression, worker selection, gates, evidence, and stop decisions. | Heavy execution, private workflow truth, or direct Knowledge Store ownership. |
+| Knowledge Manager | Governed knowledge retrieval and maintenance coordination. | Overall workflow progression or final worker-context authority. |
+| Task Evaluator | Reserved direction for governed evaluation of outcomes, verification, and improvement proposals. | Current worker execution or an unpromoted concrete evaluation architecture. |
 
-The Core Assistant may route a request into a workflow, but the handoff to the Workflow Coordinator must be explicit in Core state when the request becomes non-trivial worker-agent work.
+Internal roles may produce decisions or proposals only through normal Core services and records. They must not create private workflow, knowledge, evaluation, or product-state authorities.
 
-The Workflow Coordinator may request relevant knowledge material from the Knowledge Manager before a task starts, then combine that material with task instructions, workflow state, constraints, available capabilities, stop conditions, and review policy into the worker prompt or worker context.
+## Boundaries And Non-Goals
 
-Worker agents may request relevant knowledge while running, but those requests should go through Core-governed capability and knowledge boundaries. The Knowledge Manager responds with governed, source-traceable material or proposals; the worker does not read the Knowledge Store directly.
-
-`Context Package` is a data projection owned by `docs/core/knowledge.md`, not a separate internal agent role. The Knowledge Manager selects, filters, cites, and prepares knowledge-derived material, while the Workflow Coordinator decides how that material is assembled into the final worker context for a specific step.
-
-Workflow orchestration is a Core coordination subsystem, not an internal-agent concept by itself. It stays inside the coordination plane and delegates heavy execution to agents.
+- Architecture does not prescribe packages, processes, services, endpoints, tables, files, protocols, or deployment units.
+- Architecture does not make every runtime capability a stable Core feature; unsupported operations remain unsupported until an owning contract is accepted and implemented.
+- Architecture does not make internal roles worker runtimes or require an agent where deterministic Core code is sufficient.
+- Architecture does not define workspace object lifecycles, workflow algorithms, storage layout, transport recovery, sandbox containment, or provider behavior; their owning aspects retain those decisions.
+- Future workspace services do not authorize speculative entities, generalized workbenches, or parallel governance systems.
 
 ## Invariants
 
-- Apps and channels MUST NOT redefine Core concepts or become the source of truth for workspace history.
-- Core MUST remain the coordination plane for workspace, thread, turn, item, approval, artifact, knowledge, permission, vault, agent capability, audit, and usage boundaries.
-- Worker agents MUST NOT become the durable source of truth for product state merely because they execute work.
-- Adapter-native details MUST stay behind adapter boundaries unless a core aspect intentionally promotes a stable projection.
-- Secret values MUST NOT be stored in normal workspace files, item payloads, manifests, knowledge pages, context packages, or protocol records.
-- Internal Core roles MUST remain inside Core coordination unless a future accepted design promotes a new user-visible agent supply concept.
-- Deployment placement and release artifacts MUST NOT change Core ownership of product state, policy decisions, vault boundaries, audit records, or usage records.
+- Only Core MAY validate and commit durable product truth; every other layer MUST submit through an owning Core contract.
+- Apps and channels MUST NOT become a second source of workflow, policy, identity, review, storage, or lifecycle truth.
+- Agent adapters and runtimes MUST NOT write, terminalize, or reinterpret Core-owned product state directly.
+- Runtime-native commands, events, sessions, provider details, and evidence formats MUST remain behind the adapter boundary unless another Core aspect promotes a stable projection.
+- Adding an agent runtime MUST NOT add runtime-specific product, workflow, policy, governance, or canonical-schema branches to Core.
+- Internal Core roles MUST remain inside the coordination plane and MUST NOT maintain private product or workflow state.
+- Workspace services MUST expose governed Core contracts and MUST NOT expose raw storage, credentials, provider clients, sandbox control, or adapter internals.
+- Deployment placement, storage backend, and release artifacts MUST NOT change Core ownership, policy decisions, review authority, audit meaning, or usage attribution.
+
+## Relationships To Other Core Aspects
+
+Core Concepts owns the shared product objects and identifier semantics; Identity owns actors, authentication, and membership; Work Model owns user-facing work meaning; Agent Workflow owns workflow progression; Runtime Model and Agent Session own execution lifecycle and continuity; Communication owns command, event, streaming, and transport projections; Storage owns persistence and data-source boundaries.
+
+Agent Supply owns selectable agent profiles and readiness; Agent Capability owns governed runtime capability supply; Permissions, Sandbox, and Vault own authorization, containment, and credential boundaries; Knowledge, Audit, and Metering own their respective workspace services and records.
+
+Architecture constrains how those aspects compose. It does not redefine their objects, records, algorithms, or implementation projections.

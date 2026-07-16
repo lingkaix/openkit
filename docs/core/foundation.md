@@ -58,7 +58,9 @@ Foundation does not promise compatibility with obsolete internal contracts. Cont
 - Product projections MUST NOT create a second source of workflow, policy, identity, review, or storage truth.
 - Consequential state transitions and external effects MUST be observable and explainable through product-safe records.
 - Learning and self-improvement outputs MUST retain source provenance and a reviewable supersession or reversal path.
-- Secret values, private runtime handles, and unrestricted native payloads MUST NOT enter stable product records merely for convenience.
+- Every system responsibility, bounded fallback, and accepted compromise MUST have one accepted owner, an explicit scope, and defined failure behavior; a component MUST NOT expand into parallel product, workflow, orchestration, or authority ownership.
+- Secret values MUST NOT enter stable product records.
+- Private runtime handles and unrestricted native payloads MUST remain private unless an owning Core boundary validates a bounded product-safe projection.
 - Missing authority, unverifiable lineage, ambiguous ownership, and unsupported required semantics MUST fail closed.
 - Heavy execution SHOULD remain in specialized agents and runtimes while Core coordinates, governs, and records the work.
 

@@ -8,6 +8,7 @@ Implementation: Implemented
 - The source-free lifecycle boundary that OpenKit requires around stock OpenShell worker execution.
 - The disposable Cell model that groups one stock OpenShell Gateway, one dedicated containerd, one dedicated dockerd, all epoch-local runtime state, and at most one active worker backend session.
 - The prepare, recycle, restart-recovery, capacity-release, and failure semantics for that Cell.
+- The stock-CLI-compatible detached worker-shim launch and exact read-only session-handle restoration required for NanoCore restart recovery.
 - The local and remote fixed-command controller contracts used by NanoCore to invoke the privileged Cell helper without modifying OpenShell.
 - The stock OpenShell version and component-identity preflight required before a Cell may become ready.
 
@@ -33,6 +34,8 @@ OpenKit must consume official OpenShell artifacts without a fork, patch, replace
 
 Stock OpenShell `0.0.80` does not expose a causal operation identity that lets a later delete prove that every previously accepted create has terminated before capacity is released.
 
+Stock OpenShell `0.0.80` also exposes no detached `sandbox exec` mode. OpenKit therefore sends one fixed NanoCore-owned launcher argv through the stock attached exec path; the launcher creates a sandbox-owned `setsid` session, redirects all three standard streams away from the CLI connection, and starts the worker shim without modifying OpenShell.
+
 A resource-level delete, list probe, stable-empty delay, process-local lock, or shared-Gateway restart can improve diagnostics but cannot fence an already accepted create that is still capable of reaching the container runtime.
 
 The accepted source-free boundary is therefore one disposable OpenShell Cell per active backend session, whether the Cell is co-located with NanoCore or runs on a remote host.
@@ -43,12 +46,15 @@ NanoCore may release scheduler capacity only after the owning Cell is killed as 
 
 The next session starts a fresh Cell and verifies that both stock OpenShell and the fresh Docker runtime are empty before materialization begins.
 
+Detached-process survival is a bounded deployment fact, not an OpenShell-wide guarantee. NanoCore adopts only the exact worker process that presents its memory-only key, exact lineage, and next sequence before the durable deadline; otherwise it uses the existing evidence-preserving recycle path.
+
 ## Goals
 
 - Eliminate every OpenKit-maintained OpenShell source fork or patch.
 - Fence the observed late-create class without claiming an unsupported stock OpenShell guarantee.
 - Preserve NanoCore as the source of durable session, lease, evidence, review, and cleanup truth.
 - Keep restart cleanup possible from the durable backend identity without depending on process memory.
+- Let a sandbox-owned worker shim survive loss of the attached stock OpenShell exec client and reconnect within the bounded worker-control recovery window.
 - Support both co-located Cells and remote Cells controlled through one fixed SSH helper invocation.
 - Make the accepted compromise observable and testable: one cold Cell, one active backend session, no shared runtime reuse.
 
@@ -62,6 +68,7 @@ The next session starts a fresh Cell and verifies that both stock OpenShell and 
 - No compatibility path for the previous shared-Gateway lifecycle.
 - No general remote-execution daemon or arbitrary privileged command API.
 - No custom OpenShell binary path, CLI TLS-verification bypass flag, external dependency fork, or patched OpenShell artifact.
+- No claim that every local, remote, tunneled, container, or host-reboot topology preserves the worker process or reconnect route.
 
 ## Cell Boundary
 
@@ -83,6 +90,8 @@ An image archive is inert input and must not contain a live socket, process, mut
 The first implementation has a scheduler concurrency ceiling of one for the OpenShell target.
 
 The first implementation is pinned to the verified A1 Linux arm64 host, official OpenShell `0.0.80`, Docker `29.6.1`, and the exact supervisor artifact baked into that Gateway release. Other architectures fail closed until their official loaded-image identity and whole-Cell lifecycle are separately verified.
+
+The A1 detached-launch proof applies only while the owning Cell, sandbox, shim process, and required control routes survive. It does not claim survival across Cell recycle, sandbox destruction, local host reboot, tunnel loss beyond the fixed deadline, or an unverified deployment topology.
 
 Starting a second Cell while another owner is active is an error; the helper must not kill or replace a Cell owned by another backend session.
 
@@ -118,6 +127,12 @@ Any fresh-epoch prepare failure kills the partial Cell while retaining its owner
 
 After prepare succeeds, NanoCore uses the existing OpenShell CLI adapter, policy compiler, provider mapping, workspace materialization, worker-control registration, launch, evidence collection, and transcript import path.
 
+Because stock OpenShell `0.0.80` has no detached exec option, the backend compiles one fixed `/bin/sh -c` launcher that runs inside the governed worker image. The script uses `setsid`, redirects stdin, stdout, and stderr to `/dev/null` for the first slice, passes the complete worker command only through positional `"$@"` argv, starts the worker shim in the background, and returns launch acknowledgement without interpolating request-controlled text. The worker shim's normal transcript files remain the durable output contract.
+
+The attached `openshell sandbox exec` process is launch transport only. Its exit, timeout, connection loss, or forced termination does not establish worker completion. After launch acknowledgement and the first accepted worker heartbeat, the live executor observes the durable worker-control `final_status` and existing checkpoint/lease deadlines; it does not wait on the attached CLI process as the turn's lifetime owner.
+
+The shim sends `final_status` only after it has sealed runtime provenance and completed workspace-change publication. That accepted status is therefore the last durable-output barrier that permits collection and exact Cell cleanup; it is not merely a process-exit notification.
+
 Backend-native ids remain private evidence and do not become Cell or product authority.
 
 ### Recycle
@@ -150,7 +165,19 @@ If the Cell cannot be recycled, the durable backend session remains cleanup-owne
 
 The active owner marker and epoch counter live outside the NanoCore process and survive NanoCore restart. The marker contains the epoch, active owner, last recycled owner, boot identity, cleanup phase, and cleanup bridge, which makes interrupted teardown retryable without treating missing mutable state as successful cleanup.
 
-Restart cleanup calls recycle with the persisted backend session id and does not depend on the previous backend object, OpenShell CLI child, or in-memory materialization map.
+Restart recovery classifies the exact durable lease and backend session before any physical effect. An eligible previously post-launch heartbeat-live session has the sequence-zero process-key hash plus `lastWorkerSequence >= 1` and enters the bounded scheduler `awaiting-reconnect` path without Cell prepare, replacement sandbox creation, shim launch, worker-control registration, or recycle. A sequence-zero-only supervisor uses exact existing cleanup. An already-releasing session with durable accepted `final_status` proceeds directly through the existing collection, reconciliation, cleanup, lease, and capacity owners without another heartbeat.
+
+For an eligible awaiting-reconnect or releasing session, the OpenShell backend reconstructs one exact read-only session handle from the immutable AEP snapshot, durable backend-session identity, deterministic sandbox name, deployment and package lineage, agent session and lease, exact Cell target, placement, Gateway name and endpoint, trusted data-root-relative staging reference, deterministic session paths, and only provider identifiers already present in durable records. Restoration fails closed before external effect when any identity, lineage, target, path, backend version, or workspace-handoff check disagrees.
+
+The restored handle permits exact sandbox inspection, transcript and artifact download, provider and backend evidence reads, workspace-change collection, and exact cleanup after the existing terminal owners reach their cleanup fence. It is not launch-capable and must never call Cell `prepare`, create a sandbox, upload launch inputs, mutate provider setup, launch a process, register a worker-control token, or fabricate missing launch-only values merely to satisfy the old process-memory session shape.
+
+Exact process-key, lineage, and next-sequence adoption keeps the original Cell, sandbox, backend session, worker shim, lease, checkpoint, and workspace handoff. Verification failure, deadline expiry, or an unrecoverable identity mismatch revokes control and calls the existing idempotent recycle path with the persisted backend session id; recovery never prepares or launches a replacement for that turn. Ordinary cancellation remains owned by the existing live-turn control path rather than restart recovery.
+
+Restart closeout calls the existing lease, checkpoint, backend session, worker-control terminal record, agent session, workspace reconciliation, evidence, and cleanup owners directly. It adds no settlement coordinator, parallel domain workflow, or table.
+
+Awaiting-reconnect and adopted running Cells are not recycled. Reconnect timeout first fences the lease as `needs-evidence`, then invokes exact recycle. Cleanup failure retains the exact owner marker and backend identity, holds scheduler capacity, and waits for the next boot's same-owner recycle retry; no failure path guesses a target or releases capacity to restore availability.
+
+This contract does not guarantee that a worker survives every restart topology. A co-located host reboot normally kills the Cell, and a remote worker can reconnect only when its Cell, shim, Gateway access, and worker-control route actually survive and recover before the fixed deadline. Both outcomes use the same process-key/lineage/sequence classification rather than topology-specific compatibility behavior.
 
 ## Cell Control
 
@@ -199,6 +226,9 @@ A sandbox delete response, empty sandbox list, empty Docker snapshot, elapsed gr
 ## Security And Failure Rules
 
 - External OpenShell binaries, source, images, and protocols must not be patched or forked.
+- Restart reconnect relies on the trusted TLS or operator-managed SSH transport already protecting the bearer token. OpenKit adds no application-layer challenge; a transport observer who obtains both bearer token and process key could race the worker.
+- Detached launch must use the fixed NanoCore-owned launcher argv, `setsid`, fully redirected standard streams, and positional worker arguments; NanoCore must not interpolate request-controlled shell text or treat attached CLI lifetime as worker lifetime.
+- Read-only handle restoration must validate exact durable identity before external access and must expose no prepare, create, upload, launch, provider-mutation, or worker-control-registration capability.
 - The helper must use exact fixed paths and must not evaluate caller-controlled shell text.
 - The helper must serialize prepare and recycle through one host lock.
 - The helper must write ownership before starting effect-capable processes.
@@ -210,10 +240,13 @@ A sandbox delete response, empty sandbox list, empty Docker snapshot, elapsed gr
 - Secrets, JWT private keys, Docker sockets, host paths, process ids, and unit names remain backend-private.
 - Partial prepare and recycle failures must preserve enough owner evidence for deterministic operator recovery.
 - NanoCore must not decrement scheduler capacity after incomplete Cell destruction.
+- No tested process-survival result may be generalized to a topology whose Cell, sandbox, route, or host-survival properties were not verified.
 
 ## A1 Stock Runtime Evidence
 
 The design was falsified against unmodified OpenShell CLI and Gateway `0.0.80` on A1 before acceptance.
+
+Stock `openshell sandbox exec` exposed no detach option. A focused A1 proof used the attached CLI only to start a sandbox-owned `setsid` process with stdin, stdout, and stderr redirected away from the CLI transport, then forcibly terminated the attached CLI through its timeout. The detached process continued writing its heartbeat, and a fresh stock exec observed the same surviving process and advancing heartbeat. This proves the narrow detached-launch mechanism on the tested A1 Cell; it is not a universal OpenShell, host-reboot, tunnel, or deployment-topology guarantee.
 
 The test Cell owned a dedicated systemd slice, containerd, dockerd, Gateway, state roots, JWT bundle, and a fault-injection proxy that held the first Docker `POST /containers/create` before forwarding.
 
@@ -229,7 +262,7 @@ Later A1 acceptance verified reboot recovery, Providers v2 activation, explicit 
 
 The final implementation acceptance rebuilt `openkit/worker-codex:dev` natively on A1, passed the isolated image smoke with Node `24.18.0` and Codex `0.144.1`, installed the six-field retry-safe helper, and exercised epochs `14` through `20`. Normal prepare/recycle removed the old roots and produced an empty replacement. Stopping the same-boot Cell dockerd made recycle fail closed while retaining the `live` owner and roots; after reboot, the same owner removed the previous-boot epoch and restored a healthy empty Cell. An immutable-file fault forced root deletion to fail after the effect fence; the marker retained `fenced` plus the old bridge identity, and the same-owner retry re-proved the stopped slice, empty cgroups, and absent bridge before deleting the roots without a Docker socket. Wrong-owner recycle failed, and same-owner idempotent recycle preserved epoch `20 -> 20`.
 
-The opt-in remote backend E2E used the checksum-verified official macOS OpenShell `0.0.80` CLI, a separate operator-managed SSH Gateway tunnel, and the fixed SSH lifecycle controller to materialize a sandbox under the A1 Cell, execute a command inside it, download the command's result file, and recycle the whole Cell into an empty replacement. A separate A1-local E2E uploaded a minimal AEP fixture and executed the real OpenKit worker shim inside the Cell. These runs complete this lifecycle specification; they do not complete the separate real Codex root-plus-two-child worker-runtime provenance acceptance.
+The opt-in remote backend E2E used the checksum-verified official macOS OpenShell `0.0.80` CLI, a separate operator-managed SSH Gateway tunnel, and the fixed SSH lifecycle controller to materialize a sandbox under the A1 Cell, execute a command inside it, download the command's result file, and recycle the whole Cell into an empty replacement. A separate A1-local E2E uploaded a minimal AEP fixture and executed the real OpenKit worker shim inside the Cell. These runs complete this lifecycle specification. The separate real Codex `0.144.1` root-plus-two-child worker-runtime provenance acceptance later passed independently on A1 against stock OpenShell `0.0.80`; it validates provenance without extending this lifecycle specification's ownership.
 
 ## Alternatives
 
@@ -259,6 +292,8 @@ Rejected for the current contract because the fixed SSH invocation already suppl
 
 ## Implementation Projection
 
+The whole-Cell prepare, recycle, remote fixed-controller, cleanup-fence, detached shim launch, and active read-only restart-restoration slice are implemented. The backend can reconstruct the exact existing session as read-only, collect through it, and recycle the same Cell without calling prepare, create, upload, provider mutation, launch, or worker-control registration.
+
 - `apps/nanocore/src/runtime/openshell-cell.ts` owns the fixed local sudo and remote SSH command adapters.
 - `apps/nanocore/scripts/openshell-cell.sh` owns the privileged Linux Cell lifecycle.
 - `apps/nanocore/src/runtime/worker-governance-backend.ts` prepares a Cell before OpenShell preflight and recycles it on create failure and durable cleanup.
@@ -270,11 +305,15 @@ Rejected for the current contract because the fixed SSH invocation already suppl
 
 - L1 controller tests verify exact local sudo and remote SSH argv construction, owner and target validation, bounded errors, and no shell evaluation.
 - L1 backend tests verify prepare-before-preflight ordering, whole-Cell cleanup after every post-prepare failure, owner-bound restart cleanup, access revocation, retry, and absence of resource-delete success claims.
+- L1 detached-launch tests verify the fixed NanoCore-owned launcher argv, `setsid`, stdin/stdout/stderr redirection, positional preservation of worker argv, absence of request-controlled shell interpolation, launch acknowledgement independent of attached CLI lifetime, runtime provenance and workspace publication before final status, and executor completion only from that last durable-output barrier or an existing authority deadline.
+- L1 restoration tests verify exact durable handle reconstruction, trusted staging-path resolution, same-target and lineage checks, transcript/artifact/workspace-change download, evidence reads, and cleanup while asserting that `prepare`, sandbox creation, upload, provider mutation, launch, and worker-control registration are never called.
+- L1 restart tests verify awaiting-reconnect and adoption preserve the same Cell and backend session, accepted final status uses the restored handle, timeout selects exact recycle through the lease CAS fence, cleanup failure holds capacity, and no settlement record exists.
 - L1 factory tests verify both placements, required remote configuration, loopback HTTP Gateway origins, and explicit credential-free HTTP(S) worker-control reachability.
 - L1 scheduler tests verify a one-slot pool and target.
 - Static checks run `bash -n` over the privileged helper.
-- The opt-in A1 test runs NanoCore on A1, builds the worker image on A1, saves it into the image cache, prepares a fresh stock Cell, runs a bounded worker, recycles the Cell, and proves that the replacement Cell is ready and empty with no old process or state root remaining.
-- The opt-in remote backend test controls A1 through the fixed SSH lifecycle command, reaches its loopback Gateway through an operator-managed tunnel, materializes one sandbox, executes a bounded command, downloads its result, and proves whole-Cell cleanup leaves a fresh empty replacement.
+- The L5 opt-in A1 detached-launch test uses unmodified OpenShell `0.0.80`, forcibly terminates the attached CLI after the fixed launcher starts the shim, proves the same sandbox-owned process and heartbeat survive through a fresh exec, and verifies all standard streams remain detached from the dead CLI.
+- The L5 opt-in A1 restart gate runs NanoCore on the local controller and the bounded worker in the remote A1 Cell through the declared operator-managed Gateway forward and sandbox-reachable worker-control route. It restarts only local NanoCore after the remote worker heartbeat, proves exact same-lease adoption without prepare, create, launch, or register, downloads transcript and evidence through the restored read-only handle, accepts durable final status, and recycles the exact remote Cell into a ready empty replacement. An A1-local NanoCore run may remain a diagnostic, but it cannot replace this remote-Gateway acceptance gate.
+- The L5 opt-in remote backend test controls A1 through the fixed SSH lifecycle command, reaches its loopback Gateway through an operator-managed tunnel, materializes one sandbox, executes a bounded command, downloads its result, and proves whole-Cell cleanup leaves a fresh empty replacement; this validates only the declared A1 topology.
 - The late-create A1 falsifier holds a Docker create before forwarding, destroys the Cell, starts a fresh Cell, and proves the old request cannot materialize.
 
 ## Deferred Work

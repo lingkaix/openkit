@@ -655,9 +655,15 @@ function startWorkerInferenceCall(input: {
 /** Top-level request fields whose presence would supply private runtime authority. */
 const WORKER_INFERENCE_FORBIDDEN_FIELDS = [
   'access_token',
+  'agentId',
+  'agentSessionId',
+  'agent_id',
+  'agent_session_id',
   'apiKey',
   'api_key',
   'authorization',
+  'automationId',
+  'automation_id',
   'background',
   'budget',
   'budgets',
@@ -670,14 +676,37 @@ const WORKER_INFERENCE_FORBIDDEN_FIELDS = [
   'credential_ref',
   'credentials',
   'lineage',
+  'itemId',
+  'item_id',
+  'modelId',
+  'model_id',
   'openkit',
+  'organizationId',
+  'organization_id',
+  'packageId',
+  'packageSnapshotId',
+  'package_id',
+  'package_snapshot_id',
   'policy',
   'policies',
   'policyRef',
+  'policySnapshotId',
   'policy_ref',
+  'policy_snapshot_id',
+  'provider',
+  'providerId',
+  'providerInstanceId',
+  'providerRef',
+  'provider_id',
+  'provider_instance_id',
+  'provider_ref',
   'providerSelection',
   'provider_selection',
   'previous_response_id',
+  'requestId',
+  'request_id',
+  'routeId',
+  'route_id',
   'scope',
   'secret',
   'secretRef',
@@ -688,10 +717,20 @@ const WORKER_INFERENCE_FORBIDDEN_FIELDS = [
   'source_id',
   'sourceIds',
   'source_ids',
+  'snapshotId',
+  'snapshot_id',
+  'threadId',
+  'thread_id',
   'token',
+  'turnId',
+  'turn_id',
+  'userId',
+  'user_id',
   'vault',
   'vaultGrantId',
   'vault_grant_id',
+  'workspaceId',
+  'workspace_id',
 ] as const;
 
 /**
@@ -708,82 +747,20 @@ function rejectWorkerInferenceAuthorityHeaders(headers: Headers): void {
 }
 
 /**
- * Removes caller authority and rebuilds a provider request from one trusted AEP.
+ * Rejects caller authority aliases and rebuilds a provider request from one trusted AEP.
  *
  * @param input Parsed OpenAI-compatible worker request.
- * @param environmentPackage Authenticated package supplying lineage authority.
  * @param route AEP-selected provider route.
  * @returns Sanitized request safe to pass to the shared provider dispatcher.
  */
 function sanitizeWorkerInferenceRequest(
   input: Record<string, unknown>,
-  environmentPackage: AgentEnvironmentPackage,
   route: WorkerInferenceLlmRoute
 ): Record<string, unknown> {
   const request = { ...input };
-  const { scope } = environmentPackage;
-
-  consumeMatchingWorkerAuthority(request, ['model', 'modelId', 'model_id'], route.model);
-  consumeMatchingWorkerAuthority(
-    request,
-    [
-      'provider',
-      'providerId',
-      'provider_id',
-      'providerInstanceId',
-      'provider_instance_id',
-      'providerRef',
-      'provider_ref',
-    ],
-    route.providerInstanceId
-  );
-  consumeMatchingWorkerAuthority(request, ['workspaceId', 'workspace_id'], scope.workspaceId);
-  consumeMatchingWorkerAuthority(request, ['threadId', 'thread_id'], scope.threadId);
-  consumeMatchingWorkerAuthority(request, ['turnId', 'turn_id'], scope.turnId);
-  consumeMatchingWorkerAuthority(request, ['itemId', 'item_id'], scope.itemId ?? null);
-  consumeMatchingWorkerAuthority(
-    request,
-    ['agentId', 'agent_id'],
-    environmentPackage.agent.agentId
-  );
-  consumeMatchingWorkerAuthority(
-    request,
-    ['agentSessionId', 'agent_session_id'],
-    scope.agentSessionId
-  );
-  consumeMatchingWorkerAuthority(
-    request,
-    ['packageId', 'package_id'],
-    environmentPackage.packageId
-  );
-  consumeMatchingWorkerAuthority(
-    request,
-    ['packageSnapshotId', 'package_snapshot_id'],
-    environmentPackage.snapshotId
-  );
-  consumeMatchingWorkerAuthority(request, ['requestId', 'request_id'], scope.requestId ?? null);
-  consumeMatchingWorkerAuthority(request, ['userId', 'user_id'], scope.userId ?? null);
-  consumeMatchingWorkerAuthority(
-    request,
-    ['organizationId', 'organization_id'],
-    scope.organizationId ?? null
-  );
-  consumeMatchingWorkerAuthority(
-    request,
-    ['automationId', 'automation_id'],
-    scope.automationId ?? null
-  );
-  consumeMatchingWorkerAuthority(request, ['routeId', 'route_id'], route.id);
-  consumeMatchingWorkerAuthority(
-    request,
-    ['snapshotId', 'snapshot_id'],
-    environmentPackage.snapshotId
-  );
-  consumeMatchingWorkerAuthority(
-    request,
-    ['policySnapshotId', 'policy_snapshot_id'],
-    environmentPackage.policy.snapshotId
-  );
+  if (Object.hasOwn(request, 'model') && request.model !== route.model) {
+    throw workerInferenceLineageMismatch();
+  }
 
   if (Object.hasOwn(request, 'store') && request.store !== false) {
     throw workerInferenceLineageMismatch();
@@ -796,7 +773,7 @@ function sanitizeWorkerInferenceRequest(
   }
   rejectProviderExecutedWorkerTools(request.tools);
 
-  request.metadata = sanitizeWorkerInferenceMetadata(request.metadata, environmentPackage, route);
+  request.metadata = sanitizeWorkerInferenceMetadata(request.metadata);
   if (request.metadata === undefined) {
     delete request.metadata;
   }
@@ -848,18 +825,12 @@ function rejectProviderExecutedWorkerTools(tools: unknown): void {
 }
 
 /**
- * Removes matching OpenKit metadata authority and preserves ordinary metadata.
+ * Rejects OpenKit authority and preserves ordinary metadata.
  *
  * @param metadata Caller metadata.
- * @param environmentPackage Authenticated package supplying lineage authority.
- * @param route AEP-selected provider route.
- * @returns Metadata without the OpenKit authority block.
+ * @returns Metadata without caller authority.
  */
-function sanitizeWorkerInferenceMetadata(
-  metadata: unknown,
-  environmentPackage: AgentEnvironmentPackage,
-  route: WorkerInferenceLlmRoute
-): Record<string, unknown> | undefined {
+function sanitizeWorkerInferenceMetadata(metadata: unknown): Record<string, unknown> | undefined {
   if (metadata === undefined) {
     return undefined;
   }
@@ -872,76 +843,10 @@ function sanitizeWorkerInferenceMetadata(
   }
 
   const sanitized = { ...(metadata as Record<string, unknown>) };
-  if (!Object.hasOwn(sanitized, 'openkit')) {
-    return sanitized;
-  }
-
-  const openkit = sanitized.openkit;
-  if (!openkit || typeof openkit !== 'object' || Array.isArray(openkit)) {
+  if (Object.hasOwn(sanitized, 'openkit')) {
     throw workerInferenceLineageMismatch();
   }
-
-  const authority = { ...(openkit as Record<string, unknown>) };
-  const { scope } = environmentPackage;
-
-  consumeMatchingWorkerAuthority(authority, ['model'], route.model);
-  consumeMatchingWorkerAuthority(
-    authority,
-    ['provider', 'providerId', 'providerInstanceId'],
-    route.providerInstanceId
-  );
-  consumeMatchingWorkerAuthority(authority, ['routeId'], route.id);
-  consumeMatchingWorkerAuthority(authority, ['workspaceId'], scope.workspaceId);
-  consumeMatchingWorkerAuthority(authority, ['threadId'], scope.threadId);
-  consumeMatchingWorkerAuthority(authority, ['turnId'], scope.turnId);
-  consumeMatchingWorkerAuthority(authority, ['itemId'], scope.itemId ?? null);
-  consumeMatchingWorkerAuthority(authority, ['agentId'], environmentPackage.agent.agentId);
-  consumeMatchingWorkerAuthority(authority, ['agentSessionId'], scope.agentSessionId);
-  consumeMatchingWorkerAuthority(authority, ['packageId'], environmentPackage.packageId);
-  consumeMatchingWorkerAuthority(authority, ['packageSnapshotId'], environmentPackage.snapshotId);
-  consumeMatchingWorkerAuthority(authority, ['requestId'], scope.requestId ?? null);
-  consumeMatchingWorkerAuthority(authority, ['userId'], scope.userId ?? null);
-  consumeMatchingWorkerAuthority(authority, ['organizationId'], scope.organizationId ?? null);
-  consumeMatchingWorkerAuthority(authority, ['automationId'], scope.automationId ?? null);
-  consumeMatchingWorkerAuthority(
-    authority,
-    ['policySnapshotId'],
-    environmentPackage.policy.snapshotId
-  );
-
-  delete authority.promptCacheKey;
-  delete authority.sessionId;
-
-  if (Object.keys(authority).length > 0) {
-    throw workerInferenceLineageMismatch();
-  }
-
-  delete sanitized.openkit;
-
-  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
-}
-
-/**
- * Requires matching values for caller-supplied authority aliases, then removes them.
- *
- * @param record Mutable request or metadata record.
- * @param fields Aliases owned by the same AEP authority value.
- * @param expected AEP-owned value.
- */
-function consumeMatchingWorkerAuthority(
-  record: Record<string, unknown>,
-  fields: readonly string[],
-  expected: unknown
-): void {
-  for (const field of fields) {
-    if (!Object.hasOwn(record, field)) {
-      continue;
-    }
-    if (record[field] !== expected) {
-      throw workerInferenceLineageMismatch();
-    }
-    delete record[field];
-  }
+  return sanitized;
 }
 
 /**
@@ -1446,7 +1351,7 @@ export function registerWorkerInferenceRoutes({
       if (provenanceRequired && !runtimeHint) {
         throw invalidWorkerInferenceRequest();
       }
-      const sanitized = sanitizeWorkerInferenceRequest(input, environmentPackage, route);
+      const sanitized = sanitizeWorkerInferenceRequest(input, route);
       const runtimeOriginRef =
         provenanceRequired && runtimeHint
           ? createWorkerRuntimeOriginRef(environmentPackage.snapshotId, runtimeHint.nativeThreadId)

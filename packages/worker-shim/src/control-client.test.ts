@@ -1,5 +1,7 @@
+import { createHash } from 'node:crypto';
+
 import type { WorkerCanonicalEventRecord, WorkerLineage } from '@openkit/worker-protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { WorkerControlClient, type WorkerControlFetch } from './control-client.js';
 
 const lineage: WorkerLineage = {
@@ -60,7 +62,7 @@ describe('WorkerControlClient', () => {
       baseUrl: 'https://nanocore.local/api/worker-control',
     });
 
-    await client.recordHeartbeat({ message: 'Worker running.', sequence: 1, status: 'running' });
+    await client.recordHeartbeat({ message: 'Worker running.', status: 'running' });
     await client.recordArtifactNotice({
       artifact: {
         mediaType: 'text/markdown',
@@ -72,7 +74,17 @@ describe('WorkerControlClient', () => {
 
     expect(requests).toEqual([
       expect.objectContaining({
-        body: expect.objectContaining({ lineage, sequence: 1, status: 'running' }),
+        body: {
+          body: {
+            message: 'Worker running.',
+            processKeyHash: expect.any(String),
+            status: 'running',
+          },
+          lineage,
+          operation: 'heartbeat',
+          schemaVersion: 1,
+          sequence: 0,
+        },
         headers: expect.objectContaining({ authorization: 'Bearer token_control_1' }),
         url: 'https://nanocore.local/api/worker-control/heartbeat',
       }),
@@ -324,6 +336,7 @@ describe('WorkerControlClient', () => {
   });
 
   it('retries an ambiguous final status failure with the exact same envelope', async () => {
+    vi.useFakeTimers();
     const requests: string[] = [];
     const ambiguousFailure = new TypeError('socket closed after request write');
     const client = new WorkerControlClient({
@@ -348,39 +361,22 @@ describe('WorkerControlClient', () => {
       lineage,
       token: 'token_control_1',
     });
+    client.enablePostLaunchRecovery();
 
-    await expect(
-      client.recordFinalStatus({
+    try {
+      const delivery = client.recordFinalStatus({
         sequence: 4,
         status: 'completed',
         stopReason: 'completed',
-      })
-    ).resolves.toMatchObject({ accepted: true, nextExpectedSequence: 5 });
-    expect(requests).toHaveLength(2);
-    expect(requests[1]).toBe(requests[0]);
-  });
+      });
+      await vi.advanceTimersByTimeAsync(250);
 
-  it('bounds ambiguous final status delivery to three total attempts', async () => {
-    const ambiguousFailure = new TypeError('connection reset');
-    let attempts = 0;
-    const client = new WorkerControlClient({
-      baseUrl: 'https://nanocore.local/api/worker-control',
-      fetch: async () => {
-        attempts += 1;
-        throw ambiguousFailure;
-      },
-      lineage,
-      token: 'token_control_1',
-    });
-
-    await expect(
-      client.recordFinalStatus({
-        sequence: 4,
-        status: 'completed',
-        stopReason: 'completed',
-      })
-    ).rejects.toBe(ambiguousFailure);
-    expect(attempts).toBe(3);
+      await expect(delivery).resolves.toMatchObject({ accepted: true, nextExpectedSequence: 5 });
+      expect(requests).toHaveLength(2);
+      expect(requests[1]).toBe(requests[0]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not retry a definitive final status conflict', async () => {
@@ -421,11 +417,10 @@ describe('WorkerControlClient', () => {
         return { ok: true, status: 200, text: async () => '{}' };
       },
       lineage,
-      signal: controller.signal,
       token: 'token_control_1',
     });
 
-    await expect(client.pollCommands()).rejects.toBe(abortReason);
+    await expect(client.pollCommands(controller.signal)).rejects.toBe(abortReason);
     expect(fetchCalls).toBe(0);
   });
 
@@ -444,8 +439,170 @@ describe('WorkerControlClient', () => {
       baseUrl: 'https://nanocore.local/api/worker-control',
     });
 
-    await expect(client.recordHeartbeat({ sequence: 1, status: 'running' })).rejects.toThrowError(
+    await expect(client.recordHeartbeat({ status: 'running' })).rejects.toThrowError(
       'Worker control request failed: worker_control_unauthorized'
     );
+  });
+
+  it('retries a post-launch request timeout inside the shared outage budget', async () => {
+    vi.useFakeTimers();
+    let attempts = 0;
+    try {
+      const client = new WorkerControlClient({
+        baseUrl: 'https://nanocore.local/api/worker-control',
+        fetch: async () => {
+          attempts += 1;
+          if (attempts === 1) {
+            return new Promise(() => undefined);
+          }
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ commands: [] }),
+          };
+        },
+        lineage,
+        token: 'token_control_1',
+      });
+      client.enablePostLaunchRecovery();
+
+      const poll = client.pollCommands().then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error })
+      );
+      await vi.advanceTimersByTimeAsync(10_250);
+
+      await expect(poll).resolves.toEqual({ value: { commands: [] } });
+      expect(attempts).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reconnects with the same process key before replaying one blocked request', async () => {
+    const requests: Array<{ body: Record<string, unknown>; path: string }> = [];
+    let pollAttempts = 0;
+    let reconnected = false;
+    const client = new WorkerControlClient({
+      baseUrl: 'https://nanocore.local/api/worker-control',
+      fetch: async (url, init) => {
+        const path = new URL(url).pathname;
+        const body = JSON.parse(init.body) as Record<string, unknown>;
+
+        requests.push({ body, path });
+        if (path.endsWith('/heartbeat')) {
+          if (body.sequence !== 0) {
+            reconnected = true;
+          }
+          return { ok: true, status: 200, text: async () => '{}' };
+        }
+        pollAttempts += 1;
+        if (pollAttempts <= 2) {
+          return {
+            ok: false,
+            status: 503,
+            text: async () =>
+              JSON.stringify({
+                code: 'worker_control_reconnect_required',
+                diagnostics: [],
+                message: 'Reconnect before retrying.',
+                retryable: true,
+              }),
+          };
+        }
+        if (!reconnected) {
+          return {
+            ok: false,
+            status: 409,
+            text: async () => JSON.stringify({ code: 'request_replayed_before_reconnect' }),
+          };
+        }
+        return { ok: true, status: 200, text: async () => JSON.stringify({ commands: [] }) };
+      },
+      lineage,
+      token: 'token_control_1',
+    });
+    await client.recordHeartbeat({ status: 'starting' });
+    client.enablePostLaunchRecovery();
+    await expect(Promise.all([client.pollCommands(), client.pollCommands()])).resolves.toEqual([
+      { commands: [] },
+      { commands: [] },
+    ]);
+
+    const [initial, firstPoll, secondPoll, reconnect, replayedFirstPoll, replayedSecondPoll] =
+      requests;
+    expect(requests.map(({ path }) => path)).toEqual([
+      '/api/worker-control/heartbeat',
+      '/api/worker-control/commands/poll',
+      '/api/worker-control/commands/poll',
+      '/api/worker-control/heartbeat',
+      '/api/worker-control/commands/poll',
+      '/api/worker-control/commands/poll',
+    ]);
+    expect(reconnect?.body).toMatchObject({ lineage, operation: 'heartbeat', sequence: 1 });
+    expect(replayedFirstPoll?.body).toEqual(firstPoll?.body);
+    expect(replayedSecondPoll?.body).toEqual(secondPoll?.body);
+    const processKeyHash = (initial?.body.body as { processKeyHash?: unknown }).processKeyHash;
+    const reconnectKey = reconnect?.body.reconnectKey;
+
+    expect(processKeyHash).toEqual(expect.any(String));
+    expect(reconnectKey).toEqual(expect.any(String));
+    expect(
+      createHash('sha256')
+        .update(Buffer.from(String(reconnectKey), 'base64url'))
+        .digest('base64url')
+    ).toBe(processKeyHash);
+  });
+
+  it('shares one reconnect heartbeat with a simultaneously blocked heartbeat', async () => {
+    let reconnectAttempts = 0;
+    let reconnected = false;
+    const client = new WorkerControlClient({
+      baseUrl: 'https://nanocore.local/api/worker-control',
+      fetch: async (url, init) => {
+        const path = new URL(url).pathname;
+        const body = JSON.parse(init.body) as Record<string, unknown>;
+        if (path.endsWith('/heartbeat') && body.sequence === 0) {
+          return { ok: true, status: 200, text: async () => '{}' };
+        }
+        if (path.endsWith('/heartbeat') && body.reconnectKey) {
+          reconnectAttempts += 1;
+          if (reconnectAttempts > 1) {
+            return {
+              ok: false,
+              status: 409,
+              text: async () => JSON.stringify({ code: 'worker_control_identity_conflict' }),
+            };
+          }
+          reconnected = true;
+          return { ok: true, status: 200, text: async () => '{}' };
+        }
+        if (!reconnected) {
+          return {
+            ok: false,
+            status: 503,
+            text: async () =>
+              JSON.stringify({
+                code: 'worker_control_reconnect_required',
+                message: 'Reconnect before retrying.',
+              }),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify(path.endsWith('/commands/poll') ? { commands: [] } : {}),
+        };
+      },
+      lineage,
+      token: 'token_control_1',
+    });
+    await client.recordHeartbeat({ status: 'starting' });
+    client.enablePostLaunchRecovery();
+
+    await expect(
+      Promise.all([client.recordHeartbeat({ status: 'running' }), client.pollCommands()])
+    ).resolves.toEqual([{}, { commands: [] }]);
+    expect(reconnectAttempts).toBe(1);
   });
 });

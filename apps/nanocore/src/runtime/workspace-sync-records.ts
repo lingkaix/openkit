@@ -975,21 +975,31 @@ export function updateBackendWorkspaceHandleCleanupStatus(
        ORDER BY created_at ASC, backend_workspace_handle_id ASC`
     )
     .all(workspaceId, packageSnapshotId) as Array<{ payload_json: string }>;
-  const updated = rows.map((row) => {
+  const resolved = rows.map((row) => {
     const handle = BackendWorkspaceHandleSchema.parse(JSON.parse(row.payload_json) as unknown);
     const effectiveCleanupStatus =
       cleanupStatus === 'retained' && ['cleaned', 'failed'].includes(handle.cleanupStatus)
         ? handle.cleanupStatus
         : cleanupStatus;
 
-    return BackendWorkspaceHandleSchema.parse({
-      ...handle,
-      cleanupStatus: effectiveCleanupStatus,
-      updatedAt,
-    });
+    if (effectiveCleanupStatus === handle.cleanupStatus) {
+      return { changed: false, handle };
+    }
+
+    return {
+      changed: true,
+      handle: BackendWorkspaceHandleSchema.parse({
+        ...handle,
+        cleanupStatus: effectiveCleanupStatus,
+        updatedAt,
+      }),
+    };
   });
 
-  for (const handle of updated) {
+  for (const { changed, handle } of resolved) {
+    if (!changed) {
+      continue;
+    }
     workspaceDb.sqlite
       .prepare(
         `UPDATE backend_workspace_handles
@@ -999,7 +1009,7 @@ export function updateBackendWorkspaceHandleCleanupStatus(
       .run(JSON.stringify(handle), updatedAt, workspaceId, handle.id);
   }
 
-  return updated;
+  return resolved.map(({ handle }) => handle);
 }
 
 /**

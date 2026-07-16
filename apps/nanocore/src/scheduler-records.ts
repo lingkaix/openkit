@@ -1,5 +1,7 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
 import type { TurnStatus } from '@openkit/protocol';
+import { WorkerProcessKeySchema } from '@openkit/worker-protocol';
 import type { CoreDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import type {
@@ -171,6 +173,10 @@ export interface SchedulerSessionLeaseRecord {
   readonly releaseReason: string | null;
   /** Recovery state for terminal or takeover leases. */
   readonly recoveryState: string | null;
+  /** Fixed reconnect deadline retained across repeated NanoCore restarts. */
+  readonly recoveryDeadline: string | null;
+  /** SHA-256 digest of the worker process's memory-only reconnect key. */
+  readonly workerProcessKeyHash: string | null;
 }
 
 /** Durable scheduler orphan-worker evidence record. */
@@ -387,6 +393,8 @@ interface SchedulerSessionLeaseRow {
   readonly sandbox_binding_ref: string;
   readonly release_reason: string | null;
   readonly recovery_state: string | null;
+  readonly recovery_deadline: string | null;
+  readonly worker_process_key_hash: string | null;
   readonly backend_anchor_state: 'unanchored' | 'anchored';
 }
 
@@ -735,6 +743,8 @@ export interface AcceptSchedulerLeaseHeartbeatInput {
   readonly workerSequence: number;
   /** Heartbeat timeout in milliseconds from the accepted heartbeat timestamp. */
   readonly heartbeatTimeoutMs: number;
+  /** Optional sequence-zero commitment to the worker process's reconnect key. */
+  readonly workerProcessKeyHash?: string;
   /** Optional deterministic clock. */
   readonly now?: () => string;
 }
@@ -746,6 +756,22 @@ export interface AcceptSchedulerLeaseHeartbeatByBindingInput
   readonly workerSequence: number;
   /** NanoCore timestamp assigned to the accepted heartbeat. */
   readonly acceptedAt: string;
+  /** Optional sequence-zero commitment to the worker process's reconnect key. */
+  readonly workerProcessKeyHash?: string;
+}
+
+/** Input used to adopt one exact surviving worker process after NanoCore restarts. */
+export interface AdoptSchedulerLeaseReconnectInput {
+  /** NanoCore acceptance time for deadline checks. */
+  readonly acceptedAt: string;
+  /** Exact worker-control lineage bound to the lease. */
+  readonly lineage: SchedulerLeaseTokenBindingLineage;
+  /** Memory-only key retained by the original worker process. */
+  readonly reconnectKey: string;
+  /** Non-secret durable sandbox binding reference. */
+  readonly sandboxBindingRef: string;
+  /** Exact next heartbeat sequence. */
+  readonly workerSequence: number;
 }
 
 /** Input used to mark expired scheduler leases stale. */
@@ -844,7 +870,11 @@ export type SchedulerLeaseTokenBindingResolution =
       /** Token binding is not usable. */
       readonly status: 'rejected';
       /** Stable rejection reason. */
-      readonly reason: 'binding-not-found' | 'lineage-mismatch' | 'lease-not-live';
+      readonly reason:
+        | 'binding-not-found'
+        | 'lineage-mismatch'
+        | 'lease-not-live'
+        | 'reconnect-required';
     };
 
 /** Input used to complete one scheduler session lease. */
@@ -1403,6 +1433,7 @@ export function acceptSchedulerLeaseHeartbeat(
 ): SchedulerSessionLeaseRecord {
   const lease = requireSchedulerSessionLease(coreDb, input.leaseId);
   const timestamp = input.now?.() ?? new Date().toISOString();
+  const workerProcessKeyHash = resolveHeartbeatProcessKeyHash(lease, input);
 
   if (!canAcceptHeartbeat(lease.status)) {
     throw new SchedulerLeaseHeartbeatRejectedError(
@@ -1440,32 +1471,39 @@ export function acceptSchedulerLeaseHeartbeat(
       SET status = 'active',
           heartbeat_deadline = ?,
           last_accepted_heartbeat_at = ?,
-          last_worker_sequence = ?
+          last_worker_sequence = ?,
+          worker_process_key_hash = ?
       WHERE lease_id = ?
         AND status = ?
         AND expires_at = ?
         AND heartbeat_deadline = ?
         AND startup_deadline = ?
         AND last_accepted_heartbeat_at IS ?
-        AND last_worker_sequence IS ?`
+        AND last_worker_sequence IS ?
+        AND worker_process_key_hash IS ?`
     )
     .run(
       addMilliseconds(timestamp, input.heartbeatTimeoutMs),
       timestamp,
       input.workerSequence,
+      workerProcessKeyHash,
       input.leaseId,
       lease.status,
       lease.expiresAt,
       lease.heartbeatDeadline,
       lease.startupDeadline,
       lease.lastAcceptedHeartbeatAt,
-      lease.lastWorkerSequence
+      lease.lastWorkerSequence,
+      lease.workerProcessKeyHash
     );
 
   if (update.changes !== 1) {
     const current = requireSchedulerSessionLease(coreDb, input.leaseId);
 
-    if (current.lastWorkerSequence === input.workerSequence) {
+    if (
+      current.lastWorkerSequence === input.workerSequence &&
+      current.workerProcessKeyHash === workerProcessKeyHash
+    ) {
       return current;
     }
 
@@ -1517,7 +1555,82 @@ export function acceptSchedulerLeaseHeartbeatByBinding(
     leaseId: resolution.lease.leaseId,
     now: () => input.acceptedAt,
     workerSequence: input.workerSequence,
+    ...(input.workerProcessKeyHash ? { workerProcessKeyHash: input.workerProcessKeyHash } : {}),
   });
+}
+
+/**
+ * Adopts one exact surviving worker process without advancing its heartbeat sequence.
+ *
+ * The caller must run this inside the normal heartbeat transaction so the subsequent sequence
+ * acceptance rolls the adoption back if the canonical heartbeat cannot be committed.
+ *
+ * @param coreDb Open Core database handle.
+ * @param input Process key, lineage, deadline, and exact next sequence.
+ * @returns Lease after the reconnect-only fields are cleared.
+ * @throws SchedulerLeaseHeartbeatRejectedError when any durable authority check fails.
+ */
+export function adoptSchedulerLeaseReconnect(
+  coreDb: CoreDb,
+  input: AdoptSchedulerLeaseReconnectInput
+): SchedulerSessionLeaseRecord {
+  const row = coreDb.sqlite
+    .prepare(`${schedulerSessionLeaseSelectSql()} WHERE sandbox_binding_ref = ?`)
+    .get(input.sandboxBindingRef) as SchedulerSessionLeaseRow | undefined;
+  if (!row) {
+    throwReconnectRejected('lease-not-live', 'Worker reconnect binding is unknown.');
+  }
+  const lease = mapSchedulerSessionLeaseRow(row);
+  if (!leaseMatchesLineage(lease, input.lineage)) {
+    throwReconnectRejected('lease-changed', 'Worker reconnect lineage is not authoritative.');
+  }
+  if (
+    !['active', 'idle'].includes(lease.status) ||
+    lease.recoveryState !== 'awaiting-reconnect' ||
+    !lease.recoveryDeadline ||
+    lease.recoveryDeadline <= input.acceptedAt ||
+    lease.expiresAt <= input.acceptedAt
+  ) {
+    throwReconnectRejected('lease-not-live', 'Worker reconnect deadline or lease is not live.');
+  }
+  if (lease.lastWorkerSequence === null || input.workerSequence !== lease.lastWorkerSequence + 1) {
+    throwReconnectRejected('sequence-stale', 'Worker reconnect must use the exact next sequence.');
+  }
+  const reconnectKey = WorkerProcessKeySchema.parse(input.reconnectKey);
+  const presentedHash = createHash('sha256')
+    .update(Buffer.from(reconnectKey, 'base64url'))
+    .digest();
+  const storedHash = lease.workerProcessKeyHash
+    ? Buffer.from(lease.workerProcessKeyHash, 'base64url')
+    : Buffer.alloc(0);
+  if (storedHash.length !== presentedHash.length || !timingSafeEqual(storedHash, presentedHash)) {
+    throwReconnectRejected('lease-changed', 'Worker reconnect process key does not match.');
+  }
+  const update = coreDb.sqlite
+    .prepare(
+      `UPDATE scheduler_session_leases
+       SET recovery_state = NULL,
+           recovery_deadline = NULL,
+           heartbeat_deadline = ?
+       WHERE lease_id = ?
+         AND scheduler_epoch = ?
+         AND recovery_state = 'awaiting-reconnect'
+         AND recovery_deadline = ?
+         AND last_worker_sequence = ?
+         AND worker_process_key_hash = ?`
+    )
+    .run(
+      lease.recoveryDeadline,
+      lease.leaseId,
+      lease.schedulerEpoch,
+      lease.recoveryDeadline,
+      lease.lastWorkerSequence,
+      lease.workerProcessKeyHash
+    );
+  if (update.changes !== 1) {
+    throwReconnectRejected('lease-changed', 'Worker reconnect lost its compare-and-set race.');
+  }
+  return requireSchedulerSessionLease(coreDb, lease.leaseId);
 }
 
 /**
@@ -1536,6 +1649,7 @@ export function markExpiredSchedulerLeasesStale(
     .prepare(
       `${schedulerSessionLeaseSelectSql()}
       WHERE status IN ('acquired', 'starting', 'active', 'idle')
+        AND recovery_state IS NULL
         AND (
           expires_at <= ?
           OR (last_accepted_heartbeat_at IS NOT NULL AND heartbeat_deadline <= ?)
@@ -1799,6 +1913,15 @@ export function resolveSchedulerLeaseTokenBinding(
     return { status: 'rejected', reason: 'lineage-mismatch' };
   }
 
+  if (
+    lease.recoveryState === 'awaiting-reconnect' &&
+    lease.recoveryDeadline !== null &&
+    lease.recoveryDeadline > timestamp &&
+    lease.expiresAt > timestamp
+  ) {
+    return { status: 'rejected', reason: 'reconnect-required' };
+  }
+
   const workerDeadline = lease.lastAcceptedHeartbeatAt
     ? lease.heartbeatDeadline
     : lease.startupDeadline;
@@ -1904,7 +2027,8 @@ export function markSchedulerSessionLeaseReleasing(
       SET status = 'releasing',
           expires_at = ?,
           release_reason = ?,
-          recovery_state = ?
+          recovery_state = ?,
+          recovery_deadline = NULL
       WHERE lease_id = ?`
     )
     .run(expiresAt, input.releaseReason, input.recoveryState ?? 'needs-evidence', input.leaseId);
@@ -2019,6 +2143,7 @@ function completeSchedulerSessionLeaseInTransaction(
       SET status = ?,
           release_reason = ?,
           recovery_state = ?,
+          recovery_deadline = NULL,
           scheduler_epoch = ?
       WHERE lease_id = ? AND status = ? AND scheduler_epoch = ?`
     )
@@ -2956,6 +3081,31 @@ function canAcceptHeartbeat(status: SchedulerSessionLeaseStatus): boolean {
   return status === 'acquired' || status === 'starting' || status === 'active' || status === 'idle';
 }
 
+/** Resolves the immutable process-key hash committed by the sequence-zero heartbeat. */
+function resolveHeartbeatProcessKeyHash(
+  lease: SchedulerSessionLeaseRecord,
+  input: AcceptSchedulerLeaseHeartbeatInput
+): string | null {
+  const candidate = input.workerProcessKeyHash
+    ? WorkerProcessKeySchema.parse(input.workerProcessKeyHash)
+    : null;
+  if (!lease.workerProcessKeyHash && candidate && input.workerSequence !== 0) {
+    throwReconnectRejected('sequence-stale', 'Only sequence zero may bind a worker process key.');
+  }
+  if (lease.workerProcessKeyHash && candidate && candidate !== lease.workerProcessKeyHash) {
+    throwReconnectRejected('lease-changed', 'Worker process key hash changed after binding.');
+  }
+  return lease.workerProcessKeyHash ?? candidate;
+}
+
+/** Throws one stable scheduler heartbeat rejection for reconnect authority failures. */
+function throwReconnectRejected(
+  reason: SchedulerLeaseHeartbeatRejectedError['reason'],
+  message: string
+): never {
+  throw new SchedulerLeaseHeartbeatRejectedError(reason, message);
+}
+
 /**
  * Returns whether a lease status is terminal.
  *
@@ -3103,6 +3253,8 @@ function schedulerSessionLeaseSelectSql(): string {
     sandbox_binding_ref,
     release_reason,
     recovery_state,
+    recovery_deadline,
+    worker_process_key_hash,
     backend_anchor_state
   FROM scheduler_session_leases`;
 }
@@ -3311,6 +3463,8 @@ function mapSchedulerSessionLeaseRow(row: SchedulerSessionLeaseRow): SchedulerSe
     sandboxBindingRef: row.sandbox_binding_ref,
     releaseReason: row.release_reason,
     recoveryState: row.recovery_state,
+    recoveryDeadline: row.recovery_deadline,
+    workerProcessKeyHash: row.worker_process_key_hash,
   };
 }
 

@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS `idempotency_requests` (
   `input_hash` text NOT NULL,
   `response_kind` text NOT NULL,
   `response_id` text NOT NULL,
+  `response_json` text,
   `created_at` text NOT NULL,
   `expires_at` text NOT NULL
 );

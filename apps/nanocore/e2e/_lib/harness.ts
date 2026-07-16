@@ -9,6 +9,8 @@ import { seedDemoWorkspaceDataRoot as seedSharedDemoWorkspaceDataRoot } from '..
 export interface NanoCoreHarness {
   baseUrl: string;
   dataRoot: string;
+  /** Immediately kills the child process and waits for exit. */
+  kill(): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -16,6 +18,8 @@ export interface NanoCoreHarnessOptions {
   coreMode?: 'local' | 'server';
   dataRoot?: string;
   env?: Record<string, string | undefined>;
+  /** Fixed listener port reused across process restart. */
+  port?: number;
   seedDemoWorkspace?: boolean;
   useSimulator?: boolean;
 }
@@ -37,7 +41,7 @@ const nanoCoreRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 export async function startNanoCoreHarness(
   options: NanoCoreHarnessOptions = {}
 ): Promise<NanoCoreHarness> {
-  const port = await findOpenPort();
+  const port = options.port ?? (await findOpenPort());
   const dataRoot = options.dataRoot ?? (await mkdtemp(join(tmpdir(), 'openkit-nanocore-e2e-')));
   const coreMode = options.coreMode ?? 'local';
   const env: NodeJS.ProcessEnv = {
@@ -74,6 +78,7 @@ export async function startNanoCoreHarness(
   return {
     baseUrl,
     dataRoot,
+    kill: () => killProcess(child),
     stop: () => stopProcess(child),
   };
 }
@@ -340,6 +345,15 @@ async function stopProcess(process: ChildProcessWithoutNullStreams): Promise<voi
       }
     }),
   ]);
+}
+
+/** Immediately kills a spawned NanoCore process and waits for exit. */
+async function killProcess(process: ChildProcessWithoutNullStreams): Promise<void> {
+  if (process.exitCode !== null) {
+    return;
+  }
+  process.kill('SIGKILL');
+  await new Promise<void>((resolve) => process.once('exit', () => resolve()));
 }
 
 /**

@@ -9,8 +9,9 @@ describe('thread dashboard app API', () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Dashboard thread');
     const turn = store.createTurn('ws_demo', thread.id, 'Run dashboard turn');
+    const agentSessionId = `session_sim_turn_${turn.id}`;
     store.createAgentSession({
-      id: `session_sim_${thread.id}`,
+      id: agentSessionId,
       agentId: 'agent_codex_host',
       workspaceId: 'ws_demo',
       threadId: thread.id,
@@ -18,6 +19,11 @@ describe('thread dashboard app API', () => {
       message: null,
       createdAt: turn.startedAt ?? new Date().toISOString(),
       updatedAt: turn.startedAt ?? new Date().toISOString(),
+    });
+    store.updateTurn(turn.id, {
+      agentId: 'agent_codex_host',
+      agentProfileId: 'default',
+      agentSessionId,
     });
     const artifact = store.createArtifact({
       id: 'ar_thread_dashboard',
@@ -44,7 +50,7 @@ describe('thread dashboard app API', () => {
         name: 'Dashboard thread',
       },
       activeSession: {
-        id: `session_sim_${thread.id}`,
+        id: agentSessionId,
         status: 'busy',
         message: null,
       },
@@ -120,6 +126,7 @@ describe('thread dashboard app API', () => {
       completedAt: null,
     });
     store.updateTurn(turn.id, {
+      agentId: 'agent_codex_host',
       status: 'awaiting_human',
       humanGate: {
         kind: 'approval',

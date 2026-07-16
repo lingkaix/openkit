@@ -49,6 +49,8 @@ export interface RunSchedulerLeaseMaintenanceOnceInput extends RunSchedulerLease
 export interface StartSchedulerLeaseMaintenanceServiceInput
   extends RunSchedulerLeaseMaintenanceOnceInput,
     SchedulerLeaseMaintenanceTimerHooks {
+  /** Cleans reconnect leases whose durable adoption deadline expired. */
+  readonly cleanupExpiredReconnects: () => Promise<void>;
   /** Repeated maintenance interval. */
   readonly intervalMs: number;
 }
@@ -202,7 +204,9 @@ export function startSchedulerLeaseMaintenanceService(
     }
 
     try {
-      return runSchedulerLeaseMaintenanceOnce(coreDb, input);
+      const result = runSchedulerLeaseMaintenanceOnce(coreDb, input);
+      void input.cleanupExpiredReconnects().catch((error) => input.onError?.(error));
+      return result;
     } catch (error) {
       input.onError?.(error);
       return null;

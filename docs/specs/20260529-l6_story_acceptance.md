@@ -26,11 +26,11 @@ It exists because OpenKit is an agent workflow product, and many important failu
 
 L6 should be agent-first for exploratory and long-flow acceptance, deterministic where a story becomes stable enough to automate, and strict about reducing confirmed defects into lower-level regression coverage.
 
-The current repository implementation includes deterministic Web and legacy user-facing MCP slices plus opt-in real Codex, real worker, and real-provider preflight slices: Markdown story artifacts live in `tests/stories/`, executable deterministic adapters and preflight runners live in `tests/story-runner/`, and `pnpm -w test:stories` runs the metadata parser tests plus the current deterministic story adapters.
+The current repository implementation includes deterministic Web and legacy user-facing MCP slices plus opt-in real Codex acceptance, real-worker acceptance, and real-provider slices: Markdown story artifacts live in `tests/stories/`, executable deterministic adapters and opt-in runners live in `tests/story-runner/`, and `pnpm -w test:stories` runs the metadata parser tests plus the current deterministic story adapters.
 
 The deterministic MCP slice now covers Goal Mode, Task Mode escalation, Chat Mode, workspace portability, and recovery controls. `tests/stories/goal-mode-mcp-smoke.story.md` validates the Goal Mode planning, approval, step, evidence, Action Center, and artifact read path through the MCP facade. `tests/stories/task-mode-mcp-smoke.story.md` validates the Task Mode MCP entry point and Task-to-Goal escalation path. `tests/stories/chat-mode-mcp-smoke.story.md` validates Chat Mode knowledge-backed answering, clarification gates, Action Center projection, and Goal Mode handoff through the same facade. `tests/stories/workspace-portability-release.story.md` validates cross-deployment workspace export/import, repository re-binding, lineage evidence, and redaction checks through a deterministic MCP runner, while vault reference re-binding remains part of the full agentic seeded path until a public setup path can seed workspace vault references without private test hooks. `tests/stories/recovery-mcp-smoke.story.md` validates interrupted worker recovery reads, pending input edit/follow-up/cancel actions, and interrupted checkpoint retry through the MCP facade.
 
-The existing deterministic and opt-in preflight L6 mechanics are implemented, but the accepted end-user channel contract is only partially covered. The user-facing MCP stories and runners are removal-only and must be replaced by unified Skill and bundled CLI stories before the Agent Skill Interface change closes. A future general agentic executor remains deferred product work and does not block that replacement.
+The existing deterministic and opt-in real-runner L6 mechanics are implemented, but the accepted end-user channel contract is only partially covered. The user-facing MCP stories and runners are removal-only and must be replaced by unified Skill and bundled CLI stories before the Agent Skill Interface change closes. A future general agentic executor remains deferred product work and does not block that replacement.
 
 ## Goals
 
@@ -222,7 +222,7 @@ The repository should not require every story to advance to deterministic state.
 
 The L6 catalog should make it obvious which stories are deterministic and which are agentic-only.
 
-Until a catalog file exists, the mapping is implicit: stories with matching adapters under `tests/story-runner/` are deterministic or opt-in preflight stories, and other story files are agentic candidates. The current MCP runner command `pnpm -w test:stories:mcp` runs all deterministic MCP stories.
+Until a catalog file exists, the mapping is implicit: stories with matching adapters under `tests/story-runner/` are deterministic or opt-in real-runner stories, and other story files are agentic candidates. The current MCP runner command `pnpm -w test:stories:mcp` runs all deterministic MCP stories.
 
 A future catalog may be added if the number of stories grows enough to require filtering by tag, environment, risk, or release target.
 
@@ -263,6 +263,8 @@ It should rely on Playwright trace retention, screenshots, and browser diagnosti
 It should keep implementation detail out of the story body.
 
 If the adapter needs product-specific helpers, those helpers should be generic enough to serve multiple stories or remain narrowly scoped to the story-runner boundary.
+
+Opt-in real-provider and real-worker adapters must reuse existing story-runner support when process-group deadlines, secure evidence-directory preflight, exclusive owner-only evidence writes, or credential leak guards have the same policy. Each adapter may add only the story-specific oracles required by its owning specification; it must not become a parallel transport, process-supervision, evidence, or workflow platform.
 
 ## Tooling Boundaries
 
@@ -453,8 +455,9 @@ The current implementation deliberately does not call an external AI model.
 It exists to prove the story artifact, parser, execution entrypoint, isolated environment, report attachment, and CI/manual wiring before the agentic executor is added.
 
 The current real Codex and real Task Mode worker stories are agentic-only and opt-in.
-Their preflight runners validate metadata, explicit real Codex or real worker opt-ins, the disposable repository path, and the evidence directory before writing preflight evidence and redaction notes.
-They do not run in default gates and must not consume real worker or host-side resources unless the operator explicitly enables them.
+The real Codex Goal runner executes the full opt-in Goal workflow after secure metadata, quota, repository, and evidence preflight and writes bounded result and redaction evidence.
+The real Task Mode worker runner executes the full opt-in Task workflow after equivalent secure preflight and writes bounded result and redaction evidence.
+Neither runs in default gates or consumes real worker or host-side resources unless the operator explicitly enables it.
 
 The current pi-ai real-provider story is opt-in and quota-gated.
 Its runner validates story metadata, explicit provider opt-in, target NanoCore URL, provider configuration, evidence output, capability usage evidence, and redaction checks.

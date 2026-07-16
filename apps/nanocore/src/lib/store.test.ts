@@ -83,6 +83,79 @@ describe('FsStore persistence', () => {
     expect(store.getAgentForThread(workspace.id, 'th_new').id).toBe('agent_codex_host');
   });
 
+  it('records exact artifact-reference lineage for turn-bound creates and updates', () => {
+    const store = new FsStore();
+    const workspace = store.createWorkspace('Artifact lineage workspace');
+    const thread = store.createThread(workspace.id, 'Artifact lineage thread');
+    const turn = store.createTurn(workspace.id, thread.id, 'Create and update an artifact');
+    const timestamp = turn.startedAt ?? new Date().toISOString();
+    const artifact = store.createArtifact({
+      id: 'ar_turn_lineage',
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      kind: 'summary',
+      title: 'Turn artifact',
+      status: 'draft',
+      summary: null,
+      version: 1,
+      content: { format: 'text', body: 'Artifact version one.' },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+
+    store.updateArtifact(workspace.id, artifact.id, {
+      status: 'ready',
+      summary: 'Artifact version two.',
+      version: 2,
+      updatedAt: timestamp,
+    });
+
+    const lineage = store
+      .listWorkspaceItemRevisions(workspace.id)
+      .filter((item) => item.type === 'artifact-reference' && item.artifactId === artifact.id);
+
+    expect(lineage).toEqual([
+      expect.objectContaining({
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        turnId: turn.id,
+        artifactId: artifact.id,
+        artifactVersion: 1,
+      }),
+      expect.objectContaining({
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        turnId: turn.id,
+        artifactId: artifact.id,
+        artifactVersion: 2,
+      }),
+    ]);
+  });
+
+  it('does not invent an Item for a workspace-only Artifact', () => {
+    const store = new FsStore();
+    const workspace = store.createWorkspace('Workspace-only artifact');
+    const timestamp = new Date().toISOString();
+
+    store.createArtifact({
+      id: 'ar_workspace_only',
+      workspaceId: workspace.id,
+      threadId: null,
+      turnId: null,
+      kind: 'file',
+      title: 'Imported artifact',
+      status: 'ready',
+      summary: null,
+      version: 1,
+      content: { format: 'text', body: 'Imported outside a Thread.' },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+
+    expect(store.listAllItems()).toEqual([]);
+  });
+
   it('does not retain a turn when its owning thread is missing', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
     const store = new FsStore({ dataRoot });
@@ -390,7 +463,11 @@ describe('FsStore persistence', () => {
       requestId: '0190f4c8-0000-7000-8000-000000000501',
       scope: { workspaceId: workspace.id },
       inputHash: 'sha256:live',
-      response: { kind: 'thread', id: 'th_demo' },
+      response: {
+        kind: 'thread',
+        id: 'th_demo',
+        snapshot: { state: 'queued', goalId: 'goal_original' },
+      },
       createdAt: '2026-05-27T00:00:00.000Z',
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
@@ -410,7 +487,11 @@ describe('FsStore persistence', () => {
       restarted.getCommandRequest('thread.create', '0190f4c8-0000-7000-8000-000000000501', {
         workspaceId: workspace.id,
       })?.response
-    ).toEqual({ kind: 'thread', id: 'th_demo' });
+    ).toEqual({
+      kind: 'thread',
+      id: 'th_demo',
+      snapshot: { state: 'queued', goalId: 'goal_original' },
+    });
     expect(
       restarted.getCommandRequest('thread.create', '0190f4c8-0000-7000-8000-000000000502', {
         workspaceId: workspace.id,

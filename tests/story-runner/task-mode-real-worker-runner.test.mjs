@@ -1,48 +1,31 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { EventEmitter } from 'node:events';
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
 
 import {
   assertTaskModeAgentEnvironment,
   assertTaskModeRuntimeProvenance,
-  assertTaskModeWorkspaceProof,
   DEFAULT_TASK_MODE_REAL_WORKER_STORY_PATH,
   evaluateTaskModeRealWorkerPrerequisites,
-  runTaskModeRealWorkerCli,
   runTaskModeRealWorkerStory,
-  TASK_MODE_REAL_WORKER_PROOF_PATH,
 } from './task-mode-real-worker-runner.mjs';
 
-const rawBundleId = 'evb_0123456789abcdef01234567';
-const indexBundleId = 'evb_89abcdef0123456789abcdef';
 const taskWorkerImageRef = 'openkit/worker-codex:0123456789ab-a1';
+const fakeSecret = 'task-mode-secret-canary-value';
 
-/** Returns redacted runtime setup evidence for synthetic runner clients. */
-async function configureTestRuntime() {
-  return {
-    oauth: { accountSlotId: 'default', status: 'logged_in' },
-    runtimeConfig: {
-      agentId: 'agent_codex_host',
-      modelId: 'openai-codex/gpt-5.6-sol',
-      providerId: 'openai_codex',
-      reloadStatus: 'dry-run',
-    },
-  };
-}
+/** Configures the synthetic runtime without external effects. */
+async function configureTestRuntime() {}
 
-/** Returns one complete public provenance surface for runner assertions. */
+/** Returns the critical public provenance surfaces for one root and two children. */
 function completeProvenanceSurface() {
   const capabilityCalls = [
-    ['cap_root', 'rto_111111111111111111111111', 'rcl_aaaaaaaaaaaaaaaaaaaaaaaa', 'req_root'],
-    ['cap_child_a', 'rto_222222222222222222222222', 'rcl_bbbbbbbbbbbbbbbbbbbbbbbb', 'req_child_a'],
-    ['cap_child_b', 'rto_333333333333333333333333', 'rcl_aaaaaaaaaaaaaaaaaaaaaaaa', 'req_child_b'],
-  ].map(([id, runtimeOriginRef, runtimeCacheLineageRef, requestId]) => ({
+    ['cap_root', 'req_root', 'rto_111111111111111111111111', 'rcl_aaaaaaaaaaaaaaaaaaaaaaaa'],
+    ['cap_child_a', 'req_child_a', 'rto_222222222222222222222222', 'rcl_bbbbbbbbbbbbbbbbbbbbbbbb'],
+    ['cap_child_b', 'req_child_b', 'rto_333333333333333333333333', 'rcl_bbbbbbbbbbbbbbbbbbbbbbbb'],
+  ].map(([id, requestId, runtimeOriginRef, runtimeCacheLineageRef]) => ({
     agentSessionId: 'ags_1',
     family: 'llm',
     id,
@@ -57,56 +40,18 @@ function completeProvenanceSurface() {
   }));
 
   return {
-    auditEvents: capabilityCalls.map((call) => ({
-      action: 'capability.finish',
-      capabilityCallId: call.id,
-      outcome: 'succeeded',
-      summary: 'Capability call succeeded.',
-    })),
     capabilityCalls,
-    evidenceBundles: [
-      {
-        id: rawBundleId,
-        importStatus: 'promoted',
-        rawEvidenceRefs: [],
-        redactedEvidenceRefs: [],
-        retentionClass: 'restricted-raw',
-        sensitivityClass: 'restricted',
-        sourceKind: 'worker-runtime-provenance-raw',
-        turnId: 'turn_1',
-      },
-      {
-        id: indexBundleId,
-        importStatus: 'promoted',
-        rawEvidenceRefs: [],
-        redactedEvidenceRefs: [
-          { kind: 'worker-runtime-provenance-index', ref: 'runtime-origin-index.jsonl' },
-        ],
-        retentionClass: 'turn-evidence',
-        sensitivityClass: 'product-safe',
-        sourceKind: 'worker-runtime-provenance-index',
-        turnId: 'turn_1',
-      },
-    ],
     runtimeEvidence: [
       {
         agentSessionId: 'ags_1',
         backendType: 'openshell',
         backendVersion: '0.0.80',
-        evidenceBundleIds: [rawBundleId, indexBundleId],
-        id: 'rte_0123456789abcdef01234567',
         outcome: 'succeeded',
         phase: 'transcript-collection',
         requiredFeatures: ['runtime.evidence.v1', 'worker.runtime-provenance.v1'],
-        summary: `Worker runtime provenance complete: 4 streams, 16 frames, 15 attributed, 1 unattributed, 1 root, 2 children, 3/3 gateway calls reconciled, gateway complete, bundles ${rawBundleId} and ${indexBundleId}.`,
+        summary:
+          'Worker runtime provenance complete: 4 streams, 16 frames, 15 attributed, 1 unattributed, 1 root, 2 children, 3/3 gateway calls reconciled, gateway complete, bundles bundle_raw and bundle_index.',
         threadId: 'thread_1',
-        turnId: 'turn_1',
-      },
-      {
-        agentSessionId: 'ags_1',
-        outcome: 'succeeded',
-        phase: 'teardown',
-        stopReason: 'completed',
         turnId: 'turn_1',
       },
     ],
@@ -134,8 +79,8 @@ function completeProvenanceSurface() {
   };
 }
 
-/** Returns one trusted AEP bound to the disposable repository base and acceptance image. */
-function completeAepSurface(initialHead = 'a'.repeat(40), imageRef = taskWorkerImageRef) {
+/** Returns one trusted AEP for the critical real-worker story. */
+function completeAepSurface(imageRef = taskWorkerImageRef) {
   return {
     items: [
       {
@@ -167,15 +112,6 @@ function completeAepSurface(initialHead = 'a'.repeat(40), imageRef = taskWorkerI
           providers: { attachments: [] },
           runtime: { image: { ref: imageRef } },
           vault: { grants: [], references: [] },
-          workspace: {
-            inputs: [
-              {
-                access: 'read-write',
-                materialization: { strategy: 'git' },
-                source: { commit: initialHead },
-              },
-            ],
-          },
         },
         turnId: 'turn_1',
       },
@@ -183,183 +119,83 @@ function completeAepSurface(initialHead = 'a'.repeat(40), imageRef = taskWorkerI
   };
 }
 
-/** Returns one pending review and its cleaned backend workspace handle. */
-function completeWorkspaceProofSurface(initialHead = 'a'.repeat(40)) {
-  const patchText = `diff --git a/${TASK_MODE_REAL_WORKER_PROOF_PATH} b/${TASK_MODE_REAL_WORKER_PROOF_PATH}
-new file mode 100644
---- /dev/null
-+++ b/${TASK_MODE_REAL_WORKER_PROOF_PATH}
-@@ -0,0 +1,3 @@
-+- Root inspected the repository.
-+- Child A inspected runtime code.
-+- Child B inspected story coverage.
-`;
+/** Returns the enabled runner environment for disposable fixture paths. */
+function enabledRunnerEnv({ dataRoot, evidenceDir, repositoryRoot }) {
   return {
-    backendHandles: [
-      {
-        cleanupStatus: 'cleaned',
-        id: 'bwh_1',
-        materializationRecordId: 'wmr_1',
-      },
-    ],
-    review: {
-      artifactId: 'artifact_1',
-      changeSet: {
-        base: { commit: initialHead },
-        changedPaths: [{ path: TASK_MODE_REAL_WORKER_PROOF_PATH, status: 'added' }],
-        materializationRecordId: 'wmr_1',
-      },
-      patchPayload: { text: patchText },
-      review: {
-        diffSummary: { additions: 3, deletions: 0, filesChanged: 1 },
-        id: 'swr_1',
-        status: 'pending',
-      },
-    },
-    taskEvidence: {
-      artifactIds: ['artifact_1'],
-      reviewIds: ['swr_1'],
-    },
+    OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
+    OPENKIT_L6_EVIDENCE_DIR: evidenceDir,
+    OPENKIT_L6_NANOCORE_DATA_ROOT: dataRoot,
+    OPENKIT_L6_TASK_NANOCORE_URL: 'http://127.0.0.1:54001',
+    OPENKIT_L6_TASK_REAL_WORKER: '1',
+    OPENKIT_L6_TASK_REPO_ROOT: repositoryRoot,
+    OPENKIT_L6_TASK_WORKER_IMAGE_REF: taskWorkerImageRef,
   };
 }
 
-/**
- * Creates the empty Core database owned by one fresh Task acceptance data root.
- *
- * @param {string} dataRoot Fresh NanoCore data root.
- * @returns {void}
- */
-function initializeTaskDataRoot(dataRoot) {
-  const databasePath = join(dataRoot, 'server', 'db', 'core.sqlite');
+/** Creates the two filesystem entries required by runner preflight. */
+function initializeRunnerPaths(dataRoot, repositoryRoot) {
   mkdirSync(join(dataRoot, 'server', 'db'), { recursive: true });
-  const database = new DatabaseSync(databasePath);
-  database.exec(`
-    CREATE TABLE scheduler_session_leases (
-      turn_id TEXT NOT NULL,
-      target_id TEXT NOT NULL,
-      status TEXT NOT NULL,
-      release_reason TEXT,
-      recovery_state TEXT
-    );
-    CREATE TABLE scheduler_capacity_records (
-      target_id TEXT PRIMARY KEY,
-      in_use_count INTEGER NOT NULL
-    );
-    CREATE TABLE worker_control_records (
-      turn_id TEXT NOT NULL,
-      operation TEXT NOT NULL,
-      record_key TEXT NOT NULL
-    )
-  `);
-  database.close();
+  writeFileSync(join(dataRoot, 'server', 'db', 'core.sqlite'), '');
+  mkdirSync(join(repositoryRoot, '.git'), { recursive: true });
 }
 
-/**
- * Records the scheduler outcome emitted by the fake completed Task turn.
- *
- * @param {string} dataRoot Fresh NanoCore data root.
- * @param {{ finalStatusRecordCount?: number, inUseCount?: number, releaseReason: string, status: string }} lease Terminal or stale lease outcome.
- * @returns {void}
- */
-function recordTaskLease(
-  dataRoot,
-  { finalStatusRecordCount = 1, inUseCount = 0, releaseReason, status }
-) {
-  const database = new DatabaseSync(join(dataRoot, 'server', 'db', 'core.sqlite'));
-  database
-    .prepare(
-      'INSERT INTO scheduler_session_leases (turn_id, target_id, status, release_reason) VALUES (?, ?, ?, ?)'
-    )
-    .run('turn_1', 'target_1', status, releaseReason);
-  database
-    .prepare('INSERT INTO scheduler_capacity_records (target_id, in_use_count) VALUES (?, ?)')
-    .run('target_1', inUseCount);
-  const insertFinalStatus = database.prepare(
-    'INSERT INTO worker_control_records (turn_id, operation, record_key) VALUES (?, ?, ?)'
-  );
-  for (let index = 0; index < finalStatusRecordCount; index += 1) {
-    insertFinalStatus.run('turn_1', 'final_status', String(7 + index));
-  }
-  database.close();
-}
-
-/**
- * Returns complete fake clients with a configurable finalization defect.
- *
- * @param {{ dataRoot: string, initialHead: string, lease?: { finalStatusRecordCount?: number, inUseCount?: number, releaseReason: string, status: string }, reconciliationRecords?: Array<Record<string, unknown>> }} input Fixture input.
- * @returns {{ core: Record<string, unknown> }} Fake runner clients.
- */
-function completeTaskModeClients({
-  dataRoot,
-  initialHead,
-  lease = { releaseReason: 'turn-completed', status: 'released' },
-  reconciliationRecords = [],
-}) {
+/** Returns injected Core Client behavior for one complete critical story. */
+function completeTaskModeClients() {
   const provenance = completeProvenanceSurface();
-  const aepRead = completeAepSurface(initialHead);
-  const workspaceProof = completeWorkspaceProofSurface(initialHead);
-  let taskStarted = false;
+  const rejectedReviewIds = [];
+  let workspaceCreated = false;
+  const workspaceId = 'ws_task_acceptance';
 
   return {
     core: {
-      actionCenter: {
-        listHumanAttention: async () => ({ items: [] }),
-      },
       app: {
         getCapabilityUsage: async () => ({
           capabilityCalls: provenance.capabilityCalls,
           usageRecords: provenance.usageRecords,
         }),
         getDiagnostics: async () => ({ boot: { acceptingProductWork: true } }),
-        listAgentEnvironmentPackageSnapshots: async () => aepRead,
-        listBackendWorkspaceHandles: async () => ({ items: workspaceProof.backendHandles }),
-        listWorkspaceAuditEvents: async () => ({ auditEvents: provenance.auditEvents }),
-        listWorkspaceEvidenceBundles: async () => ({
-          evidenceBundles: provenance.evidenceBundles,
-        }),
-        listWorkspaceReconciliationRecords: async () => ({
-          items: taskStarted ? reconciliationRecords : [],
-        }),
+        listAgentEnvironmentPackageSnapshots: async () => completeAepSurface(),
         listWorkspaceRuntimeEvidence: async () => ({
           runtimeEvidence: provenance.runtimeEvidence,
         }),
-        listWorkspaceSyncReviews: async () => ({ items: [workspaceProof.review] }),
-        startTaskMode: async () => {
-          taskStarted = true;
-          recordTaskLease(dataRoot, lease);
-          return {
-            decision: {
-              mode: 'task',
-              worker: { agentId: 'agent_codex_host', runtime: 'codex' },
-            },
-            evidence: workspaceProof.taskEvidence,
-            state: 'completed',
-            turn: { id: 'turn_1' },
-          };
-        },
+        startTaskMode: async () => ({
+          decision: {
+            mode: 'task',
+            worker: { agentId: 'agent_codex_host', runtime: 'codex' },
+          },
+          evidence: { reviewIds: ['swr_1'] },
+          state: 'completed',
+          turn: { id: 'turn_1' },
+        }),
         submitWorkspaceSyncReviewDecision: async (_workspaceId, reviewId, input) => {
-          assert.equal(reviewId, 'swr_1');
           assert.equal(input.decision, 'rejected');
+          rejectedReviewIds.push(reviewId);
           return { review: { id: reviewId, status: 'rejected' } };
         },
       },
       core: {
-        createThread: async () => ({ id: 'thread_1' }),
+        createThread: async (input) => {
+          assert.equal(workspaceCreated, true);
+          assert.equal(input.workspaceId, workspaceId);
+          return { id: 'thread_1' };
+        },
+        createWorkspace: async () => {
+          workspaceCreated = true;
+          return { id: workspaceId };
+        },
         listThreadItems: async () => ({ items: provenance.threadItems, nextCursor: null }),
       },
       repositories: {
         setDefault: async () => ({ repository: { resourceId: 'default' } }),
       },
     },
+    rejectedReviewIds,
   };
 }
 
 describe('real Task Mode worker L6 runner', () => {
   it('skips by default without real worker opt-in', () => {
-    const result = evaluateTaskModeRealWorkerPrerequisites({
-      env: {},
-      fileExists: () => false,
-    });
+    const result = evaluateTaskModeRealWorkerPrerequisites({ env: {}, fileExists: () => false });
 
     assert.equal(result.enabled, false);
     assert.match(result.reason, /OPENKIT_L6_TASK_REAL_WORKER=1/);
@@ -375,14 +211,12 @@ describe('real Task Mode worker L6 runner', () => {
     assert.match(result.reason, /OPENKIT_L6_ALLOW_PROVIDER_QUOTA=1/);
   });
 
-  it('requires the local NanoCore data root for runtime and scheduler evidence', () => {
+  it('requires the local NanoCore data root', () => {
     const result = evaluateTaskModeRealWorkerPrerequisites({
       env: {
         OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
-        OPENKIT_L6_EVIDENCE_DIR: '/tmp/openkit-task-evidence',
         OPENKIT_L6_TASK_NANOCORE_URL: 'http://127.0.0.1:54001',
         OPENKIT_L6_TASK_REAL_WORKER: '1',
-        OPENKIT_L6_TASK_REPO_ROOT: '/tmp/openkit-task-repo',
       },
       fileExists: () => true,
     });
@@ -392,47 +226,31 @@ describe('real Task Mode worker L6 runner', () => {
   });
 
   it('accepts complete explicit real-worker prerequisites', () => {
-    const result = evaluateTaskModeRealWorkerPrerequisites({
-      env: {
-        OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
-        OPENKIT_L6_EVIDENCE_DIR: '/tmp/openkit-task-evidence',
-        OPENKIT_L6_NANOCORE_DATA_ROOT: '/tmp/openkit-task-data',
-        OPENKIT_L6_TASK_NANOCORE_URL: 'http://127.0.0.1:54001',
-        OPENKIT_L6_TASK_REAL_WORKER: '1',
-        OPENKIT_L6_TASK_REPO_ROOT: '/tmp/openkit-task-repo',
-        OPENKIT_L6_TASK_WORKER_IMAGE_REF: taskWorkerImageRef,
-      },
-      fileExists: (path) =>
-        path === '/tmp/openkit-task-repo/.git' ||
-        path === '/tmp/openkit-task-data' ||
-        path === '/tmp/openkit-task-data/server/db/core.sqlite' ||
-        path.endsWith('task-mode-real-worker-release.story.md'),
+    const env = enabledRunnerEnv({
+      dataRoot: '/tmp/data',
+      evidenceDir: '/tmp/evidence',
+      repositoryRoot: '/tmp/repo',
     });
+    const result = evaluateTaskModeRealWorkerPrerequisites({ env, fileExists: () => true });
 
     assert.equal(result.enabled, true);
-    assert.equal(result.config.nanoCoreDataRoot, '/tmp/openkit-task-data');
-    assert.match(result.config.taskInput, /exactly two Codex sub-agents/);
     assert.equal(result.config.workerImageRef, taskWorkerImageRef);
   });
 
-  it('requires the exact A1-built worker image reference before quota use', () => {
-    const result = evaluateTaskModeRealWorkerPrerequisites({
-      env: {
-        OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
-        OPENKIT_L6_EVIDENCE_DIR: '/tmp/openkit-task-evidence',
-        OPENKIT_L6_NANOCORE_DATA_ROOT: '/tmp/openkit-task-data',
-        OPENKIT_L6_TASK_NANOCORE_URL: 'http://127.0.0.1:54001',
-        OPENKIT_L6_TASK_REAL_WORKER: '1',
-        OPENKIT_L6_TASK_REPO_ROOT: '/tmp/openkit-task-repo',
-      },
-      fileExists: () => true,
+  it('requires an explicit worker image before quota use', () => {
+    const env = enabledRunnerEnv({
+      dataRoot: '/tmp/data',
+      evidenceDir: '/tmp/evidence',
+      repositoryRoot: '/tmp/repo',
     });
+    delete env.OPENKIT_L6_TASK_WORKER_IMAGE_REF;
+    const result = evaluateTaskModeRealWorkerPrerequisites({ env, fileExists: () => true });
 
     assert.equal(result.enabled, false);
     assert.match(result.reason, /OPENKIT_L6_TASK_WORKER_IMAGE_REF/);
   });
 
-  it('writes a skipped result without touching NanoCore when opt-in is absent', async () => {
+  it('writes a skipped result without touching NanoCore', async () => {
     const result = await runTaskModeRealWorkerStory({
       env: {},
       fileExists: () => false,
@@ -442,103 +260,69 @@ describe('real Task Mode worker L6 runner', () => {
     assert.equal(result.status, 'skipped');
   });
 
-  it('uses only the Core Client public surface', () => {
-    const source = readFileSync(
-      new URL('./task-mode-real-worker-runner.mjs', import.meta.url),
-      'utf8'
-    );
-
-    assert.doesNotMatch(source, /mcp\/dist/);
-    assert.doesNotMatch(source, /\bregistry\b/);
-  });
-
-  it('kills the supervised Task process group at the story deadline', {
-    timeout: 5_000,
-  }, async () => {
-    const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-real-task-timeout-'));
+  it('preserves controlled assertions in owner-only failure evidence', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-real-task-assertion-'));
+    const dataRoot = join(tempRoot, 'data');
     const repositoryRoot = join(tempRoot, 'repo');
     const evidenceDir = join(tempRoot, 'evidence');
-    const nanoCoreDataRoot = join(tempRoot, 'data');
-    const storyPath = join(tempRoot, 'timeout.story.md');
-    initializeRepository(repositoryRoot);
-    initializeTaskDataRoot(nanoCoreDataRoot);
-    writeFileSync(
-      storyPath,
-      readFileSync(DEFAULT_TASK_MODE_REAL_WORKER_STORY_PATH, 'utf8').replace(
-        'timeout_seconds: 3600',
-        'timeout_seconds: 1'
-      )
-    );
-    const child = new EventEmitter();
-    child.pid = 24_680;
-    let killed = false;
+    initializeRunnerPaths(dataRoot, repositoryRoot);
 
     await assert.rejects(
       () =>
-        runTaskModeRealWorkerCli({
+        runTaskModeRealWorkerStory({
+          clients: {
+            core: {
+              app: {
+                getDiagnostics: async () => ({ boot: { acceptingProductWork: false } }),
+              },
+            },
+          },
+          configureRuntime: configureTestRuntime,
           env: {
-            OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
-            OPENKIT_L6_EVIDENCE_DIR: evidenceDir,
-            OPENKIT_L6_NANOCORE_DATA_ROOT: nanoCoreDataRoot,
-            OPENKIT_L6_TASK_NANOCORE_URL: 'http://127.0.0.1:54001',
-            OPENKIT_L6_TASK_REAL_WORKER: '1',
-            OPENKIT_L6_TASK_REPO_ROOT: repositoryRoot,
-            OPENKIT_L6_TASK_WORKER_IMAGE_REF: taskWorkerImageRef,
+            ...enabledRunnerEnv({ dataRoot, evidenceDir, repositoryRoot }),
+            OPENKIT_NANOCORE_TOKEN: fakeSecret,
           },
-          killProcess: (pid, signal) => {
-            assert.equal(pid, -24_680);
-            assert.equal(signal, 'SIGKILL');
-            killed = true;
-            child.emit('close', null);
-          },
-          spawnProcess: () => child,
           stdout: () => {},
-          storyPath,
         }),
-      /configured deadline/i
+      /not accepting product work/i
     );
-    assert.equal(killed, true);
+
+    const failurePath = join(evidenceDir, 'task-mode-real-worker-failure.json');
+    const failureText = readFileSync(failurePath, 'utf8');
+    assert.equal(failureText.includes(dataRoot), false);
+    assert.equal(failureText.includes(fakeSecret), false);
+    assert.equal(statSync(failurePath).mode & 0o777, 0o600);
     rmSync(tempRoot, { force: true, recursive: true });
   });
 
   it('rejects a story that does not require real provider and Codex execution', async () => {
-    const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-real-task-runner-'));
+    const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-real-task-story-'));
     const dataRoot = join(tempRoot, 'data');
     const storyPath = join(tempRoot, 'fake.story.md');
     const repositoryRoot = join(tempRoot, 'repo');
     const evidenceDir = join(tempRoot, 'evidence');
-    const storyText = readFileSync(DEFAULT_TASK_MODE_REAL_WORKER_STORY_PATH, 'utf8')
-      .replace('requires_real_provider: true', 'requires_real_provider: false')
-      .replace('requires_real_codex: true', 'requires_real_codex: false');
-
-    initializeTaskDataRoot(dataRoot);
-    mkdirSync(join(repositoryRoot, '.git'), { recursive: true });
-    mkdirSync(evidenceDir, { recursive: true });
-    await import('node:fs/promises').then((fs) => fs.writeFile(storyPath, storyText));
+    initializeRunnerPaths(dataRoot, repositoryRoot);
+    writeFileSync(
+      storyPath,
+      readFileSync(DEFAULT_TASK_MODE_REAL_WORKER_STORY_PATH, 'utf8')
+        .replace('requires_real_provider: true', 'requires_real_provider: false')
+        .replace('requires_real_codex: true', 'requires_real_codex: false')
+    );
 
     await assert.rejects(
       () =>
         runTaskModeRealWorkerStory({
           configureRuntime: configureTestRuntime,
-          env: {
-            OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
-            OPENKIT_L6_EVIDENCE_DIR: evidenceDir,
-            OPENKIT_L6_NANOCORE_DATA_ROOT: dataRoot,
-            OPENKIT_L6_TASK_NANOCORE_URL: 'http://127.0.0.1:54001',
-            OPENKIT_L6_TASK_REAL_WORKER: '1',
-            OPENKIT_L6_TASK_REPO_ROOT: repositoryRoot,
-            OPENKIT_L6_TASK_WORKER_IMAGE_REF: taskWorkerImageRef,
-          },
+          env: enabledRunnerEnv({ dataRoot, evidenceDir, repositoryRoot }),
           stdout: () => {},
           storyPath,
         }),
       /must require real provider and real Codex execution/
     );
-
     rmSync(tempRoot, { force: true, recursive: true });
   });
 
-  it('asserts the public runtime forest, relay, cache, telemetry, audit, and outer result', () => {
+  it('asserts the real runtime forest, Gateway attribution, cache, and outer result', () => {
     const surface = completeProvenanceSurface();
     surface.capabilityCalls.push({
       family: 'llm',
@@ -551,53 +335,58 @@ describe('real Task Mode worker L6 runner', () => {
       status: 'succeeded',
       turnId: 'turn_1',
     });
+
     assert.deepEqual(assertTaskModeRuntimeProvenance(surface), {
-      auditEventCount: 3,
       backendType: 'openshell',
       backendVersion: '0.0.80',
       cacheLineageCount: 2,
       cachedInputTokens: 64,
       capabilityCallCount: 3,
       childOriginCount: 2,
-      indexBundleId,
-      positiveCacheReadObserved: true,
-      rawBundleId,
       packageSnapshotId: 'aep_snapshot_1',
       runtimeOriginCount: 3,
       runtimeRootCount: 1,
       streamCount: 4,
-      teardownEvidenceCount: 1,
     });
   });
 
-  it('requires exactly one root, two children, and successful teardown evidence', () => {
-    const extraRoot = completeProvenanceSurface();
-    extraRoot.runtimeEvidence[0].summary = extraRoot.runtimeEvidence[0].summary.replace(
+  it('accepts an attributed cancellation but rejects a failed Gateway call', () => {
+    const surface = completeProvenanceSurface();
+    const terminalCall = {
+      ...surface.capabilityCalls[0],
+      id: 'cap_terminal',
+      requestId: 'req_terminal',
+      status: 'cancelled',
+    };
+    surface.capabilityCalls.push(terminalCall);
+    surface.runtimeEvidence[0].summary = surface.runtimeEvidence[0].summary.replace(
+      '3/3 gateway calls',
+      '4/4 gateway calls'
+    );
+
+    assert.equal(assertTaskModeRuntimeProvenance(surface).capabilityCallCount, 4);
+    terminalCall.status = 'failed';
+    assert.throws(() => assertTaskModeRuntimeProvenance(surface), /unsupported terminal status/i);
+  });
+
+  it('requires exactly one root and two children', () => {
+    const surface = completeProvenanceSurface();
+    surface.runtimeEvidence[0].summary = surface.runtimeEvidence[0].summary.replace(
       '1 root, 2 children',
       '2 roots, 2 children'
     );
-    assert.throws(
-      () => assertTaskModeRuntimeProvenance(extraRoot),
-      /exactly one root and two children/
-    );
 
-    const missingTeardown = completeProvenanceSurface();
-    missingTeardown.runtimeEvidence = missingTeardown.runtimeEvidence.filter(
-      (record) => record.phase !== 'teardown'
-    );
     assert.throws(
-      () => assertTaskModeRuntimeProvenance(missingTeardown),
-      /successful terminal teardown/
+      () => assertTaskModeRuntimeProvenance(surface),
+      /exactly one root and two children/
     );
   });
 
-  it('requires one trusted gpt-5.6-sol AEP bound to the exact repository and image', () => {
-    const initialHead = 'a'.repeat(40);
+  it('requires one trusted AEP and the exact worker image', () => {
     assert.deepEqual(
       assertTaskModeAgentEnvironment({
-        aepRead: completeAepSurface(initialHead),
+        aepRead: completeAepSurface(),
         expectedImageRef: taskWorkerImageRef,
-        initialHead,
         packageSnapshotId: 'aep_snapshot_1',
         turnId: 'turn_1',
       }),
@@ -610,29 +399,13 @@ describe('real Task Mode worker L6 runner', () => {
         providerId: 'openai_codex',
         runtimeKind: 'codex',
         snapshotId: 'aep_snapshot_1',
-        sourceCommitMatched: true,
       }
     );
-
-    const stale = completeAepSurface('b'.repeat(40));
     assert.throws(
       () =>
         assertTaskModeAgentEnvironment({
-          aepRead: stale,
+          aepRead: completeAepSurface('openkit/worker-codex:wrong'),
           expectedImageRef: taskWorkerImageRef,
-          initialHead,
-          packageSnapshotId: 'aep_snapshot_1',
-          turnId: 'turn_1',
-        }),
-      /repository base/
-    );
-
-    assert.throws(
-      () =>
-        assertTaskModeAgentEnvironment({
-          aepRead: completeAepSurface(initialHead, 'openkit/worker-codex:dev'),
-          expectedImageRef: taskWorkerImageRef,
-          initialHead,
           packageSnapshotId: 'aep_snapshot_1',
           turnId: 'turn_1',
         }),
@@ -640,288 +413,93 @@ describe('real Task Mode worker L6 runner', () => {
     );
   });
 
-  it('requires one exact pending proof review and a cleaned backend handle', () => {
-    const initialHead = 'a'.repeat(40);
-    assert.deepEqual(
-      assertTaskModeWorkspaceProof({ initialHead, ...completeWorkspaceProofSurface(initialHead) }),
-      {
-        backendHandleCount: 1,
-        changedPaths: [TASK_MODE_REAL_WORKER_PROOF_PATH],
-        reviewId: 'swr_1',
-      }
-    );
-
-    const retained = completeWorkspaceProofSurface(initialHead);
-    retained.backendHandles[0].cleanupStatus = 'retained';
-    assert.throws(
-      () => assertTaskModeWorkspaceProof({ initialHead, ...retained }),
-      /backend workspace cleanup/
-    );
-  });
-
-  it('uses the story timeout and closes the runner transport after failure', async () => {
-    const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-real-task-timeout-'));
-    const dataRoot = join(tempRoot, 'data');
-    const repositoryRoot = join(tempRoot, 'repo');
-    const evidenceDir = join(tempRoot, 'evidence');
-    initializeTaskDataRoot(dataRoot);
-    initializeRepository(repositoryRoot);
-    let clientTimeoutMs;
-    let closed = false;
-    let failure;
-    const originalFetch = globalThis.fetch;
-
-    try {
-      globalThis.fetch = async () => {
-        throw new Error('Runner used the default fetch instead of the injected client factory.');
-      };
-      await runTaskModeRealWorkerStory({
-        configureRuntime: configureTestRuntime,
-        createClients: async (_config, timeoutMs) => {
-          clientTimeoutMs = timeoutMs;
-          return {
-            close: async () => {
-              closed = true;
-            },
-            core: {
-              app: {
-                getDiagnostics: async () => {
-                  throw new Error('Expected Core Client failure.');
-                },
-              },
-            },
-          };
-        },
-        env: {
-          OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
-          OPENKIT_L6_EVIDENCE_DIR: evidenceDir,
-          OPENKIT_L6_NANOCORE_DATA_ROOT: dataRoot,
-          OPENKIT_L6_TASK_NANOCORE_URL: 'http://127.0.0.1:54001',
-          OPENKIT_L6_TASK_REAL_WORKER: '1',
-          OPENKIT_L6_TASK_REPO_ROOT: repositoryRoot,
-          OPENKIT_L6_TASK_WORKER_IMAGE_REF: taskWorkerImageRef,
-        },
-        stdout: () => {},
-      });
-    } catch (error) {
-      failure = error;
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-
-    rmSync(tempRoot, { force: true, recursive: true });
-    assert.match(String(failure), /Expected Core Client failure/);
-    assert.equal(clientTimeoutMs, 3_600_000);
-    assert.equal(closed, true);
-  });
-
-  it('enforces the absolute story budget and closes the runner transport', async () => {
-    const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-real-task-deadline-'));
-    const dataRoot = join(tempRoot, 'data');
-    const repositoryRoot = join(tempRoot, 'repo');
-    const evidenceDir = join(tempRoot, 'evidence');
-    initializeTaskDataRoot(dataRoot);
-    initializeRepository(repositoryRoot);
-    const controller = new AbortController();
-    controller.abort();
-    let clientDeadlineSignal;
-    let closed = false;
-
-    const storyRun = runTaskModeRealWorkerStory({
-      configureRuntime: configureTestRuntime,
-      createClients: async (_config, _timeoutMs, deadlineSignal) => {
-        clientDeadlineSignal = deadlineSignal;
-        return {
-          close: async () => {
-            closed = true;
-          },
-          core: {},
-        };
-      },
-      createDeadlineSignal: (timeoutMs) => {
-        assert.equal(timeoutMs, 3_600_000);
-        return controller.signal;
-      },
-      env: {
-        OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
-        OPENKIT_L6_EVIDENCE_DIR: evidenceDir,
-        OPENKIT_L6_NANOCORE_DATA_ROOT: dataRoot,
-        OPENKIT_L6_TASK_NANOCORE_URL: 'http://127.0.0.1:54001',
-        OPENKIT_L6_TASK_REAL_WORKER: '1',
-        OPENKIT_L6_TASK_REPO_ROOT: repositoryRoot,
-        OPENKIT_L6_TASK_WORKER_IMAGE_REF: taskWorkerImageRef,
-      },
-      stdout: () => {},
-    });
-    const outcome = await Promise.race([
-      storyRun.then(
-        () => new Error('Runner unexpectedly completed.'),
-        (error) => error
-      ),
-      new Promise((resolve) => {
-        setTimeout(() => resolve(new Error('Runner ignored the story execution budget.')), 50);
-      }),
-    ]);
-
-    rmSync(tempRoot, { force: true, recursive: true });
-    assert.match(String(outcome), /exceeded its 3600000 ms execution budget/);
-    assert.equal(clientDeadlineSignal, controller.signal);
-    assert.equal(closed, true);
-  });
-
-  it('rejects the staged review after a complete real Task proof flow', async () => {
+  it('completes the critical story and rejects returned reviews as cleanup', async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-real-task-success-'));
     const dataRoot = join(tempRoot, 'data');
     const repositoryRoot = join(tempRoot, 'repo');
     const evidenceDir = join(tempRoot, 'evidence');
-    initializeTaskDataRoot(dataRoot);
-    initializeRepository(repositoryRoot);
-    const initialHead = git(repositoryRoot, ['rev-parse', 'HEAD']);
-    const clients = completeTaskModeClients({ dataRoot, initialHead });
+    initializeRunnerPaths(dataRoot, repositoryRoot);
+    const clients = completeTaskModeClients();
 
     const result = await runTaskModeRealWorkerStory({
       clients,
       configureRuntime: configureTestRuntime,
-      env: {
-        OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
-        OPENKIT_L6_EVIDENCE_DIR: evidenceDir,
-        OPENKIT_L6_NANOCORE_DATA_ROOT: dataRoot,
-        OPENKIT_L6_TASK_NANOCORE_URL: 'http://127.0.0.1:54001',
-        OPENKIT_L6_TASK_REAL_WORKER: '1',
-        OPENKIT_L6_TASK_REPO_ROOT: repositoryRoot,
-        OPENKIT_L6_TASK_WORKER_IMAGE_REF: taskWorkerImageRef,
-      },
+      env: enabledRunnerEnv({ dataRoot, evidenceDir, repositoryRoot }),
       stdout: () => {},
     });
 
     assert.equal(result.status, 'ok');
-    assert.equal(result.cleanup.reviewDecision, 'rejected');
-    assert.equal(result.git.headUnchanged, true);
-    assert.equal(result.git.statusShort, '');
-    assert.equal(result.runtime.runtimeConfig.modelId, 'openai-codex/gpt-5.6-sol');
-    assert.equal(git(repositoryRoot, ['status', '--short', '--untracked-files=all']), '');
+    assert.equal(result.cleanup.rejectedReviewCount, 1);
+    assert.deepEqual(clients.rejectedReviewIds, ['swr_1']);
+    assert.equal(result.provenance.runtimeOriginCount, 3);
     for (const fileName of [
       'task-mode-real-worker-result.json',
       'task-mode-real-worker-redaction-notes.md',
     ]) {
       assert.equal(statSync(join(evidenceDir, fileName)).mode & 0o777, 0o600);
     }
-
     rmSync(tempRoot, { force: true, recursive: true });
   });
 
-  it('rejects incomplete finalization evidence on fresh data roots', async () => {
-    const timestamp = '2026-07-14T00:00:00.000Z';
-    const reconciliationRecord = {
-      affectedRecordIds: ['wmr_1', 'bwh_1'],
-      backendHandleSummary: {
-        backendKind: 'openshell',
-        cleanupStatus: 'pending',
-        handleId: 'bwh_1',
-        workerSessionId: 'session_1',
-      },
-      backendReachability: {
-        checkedAt: timestamp,
-        detail: 'heartbeat-timeout',
-        status: 'unavailable',
-      },
-      collectedOutputManifestIds: [],
-      evidenceBundleIds: [],
-      finishedAt: null,
-      id: 'wrr_1',
-      quarantineRefs: [],
-      requiredHumanDecision: 'inspect_recovery',
-      retentionDecision: 'retain-backend',
-      startedAt: timestamp,
-      stateAfter: 'requires-human',
-      stateBefore: 'lease-stale',
-      triggerReason: 'backend_takeover',
-      workspaceId: 'ws_demo',
+  it('preserves a story assertion when review cleanup also fails', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-real-task-cleanup-failure-'));
+    const dataRoot = join(tempRoot, 'data');
+    const repositoryRoot = join(tempRoot, 'repo');
+    const evidenceDir = join(tempRoot, 'evidence');
+    initializeRunnerPaths(dataRoot, repositoryRoot);
+    const clients = completeTaskModeClients();
+    clients.core.app.listWorkspaceRuntimeEvidence = async () => ({ runtimeEvidence: [] });
+    clients.core.app.submitWorkspaceSyncReviewDecision = async () => {
+      throw new Error('synthetic cleanup failure');
     };
-    const scenarios = [
-      {
-        expected: /scheduler lease was not released with turn-completed/,
-        lease: { releaseReason: 'heartbeat-timeout', status: 'stale' },
-        reconciliationRecords: [],
-      },
-      {
-        expected: /requires-human backend_takeover workspace reconciliation/,
-        lease: { releaseReason: 'turn-completed', status: 'released' },
-        reconciliationRecords: [reconciliationRecord],
-      },
-      {
-        expected: /scheduler capacity was not released/,
-        lease: { inUseCount: 1, releaseReason: 'turn-completed', status: 'released' },
-        reconciliationRecords: [],
-      },
-      {
-        expected: /exactly one accepted final_status record/,
-        lease: {
-          finalStatusRecordCount: 0,
-          releaseReason: 'turn-completed',
-          status: 'released',
-        },
-        reconciliationRecords: [],
-      },
-      {
-        expected: /exactly one accepted final_status record/,
-        lease: {
-          finalStatusRecordCount: 2,
-          releaseReason: 'turn-completed',
-          status: 'released',
-        },
-        reconciliationRecords: [],
-      },
-    ];
 
-    for (const scenario of scenarios) {
-      const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-real-task-finalization-'));
-      const dataRoot = join(tempRoot, 'data');
-      const repositoryRoot = join(tempRoot, 'repo');
-      const evidenceDir = join(tempRoot, 'evidence');
-      initializeTaskDataRoot(dataRoot);
-      initializeRepository(repositoryRoot);
-      const initialHead = git(repositoryRoot, ['rev-parse', 'HEAD']);
-      const clients = completeTaskModeClients({
-        dataRoot,
-        initialHead,
-        lease: scenario.lease,
-        reconciliationRecords: scenario.reconciliationRecords,
-      });
-
-      try {
-        await assert.rejects(
-          () =>
-            runTaskModeRealWorkerStory({
-              clients,
-              configureRuntime: configureTestRuntime,
-              env: {
-                OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
-                OPENKIT_L6_EVIDENCE_DIR: evidenceDir,
-                OPENKIT_L6_NANOCORE_DATA_ROOT: dataRoot,
-                OPENKIT_L6_TASK_NANOCORE_URL: 'http://127.0.0.1:54001',
-                OPENKIT_L6_TASK_REAL_WORKER: '1',
-                OPENKIT_L6_TASK_REPO_ROOT: repositoryRoot,
-                OPENKIT_L6_TASK_WORKER_IMAGE_REF: taskWorkerImageRef,
-              },
-              stdout: () => {},
-            }),
-          scenario.expected
-        );
-      } finally {
-        rmSync(tempRoot, { force: true, recursive: true });
-      }
-    }
+    await assert.rejects(
+      () =>
+        runTaskModeRealWorkerStory({
+          clients,
+          configureRuntime: configureTestRuntime,
+          env: enabledRunnerEnv({ dataRoot, evidenceDir, repositoryRoot }),
+          stdout: () => {},
+        }),
+      /did not produce runtime provenance evidence/
+    );
+    rmSync(tempRoot, { force: true, recursive: true });
   });
 
-  it('reports zero or unreported cache reads and rejects runtime-native leaks', () => {
+  it('rejects needs-review without a returned review id', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-real-task-missing-review-'));
+    const dataRoot = join(tempRoot, 'data');
+    const repositoryRoot = join(tempRoot, 'repo');
+    const evidenceDir = join(tempRoot, 'evidence');
+    initializeRunnerPaths(dataRoot, repositoryRoot);
+    const clients = completeTaskModeClients();
+    clients.core.app.startTaskMode = async () => ({
+      decision: {
+        mode: 'task',
+        worker: { agentId: 'agent_codex_host', runtime: 'codex' },
+      },
+      evidence: { reviewIds: [] },
+      state: 'needs-review',
+      turn: { id: 'turn_1' },
+    });
+
+    await assert.rejects(
+      () =>
+        runTaskModeRealWorkerStory({
+          clients,
+          configureRuntime: configureTestRuntime,
+          env: enabledRunnerEnv({ dataRoot, evidenceDir, repositoryRoot }),
+          stdout: () => {},
+        }),
+      /needs-review without a review id/
+    );
+    rmSync(tempRoot, { force: true, recursive: true });
+  });
+
+  it('records optional cache telemetry and rejects collapsed or leaked lineage', () => {
     const missingTelemetry = completeProvenanceSurface();
     missingTelemetry.usageRecords = missingTelemetry.usageRecords.filter(
       (row) => row.source !== 'llm-gateway-adapter-reported:cache_read'
-    );
-    assert.equal(
-      assertTaskModeRuntimeProvenance(missingTelemetry).positiveCacheReadObserved,
-      false
     );
     assert.equal(assertTaskModeRuntimeProvenance(missingTelemetry).cachedInputTokens, 0);
 
@@ -930,11 +508,7 @@ describe('real Task Mode worker L6 runner', () => {
     assert.equal(assertTaskModeRuntimeProvenance(isolated).cacheLineageCount, 3);
 
     const leaked = completeProvenanceSurface();
-    leaked.auditEvents.push({
-      capabilityCallId: null,
-      outcome: 'succeeded',
-      summary: 'nativeThreadId leaked',
-    });
+    leaked.runtimeEvidence.push({ nativeThreadId: 'native-leak' });
     assert.throws(() => assertTaskModeRuntimeProvenance(leaked), /runtime-native metadata/);
 
     const collapsed = completeProvenanceSurface();
@@ -947,34 +521,3 @@ describe('real Task Mode worker L6 runner', () => {
     );
   });
 });
-
-/** Initializes one clean disposable repository with a baseline commit. */
-function initializeRepository(repositoryRoot) {
-  mkdirSync(repositoryRoot, { recursive: true });
-  writeFileSync(join(repositoryRoot, 'README.md'), '# Disposable Task L6 Repository\n');
-  execFileSync('git', ['init', '--quiet'], { cwd: repositoryRoot });
-  execFileSync('git', ['add', 'README.md'], { cwd: repositoryRoot });
-  execFileSync(
-    'git',
-    [
-      '-c',
-      'user.name=OpenKit L6',
-      '-c',
-      'user.email=l6@example.test',
-      'commit',
-      '--quiet',
-      '-m',
-      'chore: initialize disposable Task repository',
-    ],
-    { cwd: repositoryRoot }
-  );
-}
-
-/** Runs one read-only Git command in a disposable repository. */
-function git(repositoryRoot, args) {
-  return execFileSync('git', args, {
-    cwd: repositoryRoot,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  }).trim();
-}

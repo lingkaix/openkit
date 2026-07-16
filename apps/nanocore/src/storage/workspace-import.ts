@@ -725,8 +725,14 @@ interface ImportRemintContext {
   goalIds: Map<string, string>;
   /** Imported Goal task ids keyed by source id. */
   goalTaskIds: Map<string, string>;
+  /** Imported Goal review ids keyed by source id. */
+  goalReviewIds: Map<string, string>;
+  /** Imported Goal verification ids keyed by source id. */
+  goalVerificationIds: Map<string, string>;
   /** Imported Vault grant ids keyed by source id. */
   vaultGrantIds: Map<string, string>;
+  /** Imported evidence bundle ids keyed by source id. */
+  evidenceBundleIds: Map<string, string>;
   /** Canonical knowledge ids retained by the imported workspace. */
   knowledgeIds: Set<string>;
 }
@@ -764,7 +770,10 @@ export function readWorkspaceImportSnapshot(
     knowledgeSourceIds: new Map(),
     goalIds: new Map(),
     goalTaskIds: new Map(),
+    goalReviewIds: new Map(),
+    goalVerificationIds: new Map(),
     vaultGrantIds: new Map(),
+    evidenceBundleIds: new Map(),
     knowledgeIds: new Set(),
   };
   const canonical = readCanonicalImportState(context);
@@ -1400,6 +1409,7 @@ function readGoalRuntimeControlState(context: ImportRemintContext) {
       `review_imported_${context.targetWorkspaceId}_${index + 1}`,
     ])
   );
+  context.goalReviewIds = goalReviewIds;
   const goalReviewRecords = exportedGoalReviewRecords.map((parsed) => {
     const resolutionSnapshot = parsed.resolutionSnapshot;
 
@@ -1458,6 +1468,7 @@ function readGoalRuntimeControlState(context: ImportRemintContext) {
       `verification_imported_${context.targetWorkspaceId}_${index + 1}`,
     ])
   );
+  context.goalVerificationIds = goalVerificationIds;
   const goalVerificationRecords = exportedGoalVerificationRecords.map((parsed) =>
     ExportedGoalVerificationRecordSchema.parse({
       ...parsed,
@@ -1513,8 +1524,11 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
     agentSessionIds,
     approvalRequestIds,
     artifactIds,
+    evidenceBundleIds,
     goalIds,
+    goalReviewIds,
     goalTaskIds,
+    goalVerificationIds,
     itemIds,
     report,
     threadIds,
@@ -1675,7 +1689,19 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
         resource:
           parsed.resource === `workspace:${report.exportedWorkspaceId}`
             ? `workspace:${context.targetWorkspaceId}`
-            : parsed.resource,
+            : parsed.resource?.startsWith('goal-review:')
+              ? `goal-review:${requiredMapValue(
+                  goalReviewIds,
+                  parsed.resource.slice('goal-review:'.length),
+                  'goal review'
+                )}`
+              : parsed.resource?.startsWith('goal-verification:')
+                ? `goal-verification:${requiredMapValue(
+                    goalVerificationIds,
+                    parsed.resource.slice('goal-verification:'.length),
+                    'goal verification'
+                  )}`
+                : parsed.resource,
       });
     }
   );
@@ -1812,7 +1838,6 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
       workspaceId: context.targetWorkspaceId,
     });
   });
-  const evidenceBundleIds = new Map<string, string>();
   for (const [index, bundle] of exportedEvidenceBundles.entries()) {
     const indexPackage = provenancePackages.get(bundle.id);
     const pairedIndexId = exportedRuntimeEvidence
@@ -2040,7 +2065,7 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
  * @throws Error when a synchronization record references missing exported state.
  */
 function readWorkspaceSyncImportState(context: ImportRemintContext) {
-  const { artifactIds, report, vaultGrantIds } = context;
+  const { artifactIds, evidenceBundleIds, report, vaultGrantIds } = context;
   const workspaceRepositories = readOptionalImportJsonl(
     context.files,
     'records/workspace-repositories.jsonl'
@@ -2193,6 +2218,9 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
 
     return WorkspaceReconciliationRecordSchema.parse({
       ...parsed,
+      evidenceBundleIds: parsed.evidenceBundleIds.map((id) =>
+        requiredMapValue(evidenceBundleIds, id, 'evidence bundle')
+      ),
       workspaceId: context.targetWorkspaceId,
     });
   });

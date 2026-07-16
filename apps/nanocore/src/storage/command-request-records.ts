@@ -19,6 +19,7 @@ type CommandRequestRow = {
   readonly inputHash: string;
   readonly responseKind: CommandRequestResponseKind;
   readonly responseId: string;
+  readonly responseJson: string | null;
   readonly createdAt: string;
   readonly expiresAt: string;
 };
@@ -34,6 +35,7 @@ const COMMAND_REQUEST_SELECT = `SELECT
   input_hash AS inputHash,
   response_kind AS responseKind,
   response_id AS responseId,
+  response_json AS responseJson,
   created_at AS createdAt,
   expires_at AS expiresAt
 FROM idempotency_requests`;
@@ -79,9 +81,10 @@ export function recordCommandRequestRecord(
           input_hash,
           response_kind,
           response_id,
+          response_json,
           created_at,
           expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         record.key,
@@ -91,6 +94,7 @@ export function recordCommandRequestRecord(
         record.inputHash,
         record.response.kind,
         record.response.id,
+        record.response.snapshot === undefined ? null : JSON.stringify(record.response.snapshot),
         record.createdAt,
         record.expiresAt
       );
@@ -247,7 +251,11 @@ function mapCommandRequestRow(row: CommandRequestRow): CommandRequestRecord {
     requestId: row.requestId,
     scope: JSON.parse(row.scopeJson) as CommandRequestScope,
     inputHash: row.inputHash,
-    response: { kind: row.responseKind, id: row.responseId },
+    response: {
+      kind: row.responseKind,
+      id: row.responseId,
+      ...(row.responseJson === null ? {} : { snapshot: JSON.parse(row.responseJson) }),
+    },
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,
   };

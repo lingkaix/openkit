@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   SubmitArtifactReviewDecisionRequestSchema,
   SubmitArtifactReviewDecisionResponseSchema,
@@ -25,6 +27,7 @@ import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
+import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { requireWorkspaceApplyResult } from './runtime/workspace-apply-results.js';
 import {
   decideWorkspaceSyncReview,
@@ -93,12 +96,23 @@ export function registerReviewDecisionRoutes({
   inflightCommands,
   repositoryWorkspaceDb,
   requestStore,
+  startModeWorkerTurn,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
+  /** Starts the existing worker-backed Turn path for refinement and redo decisions. */
+  readonly startModeWorkerTurn: (input: {
+    readonly store: FsStore;
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly prompt: string;
+    readonly requestId: string;
+    readonly requestedAgentId: string;
+    readonly reservedTurnId: string;
+  }) => Promise<unknown>;
 }): void {
   registerAppApiRoute(app, 'submitArtifactReviewDecision', async (c) => {
     try {
@@ -131,13 +145,20 @@ export function registerReviewDecisionRoutes({
         execute: async () => {
           const message = input.message ?? null;
           const existingReview = store.getArtifactReviewDecision(artifact.id);
-          const resumesPendingClaim =
-            existingReview?.lifecycle === 'pending' &&
+          const resumesExistingClaim =
+            existingReview !== null &&
+            existingReview.lifecycle !== 'failed' &&
+            existingReview.requestId === requestId &&
             existingReview.status === input.decision &&
-            (input.message === undefined || existingReview.message === message);
-          const claimStatus = resumesPendingClaim ? existingReview.status : input.decision;
-          const claimRequestId = resumesPendingClaim ? existingReview.requestId : requestId;
-          const claimMessage = resumesPendingClaim ? existingReview.message : message;
+            existingReview.message === message;
+
+          if (existingReview && existingReview.lifecycle !== 'failed' && !resumesExistingClaim) {
+            throw new IdempotencyKeyConflictError();
+          }
+
+          const claimStatus = resumesExistingClaim ? existingReview.status : input.decision;
+          const claimRequestId = resumesExistingClaim ? existingReview.requestId : requestId;
+          const claimMessage = resumesExistingClaim ? existingReview.message : message;
           const decidedAt =
             existingReview && existingReview.lifecycle !== 'failed'
               ? existingReview.decidedAt
@@ -149,7 +170,7 @@ export function registerReviewDecisionRoutes({
                   ? `Redo artifact ${artifact.title}.`
                   : `Refine artifact ${artifact.title}.`))
               : null;
-          const followUpTurnId = resumesPendingClaim
+          const followUpTurnId = resumesExistingClaim
             ? existingReview.followUpTurnId
             : artifact.threadId && followUpText
               ? `tu_artifact_review_${commandInputHash({
@@ -158,6 +179,41 @@ export function registerReviewDecisionRoutes({
                   workspaceId,
                 }).slice(7, 31)}`
               : null;
+          let sourceAgentId: string | null = null;
+
+          if (
+            existingReview?.lifecycle !== 'completed' &&
+            artifact.threadId &&
+            followUpText &&
+            followUpTurnId
+          ) {
+            if (!artifact.turnId) {
+              throw new Error(`Artifact refinement requires a source Turn: ${artifact.id}`);
+            }
+            const sourceTurn = store.getTurn(workspaceId, artifact.threadId, artifact.turnId);
+            if (!sourceTurn.agentId) {
+              throw new Error(`Artifact refinement requires an assigned Agent: ${artifact.id}`);
+            }
+            sourceAgentId = sourceTurn.agentId;
+
+            const threadBusy = store
+              .listThreadTurns(workspaceId, artifact.threadId)
+              .some(
+                (turn) =>
+                  turn.id !== followUpTurnId &&
+                  (turn.status === 'pending' ||
+                    turn.status === 'running' ||
+                    turn.status === 'awaiting_human')
+              );
+            if (threadBusy) {
+              throw new TurnStartValidationError(
+                'thread_busy',
+                'Thread already has an active worker turn.',
+                409
+              );
+            }
+          }
+
           const claimedReview = store.recordArtifactReviewDecision({
             artifactId: artifact.id,
             workspaceId,
@@ -186,7 +242,11 @@ export function registerReviewDecisionRoutes({
 
           const workspaceReview = parseWorkspaceSyncReviewArtifact(artifact);
 
-          if (workspaceReview) {
+          if (
+            workspaceReview &&
+            claimedReview.status !== 'needs_refinement' &&
+            claimedReview.status !== 'redo'
+          ) {
             const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
             try {
               const result = await decideWorkspaceSyncReview({
@@ -229,41 +289,30 @@ export function registerReviewDecisionRoutes({
           }
 
           if (artifact.threadId && followUpText && followUpTurnId) {
-            const followUpTurn =
-              store
-                .listThreadTurns(workspaceId, artifact.threadId)
-                .find((turn) => turn.id === followUpTurnId) ??
-              store.createTurn(workspaceId, artifact.threadId, followUpText, null, {
-                turnId: followUpTurnId,
-              });
-            const itemId = `it_artifact_review_${followUpTurn.id}`;
-            const existingItems = store
-              .listThreadItems(workspaceId, artifact.threadId)
-              .filter((item) => item.turnId === followUpTurn.id);
-            const existingItem = existingItems.find((item) => item.id === itemId);
-
-            if (
-              existingItem &&
-              (existingItem.type !== 'user-message' ||
-                existingItem.status !== 'completed' ||
-                existingItem.text !== followUpText)
-            ) {
-              throw new IdempotencyKeyConflictError();
+            if (!sourceAgentId) {
+              throw new Error(`Artifact refinement requires an assigned Agent: ${artifact.id}`);
             }
-            if (!existingItem && existingItems.length > 0) {
-              throw new IdempotencyKeyConflictError();
-            }
-            if (!existingItem) {
-              store.createItem({
-                id: itemId,
+            const existingTurn = store
+              .listThreadTurns(workspaceId, artifact.threadId)
+              .find((turn) => turn.id === followUpTurnId);
+            if (existingTurn) {
+              const userItem = existingTurn.items.find((item) => item.type === 'user-message');
+              if (
+                existingTurn.agentId !== sourceAgentId ||
+                userItem?.type !== 'user-message' ||
+                userItem.text !== followUpText
+              ) {
+                throw new IdempotencyKeyConflictError();
+              }
+            } else {
+              await startModeWorkerTurn({
+                store,
                 workspaceId,
                 threadId: artifact.threadId,
-                turnId: followUpTurn.id,
-                type: 'user-message',
-                status: 'completed',
-                text: followUpText,
-                createdAt: claimedReview.decidedAt,
-                completedAt: claimedReview.decidedAt,
+                prompt: followUpText,
+                requestId: randomUUID(),
+                requestedAgentId: sourceAgentId,
+                reservedTurnId: followUpTurnId,
               });
             }
           }

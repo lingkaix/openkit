@@ -132,6 +132,10 @@ export function enqueuePendingUserTurn(
     input.requestId
   );
 
+  if (insertResult.changes === 0) {
+    assertSamePendingUserTurn(pendingTurn, input);
+  }
+
   if (insertResult.changes > 0) {
     recordPendingUserTurnEnqueuedAuditEvent(workspaceDb, pendingTurn);
   }
@@ -642,6 +646,26 @@ function createPendingUserTurnId(workspaceId: string, threadId: string, requestI
 function assertHasContentReference(input: EnqueuePendingUserTurnInput): void {
   if (!input.contentItemId && !input.contentDigest) {
     throw new Error('Pending user turn requires a content item id or content digest.');
+  }
+}
+
+/**
+ * Rejects duplicate request ids that resolve to different durable lineage.
+ *
+ * @param pendingTurn Existing pending row.
+ * @param input Replayed enqueue input.
+ * @throws Error when the replay changes content or queue mode.
+ */
+function assertSamePendingUserTurn(
+  pendingTurn: PendingUserTurnRecord,
+  input: EnqueuePendingUserTurnInput
+): void {
+  if (
+    pendingTurn.contentItemId !== (input.contentItemId ?? null) ||
+    pendingTurn.contentDigest !== (input.contentDigest ?? null) ||
+    pendingTurn.queueMode !== input.queueMode
+  ) {
+    throw new Error('Pending user turn request conflicts with existing lineage.');
   }
 }
 

@@ -86,7 +86,7 @@ describe('workspace derived index rebuild', () => {
     expect(result).toEqual({
       workspaceId: 'ws_demo',
       indexPath: 'users/user_local/workspaces/ws_demo/indexes/search.json',
-      itemCount: 8,
+      itemCount: 9,
       removedEntries: ['stale.json'],
     });
     expect(existsSync(join(indexesRoot, 'stale.json'))).toBe(false);
@@ -97,6 +97,11 @@ describe('workspace derived index rebuild', () => {
         expect.objectContaining({ kind: 'workspace', id: 'ws_demo', title: 'Demo Workspace' }),
         expect.objectContaining({ kind: 'thread', id: thread.id, title: 'Needle thread' }),
         expect.objectContaining({ kind: 'item', id: 'it_search_needle', title: 'Needle answer' }),
+        expect.objectContaining({
+          kind: 'item',
+          id: 'it_artifact_ar_search_needle',
+          title: 'Needle artifact',
+        }),
         expect.objectContaining({
           kind: 'artifact',
           id: 'ar_search_needle',

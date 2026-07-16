@@ -21,6 +21,7 @@ The clean target is one policy truth and many enforcement points. `@openkit/poli
 
 - The internal policy-kernel graph algorithm.
 - Authentication, identity session lifecycle, or membership storage.
+- Workspace invitation, owner-transfer, and fixed product-role lifecycle.
 - Approval UI copy or Action Center UI layout.
 - Sandbox implementation details beyond derived policy input.
 - Vault secret storage or credential injection mechanics.
@@ -29,6 +30,7 @@ The clean target is one policy truth and many enforcement points. `@openkit/poli
 ## Core References
 
 - `docs/core/permissions.md`
+- `docs/core/identity.md`
 - `docs/core/audit.md`
 - `docs/core/sandbox.md`
 - `docs/core/agent-capability.md`
@@ -49,7 +51,7 @@ The clean target is one policy truth and many enforcement points. `@openkit/poli
 - Do not redefine NGAC concepts through NanoCore product vocabulary.
 - Do not make OpenShell policy YAML canonical.
 - Do not define UI copy for policy decisions.
-- Do not require a full organization role model in the first implementation.
+- Do not add organizations, tenants, custom roles, groups, or a second RBAC engine; the first implementation projects the fixed owner/editor/viewer product roles into the policy kernel.
 - Do not preserve runtime-native approval prompts as the long-term permission model.
 
 ## Policy Fact Vocabulary
@@ -70,7 +72,10 @@ Subjects:
 Actions:
 
 - call app API
-- call MCP tool
+- invoke an Agent Skill operation
+- invoke a worker-supplied tool
+- manage workspace membership
+- transfer workspace ownership
 - start worker session
 - materialize workspace
 - read workspace file
@@ -113,7 +118,7 @@ Resources:
 Context:
 
 - core mode
-- workspace membership
+- workspace membership status and fixed access level
 - agent session state
 - package snapshot id
 - requested runtime placement
@@ -162,6 +167,7 @@ Decisions are immutable.
 
 NanoCore should evaluate policy at:
 
+- the centralized workspace access resolver before any workspace-addressed handler performs lookup or mutation
 - app API command handlers
 - worker MCP capability handlers
 - worker scheduling
@@ -279,19 +285,24 @@ Server mode needs explicit membership facts before workspace policy can be enfor
 Minimum facts:
 
 - authenticated actor id
-- actor kind: user, service identity, automation, agent, worker shim, or integration
+- actor kind: user, deployment administrator, service identity, automation, agent, worker shim, or integration
 - responsible user id when an agent, automation, worker shim, or integration acts on behalf of a user
 - workspace id
-- membership status: active, invited, suspended, removed, or service-bound
-- workspace role or policy principal set
-- workspace owner or admin authority marker
+- current membership status: active or removed
+- fixed product access: owner, editor, or viewer
+- owner authority derived from the canonical workspace registry rather than a second membership-role copy
+- current token workspace binding and scope when a bearer token is used
 - explicit grants and restrictions relevant to the request
-- request origin: app, MCP, worker shim, internal scheduler, webhook, or integration
+- request origin: app, bundled CLI, Agent Skill, worker tool, internal scheduler, webhook, or integration
 - policy snapshot id or policy version used for evaluation
 - authentication assurance level when policy depends on it
 - time and retention class when policy depends on it
 
 If any required membership fact is unavailable, the permission outcome should be `defer` when the missing fact can be supplied by normal lookup, or `deny` when the missing fact means the actor is not authorized. Server mode must not silently fall back to local implicit-owner assumptions for workspace policy.
+
+Invitation state is not active membership and must never satisfy a Workspace access request. A `server-admin` credential proves deployment-administration authority only; it does not synthesize Workspace membership or an owner/editor/viewer role. Any future break-glass content path requires a separate accepted design, an explicit reason, a bounded grant, and durable audit.
+
+The fixed product roles are adapter vocabulary. The centralized resolver converts the authenticated actor, current membership, owner relationship, token intersection, action, resource, and request context into one policy-kernel request. Handlers consume that decision and must not reimplement role tables or rely on route path/body heuristics.
 
 ## Resolved Decisions
 
@@ -303,6 +314,8 @@ If any required membership fact is unavailable, the permission outcome should be
 - Product diagnostics may include decision id, result, reason code, enforcement point, redacted subject/resource/context summaries, policy snapshot id, and matched policy ids. They must not expose secret values, unrestricted path lists, raw membership graphs, raw provider payloads, or sensitive source contents.
 - Policy changes during an active worker session should update future checks when safe, mark the session stale when setup or resource assumptions changed, and interrupt or recycle the session when a newly denied high-risk action would otherwise remain possible.
 - Server mode requires explicit actor, responsible user, workspace membership, role or principal, grant or restriction, request-origin, policy snapshot, assurance, and time facts before enforcing workspace policy. Missing required facts produce `defer` or `deny`, not implicit local-owner behavior.
+- Owner/editor/viewer are fixed product roles projected into the NGAC-aligned kernel, not a second authorization engine.
+- Deployment-administrator authority and Workspace content authority are separate; `server-admin` has no implicit content bypass.
 
 ## Deferred / Future Work
 
@@ -324,6 +337,8 @@ If any required membership fact is unavailable, the permission outcome should be
 - OpenShell derived policy fixture tests.
 - Fail-closed tests for policy engine errors.
 - Audit linkage tests for every decision.
+- Role-matrix tests for owner, editor, viewer, removed member, invitee, unrelated user, token-bound actor, and deployment administrator.
+- Coverage tests proving every workspace-addressed public operation declares the metadata consumed by the centralized resolver.
 
 ## Risks & Mitigations
 
@@ -343,3 +358,4 @@ If any required membership fact is unavailable, the permission outcome should be
 - `docs/specs/20260703-worker_agent_capability.md`
 - `docs/specs/20260703-vault_secret_injection.md`
 - `docs/specs/20260703-audit_usage_evidence_records.md`
+- `docs/specs/20260715-multi_user_workspace_system.md`

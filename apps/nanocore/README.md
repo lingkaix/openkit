@@ -12,7 +12,7 @@
 - Codex-managed ChatGPT subscription login state
 - agent-facing LLM Gateway endpoints for Chat Completions and Responses
 - workspace repository resources for governed worker materialization
-- Goal Mode planning, task supervision, actionable human review, steering, stored verification evidence, and terminal summaries
+- Goal Mode planning, task supervision, actionable human review, stored verification evidence, and terminal summaries
 - real HTTP + SSE protocol surface
 - thread-bound agent reuse
 
@@ -21,7 +21,7 @@
 - `nanocore` starts governed worker sessions through the configured container worker runtime.
 - one nanocore thread binds to one Codex agent session
 - follow-up turns on the same thread reuse the same agent session when it stays healthy
-- current capabilities: turn execution, streaming assistant text, approval bridging, user-input questions, interruption, artifact inventory/content and review decisions, workspace configuration, workspace knowledge editing, repository linking, Goal Mode start and plan approval, Goal Mode steering, actionable Goal Review, stored verification evidence, terminal summaries, unified Human Attention Action Center projection, Codex/ChatGPT login coordination, and dual-entry LLM Gateway routing
+- current capabilities: turn execution, streaming assistant text, approval bridging, user-input questions, interruption, artifact inventory/content and review decisions, workspace configuration, workspace knowledge editing, repository linking, Goal Mode start and plan approval, actionable Goal Review, stored verification evidence, terminal summaries, unified Human Attention Action Center projection, Codex/ChatGPT login coordination, and dual-entry LLM Gateway routing
 - current non-goals: remote agents, full Sustained Mode automation, Task Evaluator loops, and an independent final-verifier completion gate
 
 ## Prerequisites
@@ -164,13 +164,7 @@ curl -s -X POST http://127.0.0.1:3000/api/app/workspaces/ws_demo/threads/th_demo
 
 Pause is accepted only for a running goal when the thread has no active running or human-gated worker turn. While the goal is paused, `/goal/step` returns `goal_paused`; resume returns the same durable goal to `running` so the next bounded step continues from stored goal and task state.
 
-Submit active steering with:
-
-```bash
-curl -s http://127.0.0.1:3000/api/app/workspaces/ws_demo/threads/th_demo/goal/steering \
-  -H 'content-type: application/json' \
-  --data '{"requestId":"steer-1","message":"Keep the next task limited to docs and tests."}'
-```
+Goal steering currently fails closed with `goal_steering_delivery_unavailable` and creates no business records until the real worker path can persist an immutable Context Package delivery trace.
 
 Run one real bounded worker step with:
 
@@ -180,7 +174,7 @@ curl -s http://127.0.0.1:3000/api/app/workspaces/ws_demo/threads/th_demo/goal/st
   --data '{"requestId":"goal-step-1","followUpDrainMode":"one_at_a_time"}'
 ```
 
-The real step route requires a ready workspace repository before worker checkpointing begins, asks Workflow Coordinator for the selected worker summary, drains safe-point steering before context preparation, records the worker context digest and product-safe context assembly summary in the checkpoint, normalizes terminal worker outcomes to stable stop reasons, and clears terminal checkpoints only after the goal and task read models are saved.
+The real step route requires a ready workspace repository before worker checkpointing begins, asks Workflow Coordinator for the selected worker summary, records the worker context digest and product-safe context assembly summary in the checkpoint, normalizes terminal worker outcomes to stable stop reasons, and clears terminal checkpoints only after the goal and task read models are saved.
 
 `reviewPolicyOverride` accepts `human` or `none` and defaults to `human`. `human` creates a durable actionable unresolved Goal Review after the completed step; accepting it atomically advances the task graph. `none` skips only that step's review and still advances dependencies and remaining tasks.
 
@@ -209,6 +203,8 @@ pnpm --filter @openkit/nanocore run test:e2e
 ```
 
 The e2e surface boots NanoCore as a process, uses fresh temporary data roots, covers empty boot, internal self-check turns, restart replay, configuration loading, migration idempotency, agent readiness diagnostics, secret redaction, and the skip-aware real Codex smoke spec.
+
+The worker restart e2e kills and restarts the built NanoCore process after the sequence-zero process-key hash and first post-launch heartbeat are durable, then proves bounded reconnect adoption, final-status closeout, backend cleanup projection, and lease release over HTTP. It starts final closeout from an already durable `physical-cleaned` boundary; the thin A1 acceptance owns real stock OpenShell Cell recycle coverage.
 
 Run the quick NanoCore e2e smoke subset with:
 
@@ -290,7 +286,7 @@ OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:3000/ap
 pnpm --filter @openkit/nanocore start
 ```
 
-The Cell Gateway and health endpoints remain fixed at `http://127.0.0.1:17670` and `http://127.0.0.1:17671/readyz` on the Cell host. Local placement uses that Gateway directly. Remote placement requires `OPENKIT_OPENSHELL_CELL_SSH_TARGET`, a loopback HTTP `OPENKIT_OPENSHELL_GATEWAY_URL` backed by a separate operator-managed SSH local-forward, and an explicit credential-free HTTP(S) `OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL` ending at `/api/worker-control` and reachable from the remote sandbox; loopback and unspecified worker-control addresses are rejected. The optional `OPENKIT_OPENSHELL_GATEWAY` name must match `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}`. NanoCore's SSH lifecycle command disables forwarding and invokes only the fixed helper action, while every official OpenShell CLI subprocess removes inherited Gateway target overrides before using the validated argv target.
+The Cell Gateway and health endpoints remain fixed at `http://127.0.0.1:17670` and `http://127.0.0.1:17671/readyz` on the Cell host. Local placement uses that Gateway directly. Remote placement requires `OPENKIT_OPENSHELL_CELL_SSH_TARGET`, a loopback HTTP `OPENKIT_OPENSHELL_GATEWAY_URL` backed by a separate operator-managed SSH local-forward, and an explicit credential-free HTTP(S) `OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL` ending at `/api/worker-control` and reachable from the remote sandbox; loopback and unspecified worker-control addresses are rejected. The optional `OPENKIT_OPENSHELL_GATEWAY` name must match `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}`. NanoCore's SSH lifecycle command disables forwarding and invokes only the fixed helper action, while every official OpenShell CLI subprocess removes inherited Gateway target overrides before using the validated argv target. The deployment guide records the proven A1 test tunnel that combines the Gateway local-forward with an exact Cell-bridge reverse worker-control listener without binding a wildcard address.
 
 Do not start a naked shared Gateway or use a custom binary path, the OpenShell CLI TLS-verification bypass flag, a patched OpenShell artifact, or a forked OpenShell artifact. The Cell Gateway intentionally serves unauthenticated HTTP only on its host loopback address, and remote access preserves that boundary through an authenticated SSH local-forward. The exact local and remote configuration profiles are in [NanoCore Deployment Modes](../../docs/nanocore-deployment-modes.en.md).
 
@@ -302,7 +298,7 @@ Synchronize the branch checkout to A1, then build and smoke the worker image on 
 
 Install `apps/nanocore/scripts/openshell-cell.sh` as root-owned mode `0700` at `/usr/local/libexec/openkit-openshell-cell`. The A1 `ubuntu` account that runs NanoCore receives passwordless sudo for only `/usr/local/libexec/openkit-openshell-cell prepare *` and `/usr/local/libexec/openkit-openshell-cell recycle *`; do not grant passwordless shell, Docker, containerd, or systemd commands. The full build, cache, install, sudoers, and startup commands are in [NanoCore Deployment Modes](../../docs/nanocore-deployment-modes.en.md).
 
-Use a new empty `OPENKIT_DATA_ROOT`; no previous worker-lifecycle data root is migrated. For local acceptance, start NanoCore and run the real Goal story from A1 so NanoCore, the Cell helper, the worker-control endpoint, Cell image cache, and disposable repository are co-located. For remote acceptance, keep NanoCore on its selected host, control A1 through the fixed SSH helper command, and provide separate Gateway and sandbox-reachable worker-control connectivity. Acceptance requires a completed worker turn followed by successful whole-Cell recycle, absence of the old epoch processes, network, and mutable roots, and two stable-empty checks against the replacement Gateway and dockerd. The remote backend materialization path is verified; the full real Codex provenance story is still pending.
+Use a new empty `OPENKIT_DATA_ROOT`; no previous worker-lifecycle data root is migrated. For local acceptance, start NanoCore and run the real Goal story from A1 so NanoCore, the Cell helper, the worker-control endpoint, Cell image cache, and disposable repository are co-located. For remote acceptance, keep NanoCore on its selected host, control A1 through the fixed SSH helper command, and provide separate Gateway and sandbox-reachable worker-control connectivity. Acceptance requires a completed worker turn followed by successful whole-Cell recycle, absence of the old epoch processes, network, and mutable roots, and two stable-empty checks against the replacement Gateway and dockerd. The remote backend materialization path is verified, and the separate real Codex `0.144.1` root-plus-two-child provenance story passed on A1 against stock OpenShell `0.0.80`.
 
 The verified loop-0 deployment allowed `api.openai.com`, `chatgpt.com`, `chat.openai.com`, and `auth.openai.com` for `/usr/local/bin/codex` and `/usr/local/lib/codex/bin/codex`.
 

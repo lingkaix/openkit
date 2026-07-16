@@ -7,10 +7,10 @@ import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { listPendingUserTurns } from './pending-user-turns.js';
 import {
-  drainFollowUpInputs,
-  drainSteeringForSafePoint,
   enqueueFollowUpInput,
   enqueueSteeringForSafePoint,
+  selectFollowUpInputs,
+  selectSteeringForSafePoint,
 } from './user-turn-queues.js';
 
 /**
@@ -26,7 +26,7 @@ function createWorkspaceDb(): WorkspaceDb {
 }
 
 describe('user turn queue helpers', () => {
-  it('enqueues and drains system-owned safe-point steering messages in order', () => {
+  it('selects system-owned safe-point steering messages without consuming them', () => {
     const workspaceDb = createWorkspaceDb();
 
     try {
@@ -52,16 +52,16 @@ describe('user turn queue helpers', () => {
         receivedAt: '2026-05-31T00:00:00.000Z',
       });
 
-      const drained = drainSteeringForSafePoint(workspaceDb, {
+      const selected = selectSteeringForSafePoint(workspaceDb, {
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
       });
 
-      expect(drained.map((message) => message.pendingTurn.requestId)).toEqual([
+      expect(selected.map((message) => message.pendingTurn.requestId)).toEqual([
         'req_steering_earlier',
         'req_steering_later',
       ]);
-      expect(drained).toMatchObject([
+      expect(selected).toMatchObject([
         {
           kind: 'safe_point_steering_message',
           owner: 'system',
@@ -79,13 +79,13 @@ describe('user turn queue helpers', () => {
         listPendingUserTurns(workspaceDb, { workspaceId: 'ws_demo', threadId: 'th_demo' }).map(
           (turn) => turn.requestId
         )
-      ).toEqual(['req_follow_up']);
+      ).toEqual(['req_steering_earlier', 'req_follow_up', 'req_steering_later']);
     } finally {
       workspaceDb.sqlite.close();
     }
   });
 
-  it('drains follow-up inputs with one_at_a_time and all modes without starting workers', () => {
+  it('selects follow-up inputs without consuming or starting workers', () => {
     const workspaceDb = createWorkspaceDb();
 
     try {
@@ -118,34 +118,35 @@ describe('user turn queue helpers', () => {
         receivedAt: '2026-05-31T00:03:00.000Z',
       });
 
-      const first = drainFollowUpInputs(workspaceDb, {
+      const first = selectFollowUpInputs(workspaceDb, {
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         drainMode: 'one_at_a_time',
       });
-      const rest = drainFollowUpInputs(workspaceDb, {
+      const all = selectFollowUpInputs(workspaceDb, {
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         drainMode: 'all',
       });
 
       expect(first.map((input) => input.pendingTurn.requestId)).toEqual(['req_follow_up_1']);
-      expect(rest.map((input) => input.pendingTurn.requestId)).toEqual([
+      expect(all.map((input) => input.pendingTurn.requestId)).toEqual([
+        'req_follow_up_1',
         'req_follow_up_2',
         'req_follow_up_3',
       ]);
-      expect([...first, ...rest].every((input) => input.startsWorkerTurn === false)).toBe(true);
+      expect([...first, ...all].every((input) => input.startsWorkerTurn === false)).toBe(true);
       expect(
         listPendingUserTurns(workspaceDb, { workspaceId: 'ws_demo', threadId: 'th_demo' }).map(
           (turn) => turn.requestId
         )
-      ).toEqual(['req_steering']);
+      ).toEqual(['req_follow_up_1', 'req_steering', 'req_follow_up_2', 'req_follow_up_3']);
     } finally {
       workspaceDb.sqlite.close();
     }
   });
 
-  it('drains crash-safe persisted follow-up input after restart', () => {
+  it('selects crash-safe persisted follow-up input after restart without deleting it', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-user-turn-queues-restart-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'user_demo', 'ws_demo');
 
@@ -174,17 +175,17 @@ describe('user turn queue helpers', () => {
     try {
       applyScopedMigrations(restartedDb);
 
-      const drained = drainFollowUpInputs(restartedDb, {
+      const selected = selectFollowUpInputs(restartedDb, {
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         drainMode: 'all',
       });
 
-      expect(drained.map((input) => input.pendingTurn.requestId)).toEqual([
+      expect(selected.map((input) => input.pendingTurn.requestId)).toEqual([
         'req_follow_up_1',
         'req_follow_up_2',
       ]);
-      expect(drained).toMatchObject([
+      expect(selected).toMatchObject([
         {
           kind: 'queued_follow_up_input',
           owner: 'user',
@@ -199,8 +200,10 @@ describe('user turn queue helpers', () => {
         },
       ]);
       expect(
-        listPendingUserTurns(restartedDb, { workspaceId: 'ws_demo', threadId: 'th_demo' })
-      ).toEqual([]);
+        listPendingUserTurns(restartedDb, { workspaceId: 'ws_demo', threadId: 'th_demo' }).map(
+          (turn) => turn.requestId
+        )
+      ).toEqual(['req_follow_up_1', 'req_follow_up_2']);
     } finally {
       restartedDb.sqlite.close();
     }

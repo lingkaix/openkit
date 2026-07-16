@@ -40,6 +40,9 @@ const CODEX_AGENT_FILE_ID = 'agents/codex.agent.jsonc';
 const CODEX_AGENT_ID = 'agent_codex_host';
 const CODEX_AUTH_SOURCE_HOST = 'a1';
 const CODEX_AUTH_SOURCE_PATH = '/home/ubuntu/.codex/auth.json';
+const CODEX_AUTH_TRANSFER_TIMEOUT_MS = 30_000;
+const CODEX_AUTH_TERMINATION_GRACE_MS = 1_000;
+const CODEX_AUTH_PROCESS_EXIT_TIMEOUT_MS = 5_000;
 const REAL_CODEX_OPENSHELL_VERSION = '0.0.80';
 const REAL_CODEX_WORKER_IMAGE_REF = 'openkit/worker-codex:dev';
 const TERMINAL_GOAL_STATUSES = new Set(['completed', 'blocked', 'aborted', 'failed']);
@@ -164,12 +167,29 @@ export function evaluateRealCodexRunnerPrerequisites(options = {}) {
 /**
  * Streams the A1 Codex auth file directly into a new local OAuth account file.
  *
- * @param {{ env?: Record<string, string | undefined>, spawnProcess?: typeof spawn, targetPath: string }} options Transfer options.
+ * @param {{ env?: Record<string, string | undefined>, killProcess?: typeof process.kill, processExitTimeoutMs?: number, spawnProcess?: typeof spawn, targetPath: string, terminationGraceMs?: number, timeoutMs?: number }} options Transfer options and bounded process-owner seams.
  * @returns {Promise<void>} Completion after a successful 0600 transfer.
- * @throws {Error} When the target cannot be created or the SSH stream fails.
+ * @throws {Error} When the target cannot be created, the SSH stream fails, or the bounded process cannot exit.
  */
 export async function streamCodexAuthFromSsh(options) {
   const spawnProcess = options.spawnProcess ?? spawn;
+  const killProcess = options.killProcess ?? process.kill;
+  const timeoutMs = requireTransferTimeout(
+    options.timeoutMs,
+    CODEX_AUTH_TRANSFER_TIMEOUT_MS,
+    'SSH auth transfer timeout'
+  );
+  const terminationGraceMs = requireTransferTimeout(
+    options.terminationGraceMs,
+    CODEX_AUTH_TERMINATION_GRACE_MS,
+    'SSH auth transfer termination grace',
+    0
+  );
+  const processExitTimeoutMs = requireTransferTimeout(
+    options.processExitTimeoutMs,
+    CODEX_AUTH_PROCESS_EXIT_TIMEOUT_MS,
+    'SSH auth transfer process-exit timeout'
+  );
   let fileDescriptor;
 
   try {
@@ -186,13 +206,66 @@ export async function streamCodexAuthFromSsh(options) {
   fileDescriptor = undefined;
 
   try {
-    const child = spawnProcess('ssh', [CODEX_AUTH_SOURCE_HOST, 'cat', CODEX_AUTH_SOURCE_PATH], {
-      env: sshEnvironment(options.env ?? process.env),
-      shell: false,
-      stdio: ['ignore', 'pipe', 'ignore'],
+    const detached = process.platform !== 'win32';
+    const child = spawnProcess(
+      '/usr/bin/ssh',
+      [
+        '-T',
+        '-o',
+        'BatchMode=yes',
+        '-o',
+        'ClearAllForwardings=yes',
+        '-o',
+        'ForwardAgent=no',
+        '-o',
+        'ForwardX11=no',
+        '-o',
+        'PermitLocalCommand=no',
+        '-o',
+        'StrictHostKeyChecking=yes',
+        '-o',
+        'ConnectTimeout=10',
+        '-o',
+        'ServerAliveInterval=10',
+        '-o',
+        'ServerAliveCountMax=2',
+        CODEX_AUTH_SOURCE_HOST,
+        'cat',
+        CODEX_AUTH_SOURCE_PATH,
+      ],
+      {
+        detached,
+        env: sshEnvironment(options.env ?? process.env),
+        shell: false,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }
+    );
+    assert(
+      Number.isSafeInteger(child.pid) && child.pid > 0,
+      'SSH auth transfer did not expose a process owner.'
+    );
+    const exit = waitForChildExit(child);
+    if (!child.stdout) {
+      await terminateSshAuthProcess({
+        child,
+        detached,
+        exit,
+        killProcess,
+        processExitTimeoutMs,
+        terminationGraceMs,
+      });
+      throw new Error('SSH auth transfer did not expose a readable stream.');
+    }
+    const exitCode = await waitForBoundedSshAuthTransfer({
+      child,
+      detached,
+      exit,
+      killProcess,
+      processExitTimeoutMs,
+      terminationGraceMs,
+      timeoutMs,
+      transfer: pipeline(child.stdout, writer),
     });
-    assert(child.stdout, 'SSH auth transfer did not expose a readable stream.');
-    const [exitCode] = await Promise.all([waitForChildExit(child), pipeline(child.stdout, writer)]);
 
     if (exitCode !== 0) {
       throw new Error(`SSH auth transfer from a1 failed with exit code ${exitCode}.`);
@@ -579,7 +652,7 @@ async function executeRealCodexGoalModeStory({ config, env, options, stdout, sto
  * Configures the default server OAuth slot, provider profile, and Codex agent selection.
  *
  * @param {Record<string, any>} core Public composed Core Client.
- * @param {RealCodexRunnerConfig} config Runner configuration.
+ * @param {{ nanoCoreDataRoot: string }} config Runner configuration.
  * @param {(input: { targetPath: string }) => Promise<void>} syncCodexAuth Auth stream implementation.
  * @returns {Promise<{ oauth: Record<string, any>, publicSurfaces: unknown[], runtimeConfig: Record<string, any> }>} Redacted setup summary and scannable public responses.
  */
@@ -998,23 +1071,21 @@ function assertRequiredMcpTools(registry) {
  * Creates and probes the redacted evidence directory before contacting NanoCore.
  *
  * @param {string} evidenceDir Evidence directory selected for the run.
+ * @param {string[]} [outputFiles] Fixed evidence file names owned by the runner.
  * @throws {Error} When the directory cannot be created or written securely.
  */
-function prepareEvidenceDirectory(evidenceDir) {
+export function prepareEvidenceDirectory(
+  evidenceDir,
+  outputFiles = [FAILURE_FILE, REDACTION_NOTES_FILE, RESULT_FILE]
+) {
   const probePath = join(evidenceDir, `.openkit-write-probe-${randomUUID()}`);
   let fileDescriptor;
 
   try {
     mkdirSync(evidenceDir, { mode: 0o700, recursive: true });
-    assertDirectDirectory(
-      evidenceDir,
-      'Real Codex Goal Mode evidence directory must be a direct directory.'
-    );
-    for (const fileName of [FAILURE_FILE, REDACTION_NOTES_FILE, RESULT_FILE]) {
-      assertPathAbsent(
-        join(evidenceDir, fileName),
-        'Real Codex Goal Mode evidence output already exists.'
-      );
+    assertDirectDirectory(evidenceDir, 'Story evidence directory must be a direct directory.');
+    for (const fileName of outputFiles) {
+      assertPathAbsent(join(evidenceDir, fileName), 'Story evidence output already exists.');
     }
     fileDescriptor = openSync(probePath, 'wx', 0o600);
     closeSync(fileDescriptor);
@@ -1031,12 +1102,12 @@ function prepareEvidenceDirectory(evidenceDir) {
     }
     if (
       error instanceof Error &&
-      (error.message === 'Real Codex Goal Mode evidence directory must be a direct directory.' ||
-        error.message === 'Real Codex Goal Mode evidence output already exists.')
+      (error.message === 'Story evidence directory must be a direct directory.' ||
+        error.message === 'Story evidence output already exists.')
     ) {
       throw error;
     }
-    throw new Error('Real Codex Goal Mode evidence directory is not writable.');
+    throw new Error('Story evidence directory is not writable.');
   }
 }
 
@@ -1186,7 +1257,7 @@ function assertNoWorkerHumanGate(rows) {
  * @param {typeof process.kill} killProcess Process signaling implementation.
  * @returns {Promise<{ kind: 'close', exitCode: number | null } | { kind: 'timeout' }>} Terminal outcome.
  */
-async function waitForChildOrDeadline(child, timeoutMs, killProcess) {
+export async function waitForChildOrDeadline(child, timeoutMs, killProcess) {
   const closed = waitForChildClose(child);
   /** @type {ReturnType<typeof setTimeout> | undefined} */
   let timer;
@@ -1464,9 +1535,9 @@ function parseResource(resource, label) {
  * Rejects raw credential material and account-file paths from public read models.
  *
  * @param {unknown} value Public responses and resources.
- * @param {Array<string | undefined>} prohibitedValues Local secret-bearing values.
+ * @param {Array<string | undefined>} [prohibitedValues] Local secret-bearing values.
  */
-function assertNoPublicSecretLeak(value, prohibitedValues = []) {
+export function assertNoPublicSecretLeak(value, prohibitedValues = []) {
   const text = JSON.stringify(value);
   const patterns = [
     /"(?:access_token|refresh_token|api_?key|client_?secret|authorization|cookie)"\s*:/i,
@@ -1480,7 +1551,7 @@ function assertNoPublicSecretLeak(value, prohibitedValues = []) {
       prohibitedValues
         .filter((entry) => typeof entry === 'string' && entry.length >= 8)
         .every((entry) => !text.includes(entry)),
-    'Public Goal story evidence exposed credential material or an account-file path.'
+    'Public story evidence exposed credential material or an account-file path.'
   );
 }
 
@@ -1543,7 +1614,7 @@ function tryWriteFailureEvidence(config, story, error, generatedAt) {
  * @param {string} filePath Evidence file path.
  * @param {string} content Complete evidence content.
  */
-function writeExclusiveEvidenceFile(filePath, content) {
+export function writeExclusiveEvidenceFile(filePath, content) {
   writeFileSync(filePath, content, { flag: 'wx', mode: 0o600 });
 }
 
@@ -1608,6 +1679,109 @@ function sshEnvironment(env) {
 }
 
 /**
+ * Waits for one direct-to-file SSH transfer under a shorter local deadline.
+ *
+ * @param {{ child: import('node:child_process').ChildProcess, detached: boolean, exit: Promise<number | null>, killProcess: typeof process.kill, processExitTimeoutMs: number, terminationGraceMs: number, timeoutMs: number, transfer: Promise<void> }} input Owned SSH process and bounded transfer policy.
+ * @returns {Promise<number | null>} SSH exit code after its stdout is fully written.
+ * @throws {Error} When the transfer, process, or local deadline fails.
+ */
+async function waitForBoundedSshAuthTransfer(input) {
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let timer;
+  let outcome;
+
+  try {
+    outcome = await Promise.race([
+      Promise.all([input.exit, input.transfer]).then(([exitCode]) => ({ exitCode, kind: 'done' })),
+      new Promise((resolveOutcome) => {
+        timer = setTimeout(() => resolveOutcome({ kind: 'timeout' }), input.timeoutMs);
+      }),
+    ]);
+  } catch (error) {
+    await terminateSshAuthProcess(input);
+    throw error;
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+
+  if (outcome.kind === 'done') {
+    return outcome.exitCode;
+  }
+
+  await terminateSshAuthProcess(input);
+  throw new Error('SSH auth transfer from a1 timed out.');
+}
+
+/**
+ * Terminates one owned SSH process group with bounded TERM-to-KILL escalation.
+ *
+ * @param {{ child: import('node:child_process').ChildProcess, detached: boolean, exit: Promise<number | null>, killProcess: typeof process.kill, processExitTimeoutMs: number, terminationGraceMs: number }} input Owned process and termination policy.
+ * @returns {Promise<void>} Completion after the SSH process closes.
+ * @throws {Error} When the process remains alive after SIGKILL.
+ */
+async function terminateSshAuthProcess(input) {
+  signalSshAuthProcess(input, 'SIGTERM');
+  if (await promiseSettledWithin(input.exit, input.terminationGraceMs)) {
+    return;
+  }
+
+  signalSshAuthProcess(input, 'SIGKILL');
+  if (!(await promiseSettledWithin(input.exit, input.processExitTimeoutMs))) {
+    throw new Error('SSH auth transfer from a1 did not exit after SIGKILL.');
+  }
+}
+
+/**
+ * Signals one SSH process group while treating an already-vanished process as success.
+ *
+ * @param {{ child: import('node:child_process').ChildProcess, detached: boolean, killProcess: typeof process.kill }} input Owned SSH child and signaling seam.
+ * @param {NodeJS.Signals} signal Signal to deliver.
+ * @returns {void}
+ */
+function signalSshAuthProcess(input, signal) {
+  try {
+    if (input.detached) {
+      input.killProcess(-input.child.pid, signal);
+    } else {
+      input.child.kill(signal);
+    }
+  } catch (error) {
+    if (error?.code !== 'ESRCH') {
+      throw error;
+    }
+  }
+}
+
+/**
+ * Returns whether one promise settles inside a non-negative duration.
+ *
+ * @param {Promise<unknown>} promise Promise to observe without cancelling.
+ * @param {number} timeoutMs Non-negative observation deadline.
+ * @returns {Promise<boolean>} True when the promise settled before the timer.
+ */
+async function promiseSettledWithin(promise, timeoutMs) {
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let timer;
+  try {
+    return await Promise.race([
+      promise.then(
+        () => true,
+        () => true
+      ),
+      new Promise((resolveSettled) => {
+        timer = setTimeout(() => resolveSettled(false), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+/**
  * Waits for one spawned child process to close without preserving stderr.
  *
  * @param {import('node:child_process').ChildProcess} child Spawned process.
@@ -1618,6 +1792,24 @@ function waitForChildExit(child) {
     child.once('error', () => rejectExit(new Error('SSH auth transfer from a1 could not start.')));
     child.once('close', (code) => resolveExit(code));
   });
+}
+
+/**
+ * Returns a validated whole-millisecond timeout.
+ *
+ * @param {number | undefined} value Optional timeout override.
+ * @param {number} fallback Default timeout.
+ * @param {string} name Input name used in validation errors.
+ * @param {number} [minimum=1] Minimum accepted value.
+ * @returns {number} Validated timeout.
+ */
+function requireTransferTimeout(value, fallback, name, minimum = 1) {
+  const timeout = value ?? fallback;
+  assert(
+    Number.isSafeInteger(timeout) && timeout >= minimum,
+    `${name} must be a whole number of at least ${minimum} milliseconds.`
+  );
+  return timeout;
 }
 
 /**
@@ -1654,7 +1846,7 @@ function git(repositoryRoot, args) {
  *
  * @param {string} filePath Build artifact path.
  */
-function assertBuilt(filePath) {
+export function assertBuilt(filePath) {
   if (!existsSync(filePath)) {
     throw new Error(`Required build output is missing: ${filePath}`);
   }

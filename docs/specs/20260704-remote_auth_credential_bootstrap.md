@@ -17,7 +17,7 @@ Implementation: Partial
 
 - Canonical identity concepts. `docs/core/identity.md` owns `User`, `AuthSession`, `Token`, `WorkspaceMember`, `AutomationIdentity`, and actor-context terminology; this spec realizes them for remote auth.
 - Authorization policy evaluation, roles, or permission decisions. Those belong to `docs/specs/20260629-openkit_policy_model.md` and `docs/specs/20260703-policy_enforcement_mapping.md`.
-- Multi-user membership, invitations, and role administration, which remain deferred tenancy work.
+- Multi-user Workspace membership, invitations, fixed roles, owner transfer, and user lifecycle, which are owned by `docs/specs/20260715-multi_user_workspace_system.md`.
 - User-owned external-service secrets and provider credentials. Those belong to the vault specs (`docs/specs/20260703-vault_secret_injection.md`).
 - Better Auth implementation details, table layout, or session-cookie mechanics beyond their appearance in the Current Implementation Projection.
 - Worker sandbox session tokens and lease-bound worker authentication, owned by the scheduler and worker control protocol specs.
@@ -43,7 +43,7 @@ The clean target is a single credential family: server-issued opaque access toke
 - Give the bundled CLI a first-class, scoped, revocable credential instead of forwarded raw headers.
 - Bind every token-authenticated request to an explicit actor context that flows into audit labels.
 - Keep client machines free of plaintext token material at rest.
-- Keep the check structure ready for multi-user tenancy so later work only adds membership facts, per the NGAC direction in the policy specs.
+- Intersect every Workspace-addressed bearer request with current multi-user membership and policy facts, per the NGAC direction in the policy specs.
 
 ## Non-goals
 
@@ -83,7 +83,7 @@ NanoCore owns opaque access-token issuance and verification as the remote channe
 
 Scopes are a small closed set in v1:
 
-- `server-admin`: full administrative authority over the deployment, including token issuance and revocation, user creation, and server config.
+- `server-admin`: deployment-administration authority, including token issuance and revocation, user administration, server config, backup, recovery, and data-root operations; it does not imply Workspace content authority.
 - `workspace`: read and write product operations bound to an explicit list of workspace ids recorded on the token.
 - `workspace-readonly`: read-only product operations bound to an explicit list of workspace ids.
 
@@ -92,7 +92,7 @@ Rules:
 - A token MUST carry exactly one scope. `workspace` and `workspace-readonly` tokens MUST carry at least one workspace id; `server-admin` tokens MUST NOT carry workspace bindings.
 - Scope checks are authentication-layer gates. Passing a scope check MUST NOT be treated as a permission decision; policy evaluation still applies downstream, per `docs/core/permissions.md`.
 - Requests outside a token's scope MUST fail with a typed authorization error that does not reveal whether the target resource exists.
-- Better Auth session actors and workspace-scoped token actors MUST be checked against active workspace membership on every workspace-addressed request. A missing membership verifier MUST fail closed, workspace tokens MUST also be bound to the addressed workspace, and `server-admin` tokens remain exempt from workspace bindings.
+- Every Better Auth session actor and bearer-token actor, including a `server-admin` token actor, MUST be checked against the token owner's current active Workspace membership and product role on every workspace-addressed product request. A missing membership verifier MUST fail closed. Workspace-scoped tokens MUST additionally be bound to the addressed Workspace; `server-admin` tokens are exempt only from the token-binding field, never from membership or policy evaluation.
 - Membership revocation MUST retain the membership edge with `status = "removed"`; hard deletion is not a supported revocation mechanism because it discards the tombstone. Workspace creation and workspace import MUST record the owner membership transactionally. Request-time filesystem discovery MUST NOT synthesize missing membership, revive an existing `removed` edge, or replace the first workspace registry owner.
 - Global App Search requests made by `workspace` or `workspace-readonly` tokens MUST search only token-bound workspaces with active membership. The same visible workspace set MUST constrain workspace, thread, knowledge, artifact, and item results; removing active membership MUST remove that workspace from subsequent search results and the removal MUST survive NanoCore restart.
 - Deployment-wide data-root administration routes MUST accept only the implicit local actor in local mode or a `server-admin` token in server mode. A Better Auth session, `workspace` token, or `workspace-readonly` token MUST NOT confer data-root administration authority.
@@ -154,6 +154,7 @@ The NanoCore token, bootstrap, authorization, audit, and `@openkit/core-client` 
 - NanoCore now has the first server-side access-token auth and administration slice: `okt_` opaque secret generation with at least 256 bits of entropy, versioned SHA-256 token hashing, constant-time verification, closed v1 scope-shape validation, active / expired / revoked / rotated usability checks, durable server-scope `openkit_access_tokens` records, and server-mode bearer verification in `apps/nanocore/src/auth/middleware.ts`. When `createApp` has a Core DB, protected App API and internal routes can authenticate `Authorization: Bearer <okt_token>` and resolve an actor with `kind: "token"` and the durable token id without exposing token material in auth failures. NanoCore refuses bearer tokens over non-loopback plaintext HTTP before verification. NanoCore also exposes the first token administration App API surface: `GET /api/app/auth/tokens`, `POST /api/app/auth/tokens`, `POST /api/app/auth/tokens/:tokenId/revoke`, and `POST /api/app/auth/tokens/:tokenId/rotate`; only `server-admin` token actors can administer tokens, while Better Auth session actors and workspace-scoped token actors receive `access_token_admin_forbidden`; list/revoke/rotate responses expose only redacted token records, and create/rotate return the plaintext token only once. `@openkit/core-client` exposes those same token administration routes under `client.app`, and `@openkit/mcp` exposes them as `openkit.list_openkit_access_tokens`, `openkit.create_openkit_access_token`, `openkit.revoke_openkit_access_token`, and `openkit.rotate_openkit_access_token` without adding a second administration surface. Successful bearer verification updates the redacted last-used summary fields exposed by the token administration API, and MCP requests now send stable `mcp` / `desktop-agent` channel metadata that NanoCore records in that summary. Better Auth session actors and workspace-scoped token actors now require active membership for workspace-addressed requests, a missing membership verifier fails closed, workspace-scoped tokens additionally enforce route-level workspace bindings, and workspace-readonly tokens reject mutating methods with non-echoing `core.auth.scope_forbidden` failures. The MCP server authenticates through `OPENKIT_NANOCORE_TOKEN` first, otherwise reads an OS keychain token keyed by the configured NanoCore URL across macOS Keychain, Linux Secret Service, and Windows Credential Manager, and finally reads a machine-scoped encrypted fallback file with a degraded-storage warning. It also exposes `openkit.consume_bootstrap_token`, which consumes the one-time bootstrap token through `@openkit/core-client` without echoing the bootstrap token in the MCP response and can store the returned NanoCore token when called with `storeCredential: true`: Linux writes to Secret Service through stdin, Windows writes to Credential Manager through stdin, and other platforms fall back to the encrypted file instead of using secret-bearing command argv. Server-mode first boot now issues a distinct one-time bootstrap token when the OpenKit `users` table is empty, writes the plaintext only to an owner-readable data-root emission file, and exposes `POST /api/app/auth/bootstrap/consume` as the public one-shot consume route that atomically creates the owner `User` and returns the first `server-admin` access token once. The server-mode MCP smoke now exercises the clean-data-root bootstrap story end to end: owned NanoCore startup, owner-only bootstrap emission file, bootstrap consumption, server-admin workspace setup, scoped workspace token issuance, and MCP connection through `OPENKIT_NANOCORE_TOKEN`.
 - Successful bootstrap consumption, access-token issuance, token revocation, and token rotation now emit server-owned general `AuditEvent` rows through the existing audit recorder. The rows use stable token lifecycle action names and redacted token ids, scopes, owners, and authenticated actor ids when present; they do not store bootstrap token values, plaintext `okt_` secrets, token hashes, keychain material, fallback encrypted-file contents, or authorization headers.
 - Token records target the server-scope database in the layout owned by `docs/specs/20260703-storage_layout_record_ownership.md`.
+- Current middleware exempts `server-admin` tokens from the Workspace membership check. That is an implementation gap: the accepted target preserves deployment administration while removing implicit Workspace content bypass.
 
 ## Alternatives Considered
 
@@ -207,12 +208,12 @@ Acceptance criteria: all L1-L3 behaviors pass deterministically; no agent-visibl
 
 ## Resolved Decisions
 
-Previously open questions are resolved by accepted V1 defaults: the encrypted fallback file uses a machine-scoped key when OS keychain storage is unavailable; `workspace` tokens bind to an explicit workspace list only, and wildcard workspace binding is deferred until audit, tenancy, and revocation semantics are designed.
+Previously open questions are resolved by accepted V1 defaults: the encrypted fallback file uses a machine-scoped key when OS keychain storage is unavailable; `workspace` tokens bind to an explicit Workspace list only, and wildcard Workspace binding is deferred until its audit and revocation semantics are designed.
 
 ## Deferred / Future Work
 
 - OAuth-style device-flow pairing so a Skill-capable AI application can acquire a token through a browser consent step instead of manual issuance.
-- Multi-user invitations, membership administration, and role-bearing tokens once tenancy lands; the membership check structure here is built for that addition.
+- Dedicated automation-identity token issuance and administration flows after the responsible-user and current-membership intersection is implemented.
 - Fine-grained token scopes (per-capability, per-thread, time-boxed step tokens) beyond the closed v1 set.
 - Web UI token administration surfaces projecting the token read models.
 - Automation-identity token issuance flows for scheduled and webhook-triggered work.
@@ -222,6 +223,7 @@ Previously open questions are resolved by accepted V1 defaults: the encrypted fa
 - `docs/core/identity.md`
 - `docs/deployment.md`
 - `docs/core/permissions.md`
+- `docs/specs/20260715-multi_user_workspace_system.md`
 - `docs/core/audit.md`
 - `docs/specs/20260628-nanocore_config_identity_contract.md`
 - `docs/specs/20260713-openkit_agent_skill_interface.md`

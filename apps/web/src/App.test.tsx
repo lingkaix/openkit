@@ -263,6 +263,7 @@ interface FakeClientOptions {
   humanAttention?: HumanAttentionRow[];
   emptyWorkspaceResources?: boolean;
   quickChatError?: Error;
+  reviseThreadGoalPlanError?: Error;
   startThreadGoalError?: Error;
   workspaceListError?: Error;
   runtimeConfigConflictOnSave?: boolean;
@@ -278,12 +279,13 @@ interface FakeClientOptions {
     input: Parameters<CoreClient['app']['approveThreadGoalPlan']>[2]
   ): void;
   onCreateThreadGoalPlan?(workspaceId: string, threadId: string): void;
-  onRunThreadGoalStep?(workspaceId: string, threadId: string): void;
-  onSubmitThreadGoalSteering?(
+  onReviseThreadGoalPlan?(
     workspaceId: string,
     threadId: string,
-    input: Parameters<CoreClient['app']['submitThreadGoalSteering']>[2]
+    input: Parameters<CoreClient['app']['reviseThreadGoalPlan']>[2]
   ): void;
+  onRunThreadGoalStep?(workspaceId: string, threadId: string): void;
+  onGetThreadGoalSummary?(workspaceId: string, threadId: string): void;
   onSubmitArtifactReviewDecision?(
     workspaceId: string,
     artifactId: string,
@@ -344,6 +346,7 @@ type FakeClientImplementations = CoreClient['core'] & {
   startThreadGoal: CoreClient['app']['startThreadGoal'];
   createThreadGoalPlan: CoreClient['app']['createThreadGoalPlan'];
   approveThreadGoalPlan: CoreClient['app']['approveThreadGoalPlan'];
+  reviseThreadGoalPlan: CoreClient['app']['reviseThreadGoalPlan'];
   runThreadGoalStep: CoreClient['app']['runThreadGoalStep'];
   submitThreadGoalSteering: CoreClient['app']['submitThreadGoalSteering'];
   submitArtifactReviewDecision: CoreClient['app']['submitArtifactReviewDecision'];
@@ -1676,7 +1679,10 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
         },
       };
     },
-    threadGoalSummary: async () => currentThreadGoalSummary,
+    threadGoalSummary: async (workspaceId, threadId) => {
+      options.onGetThreadGoalSummary?.(workspaceId, threadId);
+      return currentThreadGoalSummary;
+    },
     startThreadGoal: async (workspaceId, threadId, input) => {
       if (options.startThreadGoalError) {
         throw options.startThreadGoalError;
@@ -1827,6 +1833,47 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
         startsWorkerTurn: false,
       };
     },
+    reviseThreadGoalPlan: async (workspaceId, threadId, input) => {
+      options.onReviseThreadGoalPlan?.(workspaceId, threadId, input);
+
+      if (options.reviseThreadGoalPlanError) {
+        throw options.reviseThreadGoalPlanError;
+      }
+
+      const goal: ThreadGoalSummary = {
+        goalId: `goal_${threadId}`,
+        workspaceId,
+        threadId,
+        status: 'planning',
+        title: 'Demo goal',
+        objective: 'Validate Goal Mode UI fixtures.',
+        currentTask: null,
+        taskCounts: {
+          pending: 0,
+          ready: 0,
+          running: 0,
+          reviewing: 0,
+          needsRevision: 0,
+          completed: 0,
+          blocked: 0,
+          failed: 0,
+          skipped: 0,
+        },
+        pendingHumanAttention: {
+          required: false,
+          reason: null,
+        },
+        terminalState: null,
+        steering: emptyGoalSteering(),
+        updatedAt: timestamp,
+      };
+      currentThreadGoalSummary = { goal };
+      return {
+        goal,
+        revisionItemId: `it_plan_revision_${threadId}`,
+        startsWorkerTurn: false,
+      };
+    },
     runThreadGoalStep: async (workspaceId, threadId) => {
       options.onRunThreadGoalStep?.(workspaceId, threadId);
       const goal: ThreadGoalSummary = {
@@ -1902,30 +1949,8 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
         },
       };
     },
-    submitThreadGoalSteering: async (workspaceId, threadId, input) => {
-      options.onSubmitThreadGoalSteering?.(workspaceId, threadId, input);
-      const currentGoal = currentThreadGoalSummary.goal;
-
-      if (!currentGoal) {
-        throw new Error('Thread does not have an active goal.');
-      }
-
-      const blocked = currentGoal.pendingHumanAttention.required;
-      const goal: ThreadGoalSummary = {
-        ...currentGoal,
-        steering: {
-          ...currentGoal.steering,
-          pendingFollowUpCount: currentGoal.steering.pendingFollowUpCount + (blocked ? 1 : 0),
-          pendingSteeringCount: currentGoal.steering.pendingSteeringCount + (blocked ? 0 : 1),
-        },
-      };
-
-      currentThreadGoalSummary = { goal };
-
-      return {
-        state: blocked ? 'blocked' : 'queued',
-        goal,
-      };
+    submitThreadGoalSteering: async () => {
+      throw new Error('Goal steering delivery is unavailable.');
     },
     submitArtifactReviewDecision: async (workspaceId, artifactId, input) => {
       options.onSubmitArtifactReviewDecision?.(workspaceId, artifactId, input);
@@ -2502,9 +2527,7 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
       startThreadGoal: implementations.startThreadGoal,
       createThreadGoalPlan: implementations.createThreadGoalPlan,
       approveThreadGoalPlan: implementations.approveThreadGoalPlan,
-      reviseThreadGoalPlan: async () => {
-        throw new Error('Goal plan revision fixture not configured.');
-      },
+      reviseThreadGoalPlan: implementations.reviseThreadGoalPlan,
       pauseThreadGoal: async () => {
         throw new Error('Goal pause fixture not configured.');
       },
@@ -3550,64 +3573,6 @@ describe('App', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/goal mode route is unavailable/i);
   });
 
-  it('submits Goal Mode steering from the thread workbench', async () => {
-    let steeringInput: Parameters<CoreClient['app']['submitThreadGoalSteering']>[2] | null = null;
-
-    render(() => (
-      <App
-        client={createFakeClient({
-          threadGoalSummary: {
-            goal: {
-              goalId: 'goal_th_demo',
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
-              status: 'running',
-              title: 'Ship v0.0.6',
-              objective: 'Make the release ready for end users.',
-              currentTask: null,
-              taskCounts: {
-                pending: 0,
-                ready: 1,
-                running: 0,
-                reviewing: 0,
-                needsRevision: 0,
-                completed: 0,
-                blocked: 0,
-                failed: 0,
-                skipped: 0,
-              },
-              pendingHumanAttention: {
-                required: false,
-                reason: null,
-              },
-              terminalState: null,
-              steering: emptyGoalSteering(),
-              updatedAt: '2026-04-15T09:00:00.000Z',
-            },
-          },
-          onSubmitThreadGoalSteering: (_workspaceId, _threadId, input) => {
-            steeringInput = input;
-          },
-        })}
-      />
-    ));
-
-    await screen.findByRole('button', { name: /demo workspace/i });
-    fireEvent.click(await screen.findByRole('button', { name: /protocol design review/i }));
-    const goalMode = await screen.findByRole('region', { name: /goal mode/i });
-
-    fireEvent.input(within(goalMode).getByRole('textbox', { name: /steering input/i }), {
-      target: { value: 'Prioritize release notes.' },
-    });
-    fireEvent.click(within(goalMode).getByRole('button', { name: /submit steering/i }));
-
-    await waitFor(() => {
-      expect(steeringInput?.message).toBe('Prioritize release notes.');
-    });
-    expect(goalMode).toHaveTextContent(/queued for the next safe point/i);
-    expect(goalMode).toHaveTextContent(/queued steering: 1/i);
-  });
-
   it('drafts and approves a Goal Mode plan without starting a worker', async () => {
     let createdPlanCount = 0;
     let approvedPlan: Parameters<CoreClient['app']['approveThreadGoalPlan']>[2] | null = null;
@@ -3652,6 +3617,92 @@ describe('App', () => {
       expect(approvedPlan?.planItemId).toBe('it_plan_th_demo');
     });
     expect(workerStepCount).toBe(0);
+  });
+
+  it('persists Goal plan rejection and revision through NanoCore', async () => {
+    const revisions: Parameters<CoreClient['app']['reviseThreadGoalPlan']>[2][] = [];
+    let workerStepCount = 0;
+
+    render(() => (
+      <App
+        client={createFakeClient({
+          threadGoalSummary: { goal: null },
+          onReviseThreadGoalPlan: (_workspaceId, _threadId, input) => {
+            revisions.push(input);
+          },
+          onRunThreadGoalStep: () => {
+            workerStepCount += 1;
+          },
+        })}
+      />
+    ));
+
+    await screen.findByRole('button', { name: /demo workspace/i });
+    fireEvent.click(await screen.findByRole('button', { name: /protocol design review/i }));
+    const goalMode = await screen.findByRole('region', { name: /goal mode/i });
+
+    fireEvent.input(within(goalMode).getByRole('textbox', { name: /goal objective/i }), {
+      target: { value: 'Plan the release.' },
+    });
+    fireEvent.click(within(goalMode).getByRole('button', { name: /start goal/i }));
+
+    const planReview = await screen.findByRole('region', { name: /goal plan review/i });
+    fireEvent.click(within(planReview).getByRole('button', { name: /draft plan/i }));
+
+    const requestedChanges = await within(planReview).findByRole('textbox', {
+      name: /requested plan changes/i,
+    });
+    fireEvent.input(requestedChanges, {
+      target: { value: '  Reduce the release scope.  ' },
+    });
+    fireEvent.click(within(planReview).getByRole('button', { name: /request changes/i }));
+
+    await waitFor(() => {
+      expect(revisions).toEqual([{ revision: 'Reduce the release scope.' }]);
+    });
+    expect(planReview).toHaveTextContent(/draft a bounded plan/i);
+
+    fireEvent.click(within(planReview).getByRole('button', { name: /draft plan/i }));
+    fireEvent.click(await within(planReview).findByRole('button', { name: /reject plan/i }));
+
+    await waitFor(() => {
+      expect(revisions).toEqual([
+        { revision: 'Reduce the release scope.' },
+        { revision: 'Reject this plan and draft a new plan.' },
+      ]);
+    });
+    expect(workerStepCount).toBe(0);
+  });
+
+  it('keeps the Goal plan visible when revision persistence fails', async () => {
+    render(() => (
+      <App
+        client={createFakeClient({
+          threadGoalSummary: { goal: null },
+          reviseThreadGoalPlanError: new Error('Goal plan revision failed.'),
+        })}
+      />
+    ));
+
+    await screen.findByRole('button', { name: /demo workspace/i });
+    fireEvent.click(await screen.findByRole('button', { name: /protocol design review/i }));
+    const goalMode = await screen.findByRole('region', { name: /goal mode/i });
+
+    fireEvent.input(within(goalMode).getByRole('textbox', { name: /goal objective/i }), {
+      target: { value: 'Plan the release.' },
+    });
+    fireEvent.click(within(goalMode).getByRole('button', { name: /start goal/i }));
+
+    const planReview = await screen.findByRole('region', { name: /goal plan review/i });
+    fireEvent.click(within(planReview).getByRole('button', { name: /draft plan/i }));
+    const requestedChanges = await within(planReview).findByRole('textbox', {
+      name: /requested plan changes/i,
+    });
+    fireEvent.input(requestedChanges, { target: { value: 'Keep the release reversible.' } });
+    fireEvent.click(within(planReview).getByRole('button', { name: /request changes/i }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/goal plan revision failed/i);
+    expect(within(planReview).getByRole('button', { name: /approve plan/i })).toBeInTheDocument();
   });
 
   it('runs a real Goal Mode worker step from the thread workbench', async () => {

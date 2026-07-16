@@ -12,7 +12,7 @@ Identity answers who or what is acting. Permission answers whether that actor ma
 
 ## Purpose
 
-OpenKit supports single-user local operation, but the core model must remain compatible with shared workspaces, invitations, roles, tokens, automations, and external integrations.
+OpenKit supports both single-user local operation and shared server workspaces with invitations, roles, tokens, automations, and external integrations.
 
 The identity model provides stable names for the actors and credentials that appear in ownership, audit, permission, usage, and protocol records.
 
@@ -52,6 +52,8 @@ App API may expose sign-in, invitation, and profile endpoints, but those endpoin
 
 `IntegrationIdentity` is an external system identity such as a webhook source, repository app, or provider integration.
 
+`ActorRef` is the stable, non-secret identity summary attached to shared history and governed actions. It carries actor kind (`user`, `agent`, `automation`, `integration`, or `system`), stable actor ID, and a nullable responsible user ID. For a human actor, the responsible user ID equals the actor ID. Credential kind, credential ID, channel, display name, and email are request or audit projections rather than part of the stable actor reference.
+
 These are conceptual record families, not a complete field list.
 
 ## Typical Record Areas
@@ -66,14 +68,12 @@ disabled
 deleted
 ```
 
-`WorkspaceMember` record areas include workspace ID, user ID, membership status, roles or attributes, invitation reference, joined time, suspended time, and removed time.
+`WorkspaceMember` record areas include workspace ID, user ID, membership status, access level or policy attributes, invitation reference, joined time, removed time, and revision.
 
 Workspace member status values may include:
 
 ```text
-invited
 active
-suspended
 removed
 ```
 
@@ -98,14 +98,13 @@ revoked
 rotated
 ```
 
-`Invitation` record areas include workspace ID, inviter identity, invitee handle, role or attribute proposal, issued time, expiration time, accepted time, revoked time, and status.
+`Invitation` record areas include workspace ID, inviter identity, canonical invitee user ID, proposed access level or policy attributes, issued time, expiration time, accepted time, declined time, revoked time, and status. A pending invitation is not a membership and grants no Workspace authority.
 
 Invitation status values may include:
 
 ```text
 pending
 accepted
-expired
 revoked
 declined
 ```
@@ -129,7 +128,7 @@ Automation identity and trigger source are different concepts. `AutomationIdenti
 
 Workspace membership is the default bridge between identity and workspace-scoped work.
 
-Future multi-user workspaces should be able to answer:
+Every shared workspace must be able to answer:
 
 - which users belong to a workspace
 - which roles or attributes they have
@@ -137,10 +136,18 @@ Future multi-user workspaces should be able to answer:
 - which tokens or automations can act in the workspace
 - which user or automation caused a turn, approval, vault use, or capability call
 
+Workspace ownership is a distinguished lifecycle and authority relationship. It does not make the owner's user storage the parent of canonical workspace data, and changing the owner must not change workspace identity or move workspace-owned state.
+
+The canonical owner must also have active membership. Ownership is stored once and effective owner authority is derived from that relationship rather than duplicated as a mutable membership role. Disabling or deleting a user cannot cascade-delete a Workspace; ownership must first transfer or the destructive user operation must fail.
+
 ## Invariants
 
 - Identity records MUST NOT be treated as permission decisions.
-- Workspace-scoped actions SHOULD preserve enough identity context to explain who or what caused them.
+- Ordinary Workspace content access MUST come from active membership and a permission decision, not from filesystem presence, a user-owned link, an invitation, or deployment-administrator credentials alone.
+- Deployment recovery authority MAY change ownership or membership through an explicit audited recovery operation, after which normal Workspace authorization applies; it MUST NOT silently bypass membership for content access.
+- Workspace owner transfer MUST preserve workspace identity and history.
+- Workspace-scoped human, agent, automation, and integration actions MUST preserve an `ActorRef` when attribution is required to explain who or what caused them.
+- Credential scope, token binding, active membership, and current permission MUST be intersected at request time; no one fact is sufficient by itself.
 - OpenKit-authored records MUST use `AuthSession`, `AgentSession`, `ChannelSession`, or another prefixed term instead of the bare `Session`.
 - Raw token secret material MUST NOT be exposed after issuance through identity records, item payloads, audit records, or protocol summaries.
 - Automation and integration identities MUST remain distinguishable from trigger sources.

@@ -1,12 +1,13 @@
 # Quick Chat Workspace
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
 
 ## Owns
 
 - The product and implementation contract for the built-in Quick Chat workspace kind.
-- The startup seed rule that makes Quick Chat the only workspace in a fresh NanoCore data root.
+- The per-user seed rule that makes Quick Chat each user's initial owner-only Workspace.
+- The rule that Quick Chat is not shareable in the first multi-user implementation.
 - The capability boundary that allows lightweight Chat Mode and workspace knowledge while refusing repository, data-source, Task Mode, Goal Mode, worker execution, and Git write flows.
 - The App API and Web behavior required to keep Quick Chat visible as the default lightweight entry point without treating it as a project workspace.
 
@@ -35,7 +36,7 @@ Implementation: Implemented
 
 ## Summary
 
-NanoCore should start a fresh data root with one lightweight Quick Chat workspace as the only user-owned workspace.
+NanoCore should give every local or server user one lightweight owner-only Quick Chat Workspace as that user's initial Workspace. A fresh local data root therefore has one Quick Chat; a server deployment has one independent Quick Chat per user.
 
 Quick Chat is a real workspace for conversation, threads, items, and knowledge, but it is not a project workspace.
 
@@ -49,7 +50,7 @@ When user intent requires repository access, file edits, external side effects, 
 
 ### Goals
 
-- Seed Quick Chat as the only workspace in a new NanoCore server or fresh data root.
+- Seed Quick Chat as the only Workspace initially visible to each newly created user.
 - Represent Quick Chat through a product-visible workspace kind rather than a hard-coded workspace id branch.
 - Allow Chat Mode, ordinary threads, ordinary items, and Knowledge Store records in Quick Chat.
 - Reject repository resource binding, workspace data-source catalog use, Task Mode, Goal Mode, direct worker turn startup, and Git push flows for Quick Chat.
@@ -61,6 +62,7 @@ When user intent requires repository access, file edits, external side effects, 
 - Do not add user-level default workspace preferences in this slice.
 - Do not add a full workspace capability matrix before more workspace kinds require it.
 - Do not let Quick Chat share knowledge implicitly with project workspaces.
+- Do not let a user invite members to, transfer, or otherwise share Quick Chat in V1.
 - Do not create a separate Chat-only product model outside the normal workspace, thread, turn, and item backbone.
 - Do not preserve compatibility for older seeded workspace order in internal development.
 
@@ -80,7 +82,7 @@ The missing contract is a workspace kind that hosts that lightweight entry point
 
 OpenKit will add a `quick-chat` workspace kind.
 
-NanoCore will seed one Quick Chat workspace, and no Demo Workspace, in fresh local and server data roots.
+NanoCore will seed one Quick Chat Workspace, and no Demo Workspace, for each local or server user when that user has no Workspace state.
 
 Quick Chat will be the default workspace by being the only fresh workspace, not by a separate `defaultWorkspaceId` record.
 
@@ -97,6 +99,10 @@ Quick Chat is a `WorkspaceRecord` with `kind: "quick-chat"`, `status: "active"`,
 Quick Chat owns normal workspace threads, turns, items, knowledge entries, knowledge proposals, knowledge sources, audit rows, capability usage rows, and workspace-local Knowledge Store files.
 
 Quick Chat does not own repository resources, workspace-root data-source bindings, worker materialization records, worker checkpoints, Goal Mode records, Task Mode worker state, staged workspace reviews, workspace apply results, or Git push records.
+
+### Sharing Boundary
+
+Quick Chat MUST remain owner-only in V1. Invitation, direct membership addition, role change, ownership transfer, and portable share operations MUST reject a Quick Chat target with a stable product error before mutation. Each user's Quick Chat id and Knowledge remain independent; a user's Quick Chat MUST NOT become a team Workspace by implication.
 
 ### Allowed Behavior
 
@@ -138,7 +144,7 @@ Service-side refusals remain authoritative even when a client renders a stale or
 
 Add `quick-chat` to `WorkspaceKindSchema`.
 
-Seed only Quick Chat in `FsStore` when no data-root snapshot exists.
+Seed only Quick Chat when a user has no Workspace state. Under the owner-independent storage model, user provisioning records that user as the owner and only active member of a new top-level Quick Chat Workspace.
 
 Keep `createDemoWorkspaceForUser(userId)` as a test and development helper that returns an importable Demo Workspace fixture without mutating the default new-user seed state.
 
@@ -155,6 +161,8 @@ Keep Chat Mode and Knowledge Store routes available in Quick Chat, and skip Chat
 `packages/protocol/src/models/workspace.ts` owns `WorkspaceKindSchema` and `WorkspaceRecordSchema`.
 
 `apps/nanocore/src/lib/store.ts` owns the fresh data-root seed state and the Demo Workspace fixture helper.
+
+The current user-bound `FsStore` naturally gives users independent Quick Chat data, but the accepted top-level Workspace root, explicit per-user owner membership, and stable rejection by future sharing operations are not yet implemented. This gap is why the spec is `Implementation: Partial`.
 
 `apps/nanocore/src/app.ts` owns repository setup, Task Mode, Goal Mode, Chat Mode, and worker-turn routes.
 
@@ -196,7 +204,7 @@ The implementation adds a domain-specific special case, but it is centralized as
 
 This repository is in internal development, so no backward compatibility layer is required.
 
-Fresh data roots seed only Quick Chat.
+Fresh local data roots seed only Quick Chat. In server mode, each newly created user receives one independent Quick Chat and no Demo Workspace.
 
 Existing data roots keep their persisted workspaces until explicitly recreated or migrated by future tooling.
 
@@ -208,6 +216,7 @@ No old `general` Quick Chat records need to be repaired in this slice unless a f
 - NanoCore store tests prove a fresh store lists only Quick Chat and keeps it worker-default-free.
 - NanoCore route tests prove Quick Chat rejects repository setup with a stable error code.
 - NanoCore route tests prove Quick Chat rejects Task Mode, Goal Mode, and direct worker-turn startup before worker execution.
+- Multi-user route tests prove every invitation, membership, and owner-transfer operation rejects Quick Chat before mutation.
 - Existing Chat Mode and knowledge tests continue to pass for ordinary workspace-scoped behavior.
 - Existing first-workspace selection keeps opening the first returned workspace, which is Quick Chat for fresh NanoCore stores.
 - Focused package tests and typecheck pass for touched packages.
@@ -237,3 +246,4 @@ None.
 ## Links
 
 - `docs/changes/202607091725150001-quick_chat_workspace.md`
+- `docs/specs/20260715-multi_user_workspace_system.md`

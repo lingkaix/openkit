@@ -15,7 +15,7 @@ import {
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import { describe, it } from 'node:test';
 import { setTimeout as wait } from 'node:timers/promises';
 
@@ -96,7 +96,32 @@ describe('real Codex Goal Mode L6 runner', () => {
 
     assert.equal(readFileSync(targetPath, 'utf8').includes(fakeSecret), true);
     assert.equal(statSync(targetPath).mode & 0o777, 0o600);
-    assert.deepEqual(calls[0].args, ['a1', 'cat', '/home/ubuntu/.codex/auth.json']);
+    assert.deepEqual(calls[0].args, [
+      '-T',
+      '-o',
+      'BatchMode=yes',
+      '-o',
+      'ClearAllForwardings=yes',
+      '-o',
+      'ForwardAgent=no',
+      '-o',
+      'ForwardX11=no',
+      '-o',
+      'PermitLocalCommand=no',
+      '-o',
+      'StrictHostKeyChecking=yes',
+      '-o',
+      'ConnectTimeout=10',
+      '-o',
+      'ServerAliveInterval=10',
+      '-o',
+      'ServerAliveCountMax=2',
+      'a1',
+      'cat',
+      '/home/ubuntu/.codex/auth.json',
+    ]);
+    assert.equal(calls[0].command, '/usr/bin/ssh');
+    assert.equal(calls[0].options.detached, process.platform !== 'win32');
     assert.equal(calls[0].options.shell, false);
     assert.equal(calls[0].options.env.OPENKIT_NANOCORE_TOKEN, undefined);
     assert.equal(JSON.stringify(calls).includes(fakeSecret), false);
@@ -113,6 +138,45 @@ describe('real Codex Goal Mode L6 runner', () => {
       () => streamCodexAuthFromSsh({ spawnProcess, targetPath }),
       /SSH auth transfer from a1 failed with exit code 23/
     );
+    assert.equal(existsSync(targetPath), false);
+
+    rmSync(tempRoot, { force: true, recursive: true });
+  });
+
+  it('terminates and then kills a hung SSH auth stream inside its own deadline', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-real-codex-auth-timeout-'));
+    const targetPath = join(tempRoot, 'default', 'codex-home', 'auth.json');
+    const child = new EventEmitter();
+    const stdout = new PassThrough();
+    const signals = [];
+    const pid = 41_317;
+    child.pid = pid;
+    child.stdout = stdout;
+    stdout.write(fakeSecret);
+
+    await assert.rejects(
+      () =>
+        streamCodexAuthFromSsh({
+          killProcess: (targetPid, signal) => {
+            signals.push({ signal, targetPid });
+            if (signal === 'SIGKILL') {
+              stdout.destroy();
+              queueMicrotask(() => child.emit('close', null, signal));
+            }
+            return true;
+          },
+          processExitTimeoutMs: 100,
+          spawnProcess: () => child,
+          targetPath,
+          terminationGraceMs: 5,
+          timeoutMs: 10,
+        }),
+      /SSH auth transfer from a1 timed out/
+    );
+    assert.deepEqual(signals, [
+      { signal: 'SIGTERM', targetPid: -pid },
+      { signal: 'SIGKILL', targetPid: -pid },
+    ]);
     assert.equal(existsSync(targetPath), false);
 
     rmSync(tempRoot, { force: true, recursive: true });
@@ -894,6 +958,7 @@ function createFakeSshSpawn(content, calls, exitCode = 0) {
   return (command, args, options) => {
     const child = new EventEmitter();
 
+    child.pid = 41_316;
     child.stdout = Readable.from([content]);
     calls.push({ args, command, options });
     queueMicrotask(() => child.emit('close', exitCode, null));

@@ -55,7 +55,7 @@ Do not use specs as task logs, release progress logs, or one-off implementation 
 
 - `docs/core/` owns stable core model decisions.
 - `docs/specs/` owns implementation-facing design contracts, alternatives, consequences, rollout plans, migration plans, and unresolved questions.
-- `docs/changes/` owns concise lifecycle records for material PRs, standalone important changes, and release summaries.
+- `docs/changes/` owns curated lifecycle records for material PRs, standalone important changes, and release summaries.
 - `docs/working_logs/` owns archived long-run release PRDs, task lists, and progress logs.
 
 Core documents define canonical concepts once. Specs reference those concepts and
@@ -69,6 +69,7 @@ Current specs live at the root of this directory. Read the relevant core documen
 Kernel, protocol, and product surfaces:
 
 - [`20260628-protocol_contract_consolidation.md`](./20260628-protocol_contract_consolidation.md)
+- [`20260715-contract_stability_baseline.md`](./20260715-contract_stability_baseline.md)
 - [`20260528-core_client_boundary.md`](./20260528-core_client_boundary.md)
 - [`20260628-nanocore_config_identity_contract.md`](./20260628-nanocore_config_identity_contract.md)
 - [`20260704-nanocore_bootstrap_readiness.md`](./20260704-nanocore_bootstrap_readiness.md)
@@ -99,6 +100,9 @@ Worker runtime, supply, and synchronization:
 - [`20260703-agent_manifest_aep_resolution.md`](./20260703-agent_manifest_aep_resolution.md)
 - [`20260629-worker_runtime_communication_model.md`](./20260629-worker_runtime_communication_model.md)
 - [`20260711-worker_runtime_subagent_provenance.md`](./20260711-worker_runtime_subagent_provenance.md)
+- [`20260716-codex_worker_adapter.md`](./20260716-codex_worker_adapter.md)
+- [`20260716-opencode_worker_adapter.md`](./20260716-opencode_worker_adapter.md)
+- [`20260716-pi_worker_adapter.md`](./20260716-pi_worker_adapter.md)
 - [`20260715-openshell_disposable_cell_lifecycle.md`](./20260715-openshell_disposable_cell_lifecycle.md)
 - [`20260708-container_image_packaging.md`](./20260708-container_image_packaging.md)
 - [`20260704-session_static_workspace_materialization.md`](./20260704-session_static_workspace_materialization.md)
@@ -119,6 +123,7 @@ Worker runtime, supply, and synchronization:
 Storage, knowledge, policy, vault, audit, and metering:
 
 - [`20260703-storage_layout_record_ownership.md`](./20260703-storage_layout_record_ownership.md)
+- [`20260715-multi_user_workspace_system.md`](./20260715-multi_user_workspace_system.md)
 - [`20260703-schema_evolution_record_envelope.md`](./20260703-schema_evolution_record_envelope.md)
 - [`20260702-knowledge_store_governance_rules.md`](./20260702-knowledge_store_governance_rules.md)
 - [`20260703-knowledge_store_implementation.md`](./20260703-knowledge_store_implementation.md)

@@ -27,19 +27,15 @@ OpenKit 面向高效率学习和工作的专业个人，以及 typically 3-5 人
 
 ### 3.1 Agents as Teammates
 
-OpenKit 把 agents 当作真实 teammates，而不是一次性调用的工具。
+OpenKit treats agents as real teammates rather than disposable tool calls. Users may work directly with one agent, but the product should also provide one coherent way to direct and supervise the agent team through Core.
 
-每个 agent 都应在明确的 context、tools 和 skills 下尽可能 end to end 地完成任务，并对自己的工作结果负责。
-
-用户可以直接和某个 agent 对话，但更常见的模式是通过 `Core Agent` 或 `Core` 来管理整个 agent team。
+The normative rules for bounded delegation, execution accountability, human authority, and durable product truth belong to [Foundation](./core/foundation.md).
 
 ### 3.2 Human as Leader, Driver, and Supervisor
 
-具体任务由 agents 完成，但整个过程必须 trackable、可回溯、可解释，并且不脱离人的掌控。
+The real human remains the team's leader, driver, and supervisor. The product should give that human clear visibility into work, handoffs, outputs, and risks while agents perform delegated execution.
 
-Real human 始终是团队的 leader、driver 和 supervisor，拥有最终决定权和全局视野。
-
-系统需要帮助 human 保持对 task state、communication、handoff、outputs 和 risks 的持续可见性。
+[Foundation](./core/foundation.md) owns the normative final-authority, observability, reviewability, and stop-boundary doctrine.
 
 ### 3.3 Let Humans Focus on What Humans Do Best
 
@@ -59,27 +55,19 @@ OpenKit 的 unified interface 应让用户专注于发挥人最重要的能力�
 
 OpenKit 的基本架构是 `App + Core + Agent`。
 
-- `App` 提供面向用户的 UI，当前以 `SPA` 为主，未来可以封装为 desktop app。
-- `Core` 是 orchestration hub，负责 communication、task state、storage、routing、context supply、proxy 和 coordination。
-- `Agent` 封装实际执行任务的 agent runtimes，例如 `Codex`、`OpenCode`、`Pi Agent`，承担 heavy execution。
+- `App` is the user interaction surface.
+- `Core` is the governed coordination and durable-truth boundary.
+- `Agent` integrates specialized runtimes that perform delegated execution.
 
-这套边界的目的是保持 `Core minimal`，避免 Core 退化成另一个完整 runtime。
+[Foundation](./core/foundation.md) and [Architecture](./core/architecture.md) own the normative responsibility and execution boundaries; this section states only the product shape.
 
 ### 4.2 Core as Hub
 
-Core server 是整个体系的中枢，提供使用 agents 所需的功能、数据和基础设施。
-
-它不是另一个 `agent runtime`，而是让 human 高效管理 agent team 的统一操作层。
-
-Core 负责下达任务、分配执行、跟踪协作，并通过 UI 或外部 channels 持续呈现 communication、task state 和 outputs。
+To the user, Core is the unified operating layer for directing the agent team and observing its work. Its exact services and internal responsibilities belong to [Architecture](./core/architecture.md), not Product Vision.
 
 ### 4.3 Agents Do the Heavy Lifting
 
-复杂任务、大型执行、扩展逻辑和 runtime-specific capabilities 应交给 agents 完成。
-
-Core 可以完成 quick answer 和轻量任务，但不加载额外工具，不承担 heavy execution。
-
-这条边界保证 Core 始终保持 orchestrator 身份，并让系统最大化复用现有 agent ecosystem。
+The product should delegate complex and runtime-specific execution to specialized agents while keeping coordination coherent for the user. [Foundation](./core/foundation.md) owns the durable Core-versus-runtime boundary.
 
 ## 5. User Experience
 
@@ -170,7 +158,7 @@ Unified proxy 覆盖以下能力。
 
 Proxy 的核心价值如下。
 
-- **Auth proxy**：帮助 agent 访问需要认证的资源，agent 自身不需要持有或看到凭证。
+- **Auth proxy**: lets an agent access authenticated resources without placing credentials in prompts or stable product records; agent visibility depends on the approved injection path.
 - **Access control**：对 agent 可访问的外部资源进行限制和审批。
 - **Load balancing & rate limiting**：在多 agent 并发场景下管理外部资源访问压力。
 - **Audit & logging**：所有外部资源访问都经过 proxy，天然具备访问记录，支持 usage statistics、cost tracking 和 security audit。
@@ -185,11 +173,7 @@ Proxy 的核心价值如下。
 - 每次启动 agent session 时，传入对应的 `vault_id`。
 - Agent 调用外部工具时，由 proxy 层自动注入凭证。
 
-关键安全设计是 credentials 永远不会被读进 agent 的 context window。
-
-即使发生 prompt injection，agent 也无法泄露密钥，因为 credentials 根本不在 agent 能“看到”的地方。
-
-Credentials injection 发生在 proxy / transport layer，对 agent 完全透明。
+Credentials must remain outside agent prompts, context packages, and stable product records. [Vault](./core/vault.md) owns the visibility, containment, redaction, and audit contract for every approved injection path.
 
 ### 6.7 Knowledge Base / Notebook
 
@@ -292,27 +276,20 @@ Core 的结构和部署应保持轻量级。
 
 ### 8.1 Storage Strategy
 
-`SQLite` 是结构化数据的唯一存储引擎。
+OpenKit should keep durable product truth ownership-scoped, inspectable, portable, and operable without a required external database service in the baseline deployment.
 
-SQLite files 按 ownership scope 划分，而不是按功能模组划分：`core.sqlite` 属于 Core server，`user.sqlite` 属于单个 user，`workspace.sqlite` 属于单个 workspace，详见 `docs/core/storage.md`。每个 ownership scope 拥有自己的 db file，保持各 scope 数据独立、可替换、可单独备份。当前实现先以单一 `core.sqlite` 承载 server-scope 数据，`user.sqlite` 与 `workspace.sqlite` 随 scope 演进逐步落地。
-
-Filesystem `data/` 用于存储非结构化或半结构化数据，并按目录组织。
-
-- Thread / turn / item records。
-- Artifacts，也就是 agent 产出的工作产物。
-- 其他不适合放入 SQLite 的内容，例如大文件、二进制产物等。
+[Storage](./core/storage.md) owns the rules for persisting OpenKit-owned records and declaring their source of truth. Concrete engines, files, indexes, and physical topology belong to the owning storage specifications; this product vision does not freeze one database engine or one-file-per-scope layout.
 
 ### 8.2 Storage Benefits
 
-- **Zero external dependency**：不需要 PostgreSQL、Redis 或任何外部数据库服务，单机即可运行。
-- **Observability**：SQLite files 和 `data/` directory 都可以直接查看、备份、迁移。
-- **Ownership / scope isolation**：每个 ownership scope，例如 server、user、workspace，使用独立 db file（`core.sqlite` / `user.sqlite` / `workspace.sqlite`），避免单一数据库膨胀，也方便按 scope 演进、备份、导出和删除。
+- **Low operational dependency**: the baseline deployment requires no PostgreSQL, Redis, or other external database service.
+- **Observability and portability**: authoritative records and required companion state should be inspectable, backup-ready, and migratable through their owning contracts.
+- **Ownership / scope isolation**: server, user, and workspace data must retain clear ownership boundaries, while Storage and its specifications own the physical topology.
 
 ## 9. Design Principles
 
 - `Minimal implementation first`：先做最小可用实现，不在一开始追求完整平台化。
-- `Core minimal`：Core 只保留 orchestration 必需能力，不承担重执行逻辑。
-- `Agents do the heavy lifting`：大型任务、复杂执行、扩展逻辑交给 agents。
+- `Clear responsibility boundaries`: follow Foundation and Architecture instead of growing one component into another product or runtime.
 - `Reuse over reinvention`：优先封装 existing runtimes，而不是自研新 runtime。
 - `Speed matters`：系统需要快速响应，至少支持 quick answer 和基础工具调用。
 - `Small codebase`：控制复杂度，保持实现和维护成本可控。

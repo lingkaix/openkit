@@ -226,6 +226,8 @@ export interface CommandRequestResponse {
   kind: CommandRequestResponseKind;
   /** Resource id produced by the original command. */
   id: string;
+  /** Optional immutable public response required for exact command replay. */
+  snapshot?: unknown;
 }
 
 /**
@@ -2037,7 +2039,7 @@ export class FsStore {
     this.turns.set(turnId, updated);
     this.persist(turn.workspaceId);
     if (updated.status === 'completed' && !turn.completedAt && updated.completedAt) {
-      ensureTurnFeedback(this, updated, this.resolveTurnAgentId(updated));
+      ensureTurnFeedback(this, updated, updated.agentId ?? null);
     }
     return updated;
   }
@@ -2058,25 +2060,6 @@ export class FsStore {
    */
   public getUserId(): string {
     return this.userId;
-  }
-
-  /**
-   * Resolves the agent id associated with a turn.
-   *
-   * @param turn Turn record.
-   * @returns Agent id when available.
-   */
-  public resolveTurnAgentId(turn: Turn): string | null {
-    return (
-      [...this.agentSessions.values()]
-        .filter(
-          (session) =>
-            session.workspaceId === turn.workspaceId && session.threadId === turn.threadId
-        )
-        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0]?.agentId ??
-      this.getWorkspace(turn.workspaceId).defaults?.defaultAgentId ??
-      null
-    );
   }
 
   public createItem(input: Item): Item {
@@ -2318,6 +2301,9 @@ export class FsStore {
   public createArtifact(input: Artifact): Artifact {
     const artifact = ArtifactSchema.parse(input);
     this.getWorkspace(artifact.workspaceId);
+    if ((artifact.threadId === null) !== (artifact.turnId === null)) {
+      throw new Error(`Artifact thread and turn lineage must be paired: ${artifact.id}`);
+    }
     if (artifact.threadId !== null) {
       this.getThread(artifact.workspaceId, artifact.threadId);
     }
@@ -2332,10 +2318,31 @@ export class FsStore {
     if (existing && existing.workspaceId !== artifact.workspaceId) {
       throw new Error(`Artifact id belongs to another workspace: ${artifact.id}`);
     }
+    if (
+      existing &&
+      (existing.threadId !== artifact.threadId ||
+        existing.turnId !== artifact.turnId ||
+        existing.createdAt !== artifact.createdAt)
+    ) {
+      throw new Error(`Artifact immutable lineage cannot change: ${artifact.id}`);
+    }
 
+    this.assertArtifactReferenceLineage(artifact);
     this.artifacts.set(artifact.id, artifact);
     this.refreshWorkspaceCounts(artifact.workspaceId);
-    this.persist(artifact.workspaceId);
+    try {
+      this.persist(artifact.workspaceId);
+      this.recordArtifactReference(artifact);
+    } catch (error) {
+      if (existing) {
+        this.artifacts.set(existing.id, existing);
+      } else {
+        this.artifacts.delete(artifact.id);
+      }
+      this.refreshWorkspaceCounts(artifact.workspaceId);
+      this.persist(artifact.workspaceId);
+      throw error;
+    }
     return artifact;
   }
 
@@ -2360,6 +2367,12 @@ export class FsStore {
     }
     this.artifacts.delete(artifactId);
     this.artifactReviews.delete(artifactId);
+    const reference = [...this.items.values()].find(
+      (item) => item.type === 'artifact-reference' && item.artifactId === artifactId
+    );
+    if (reference) {
+      this.updateItem(reference.id, { status: 'declined', completedAt: now() });
+    }
     this.refreshWorkspaceCounts(workspaceId);
     this.persist(workspaceId);
   }
@@ -2381,9 +2394,76 @@ export class FsStore {
     const artifact = this.getArtifact(workspaceId, artifactId);
 
     const updated: Artifact = { ...artifact, ...input, updatedAt: input.updatedAt ?? now() };
+    this.assertArtifactReferenceLineage(updated);
     this.artifacts.set(artifactId, updated);
-    this.persist(workspaceId);
+    try {
+      this.persist(workspaceId);
+      this.recordArtifactReference(updated);
+    } catch (error) {
+      this.artifacts.set(artifactId, artifact);
+      this.persist(workspaceId);
+      throw error;
+    }
     return updated;
+  }
+
+  /**
+   * Creates or revises the one Item that communicates a turn-bound Artifact.
+   *
+   * @param artifact Current Artifact revision.
+   */
+  private recordArtifactReference(artifact: Artifact): void {
+    if (artifact.threadId === null || artifact.turnId === null) {
+      return;
+    }
+
+    const itemId = `it_artifact_${artifact.id}`;
+    const existing = this.items.get(itemId);
+
+    const reference = {
+      id: itemId,
+      workspaceId: artifact.workspaceId,
+      threadId: artifact.threadId,
+      turnId: artifact.turnId,
+      type: 'artifact-reference',
+      status: 'completed',
+      artifactId: artifact.id,
+      artifactVersion: artifact.version,
+      title: artifact.title,
+      summary: artifact.summary,
+      createdAt: existing?.createdAt ?? artifact.createdAt,
+      completedAt: artifact.updatedAt,
+    } as const;
+
+    if (existing) {
+      this.updateItem(itemId, reference);
+    } else {
+      this.createItem(reference);
+    }
+  }
+
+  /**
+   * Validates the deterministic Item identity reserved for one turn-bound Artifact.
+   *
+   * @param artifact Artifact whose communicating Item must remain on the same lineage.
+   * @throws Error when the deterministic Item id is occupied by another identity.
+   */
+  private assertArtifactReferenceLineage(artifact: Artifact): void {
+    if (artifact.threadId === null || artifact.turnId === null) {
+      return;
+    }
+
+    const existing = this.items.get(`it_artifact_${artifact.id}`);
+    if (
+      existing &&
+      (existing.type !== 'artifact-reference' ||
+        existing.workspaceId !== artifact.workspaceId ||
+        existing.threadId !== artifact.threadId ||
+        existing.turnId !== artifact.turnId ||
+        existing.artifactId !== artifact.id)
+    ) {
+      throw new Error(`Artifact reference has invalid lineage: ${artifact.id}`);
+    }
   }
 
   public listArtifacts(workspaceId: string): Artifact[] {

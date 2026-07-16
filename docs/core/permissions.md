@@ -28,6 +28,7 @@ The permission model gives Core a stable way to decide whether those actions are
 - Multiple layers may enforce the same decision, but Core should remain able to explain the policy result.
 - Policy details may evolve, but permission vocabulary should remain stable enough for audit, UI summaries, and agent capability control.
 - OpenKit may implement only a subset of NGAC, but every implemented NGAC concept MUST match NGAC definitions, standard terminology, and described semantics. Product adapters MAY expose friendlier names, but Core policy doctrine MUST preserve NGAC as the long-term standard rather than creating a parallel OpenKit-specific authorization model.
+- Workspace authorization is deny-by-default and uses current identity, membership, credential, and resource facts on every governed request.
 
 ## Boundary
 
@@ -68,6 +69,7 @@ Subjects may include:
 
 - user
 - workspace member
+- deployment administrator
 - agent
 - profile
 - agent session
@@ -123,7 +125,8 @@ Resources should be scoped by workspace unless explicitly global or shared.
 Examples:
 
 - current workspace
-- user role
+- current membership status and product access level
+- token scope and Workspace binding
 - agent identity
 - agent session status
 - turn status
@@ -180,6 +183,7 @@ Permission checks should happen at enforcement points.
 
 Examples:
 
+- centralized Workspace access resolution before a Workspace-addressed handler reads or mutates state
 - app API command handler
 - Core scheduler
 - agent adapter
@@ -225,3 +229,7 @@ Detailed audit semantics belong to `docs/core/audit.md`.
 - Permission-sensitive actions SHOULD leave audit records or enough metadata for future audit projection.
 - Approval records MUST NOT be treated as a complete permission engine unless a policy requirement explicitly links the approval to an authorization decision.
 - Product UI summaries MUST NOT become the policy source of truth.
+- Workspace product roles MAY be convenient adapter inputs, but their permissions MUST be projected into the policy kernel rather than enforced by a second handler-local role engine.
+- Invitation state, filesystem presence, owner-nested paths, and token scope alone MUST NOT grant Workspace access.
+- Deployment-administrator authority MUST NOT imply ordinary Workspace content authority; explicit audited recovery changes membership or ownership before normal authorization applies.
+- Missing actor, responsible-user, membership, resource, token-binding, or required policy facts MUST fail closed.

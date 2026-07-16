@@ -30,6 +30,8 @@
     "test:stories:real-codex": "node tests/story-runner/real-codex-goal-mode-runner.mjs",
     "test:stories:real-provider": "node tests/story-runner/pi-ai-real-provider-runner.mjs",
     "test:stories:real-task-mode": "node tests/story-runner/task-mode-real-worker-runner.mjs",
+    "test:stories:a1-restart:preflight": "pnpm --filter @openkit/nanocore... build && pnpm --filter @openkit/core-client... build && bash -n apps/nanocore/scripts/openshell-cell.sh && node --test --test-name-pattern=\"streams A1 auth|partial account file|hung SSH auth stream\" tests/story-runner/real-codex-goal-mode-runner.test.mjs && node --test tests/story-runner/a1-nanocore-restart-runner.test.mjs && pnpm --filter @openkit/nanocore exec vitest run src/runtime/openshell-cell.test.ts",
+    "test:stories:a1-restart": "pnpm run test:stories:a1-restart:preflight && node tests/story-runner/a1-nanocore-restart-runner.mjs",
     "verify:l0-l2": "pnpm run check:repo && pnpm lint && pnpm typecheck && pnpm run test:unit && pnpm run test:coverage && pnpm build",
     "verify": "pnpm run verify:l0-l2",
     "verify:release": "pnpm run verify:l0-l2 && pnpm run test:e2e:nano && pnpm run test:smoke",

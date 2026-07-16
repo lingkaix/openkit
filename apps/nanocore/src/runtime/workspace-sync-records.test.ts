@@ -655,7 +655,7 @@ describe('workspace sync records', () => {
       expect(listBackendWorkspaceHandles(workspaceDb, 'ws_demo')).toEqual([
         expect.objectContaining({
           cleanupStatus: 'cleaned',
-          updatedAt: '2026-07-05T00:03:00.000Z',
+          updatedAt: '2026-07-05T00:02:00.000Z',
         }),
       ]);
     } finally {

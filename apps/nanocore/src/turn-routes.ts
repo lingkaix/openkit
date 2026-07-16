@@ -113,6 +113,13 @@ export function registerTurnRoutes({
         return c.json(turn, 202);
       }
 
+      if (store.getWorkspace(input.workspaceId).kind === 'quick-chat') {
+        throw new TurnStartValidationError(
+          'workspace_kind_not_supported',
+          'Quick Chat workspace cannot start worker turns. Create or select a project workspace.'
+        );
+      }
+      store.getThread(input.workspaceId, input.threadId);
       const turn = await runIdempotentCommand({
         store,
         inflightCommands,
@@ -122,13 +129,21 @@ export function registerTurnRoutes({
         input,
         responseKind: 'turn',
         execute: async () => {
-          if (store.getWorkspace(input.workspaceId).kind === 'quick-chat') {
+          const threadBusy = store
+            .listThreadTurns(input.workspaceId, input.threadId)
+            .some(
+              (turn) =>
+                turn.status === 'pending' ||
+                turn.status === 'running' ||
+                turn.status === 'awaiting_human'
+            );
+          if (threadBusy) {
             throw new TurnStartValidationError(
-              'workspace_kind_not_supported',
-              'Quick Chat workspace cannot start worker turns. Create or select a project workspace.'
+              'thread_busy',
+              'Thread already has an active worker turn.',
+              409
             );
           }
-          store.getThread(input.workspaceId, input.threadId);
 
           const handle = await startProductTurn({
             input,

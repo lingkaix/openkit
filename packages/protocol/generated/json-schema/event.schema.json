@@ -754,6 +754,11 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "artifactVersion": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
                               "title": {
                                 "type": "string",
                                 "minLength": 1
@@ -779,6 +784,7 @@
                               "completedAt",
                               "type",
                               "artifactId",
+                              "artifactVersion",
                               "title",
                               "summary"
                             ],
@@ -2597,6 +2603,11 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "artifactVersion": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
                               "title": {
                                 "type": "string",
                                 "minLength": 1
@@ -2622,6 +2633,7 @@
                               "completedAt",
                               "type",
                               "artifactId",
+                              "artifactVersion",
                               "title",
                               "summary"
                             ],
@@ -4440,6 +4452,11 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "artifactVersion": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
                               "title": {
                                 "type": "string",
                                 "minLength": 1
@@ -4465,6 +4482,7 @@
                               "completedAt",
                               "type",
                               "artifactId",
+                              "artifactVersion",
                               "title",
                               "summary"
                             ],
@@ -6330,6 +6348,11 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "artifactVersion": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
                               "title": {
                                 "type": "string",
                                 "minLength": 1
@@ -6355,6 +6378,7 @@
                               "completedAt",
                               "type",
                               "artifactId",
+                              "artifactVersion",
                               "title",
                               "summary"
                             ],
@@ -8173,6 +8197,11 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "artifactVersion": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
                               "title": {
                                 "type": "string",
                                 "minLength": 1
@@ -8198,6 +8227,7 @@
                               "completedAt",
                               "type",
                               "artifactId",
+                              "artifactVersion",
                               "title",
                               "summary"
                             ],
@@ -10016,6 +10046,11 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "artifactVersion": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
                               "title": {
                                 "type": "string",
                                 "minLength": 1
@@ -10041,6 +10076,7 @@
                               "completedAt",
                               "type",
                               "artifactId",
+                              "artifactVersion",
                               "title",
                               "summary"
                             ],
@@ -11859,6 +11895,11 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "artifactVersion": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
                               "title": {
                                 "type": "string",
                                 "minLength": 1
@@ -11884,6 +11925,7 @@
                               "completedAt",
                               "type",
                               "artifactId",
+                              "artifactVersion",
                               "title",
                               "summary"
                             ],
@@ -13701,6 +13743,11 @@
                       "type": "string",
                       "minLength": 1
                     },
+                    "artifactVersion": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
                     "title": {
                       "type": "string",
                       "minLength": 1
@@ -13726,6 +13773,7 @@
                     "completedAt",
                     "type",
                     "artifactId",
+                    "artifactVersion",
                     "title",
                     "summary"
                   ],
@@ -15896,6 +15944,11 @@
                       "type": "string",
                       "minLength": 1
                     },
+                    "artifactVersion": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
                     "title": {
                       "type": "string",
                       "minLength": 1
@@ -15921,6 +15974,7 @@
                     "completedAt",
                     "type",
                     "artifactId",
+                    "artifactVersion",
                     "title",
                     "summary"
                   ],
@@ -18164,6 +18218,11 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "artifactVersion": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
                               "title": {
                                 "type": "string",
                                 "minLength": 1
@@ -18189,6 +18248,7 @@
                               "completedAt",
                               "type",
                               "artifactId",
+                              "artifactVersion",
                               "title",
                               "summary"
                             ],
@@ -20007,6 +20067,11 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "artifactVersion": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
                               "title": {
                                 "type": "string",
                                 "minLength": 1
@@ -20032,6 +20097,7 @@
                               "completedAt",
                               "type",
                               "artifactId",
+                              "artifactVersion",
                               "title",
                               "summary"
                             ],
@@ -21850,6 +21916,11 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "artifactVersion": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
                               "title": {
                                 "type": "string",
                                 "minLength": 1
@@ -21875,6 +21946,7 @@
                               "completedAt",
                               "type",
                               "artifactId",
+                              "artifactVersion",
                               "title",
                               "summary"
                             ],
@@ -23740,6 +23812,11 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "artifactVersion": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
                               "title": {
                                 "type": "string",
                                 "minLength": 1
@@ -23765,6 +23842,7 @@
                               "completedAt",
                               "type",
                               "artifactId",
+                              "artifactVersion",
                               "title",
                               "summary"
                             ],
@@ -25583,6 +25661,11 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "artifactVersion": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
                               "title": {
                                 "type": "string",
                                 "minLength": 1
@@ -25608,6 +25691,7 @@
                               "completedAt",
                               "type",
                               "artifactId",
+                              "artifactVersion",
                               "title",
                               "summary"
                             ],
@@ -27426,6 +27510,11 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "artifactVersion": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
                               "title": {
                                 "type": "string",
                                 "minLength": 1
@@ -27451,6 +27540,7 @@
                               "completedAt",
                               "type",
                               "artifactId",
+                              "artifactVersion",
                               "title",
                               "summary"
                             ],
@@ -29269,6 +29359,11 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "artifactVersion": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
                               "title": {
                                 "type": "string",
                                 "minLength": 1
@@ -29294,6 +29389,7 @@
                               "completedAt",
                               "type",
                               "artifactId",
+                              "artifactVersion",
                               "title",
                               "summary"
                             ],

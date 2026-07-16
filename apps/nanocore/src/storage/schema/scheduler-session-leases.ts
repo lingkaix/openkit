@@ -66,6 +66,10 @@ export const schedulerSessionLeases = sqliteTable(
     releaseReason: text('release_reason'),
     /** Recovery state for terminal or takeover leases. */
     recoveryState: text('recovery_state'),
+    /** Fixed deadline for a surviving worker process to reconnect after NanoCore restarts. */
+    recoveryDeadline: text('recovery_deadline'),
+    /** SHA-256 digest of the worker process's memory-only reconnect key. */
+    workerProcessKeyHash: text('worker_process_key_hash'),
   },
   (table) => [
     index('scheduler_session_leases_plan_idx').on(table.planId, table.status),
@@ -80,6 +84,7 @@ export const schedulerSessionLeases = sqliteTable(
       table.expiresAt,
       table.heartbeatDeadline
     ),
+    index('scheduler_session_leases_recovery_idx').on(table.recoveryState, table.recoveryDeadline),
     uniqueIndex('scheduler_session_leases_binding_idx').on(table.sandboxBindingRef),
   ]
 );

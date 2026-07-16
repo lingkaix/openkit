@@ -317,7 +317,7 @@ describe('FsStore canonical reload', () => {
       createdAt: turn.startedAt ?? new Date().toISOString(),
       completedAt: turn.startedAt ?? new Date().toISOString(),
     });
-    const assistantItem = store.createItem({
+    store.createItem({
       id: `it_assistant_${turn.id}`,
       workspaceId: workspace.id,
       threadId: thread.id,
@@ -340,7 +340,7 @@ describe('FsStore canonical reload', () => {
       createdAt: userItem.createdAt,
       resolvedAt: null,
     });
-    const approvalRequestItem = store.createItem({
+    store.createItem({
       id: `it_approval_request_${turn.id}`,
       workspaceId: workspace.id,
       threadId: thread.id,
@@ -484,12 +484,7 @@ describe('FsStore canonical reload', () => {
     );
     expect(restarted.getThread(workspace.id, thread.id)).toEqual(persistedThread);
     expect(restarted.getTurn(workspace.id, thread.id, turn.id)).toEqual(completedTurn);
-    expect(restarted.listThreadItems(workspace.id, thread.id)).toEqual([
-      userItem,
-      assistantItem,
-      approvalRequestItem,
-      approvalDecisionItem,
-    ]);
+    expect(restarted.listThreadItems(workspace.id, thread.id)).toEqual(completedTurn.items);
     expect(restarted.getApproval(approval.id)).toEqual(resolvedApproval);
     expect(restarted.getAgentSession(agentSession.id)).toEqual(agentSession);
     expect(restarted.getArtifact(workspace.id, artifact.id)).toEqual(artifact);
@@ -1241,6 +1236,7 @@ describe('FsStore canonical reload', () => {
     ['non-contiguous events', /Turn event .* invalid lineage/],
     ['batch duplicate thread', /Duplicate .*thread/i],
     ['null-thread agent session', /Agent session .* invalid lineage/],
+    ['orphan turn-bound artifact', /artifact-reference/i],
   ] as const)('rejects imported workspace history with %s', (violation, expectedError) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-invalid-import-history-'));
     const store = new FsStore({ dataRoot });
@@ -1295,6 +1291,24 @@ describe('FsStore canonical reload', () => {
             sessionCompatibilityKey: null,
             stale: false,
             workspaceRoots: [],
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          },
+        ];
+        break;
+      case 'orphan turn-bound artifact':
+        input.artifacts = [
+          {
+            id: 'ar_orphan_turn_bound_import',
+            workspaceId,
+            threadId: turn.threadId,
+            turnId: turn.id,
+            kind: 'summary',
+            title: 'Orphan imported artifact',
+            status: 'ready',
+            summary: null,
+            version: 1,
+            content: { format: 'text', body: 'This Artifact has no Item lineage.' },
             createdAt: timestamp,
             updatedAt: timestamp,
           },

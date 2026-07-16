@@ -154,7 +154,7 @@ The Knowledge Manager owns knowledge retrieval support and knowledge maintenance
 
 After the worker capability plane is implemented, worker agents may request additional knowledge through Core-governed capability and knowledge boundaries. Those future requests should route to the Knowledge Manager or a Knowledge Manager-backed service rather than letting the worker read the Knowledge Store directly. A selected Knowledge reference becomes worker-visible only when Core explicitly binds it into the worker input or a materialized Context Package; selection alone does not imply delivery.
 
-`Context Package` is a data projection owned by `knowledge.md` and projected into workflow. It is not a separate internal agent. The Knowledge Manager prepares knowledge-derived material for the package, while the Workflow Coordinator assembles the final worker context for the specific step.
+`Context Package` is a data projection owned by `knowledge.md` and projected into workflow. It is not a separate Internal Core Role. The Knowledge Manager prepares knowledge-derived material for the package, while the Workflow Coordinator assembles the final worker context for the specific step.
 
 The future Task Evaluator may review task outcomes, workflow or Skill updates, test evidence, verification results, and measured improvement before changes are accepted. Until its evaluation model is designed, it remains a placeholder role rather than a required workflow mechanism.
 
@@ -328,7 +328,7 @@ If a future graph is promoted, it should be designed around explicit workflow an
 - The Workflow Coordinator MUST NOT bypass the Knowledge Manager or Core-governed knowledge boundary when worker context needs reusable knowledge.
 - The Knowledge Manager MUST NOT own the whole task workflow or silently update high-impact knowledge without the required review gate.
 - Worker agents MUST NOT read the Knowledge Store directly. Core MUST supply selected Knowledge through prepared context packages or, after the worker capability plane exists, through Core-governed capability and knowledge boundaries.
-- Context packages MUST remain data projections, not internal agent roles.
+- Context packages MUST remain data projections, not Internal Core Roles.
 - A channel MUST NOT advance workflow state by mutating worker runtime internals, storage internals, or agent-private state directly.
 - A worker agent MUST NOT be treated as the canonical owner of workflow state merely because it executed a step.
 - A bounded step MUST return observable status to Core before the next bounded step is run.

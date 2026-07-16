@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,6 +15,7 @@ import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-le
 import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
 import { runSchedulerLeaseMaintenanceOnce } from './runtime/scheduler-lease-maintenance-service.js';
 import {
+  markWorkerBackendWorkspaceHandoffComplete,
   recordWorkerBackendSessionMaterializing,
   transitionWorkerBackendSessionState,
 } from './runtime/worker-backend-sessions.js';
@@ -266,6 +268,23 @@ function markWorkerControlBackendSessionCleaned(coreDb: CoreDb, leaseId: string)
   }
 }
 
+/** Builds the only worker heartbeat request shape accepted by the HTTP route. */
+function heartbeatEnvelope(
+  lineage: WorkerControlLineage,
+  sequence: number,
+  status: 'starting' | 'running' | 'stopping',
+  message: string | null = null,
+  processKeyHash?: string
+) {
+  return {
+    body: { message, ...(processKeyHash ? { processKeyHash } : {}), status },
+    lineage,
+    operation: 'heartbeat' as const,
+    schemaVersion: 1 as const,
+    sequence,
+  };
+}
+
 describe('worker control routes', () => {
   it('keeps worker route planes ahead of product API middleware', () => {
     const routes = createApp()
@@ -290,6 +309,121 @@ describe('worker control routes', () => {
       'ALL /api/*',
       'ALL /api/*',
     ]);
+  });
+
+  it.each([
+    [
+      'original process key',
+      createHash('sha256').update('route-process-key').digest('base64url'),
+      true,
+    ],
+    [
+      'different process key',
+      createHash('sha256').update('wrong-route-process-key').digest('base64url'),
+      false,
+    ],
+  ] as const)('accepts restart heartbeat only for the %s', async (_case, reconnectKey, accepted) => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-reconnect-route-')));
+    const fixture = createWorkerControlRouteFixture();
+    const originalKey = createHash('sha256').update('route-process-key').digest('base64url');
+    const processKeyHash = createHash('sha256')
+      .update(Buffer.from(originalKey, 'base64url'))
+      .digest('base64url');
+
+    try {
+      applyMigrations(coreDb);
+      const binding = createDurableWorkerControlLease(
+        coreDb,
+        fixture.environmentPackage,
+        fixture.lineage,
+        'process_key_reconnect'
+      );
+      const leaseId = recordWorkerControlBackendSession(
+        coreDb,
+        fixture.environmentPackage,
+        fixture.lineage,
+        binding,
+        'sandbox-process-key-reconnect'
+      );
+      transitionWorkerBackendSessionState(coreDb, {
+        fromState: 'materializing',
+        leaseId,
+        toState: 'materialized',
+      });
+      transitionWorkerBackendSessionState(coreDb, {
+        fromState: 'materialized',
+        leaseId,
+        toState: 'launching',
+      });
+      markWorkerBackendWorkspaceHandoffComplete(coreDb, { leaseId });
+      const firstGateway = createDefaultWorkerControlGateway(coreDb);
+      firstGateway.registerSession(fixture.environmentPackage, { sandboxBindingRef: binding });
+      const firstApp = createApp({
+        coreDb,
+        mode: 'server',
+        store: fixture.store,
+        workerControlGateway: firstGateway,
+      });
+      const firstHeartbeat = await firstApp.request('/api/worker-control/heartbeat', {
+        body: JSON.stringify(
+          heartbeatEnvelope(fixture.lineage, 0, 'starting', null, processKeyHash)
+        ),
+        headers: { authorization: `Bearer ${binding}`, 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      expect(firstHeartbeat.status).toBe(200);
+      coreDb.sqlite
+        .prepare(
+          `UPDATE scheduler_session_leases
+           SET recovery_state = 'awaiting-reconnect',
+               recovery_deadline = '2099-01-01T00:00:00.000Z',
+               scheduler_epoch = 2
+           WHERE lease_id = 'lease_process_key_reconnect'`
+        )
+        .run();
+
+      const restartedGateway = createDefaultWorkerControlGateway(coreDb);
+      restartedGateway.registerSession(fixture.environmentPackage, { sandboxBindingRef: binding });
+      const restartedApp = createApp({
+        coreDb,
+        mode: 'server',
+        store: fixture.store,
+        workerControlGateway: restartedGateway,
+      });
+      const reconnect = await restartedApp.request('/api/worker-control/heartbeat', {
+        body: JSON.stringify({
+          ...heartbeatEnvelope(fixture.lineage, 1, 'running', 'Worker survived NanoCore restart.'),
+          reconnectKey,
+        }),
+        headers: { authorization: `Bearer ${binding}`, 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      const lease = requireSchedulerSessionLease(coreDb, 'lease_process_key_reconnect');
+      const durableWorkerControl = JSON.stringify(
+        coreDb.sqlite
+          .prepare(
+            `SELECT record_json FROM worker_control_records
+             UNION ALL
+             SELECT fingerprint AS record_json FROM worker_control_sequence_fingerprints`
+          )
+          .all()
+      );
+
+      expect(reconnect.status === 200).toBe(accepted);
+      expect(lease).toMatchObject(
+        accepted
+          ? { lastWorkerSequence: 1, recoveryDeadline: null, recoveryState: null }
+          : {
+              lastWorkerSequence: 0,
+              recoveryDeadline: '2099-01-01T00:00:00.000Z',
+              recoveryState: 'awaiting-reconnect',
+            }
+      );
+      expect(await reconnect.text()).not.toContain(reconnectKey);
+      expect(durableWorkerControl).not.toContain(reconnectKey);
+    } finally {
+      coreDb.sqlite.close();
+    }
   });
 
   it('keeps event append sequence conflicts durable across default gateway instances', async () => {
@@ -453,12 +587,7 @@ describe('worker control routes', () => {
         workerControlGateway: gateway,
       });
       const heartbeat = await app.request('/api/worker-control/heartbeat', {
-        body: JSON.stringify({
-          lineage,
-          message: 'Worker is alive.',
-          sequence: 1,
-          status: 'running',
-        }),
+        body: JSON.stringify(heartbeatEnvelope(lineage, 1, 'running', 'Worker is alive.')),
         headers: {
           authorization: `Bearer ${registration.token}`,
           'content-type': 'application/json',
@@ -535,8 +664,8 @@ describe('worker control routes', () => {
       const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
       const requests = [
         {
-          accepted: { lineage, message: 'alive', sequence: 1, status: 'running' },
-          conflict: { lineage, message: 'changed', sequence: 1, status: 'running' },
+          accepted: heartbeatEnvelope(lineage, 1, 'running', 'alive'),
+          conflict: heartbeatEnvelope(lineage, 1, 'running', 'changed'),
           operation: 'heartbeat',
           route: '/api/worker-control/heartbeat',
         },
@@ -865,9 +994,7 @@ describe('worker control routes', () => {
 
     gateway.recordHeartbeat({
       authorization: `Bearer ${registration.token}`,
-      lineage,
-      sequence: 1,
-      status: 'running',
+      ...heartbeatEnvelope(lineage, 1, 'running'),
     });
     expect(requireSchedulerSessionLease(coreDb, 'lease_default_binding')).toMatchObject({
       lastAcceptedHeartbeatAt: expect.any(String),
@@ -880,11 +1007,7 @@ describe('worker control routes', () => {
       .prepare('UPDATE scheduler_session_leases SET last_worker_sequence = ? WHERE lease_id = ?')
       .run(3, 'lease_default_binding');
     const staleSequenceResponse = await app.request('/api/worker-control/heartbeat', {
-      body: JSON.stringify({
-        lineage,
-        sequence: 2,
-        status: 'running',
-      }),
+      body: JSON.stringify(heartbeatEnvelope(lineage, 2, 'running')),
       headers: {
         authorization: `Bearer ${registration.token}`,
         'content-type': 'application/json',
@@ -913,11 +1036,7 @@ describe('worker control routes', () => {
       END
     `);
     const failedHeartbeatResponse = await app.request('/api/worker-control/heartbeat', {
-      body: JSON.stringify({
-        lineage,
-        sequence: 2,
-        status: 'running',
-      }),
+      body: JSON.stringify(heartbeatEnvelope(lineage, 2, 'running')),
       headers: {
         authorization: `Bearer ${registration.token}`,
         'content-type': 'application/json',
@@ -970,11 +1089,7 @@ describe('worker control routes', () => {
       )
       .run('lease_default_binding');
     const staleResponse = await app.request('/api/worker-control/heartbeat', {
-      body: JSON.stringify({
-        lineage,
-        sequence: 2,
-        status: 'running',
-      }),
+      body: JSON.stringify(heartbeatEnvelope(lineage, 2, 'running')),
       headers: {
         authorization: `Bearer ${registration.token}`,
         'content-type': 'application/json',
@@ -995,9 +1110,7 @@ describe('worker control routes', () => {
     expect(() =>
       gateway.recordHeartbeat({
         authorization: `Bearer ${registration.token}`,
-        lineage,
-        sequence: 3,
-        status: 'running',
+        ...heartbeatEnvelope(lineage, 3, 'running'),
       })
     ).toThrowError(
       expect.objectContaining({
@@ -1019,7 +1132,7 @@ describe('worker control routes', () => {
       const registration = gateway.registerSession(environmentPackage);
       const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
       const response = await app.request('/api/worker-control/heartbeat', {
-        body: JSON.stringify({ lineage, sequence: 1, status: 'running' }),
+        body: JSON.stringify(heartbeatEnvelope(lineage, 1, 'running')),
         headers: {
           authorization: `Bearer ${registration.token}`,
           'content-type': 'application/json',
@@ -1048,11 +1161,7 @@ describe('worker control routes', () => {
 
     coreDb.sqlite.close();
     const response = await app.request('/api/worker-control/heartbeat', {
-      body: JSON.stringify({
-        lineage,
-        sequence: 1,
-        status: 'running',
-      }),
+      body: JSON.stringify(heartbeatEnvelope(lineage, 1, 'running')),
       headers: {
         authorization: `Bearer ${registration.token}`,
         'content-type': 'application/json',
@@ -2338,7 +2447,7 @@ describe('worker control routes', () => {
     const padding = 'x'.repeat(70 * 1024);
     const requests = [
       {
-        body: { lineage, message: padding, sequence: 1, status: 'running' },
+        body: heartbeatEnvelope(lineage, 1, 'running', padding),
         path: '/api/worker-control/heartbeat',
       },
       {
@@ -2388,12 +2497,7 @@ describe('worker control routes', () => {
     const { app, lineage, token } = createWorkerControlRouteFixture();
 
     const res = await app.request('/api/worker-control/heartbeat', {
-      body: JSON.stringify({
-        lineage,
-        message: 'Worker is alive.',
-        sequence: 1,
-        status: 'running',
-      }),
+      body: JSON.stringify(heartbeatEnvelope(lineage, 1, 'running', 'Worker is alive.')),
       headers: {
         authorization: `Bearer ${token}`,
         'content-type': 'application/json',
@@ -2814,12 +2918,7 @@ describe('worker control routes', () => {
       });
 
       const firstHeartbeatResponse = await firstApp.request('/api/worker-control/heartbeat', {
-        body: JSON.stringify({
-          lineage,
-          message: 'Worker is alive.',
-          sequence: 1,
-          status: 'running',
-        }),
+        body: JSON.stringify(heartbeatEnvelope(lineage, 1, 'running', 'Worker is alive.')),
         headers: {
           authorization: `Bearer ${firstRegistration.token}`,
           'content-type': 'application/json',
@@ -2870,10 +2969,7 @@ describe('worker control routes', () => {
       const authorization = 'Bearer lease-binding:lease_rebuild';
       const retryHeartbeat = rebuiltGateway.recordHeartbeat({
         authorization,
-        lineage,
-        message: 'Worker is alive.',
-        sequence: 1,
-        status: 'running',
+        ...heartbeatEnvelope(lineage, 1, 'running', 'Worker is alive.'),
       });
       const snapshot = rebuiltGateway.getSessionSnapshot(lineage.packageSnapshotId);
       const leaseAfterRetry = requireSchedulerSessionLease(coreDb, 'lease_rebuild');
@@ -3095,11 +3191,7 @@ describe('worker control routes', () => {
     const { app, lineage } = createWorkerControlRouteFixture();
 
     const res = await app.request('/api/worker-control/heartbeat', {
-      body: JSON.stringify({
-        lineage,
-        sequence: 1,
-        status: 'running',
-      }),
+      body: JSON.stringify(heartbeatEnvelope(lineage, 1, 'running')),
       headers: {
         authorization: 'Bearer wrong',
         'content-type': 'application/json',

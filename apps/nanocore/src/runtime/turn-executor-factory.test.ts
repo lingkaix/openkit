@@ -75,6 +75,9 @@ describe('createConfiguredTurnExecutor', () => {
 
     expect(executor).toBeInstanceOf(WorkerGovernanceTurnExecutor);
     expect(
+      (executor as unknown as { awaitWorkerCompletion: unknown }).awaitWorkerCompletion
+    ).toEqual(expect.any(Function));
+    expect(
       (executor as unknown as { environmentBackend: { kind: string; placement?: string } })
         .environmentBackend
     ).toMatchObject({

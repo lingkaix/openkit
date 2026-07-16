@@ -1,6 +1,8 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import {
   type WorkerCanonicalEventRecord,
   WorkerCanonicalEventRecordSchema,
+  WorkerCanonicalTerminalStatusSchema,
 } from '@openkit/worker-protocol';
 import {
   requireSchedulerSessionLeaseAdmissionContext,
@@ -10,10 +12,25 @@ import type { CoreDb } from '../storage/db.js';
 import type {
   WorkerControlAcceptedRecordRecorder,
   WorkerControlAcceptedRecordRecorderInput,
+  WorkerControlFinalStatus,
   WorkerControlFinalStatusTokenBindingResolution,
   WorkerControlLineage,
   WorkerControlTokenBindingInput,
 } from './worker-control-gateway.js';
+
+/** Default interval for observing one scheduler-owned durable final status. */
+const WORKER_FINAL_STATUS_POLL_INTERVAL_MS = 100;
+
+/** Inputs for waiting until one exact scheduler-owned worker has durably completed. */
+export interface WaitForWorkerControlFinalStatusInput {
+  /** Scheduler lease that owns the worker. */
+  readonly leaseId: string;
+  /** Complete worker-control lineage that the final status must match. */
+  readonly lineage: WorkerControlLineage;
+}
+
+/** Durable final-status fields required by online and restart closeout. */
+export type AcceptedWorkerFinalStatus = Pick<WorkerControlFinalStatus, 'acceptedAt' | 'status'>;
 
 /**
  * Creates a server-scope SQLite recorder for accepted worker-control records.
@@ -120,6 +137,94 @@ export function listWorkerControlAcceptedEvents(
 
     return record;
   });
+}
+
+/** Reads the accepted final status for one exact worker lineage. */
+export function getWorkerControlAcceptedFinalStatus(
+  coreDb: CoreDb,
+  lineage: WorkerControlLineage
+): AcceptedWorkerFinalStatus | null {
+  const row = coreDb.sqlite
+    .prepare(
+      `SELECT record_json AS recordJson, accepted_at AS acceptedAt
+       FROM worker_control_records
+       WHERE workspace_id = ?
+         AND thread_id = ?
+         AND turn_id = ?
+         AND agent_session_id = ?
+         AND package_snapshot_id = ?
+         AND request_id IS ?
+         AND operation = 'final_status'
+       LIMIT 1`
+    )
+    .get(
+      lineage.workspaceId,
+      lineage.threadId,
+      lineage.turnId,
+      lineage.agentSessionId,
+      lineage.packageSnapshotId,
+      lineage.requestId ?? null
+    ) as { readonly acceptedAt: string; readonly recordJson: string } | undefined;
+  if (!row) {
+    return null;
+  }
+  const status = WorkerCanonicalTerminalStatusSchema.parse(
+    (JSON.parse(row.recordJson) as { readonly status?: unknown }).status
+  );
+  return { acceptedAt: row.acceptedAt, status };
+}
+
+/**
+ * Waits until one exact worker final status is durable or its lease can no longer complete.
+ *
+ * A final status accepted before lease expiry remains authoritative after expiry. Without that
+ * record, only pre-terminal live lease states may continue waiting.
+ *
+ * @param coreDb Server-scope Core database.
+ * @param input Exact lease, worker lineage, clock, and optional poll interval.
+ * @throws Error when lineage is absent, the lease expires, or its state becomes non-waitable.
+ */
+export async function waitForWorkerControlFinalStatus(
+  coreDb: CoreDb,
+  input: WaitForWorkerControlFinalStatusInput
+): Promise<AcceptedWorkerFinalStatus> {
+  for (;;) {
+    const lease = coreDb.sqlite
+      .prepare(
+        `SELECT status, expires_at AS expiresAt
+         FROM scheduler_session_leases
+         WHERE lease_id = ?
+           AND workspace_id = ?
+           AND thread_id = ?
+           AND turn_id = ?
+           AND agent_session_id = ?
+           AND package_snapshot_id = ?`
+      )
+      .get(
+        input.leaseId,
+        input.lineage.workspaceId,
+        input.lineage.threadId,
+        input.lineage.turnId,
+        input.lineage.agentSessionId,
+        input.lineage.packageSnapshotId
+      ) as { readonly expiresAt: string; readonly status: string } | undefined;
+
+    if (!lease) {
+      throw new Error('Worker completion lease does not match the exact durable lineage.');
+    }
+    const accepted = getWorkerControlAcceptedFinalStatus(coreDb, input.lineage);
+    if (accepted) {
+      return accepted;
+    }
+    if (!['acquired', 'starting', 'active', 'idle'].includes(lease.status)) {
+      throw new Error(`Worker lease became ${lease.status} before durable final status.`);
+    }
+    if (lease.expiresAt <= new Date().toISOString()) {
+      throw new Error('Worker lease expired before durable final status.');
+    }
+
+    await delay(WORKER_FINAL_STATUS_POLL_INTERVAL_MS);
+  }
 }
 
 /**

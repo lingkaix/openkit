@@ -506,6 +506,7 @@ describe('worker runtime provenance import', () => {
 
   it.each([
     { label: 'a parent cycle', options: { cycle: true } },
+    { label: 'an inconsistent runtime depth', options: { inconsistentDepth: true } },
     { label: 'an outer lineage mismatch', options: { manifestLineageMismatch: true } },
     { label: 'an unlisted index stream', options: { unlistedIndexStream: true } },
     { label: 'overlapping frame coordinates', options: { overlappingFrames: true } },
@@ -831,6 +832,7 @@ function createRuntimeCaptureFixture(
     readonly childBRoot?: boolean;
     readonly cycle?: boolean;
     readonly inheritedRootHistory?: boolean;
+    readonly inconsistentDepth?: boolean;
     readonly manifestLineageMismatch?: boolean;
     readonly missingFrame?: boolean;
     readonly overlappingFrames?: boolean;
@@ -849,9 +851,13 @@ function createRuntimeCaptureFixture(
   const childAParent = options.cycle ? CHILD_B_NATIVE_ID : ROOT_NATIVE_ID;
   const childBParent = options.childBRoot
     ? null
-    : options.cycle
+    : options.inconsistentDepth
       ? CHILD_A_NATIVE_ID
-      : ROOT_NATIVE_ID;
+      : options.cycle
+        ? CHILD_A_NATIVE_ID
+        : ROOT_NATIVE_ID;
+  const childADepth = 1;
+  const childBDepth = options.inconsistentDepth ? 3 : 1;
   const streams = [
     createRuntimeStream(lineage, 'stream-0000.jsonl', 'primary', [
       {
@@ -889,6 +895,7 @@ function createRuntimeCaptureFixture(
     createRuntimeStream(lineage, 'stream-0002.jsonl', 'runtime-thread', [
       {
         record: sessionMeta(CHILD_A_NATIVE_ID, {
+          depth: childADepth,
           nickname: 'Curie',
           parentThreadId: childAParent,
           role: 'reviewer',
@@ -897,7 +904,7 @@ function createRuntimeCaptureFixture(
           nativeSessionId: NATIVE_SESSION_ID,
           nativeThreadId: CHILD_A_NATIVE_ID,
           parentNativeThreadId: childAParent,
-          runtimeDepth: 1,
+          runtimeDepth: childADepth,
           runtimeNickname: 'Curie',
           runtimeRole: 'reviewer',
         },
@@ -910,7 +917,7 @@ function createRuntimeCaptureFixture(
                 nativeSessionId: NATIVE_SESSION_ID,
                 nativeThreadId: CHILD_A_NATIVE_ID,
                 parentNativeThreadId: childAParent,
-                runtimeDepth: 1,
+                runtimeDepth: childADepth,
                 runtimeNickname: 'Curie',
                 runtimeRole: 'reviewer',
               },
@@ -924,7 +931,7 @@ function createRuntimeCaptureFixture(
           nativeThreadId: CHILD_A_NATIVE_ID,
           parentNativeThreadId: childAParent,
           nativeTurnId: '20000000-0000-4000-8000-000000000002',
-          runtimeDepth: 1,
+          runtimeDepth: childADepth,
           runtimeNickname: 'Curie',
           runtimeRole: 'reviewer',
         },
@@ -933,6 +940,7 @@ function createRuntimeCaptureFixture(
     createRuntimeStream(lineage, 'stream-0003.jsonl', 'runtime-thread', [
       {
         record: sessionMeta(CHILD_B_NATIVE_ID, {
+          depth: childBDepth,
           nickname: 'Turing',
           parentThreadId: childBParent,
           role: options.childBRole ?? 'researcher',
@@ -941,7 +949,7 @@ function createRuntimeCaptureFixture(
           nativeSessionId: NATIVE_SESSION_ID,
           nativeThreadId: CHILD_B_NATIVE_ID,
           ...(childBParent ? { parentNativeThreadId: childBParent } : {}),
-          runtimeDepth: 1,
+          runtimeDepth: childBDepth,
           runtimeNickname: 'Turing',
           runtimeRole: options.childBRole ?? 'researcher',
         },
@@ -953,7 +961,7 @@ function createRuntimeCaptureFixture(
           nativeThreadId: CHILD_B_NATIVE_ID,
           ...(childBParent ? { parentNativeThreadId: childBParent } : {}),
           nativeTurnId: '20000000-0000-4000-8000-000000000003',
-          runtimeDepth: 1,
+          runtimeDepth: childBDepth,
           runtimeNickname: 'Turing',
           runtimeRole: options.childBRole ?? 'researcher',
         },
@@ -1115,6 +1123,7 @@ function createRuntimeStream(
 function sessionMeta(
   threadId: string,
   child?: {
+    readonly depth?: number;
     readonly nickname: string;
     readonly parentThreadId: string | null;
     readonly role: string;
@@ -1136,7 +1145,7 @@ function sessionMeta(
             subagent: {
               thread_spawn: {
                 ...(child.parentThreadId ? { parent_thread_id: child.parentThreadId } : {}),
-                depth: 1,
+                depth: child.depth ?? 1,
                 agent_nickname: child.nickname,
                 agent_role: child.role,
               },

@@ -51,6 +51,8 @@ Core MUST write or enqueue an audit event for:
 - capability calls
 - vault reference use
 - approval decisions
+- Workspace invitation, membership, role, ownership-transfer, recovery, and deletion decisions
+- user disable, deletion, and credential-revocation decisions
 - agent session lifecycle changes
 - sandbox lifecycle changes
 - knowledge entry creation, archival, supersession, or injection
@@ -70,7 +72,9 @@ Minimum stable areas include:
 - audit event ID
 - `protocolVersion`
 - workspace ID
-- actor or subject summary
+- stable actor reference when an actor exists
+- redacted authenticated credential and channel summary when applicable
+- subject reference when the affected subject differs from the actor
 - `category`
 - action
 - resource summary
@@ -85,6 +89,8 @@ Minimum stable areas include:
 - optional agent ID
 - optional agent session ID
 - optional capability call ID
+- optional permission decision ID
+- optional invitation or membership ID
 - optional error code
 
 These are model areas, not a complete field list.
@@ -94,6 +100,8 @@ These are model areas, not a complete field list.
 Audit records must avoid storing secret values, raw provider payloads, sensitive sandbox internals, or unrestricted file contents.
 
 Audit should store references, summaries, hashes, stable IDs, or redacted excerpts where needed.
+
+An audit actor uses the `ActorRef` semantics from `docs/core/identity.md`. Display names and email addresses may appear only as redacted point-in-time summaries; they are not durable actor identifiers. Credential summaries may identify credential kind, stable credential record ID, and channel, but never secret material, authorization headers, cookies, token hashes, or invitation secrets.
 
 ## Source Of Truth
 
@@ -107,6 +115,8 @@ Where possible, audit events should retain links back to item IDs, capability ca
 - Audit MUST remain a governance projection over core activity, not a second user conversation log.
 - Product surfaces MUST NOT claim complete audit coverage when an implementation intentionally omits an audit producer class.
 - Audit events SHOULD retain stable links back to item IDs, capability call IDs, permission decision IDs, vault reference IDs, agent session IDs, or related core records when those records exist.
+- Auditable shared mutations and terminal human decisions MUST preserve the winning actor reference, responsible user when applicable, target resource, request ID, outcome, and timestamp.
+- Membership, ownership, credential, and permission changes MUST be auditable even when the affected user later becomes disabled, removed, or deleted.
 - Core MUST own durable audit projection; adapters, bridges, gateways, and agents may only provide metadata or source events.
 
 ## Related Docs

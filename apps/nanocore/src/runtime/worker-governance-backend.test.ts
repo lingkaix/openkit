@@ -394,6 +394,54 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     expect(cli.execSandboxCalls[0]?.command.join(' ')).toContain('openkit-codex-shim');
   });
 
+  it('delegates launch through a detached sandbox shell without interpolating worker argv', async () => {
+    let releaseLauncher!: () => void;
+    const launcherExited = new Promise<void>((resolve) => {
+      releaseLauncher = resolve;
+    });
+    const cli = new FakeOpenShellClient({ execSandboxGate: launcherExited });
+    const backend = createTestOpenShellBackend({
+      cli,
+      gatewayName: 'openshell',
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'token_openshell_detached_launch',
+      }),
+    });
+    const environmentPackage = createOpenShellPackage([]);
+    const literalArgument = `literal $HOME; $(touch /tmp/openkit-must-not-run) ' " \\`;
+    environmentPackage.runtime.command.argv.push(literalArgument);
+    const workerArgv = [...environmentPackage.runtime.command.argv];
+    const materialization = await backend.materialize(environmentPackage);
+    let launchSettled = false;
+    const launch = backend.launch(materialization).then((evidence) => {
+      launchSettled = true;
+      return evidence;
+    });
+
+    try {
+      await vi.waitFor(() => expect(cli.execSandboxCalls).toHaveLength(1));
+      const delegatedArgv = cli.execSandboxCalls[0]?.command ?? [];
+      const launcherScript = delegatedArgv[2] ?? '';
+
+      expect(delegatedArgv.slice(0, 2)).toEqual(['/bin/sh', '-c']);
+      expect(launcherScript).toMatch(/\bsetsid "\$@"/);
+      expect(launcherScript).toContain('</dev/null');
+      expect(launcherScript).toContain('>/dev/null');
+      expect(launcherScript).toContain('2>&1');
+      expect(launcherScript).toMatch(/&\s*$/);
+      expect(launcherScript).not.toContain(literalArgument);
+      expect(delegatedArgv[3]).toEqual(expect.any(String));
+      expect(delegatedArgv.slice(4)).toEqual(workerArgv);
+      await Promise.resolve();
+      expect(launchSettled).toBe(false);
+    } finally {
+      releaseLauncher();
+      await launch;
+    }
+
+    expect(launchSettled).toBe(true);
+  });
+
   it('invalidates all same-process access after durable session cleanup', async () => {
     const cellLifecycle = new FakeOpenShellCellLifecycle();
     const cli = new FakeOpenShellClient();
@@ -426,6 +474,111 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       identity.backendSessionId,
       identity.backendSessionId,
     ]);
+  });
+
+  it('restores an exact durable OpenShell session as read-only without creating or launching work', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-openshell-restored-session-'));
+    const cellLifecycle = new FakeOpenShellCellLifecycle();
+    const environmentPackage = createOpenShellPackage([]);
+    const cli = new FakeOpenShellClient({
+      downloads: {
+        '/sandbox/openkit/session/events.jsonl': '{"type":"worker.ready"}\n',
+        '/sandbox/openkit/session/items.jsonl': '{"kind":"item"}\n',
+      },
+    });
+    const originalBackend = createTestOpenShellBackend({
+      cellLifecycle,
+      cli,
+      dataRoot,
+      gatewayName: 'openshell',
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'token_openshell_restore_original',
+      }),
+    });
+    const identity = originalBackend.planSession(environmentPackage);
+    const materialization = await originalBackend.materialize(environmentPackage);
+    const createCallCount = cli.createSandboxCalls.length;
+    const prepareCallCount = cellLifecycle.prepareCalls.length;
+    const restoredBackend = createTestOpenShellBackend({
+      cellLifecycle,
+      cli,
+      dataRoot,
+      gatewayName: 'openshell',
+    });
+
+    await expect(
+      restoredBackend.restoreSession(environmentPackage, identity)
+    ).resolves.toBeUndefined();
+    await expect(restoredBackend.collectTranscript(environmentPackage.snapshotId)).resolves.toEqual(
+      expect.objectContaining({
+        eventsJsonl: '{"type":"worker.ready"}\n',
+        itemsJsonl: '{"kind":"item"}\n',
+      })
+    );
+    await expect(restoredBackend.launch(materialization)).rejects.toThrow(
+      'read-only restored session'
+    );
+    await expect(
+      restoredBackend.cleanupSession({
+        ...identity,
+        backendSessionId: 'wrong-sandbox',
+      })
+    ).rejects.toThrow('does not match its deployment-owned lineage');
+    await expect(restoredBackend.cleanupSession(identity)).resolves.toBeUndefined();
+
+    expect(cli.createSandboxCalls).toHaveLength(createCallCount);
+    expect(cli.execSandboxCalls).toHaveLength(0);
+    expect(cellLifecycle.prepareCalls).toHaveLength(prepareCallCount);
+    expect(cellLifecycle.recycleCalls).toEqual([identity.backendSessionId]);
+    expect(existsSync(join(dataRoot, identity.stagingDirectoryRef))).toBe(false);
+  });
+
+  it('does not mutate providers through a read-only restored OpenShell session', async () => {
+    const cli = new FakeOpenShellClient();
+    const backend = createTestOpenShellBackend({ cli, gatewayName: 'openshell' });
+    const environmentPackage = createOpenShellPackageWithProviderAttachment();
+
+    await backend.restoreSession(environmentPackage, backend.planSession(environmentPackage));
+    await backend.detachProvidersForRevokedGrants(['grant_github_read']);
+
+    expect(cli.detachProviderCalls).toEqual([]);
+  });
+
+  it('restores a missing staging directory without a speculative preflight', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-openshell-restored-missing-'));
+    const backend = createTestOpenShellBackend({
+      cli: new FakeOpenShellClient(),
+      dataRoot,
+      gatewayName: 'openshell',
+    });
+    const environmentPackage = createOpenShellPackage([]);
+
+    await expect(
+      backend.restoreSession(environmentPackage, backend.planSession(environmentPackage))
+    ).resolves.toBeUndefined();
+  });
+
+  it('rejects a conflicting restored OpenShell identity before any external effect', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-openshell-restored-conflict-'));
+    const cli = new FakeOpenShellClient();
+    const backend = createTestOpenShellBackend({
+      cli,
+      dataRoot,
+      gatewayName: 'openshell',
+    });
+    const environmentPackage = createOpenShellPackage([]);
+    const identity = backend.planSession(environmentPackage);
+
+    await expect(
+      backend.restoreSession(environmentPackage, {
+        ...identity,
+        backendSessionId: 'wrong-sandbox',
+      })
+    ).rejects.toThrow('does not match its deployment-owned lineage');
+
+    expect(cli.statusCalls).toEqual([]);
+    expect(cli.createSandboxCalls).toEqual([]);
+    expect(cli.execSandboxCalls).toEqual([]);
   });
 
   it('prepares the disposable Cell before OpenShell gateway preflight', async () => {
@@ -1888,14 +2041,14 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       '--dry-run',
     ]);
     await backend.launch(materialization);
-    expect(cli.execSandboxCalls[0]?.command).toEqual([
+    expect(cli.execSandboxCalls[0]?.command.slice(4)).toEqual([
       'bash',
       '-lc',
       expect.stringContaining(
         "tar -xf '/openkit/config/workspaces/repo.tar' -C '/workspace/openkit/worktrees/main'"
       ),
     ]);
-    expect(cli.execSandboxCalls[0]?.command).toEqual([
+    expect(cli.execSandboxCalls[0]?.command.slice(4)).toEqual([
       'bash',
       '-lc',
       expect.stringContaining(
@@ -1959,7 +2112,7 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       '--dry-run',
     ]);
     await backend.launch(materialization);
-    expect(cli.execSandboxCalls[0]?.command).toEqual([
+    expect(cli.execSandboxCalls[0]?.command.slice(4)).toEqual([
       'bash',
       '-lc',
       expect.stringContaining(
@@ -2172,10 +2325,142 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     });
 
     expect(importResult).toMatchObject({
-      itemIds: [expect.stringMatching(/^it_worker_/)],
+      itemIds: [expect.stringMatching(/^it_worker_/), 'it_artifact_ar_worker_tu_1_3'],
       artifactIds: [expect.stringMatching(/^ar_worker_/)],
       diagnostics: [],
     });
+  });
+
+  it('treats a stock OpenShell missing optional transcript file as absent', async () => {
+    const environmentPackage = createOpenShellPackage();
+    const cli = new FakeOpenShellClient();
+    const backend = createTestOpenShellBackend({
+      cli,
+      gatewayName: 'openshell',
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'token_openshell_control_1',
+      }),
+    });
+
+    await backend.materialize(environmentPackage);
+    const downloadFile = cli.downloadFile.bind(cli);
+    vi.spyOn(cli, 'downloadFile').mockImplementation(async (input) => {
+      if (input.sandboxPath === '/sandbox/openkit/session/artifacts.jsonl') {
+        throw new Error(
+          "OpenShell sandbox download failed: realpath: /sandbox/openkit/session/artifacts.jsonl: No such file or directory\nfailed to resolve sandbox source path '/sandbox/openkit/session/artifacts.jsonl'\nssh probe exited with status exit status: 1"
+        );
+      }
+      return downloadFile(input);
+    });
+
+    await expect(backend.collectTranscript(environmentPackage.snapshotId)).resolves.toMatchObject({
+      artifactsJsonl: '',
+    });
+  });
+
+  it.each([
+    ['gateway transport', 'OpenShell sandbox download failed: connection refused'],
+    ['sandbox permission', 'OpenShell sandbox download failed: permission denied'],
+    ['download timeout', 'OpenShell command timed out after 120000ms.'],
+    ['sandbox unavailable', 'OpenShell sandbox download failed: sandbox not found'],
+    [
+      'conflicting missing source',
+      "OpenShell sandbox download failed: realpath: /sandbox/openkit/session/artifacts.jsonl: No such file or directory\nfailed to resolve sandbox source path '/sandbox/openkit/session/artifacts.jsonl'\nssh probe exited with status exit status: 1",
+    ],
+  ] as const)('propagates %s failures while collecting optional sandbox files', async (_label, message) => {
+    const environmentPackage = createOpenShellPackage();
+    const cli = new FakeOpenShellClient();
+    const backend = createTestOpenShellBackend({
+      cli,
+      gatewayName: 'openshell',
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'token_openshell_control_1',
+      }),
+    });
+
+    await backend.materialize(environmentPackage);
+    vi.spyOn(cli, 'downloadFile').mockRejectedValueOnce(new Error(message));
+
+    const error = await backend
+      .collectWorkspaceChanges(environmentPackage.snapshotId)
+      .catch((failure: unknown) => failure);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(message);
+  });
+
+  it('reports an exact missing required runtime provenance file', async () => {
+    const environmentPackage = createTrustedRelayOpenShellPackage('as_runtime_provenance_missing');
+    const cli = new FakeOpenShellClient();
+    const backend = createTestOpenShellBackend({
+      cli,
+      gatewayName: 'openshell',
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'token_openshell_control_1',
+      }),
+    });
+
+    await backend.materialize(environmentPackage);
+    enableRuntimeProvenanceCollection(environmentPackage);
+    const downloadFile = cli.downloadFile.bind(cli);
+    vi.spyOn(cli, 'downloadFile').mockImplementation(async (input) => {
+      if (input.sandboxPath === '/sandbox/openkit/session/runtime/raw-streams.json') {
+        throw new Error(
+          "OpenShell sandbox download failed: realpath: /sandbox/openkit/session/runtime/raw-streams.json: No such file or directory\nfailed to resolve sandbox source path '/sandbox/openkit/session/runtime/raw-streams.json'\nssh probe exited with status exit status: 1"
+        );
+      }
+      return downloadFile(input);
+    });
+
+    await expect(backend.collectTranscript(environmentPackage.snapshotId)).resolves.toMatchObject({
+      runtimeProvenance: {
+        diagnostics: [
+          {
+            code: 'runtime_provenance_file_missing',
+            message: 'A required runtime provenance file could not be collected.',
+            path: '/openkit/session/runtime/raw-streams.json',
+          },
+        ],
+        manifestPath: null,
+        missingPaths: ['/openkit/session/runtime/raw-streams.json'],
+        nativeOriginIndexPath: null,
+        rawStreamPaths: {},
+      },
+    });
+  });
+
+  it.each([
+    ['gateway transport', 'OpenShell sandbox download failed: connection refused'],
+    ['gateway authentication', 'OpenShell sandbox download failed: authentication failed'],
+    ['download timeout', 'OpenShell command timed out after 120000ms.'],
+    ['sandbox unreachable', 'OpenShell sandbox download failed: sandbox not found'],
+  ])('propagates %s failures while collecting runtime provenance', async (_label, message) => {
+    const environmentPackage = createTrustedRelayOpenShellPackage(
+      'as_runtime_provenance_download_failure'
+    );
+    const cellLifecycle = new FakeOpenShellCellLifecycle();
+    const cli = new FakeOpenShellClient();
+    const backend = createTestOpenShellBackend({
+      cellLifecycle,
+      cli,
+      gatewayName: 'openshell',
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'token_openshell_control_1',
+      }),
+    });
+
+    await backend.materialize(environmentPackage);
+    enableRuntimeProvenanceCollection(environmentPackage);
+    const downloadFile = cli.downloadFile.bind(cli);
+    vi.spyOn(cli, 'downloadFile').mockImplementation(async (input) => {
+      if (input.sandboxPath === '/sandbox/openkit/session/runtime/raw-streams.json') {
+        throw new Error(message);
+      }
+      return downloadFile(input);
+    });
+
+    await expect(backend.collectTranscript(environmentPackage.snapshotId)).rejects.toThrow(message);
+    expect(cellLifecycle.recycleCalls).toEqual([]);
   });
 
   it('collects declared runtime provenance as bounded session-owned files without raw payload text', async () => {
@@ -2522,6 +2807,7 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
   private readonly downloads: Record<string, string>;
   private readonly endpoint: string;
   private readonly ensureProviderProfileFailure: Error | null;
+  private readonly execSandboxGate: Promise<void> | null;
   private readonly gatewayVersion: string | null;
   private readonly detachFailures: Error[];
   private readonly providerOutputs: Record<string, string>;
@@ -2538,6 +2824,7 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
       downloads?: Record<string, string>;
       endpoint?: string;
       ensureProviderProfileFailure?: Error;
+      execSandboxGate?: Promise<void>;
       gatewayVersion?: string | null;
       providerOutputs?: Record<string, string>;
       /** Error raised while reading the global providers v2 setting. */
@@ -2554,6 +2841,7 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
     this.downloads = options.downloads ?? {};
     this.endpoint = options.endpoint ?? 'https://127.0.0.1:17670';
     this.ensureProviderProfileFailure = options.ensureProviderProfileFailure ?? null;
+    this.execSandboxGate = options.execSandboxGate ?? null;
     this.gatewayVersion =
       options.gatewayVersion === null
         ? null
@@ -2628,6 +2916,7 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
 
   public async execSandbox(input: OpenShellSandboxExecInput) {
     this.execSandboxCalls.push(input);
+    await this.execSandboxGate;
     return { exitCode: 0, stderr: '', stdout: 'worker completed' };
   }
 

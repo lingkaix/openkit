@@ -54,7 +54,7 @@ Workspace -> Thread -> Turn -> Item[]
 
 - NanoCore local and server-mode foundations.
 - Durable workspace, thread, turn, item, artifact, knowledge, agent session, approval, automation, and review-related storage foundations.
-- Goal Mode for objective capture, plan review, bounded steps, steering, verification evidence, and terminal completion state.
+- Goal Mode for objective capture, plan review, bounded steps, verification evidence, and terminal completion state.
 - Action Center read models for human attention, approvals, blocked work, and follow-up decisions.
 - Workspace repository linking, sync records, review records, apply results, artifacts, and evidence bundles through public NanoCore contracts.
 - A currently implemented legacy `@openkit/mcp` coordinator path that remains only while the unified Skill and CLI reach capability parity.

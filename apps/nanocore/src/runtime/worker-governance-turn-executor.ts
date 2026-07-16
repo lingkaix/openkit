@@ -43,7 +43,11 @@ import {
   transitionWorkerBackendSessionState,
   type WorkerBackendSessionRecord,
 } from './worker-backend-sessions.js';
-import { listWorkerControlAcceptedEvents } from './worker-control-records.js';
+import {
+  type AcceptedWorkerFinalStatus,
+  getWorkerControlAcceptedFinalStatus,
+  listWorkerControlAcceptedEvents,
+} from './worker-control-records.js';
 import type {
   WorkerGovernanceBackend,
   WorkerGovernanceBackendSessionIdentity,
@@ -60,7 +64,8 @@ import {
 } from './workspace-materializer.js';
 import { stageGitWorkspaceReview } from './workspace-review-git.js';
 import {
-  getWorkspaceSyncReview,
+  listWorkspaceInputSnapshots,
+  listWorkspaceMaterializationRecords,
   recordWorkspaceBackendHandoff,
   recordWorkspaceSyncReview,
 } from './workspace-sync-records.js';
@@ -81,6 +86,13 @@ interface WorkerTurnBackendLifecycle {
  * Options for the worker-governance-backed turn executor.
  */
 export interface WorkerGovernanceTurnExecutorOptions {
+  /** Optional durable completion barrier used after a detached backend launch. */
+  awaitWorkerCompletion?:
+    | ((
+        environmentPackage: AgentEnvironmentPackage,
+        leaseId: string
+      ) => Promise<AcceptedWorkerFinalStatus>)
+    | undefined;
   /** Backend that materializes, launches, collects, and tears down worker sessions. */
   backend: WorkerGovernanceBackend;
   /** Optional Core database used to persist workspace synchronization records. */
@@ -128,6 +140,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     'status',
   ];
 
+  private readonly awaitWorkerCompletion:
+    | ((
+        environmentPackage: AgentEnvironmentPackage,
+        leaseId: string
+      ) => Promise<AcceptedWorkerFinalStatus>)
+    | null;
   private readonly backend: WorkerGovernanceBackend;
   private readonly coreDb: CoreDb | null;
   private readonly createAgentSessionId: () => string;
@@ -142,6 +160,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    * @param options Backend, package target, and optional deterministic factories.
    */
   public constructor(options: WorkerGovernanceTurnExecutorOptions) {
+    this.awaitWorkerCompletion = options.awaitWorkerCompletion ?? null;
     this.backend = options.backend;
     this.coreDb = options.coreDb ?? null;
     this.environmentBackend = options.environmentBackend;
@@ -183,12 +202,17 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     let backendCapabilities: WorkerGovernanceBackendCapabilities | null = null;
     let backendLifecycle: WorkerTurnBackendLifecycle | null = null;
     let backendCleanupRequired = false;
+    let closeoutAt: string | null = null;
     let environmentPackage: AgentEnvironmentPackage | null = null;
+    let workerFinalStatus: AcceptedWorkerFinalStatus | null = null;
     let primaryFailed = false;
     let primaryError: unknown;
 
     try {
-      const agent = store.getAgentForThread(turn.workspaceId, turn.threadId);
+      if (!turn.agentId) {
+        throw new Error(`Worker turn has no assigned agent: ${turn.id}`);
+      }
+      const agent = store.getAgent(turn.workspaceId, turn.agentId);
       const resolvedAgentSessionId = agentSessionId ?? this.createAgentSessionId();
       agentSessionId = resolvedAgentSessionId;
       const providerCredentials: ResolvedAgentEnvironmentProviderCredential[] = [];
@@ -241,6 +265,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         updatedAt: timestamp,
         workspaceId: turn.workspaceId,
         workspaceRoots: context.workspaceRoots,
+      });
+      store.updateTurn(turnId, {
+        agentProfileId: environmentPackage.agent.profileId,
+        agentSessionId: agentSession.id,
       });
       const userItem = store.createItem({
         completedAt: timestamp,
@@ -349,88 +377,33 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           now: this.now,
         });
       }
+      const completionLeaseId = this.awaitWorkerCompletion
+        ? backendLifecycle.session?.leaseId
+        : null;
+      if (this.awaitWorkerCompletion && !completionLeaseId) {
+        throw new Error('Detached worker completion requires a durable scheduler lease.');
+      }
       await this.backend.launch(materialization);
-      await this.backend.collectEvidence(environmentPackage.snapshotId);
-      const transcript = await this.backend.collectTranscript(environmentPackage.snapshotId);
-      if (environmentPackage.control.transcript?.runtimeProvenance) {
-        if (!workspaceDb) {
-          throw new Error('Runtime provenance collection requires durable workspace storage.');
-        }
-        const collection = transcript.runtimeProvenance;
-        const firstRawStreamPath = Object.values(collection?.rawStreamPaths ?? {})[0];
-        const rawStreamsRoot = firstRawStreamPath
-          ? dirname(firstRawStreamPath)
-          : collection?.manifestPath
-            ? join(dirname(collection.manifestPath), 'raw')
-            : collection?.nativeOriginIndexPath
-              ? join(dirname(collection.nativeOriginIndexPath), 'raw')
-              : '';
-        const provenance = await this.runtimeProvenanceImporter({
-          backend: {
-            kind: backendCapabilities.kind,
-            placement: this.environmentBackend.placement ?? 'local',
-            version: backendCapabilities.version ?? null,
-          },
-          capture: {
-            nativeOriginIndexPath: collection?.nativeOriginIndexPath ?? null,
-            rawStreamsRoot,
-            streamManifestPath: collection?.manifestPath ?? null,
-          },
-          collectedAt: this.now(),
-          environmentPackage,
-          workspaceDb,
-          workspaceRoot: join(
-            workspaceDb.dataRoot,
-            'users',
-            workspaceDb.userId,
-            'workspaces',
-            workspaceDb.workspaceId
-          ),
-        });
-        if (!provenance.complete) {
-          throw new Error('Required worker runtime provenance verification failed.');
-        }
+      if (this.awaitWorkerCompletion && completionLeaseId) {
+        workerFinalStatus = await this.awaitWorkerCompletion(environmentPackage, completionLeaseId);
+        closeoutAt = workerFinalStatus.acceptedAt;
       }
-      const acceptedLiveEvents = this.coreDb
-        ? listWorkerControlAcceptedEvents(this.coreDb, {
-            agentSessionId: environmentPackage.scope.agentSessionId,
-            packageSnapshotId: environmentPackage.snapshotId,
-            requestId: environmentPackage.scope.requestId,
-            threadId: environmentPackage.scope.threadId,
-            turnId: environmentPackage.scope.turnId,
-            workspaceId: environmentPackage.scope.workspaceId,
-          })
-        : [];
-      const importResult = importWorkerTranscript(store, environmentPackage, transcript, {
-        acceptedLiveEvents,
-      });
-      if (
-        importResult.rejectedEventSequences.length > 0 ||
-        importResult.diagnostics.some((diagnostic) => diagnostic.path.startsWith('$.events'))
-      ) {
-        throw new Error('Worker transcript event reconciliation failed.');
-      }
-      const workspaceChanges = await this.backend.collectWorkspaceChanges(
-        environmentPackage.snapshotId
-      );
-
-      await this.createWorkspaceChangeArtifacts(
+      closeoutAt ??= this.now();
+      await this.finishLaunchedTurn(
         store,
         environmentPackage,
-        workspaceChanges,
-        workspaceDb,
-        inputSnapshots,
-        materializationRecords
-      );
-      await this.backend.collectArtifacts(environmentPackage.snapshotId);
-      await this.cleanupBackendLifecycle(
+        requestId,
+        backendCapabilities,
         backendLifecycle,
         workspaceDb,
-        environmentPackage,
-        backendCapabilities
+        inputSnapshots,
+        materializationRecords,
+        closeoutAt
       );
       backendCleanupRequired = false;
-      this.emitImportedRecords(store, environmentPackage, requestId, importResult);
+      if (workerFinalStatus && workerFinalStatus.status !== 'completed') {
+        throw new Error(`Worker reported terminal status: ${workerFinalStatus.status}.`);
+      }
     } catch (error) {
       primaryFailed = true;
       primaryError = error;
@@ -513,6 +486,107 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   }
 
   /**
+   * Resumes the existing post-launch closeout path for one durable accepted final status.
+   *
+   * @param store Product store that owns the turn.
+   * @param environmentPackage Immutable package restored from the workspace ledger.
+   * @param session Exact durable backend session restored by the lifecycle runtime.
+   * @returns Product terminal status established by closeout.
+   */
+  public async resumeAcceptedFinalStatus(
+    store: FsStore,
+    environmentPackage: AgentEnvironmentPackage,
+    session: WorkerBackendSessionRecord
+  ): Promise<'completed' | 'failed'> {
+    if (!this.coreDb || store.getUserId() !== environmentPackage.scope.userId) {
+      throw new Error('Restart closeout requires the exact durable Core and store owner.');
+    }
+    assertRestoredSession(
+      environmentPackage,
+      session,
+      this.backend.planSession(environmentPackage)
+    );
+    const turn = store.getTurnById(environmentPackage.scope.turnId);
+    const accepted = getWorkerControlAcceptedFinalStatus(this.coreDb, {
+      agentSessionId: environmentPackage.scope.agentSessionId,
+      packageSnapshotId: environmentPackage.snapshotId,
+      requestId: environmentPackage.scope.requestId,
+      threadId: environmentPackage.scope.threadId,
+      turnId: environmentPackage.scope.turnId,
+      workspaceId: environmentPackage.scope.workspaceId,
+    });
+    if (!accepted) {
+      throw new Error('Restart closeout requires the exact durable final status.');
+    }
+    const status = accepted.status;
+    const recoveredStatus = status === 'completed' ? 'completed' : 'failed';
+    const workspaceDb = this.openWorkspaceDb(
+      store.getUserId(),
+      environmentPackage.scope.workspaceId
+    );
+    if (!workspaceDb) {
+      throw new Error('Restart closeout requires durable workspace storage.');
+    }
+    applyScopedMigrations(workspaceDb);
+    const backendCapabilities = await this.backend.describeCapabilities();
+    const lifecycle: WorkerTurnBackendLifecycle = {
+      identity: this.backend.planSession(environmentPackage),
+      physicalCleanedAt: session.physicalCleanedAt,
+      session,
+      workspaceHandoffState: session.workspaceHandoffState,
+    };
+    const collectDurableOutput =
+      session.state !== 'physical-cleaned' && session.state !== 'cleaned';
+
+    try {
+      if (collectDurableOutput) {
+        await this.finishLaunchedTurn(
+          store,
+          environmentPackage,
+          environmentPackage.scope.requestId ?? null,
+          backendCapabilities,
+          lifecycle,
+          workspaceDb,
+          listWorkspaceInputSnapshots(workspaceDb, environmentPackage.scope.workspaceId),
+          listWorkspaceMaterializationRecords(workspaceDb, environmentPackage.scope.workspaceId),
+          accepted.acceptedAt
+        );
+      } else if (session.state !== 'cleaned') {
+        await this.cleanupBackendLifecycle(
+          lifecycle,
+          workspaceDb,
+          environmentPackage,
+          backendCapabilities
+        );
+      }
+
+      if (turn.status === recoveredStatus) {
+        return recoveredStatus;
+      }
+
+      if (status === 'completed') {
+        this.completeTurn(
+          store,
+          turn,
+          environmentPackage.scope.agentSessionId,
+          environmentPackage.scope.requestId ?? null
+        );
+      } else {
+        this.failTurn(
+          store,
+          turn,
+          environmentPackage.scope.agentSessionId,
+          environmentPackage.scope.requestId ?? null,
+          new Error(`Worker reported terminal status: ${status}.`)
+        );
+      }
+      return recoveredStatus;
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  }
+
+  /**
    * Interrupt is unsupported for the initial one-shot backend executor.
    *
    * @param _store Store that owns the turn.
@@ -560,6 +634,98 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       status: session.status,
       workspaceRoots: session.workspaceRoots,
     };
+  }
+
+  /** Runs the single transcript, workspace, artifact, and backend closeout path. */
+  private async finishLaunchedTurn(
+    store: FsStore,
+    environmentPackage: AgentEnvironmentPackage,
+    requestId: string | null,
+    backendCapabilities: WorkerGovernanceBackendCapabilities,
+    backendLifecycle: WorkerTurnBackendLifecycle,
+    workspaceDb: WorkspaceDb | null,
+    inputSnapshots: readonly WorkspaceInputSnapshot[],
+    materializationRecords: readonly WorkspaceMaterializationRecord[],
+    recordedAt: string
+  ): Promise<void> {
+    await this.backend.collectEvidence(environmentPackage.snapshotId);
+    const transcript = await this.backend.collectTranscript(environmentPackage.snapshotId);
+    if (environmentPackage.control.transcript?.runtimeProvenance) {
+      if (!workspaceDb) {
+        throw new Error('Runtime provenance collection requires durable workspace storage.');
+      }
+      const collection = transcript.runtimeProvenance;
+      const firstRawStreamPath = Object.values(collection?.rawStreamPaths ?? {})[0];
+      const rawStreamsRoot = firstRawStreamPath
+        ? dirname(firstRawStreamPath)
+        : collection?.manifestPath
+          ? join(dirname(collection.manifestPath), 'raw')
+          : collection?.nativeOriginIndexPath
+            ? join(dirname(collection.nativeOriginIndexPath), 'raw')
+            : '';
+      const provenance = await this.runtimeProvenanceImporter({
+        backend: {
+          kind: backendCapabilities.kind,
+          placement: this.environmentBackend.placement ?? 'local',
+          version: backendCapabilities.version ?? null,
+        },
+        capture: {
+          nativeOriginIndexPath: collection?.nativeOriginIndexPath ?? null,
+          rawStreamsRoot,
+          streamManifestPath: collection?.manifestPath ?? null,
+        },
+        collectedAt: this.now(),
+        environmentPackage,
+        workspaceDb,
+        workspaceRoot: join(
+          workspaceDb.dataRoot,
+          'users',
+          workspaceDb.userId,
+          'workspaces',
+          workspaceDb.workspaceId
+        ),
+      });
+      if (!provenance.complete) {
+        throw new Error('Required worker runtime provenance verification failed.');
+      }
+    }
+    const acceptedLiveEvents = this.coreDb
+      ? listWorkerControlAcceptedEvents(this.coreDb, {
+          agentSessionId: environmentPackage.scope.agentSessionId,
+          packageSnapshotId: environmentPackage.snapshotId,
+          requestId: environmentPackage.scope.requestId,
+          threadId: environmentPackage.scope.threadId,
+          turnId: environmentPackage.scope.turnId,
+          workspaceId: environmentPackage.scope.workspaceId,
+        })
+      : [];
+    const importResult = importWorkerTranscript(store, environmentPackage, transcript, {
+      acceptedLiveEvents,
+      recordedAt,
+    });
+    if (
+      importResult.rejectedEventSequences.length > 0 ||
+      importResult.diagnostics.some((diagnostic) => diagnostic.path.startsWith('$.events'))
+    ) {
+      throw new Error('Worker transcript event reconciliation failed.');
+    }
+    await this.createWorkspaceChangeArtifacts(
+      store,
+      environmentPackage,
+      await this.backend.collectWorkspaceChanges(environmentPackage.snapshotId),
+      workspaceDb,
+      inputSnapshots,
+      materializationRecords,
+      recordedAt
+    );
+    await this.backend.collectArtifacts(environmentPackage.snapshotId);
+    await this.cleanupBackendLifecycle(
+      backendLifecycle,
+      workspaceDb,
+      environmentPackage,
+      backendCapabilities
+    );
+    this.emitImportedRecords(store, environmentPackage, requestId, importResult);
   }
 
   /**
@@ -690,6 +856,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    * @param workspaceDb Optional durable workspace database.
    * @param inputSnapshots Trusted input snapshots for the current worker package.
    * @param materializationRecords Trusted materializations for the current worker package.
+   * @param recordedAt Stable durable final-status timestamp used by exact replay.
    */
   private async createWorkspaceChangeArtifacts(
     store: FsStore,
@@ -697,7 +864,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     records: readonly WorkerGovernanceWorkspaceChangeRecord[],
     workspaceDb: WorkspaceDb | null,
     inputSnapshots: readonly WorkspaceInputSnapshot[],
-    materializationRecords: readonly WorkspaceMaterializationRecord[]
+    materializationRecords: readonly WorkspaceMaterializationRecord[],
+    recordedAt: string
   ): Promise<void> {
     for (const record of records) {
       const workerTurnRefs = record.changeSet.evidenceRefs
@@ -725,7 +893,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         throw new Error(`Workspace review lineage mismatch: ${record.review.id}`);
       }
 
-      const timestamp = this.now();
+      const timestamp = recordedAt;
       const artifactId = `ar_workspace_changes_${environmentPackage.scope.turnId}_${record.review.id}`;
       const repository = workspaceDb
         ? getWorkspaceRepositoryResource(
@@ -811,13 +979,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               }
             : record.review,
       };
-      if (
-        workspaceDb &&
-        getWorkspaceSyncReview(workspaceDb, environmentPackage.scope.workspaceId, record.review.id)
-      ) {
-        throw new Error(`Workspace review already exists: ${record.review.id}`);
-      }
-
       /** Persists one staged record to artifact and durable workspace storage. */
       const persistRecord = (stagedItem: typeof item): void => {
         let artifactWriteAttempted = false;
@@ -1102,6 +1263,30 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       store,
       turnId: turnScope.id,
     });
+  }
+}
+
+/** Verifies that the restored package, Core session, and backend plan have one authority lineage. */
+function assertRestoredSession(
+  environmentPackage: AgentEnvironmentPackage,
+  session: WorkerBackendSessionRecord,
+  identity: WorkerGovernanceBackendSessionIdentity
+): void {
+  const scope = environmentPackage.scope;
+  if (
+    session.workspaceId !== scope.workspaceId ||
+    session.threadId !== scope.threadId ||
+    session.turnId !== scope.turnId ||
+    session.agentSessionId !== scope.agentSessionId ||
+    session.packageSnapshotId !== environmentPackage.snapshotId ||
+    session.backendKind !== identity.backendKind ||
+    session.backendSessionId !== identity.backendSessionId ||
+    session.deploymentId !== identity.deploymentId ||
+    session.stagingDirectoryRef !== identity.stagingDirectoryRef ||
+    session.transientProviderInstanceId !== identity.transientProviderInstanceId ||
+    !isDeepStrictEqual(session.backendTarget, identity.backendTarget)
+  ) {
+    throw new Error('Restart closeout backend session does not match its immutable lineage.');
   }
 }
 

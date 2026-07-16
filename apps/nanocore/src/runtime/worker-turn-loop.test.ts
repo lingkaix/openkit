@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { listPendingUserTurns } from './pending-user-turns.js';
 import { enqueueFollowUpInput, enqueueSteeringForSafePoint } from './user-turn-queues.js';
 import { getWorkerCheckpoint } from './worker-checkpoints.js';
 import type { WorkerTurnLoopPrepareInput } from './worker-turn-loop.js';
@@ -36,7 +37,7 @@ function createWorkspaceDb(coreDb: CoreDb): WorkspaceDb {
 }
 
 describe('worker turn loop', () => {
-  it('drains queued inputs before preparation and checkpoints the bounded worker outcome', async () => {
+  it('selects queued inputs without consuming them before delivery proof', async () => {
     const coreDb = createCoreDb();
     const workspaceDb = createWorkspaceDb(coreDb);
 
@@ -156,6 +157,11 @@ describe('worker turn loop', () => {
         reason_code: 'worker_turn_start_allowed',
         result: 'allow',
       });
+      expect(
+        listPendingUserTurns(workspaceDb, { workspaceId: 'ws_demo', threadId: 'th_demo' }).map(
+          (turn) => turn.requestId
+        )
+      ).toEqual(['steer_1', 'follow_1', 'follow_2']);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -167,6 +173,12 @@ describe('worker turn loop', () => {
     const workspaceDb = createWorkspaceDb(coreDb);
 
     try {
+      enqueueSteeringForSafePoint(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        requestId: 'steer_failed',
+        contentItemId: 'it_steer_failed',
+      });
       await expect(
         runWorkerTurnLoop({
           workspaceDb,
@@ -225,6 +237,11 @@ describe('worker turn loop', () => {
         stopReason: 'error',
         diagnosticsSummary: 'Worker failed Authorization: Bearer [redacted]',
       });
+      expect(
+        listPendingUserTurns(workspaceDb, { workspaceId: 'ws_demo', threadId: 'th_demo' }).map(
+          (turn) => turn.requestId
+        )
+      ).toEqual(['steer_failed']);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();

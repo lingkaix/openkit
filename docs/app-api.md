@@ -2,7 +2,7 @@
 
 Status: Accepted
 Date: 2026-05-31
-Updated: 2026-07-12
+Updated: 2026-07-15
 
 ## Purpose
 
@@ -21,6 +21,8 @@ NanoCore route behavior lives in `apps/nanocore`.
 Typed client behavior lives in `@openkit/core-client`.
 
 Generated OpenAPI behavior is a build-time projection owned by `docs/specs/20260704-app_api_openapi_projection.md`.
+
+The App API, `@openkit/core-client`, bundled CLI, unified Skill, and Web are release-coupled projections under `docs/core/contract-evolution.md`. They must agree within one OpenKit release but do not promise compatibility for an independently versioned client.
 
 ## Source Of Truth
 
@@ -85,6 +87,7 @@ The App API must not redefine:
 - Generate OpenAPI from shared schemas and the canonical operation catalog used by runtime registrations; do not hand-edit the generated document or generate first-party types from it.
 - Return server-composed read models that reduce Web round trips, but derive them from Core records where possible.
 - Treat App API payloads as replaceable product projections over Core records.
+- Advance one exact release contract identity when a supported App API shape changes, update every first-party consumer together, and fail typed on mismatch.
 - Do not expose raw provider API keys, OAuth tokens, authorization headers, account IDs, full prompt cache keys, host paths, worker launch commands, environment variables, or adapter-native runtime config.
 - Because this repository is in internal development, remove obsolete App API shapes instead of preserving compatibility shims.
 

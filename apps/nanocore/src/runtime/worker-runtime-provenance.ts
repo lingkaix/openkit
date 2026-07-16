@@ -584,7 +584,7 @@ async function verifyRuntimeProvenance(
   };
 }
 
-/** Validates parent closure, one root, and acyclic native origin ancestry. */
+/** Validates parent closure, allowed roots in a native origin forest, and acyclic ancestry. */
 function validateOriginGraph(
   origins: Map<string, NativeOriginSummary>,
   primaryThreadId: string | null,
@@ -603,15 +603,23 @@ function validateOriginGraph(
     if (origin.parentId && !origins.has(origin.parentId)) {
       errors.push('Runtime origin parent is missing.');
     }
+    const parent = origin.parentId ? origins.get(origin.parentId) : undefined;
+    if (
+      origin.depth !== undefined &&
+      parent?.depth !== undefined &&
+      origin.depth !== parent.depth + 1
+    ) {
+      errors.push('Runtime origin depth is inconsistent with its parent.');
+    }
     const visited = new Set([threadId]);
-    let parent = origin.parentId;
-    while (parent) {
-      if (visited.has(parent)) {
+    let ancestorId = origin.parentId;
+    while (ancestorId) {
+      if (visited.has(ancestorId)) {
         errors.push('Runtime origin graph contains a cycle.');
         break;
       }
-      visited.add(parent);
-      parent = origins.get(parent)?.parentId ?? null;
+      visited.add(ancestorId);
+      ancestorId = origins.get(ancestorId)?.parentId ?? null;
     }
   }
 }
@@ -706,7 +714,7 @@ function projectNativeFrame(
       }
     }
   }
-  if (type === 'session_meta' && payload) {
+  if (type === 'session_meta' && payload && entry.frameSequence === 0) {
     const source = recordValue(payload.source);
     const subagent = source ? recordValue(source.subagent) : null;
     const spawn = subagent ? recordValue(subagent.thread_spawn) : null;

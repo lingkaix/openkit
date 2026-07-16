@@ -607,6 +607,28 @@ describe('protocol schemas', () => {
     expect(parsed.output).toBe('');
   });
 
+  it('requires artifact-reference items to identify the exact artifact version', () => {
+    const item = {
+      id: 'it_artifact_demo',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: 'tu_demo',
+      status: 'completed',
+      createdAt: '2026-04-15T00:00:00Z',
+      completedAt: '2026-04-15T00:00:01Z',
+      type: 'artifact-reference',
+      artifactId: 'ar_demo',
+      title: 'Artifact',
+      summary: null,
+    } as const;
+
+    expect.soft(() => ItemSchema.parse(item)).toThrow();
+    expect(ItemSchema.parse({ ...item, artifactVersion: 2 })).toMatchObject({
+      artifactId: 'ar_demo',
+      artifactVersion: 2,
+    });
+  });
+
   it('accepts an explicit user-input human gate for paused turns', () => {
     const gate = TurnHumanGateSchema.parse({
       kind: 'user-input',

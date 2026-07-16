@@ -1,7 +1,7 @@
 # Agent Session Continuity
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
 
 ## Owns
 
@@ -45,6 +45,7 @@ The universal fallback — a fresh session from manifest resolution plus workspa
 - Guarantee snapshots never smuggle credentials, provider attachments, or knowledge across policy or time boundaries.
 - Reserve fork/clone lineage now so records stay stable when the operations activate later.
 - Bind crash recovery to lease terminal states so scheduler and session semantics compose without gaps.
+- Preserve the same session and turn while an exact surviving worker is inside the scheduler's bounded awaiting-reconnect window.
 
 ### Non-goals
 
@@ -65,6 +66,7 @@ The agent-session core doc fixes the model: sessions are runtime continuity, reu
 - Snapshots exclude credentials, provider instances, and knowledge by contract. Restore re-derives attachments from current grants and policy.
 - Rollback restores a snapshot into a new agent session; sessions are never mutated in place. Fork/clone records are reserved but the operations are deferred.
 - Crash recovery is a decision matrix over lease terminal states with a closed option set; the item log stays coherent in every branch.
+- Restart recovery defers replacement and retry while the exact existing lease is `awaiting-reconnect`; successful process-key/lineage/sequence adoption continues the same agent session and turn, while verification failure or timeout falls through to the existing terminal lease matrix.
 
 ## Contract / Expected Behavior
 
@@ -146,6 +148,10 @@ This matrix binds the durable scheduler's lease outcomes to session and turn han
 | `stale` then `released` (evidence collected) | session `interrupted`, not reusable | retry on replacement session (default for infrastructure failure); restore from snapshot when eligible; mark turn failed; ask human |
 | `released` normal at step end | session `idle` or `closed` per reuse policy | n/a |
 | scheduler-restart pre-launch `failed` | session record closed `never-started` | automatic requeue per scheduler spec |
+| `active` or `idle` with `recovery_state=awaiting-reconnect` | same session retains its existing `busy` or `idle` continuity and is not reusable by another turn | wait for bounded exact reconnect; do not retry, restore, or create a replacement session |
+| exact same-worker reconnect under the existing lease | same session and turn continue under the existing lease and checkpoint | n/a; no new session, worker launch, snapshot restore, or user recovery action |
+| `awaiting-reconnect` key, lineage, sequence, or deadline failure | enter the existing `stale` then `lost` or `stale` then `released` branch according to evidence | use that branch's existing replacement, snapshot, failure, or human options |
+| `releasing` with durable accepted `final_status` at restart | same session completes existing terminal handoff and becomes `idle` or `closed` per reuse policy | n/a; another heartbeat is not required |
 
 Rules:
 
@@ -153,6 +159,8 @@ Rules:
 - Default selection: infrastructure failures (backend died, target quarantined) default to retry-on-replacement-session; content failures (worker error outcome) default to workflow/human decision through the existing Action Center paths. The default is a policy-visible choice, not hardcoded behavior.
 - Every branch MUST leave the item log coherent: partial items and artifacts collected as evidence remain history, and the replacement session reads thread history through Core records, never through inherited hidden runtime state.
 - Session replacement records `replaces`/`replacedBy` lineage in both records.
+- `awaiting-reconnect` is a bounded nonterminal deferral, not a new session-selection path. The scheduler and worker-control protocol own exact process-key, lineage, sequence, and deadline verification; this spec must not infer continuity from `SessionCompatibilityKey`, add a reconnect compatibility registry, or create a replacement session while the window remains open.
+- Accepted final status after adoption or during `releasing` uses the existing worker checkpoint, session, turn, evidence, workspace reconciliation, backend cleanup, lease, and capacity owners directly. No restart settlement coordinator or parallel domain workflow exists.
 
 ### Expiry and garbage collection
 
@@ -166,7 +174,7 @@ Session records extend the existing agent-session storage foundations in `apps/n
 
 ## Current Implementation Projection
 
-Agent session storage foundations exist (session rows and checkpoint rows referenced by `docs/specs/20260531-worker_turn_reliability_envelope.md` and the worker governance executor). `apps/nanocore/src/lib/store.ts` now persists app-local `policySnapshotId` and `sessionCompatibilityKey` extensions on agent sessions, deriving the compatibility key from the resolved Agent Environment Package session workspace projection when available. `apps/nanocore/src/runtime/worker-governance-turn-executor.ts` binds governed worker sessions to the first worker-launch policy snapshot id used by the matching durable `runtime.launch` permission decision and leaves the strict session workspace digest on the stored session record for selector and diagnostics work. `scheduler_session_leases` also persists the same nullable `session_compatibility_key` evidence on newly acquired leases, so lease/session/package lineage can be compared from durable scheduler records instead of reconstructing the key from transient runtime state. `apps/nanocore/drizzle/0051_session_snapshots.sql`, `apps/nanocore/src/storage/schema/session-snapshots.ts`, and `apps/nanocore/src/agent-session-continuity.ts` now implement the V1 `SessionSnapshotRecord` storage contract, compatible snapshot listing, strict resume-precedence selector over live session, resume handle, snapshot restore, and fresh session candidates, and the lease-outcome recovery option matrix. `apps/nanocore/src/runtime/scheduler-dispatch-loop.ts` uses the strict V1 selector when dispatch callers provide continuity candidates and falls back to fresh-session launch when no candidate is valid. Runtime adapter snapshot creation/restore is still capability-gated and inactive until a backend declares `session-snapshot`; fork/clone activation, superset-compatible reuse, snapshot cadence policy, and richer recovery automation remain deferred future work.
+Agent session storage foundations exist (session rows and checkpoint rows referenced by `docs/specs/20260531-worker_turn_reliability_envelope.md` and the worker governance executor). `apps/nanocore/src/lib/store.ts` persists app-local `policySnapshotId` and `sessionCompatibilityKey` extensions on agent sessions, and `scheduler_session_leases` persists the same nullable compatibility evidence. `apps/nanocore/src/agent-session-continuity.ts` implements the V1 snapshot record, strict resume-precedence selector, and original terminal lease-outcome recovery matrix. The active restart slice adds lease-local `awaiting-reconnect`, same-session adoption, and direct accepted-final-status handoff without adding session state. Runtime adapter snapshot creation/restore remains capability-gated and inactive until a backend declares `session-snapshot`; fork/clone activation, superset-compatible reuse, snapshot cadence policy, and richer recovery automation remain deferred future work.
 
 ## Alternatives Considered
 
@@ -190,11 +198,11 @@ New machinery, no compatibility path. Order: (1) `AgentSessionRecord` extensions
 
 Mapped to `docs/specs/20260529-test_strategy.md`:
 
-- L1: unit tests for the resume-precedence selector (each path's conditions, strict-equality rejection cases, recorded rejection reasons), recovery matrix option computation per lease outcome, snapshot eligibility (newer-than-evidence rule), expiry math, lineage integrity (replaces/replacedBy symmetry).
+- L1: unit tests for the resume-precedence selector (each path's conditions, strict-equality rejection cases, recorded rejection reasons), recovery matrix option computation per lease outcome, awaiting-reconnect deferral, exact-adoption continuation, reconnect timeout fallback, accepted-final-status handoff, snapshot eligibility (newer-than-evidence rule), expiry math, and lineage integrity (replaces/replacedBy symmetry).
 - L2: contract tests binding to the scheduler spec: selection happens only inside plan creation; restore/resume only under an `acquired` lease; token binding follows the lease, not the session. Contract tests for exclusion rules: a restored session's attachments derive from current grants (fixture policy change between snapshot and restore must change or deny attachments).
-- L3: NanoCore black-box tests: live-reuse across two turns with identical keys; key-mismatch forces fresh session with recorded reason; kill backend mid-turn, observe stale-lease path, session `interrupted`, retry on replacement with coherent item log; restore-from-snapshot recovery when snapshot is newer than last step evidence and refusal when older; restart recovery re-adopts live sessions and closes pre-launch ones; expired snapshot cannot be restored.
+- L3: NanoCore black-box tests: live-reuse across two turns with identical compatibility keys; compatibility-key mismatch forces fresh session with recorded reason; one deterministic restart test observes `awaiting-reconnect`, exact process-key adoption of the same session and turn, no replacement worker or session, direct durable-final-status handoff, and timeout fallback to the existing interrupted path.
 - L5: smoke: packaged build executes two consecutive turns on one reused session on the localhost baseline.
-- L6: story acceptance: a long task survives a NanoCore restart mid-step, the user sees the interruption, chooses retry, and the thread history remains complete and coherent.
+- L6: story acceptance covers both branches: a long task transparently continues on the same worker after a NanoCore restart and exact adoption, while a reconnect-verification failure surfaces the existing interrupted recovery choices and preserves complete, coherent thread history.
 
 Acceptance: fallback path never regresses; no test can restore credentials or stale policy attachments from a snapshot; every recovery branch leaves item-log coherence intact; session selection is fully explainable from recorded reasons.
 
@@ -204,10 +212,13 @@ Acceptance: fallback path never regresses; no test can restore credentials or st
 - Risk: backend snapshot mechanisms capture secrets despite the contract. Mitigation: capability declaration requires the invalidation guarantee; L2/L3 tests plant canary credentials before snapshot and assert absence after restore.
 - Risk: snapshot GC races an in-flight restore. Mitigation: restore takes a short-lived reference on the snapshot record inside the lease transaction; GC skips referenced snapshots.
 - Risk: the recovery matrix drifts into a second workflow engine. Mitigation: the matrix computes options and defaults only; the decision stays with the workflow layer and Action Center.
+- Risk: restart recovery mistakes a compatible replacement for the original worker. Mitigation: only the exact memory-only process key, durable lineage, next sequence, deadline, and lease CAS can adopt the existing lease; session compatibility remains a fresh turn-assignment rule and is never a reconnect substitute.
 
 ## Resolved Decisions
 
 Previously open questions are resolved by accepted V1 defaults: snapshots are explicit-only and are requested by workflow, recovery, or operator action rather than automatically at every bounded-step boundary; `AgentSessionStatus` includes a distinct `restoring` projected state so product surfaces and recovery logic can distinguish restore work from first-time initialization.
+
+NanoCore restart does not itself interrupt a previously post-launch heartbeat-live session. The sequence-zero key hash and `lastWorkerSequence >= 1` prove that boundary. The exact lease remains pending during the bounded reconnect window, successful adoption continues the same session and turn, and only verification failure or timeout activates the existing replacement and human-recovery matrix. A sequence-zero-only supervisor has not proved that child work launched and uses existing cleanup.
 
 ## Deferred / Future Work
 

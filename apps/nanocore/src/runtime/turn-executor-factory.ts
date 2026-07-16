@@ -1,12 +1,19 @@
+import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
-import type { CoreDb } from '../storage/db.js';
+import { FsStore } from '../lib/store.js';
+import { requireSchedulerSessionLeaseAdmissionContext } from '../scheduler-records.js';
+import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
+import { applyScopedMigrations } from '../storage/migrate.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
+import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { OpenShellCellController } from './openshell-cell.js';
 import { OpenShellCli } from './openshell-cli.js';
 import type { OpenShellNetworkEndpoint } from './openshell-policy.js';
 import type { TurnExecutor } from './types.js';
+import type { WorkerBackendSessionRecord } from './worker-backend-sessions.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
+import { waitForWorkerControlFinalStatus } from './worker-control-records.js';
 import {
   OpenShellWorkerGovernanceBackend,
   type WorkerGovernanceBackendSessionIdentity,
@@ -53,6 +60,8 @@ export interface CreateConfiguredTurnExecutorOptions {
   workerControlGateway?: WorkerControlGateway | undefined;
   /** Optional vault backend used for grant-derived provider attachments. */
   vaultBackend?: (() => VaultBackend) | undefined;
+  /** Optional process-local store owner shared with the public App API. */
+  storeForUserId?: ((userId: string) => FsStore) | undefined;
 }
 
 /** Shared real-worker lifecycle selected from NanoCore runtime configuration. */
@@ -61,8 +70,15 @@ export interface ConfiguredWorkerLifecycleRuntime {
   readonly cleanupBackendSession: (
     identity: WorkerGovernanceBackendSessionIdentity
   ) => Promise<void>;
+  /** Restores and closes one worker whose final status is already durable. */
+  readonly reconcileAcceptedFinalStatus: (session: WorkerBackendSessionRecord) => Promise<{
+    readonly status: 'completed' | 'failed';
+    readonly turn: ReturnType<FsStore['getTurnById']>;
+  }>;
   /** Configured disposable Cell placement. */
   readonly placement: 'local' | 'remote';
+  /** Restores read-only access to one exact durable backend session. */
+  readonly restoreBackendSession: (session: WorkerBackendSessionRecord) => Promise<void>;
   /** Product turn executor backed by the same cleanup owner. */
   readonly turnExecutor: TurnExecutor;
 }
@@ -118,7 +134,8 @@ export function createConfiguredWorkerLifecycleRuntime(
     workerControlGateway,
     options.coreDb,
     placement,
-    options.vaultBackend
+    options.vaultBackend,
+    options.storeForUserId
   );
 }
 
@@ -147,6 +164,7 @@ function parseContainerPlacement(value: string | undefined): 'local' | 'remote' 
  * @param coreDb Durable Core database and deployment identity source.
  * @param placement Local or remote disposable Cell placement.
  * @param vaultBackend Optional vault backend used for runtime provider grants.
+ * @param storeForUserId Optional process-local store owner shared with the App API.
  * @returns Shared worker lifecycle runtime.
  */
 function createOpenShellWorkerLifecycleRuntime(
@@ -154,7 +172,8 @@ function createOpenShellWorkerLifecycleRuntime(
   workerControlGateway: WorkerControlGateway,
   coreDb: CoreDb,
   placement: 'local' | 'remote',
-  vaultBackend?: (() => VaultBackend) | undefined
+  vaultBackend?: (() => VaultBackend) | undefined,
+  storeForUserId?: ((userId: string) => FsStore) | undefined
 ): ConfiguredWorkerLifecycleRuntime {
   const sandboxImageRef =
     normalizeEnvValue(env.OPENKIT_OPENSHELL_WORKER_IMAGE) ?? 'openkit/worker-codex:dev';
@@ -190,26 +209,95 @@ function createOpenShellWorkerLifecycleRuntime(
     placement,
     workerControlGateway,
   });
+  const turnExecutor =
+    env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
+      ? new SimulatedTurnExecutor()
+      : new WorkerGovernanceTurnExecutor({
+          awaitWorkerCompletion: (environmentPackage, leaseId) =>
+            waitForWorkerControlFinalStatus(coreDb, {
+              leaseId,
+              lineage: {
+                agentSessionId: environmentPackage.scope.agentSessionId,
+                packageSnapshotId: environmentPackage.snapshotId,
+                requestId: environmentPackage.scope.requestId ?? null,
+                threadId: environmentPackage.scope.threadId,
+                turnId: environmentPackage.scope.turnId,
+                workspaceId: environmentPackage.scope.workspaceId,
+              },
+            }),
+          backend,
+          coreDb,
+          environmentBackend: {
+            ...(codexModel ? { codexModel } : {}),
+            workerControlBaseUrl,
+            gatewayUrl,
+            kind: 'openshell',
+            placement,
+            sandboxImageRef,
+          },
+          ...(vaultBackend ? { vaultBackend } : {}),
+        });
+
+  /** Restores the existing immutable package, owner, and read-only backend handle. */
+  async function restoreDurableSession(session: WorkerBackendSessionRecord): Promise<{
+    readonly environmentPackage: AgentEnvironmentPackage;
+    readonly userId: string;
+  }> {
+    const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, session.leaseId);
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, admission.userId, session.workspaceId);
+    let environmentPackage: AgentEnvironmentPackage;
+    try {
+      applyScopedMigrations(workspaceDb);
+      environmentPackage = requireAgentEnvironmentPackageSnapshot(
+        workspaceDb,
+        session.workspaceId,
+        session.packageSnapshotId
+      ).snapshot;
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+    const capabilities = await backend.describeCapabilities();
+    if (
+      session.backendKind !== 'openshell' ||
+      session.backendVersion !== (capabilities.version ?? null) ||
+      session.workerImage !== environmentPackage.runtime.image.ref ||
+      session.workspaceHandoffState !== 'complete'
+    ) {
+      throw new Error('Restart backend session does not match its immutable runtime package.');
+    }
+    await backend.restoreSession(environmentPackage, {
+      agentSessionId: session.agentSessionId,
+      backendKind: session.backendKind,
+      backendSessionId: session.backendSessionId,
+      backendTarget: session.backendTarget,
+      deploymentId: session.deploymentId,
+      packageSnapshotId: session.packageSnapshotId,
+      stagingDirectoryRef: session.stagingDirectoryRef,
+      transientProviderInstanceId: session.transientProviderInstanceId,
+    });
+    return { environmentPackage, userId: admission.userId };
+  }
 
   return {
     cleanupBackendSession: (identity) => backend.cleanupSession(identity),
     placement,
-    turnExecutor:
-      env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
-        ? new SimulatedTurnExecutor()
-        : new WorkerGovernanceTurnExecutor({
-            backend,
-            coreDb,
-            environmentBackend: {
-              ...(codexModel ? { codexModel } : {}),
-              workerControlBaseUrl,
-              gatewayUrl,
-              kind: 'openshell',
-              placement,
-              sandboxImageRef,
-            },
-            ...(vaultBackend ? { vaultBackend } : {}),
-          }),
+    reconcileAcceptedFinalStatus: async (session) => {
+      if (!(turnExecutor instanceof WorkerGovernanceTurnExecutor)) {
+        throw new Error('The self-check executor cannot reconcile a real worker session.');
+      }
+      const { environmentPackage, userId } = await restoreDurableSession(session);
+      const store = storeForUserId?.(userId) ?? new FsStore({ dataRoot: coreDb.dataRoot, userId });
+      const recoveredStatus = await turnExecutor.resumeAcceptedFinalStatus(
+        store,
+        environmentPackage,
+        session
+      );
+      return { status: recoveredStatus, turn: store.getTurnById(session.turnId) };
+    },
+    restoreBackendSession: async (session) => {
+      await restoreDurableSession(session);
+    },
+    turnExecutor,
   };
 }
 

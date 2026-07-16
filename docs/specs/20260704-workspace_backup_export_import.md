@@ -1,7 +1,7 @@
 # Workspace Backup, Export, Import, And Data-Root Migration
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
 Workspace export format: V2
 
 ## Owns
@@ -10,6 +10,7 @@ Workspace export format: V2
 - Content inclusion, exclusion, and redaction rules for workspace exports.
 - Import validation, exact-byte verification, required-feature enforcement, coordinated publication, and rollback behavior.
 - Workspace id collision handling, subordinate identity reminting, and `importedFrom` lineage rules on import.
+- Portable-export exclusion and import reconstruction rules for Workspace ownership, membership, invitations, and actor lineage.
 - The cold and hot backup procedures for a NanoCore data root and the restore procedure.
 - Data-root migration rules for moving a data root to a new path or host, including deployment id lineage.
 - The interaction contract between workspace deletion, retention classes, and the sealed audit closure export.
@@ -22,11 +23,13 @@ Workspace export format: V2
 - Vault backend mechanics, secret material storage, or re-binding UX. `docs/specs/20260704-vault_backend_implementation.md` owns those.
 - Audit, usage, and evidence record schemas or retention class definitions. `docs/specs/20260703-audit_usage_evidence_records.md` owns those.
 - Boot-time layout verification, index rebuild, and recovery sequencing. `docs/specs/20260704-nanocore_bootstrap_readiness.md` owns those.
+- Workspace membership, invitation, owner-transfer, role, and user-lifecycle semantics. `docs/specs/20260715-multi_user_workspace_system.md` owns those.
 - Multi-deployment live synchronization or replication, which are deferred.
 
 ## Core References
 
 - `docs/core/storage.md`
+- `docs/core/identity.md`
 - `docs/core/architecture.md`
 - `docs/core/audit.md`
 - `docs/core/vault.md`
@@ -36,7 +39,7 @@ Workspace export format: V2
 
 ## Summary
 
-The primary export unit is one workspace. Workspace export format V2 is a self-describing, offline-verifiable directory tree whose manifest commits to the exact portable file set and bytes consumed by import. Imports consume only those verified bytes, enforce required features fail-closed, preserve or remint the workspace id with recorded lineage, remint collision-prone target identities and references, and coordinate staged files with transactional Core replay and synchronous compensation on failure. Backup is data-root-level: a cold copy is the baseline, and a hot backup captures the file tree first and individual SQLite snapshots second. Data-root migration is a config repoint validated at boot. System-managed Vault, provider, and runtime secrets never enter workspace exports; exports carry only non-secret vault reference metadata that lands `unbound`. User-authored portable content is not a sanitized or DLP-scanned channel.
+The primary export unit is one workspace. Workspace export format V2 is a self-describing, offline-verifiable directory tree whose manifest commits to the exact portable file set and bytes consumed by import. Imports consume only those verified bytes, enforce required features fail-closed, preserve or remint the workspace id with recorded lineage, remint collision-prone target identities and references, and coordinate staged files with transactional Core replay and synchronous compensation on failure. A portable Workspace export carries product truth and actor lineage but no deployment-local access grants; the importing user becomes the new owner and only active member. Backup is data-root-level: a cold copy is the baseline, and a hot backup captures the file tree first and individual SQLite snapshots second. Data-root migration is a config repoint validated at boot. System-managed Vault, provider, and runtime secrets never enter workspace exports; exports carry only non-secret vault reference metadata that lands `unbound`. User-authored portable content is not a sanitized or DLP-scanned channel.
 
 ## Goals
 
@@ -104,6 +107,8 @@ The workspace evaluation area and workspace-scope Skill Catalog state join expor
 ### Non-Portable And Redacted State
 
 - System-managed Vault material, provider credentials, session cookies, access tokens, runtime credentials, and backend secrets MUST NOT appear in an export.
+- Active memberships, removed membership tombstones, invitations, auth sessions, personal preferences, and user-local notification state MUST NOT appear in a portable Workspace export.
+- Stable actor references in product history and audit MUST remain as non-authority lineage. Import MUST NOT interpret a source owner, member, approver, reviewer, or actor id as a target-deployment access grant.
 - User-authored artifacts, knowledge, source material, and workspace configuration are portable content and are not generically secret-scanned. Operators and product surfaces MUST NOT describe an export as sanitized user content.
 - Vault references MUST export only non-secret reference metadata. On import they MUST enter the `unbound` state and require explicit re-binding before use.
 - Backend-native handles, host paths, active sandbox details, runtime compatibility keys, agent-session policy-snapshot bindings, and similar source-host state MUST be excluded or reduced to an explicitly redacted portable summary. Context-materialization policy snapshots are portable content instead: the importer rewrites their target-owned references and recomputes dependent digests.
@@ -117,7 +122,8 @@ The workspace evaluation area and workspace-scope Skill Catalog state join expor
 - A server-managed export whose `sourceDeploymentId` matches the current deployment or its recorded predecessor MUST remain private to an actor who can currently read the source workspace and has active membership. An export from an unrelated deployment is portable input and does not require a local source membership edge.
 - The importer MUST reject unsupported `requiredFeatures` declared by the manifest or any imported record, and the diagnostic MUST name the unsupported identifier.
 - The importer MUST validate both the source canonical history graph and the reminted graph before creating target state. Duplicate identities, stale turn projections, non-contiguous events, invalid event targets, dangling lineage, and inconsistent proposal or review state MUST fail import.
-- When the workspace id does not collide anywhere in the target deployment, the importer MUST preserve it. The deployment-wide workspace registry, every owner-scoped live store, and final workspace paths participate in collision detection; when any owner already claims the id, the importer MUST mint a new workspace id. Owner membership recording MUST reject a second canonical owner instead of attaching another user's files to the same global workspace id. Every successful import MUST record `importedFrom` with source deployment id, source workspace id, export timestamp, and manifest digest. A durable Core-backed import MUST also emit a workspace import audit event.
+- When the workspace id does not collide anywhere in the target deployment, the importer MUST preserve it. The deployment-wide Workspace registry, final owner-independent Workspace path, and any staged import participate in collision detection; when any target state already claims the id, the importer MUST mint a new Workspace id.
+- A successful portable import MUST transactionally record the authenticated importing user as the new canonical owner and only active member. Source-deployment ownership, membership, invitation, and token records MUST NOT be reconstructed. Every successful import MUST record `importedFrom` with source deployment id, source workspace id, export timestamp, and manifest digest and MUST emit a Workspace import audit event.
 - Identities that would collide in the live store or belong to a target-runtime namespace MUST be reminted. The implemented set includes thread, turn, item, artifact, approval and user-input request, agent-session, Agent Environment Package snapshot and package, knowledge proposal and source, Goal Mode, and Vault reference, grant, plan, and receipt identities. Stable workspace-scoped knowledge entry, observation, claim, conflict, context-package trace, retrieval trace, evidence, and other ledger identities MAY be preserved because the imported workspace remains their ownership boundary. Every affected direct or nested reference MUST be rewritten, and a missing or ambiguous required source reference MUST fail import.
 - Context-package traces and materializations MUST remain one canonical graph after import. The importer MUST rewrite every affected selected record id, path, policy snapshot, package manifest, and source reference, then recompute context-package, file, entry, and manifest digests from the rewritten content. A stable context-package identity does not itself require reminting.
 - Imported agent sessions MUST drop source-host sandbox, workspace-root, config-version, policy-snapshot, and compatibility-key state and MUST be marked stale for target-side re-establishment.
@@ -128,13 +134,14 @@ The workspace evaluation area and workspace-scope Skill Catalog state join expor
 
 ### Public Portability Surfaces
 
-- NanoCore exposes server-managed export, dry-run import, and mutating import handles through the App API; `@openkit/core-client` and MCP expose the corresponding operations without revealing server filesystem paths.
+- NanoCore exposes server-managed export, dry-run import, and mutating import handles through the App API; `@openkit/core-client`, the bundled CLI, and the unified Skill project the corresponding operations without revealing server filesystem paths.
 - Workspace vault-reference discovery and re-binding accept secret material only as input, store it in the active target vault backend, and return only redacted reference metadata.
 - The Web portability surface supports repository and vault-reference re-binding after import or migration without retaining secret material in rendered state.
 
 ### Backup And Restore
 
 - Cold backup is the baseline: with NanoCore stopped, a byte copy of the entire data root is a complete, clean backup.
+- A full data-root backup includes the Core database and therefore preserves canonical users, Workspace owners, memberships, invitations, and token metadata for restoration as the same deployment. This is intentionally different from a portable Workspace export.
 - Hot backup MUST copy the file tree first and then snapshot every SQLite database through the SQLite backup API. The manifest marks the result crash-consistent at the copied-file and individual-database level; it does not claim one transaction or automatic reconciliation across a newer database snapshot and older copied files.
 - A backup MUST carry a manifest with capture timestamps, source deployment id, mode, consistency, exact file inventory, and per-file digests. The implemented offline verifier rejects links, extra or absent files, unsafe paths, digest mismatches, and unsupported required features. Its implemented integrity boundary is the parsed manifest plus the verified per-file inventory; unlike workspace V2 verification, it does not separately recompute the manifest `contentDigest` from that inventory or independently authenticate the manifest.
 - Restore MUST verify before mutation, replace the target data root through same-filesystem staging and rename, then reuse boot-time SQLite integrity recovery, migrations, derived-index rebuild, and runtime restart recovery. Restore remains a stopped-server operator operation rather than a live App API or MCP mutation.
@@ -165,7 +172,7 @@ The exporter reads canonical source records, validates the complete workspace gr
 
 V2 is the implemented and only accepted workspace export format. NanoCore exports and imports complete canonical history, all five authoritative knowledge ledgers, workspace configuration and schema, native OKF pages, context materializations, portable file and database row families, and source materials. The verifier owns the exact byte set consumed by dry-run and import, and the importer performs fail-closed source and target graph validation, required target-namespace reminting, stable knowledge-ledger identity preservation, context digest and policy reconstruction, same-filesystem staging, transactional Core replay, and compensating rollback for caught synchronous failures.
 
-The public portability, vault re-binding, data-root backup and verification, stopped-server restore, deployment lineage, and data-root migration validation surfaces described above are implemented. The workspace SQLite table coverage guard and app-local portable-state tests protect the implemented V2 boundary when storage ownership changes. Cross-resource crash recovery, concurrent-write hot-backup restore validation, browser-level portability acceptance, and true cross-machine continuation remain explicit hardening gaps rather than implied guarantees.
+The public App API, Core Client, removal-only MCP parity surface, vault re-binding, data-root backup and verification, stopped-server restore, deployment lineage, and data-root migration validation surfaces described above are implemented. The accepted bundled CLI and unified Skill projection, owner-independent Workspace publication, explicit exclusion of multi-user access records, new-owner-only import reconstruction, cross-resource crash recovery, concurrent-write hot-backup restore validation, browser-level portability acceptance, and true cross-machine continuation remain incomplete. The workspace SQLite table coverage guard and app-local portable-state tests protect the implemented V2 boundary when storage ownership changes.
 
 ## Alternatives Considered
 
@@ -187,6 +194,8 @@ The public portability, vault re-binding, data-root backup and verification, sto
 
 V2 replaces V1 without compatibility obligations. Existing V1 exports MUST be rejected and regenerated from their source workspaces. Future workspace-owned authoritative families MUST join export and import coverage in the same change that introduces their storage ownership; derived or server-local families MUST be explicitly classified non-portable.
 
+The multi-user implementation change MUST update V2 coverage and import tests in the same slice that moves Workspaces to the owner-independent root. It MUST prove that access records never travel in a portable export and that import grants access only to the importing user. No second export version is required unless the portable byte contract itself changes.
+
 ## Testing Strategy / Acceptance Criteria
 
 The required acceptance path maps to the L0-L6 model in `docs/specs/20260529-test_strategy.md`:
@@ -194,6 +203,7 @@ The required acceptance path maps to the L0-L6 model in `docs/specs/20260529-tes
 - L0 requires static repository, documentation lifecycle, type, lint, and boundary checks.
 - L1 requires package and NanoCore unit coverage for manifest versions, exact inventory verification, graph validation, path and link rejection, remint and stable-id behavior, context reconstruction, workspace SQLite coverage, and staged cleanup.
 - L2 requires contract and conformance coverage for V2 export-to-import-to-re-export equivalence, all portable file and row families, exact-set tamper detection, V1 and unsupported-feature rejection, coordinated rollback, and unbound Vault enforcement.
+- L2 also requires fixtures proving memberships, invitations, credentials, and personal state are absent; historical actor references remain lineage only; and import creates exactly one target owner membership.
 - L3 requires NanoCore process-level coverage for collision reminting, cross-data-root import, fault-injected synchronous rollback, boot or on-demand index rebuild, concurrent-write hot-backup restore, and deployment-lineage validation.
 - L4 requires browser-level repository and Vault re-binding coverage without retaining rendered secret material.
 - L5 requires a packaged build to export, verify, and import into a fresh data root.
@@ -237,6 +247,7 @@ The accepted workspace export version is V2. The canonical archived extension re
 
 - `docs/core/storage.md` — this spec answers its backup, export, import, and compaction open point.
 - `docs/specs/20260703-storage_layout_record_ownership.md`
+- `docs/specs/20260715-multi_user_workspace_system.md`
 - `docs/specs/20260703-schema_evolution_record_envelope.md`
 - `docs/specs/20260703-audit_usage_evidence_records.md`
 - `docs/specs/20260704-vault_backend_implementation.md`

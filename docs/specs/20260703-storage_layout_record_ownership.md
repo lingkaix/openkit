@@ -1,7 +1,7 @@
 # Storage Layout And Record Ownership
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Diverged
 
 ## Summary
 
@@ -13,7 +13,7 @@ The important call is to stop organizing persistence by feature module. Storage 
 
 ## Owns
 
-- Target physical `DATA_ROOT` ownership layout for server, user, and workspace scopes.
+- Target physical `DATA_ROOT` ownership layout for server, user, and owner-independent workspace scopes.
 - Source-of-truth decisions for file-backed records, SQLite source-of-truth ledgers, and derived SQLite records.
 - Storage ownership for worker runtime outputs, OpenShell evidence, staged reviews, apply results, audit, usage, capability calls, permission decisions, vault metadata, and recovery checkpoints.
 - Migration posture from the current single-database implementation to ownership-scoped storage.
@@ -31,6 +31,7 @@ The important call is to stop organizing persistence by feature module. Storage 
 ## Core References
 
 - `docs/core/storage.md`
+- `docs/core/identity.md`
 - `docs/core/architecture.md`
 - `docs/core/protocol.md`
 - `docs/core/knowledge.md`
@@ -38,6 +39,7 @@ The important call is to stop organizing persistence by feature module. Storage 
 - `docs/core/metering.md`
 - `docs/core/vault.md`
 - `docs/core/agent-session.md`
+- `docs/core/contract-evolution.md`
 - `docs/specs/20260703-schema_evolution_record_envelope.md`
 
 ## Goals
@@ -64,7 +66,7 @@ The missing decision is the concrete target layout and record ownership rule, es
 
 ## Decision
 
-Use one ownership tree and one database per ownership scope.
+Use sibling ownership trees and one database per ownership scope. A Workspace is a first-class server resource; its owner is an identity relationship, not its physical parent.
 
 The target tree is:
 
@@ -89,24 +91,26 @@ DATA_ROOT/
       config/user.jsonc
       files/
       logs/
-      workspaces/
-        <workspaceId>/
-          workspace.json
-          db/workspace.sqlite
-          config/workspace.jsonc
-          config/data-sources.jsonc
-          threads/
-          artifacts/
-          knowledge/
-          sources/
-          runtime/
-          reviews/
-          evidence/
-          logs/
-          indexes/
+  workspaces/
+    <workspaceId>/
+      workspace.json
+      db/workspace.sqlite
+      config/workspace.jsonc
+      config/data-sources.jsonc
+      threads/
+      artifacts/
+      knowledge/
+      sources/
+      runtime/
+      reviews/
+      evidence/
+      logs/
+      indexes/
 ```
 
 `DATA_ROOT/config` remains the operator-authored server config surface. Other mutable server-owned runtime state belongs under `DATA_ROOT/server`.
+
+`DATA_ROOT/users/<userId>` contains only user-owned state. `DATA_ROOT/workspaces/<workspaceId>` is the one canonical home for a Workspace regardless of creator, current owner, or member set. Workspace listings are derived from the Core registry, membership state, and policy decisions; sharing does not create copies, reference files, `share/` directories, symlinks, or hard links.
 
 `knowledge/` and `sources/` are deliberately sibling record families even though the Knowledge Store conceptually governs both: physical layout follows record family, lifecycle, and backup boundary rather than module nesting, and the `sources/` evidence layer is referenced by context packages, evidence bundles, audit traces, and artifacts as well as by knowledge pages. `sources/` and `artifacts/` are symmetric: durable governed inputs and durable governed outputs.
 
@@ -139,7 +143,7 @@ SQLite source-of-truth records:
 - capability calls
 - permission decisions
 - vault reference metadata and grants, excluding secret material
-- scheduler leases and capacity records
+- scheduler leases, capacity records, worker-control ledgers, and the small recovery fields and cleanup fences on their existing owning rows
 - migration metadata
 - operational recovery checkpoints that require transactions
 
@@ -182,7 +186,7 @@ Line-oriented families under this spec apply the split-envelope minimum from the
 
 ## Current Implementation Projection
 
-The V1 storage layout and current record-family ownership model are implemented:
+Most scoped record-family ownership is implemented, but the accepted owner-independent Workspace root is not. The current implementation still materializes each Workspace beneath one user and therefore diverges from this target:
 
 - `apps/nanocore/src/storage/fs-layout.ts` creates `config/`, `config/providers/`, `config/agents/`, `server/`, `server/db/`, `server/files/`, `server/evidence/`, `server/exports/`, `server/logs/`, `server/runtime/`, `server/runtime/config/`, `server/runtime/agents/`, `server/runtime/sessions/`, `server/migrations/`, `server/vendor/`, `users/<userId>/`, and `users/<userId>/workspaces/`.
 - `ensureUserLayout` creates user-owned `files/`, `data/`, `db/`, `logs/`, `config/`, and `workspaces/`.
@@ -200,11 +204,11 @@ The V1 storage layout and current record-family ownership model are implemented:
 - `GET /api/app/storage/layout-report` exposes the same report through the public App API with `@openkit/app-api-schemas` validation, `@openkit/core-client` exposes `client.app.getStorageLayoutReport()` for first-party consumers, and `@openkit/mcp` exposes `openkit.read_storage_layout_report` plus `openkit://storage/layout-report` for AI-native operator inspection. Because the report covers deployment-wide storage topology and quarantine inventory, this is a deployment-wide administration route governed by `docs/specs/20260704-remote_auth_credential_bootstrap.md`, not a workspace diagnostic.
 - `rebuildWorkspaceDerivedIndexes` rebuilds the first workspace-derived index file at `indexes/search.json` from file-backed workspace projections and authoritative workspace snapshot records, deleting stale derived index files before writing the rebuilt index.
 - `rebuildExistingWorkspaceDerivedIndexes` runs the same derived-index rebuild at boot for existing workspace directories that have a canonical `workspace.json` projection, skipping half-built workspace directories without that projection.
-- The server-scope database currently holds Better Auth or auth implementation rows, server settings, and users.
+- The server-scope database currently holds Better Auth or auth implementation rows, server settings, users, scheduler coordination, worker-control ledgers, and durable backend-session lifecycle rows. Restart closeout reuses those owners and adds no settlement table.
 - Workspace repository resources, worker-turn checkpoints, pending user turns, Goal Mode goal records, Goal Mode task records, Goal Mode review records, Goal Mode verification records, workspace apply results, workspace input snapshots, workspace materialization records, workspace change sets, staged workspace reviews, workspace filesystem staging roots, and workspace-scoped permission decisions now live in workspace-owned `workspace.sqlite` files with workspace-scoped migration ledgers.
 - Worker checkpoint rows carry workspace/thread/turn lineage, context package digest, stage, stop reason, and redacted diagnostics.
 
-`users/<userId>/db/user.sqlite` and `workspaces/<workspaceId>/db/workspace.sqlite` now have concrete open paths and migration ledgers. Repository, worker checkpoint, pending user turn, Goal Mode goal/task/review/verification, apply-result, workspace synchronization review, filesystem staging, and workspace permission-decision rows are the first workspace-owned domain rows moved out of the server database.
+`users/<userId>/db/user.sqlite` has a concrete open path and migration ledger. The current Workspace database path is `users/<userId>/workspaces/<workspaceId>/db/workspace.sqlite`; the accepted replacement is `workspaces/<workspaceId>/db/workspace.sqlite`. Repository, worker checkpoint, pending user turn, Goal Mode goal/task/review/verification, apply-result, workspace synchronization review, filesystem staging, and workspace permission-decision rows are the first workspace-owned domain rows moved out of the server database.
 
 The workspace physical `memory/` directory has been replaced by `knowledge/`. OpenKit-owned protocol, App API, MCP, NanoCore, core-client, and Web surfaces now use `knowledge`; remaining `memory` mentions in active implementation are ordinary in-memory wording, resource-limit options, or fail-closed unsupported layout guards.
 
@@ -328,7 +332,7 @@ Runtime-internal sub-agent streams and their native origin indexes follow the re
 - user-scoped provider or vault metadata when policy allows it
 - user-level notifications and attention state
 
-User files remain under `users/<userId>/files`. Workspaces owned or visible to the user are under `users/<userId>/workspaces/<workspaceId>` until a future organization scope adds a shared ownership tree.
+User files remain under `users/<userId>/files`. Workspace ownership and visibility do not create any Workspace storage below the user tree; all canonical Workspace data lives under `workspaces/<workspaceId>` and is resolved through Core identity and policy state.
 
 ## Record Identity
 
@@ -359,9 +363,11 @@ Migration from the current partial implementation should be explicit and one-way
 
 1. Create the target tree.
 2. Move server-owned runtime files under `server/`.
-3. Create `user.sqlite` and `workspace.sqlite` when the first user or workspace needs scoped data.
-4. Rebuild derived indexes from file-backed records and authoritative ledgers.
-5. Keep a temporary repair or migration report when useful, not a permanent legacy reader for old paths.
+3. Preflight every registered Workspace against its current `users/<ownerUserId>/workspaces/<workspaceId>` source and fail on missing, duplicate, linked, or ambiguous roots.
+4. Copy each verified Workspace into a same-filesystem staging root, verify its complete inventory and authoritative databases, then atomically publish it at `workspaces/<workspaceId>`.
+5. Repoint all Workspace openers and recovery scans to the owner-independent root, rebuild derived indexes, and write the new layout marker only after every Workspace has been verified.
+6. Retain the old user-nested source as bounded rollback evidence until the migration is accepted; do not add a dual reader, alias, or filesystem link.
+7. Keep a migration report that records source, target, digests, and outcome without exposing credentials or user content.
 
 After this baseline is established, future storage additions must follow the additive schema evolution rules in `docs/specs/20260703-schema_evolution_record_envelope.md`.
 
@@ -373,10 +379,11 @@ Post-baseline import is an explicit contract with three verifiable rules:
 
 ## Resolved Decisions
 
-- The target layout uses one database per ownership scope under a `db/` directory: `server/db/core.sqlite`, `users/<userId>/db/user.sqlite`, and `users/<userId>/workspaces/<workspaceId>/db/workspace.sqlite` until a future organization scope introduces a shared workspace tree.
+- The target layout uses one database per ownership scope under a `db/` directory: `server/db/core.sqlite`, `users/<userId>/db/user.sqlite`, and `workspaces/<workspaceId>/db/workspace.sqlite`.
+- Workspace ownership is a Core identity relationship and never determines the canonical Workspace path.
 - The legacy root-level `core.sqlite` path is implementation debt, not the target location.
 - The legacy workspace `memory/` directory name is implementation debt; the target directory is `knowledge/`.
-- Rows caused by workspace work are workspace-scoped even if the gateway, scheduler, or runtime lives in the server process. Rows with no workspace context are server-scoped.
+- Workspace domain rows are workspace-scoped even if the gateway, scheduler, or runtime lives in the server process. Deployment-wide scheduler rows remain server-scoped when they fence scheduler epoch, lease, capacity, or physical cleanup atomically; direct restart closeout follows product-safe lineage into the existing workspace owners and never copies workspace-domain payload into a server settlement row. Rows with no workspace context are server-scoped.
 - Quarantined worker output should be retained by default as restricted redacted evidence for a bounded retention window, not silently deleted at rejection time.
 - Derived indexes and read models must be rebuildable from file-backed records or authoritative SQLite ledgers.
 - A temporary migration report is allowed; permanent legacy readers for old layout paths are not part of the target.
@@ -399,6 +406,7 @@ Post-baseline import is an explicit contract with three verifiable rules:
 
 - Storage fixture tests should create a full target tree and validate path ownership.
 - Startup storage tests should prove NanoCore boots on the ownership-scoped target tree.
+- Multi-user storage tests should prove owner transfer and membership changes do not move or alias the Workspace root.
 - Replay tests should rebuild workspace read models from files and ledgers.
 - Import tests should reject worker records with missing lineage or mismatched digests.
 - Backup tests should prove a workspace can be copied with its `workspace.sqlite`, files, and evidence manifests.
@@ -421,6 +429,7 @@ Post-baseline import is an explicit contract with three verifiable rules:
 - `docs/core/knowledge.md`
 - `docs/core/vault.md`
 - `docs/specs/20260703-schema_evolution_record_envelope.md`
+- `docs/specs/20260715-multi_user_workspace_system.md`
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260703-workspace_synchronization.md`
 - `docs/specs/20260629-worker_runtime_communication_model.md`

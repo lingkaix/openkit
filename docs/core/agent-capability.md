@@ -192,7 +192,7 @@ Usage measures resource consumption. Audit explains who caused an action, which 
 - Secret values MUST NOT appear in prompts, item payloads, context packages, audit records, usage records, or normal workspace files through the capability path.
 - Product-visible capability calls MUST produce or be referenced by item-backed events.
 - A disabled capability plane MUST expose no routes and MUST fail closed rather than infer access from worker supply, network reachability, or control connectivity.
-- Non-gateway runtime, sandbox, storage, and workspace-sync metering MUST remain future metering scope until promoted by a stable design.
+- Non-gateway runtime, sandbox, storage, and workspace-sync measurement MUST follow the current Metering boundary and MUST NOT be represented as an agent-capability-mediated call unless it is one.
 
 ## Agent Capability vs Feature Discovery
 

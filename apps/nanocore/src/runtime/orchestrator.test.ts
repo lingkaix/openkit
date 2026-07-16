@@ -146,6 +146,7 @@ describe('startTurn orchestrator', () => {
 
     expect(handle.modelId).toBe('model_opencode');
     expect(handle.agent.id).toBe('agent_opencode_host');
+    expect(handle.turn.agentId).toBe('agent_opencode_host');
     expect(turnExecutor.calls).toEqual([
       {
         context: { requestId: null, workspaceCwd: null, workspaceRoots: [] },

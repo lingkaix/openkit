@@ -457,13 +457,16 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
     options.args.sessionDir
   );
   const lineage = workerLineageFromEnvironment(environment);
-  let finalStatusClient: WorkerControlClient | null = null;
+  let controlSession: WorkerControlClient | null = null;
   const writer = new WorkerTranscriptWriter({
     appendEvent: async (record) => {
-      if (!finalStatusClient) {
+      if (!controlSession) {
         throw new Error('Worker live event append requires initialized direct control.');
       }
-      await finalStatusClient.appendEvent(record);
+      await controlSession.appendEvent(
+        record,
+        controlAbortController.signal.aborted ? undefined : controlAbortController.signal
+      );
     },
     lineage,
     sessionDir: options.args.sessionDir,
@@ -476,6 +479,7 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
   let interrupted = false;
   /** Cancels the control and Codex child under the shared supervisor lifecycle. */
   const abortChildren = (reason?: unknown) => {
+    controlSession?.disablePostLaunchRecovery();
     controlAbortController.abort(reason);
     codexAbortController.abort(reason);
   };
@@ -490,28 +494,15 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
 
   try {
     const controlToken = requireWorkerControlToken(options.controlToken);
-    const controlClient = new WorkerControlClient({
-      ...(options.fetch ? { fetch: options.fetch } : {}),
-      lineage,
-      signal: controlAbortController.signal,
-      token: controlToken,
-      baseUrl: controlBaseUrl,
-    });
-    finalStatusClient = new WorkerControlClient({
+    const session = new WorkerControlClient({
       ...(options.fetch ? { fetch: options.fetch } : {}),
       lineage,
       token: controlToken,
       baseUrl: controlBaseUrl,
     });
+    controlSession = session;
     const commandRunner = options.commandRunner ?? new ChildProcessWorkerControlCommandRunner();
     const seenCommandIds = new Set<string>();
-    let heartbeatSequence = 0;
-    /** Allocates the next worker heartbeat sequence. */
-    const nextHeartbeatSequence = () => {
-      const sequence = heartbeatSequence;
-      heartbeatSequence += 1;
-      return sequence;
-    };
     /** Records a delivered interrupt and cancels both supervised child paths. */
     const interruptWorker = () => {
       interrupted = true;
@@ -522,7 +513,7 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
     let initialCommandPoll: WorkerControlCommandPoll | null = null;
     try {
       initialCommandPoll = await waitForWorkerControlReadiness(
-        () => pollWorkerControl(controlClient, writer, nextHeartbeatSequence),
+        () => pollWorkerControl(session, writer, 'starting', controlAbortController.signal),
         controlAbortController
       );
       workerControlReady = true;
@@ -536,13 +527,12 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
     if (initialCommandPoll) {
       try {
         await handleWorkerControlCommands(
-          controlClient,
+          session,
           writer,
           commandRunner,
           initialCommandPoll.commands,
           environment,
           controlAbortController.signal,
-          nextHeartbeatSequence,
           seenCommandIds,
           interruptWorker
         );
@@ -555,7 +545,7 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
 
     if (interrupted || options.signal?.aborted) {
       terminalOutcomeAttempted = true;
-      await writeAndReportTerminalOutcome(writer, workerControlReady ? finalStatusClient : null, {
+      await writeAndReportTerminalOutcome(writer, workerControlReady ? session : null, {
         status: 'interrupted',
         stopReason: interrupted ? 'worker-interrupt-command' : 'worker-parent-aborted',
       });
@@ -622,11 +612,11 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
           ? { writeStdout: (chunk: Uint8Array) => provenanceCapture.writePrimaryChunk(chunk) }
           : {}),
       });
+      session.enablePostLaunchRecovery();
       controlPromise = runWorkerControlLoop(
-        controlClient,
+        session,
         writer,
         commandRunner,
-        nextHeartbeatSequence,
         environment,
         controlAbortController.signal,
         seenCommandIds,
@@ -679,8 +669,15 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
         : result.exitCode === 0
           ? 'completed'
           : 'failed';
+    await provenanceCapture?.finalize();
+    await publishWorkspaceGitSnapshots({
+      bases: workspaceBases,
+      inputs: workspaceInputs,
+      lineage,
+      sessionDir: options.args.sessionDir,
+    });
     terminalOutcomeAttempted = true;
-    await writeAndReportTerminalOutcome(writer, finalStatusClient, {
+    await writeAndReportTerminalOutcome(writer, session, {
       ...(status === 'failed' && !provenanceCapture
         ? { diagnostics: codexFailureDiagnostics(result) }
         : {}),
@@ -696,13 +693,6 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
     });
     controlAbortController.abort();
     await controlPromise.catch(() => undefined);
-    await provenanceCapture?.finalize();
-    await publishWorkspaceGitSnapshots({
-      bases: workspaceBases,
-      inputs: workspaceInputs,
-      lineage,
-      sessionDir: options.args.sessionDir,
-    });
 
     return {
       exitCode: result.exitCode,
@@ -712,7 +702,7 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
   } catch (error) {
     if (!terminalOutcomeAttempted) {
       terminalOutcomeAttempted = true;
-      await writeAndReportTerminalOutcome(writer, workerControlReady ? finalStatusClient : null, {
+      await writeAndReportTerminalOutcome(writer, workerControlReady ? controlSession : null, {
         status: 'failed',
         stopReason: failureReason,
       }).catch(() => undefined);
@@ -728,7 +718,7 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
  * Persists one terminal transcript record and reports its exact final sequence to NanoCore.
  *
  * @param writer Durable worker transcript writer.
- * @param client Live final-status client, or null when control readiness never completed.
+ * @param client Live session coordinator, or null when control readiness never completed.
  * @param input Worker-local terminal outcome.
  */
 async function writeAndReportTerminalOutcome(
@@ -1728,27 +1718,28 @@ function redactDiagnosticOutput(output: string): string {
 /**
  * Records one heartbeat and polls NanoCore for worker commands.
  *
- * @param client Authenticated worker-control client.
+ * @param client Session-level worker-control coordinator.
  * @param transcript Shared worker transcript writer.
- * @param nextHeartbeatSequence Allocates the next monotonic heartbeat sequence.
+ * @param status Logical worker heartbeat status.
+ * @param signal Supervisor cancellation signal.
  * @returns Commands returned by NanoCore after the heartbeat is accepted.
  */
 async function pollWorkerControl(
   client: WorkerControlClient,
   transcript: WorkerTranscriptWriter,
-  nextHeartbeatSequence: () => number
+  status: 'running' | 'starting',
+  signal: AbortSignal
 ): Promise<WorkerControlCommandPoll> {
-  await recordWorkerHeartbeat(client, transcript, nextHeartbeatSequence());
-  return client.pollCommands();
+  await recordWorkerHeartbeat(client, transcript, status, signal);
+  return client.pollCommands(signal);
 }
 
 /**
  * Runs periodic worker-control cycles until the supervisor cancels them.
  *
- * @param client Authenticated worker-control client.
+ * @param client Session-level worker-control coordinator.
  * @param transcript Shared transcript writer owned by the worker supervisor.
  * @param commandRunner Runner for NanoCore-issued terminal commands.
- * @param nextHeartbeatSequence Allocates the next monotonic heartbeat sequence.
  * @param environment Sandbox worker lineage environment.
  * @param signal Supervisor cancellation signal.
  * @param seenCommandIds Command ids already queued or handled.
@@ -1758,7 +1749,6 @@ async function runWorkerControlLoop(
   client: WorkerControlClient,
   transcript: WorkerTranscriptWriter,
   commandRunner: WorkerControlCommandRunner,
-  nextHeartbeatSequence: () => number,
   environment: CodexShimEnvironment,
   signal: AbortSignal,
   seenCommandIds: Set<string>,
@@ -1770,7 +1760,7 @@ async function runWorkerControlLoop(
       if (signal.aborted) {
         return;
       }
-      const commandPoll = await pollWorkerControl(client, transcript, nextHeartbeatSequence);
+      const commandPoll = await pollWorkerControl(client, transcript, 'running', signal);
       if (transcript.eventTranscriptSealed) {
         continue;
       }
@@ -1781,7 +1771,6 @@ async function runWorkerControlLoop(
         commandPoll.commands,
         environment,
         signal,
-        nextHeartbeatSequence,
         seenCommandIds,
         onInterrupt
       );
@@ -1797,13 +1786,12 @@ async function runWorkerControlLoop(
 /**
  * Handles commands delivered by NanoCore during one control poll.
  *
- * @param client Worker control client.
+ * @param client Session-level worker-control coordinator.
  * @param transcript Durable transcript writer.
  * @param commandRunner Terminal command runner.
  * @param commands Polled commands.
  * @param environment Control process environment.
  * @param signal Supervisor cancellation signal.
- * @param nextHeartbeatSequence Allocates the next monotonic heartbeat sequence.
  * @param seenCommandIds Command ids already queued or handled.
  * @param onInterrupt Optional worker interrupt callback.
  */
@@ -1814,7 +1802,6 @@ async function handleWorkerControlCommands(
   commands: Array<Record<string, unknown>>,
   environment: CodexShimEnvironment,
   signal: AbortSignal,
-  nextHeartbeatSequence: () => number,
   seenCommandIds: Set<string>,
   onInterrupt?: () => void
 ): Promise<void> {
@@ -1823,7 +1810,7 @@ async function handleWorkerControlCommands(
 
   if (interrupt) {
     onInterrupt?.();
-    await recordWorkerInterrupt(client, transcript, interrupt);
+    await recordWorkerInterrupt(client, transcript, interrupt, signal);
     return;
   }
 
@@ -1846,7 +1833,6 @@ async function handleWorkerControlCommands(
         env: workerCommandEnvironment(environment),
         signal,
       },
-      nextHeartbeatSequence,
       signal,
       seenCommandIds,
       onInterrupt
@@ -1855,13 +1841,16 @@ async function handleWorkerControlCommands(
       return;
     }
     const { result } = outcome;
-    await client.recordTerminalResult({
-      durationMs: result.durationMs,
-      exitCode: result.exitCode,
-      stderr: result.stderr,
-      stdout: result.stdout,
-      terminalCommandId: command.commandId,
-    });
+    await client.recordTerminalResult(
+      {
+        durationMs: result.durationMs,
+        exitCode: result.exitCode,
+        stderr: result.stderr,
+        stdout: result.stdout,
+        terminalCommandId: command.commandId,
+      },
+      signal
+    );
     await transcript.writeAndAppendEvent({
       data: {
         commandId: command.commandId,
@@ -1909,14 +1898,16 @@ function takeNewWorkerCommands(
 /**
  * Persists and acknowledges one authenticated worker interrupt.
  *
- * @param client Authenticated worker-control client.
+ * @param client Session-level worker-control coordinator.
  * @param transcript Shared worker transcript writer.
  * @param command Valid interrupt command.
+ * @param signal Supervisor cancellation signal.
  */
 async function recordWorkerInterrupt(
   client: WorkerControlClient,
   transcript: WorkerTranscriptWriter,
-  command: Extract<DirectWorkerControlCommand, { kind: 'interrupt' }>
+  command: Extract<DirectWorkerControlCommand, { kind: 'interrupt' }>,
+  signal: AbortSignal
 ): Promise<void> {
   await transcript.writeAndAppendEvent({
     data: {
@@ -1925,27 +1916,30 @@ async function recordWorkerInterrupt(
     },
     type: 'worker.heartbeat',
   });
-  await client.acknowledgeCommand(command.commandId);
+  await client.acknowledgeCommand(command.commandId, signal);
 }
 
 /**
  * Records one accepted worker heartbeat and its durable transcript event.
  *
- * @param client Authenticated worker-control client.
+ * @param client Session-level worker-control coordinator.
  * @param transcript Shared worker transcript writer.
- * @param sequence Monotonic worker heartbeat sequence.
+ * @param status Logical worker heartbeat status.
+ * @param signal Supervisor cancellation signal.
  */
 async function recordWorkerHeartbeat(
   client: WorkerControlClient,
   transcript: WorkerTranscriptWriter,
-  sequence: number
+  status: 'running' | 'starting',
+  signal: AbortSignal
 ): Promise<void> {
-  const status = sequence === 0 ? 'starting' : 'running';
-  await client.recordHeartbeat({
-    message: status === 'starting' ? 'Worker shim started.' : 'Worker shim running.',
-    sequence,
-    status,
-  });
+  await client.recordHeartbeat(
+    {
+      message: status === 'starting' ? 'Worker shim started.' : 'Worker shim running.',
+      status,
+    },
+    signal
+  );
   if (transcript.eventTranscriptSealed) {
     return;
   }
@@ -1958,11 +1952,10 @@ async function recordWorkerHeartbeat(
 /**
  * Keeps worker control live while one terminal command is running.
  *
- * @param client Authenticated worker-control client.
+ * @param client Session-level worker-control coordinator.
  * @param transcript Shared worker transcript writer.
  * @param commandRunner Sandbox terminal command runner.
  * @param input Terminal command input.
- * @param nextHeartbeatSequence Allocates the next monotonic heartbeat sequence.
  * @param signal Parent worker-control cancellation signal.
  * @param seenCommandIds Command ids already queued or handled.
  * @param onInterrupt Optional worker interrupt callback.
@@ -1973,7 +1966,6 @@ async function runTerminalCommandWithControl(
   transcript: WorkerTranscriptWriter,
   commandRunner: WorkerControlCommandRunner,
   input: WorkerControlCommandRunInput,
-  nextHeartbeatSequence: () => number,
   signal: AbortSignal,
   seenCommandIds: Set<string>,
   onInterrupt?: () => void
@@ -2039,14 +2031,14 @@ async function runTerminalCommandWithControl(
       }
 
       try {
-        const commandPoll = await pollWorkerControl(client, transcript, nextHeartbeatSequence);
+        const commandPoll = await pollWorkerControl(client, transcript, 'running', signal);
         const commands = takeNewWorkerCommands(commandPoll.commands, seenCommandIds);
         const interrupt = commands.find(isInterruptCommand);
 
         if (interrupt) {
           onInterrupt?.();
           commandController.abort(abortSignalReason(signal));
-          await recordWorkerInterrupt(client, transcript, interrupt);
+          await recordWorkerInterrupt(client, transcript, interrupt, signal);
           await commandOutcome;
           return null;
         }

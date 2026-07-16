@@ -10930,6 +10930,11 @@
                                   "type": "string",
                                   "minLength": 1
                                 },
+                                "artifactVersion": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
                                 "title": {
                                   "type": "string",
                                   "minLength": 1
@@ -10955,6 +10960,7 @@
                                 "completedAt",
                                 "type",
                                 "artifactId",
+                                "artifactVersion",
                                 "title",
                                 "summary"
                               ],
@@ -12773,6 +12779,11 @@
                                   "type": "string",
                                   "minLength": 1
                                 },
+                                "artifactVersion": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
                                 "title": {
                                   "type": "string",
                                   "minLength": 1
@@ -12798,6 +12809,7 @@
                                 "completedAt",
                                 "type",
                                 "artifactId",
+                                "artifactVersion",
                                 "title",
                                 "summary"
                               ],
@@ -14616,6 +14628,11 @@
                                   "type": "string",
                                   "minLength": 1
                                 },
+                                "artifactVersion": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
                                 "title": {
                                   "type": "string",
                                   "minLength": 1
@@ -14641,6 +14658,7 @@
                                 "completedAt",
                                 "type",
                                 "artifactId",
+                                "artifactVersion",
                                 "title",
                                 "summary"
                               ],
@@ -16506,6 +16524,11 @@
                                   "type": "string",
                                   "minLength": 1
                                 },
+                                "artifactVersion": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
                                 "title": {
                                   "type": "string",
                                   "minLength": 1
@@ -16531,6 +16554,7 @@
                                 "completedAt",
                                 "type",
                                 "artifactId",
+                                "artifactVersion",
                                 "title",
                                 "summary"
                               ],
@@ -18349,6 +18373,11 @@
                                   "type": "string",
                                   "minLength": 1
                                 },
+                                "artifactVersion": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
                                 "title": {
                                   "type": "string",
                                   "minLength": 1
@@ -18374,6 +18403,7 @@
                                 "completedAt",
                                 "type",
                                 "artifactId",
+                                "artifactVersion",
                                 "title",
                                 "summary"
                               ],
@@ -20192,6 +20222,11 @@
                                   "type": "string",
                                   "minLength": 1
                                 },
+                                "artifactVersion": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
                                 "title": {
                                   "type": "string",
                                   "minLength": 1
@@ -20217,6 +20252,7 @@
                                 "completedAt",
                                 "type",
                                 "artifactId",
+                                "artifactVersion",
                                 "title",
                                 "summary"
                               ],
@@ -22035,6 +22071,11 @@
                                   "type": "string",
                                   "minLength": 1
                                 },
+                                "artifactVersion": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
                                 "title": {
                                   "type": "string",
                                   "minLength": 1
@@ -22060,6 +22101,7 @@
                                 "completedAt",
                                 "type",
                                 "artifactId",
+                                "artifactVersion",
                                 "title",
                                 "summary"
                               ],
@@ -34511,6 +34553,11 @@
                                   "type": "string",
                                   "minLength": 1
                                 },
+                                "artifactVersion": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
                                 "title": {
                                   "type": "string",
                                   "minLength": 1
@@ -34536,6 +34583,7 @@
                                 "completedAt",
                                 "type",
                                 "artifactId",
+                                "artifactVersion",
                                 "title",
                                 "summary"
                               ],
@@ -36354,6 +36402,11 @@
                                   "type": "string",
                                   "minLength": 1
                                 },
+                                "artifactVersion": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
                                 "title": {
                                   "type": "string",
                                   "minLength": 1
@@ -36379,6 +36432,7 @@
                                 "completedAt",
                                 "type",
                                 "artifactId",
+                                "artifactVersion",
                                 "title",
                                 "summary"
                               ],
@@ -38197,6 +38251,11 @@
                                   "type": "string",
                                   "minLength": 1
                                 },
+                                "artifactVersion": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
                                 "title": {
                                   "type": "string",
                                   "minLength": 1
@@ -38222,6 +38281,7 @@
                                 "completedAt",
                                 "type",
                                 "artifactId",
+                                "artifactVersion",
                                 "title",
                                 "summary"
                               ],
@@ -40087,6 +40147,11 @@
                                   "type": "string",
                                   "minLength": 1
                                 },
+                                "artifactVersion": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
                                 "title": {
                                   "type": "string",
                                   "minLength": 1
@@ -40112,6 +40177,7 @@
                                 "completedAt",
                                 "type",
                                 "artifactId",
+                                "artifactVersion",
                                 "title",
                                 "summary"
                               ],
@@ -41930,6 +41996,11 @@
                                   "type": "string",
                                   "minLength": 1
                                 },
+                                "artifactVersion": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
                                 "title": {
                                   "type": "string",
                                   "minLength": 1
@@ -41955,6 +42026,7 @@
                                 "completedAt",
                                 "type",
                                 "artifactId",
+                                "artifactVersion",
                                 "title",
                                 "summary"
                               ],
@@ -43773,6 +43845,11 @@
                                   "type": "string",
                                   "minLength": 1
                                 },
+                                "artifactVersion": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
                                 "title": {
                                   "type": "string",
                                   "minLength": 1
@@ -43798,6 +43875,7 @@
                                 "completedAt",
                                 "type",
                                 "artifactId",
+                                "artifactVersion",
                                 "title",
                                 "summary"
                               ],
@@ -45616,6 +45694,11 @@
                                   "type": "string",
                                   "minLength": 1
                                 },
+                                "artifactVersion": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
                                 "title": {
                                   "type": "string",
                                   "minLength": 1
@@ -45641,6 +45724,7 @@
                                 "completedAt",
                                 "type",
                                 "artifactId",
+                                "artifactVersion",
                                 "title",
                                 "summary"
                               ],
@@ -47516,6 +47600,11 @@
                       "type": "string",
                       "minLength": 1
                     },
+                    "artifactVersion": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
                     "title": {
                       "type": "string",
                       "minLength": 1
@@ -47541,6 +47630,7 @@
                     "completedAt",
                     "type",
                     "artifactId",
+                    "artifactVersion",
                     "title",
                     "summary"
                   ],
@@ -59813,6 +59903,11 @@
                               "type": "string",
                               "minLength": 1
                             },
+                            "artifactVersion": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
                             "title": {
                               "type": "string",
                               "minLength": 1
@@ -59838,6 +59933,7 @@
                             "completedAt",
                             "type",
                             "artifactId",
+                            "artifactVersion",
                             "title",
                             "summary"
                           ],
@@ -61656,6 +61752,11 @@
                               "type": "string",
                               "minLength": 1
                             },
+                            "artifactVersion": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
                             "title": {
                               "type": "string",
                               "minLength": 1
@@ -61681,6 +61782,7 @@
                             "completedAt",
                             "type",
                             "artifactId",
+                            "artifactVersion",
                             "title",
                             "summary"
                           ],
@@ -63499,6 +63601,11 @@
                               "type": "string",
                               "minLength": 1
                             },
+                            "artifactVersion": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
                             "title": {
                               "type": "string",
                               "minLength": 1
@@ -63524,6 +63631,7 @@
                             "completedAt",
                             "type",
                             "artifactId",
+                            "artifactVersion",
                             "title",
                             "summary"
                           ],
@@ -65389,6 +65497,11 @@
                               "type": "string",
                               "minLength": 1
                             },
+                            "artifactVersion": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
                             "title": {
                               "type": "string",
                               "minLength": 1
@@ -65414,6 +65527,7 @@
                             "completedAt",
                             "type",
                             "artifactId",
+                            "artifactVersion",
                             "title",
                             "summary"
                           ],
@@ -67232,6 +67346,11 @@
                               "type": "string",
                               "minLength": 1
                             },
+                            "artifactVersion": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
                             "title": {
                               "type": "string",
                               "minLength": 1
@@ -67257,6 +67376,7 @@
                             "completedAt",
                             "type",
                             "artifactId",
+                            "artifactVersion",
                             "title",
                             "summary"
                           ],
@@ -69075,6 +69195,11 @@
                               "type": "string",
                               "minLength": 1
                             },
+                            "artifactVersion": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
                             "title": {
                               "type": "string",
                               "minLength": 1
@@ -69100,6 +69225,7 @@
                             "completedAt",
                             "type",
                             "artifactId",
+                            "artifactVersion",
                             "title",
                             "summary"
                           ],
@@ -70918,6 +71044,11 @@
                               "type": "string",
                               "minLength": 1
                             },
+                            "artifactVersion": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
                             "title": {
                               "type": "string",
                               "minLength": 1
@@ -70943,6 +71074,7 @@
                             "completedAt",
                             "type",
                             "artifactId",
+                            "artifactVersion",
                             "title",
                             "summary"
                           ],
@@ -72746,6 +72878,11 @@
                     "type": "string",
                     "minLength": 1
                   },
+                  "artifactVersion": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
                   "title": {
                     "type": "string",
                     "minLength": 1
@@ -72771,6 +72908,7 @@
                   "completedAt",
                   "type",
                   "artifactId",
+                  "artifactVersion",
                   "title",
                   "summary"
                 ],
@@ -74612,6 +74750,11 @@
                               "type": "string",
                               "minLength": 1
                             },
+                            "artifactVersion": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
                             "title": {
                               "type": "string",
                               "minLength": 1
@@ -74637,6 +74780,7 @@
                             "completedAt",
                             "type",
                             "artifactId",
+                            "artifactVersion",
                             "title",
                             "summary"
                           ],
@@ -76455,6 +76599,11 @@
                               "type": "string",
                               "minLength": 1
                             },
+                            "artifactVersion": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
                             "title": {
                               "type": "string",
                               "minLength": 1
@@ -76480,6 +76629,7 @@
                             "completedAt",
                             "type",
                             "artifactId",
+                            "artifactVersion",
                             "title",
                             "summary"
                           ],
@@ -78298,6 +78448,11 @@
                               "type": "string",
                               "minLength": 1
                             },
+                            "artifactVersion": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
                             "title": {
                               "type": "string",
                               "minLength": 1
@@ -78323,6 +78478,7 @@
                             "completedAt",
                             "type",
                             "artifactId",
+                            "artifactVersion",
                             "title",
                             "summary"
                           ],
@@ -80188,6 +80344,11 @@
                               "type": "string",
                               "minLength": 1
                             },
+                            "artifactVersion": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
                             "title": {
                               "type": "string",
                               "minLength": 1
@@ -80213,6 +80374,7 @@
                             "completedAt",
                             "type",
                             "artifactId",
+                            "artifactVersion",
                             "title",
                             "summary"
                           ],
@@ -82031,6 +82193,11 @@
                               "type": "string",
                               "minLength": 1
                             },
+                            "artifactVersion": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
                             "title": {
                               "type": "string",
                               "minLength": 1
@@ -82056,6 +82223,7 @@
                             "completedAt",
                             "type",
                             "artifactId",
+                            "artifactVersion",
                             "title",
                             "summary"
                           ],
@@ -83874,6 +84042,11 @@
                               "type": "string",
                               "minLength": 1
                             },
+                            "artifactVersion": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
                             "title": {
                               "type": "string",
                               "minLength": 1
@@ -83899,6 +84072,7 @@
                             "completedAt",
                             "type",
                             "artifactId",
+                            "artifactVersion",
                             "title",
                             "summary"
                           ],
@@ -85717,6 +85891,11 @@
                               "type": "string",
                               "minLength": 1
                             },
+                            "artifactVersion": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
                             "title": {
                               "type": "string",
                               "minLength": 1
@@ -85742,6 +85921,7 @@
                             "completedAt",
                             "type",
                             "artifactId",
+                            "artifactVersion",
                             "title",
                             "summary"
                           ],
@@ -88455,403 +88635,36 @@
         "properties": {
           "state": {
             "type": "string",
-            "enum": [
-              "queued",
-              "blocked"
-            ]
+            "const": "queued"
           },
-          "goal": {
-            "type": "object",
-            "properties": {
-              "goalId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "workspaceId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "threadId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "status": {
-                "type": "string",
-                "enum": [
-                  "planning",
-                  "awaiting_plan_approval",
-                  "running",
-                  "paused",
-                  "awaiting_user",
-                  "reviewing",
-                  "verifying",
-                  "completed",
-                  "blocked",
-                  "aborted",
-                  "failed"
-                ]
-              },
-              "title": {
-                "type": "string",
-                "minLength": 1
-              },
-              "objective": {
-                "type": "string",
-                "minLength": 1
-              },
-              "currentTask": {
-                "anyOf": [
-                  {
-                    "type": "object",
-                    "properties": {
-                      "taskId": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "title": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "status": {
-                        "type": "string",
-                        "enum": [
-                          "pending",
-                          "ready",
-                          "running",
-                          "reviewing",
-                          "needs_revision",
-                          "completed",
-                          "blocked",
-                          "failed",
-                          "skipped"
-                        ]
-                      },
-                      "orderIndex": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 9007199254740991
-                      }
-                    },
-                    "required": [
-                      "taskId",
-                      "title",
-                      "status",
-                      "orderIndex"
-                    ],
-                    "additionalProperties": false
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "taskCounts": {
-                "type": "object",
-                "properties": {
-                  "pending": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "ready": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "running": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "reviewing": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "needsRevision": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "completed": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "blocked": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "failed": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "skipped": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  }
-                },
-                "required": [
-                  "pending",
-                  "ready",
-                  "running",
-                  "reviewing",
-                  "needsRevision",
-                  "completed",
-                  "blocked",
-                  "failed",
-                  "skipped"
-                ],
-                "additionalProperties": false
-              },
-              "pendingHumanAttention": {
-                "type": "object",
-                "properties": {
-                  "required": {
-                    "type": "boolean"
-                  },
-                  "reason": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                },
-                "required": [
-                  "required",
-                  "reason"
-                ],
-                "additionalProperties": false
-              },
-              "terminalState": {
-                "anyOf": [
-                  {
-                    "type": "object",
-                    "properties": {
-                      "status": {
-                        "type": "string",
-                        "enum": [
-                          "completed",
-                          "blocked",
-                          "aborted",
-                          "failed"
-                        ]
-                      },
-                      "stopReason": {
-                        "anyOf": [
-                          {
-                            "type": "string",
-                            "enum": [
-                              "completed",
-                              "error",
-                              "aborted",
-                              "length",
-                              "ask_user",
-                              "budget_exhausted"
-                            ]
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      }
-                    },
-                    "required": [
-                      "status",
-                      "stopReason"
-                    ],
-                    "additionalProperties": false
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "terminalSummary": {
-                "anyOf": [
-                  {
-                    "type": "object",
-                    "properties": {
-                      "completedTaskIds": {
-                        "maxItems": 100,
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      },
-                      "skippedTaskIds": {
-                        "maxItems": 100,
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      },
-                      "blockedTaskIds": {
-                        "maxItems": 100,
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      },
-                      "artifactIds": {
-                        "maxItems": 100,
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      },
-                      "verificationEvidence": {
-                        "maxItems": 100,
-                        "type": "array",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "verificationId": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "status": {
-                              "type": "string",
-                              "enum": [
-                                "passed",
-                                "failed",
-                                "skipped",
-                                "unavailable",
-                                "manual_required"
-                              ]
-                            },
-                            "summary": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "command": {
-                              "anyOf": [
-                                {
-                                  "type": "string",
-                                  "minLength": 1
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            "artifactIds": {
-                              "maxItems": 100,
-                              "type": "array",
-                              "items": {
-                                "type": "string",
-                                "minLength": 1
-                              }
-                            }
-                          },
-                          "required": [
-                            "verificationId",
-                            "status",
-                            "summary",
-                            "command",
-                            "artifactIds"
-                          ],
-                          "additionalProperties": false
-                        }
-                      },
-                      "risks": {
-                        "maxItems": 50,
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 1000
-                        }
-                      },
-                      "suggestedNextWork": {
-                        "maxItems": 50,
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 1000
-                        }
-                      }
-                    },
-                    "required": [
-                      "completedTaskIds",
-                      "skippedTaskIds",
-                      "blockedTaskIds",
-                      "artifactIds",
-                      "verificationEvidence",
-                      "risks",
-                      "suggestedNextWork"
-                    ],
-                    "additionalProperties": false
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "steering": {
-                "type": "object",
-                "properties": {
-                  "pendingSteeringCount": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "pendingFollowUpCount": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "appliedSteeringCount": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  }
-                },
-                "required": [
-                  "pendingSteeringCount",
-                  "pendingFollowUpCount",
-                  "appliedSteeringCount"
-                ],
-                "additionalProperties": false
-              },
-              "updatedAt": {
-                "type": "string",
-                "minLength": 1
-              }
-            },
-            "required": [
-              "goalId",
-              "workspaceId",
-              "threadId",
-              "status",
-              "title",
-              "objective",
-              "currentTask",
-              "taskCounts",
-              "pendingHumanAttention",
-              "terminalState",
-              "steering",
-              "updatedAt"
-            ],
-            "additionalProperties": false
+          "pendingTurnId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "requestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "contentItemId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "goalId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "activeTurnId": {
+            "type": "string",
+            "minLength": 1
           }
         },
         "required": [
           "state",
-          "goal"
+          "pendingTurnId",
+          "requestId",
+          "contentItemId",
+          "goalId",
+          "activeTurnId"
         ],
         "additionalProperties": false
       },
@@ -89678,6 +89491,11 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "artifactVersion": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
                               "title": {
                                 "type": "string",
                                 "minLength": 1
@@ -89703,6 +89521,7 @@
                               "completedAt",
                               "type",
                               "artifactId",
+                              "artifactVersion",
                               "title",
                               "summary"
                             ],
@@ -91521,6 +91340,11 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "artifactVersion": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
                               "title": {
                                 "type": "string",
                                 "minLength": 1
@@ -91546,6 +91370,7 @@
                               "completedAt",
                               "type",
                               "artifactId",
+                              "artifactVersion",
                               "title",
                               "summary"
                             ],
@@ -93364,6 +93189,11 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "artifactVersion": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
                               "title": {
                                 "type": "string",
                                 "minLength": 1
@@ -93389,6 +93219,7 @@
                               "completedAt",
                               "type",
                               "artifactId",
+                              "artifactVersion",
                               "title",
                               "summary"
                             ],
@@ -95254,6 +95085,11 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "artifactVersion": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
                               "title": {
                                 "type": "string",
                                 "minLength": 1
@@ -95279,6 +95115,7 @@
                               "completedAt",
                               "type",
                               "artifactId",
+                              "artifactVersion",
                               "title",
                               "summary"
                             ],
@@ -97097,6 +96934,11 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "artifactVersion": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
                               "title": {
                                 "type": "string",
                                 "minLength": 1
@@ -97122,6 +96964,7 @@
                               "completedAt",
                               "type",
                               "artifactId",
+                              "artifactVersion",
                               "title",
                               "summary"
                             ],
@@ -98940,6 +98783,11 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "artifactVersion": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
                               "title": {
                                 "type": "string",
                                 "minLength": 1
@@ -98965,6 +98813,7 @@
                               "completedAt",
                               "type",
                               "artifactId",
+                              "artifactVersion",
                               "title",
                               "summary"
                             ],
@@ -100783,6 +100632,11 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "artifactVersion": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
                               "title": {
                                 "type": "string",
                                 "minLength": 1
@@ -100808,6 +100662,7 @@
                               "completedAt",
                               "type",
                               "artifactId",
+                              "artifactVersion",
                               "title",
                               "summary"
                             ],
@@ -104935,5 +104790,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:0198d5032e2c7f8af05c59ecc02f265c8383183f7fdd817b3c65f96084107f7c"
+  "x-openkit-source-digest": "sha256:33509affc2a70ebbb9d20e4ceac07f74eb206770d7f995f68577d64b903461dc"
 }

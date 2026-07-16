@@ -1,7 +1,7 @@
 # Worker Control Protocol
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
 
 ## Summary
 
@@ -68,7 +68,7 @@ The current implementation is the accepted V1 projection of this contract:
 - `apps/nanocore/src/app.ts` projects the gateway as `/api/worker-control/heartbeat`, `/api/worker-control/artifacts`, `/api/worker-control/commands/poll`, `/api/worker-control/commands/ack`, `/api/worker-control/terminal-results`, `/api/worker-control/events/append`, `/api/worker-control/final-status`, `/api/worker-control/supply-refresh-ack`, `/api/worker-control/capability-summary`, and `/api/worker-control/knowledge-proposal-summary`.
 - Tests cover token binding, lineage checks, heartbeat recording, artifact notices, pull command delivery, non-terminal command acknowledgement, terminal results, canonical event append, the 64 KiB typed control-envelope cap, the 256 KiB live event append cap, the 1 MiB terminal diagnostic cap, process-local sequence replay handling for heartbeat, artifact notice, supply-refresh acknowledgement, capability summary, and knowledge-proposal summary streams, durable sequence-fingerprint replay checks for the default server gateway, durable accepted-record writes for default server heartbeat and event append routes, durable command delivery state transitions from queued to delivered to acknowledged for both terminal and non-terminal commands, rejected-evidence quarantine for gateway verification failures, and live lease-backed gateway rebuild from durable rows. Duplicate replay idempotency, stale sequence rejection, and conflicting same-sequence rejection are implemented and tested for the `event_append` channel and the other sequenced control streams, with server-scope durable fingerprint checks preserving same-sequence conflict rejection across default gateway instances.
 
-The implementation now covers the control-plane contract this spec owns. Full data-plane evidence promotion remains outside this spec and is owned by the workspace synchronization, worker runtime communication, audit, evidence, and review specs.
+The active restart slice adds one shared bounded retry loop in the shim, a memory-only worker process key, and exact-next heartbeat adoption through the ordinary heartbeat route. NanoCore binds only the key hash to the lease, and direct terminal closeout reuses accepted final-status, backend-session, lease, checkpoint, and workspace records. NanoCore still removes acknowledged commands and terminal results, so a lost response cannot be distinguished from an unknown command on replay. Full data-plane evidence promotion remains outside this spec and is owned by the workspace synchronization, worker runtime communication, audit, evidence, and review specs.
 
 ## Endpoint
 
@@ -98,6 +98,12 @@ The token is scoped to:
 
 NanoCore must reject token reuse across lineage.
 
+Before the readiness exchange, the shim generates one random 32-byte process key and encodes it as unpadded base64url. The sequence-zero `starting` heartbeat carries the unpadded base64url SHA-256 digest of those exact key bytes; NanoCore immutably binds that digest to the lease before the worker Agent child or a post-readiness terminal command may start. Sequence one is the first durable proof that post-launch recovery is enabled and child execution has begun, so restart recovery never arms a sequence-zero-only supervisor. The raw key remains only in the shim supervisor's memory and is never written to Core, a file, transcript, child environment, terminal-command environment, evidence record, or log.
+
+The raw process key may appear only as the request-only `reconnectKey` on an exact-next recovery heartbeat. It is an adjunct to the existing sandbox bearer token and exact lineage, not a reusable control credential or a replacement token.
+
+The one current `schemaVersion` literal is the only accepted worker-control contract. This design adds no protocol-version negotiation, accepted-version set, build compatibility registry, legacy adapter, or rollback behavior. A different schema fails closed.
+
 ## Envelope
 
 The canonical control request envelope is:
@@ -124,6 +130,10 @@ diagnostics
 ```
 
 HTTP route-specific projections may put lineage and payload fields directly in route bodies, but they must preserve the same semantics: bounded payload, bearer token, lineage binding, monotonic sequence where the operation is sequenced, and NanoCore-owned verification.
+
+Restart adoption uses the ordinary heartbeat envelope plus request-only `reconnectKey`. NanoCore decodes and hashes the key, then authorizes adoption only when the hash equals the immutable lease binding, the complete durable lineage is exact, the lease is still `awaiting-reconnect` before its preserved deadline, and the heartbeat sequence is exactly the next sequence after the last accepted heartbeat. The adoption compare-and-set advances the sequence and returns the lease to ordinary control; rollback, gaps, conflicting replay, a wrong key, or an expired window fail closed. The raw key is excluded from the canonical heartbeat fingerprint, access logs, diagnostics, and durable records.
+
+There is no application-layer challenge, asymmetric signature, recovery listener, or recovery session state machine. The reconnect request relies on the same trusted TLS or operator-managed SSH transport that protects the sandbox bearer token. A party that can observe both credentials on that transport could race the original worker; deployment transport confidentiality is therefore an explicit boundary of this V1 compromise rather than something duplicated with a second cryptographic protocol.
 
 ## Worker-To-NanoCore Messages
 
@@ -173,6 +183,8 @@ Commands are delivered by worker polling in the first implementation. A backend 
 
 `terminal-command` is for tightly controlled diagnostics and must carry policy decision context. It is not a generic shell gateway.
 
+After the readiness exchange, a retryable outage pauses command polling and starting queued commands. An already running terminal command may finish while the shared outage budget remains. Interrupt commands replay only their acknowledgement; terminal commands replay only their terminal result. The shim retains bounded raw replay data in memory for the current process and records only product-safe identity and digest evidence locally. An unknown repeated command or the same command id with a different canonical payload fails closed; no general offline outbound queue is introduced.
+
 A future supply refresh command may only be used when the runtime adapter and shim declare safe refresh support. V1 issues no live refresh request: same-snapshot lease renewal continues without refresh acknowledgement, while an incompatible AEP snapshot requires a new plan and lease after the current bounded step.
 
 `shutdown`, `collect-and-stop`, and `health-check` remain future command families until they have a concrete protocol schema and implementation.
@@ -205,11 +217,19 @@ Valid outcomes:
 
 NanoCore may compute the canonical turn outcome differently after evidence collection.
 
-NanoCore may accept `final_status` before all data-plane evidence is collected. Acceptance only means the worker has reported its local bounded-step stop state. The canonical turn cannot close until NanoCore has collected or intentionally marked missing required evidence.
+`final_status` is the worker's last durable-output barrier. Before sending it, the shim MUST seal the terminal transcript and runtime-provenance records and finish workspace-change publication for the bounded step. After NanoCore accepts it, that shim process MUST NOT publish more transcript, provenance, workspace-change, artifact, or terminal-result output for the step.
+
+NanoCore may accept `final_status` before it has collected all data-plane evidence. Acceptance means the worker has finished publishing its durable output, not that NanoCore has imported or approved it. The canonical turn cannot close until NanoCore has collected or intentionally marked missing required evidence.
+
+After readiness and worker-child launch, a lost `final_status` response is retried only with the same logical operation identity, sequence, canonical payload, and remaining shared outage budget. Budget expiry does not start a best-effort final-status grace period; the shim writes its local terminal record, ends its children, and lets durable recovery project the interrupted outcome.
 
 ## Direct Control And Evidence Collection
 
-The protocol supports direct live append plus turn-end collection from `/openkit/session/*.jsonl`. Transcript collection is evidence and deduplication input, not a fallback control mode. If direct control fails, the shim must stop or cancel the worker and preserve any local session files already written; NanoCore collects and verifies those files before closing the worker turn.
+The protocol supports direct live append plus turn-end collection from `/openkit/session/*.jsonl`. Transcript collection is evidence and deduplication input, not a fallback control mode. Control is fail-fast until the complete readiness exchange succeeds and the supervised worker Agent child starts. After child launch, retryable control failure enters one shared five-minute monotonic outage budget. The shim keeps the active worker or terminal-command child alive, pauses new command polling, and retries the same immutable logical request every 250 ms within that budget. Exponential backoff, jitter, and `Retry-After` handling are not part of this contract.
+
+HTTP 408, 425, 429, 500-599, request timeout, connection refusal/reset, broken pipe, temporary DNS, and temporary TLS/socket failures are retryable after readiness. Schema failure, 401, 403, 404, 409, 413, 422, any other non-retryable 4xx, invalid 2xx JSON, and an invalid success envelope are terminal authority or contract failures and stop the children immediately. String matching is not a normal classifier.
+
+Local transcript append and remote live delivery are separate queues. A remote outage MUST NOT poison local append or prevent one terminal record from being sealed. Exact raw terminal output needed for a same-process retry may remain bounded in shim memory; the durable transcript stores only operation identity, canonical digest, and product-safe summary. Shim restart remains non-recoverable.
 
 ## Canonical Verification
 
@@ -239,6 +259,9 @@ Worker-control state MUST survive NanoCore restart. Process-local gateway state 
 - The accepted-event high-watermark (last accepted worker sequence and its fingerprint) is durably recorded per agent session and package snapshot, so duplicate replay idempotency, stale-sequence rejection, and same-sequence conflict rejection hold across NanoCore restarts, not only within one process run.
 - Artifact notices and terminal results that have been accepted are durable rows; heartbeat state is not separately persisted because the lease's heartbeat deadline timestamps own liveness truth.
 - On restart, the worker-control gateway rebuilds its serving state entirely from lease records, command rows, and high-watermark rows during the boot phase defined by `docs/specs/20260704-nanocore_bootstrap_readiness.md`. A control request from a worker whose lease cannot be found or re-adopted is untracked execution and MUST be refused per the scheduler spec's orphan rules.
+- An armed `awaiting-reconnect` lease may use only one exact-next heartbeat carrying its memory-only process key. Every other operation remains unauthorized until adoption commits. An adopted session immediately regains ordinary control even when another lease remains pending.
+- After adoption commits, replay of the exact same sequence and fingerprint is ordinary idempotent success; rollback, gap, wrong-key replay, or same-sequence payload conflict is terminal.
+- Interrupt acknowledgement and terminal-command result are distinct operation families. NanoCore retains enough durable completed-command identity and canonical digest to accept an exact lost-response replay while rejecting a different result under the same command id. The shim does not acknowledge a terminal command separately and does not execute a repeated command id twice.
 
 ## Relationship To Items
 
@@ -285,6 +308,7 @@ The control plane only announces readiness, digests, and collection hints.
 - `event_append` is the only default item-visible progress path; every other control message family remains a control record unless NanoCore imports it.
 - The canonical worker-visible contract is one AEP-resolved direct NanoCore `/api/worker-control` base URL with typed operation envelopes.
 - Worker-control state is durable by contract: token bindings resolve through scheduler lease records, queued commands and event high-watermarks are durable rows, and restart rebuilds serving state from those records (see Durable Control Session State). The current process-local gateway state is an implementation projection that the durable scheduler change replaces.
+- Restart reconnection uses the ordinary heartbeat route, one current schema, a per-process memory-only random key whose hash is bound at sequence zero, exact-next heartbeat adoption, and the existing durable control ledger. It adds no challenge protocol, recovery listener, alternate token, negotiated version, or compatibility path.
 - Previously open questions are resolved by accepted V1 defaults: control envelopes are capped at 64 KiB, individual live event payloads are capped at 256 KiB, terminal diagnostic payloads are capped at 1 MiB, and any larger material must move through the data plane as an artifact, evidence bundle, manifest, or collected file reference with typed oversized-payload diagnostics.
 
 Current implementation projection: `apps/nanocore/src/scheduler-records.ts` now has a durable lease token-binding resolver that looks up `sandbox_binding_ref`, verifies workspace/thread/turn/agent-session/package-snapshot lineage, and rejects stale, releasing, or terminal leases. It also supports a live-to-`releasing` transition that preserves capacity until evidence collection completes. The scheduler dispatch helper can derive the package snapshot id from the selected turn and reserved agent session id, keeping lease lineage aligned with the AEP resolver. `apps/nanocore/src/runtime/worker-control-gateway.ts` authenticates through process-local `registerSession` state, can register a scheduler-owned `sandboxBindingRef` as the worker token, can enforce an injected durable token-binding resolver for registered sessions, records supply refresh acknowledgements, capability summaries, and knowledge proposal summaries, enforces idempotent replay, same-sequence conflict rejection, and stale-sequence rejection for heartbeat, artifact notice, supply-refresh acknowledgement, capability summary, knowledge-proposal summary, and event-append streams, and calls an accepted-terminal-event hook when a `turn.completed` or `turn.failed` canonical event is accepted. `apps/nanocore/src/runtime/worker-control-sequences.ts` records server-scope sequence fingerprints in `worker_control_sequence_fingerprints` through migration `0025_worker_control_sequences`, and the default server gateway uses that recorder so same-sequence conflicting event and control payloads fail across default gateway instances, not only within one process-local map. `apps/nanocore/src/app.ts` wires the default worker-control gateway to the durable scheduler resolver for `lease-binding:` tokens, wires the same default gateway to the durable sequence recorder when a Core database is available, exposes `POST /api/worker-control/final-status`, `POST /api/worker-control/supply-refresh-ack`, `POST /api/worker-control/capability-summary`, and `POST /api/worker-control/knowledge-proposal-summary` as typed `WorkerControlRequestEnvelope` routes, rejects those typed control envelopes above 64 KiB with `worker_control_payload_too_large`, rejects `/api/worker-control/events/append` requests above 256 KiB with the same diagnostic before schema handling, rejects `/api/worker-control/terminal-results` requests above 1 MiB with the same diagnostic before schema handling, maps `completed` final status to `turn.completed`, maps every other accepted final-status outcome to `turn.failed`, and persists accepted supply-refresh acknowledgements into `scheduler_supply_refresh_declarations` through migration `0027_scheduler_supply_refresh_declarations` as evidence for a future explicit refresh request. The current scheduler does not issue that request and does not read acknowledgement state for same-snapshot renewal. The route also writes product-safe rejected gateway verification evidence to `worker_control_rejected_evidence` through migration `0030_worker_control_rejected_evidence`, imports knowledge proposal summaries as pending app-local knowledge proposals for human review, and marks the matching live lease `releasing` with release reason `worker-final-status` when a terminal canonical event arrives. `apps/nanocore/src/runtime/orchestrator.ts`, `apps/nanocore/src/runtime/types.ts`, and `apps/nanocore/src/runtime/worker-governance-turn-executor.ts` let turn startup pass optional scheduler-owned agent-session and binding refs into backend materialization, and `apps/nanocore/src/runtime/worker-governance-backend.ts` can pass that binding ref into OpenShell worker-control registration. Static placement still uses process-local random tokens until scheduler dispatch supplies lease lineage to turn execution.
@@ -309,11 +333,21 @@ The product-safe active-session projection resolves live worker-control state th
 - Oversized payload rejection tests.
 - Command delivery tests for interrupt and terminal diagnostics.
 - Import tests proving shim-suggested items are not canonical until NanoCore writes them.
+- Process-key shape, hash binding, request-only transport, and non-persistence tests in `@openkit/worker-protocol`, the shim, and NanoCore.
+- Sequence-zero commit-with-lost-response tests using a per-attempt deadline shorter than the fixed readiness budget.
+- Post-launch retry classification, fixed-delay retries, shared outage budget, and terminal-error tests.
+- Reconnect-required, wrong-key, deadline, exact-lineage, exact-next adoption, and same-fingerprint replay tests.
+- Final-status ordering tests proving runtime provenance and workspace publication finish before the last durable-output barrier and no later worker output is emitted.
+- Tests proving local transcript append and terminal sealing survive remote delivery failure.
+- Lost interrupt-ack and terminal-result response tests proving exact replay without command re-execution.
+- Worker Agent and terminal-command child survival during retryable outage, stopping-heartbeat-before-final-status, and no request after budget expiry.
 
 ## Risks & Mitigations
 
 - Risk: Control becomes a backdoor shell. Mitigation: only allow named command families and require policy ids for diagnostics commands.
-- Risk: Direct control failures lose work. Mitigation: stop or cancel the worker, preserve session-file evidence already written, and require a new bounded step rather than continuing ungoverned.
+- Risk: Temporary NanoCore failure kills useful remote work. Mitigation: keep the original shim-controlled child alive only within one shared bounded outage budget and require the exact memory-only process key, durable lineage, and next sequence before ordinary control resumes.
+- Risk: A transport observer races the original worker because V1 has no server-fresh application challenge. Mitigation: require trusted TLS or the declared operator-managed SSH transport, keep the raw process key and bearer token out of durable state and logs, and fail closed on any key, lineage, sequence, or deadline mismatch.
+- Risk: Recovery replay duplicates an external effect. Mitigation: use one logical identity and digest per heartbeat, interrupt acknowledgement, terminal result, and final status; exact replay succeeds and any conflict fails closed.
 - Risk: Shim becomes a second Core. Mitigation: the shim emits suggestions and evidence; NanoCore verifies and commits.
 - Risk: Remote and local containers diverge. Mitigation: keep the same worker-visible endpoint and envelope for both placements.
 

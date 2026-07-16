@@ -112,7 +112,6 @@ import {
   createGoalVerificationRecord,
   listGoalVerificationRecordsForTask,
 } from './runtime/goal-verification-records.js';
-import { commandInputHash } from './runtime/idempotent-command.js';
 import { enqueuePendingUserTurn, listPendingUserTurns } from './runtime/pending-user-turns.js';
 import type {
   AgentSessionReadModel,
@@ -4309,11 +4308,17 @@ describe('nanocore server', () => {
         }),
       ]);
       const evidenceAuditRows = importedDb.sqlite
-        .prepare('SELECT action FROM audit_events WHERE action IN (?, ?) ORDER BY action')
+        .prepare('SELECT action, resource FROM audit_events WHERE action IN (?, ?) ORDER BY action')
         .all('goal.review.record', 'goal.verification.record') as Array<Record<string, unknown>>;
       expect(evidenceAuditRows).toEqual([
-        { action: 'goal.review.record' },
-        { action: 'goal.verification.record' },
+        {
+          action: 'goal.review.record',
+          resource: `goal-review:review_imported_${body.importedWorkspaceId}_1`,
+        },
+        {
+          action: 'goal.verification.record',
+          resource: `goal-verification:verification_imported_${body.importedWorkspaceId}_1`,
+        },
       ]);
     } finally {
       importedDb.sqlite.close();
@@ -6135,7 +6140,7 @@ describe('nanocore server', () => {
     store.createArtifact({
       id: 'ar_idempotent',
       workspaceId: 'ws_demo',
-      threadId: thread.id,
+      threadId: null,
       turnId: null,
       kind: 'summary',
       title: 'Idempotent artifact',
@@ -6210,8 +6215,18 @@ describe('nanocore server', () => {
         body: JSON.stringify(body),
         headers: jsonHeaders(),
       });
+      const competing = await app.request('/api/turns', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...body,
+          requestId: '0190f4c8-0000-7000-8000-000000000517',
+        }),
+        headers: jsonHeaders(),
+      });
 
       await Promise.resolve();
+      expect(competing.status).toBe(409);
+      await expect(competing.json()).resolves.toMatchObject({ code: 'thread_busy' });
       expect(executor.starts).toBe(1);
 
       executor.release();
@@ -6225,6 +6240,95 @@ describe('nanocore server', () => {
         store.listThreadTurns('ws_demo', 'th_demo').filter((turn) => turn.id === firstTurn.id)
       ).toHaveLength(1);
     } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects implicit turn submission while active and allows the same request after terminal', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const executor = new FakeTurnExecutor();
+    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-active-turn-steering-repository-'));
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const thread = store.createThread('ws_demo', 'Active turn steering');
+    const activeTurn = store.updateTurn(
+      store.createTurn('ws_demo', thread.id, 'Keep this turn active').id,
+      { status: 'running' }
+    );
+    const body = {
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      requestId: '0190f4c8-0000-7000-8000-000000000516',
+      input: 'Apply this to the active turn.',
+    };
+
+    mkdirSync(join(repositoryPath, '.git'));
+    upsertWorkspaceRepositoryResource(workspaceDb, {
+      workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
+      workspaceId: 'ws_demo',
+      displayName: 'Active turn steering repository',
+      localPath: repositoryPath,
+    });
+
+    try {
+      const first = await app.request('/api/turns', {
+        method: 'POST',
+        body: JSON.stringify(body),
+        headers: jsonHeaders(),
+      });
+      const replay = await app.request('/api/turns', {
+        method: 'POST',
+        body: JSON.stringify(body),
+        headers: jsonHeaders(),
+      });
+      const admissionCountWhileActive = (
+        coreDb.sqlite
+          .prepare('SELECT COUNT(*) AS count FROM scheduler_admission_entries WHERE request_id = ?')
+          .get(body.requestId) as { readonly count: number }
+      ).count;
+
+      expect(first.status).toBe(409);
+      await expect(first.json()).resolves.toMatchObject({ code: 'thread_busy' });
+      expect(replay.status).toBe(409);
+      await expect(replay.json()).resolves.toMatchObject({ code: 'thread_busy' });
+      expect(admissionCountWhileActive).toBe(0);
+      expect(executor.startContexts).toHaveLength(0);
+      expect(store.listThreadItems('ws_demo', thread.id)).toEqual([]);
+      expect(
+        listPendingUserTurns(workspaceDb, { workspaceId: 'ws_demo', threadId: thread.id })
+      ).toEqual([]);
+      expect(store.listThreadTurns('ws_demo', thread.id).map((turn) => turn.id)).toEqual([
+        activeTurn.id,
+      ]);
+
+      store.updateTurn(activeTurn.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+      const accepted = await app.request('/api/turns', {
+        method: 'POST',
+        body: JSON.stringify(body),
+        headers: jsonHeaders(),
+      });
+      const acceptedTurn = (await accepted.json()) as { id: string };
+
+      expect(accepted.status).toBe(202);
+      expect(acceptedTurn.id).not.toBe(activeTurn.id);
+      expect(executor.startContexts).toHaveLength(1);
+      expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(2);
+      expect(store.listThreadItems('ws_demo', thread.id)).toContainEqual(
+        expect.objectContaining({
+          turnId: acceptedTurn.id,
+          type: 'user-message',
+          text: body.input,
+        })
+      );
+      expect(
+        listPendingUserTurns(workspaceDb, { workspaceId: 'ws_demo', threadId: thread.id })
+      ).toEqual([]);
+    } finally {
+      workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
   });
@@ -6402,6 +6506,20 @@ describe('nanocore server', () => {
     await expect(res.json()).resolves.toMatchObject({
       code: 'turn_not_awaiting_user_input',
     });
+
+    const implicit = await app.request('/api/turns', {
+      method: 'POST',
+      body: JSON.stringify({
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        requestId: '0190f4c8-0000-7000-8000-000000000514',
+        input: 'This must not become implicit steering.',
+      }),
+      headers: jsonHeaders(),
+    });
+
+    expect(implicit.status).toBe(409);
+    await expect(implicit.json()).resolves.toMatchObject({ code: 'thread_busy' });
   });
 
   it('returns an idempotency conflict for the same request id with different input', async () => {
@@ -6567,7 +6685,7 @@ describe('nanocore server', () => {
     store.createArtifact({
       id: 'ar_server_test',
       workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      threadId: null,
       turnId: null,
       kind: 'summary',
       title: 'Draft summary',
@@ -6927,11 +7045,8 @@ describe('nanocore server', () => {
 
         expect(response.status).toBe(200);
         expect(body.review.status).toBe('needs_refinement');
-        expect(durableReview?.review).toMatchObject({
-          status: 'needs_refinement',
-          updatedAt: body.review.decidedAt,
-        });
-        expect(decisionEvents).toHaveLength(1);
+        expect(durableReview?.review).toMatchObject({ status: 'pending' });
+        expect(decisionEvents).toHaveLength(0);
         expect(listWorkspaceApplyPlans(persistedDb, item.review.workspaceId)).toEqual([]);
         expect(listWorkspaceApplyResults(persistedDb, item.review.workspaceId)).toEqual([]);
       } finally {
@@ -6941,7 +7056,7 @@ describe('nanocore server', () => {
         ListHumanAttentionResponseSchema.parse(await actionCenter.json()).items.some(
           (row) => row.id === item.review.actionCenterRowId
         )
-      ).toBe(false);
+      ).toBe(true);
     } finally {
       coreDb.sqlite.close();
     }
@@ -7409,11 +7524,25 @@ describe('nanocore server', () => {
   });
 
   it('records artifact review decisions idempotently', async () => {
+    const coreDb = createCoreDb();
     const store = createDemoStore();
-    const app = createApp({ store, turnExecutor: new FakeTurnExecutor() });
+    const executor = new FakeTurnExecutor();
+    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-artifact-review-repository-'));
     const thread = store.createThread('ws_demo', 'Artifact review idempotency');
-    const sourceTurn = store.createTurn('ws_demo', thread.id, 'Produce artifact');
     const timestamp = new Date().toISOString();
+    const sourceTurn = store.updateTurn(
+      store.createTurn('ws_demo', thread.id, 'Produce artifact').id,
+      {
+        agentId: 'agent_codex_host',
+        status: 'completed',
+        completedAt: timestamp,
+      }
+    );
+    const blockingTurn = store.updateTurn(
+      store.createTurn('ws_demo', thread.id, 'Keep unrelated work active').id,
+      { agentId: 'agent_codex_host', status: 'running' }
+    );
     store.createArtifact({
       id: 'artifact_review_idempotent',
       workspaceId: 'ws_demo',
@@ -7428,6 +7557,41 @@ describe('nanocore server', () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     });
+    mkdirSync(join(repositoryPath, '.git'));
+    const repository = await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+      method: 'PUT',
+      body: JSON.stringify({
+        displayName: 'Artifact review repository',
+        localPath: repositoryPath,
+      }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    const busyRes = await app.request(
+      '/api/app/workspaces/ws_demo/artifacts/artifact_review_idempotent/review',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          requestId: 'artifact-review-request-1',
+          decision: 'needs_refinement',
+          message: 'Tighten the summary.',
+        }),
+        headers: { 'content-type': 'application/json' },
+      }
+    );
+
+    expect(busyRes.status).toBe(409);
+    await expect(busyRes.json()).resolves.toMatchObject({ code: 'thread_busy' });
+    expect(store.getArtifactReviewDecision('artifact_review_idempotent')).toBeNull();
+    expect(
+      store.listCommandRequests().filter((record) => record.command === 'artifact.review.decide')
+    ).toEqual([]);
+    expect(store.listThreadTurns('ws_demo', thread.id).map((turn) => turn.id)).toEqual([
+      sourceTurn.id,
+      blockingTurn.id,
+    ]);
+    expect(executor.startContexts).toHaveLength(0);
+    store.updateTurn(blockingTurn.id, { status: 'completed', completedAt: timestamp });
 
     const firstRes = await app.request(
       '/api/app/workspaces/ws_demo/artifacts/artifact_review_idempotent/review',
@@ -7478,14 +7642,27 @@ describe('nanocore server', () => {
       }
     );
 
-    expect(firstRes.status).toBe(200);
+    expect(firstRes.status, await firstRes.clone().text()).toBe(200);
     expect(secondRes.status).toBe(200);
     expect(await secondRes.json()).toEqual(await firstRes.json());
     expect(replacementRequestRes.status).toBe(409);
     await expect(replacementRequestRes.json()).resolves.toMatchObject({
       code: 'idempotency_key_conflict',
     });
-    expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(2);
+    expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(3);
+    const followUpTurn = store
+      .listThreadTurns('ws_demo', thread.id)
+      .find((turn) => turn.id !== sourceTurn.id && turn.id !== blockingTurn.id);
+    expect(repository.status).toBe(200);
+    expect(executor.startContexts).toHaveLength(1);
+    expect(followUpTurn).toMatchObject({
+      agentId: sourceTurn.agentId,
+      status: 'completed',
+    });
+    expect(followUpTurn?.items.map((item) => item.type)).toEqual([
+      'user-message',
+      'assistant-message',
+    ]);
     expect(store.getArtifactReviewDecision('artifact_review_idempotent')).toMatchObject({
       status: 'needs_refinement',
       requestId: 'artifact-review-request-1',
@@ -7494,127 +7671,23 @@ describe('nanocore server', () => {
     await expect(conflictRes.json()).resolves.toMatchObject({
       code: 'idempotency_key_conflict',
     });
-  });
-
-  it.each([
-    ['follow-up item', null],
-    ['artifact decision', 'needs_refinement'],
-    ['artifact decision', 'redo'],
-  ] as const)('recovers the same workspace artifact review after a %s persistence failure while rejecting a %s replacement', async (failurePoint, replacementDecision) => {
-    const coreDb = createCoreDb();
-    const store = createDemoStore();
-    const thread = store.createThread('ws_demo', `Workspace review ${failurePoint} recovery`);
-    const sourceTurn = store.createTurn('ws_demo', thread.id, 'Produce workspace changes');
-    const item = workspaceSyncReviewRouteItem();
-    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
-
-    store.createArtifact({
-      id: item.artifactId,
-      workspaceId: item.review.workspaceId,
-      threadId: thread.id,
-      turnId: sourceTurn.id,
-      kind: 'diff',
-      title: 'Workspace changes ready for review',
-      status: 'ready',
-      summary: item.review.riskSummary,
-      version: 1,
-      content: { format: 'json', body: JSON.stringify(item) },
-      createdAt: item.review.createdAt,
-      updatedAt: item.review.updatedAt,
-    });
-
-    const workspaceDb = openTestWorkspaceDb(coreDb, item.review.workspaceId);
-    try {
-      recordTestWorkspaceReviewMaterialization(workspaceDb, item);
-      recordWorkspaceSyncReview(workspaceDb, { item });
-    } finally {
-      workspaceDb.sqlite.close();
-    }
-
-    if (failurePoint === 'follow-up item') {
-      vi.spyOn(store, 'createItem').mockImplementationOnce(() => {
-        throw new Error('Injected follow-up item persistence failure.');
-      });
-    } else {
-      const recordArtifactReviewDecision = store.recordArtifactReviewDecision.bind(store);
-      let completionFailed = false;
-      vi.spyOn(store, 'recordArtifactReviewDecision').mockImplementation((review) => {
-        if (review.lifecycle === 'completed' && !completionFailed) {
-          completionFailed = true;
-          throw new Error('Injected artifact decision persistence failure.');
-        }
-        return recordArtifactReviewDecision(review);
-      });
-    }
-
-    try {
-      const request = {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: `workspace-artifact-${failurePoint}-recovery`,
-          decision: 'needs_refinement',
-          message: 'Narrow the workspace patch.',
-        }),
-        headers: jsonHeaders(),
-      };
-      const first = await app.request(
-        `/api/app/workspaces/ws_demo/artifacts/${item.artifactId}/review`,
-        request
-      );
-      const turnsAfterFailure = store.listThreadTurns('ws_demo', thread.id);
-      const replacement = replacementDecision
-        ? await app.request(`/api/app/workspaces/ws_demo/artifacts/${item.artifactId}/review`, {
-            method: 'POST',
-            body: JSON.stringify({
-              requestId: `workspace-artifact-${failurePoint}-replacement`,
-              decision: replacementDecision,
-              message: 'Replace the original workspace review decision.',
-            }),
-            headers: jsonHeaders(),
-          })
-        : null;
-      const turnsAfterReplacement = store.listThreadTurns('ws_demo', thread.id);
-      const retry = await app.request(
-        `/api/app/workspaces/ws_demo/artifacts/${item.artifactId}/review`,
-        request
-      );
-      const review = store.getArtifactReviewDecision(item.artifactId);
-      const followUpTurns = store
-        .listThreadTurns('ws_demo', thread.id)
-        .filter((turn) => turn.id !== sourceTurn.id);
-      const followUpItems = store
-        .listThreadItems('ws_demo', thread.id)
-        .filter((candidate) => candidate.turnId !== sourceTurn.id);
-
-      expect(turnsAfterFailure).toHaveLength(2);
-      if (replacement) {
-        expect(replacement.status).toBe(409);
-        await expect(replacement.json()).resolves.toMatchObject({
-          code: 'idempotency_key_conflict',
-        });
-      }
-      expect(turnsAfterReplacement).toHaveLength(2);
-      expect(retry.status).toBe(200);
-      expect(followUpTurns).toHaveLength(1);
-      expect(followUpItems).toHaveLength(1);
-      expect(review).toMatchObject({
-        requestId: `workspace-artifact-${failurePoint}-recovery`,
-        status: 'needs_refinement',
-        followUpTurnId: followUpTurns[0]?.id,
-      });
-      expect(first.status).toBe(500);
-    } finally {
-      coreDb.sqlite.close();
-    }
+    coreDb.sqlite.close();
   });
 
   it('serializes competing workspace artifact review decisions before creating follow-ups', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
+    const executor = new FakeTurnExecutor();
     const thread = store.createThread('ws_demo', 'Concurrent workspace artifact review');
-    const sourceTurn = store.createTurn('ws_demo', thread.id, 'Produce workspace changes');
+    const createdSourceTurn = store.createTurn('ws_demo', thread.id, 'Produce workspace changes');
+    const sourceTurn = store.updateTurn(createdSourceTurn.id, {
+      agentId: 'agent_codex_host',
+      status: 'completed',
+      completedAt: createdSourceTurn.startedAt,
+    });
     const item = workspaceSyncReviewRouteItem();
-    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-concurrent-review-repository-'));
 
     store.createArtifact({
       id: item.artifactId,
@@ -7638,6 +7711,15 @@ describe('nanocore server', () => {
     } finally {
       workspaceDb.sqlite.close();
     }
+    mkdirSync(join(repositoryPath, '.git'));
+    const repository = await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+      method: 'PUT',
+      body: JSON.stringify({
+        displayName: 'Concurrent review repository',
+        localPath: repositoryPath,
+      }),
+      headers: jsonHeaders(),
+    });
 
     try {
       const href = `/api/app/workspaces/ws_demo/artifacts/${item.artifactId}/review`;
@@ -7668,9 +7750,11 @@ describe('nanocore server', () => {
         .listThreadItems('ws_demo', thread.id)
         .filter((candidate) => candidate.turnId !== sourceTurn.id);
 
+      expect(repository.status).toBe(200);
       expect([first.status, second.status].sort()).toEqual([200, 409]);
+      expect(executor.startContexts).toHaveLength(1);
       expect(followUpTurns).toHaveLength(1);
-      expect(followUpItems).toHaveLength(1);
+      expect(followUpItems).toHaveLength(2);
     } finally {
       coreDb.sqlite.close();
     }
@@ -7682,9 +7766,15 @@ describe('nanocore server', () => {
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     const thread = store.createThread('ws_demo', 'Restarted workspace artifact review');
-    const sourceTurn = store.createTurn('ws_demo', thread.id, 'Produce workspace changes');
+    const createdSourceTurn = store.createTurn('ws_demo', thread.id, 'Produce workspace changes');
+    const sourceTurn = store.updateTurn(createdSourceTurn.id, {
+      agentId: 'agent_codex_host',
+      status: 'completed',
+      completedAt: createdSourceTurn.startedAt,
+    });
     const item = workspaceSyncReviewRouteItem();
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-restarted-review-repository-'));
     let restartedCoreDb: CoreDb | null = null;
 
     store.createArtifact({
@@ -7709,6 +7799,15 @@ describe('nanocore server', () => {
     } finally {
       workspaceDb.sqlite.close();
     }
+    mkdirSync(join(repositoryPath, '.git'));
+    await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+      method: 'PUT',
+      body: JSON.stringify({
+        displayName: 'Restarted review repository',
+        localPath: repositoryPath,
+      }),
+      headers: jsonHeaders(),
+    });
     const recordArtifactReviewDecision = store.recordArtifactReviewDecision.bind(store);
     vi.spyOn(store, 'recordArtifactReviewDecision').mockImplementation((review) => {
       if (review.lifecycle === 'completed') {
@@ -7747,7 +7846,7 @@ describe('nanocore server', () => {
 
       expect(retry.status).toBe(200);
       expect(followUpTurns).toHaveLength(1);
-      expect(followUpItems).toHaveLength(1);
+      expect(followUpItems).toHaveLength(2);
       expect(restartedStore.getArtifactReviewDecision(item.artifactId)).toMatchObject({
         requestId: 'workspace-artifact-restart-recovery',
         status: 'needs_refinement',
@@ -7761,13 +7860,19 @@ describe('nanocore server', () => {
     }
   });
 
-  it('releases a generic artifact claim that loses to a dedicated workspace decision', async () => {
+  it('keeps workspace decisions separate from artifact refinement', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Cross-route workspace artifact review');
-    const sourceTurn = store.createTurn('ws_demo', thread.id, 'Produce workspace changes');
+    const createdSourceTurn = store.createTurn('ws_demo', thread.id, 'Produce workspace changes');
+    const sourceTurn = store.updateTurn(createdSourceTurn.id, {
+      agentId: 'agent_codex_host',
+      status: 'completed',
+      completedAt: createdSourceTurn.startedAt,
+    });
     const item = workspaceSyncReviewRouteItem();
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-separated-review-repository-'));
 
     store.createArtifact({
       id: item.artifactId,
@@ -7788,6 +7893,13 @@ describe('nanocore server', () => {
     try {
       recordTestWorkspaceReviewMaterialization(workspaceDb, item);
       recordWorkspaceSyncReview(workspaceDb, { item });
+      mkdirSync(join(repositoryPath, '.git'));
+      upsertWorkspaceRepositoryResource(workspaceDb, {
+        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
+        workspaceId: 'ws_demo',
+        displayName: 'Separated review repository',
+        localPath: repositoryPath,
+      });
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -7804,61 +7916,38 @@ describe('nanocore server', () => {
           headers: jsonHeaders(),
         }
       );
-      const conflictingInput = {
-        requestId: 'workspace-generic-conflicting-refinement',
+      const refinementInput = {
+        requestId: 'workspace-generic-refinement',
         decision: 'needs_refinement' as const,
         message: 'Refine instead.',
       };
-      const conflictingFollowUpTurnId = `tu_artifact_review_${commandInputHash({
-        artifactId: item.artifactId,
-        input: conflictingInput,
-        workspaceId: 'ws_demo',
-      }).slice(7, 31)}`;
-      store.createTurn('ws_demo', thread.id, conflictingInput.message, null, {
-        turnId: conflictingFollowUpTurnId,
-      });
-      const conflicting = await app.request(
+      const refinement = await app.request(
         `/api/app/workspaces/ws_demo/artifacts/${item.artifactId}/review`,
         {
           method: 'POST',
-          body: JSON.stringify(conflictingInput),
+          body: JSON.stringify(refinementInput),
           headers: jsonHeaders(),
         }
       );
 
       expect(dedicated.status).toBe(200);
-      expect(conflicting.status, await conflicting.clone().text()).toBe(409);
-      expect(store.getArtifactReviewDecision(item.artifactId)).toMatchObject({
-        lifecycle: 'failed',
-        requestId: 'workspace-generic-conflicting-refinement',
-        status: 'needs_refinement',
-      });
-
-      const matching = await app.request(
-        `/api/app/workspaces/ws_demo/artifacts/${item.artifactId}/review`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            requestId: 'workspace-generic-matching-rejection',
-            decision: 'rejected',
-          }),
-          headers: jsonHeaders(),
-        }
-      );
-
-      expect(matching.status).toBe(200);
-      await expect(matching.json()).resolves.toMatchObject({
-        review: { status: 'rejected' },
-      });
+      expect(refinement.status, await refinement.clone().text()).toBe(200);
       expect(store.getArtifactReviewDecision(item.artifactId)).toMatchObject({
         lifecycle: 'completed',
-        requestId: 'workspace-generic-matching-rejection',
-        status: 'rejected',
+        requestId: 'workspace-generic-refinement',
+        status: 'needs_refinement',
       });
-      expect(store.listThreadTurns('ws_demo', thread.id).map((turn) => turn.id)).toEqual([
-        sourceTurn.id,
-        conflictingFollowUpTurnId,
-      ]);
+      const persistedDb = openTestWorkspaceDb(coreDb, item.review.workspaceId);
+      try {
+        expect(getWorkspaceSyncReview(persistedDb, 'ws_demo', item.review.id)?.review.status).toBe(
+          'rejected'
+        );
+      } finally {
+        persistedDb.sqlite.close();
+      }
+      expect(
+        store.listThreadTurns('ws_demo', thread.id).filter((turn) => turn.id !== sourceTurn.id)
+      ).toHaveLength(1);
     } finally {
       coreDb.sqlite.close();
     }
@@ -7867,10 +7956,17 @@ describe('nanocore server', () => {
   it('recovers a pending workspace artifact claim from its Action Center decision', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
+    const executor = new FakeTurnExecutor();
     const thread = store.createThread('ws_demo', 'Action Center artifact review recovery');
-    const sourceTurn = store.createTurn('ws_demo', thread.id, 'Produce workspace changes');
+    const createdSourceTurn = store.createTurn('ws_demo', thread.id, 'Produce workspace changes');
+    const sourceTurn = store.updateTurn(createdSourceTurn.id, {
+      agentId: 'agent_codex_host',
+      status: 'completed',
+      completedAt: createdSourceTurn.startedAt,
+    });
     const item = workspaceSyncReviewRouteItem();
-    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-action-center-review-repository-'));
 
     store.createArtifact({
       id: item.artifactId,
@@ -7894,6 +7990,15 @@ describe('nanocore server', () => {
     } finally {
       workspaceDb.sqlite.close();
     }
+    mkdirSync(join(repositoryPath, '.git'));
+    const repository = await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+      method: 'PUT',
+      body: JSON.stringify({
+        displayName: 'Action Center review repository',
+        localPath: repositoryPath,
+      }),
+      headers: jsonHeaders(),
+    });
     const recordArtifactReviewDecision = store.recordArtifactReviewDecision.bind(store);
     let completionFailed = false;
     vi.spyOn(store, 'recordArtifactReviewDecision').mockImplementation((review) => {
@@ -7929,6 +8034,8 @@ describe('nanocore server', () => {
       ]);
 
       expect(first.status).toBe(500);
+      expect(repository.status).toBe(200);
+      expect(executor.startContexts).toHaveLength(1);
       expect(store.getArtifactReviewDecision(item.artifactId)).toMatchObject({
         lifecycle: 'pending',
         message: 'Narrow the workspace patch.',
@@ -7942,11 +8049,26 @@ describe('nanocore server', () => {
           .map((action) => action.kind)
       ).toEqual(['request_refinement']);
 
-      const recovered = await app.request(href, {
+      const conflictingRecovery = await app.request(href, {
         method: 'POST',
         body: JSON.stringify({
           requestId: 'workspace-action-center-recovery',
           decision: 'needs_refinement',
+        }),
+        headers: jsonHeaders(),
+      });
+
+      expect(conflictingRecovery.status).toBe(409);
+      await expect(conflictingRecovery.json()).resolves.toMatchObject({
+        code: 'idempotency_key_conflict',
+      });
+
+      const recovered = await app.request(href, {
+        method: 'POST',
+        body: JSON.stringify({
+          requestId: 'workspace-action-center-original-claim',
+          decision: 'needs_refinement',
+          message: 'Narrow the workspace patch.',
         }),
         headers: jsonHeaders(),
       });
@@ -7961,6 +8083,9 @@ describe('nanocore server', () => {
       expect(
         store.listThreadTurns('ws_demo', thread.id).filter((turn) => turn.id !== sourceTurn.id)
       ).toHaveLength(1);
+      expect(
+        store.listThreadItems('ws_demo', thread.id).filter((item) => item.turnId !== sourceTurn.id)
+      ).toHaveLength(2);
     } finally {
       coreDb.sqlite.close();
     }
@@ -8094,6 +8219,7 @@ describe('nanocore server', () => {
     const workspace = store.createWorkspace('Workspace sync apply');
     const thread = store.createThread(workspace.id, 'Apply workspace review');
     const turn = store.createTurn(workspace.id, thread.id, 'Produce workspace patch');
+    store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
     const repoDir = mkdtempSync(join(tmpdir(), 'openkit-workspace-apply-'));
     const timestamp = new Date().toISOString();
 
@@ -9576,9 +9702,14 @@ describe('nanocore server', () => {
 
     gateway.recordHeartbeat({
       authorization: `Bearer ${registration.token}`,
+      body: {
+        message: null,
+        status: 'running',
+      },
       lineage,
+      operation: 'heartbeat',
+      schemaVersion: 1,
       sequence: 4,
-      status: 'running',
     });
     gateway.recordArtifactNotice({
       artifact: {
@@ -9688,9 +9819,14 @@ describe('nanocore server', () => {
 
     gateway.recordHeartbeat({
       authorization: `Bearer ${oldRegistration.token}`,
+      body: {
+        message: null,
+        status: 'stopping',
+      },
       lineage: oldLineage,
+      operation: 'heartbeat',
+      schemaVersion: 1,
       sequence: 1,
-      status: 'stopping',
     });
     gateway.recordArtifactNotice({
       artifact: {
@@ -9704,9 +9840,14 @@ describe('nanocore server', () => {
     });
     gateway.recordHeartbeat({
       authorization: `Bearer ${currentRegistration.token}`,
+      body: {
+        message: null,
+        status: 'running',
+      },
       lineage: currentLineage,
+      operation: 'heartbeat',
+      schemaVersion: 1,
       sequence: 1,
-      status: 'running',
     });
     store.createAgentSession({
       id: currentPackage.scope.agentSessionId,

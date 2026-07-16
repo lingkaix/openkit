@@ -355,7 +355,9 @@ CREATE TABLE `scheduler_session_leases` (
 	`sandbox_binding_ref` text NOT NULL,
 	`backend_anchor_state` text DEFAULT 'unanchored' NOT NULL,
 	`release_reason` text,
-	`recovery_state` text
+	`recovery_state` text,
+	`recovery_deadline` text,
+	`worker_process_key_hash` text
 );
 --> statement-breakpoint
 CREATE INDEX `scheduler_session_leases_plan_idx` ON `scheduler_session_leases` (`plan_id`,`status`);
@@ -365,6 +367,8 @@ CREATE INDEX `scheduler_session_leases_lineage_idx` ON `scheduler_session_leases
 CREATE INDEX `scheduler_session_leases_target_idx` ON `scheduler_session_leases` (`pool_id`,`target_id`,`status`);
 --> statement-breakpoint
 CREATE INDEX `scheduler_session_leases_deadline_idx` ON `scheduler_session_leases` (`status`,`expires_at`,`heartbeat_deadline`);
+--> statement-breakpoint
+CREATE INDEX `scheduler_session_leases_recovery_idx` ON `scheduler_session_leases` (`recovery_state`,`recovery_deadline`);
 --> statement-breakpoint
 CREATE UNIQUE INDEX `scheduler_session_leases_binding_idx` ON `scheduler_session_leases` (`sandbox_binding_ref`);
 --> statement-breakpoint

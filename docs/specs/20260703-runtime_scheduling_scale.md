@@ -81,7 +81,7 @@ The baseline renews heartbeat-live leases under their existing AEP snapshot with
 
 The OpenShell turn executor factory selects local or remote disposable Cell placement. Remote configuration binds a validated SSH lifecycle target to an operator-managed loopback HTTP Gateway origin and an explicit credential-free HTTP(S) `/api/worker-control` URL reachable from the sandbox. Static environment selection creates the matching one-slot `target_local` or `target_remote` durable scheduler baseline and backend materialization path; the scheduler does not yet select among multiple Cells.
 
-Remote backend materialization, sandbox command execution, result collection, durable one-slot target projection, and whole-Cell cleanup pass their focused and opt-in A1 paths with stock OpenShell `0.0.80`; real Codex runtime-provenance acceptance remains incomplete.
+Remote backend materialization, sandbox command execution, result collection, durable one-slot target projection, whole-Cell cleanup, and the separate real Codex `0.144.1` runtime-provenance acceptance pass their focused and opt-in A1 paths with stock OpenShell `0.0.80`. This scheduling spec remains partial for its independent release-deadline and scale gaps.
 
 ## Core Mode And Runtime Placement
 
@@ -188,6 +188,9 @@ Lease fields:
 - acquired at
 - expires at
 - heartbeat deadline
+- last accepted worker sequence
+- worker process-key hash
+- bounded reconnect deadline when recovery state is `awaiting-reconnect`
 - release reason
 - recovery state
 
@@ -223,6 +226,8 @@ The first OpenShell target has one slot, and cleanup may release that slot only 
 When a heartbeat deadline is missed, NanoCore should mark the lease `stale`, stop reusing the session, attempt evidence collection, and decide whether the turn can continue from collected evidence. Lease expiry should not silently close the canonical turn; the workflow closeout still depends on item, artifact, evidence, checkpoint, and review state.
 
 Lease renewal preserves the lease's package snapshot. It requires live lease and heartbeat state and remains bounded by the recorded policy maximum; it does not require `supply_refresh_ack`.
+
+NanoCore restart runs one durable lease scan before normal serving; it is not a separate recovery service. An eligible lease has the sequence-zero process-key hash plus `lastWorkerSequence >= 1`, proving post-launch recovery was enabled, and gets one preserved `awaiting-reconnect` deadline. A sequence-zero-only supervisor uses existing cleanup. The original worker may adopt only with the exact memory-only process key, durable lineage, and next sequence. The existing lease-maintenance interval invokes timeout cleanup, whose compare-and-set first wins cleanup ownership; no reconnect-specific timer exists. Accepted final status closes directly through existing checkpoint, backend-session, workspace, turn, lease, and capacity records; no settlement state machine is part of scheduling.
 
 ## Affinity
 
@@ -351,7 +356,7 @@ Human-actionable scheduling failures should create Action Center rows. User-visi
 - Bounded step timeout tests.
 - Remote target health degradation tests.
 - Opt-in A1 tests for fixed SSH lifecycle control, stock Gateway preflight, remote sandbox materialization, whole-Cell recycle, and fresh replacement emptiness.
-- Opt-in real Codex provenance acceptance before this spec may return to `Implemented`.
+- The opt-in real Codex provenance acceptance gate has passed on A1; it does not close this spec's independent release-deadline and scale gaps.
 - Recovery tests after NanoCore restart.
 
 ## Risks & Mitigations

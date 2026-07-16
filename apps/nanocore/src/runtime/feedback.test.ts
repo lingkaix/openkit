@@ -33,7 +33,11 @@ describe('turn feedback', () => {
     const turn = store.createTurn('ws_demo', 'th_demo', 'Run tests');
     const completedAt = new Date().toISOString();
 
-    store.updateTurn(turn.id, { completedAt, status: 'completed' });
+    store.updateTurn(turn.id, {
+      agentId: 'agent_codex_host',
+      completedAt,
+      status: 'completed',
+    });
 
     const feedbackPath = feedbackFilePath(store, store.getTurnById(turn.id));
 

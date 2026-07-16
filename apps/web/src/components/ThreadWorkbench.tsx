@@ -63,7 +63,6 @@ export interface ThreadWorkbenchProps {
   isCreatingGoalPlan: boolean;
   isInterrupting: boolean;
   isRunningGoalStep: boolean;
-  isSubmittingGoalSteering: boolean;
   isStartingGoal: boolean;
   isStartingTurn: boolean;
   isRespondingToApproval: boolean;
@@ -73,7 +72,7 @@ export interface ThreadWorkbenchProps {
   models: ChatComposerModelOption[];
   pendingApprovalCount: number;
   pendingQuestionCount: number;
-  goalSteeringFeedback: string | null;
+  goalExecutionFeedback: string | null;
   quickChatDisabledMessage: string;
   quickChatResponse: string | null;
   routingExplanation: string;
@@ -93,10 +92,9 @@ export interface ThreadWorkbenchProps {
   onOpenActionCenter?(): void;
   onOpenItemLog(): void;
   onRejectGoalPlan(): void;
-  onReviseGoalPlan(): void;
+  onReviseGoalPlan(revision: string): void;
   onRunGoalStep(): Promise<void>;
   onStartGoal(objective: string): Promise<void>;
-  onSubmitGoalSteering(message: string): Promise<void>;
   onSubmitQuickChat(prompt: string, modelId: string | null): Promise<void>;
   onRespondApproval(item: ApprovalRequestItem, decision: ApprovalDecision): Promise<void>;
   onSubmitUserInput(item: UserInputRequestItem, answer: string): Promise<void>;
@@ -310,13 +308,6 @@ function goalCurrentTaskText(goal: ThreadGoalSummary): string {
 }
 
 /**
- * Checks whether a goal status can still accept steering input.
- */
-function canGoalAcceptSteering(goal: ThreadGoalSummary): boolean {
-  return !['completed', 'blocked', 'aborted', 'failed'].includes(goal.status);
-}
-
-/**
  * Formats a compact list of ids for terminal summaries.
  */
 function formatIdList(ids: readonly string[]): string {
@@ -329,7 +320,7 @@ function formatIdList(ids: readonly string[]): string {
 export function ThreadWorkbench(props: ThreadWorkbenchProps) {
   const [turnPromptDraft, setTurnPromptDraft] = createSignal('');
   const [goalObjectiveDraft, setGoalObjectiveDraft] = createSignal('');
-  const [goalSteeringDraft, setGoalSteeringDraft] = createSignal('');
+  const [goalPlanRevisionDraft, setGoalPlanRevisionDraft] = createSignal('');
   const canSubmitTurn = createMemo(
     () =>
       turnPromptDraft().trim().length > 0 &&
@@ -397,12 +388,8 @@ export function ThreadWorkbench(props: ThreadWorkbenchProps) {
   const canActOnGoalPlan = createMemo(
     () => !!props.goalPlan && !props.isApprovingGoalPlan && !props.isCreatingGoalPlan
   );
-  const canSubmitGoalSteering = createMemo(
-    () =>
-      !!props.goal &&
-      canGoalAcceptSteering(props.goal) &&
-      goalSteeringDraft().trim().length > 0 &&
-      !props.isSubmittingGoalSteering
+  const canRequestGoalPlanRevision = createMemo(
+    () => canActOnGoalPlan() && goalPlanRevisionDraft().trim().length > 0
   );
   const canRunGoalStep = createMemo(
     () =>
@@ -452,18 +439,17 @@ export function ThreadWorkbench(props: ThreadWorkbenchProps) {
   }
 
   /**
-   * Submits Goal Mode steering for the active goal.
+   * Sends the requested plan revision through the owning Core mutation.
    */
-  async function submitGoalSteering(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const message = goalSteeringDraft().trim();
+  function submitGoalPlanRevision(): void {
+    const revision = goalPlanRevisionDraft().trim();
 
-    if (!message || !canSubmitGoalSteering()) {
+    if (!revision || !canRequestGoalPlanRevision()) {
       return;
     }
 
-    await props.onSubmitGoalSteering(message);
-    setGoalSteeringDraft('');
+    props.onReviseGoalPlan(revision);
+    setGoalPlanRevisionDraft('');
   }
 
   return (
@@ -532,50 +518,7 @@ export function ThreadWorkbench(props: ThreadWorkbenchProps) {
                   <p class="text-sm font-semibold">{goalProgressSummary(goal())}</p>
                 </div>
               </div>
-              <div class="flex flex-wrap gap-2">
-                <Show when={goal().steering.pendingSteeringCount > 0}>
-                  <span class="badge badge-info badge-outline">
-                    Queued steering: {goal().steering.pendingSteeringCount}
-                  </span>
-                </Show>
-                <Show when={goal().steering.appliedSteeringCount > 0}>
-                  <span class="badge badge-success badge-outline">
-                    Applied steering: {goal().steering.appliedSteeringCount}
-                  </span>
-                </Show>
-                <Show when={goal().steering.pendingFollowUpCount > 0}>
-                  <span class="badge badge-warning badge-outline">
-                    Blocked input: {goal().steering.pendingFollowUpCount}
-                  </span>
-                </Show>
-              </div>
-              <Show when={canGoalAcceptSteering(goal())}>
-                <form
-                  class="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]"
-                  onSubmit={submitGoalSteering}
-                >
-                  <label class="form-control ui-field">
-                    <span class="label-text">Steering input</span>
-                    <textarea
-                      class="textarea textarea-bordered min-h-20"
-                      name="goalSteering"
-                      value={goalSteeringDraft()}
-                      onInput={(event) => setGoalSteeringDraft(event.currentTarget.value)}
-                      placeholder="Adjust priority, constraints, or next steps."
-                    />
-                  </label>
-                  <div class="flex items-end">
-                    <button
-                      class="btn btn-outline w-full md:w-auto"
-                      disabled={!canSubmitGoalSteering()}
-                      type="submit"
-                    >
-                      {props.isSubmittingGoalSteering ? 'Submitting' : 'Submit steering'}
-                    </button>
-                  </div>
-                </form>
-              </Show>
-              <Show when={props.goalSteeringFeedback}>
+              <Show when={props.goalExecutionFeedback}>
                 {(feedback) => (
                   <div class="rounded-md border border-info/40 bg-info/10 p-3 text-sm">
                     {feedback()}
@@ -773,6 +716,20 @@ export function ThreadWorkbench(props: ThreadWorkbenchProps) {
                     {props.goalPlanFeedback}
                   </div>
                 </Show>
+                <div class="space-y-2">
+                  <label class="metric-label" for="goal-plan-revision">
+                    Requested plan changes
+                  </label>
+                  <textarea
+                    class="textarea textarea-bordered min-h-24 w-full"
+                    disabled={!canActOnGoalPlan()}
+                    id="goal-plan-revision"
+                    maxLength={4_000}
+                    onInput={(event) => setGoalPlanRevisionDraft(event.currentTarget.value)}
+                    placeholder="Describe the changes required before approval."
+                    value={goalPlanRevisionDraft()}
+                  />
+                </div>
                 <div class="flex flex-wrap gap-2">
                   <button
                     class="btn btn-neutral"
@@ -780,7 +737,7 @@ export function ThreadWorkbench(props: ThreadWorkbenchProps) {
                     onClick={() => void props.onApproveGoalPlan(planReview())}
                     type="button"
                   >
-                    {props.isApprovingGoalPlan ? 'Approving plan' : 'Approve plan'}
+                    {props.isApprovingGoalPlan ? 'Updating plan' : 'Approve plan'}
                   </button>
                   <button
                     class="btn btn-outline"
@@ -792,8 +749,8 @@ export function ThreadWorkbench(props: ThreadWorkbenchProps) {
                   </button>
                   <button
                     class="btn btn-outline"
-                    disabled={!canActOnGoalPlan()}
-                    onClick={props.onReviseGoalPlan}
+                    disabled={!canRequestGoalPlanRevision()}
+                    onClick={submitGoalPlanRevision}
                     type="button"
                   >
                     Request changes

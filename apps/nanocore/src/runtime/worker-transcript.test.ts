@@ -82,7 +82,7 @@ describe('worker transcript import', () => {
     const importedArtifact = store.getArtifact('ws_demo', result.artifactIds[0] ?? '');
 
     expect(result).toMatchObject({
-      itemIds: [expect.stringMatching(/^it_worker_/)],
+      itemIds: [expect.stringMatching(/^it_worker_/), expect.stringMatching(/^it_artifact_/)],
       artifactIds: [expect.stringMatching(/^ar_worker_/)],
       diagnostics: [],
     });
@@ -99,6 +99,72 @@ describe('worker transcript import', () => {
       status: 'ready',
       turnId: turn.id,
     });
+  });
+
+  it('exactly replays deterministic settlement imports and rejects changed content', () => {
+    const { environmentPackage, store, turn } = createTranscriptFixture();
+    const payload = {
+      artifactsJsonl: `${JSON.stringify({
+        artifact: {
+          kind: 'file',
+          mediaType: 'text/markdown',
+          path: '/workspace/output/summary.md',
+          title: 'Settlement summary',
+        },
+        kind: 'artifact',
+        lineage: {
+          agentSessionId: 'as_transcript_1',
+          packageSnapshotId: environmentPackage.snapshotId,
+          requestId: 'req_transcript_1',
+          threadId: 'th_demo',
+          turnId: turn.id,
+          workspaceId: 'ws_demo',
+        },
+        schemaVersion: 1,
+        sequence: 2,
+      })}\n`,
+      itemsJsonl: `${JSON.stringify({
+        item: {
+          parts: [{ text: 'Recovered worker result.', type: 'text' }],
+          status: 'completed',
+          type: 'assistant-message',
+        },
+        kind: 'item',
+        lineage: {
+          agentSessionId: 'as_transcript_1',
+          packageSnapshotId: environmentPackage.snapshotId,
+          requestId: 'req_transcript_1',
+          threadId: 'th_demo',
+          turnId: turn.id,
+          workspaceId: 'ws_demo',
+        },
+        schemaVersion: 1,
+        sequence: 1,
+      })}\n`,
+    };
+    const options = { recordedAt: '2026-07-16T00:00:00.000Z' };
+
+    const first = importWorkerTranscript(store, environmentPackage, payload, options);
+    const replay = importWorkerTranscript(store, environmentPackage, payload, options);
+
+    expect(replay).toEqual(first);
+    expect(
+      store.listThreadItems('ws_demo', 'th_demo').filter((item) => item.id === first.itemIds[0])
+    ).toHaveLength(1);
+    expect(
+      store.listArtifacts('ws_demo').filter((artifact) => artifact.id === first.artifactIds[0])
+    ).toHaveLength(1);
+    expect(() =>
+      importWorkerTranscript(
+        store,
+        environmentPackage,
+        {
+          ...payload,
+          itemsJsonl: payload.itemsJsonl.replace('Recovered worker result.', 'Changed result.'),
+        },
+        options
+      )
+    ).toThrow('Worker transcript item replay conflict');
   });
 
   it('rejects transcript records whose lineage does not match the package scope', () => {

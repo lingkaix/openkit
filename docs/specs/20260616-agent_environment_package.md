@@ -64,6 +64,8 @@ OpenKit should adopt an OpenShell-inspired provider/profile/policy vocabulary, a
 
 The current NanoCore implementation uses the Agent Environment Package as the concrete V1 contract for worker governance execution. Current code resolves package metadata for local and remote disposable OpenShell Cell paths, including runtime placement, worker-visible workspace roots, generated task context, control endpoint metadata, transcript paths, policy snapshot binding, session workspace layout, workspace synchronization expectations, supply projections, capability projections, vault-backed runtime files, and backend capability requirements. NanoCore also persists redacted workspace-owned package snapshots and exposes them through App API, Core Client, OpenAPI, and MCP readback surfaces for diagnostics, evidence, export/import, and restart investigation.
 
+The current scope schema still carries `userId`, optional `automationId`, and optional `organizationId`. The accepted shared-Workspace target replaces those fields with `triggerActor: ActorRef`; `responsibleUserId` is accountability context and no longer doubles as a physical Workspace-store owner. Removing the unused organization placeholder and updating every producer, consumer, persisted snapshot, and policy adapter remains part of the multi-user implementation plan.
+
 The OpenShell-backed path uses `openkit-codex-shim` as the sandbox entrypoint. The shim supervises Codex and calls the AEP-resolved NanoCore worker-control endpoint directly; the worker image contains no separate control sidecar.
 
 The accepted V1 boundary is implemented for NanoCore-owned AEP resolution and OpenShell-backed materialization. Authored setup can project required backend capabilities into AEP backend requirements, backend materialization validates missing required capabilities before launch, grant-backed provider and runtime-file attachments flow through vault records without storing secret material in the package, and redacted package snapshots can be listed and read without exposing backend-private fields, raw credentials, or host-local runtime references.
@@ -74,7 +76,7 @@ Current read-write workspace roots are Git-backed: NanoCore resolves and records
 
 Current packages always emit `capabilities: { protocol: "openkit-worker-capability-v1", mode: "disabled", routes: [] }`. The removed worker capability client, NanoCore `/api/worker-capabilities/*` routes, worker MCP gateway, and capability smoke are not part of the current implementation. Skill and MCP supply records may still be resolved as static package inputs, but they do not grant a callable worker capability route. The accepted future capability and MCP contracts remain in `docs/specs/20260703-worker_agent_capability.md` and `docs/specs/20260704-worker_mcp_tool_supply.md` and are sequenced in `docs/roadmap.md`.
 
-The worker-runtime provenance and trusted worker-inference extension remains governed by `docs/specs/20260711-worker_runtime_subagent_provenance.md`; production advertisement still depends on its real OpenShell/Codex proof. Rich Web readiness views, broader provider profiles, object-store mounts, worker capabilities, multiple Cell targets, and target selection remain future extensions over the same AEP boundary.
+The worker-runtime provenance and trusted worker-inference extension remains governed by `docs/specs/20260711-worker_runtime_subagent_provenance.md`; production advertisement is implemented and its real OpenShell `0.0.80` and Codex `0.144.1` proof passed on A1. Rich Web readiness views, broader provider profiles, object-store mounts, worker capabilities, multiple Cell targets, and target selection remain future extensions over the same AEP boundary.
 
 ## Goals / Non-goals
 
@@ -535,9 +537,11 @@ Each field should declare one or more classes in schema documentation.
     "turnId": "turn_...",
     "itemId": "item_requesting_worker_start",
     "agentSessionId": "as_...",
-    "userId": "user_...",
-    "organizationId": null,
-    "automationId": null,
+    "triggerActor": {
+      "kind": "user",
+      "id": "user_...",
+      "responsibleUserId": "user_..."
+    },
     "requestId": "req_..."
   }
 }
@@ -546,7 +550,9 @@ Each field should declare one or more classes in schema documentation.
 Rules:
 
 - `workspaceId`, `threadId`, `turnId`, and `agentSessionId` are required for worker turns.
-- `userId` or `automationId` is required so policy can evaluate responsible actor context.
+- `triggerActor` is required and uses the shared `ActorRef` contract so policy can evaluate the initiating actor and responsible user independently from Workspace storage ownership.
+- `responsibleUserId` equals the user id for a human trigger. Agent, automation, and integration triggers carry their own stable actor id plus the current responsible user when one exists; an explicit system trigger may use `null`.
+- `tenantId`, `organizationId`, physical Workspace owner id, and user-nested Workspace paths are not AEP scope fields.
 - `itemId` is optional but should link to the user or system item that caused the worker start when available.
 - `requestId` should be included for cross-boundary tracing.
 

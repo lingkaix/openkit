@@ -108,21 +108,17 @@ const DEFAULT_CODEX_NETWORK_ENDPOINTS: OpenShellNetworkEndpoint[] = [
 /**
  * Files and sandbox identity retained for one materialized OpenShell session.
  */
-interface OpenShellMaterializedSessionState {
+interface OpenShellSessionState {
   /** Package that authorized the sandbox. */
   environmentPackage: AgentEnvironmentPackage;
   /** Product-safe sandbox name. */
   sandboxName: string;
   /** Deterministic physical identity used by online and restart cleanup. */
   identity: WorkerGovernanceBackendSessionIdentity;
-  /** Runtime command executed only after the durable launch gate. */
-  launchCommand: string[];
+  /** Runtime command executed only after the durable launch gate. Null for restored sessions. */
+  launchCommand: string[] | null;
   /** Temporary directory containing generated package, policy, and downloaded transcript files. */
   sessionDirectory: string;
-  /** Host-local generated package path uploaded into the sandbox. */
-  packagePath: string;
-  /** Host-local OpenShell policy file path passed to sandbox creation. */
-  policyPath: string;
   /** Provider instance ids attached to the sandbox. */
   providerInstanceIds: string[];
 }
@@ -569,7 +565,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
   private readonly gatewayUrl: string | null;
   private readonly placement: 'local' | 'remote';
   private readonly workerControlGateway: OpenShellWorkerControlGateway | null;
-  private readonly materializedSessions = new Map<string, OpenShellMaterializedSessionState>();
+  private readonly materializedSessions = new Map<string, OpenShellSessionState>();
   private readonly materializingPackageSnapshotIds = new Set<string>();
 
   /**
@@ -871,8 +867,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
         environmentPackage,
         identity,
         launchCommand: openShellSandboxCommand(environmentPackage, workspaceBundles),
-        packagePath: sessionFiles.packagePath,
-        policyPath: sessionFiles.policyPath,
         providerInstanceIds,
         sandboxName,
         sessionDirectory: sessionFiles.sessionDirectory,
@@ -941,6 +935,48 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
   }
 
   /**
+   * Restores read-only access to one exact durable OpenShell session without external effects.
+   *
+   * @param environmentPackage Immutable package that owns the existing session.
+   * @param identity Exact durable physical identity recorded before launch.
+   * @throws Error when durable lineage or target authority disagrees.
+   */
+  public async restoreSession(
+    environmentPackage: AgentEnvironmentPackage,
+    identity: WorkerGovernanceBackendSessionIdentity
+  ): Promise<void> {
+    const plannedIdentity = this.planSession(environmentPackage);
+    if (!isDeepStrictEqual(identity, plannedIdentity)) {
+      throw new Error('OpenShell restored identity does not match its deployment-owned lineage.');
+    }
+
+    const existing = this.materializedSessions.get(environmentPackage.snapshotId);
+    if (existing) {
+      return;
+    }
+
+    const sessionDirectory = resolveWorkerBackendStagingDirectory(
+      this.dataRoot,
+      identity.stagingDirectoryRef
+    );
+    this.materializedSessions.set(environmentPackage.snapshotId, {
+      environmentPackage,
+      identity,
+      launchCommand: null,
+      providerInstanceIds: [
+        ...new Set([
+          ...environmentPackage.providers.attachments.map(
+            (attachment) => attachment.providerInstanceId
+          ),
+          ...(identity.transientProviderInstanceId ? [identity.transientProviderInstanceId] : []),
+        ]),
+      ],
+      sandboxName: identity.backendSessionId,
+      sessionDirectory,
+    });
+  }
+
+  /**
    * Emits an OpenShell launch evidence placeholder for the created sandbox.
    *
    * @param materialization Materialization record to launch.
@@ -950,8 +986,17 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
     materialization: WorkerGovernanceMaterializationRecord
   ): Promise<WorkerGovernanceEvidenceRecord> {
     const session = this.requireMaterializedSession(materialization.packageSnapshotId);
+    if (!session.launchCommand) {
+      throw new Error('OpenShell read-only restored session cannot launch work.');
+    }
     await this.cli.execSandbox({
-      command: session.launchCommand,
+      command: [
+        '/bin/sh',
+        '-c',
+        'setsid "$@" </dev/null >/dev/null 2>&1 &',
+        'openkit-detached-worker',
+        ...session.launchCommand,
+      ],
       gateway: session.identity.backendTarget.gatewayName,
       ...(session.identity.backendTarget.gatewayEndpoint
         ? { gatewayEndpoint: session.identity.backendTarget.gatewayEndpoint }
@@ -1165,6 +1210,9 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
     const revokedGrantIds = new Set(grantIds);
 
     for (const session of this.materializedSessions.values()) {
+      if (!session.launchCommand) {
+        continue;
+      }
       const providerIds = session.environmentPackage.providers.attachments
         .filter((attachment) =>
           attachment.vaultGrantIds.some((grantId) => revokedGrantIds.has(grantId))
@@ -1344,7 +1392,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
    * @returns Provider attachment evidence records.
    */
   private async collectProviderEvidence(
-    session: OpenShellMaterializedSessionState
+    session: OpenShellSessionState
   ): Promise<WorkerGovernanceEvidenceRecord[]> {
     const evidence: WorkerGovernanceEvidenceRecord[] = [];
 
@@ -1399,7 +1447,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
    * @returns Evidence record, or null when OpenShell exposes no refresh status.
    */
   private async collectProviderRefreshStatusEvidence(
-    session: OpenShellMaterializedSessionState,
+    session: OpenShellSessionState,
     providerInstanceId: string
   ): Promise<WorkerGovernanceEvidenceRecord | null> {
     try {
@@ -1430,10 +1478,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
    * @param session Materialized session state.
    * @param provider Provider instance id to detach.
    */
-  private async detachProvider(
-    session: OpenShellMaterializedSessionState,
-    provider: string
-  ): Promise<void> {
+  private async detachProvider(session: OpenShellSessionState, provider: string): Promise<void> {
     await this.detachProviderFromSandbox(session.sandboxName, provider);
     session.providerInstanceIds = session.providerInstanceIds.filter((id) => id !== provider);
   }
@@ -1474,7 +1519,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
    * @param packageSnapshotId Package snapshot id.
    * @returns Materialized session state.
    */
-  private requireMaterializedSession(packageSnapshotId: string): OpenShellMaterializedSessionState {
+  private requireMaterializedSession(packageSnapshotId: string): OpenShellSessionState {
     const session = this.materializedSessions.get(packageSnapshotId);
 
     if (!session) {
@@ -1490,7 +1535,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
    * @param session Materialized session state.
    * @returns Transcript JSONL payloads.
    */
-  private async downloadTranscript(session: OpenShellMaterializedSessionState): Promise<{
+  private async downloadTranscript(session: OpenShellSessionState): Promise<{
     artifactsJsonl: string;
     eventsJsonl: string;
     itemsJsonl: string;
@@ -1521,7 +1566,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
    * @returns Downloaded text or empty string.
    */
   private async downloadOptionalText(
-    session: OpenShellMaterializedSessionState,
+    session: OpenShellSessionState,
     sandboxPath: string,
     localName: string
   ): Promise<string> {
@@ -1537,8 +1582,11 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
       });
 
       return await readFile(destinationPath, 'utf8');
-    } catch {
-      return '';
+    } catch (error) {
+      if (isOpenShellSandboxSourceMissing(error, sandboxPath)) {
+        return '';
+      }
+      throw error;
     }
   }
 
@@ -1549,7 +1597,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
    * @returns Backend-local paths plus product-safe missing-file diagnostics.
    */
   private async downloadRuntimeProvenance(
-    session: OpenShellMaterializedSessionState
+    session: OpenShellSessionState
   ): Promise<WorkerRuntimeProvenanceCollection> {
     const declaration = session.environmentPackage.control.transcript?.runtimeProvenance;
     if (!declaration) {
@@ -1672,20 +1720,24 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
     diagnostics: WorkerRuntimeProvenanceCollection['diagnostics'];
     localPath: string;
     missingPaths: string[];
-    session: OpenShellMaterializedSessionState;
+    session: OpenShellSessionState;
     workerPath: string;
   }): Promise<string | null> {
     await mkdir(dirname(input.localPath), { recursive: true });
+    const sandboxPath = toOpenShellSandboxPath(input.workerPath);
     try {
       await this.cli.downloadFile({
         destinationPath: input.localPath,
         gateway: this.gatewayName,
         ...(this.gatewayUrl ? { gatewayEndpoint: this.gatewayUrl } : {}),
         name: input.session.sandboxName,
-        sandboxPath: toOpenShellSandboxPath(input.workerPath),
+        sandboxPath,
       });
       return input.localPath;
-    } catch {
+    } catch (error) {
+      if (!isOpenShellSandboxSourceMissing(error, sandboxPath)) {
+        throw error;
+      }
       input.missingPaths.push(input.workerPath);
       input.diagnostics.push({
         code: 'runtime_provenance_file_missing',
@@ -1704,7 +1756,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
    * @returns Product-safe patch payload, or null when no session patch is available.
    */
   private async downloadWorkspacePatchPayload(
-    session: OpenShellMaterializedSessionState,
+    session: OpenShellSessionState,
     changeSet: WorkspaceChangeSet
   ): Promise<WorkspaceSyncReviewPatchPayload | null> {
     if (!changeSet.patch?.ref.startsWith('worker-session://')) {
@@ -2484,6 +2536,25 @@ function isOpenShellDetachNotFound(error: unknown): boolean {
   return (
     error instanceof Error &&
     /\b(sandbox|provider)\b.*\b(not found|does not exist)\b/i.test(error.message)
+  );
+}
+
+/**
+ * Checks whether OpenShell reports that one exact sandbox source path is absent.
+ *
+ * @param error Download failure.
+ * @param sandboxPath Exact sandbox source path requested by NanoCore.
+ * @returns True only for the source-path-not-found response.
+ */
+function isOpenShellSandboxSourceMissing(error: unknown, sandboxPath: string): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return (
+    error.message.includes(`sandbox source path '${sandboxPath}' does not exist`) ||
+    (error.message.includes(`realpath: ${sandboxPath}: No such file or directory`) &&
+      error.message.includes('failed to resolve sandbox source path') &&
+      error.message.includes('ssh probe exited with status'))
   );
 }
 

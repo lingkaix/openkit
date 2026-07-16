@@ -4150,6 +4150,23 @@ describe('app api schemas', () => {
     expect(
       SubmitThreadGoalSteeringResponseSchema.parse({
         state: 'queued',
+        pendingTurnId: 'turn_pending_steer',
+        requestId: 'req_steer',
+        contentItemId: 'it_goal_steer',
+        goalId: 'goal_demo',
+        activeTurnId: 'turn_goal_active',
+      })
+    ).toEqual({
+      state: 'queued',
+      pendingTurnId: 'turn_pending_steer',
+      requestId: 'req_steer',
+      contentItemId: 'it_goal_steer',
+      goalId: 'goal_demo',
+      activeTurnId: 'turn_goal_active',
+    });
+    expect(
+      SubmitThreadGoalSteeringResponseSchema.safeParse({
+        state: 'blocked',
         goal: {
           goalId: 'goal_demo',
           workspaceId: 'ws_demo',
@@ -4181,8 +4198,8 @@ describe('app api schemas', () => {
           },
           updatedAt: timestamp,
         },
-      }).state
-    ).toBe('queued');
+      }).success
+    ).toBe(false);
     const plan = {
       schemaVersion: 1,
       goalSummary: 'Make v0.0.6 ready to publish.',

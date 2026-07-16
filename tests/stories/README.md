@@ -53,7 +53,15 @@ The real OpenShell/Codex Task Mode story has a manual runner:
 pnpm -w test:stories:real-task-mode
 ```
 
-The command skips by default and requires explicit real worker plus provider quota opt-in before it calls an existing NanoCore deployment.
+The command skips by default and requires explicit real worker plus provider quota opt-in, an existing NanoCore URL and local data root, an exact A1-built worker image reference, a clean disposable repository, and a writable evidence directory. It creates a dedicated acceptance workspace and exercises the public App API through Core Client.
+
+The A1 NanoCore restart reconnection story has a manual runner:
+
+```bash
+pnpm -w test:stories:a1-restart
+```
+
+The command skips by default and requires `OPENKIT_L6_A1_RESTART=1`, `OPENKIT_L6_ALLOW_PROVIDER_QUOTA=1`, a fresh `OPENKIT_L6_NANOCORE_DATA_ROOT`, and a disposable repository at `OPENKIT_L6_TASK_REPO_ROOT`. The runner directly kills and restarts only local NanoCore, waits for completion through the public API, and compares the public backend handle before and after restart. The externally managed stock OpenShell Gateway stays available throughout the run without a fork or patch.
 
 The real pi-ai provider gateway story has a manual runner:
 
@@ -87,6 +95,7 @@ pnpm -w test:stories:mcp
 - `chat-mode-mcp-smoke.story.md`: deterministic MCP-backed Chat Mode acceptance flow covering knowledge-backed answers, bounded clarification, read-only repository file-list and file-read answers, Action Center projection, Task Mode handoff, and Goal Mode handoff.
 - `goal-mode-real-codex-release.story.md`: opt-in MCP-backed real Codex Goal kernel validation covering server-owned OAuth, strict provider binding, one bounded OpenShell worker task, workspace and Goal reviews, AEP boundaries, capability usage, audit and runtime evidence, exact repository output, and redaction.
 - `goal-mode-mcp-smoke.story.md`: deterministic MCP-backed Goal Mode acceptance flow covering status, diagnostics, repository linking, plan approval, one bounded step, Action Center, evidence, and artifact reads.
+- `nanocore-restart-reconnection.story.md`: opt-in Core Client acceptance story for one real remote OpenShell/Codex Task that reconnects, completes, and cleans its original public backend handle after a local NanoCore restart.
 - `openkit-local-self-check.story.md`: deterministic local Web/NanoCore self-check flow backed by `tests/story-runner/openkit-local-self-check.spec.ts`.
 - `pi-ai-gateway-real-provider.story.md`: opt-in real-provider validation for NanoCore public gateway routing through pi-ai, backed by `tests/story-runner/pi-ai-real-provider-runner.mjs`.
 - `recovery-mcp-smoke.story.md`: deterministic MCP-backed recovery acceptance flow covering interrupted worker reads, pending input edit/follow-up/cancel, and checkpoint retry.

@@ -104,7 +104,7 @@ extensions
 
 `recordType` identifies the record family, such as workspace, thread, turn, item-log-entry, artifact, knowledge-page, source, context-package, aep-snapshot, evidence-bundle, or runtime-evidence.
 
-`ownerScope` identifies whether the record is server-owned, user-owned, workspace-owned, or future organization-owned.
+`ownerScope` identifies whether the record is server-owned, user-owned, or workspace-owned. Organization and tenant scopes are not reserved; adding a new ownership scope requires a concrete accepted design and a real source-of-truth owner.
 
 `lineage` carries stable IDs needed to relate the record to workspace, thread, turn, item, artifact, knowledge, agent, agent session, AEP snapshot, capability call, policy decision, vault grant, request, and evidence records when those IDs exist.
 

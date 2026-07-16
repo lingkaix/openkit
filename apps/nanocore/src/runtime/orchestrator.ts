@@ -335,6 +335,7 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
     input.configVersion ?? null,
     input.turnId ? { turnId: input.turnId } : {}
   );
+  input.store.updateTurn(turn.id, { agentId: selectedAgentReadModel.id });
   const agentSetupRecordId =
     agentSetupResult.setup && input.agentSetupWorkspaceDb
       ? recordResolvedAgentSetup(input.agentSetupWorkspaceDb, {

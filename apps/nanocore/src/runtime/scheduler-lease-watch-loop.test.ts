@@ -253,4 +253,40 @@ describe('scheduler lease watch loop', () => {
       coreDb.sqlite.close();
     }
   });
+
+  it('leaves an awaiting reconnect lease live until its recovery deadline', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      dispatchLease(coreDb, 'awaiting_reconnect');
+      acceptSchedulerLeaseHeartbeat(coreDb, {
+        heartbeatTimeoutMs: 30_000,
+        leaseId: 'lease_awaiting_reconnect',
+        now: () => '2026-07-05T00:00:10.000Z',
+        workerProcessKeyHash: 'a'.repeat(43),
+        workerSequence: 0,
+      });
+      coreDb.sqlite
+        .prepare(
+          `UPDATE scheduler_session_leases
+           SET recovery_state = 'awaiting-reconnect',
+               recovery_deadline = '2026-07-05T00:02:00.000Z'
+           WHERE lease_id = ?`
+        )
+        .run('lease_awaiting_reconnect');
+
+      const result = runSchedulerLeaseWatchLoop(coreDb, {
+        now: () => '2026-07-05T00:01:00.000Z',
+      });
+
+      expect(result.stale).toEqual([]);
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT status FROM scheduler_session_leases WHERE lease_id = ?')
+          .get('lease_awaiting_reconnect')
+      ).toEqual({ status: 'active' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
 });

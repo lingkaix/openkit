@@ -7,7 +7,7 @@ Implementation: Partial
 
 This spec consolidates the current NanoCore identity, auth, runtime config, server config, and data-layout guidance.
 
-OpenKit treats NanoCore as the kernel source of truth. Local mode remains a single-user development path. Server mode uses Better Auth-backed session behavior for protected product APIs and is the foundation for future remote and multi-user deployments.
+OpenKit treats NanoCore as the kernel source of truth. Local mode remains a single-user development path. Server mode uses Better Auth-backed session behavior for protected product APIs and is the authenticated path for the accepted single-deployment multi-user Workspace model.
 
 Historical identity and config specs have been moved under `docs/specs/superseded/nanocore-config-identity/` and remain supporting detail.
 
@@ -26,6 +26,7 @@ Historical identity and config specs have been moved under `docs/specs/supersede
 - Authorization policy, permission decisions, roles, or policy enforcement.
 - Vault secret storage, secret injection, or credential material lifecycle.
 - Complete physical storage layout, database schema, backup policy, or migration plan.
+- Workspace membership, invitation, role, owner-transfer, or user-lifecycle behavior.
 - App API route design, Web UI editing UX, or Agent Skill Interface operation design.
 - Agent setup, AEP resolution, worker scheduling, runtime placement, or workspace synchronization.
 
@@ -59,6 +60,8 @@ Server mode is the path for authenticated product operation. It uses Better Auth
 
 Server-mode authentication establishes the request actor. It does not by itself prove workspace membership, role authority, policy grants, or permission approval. Those checks belong to identity membership records, permission policy, and the policy enforcement mapping.
 
+One server-mode deployment is one personal or small-team trust domain, not a legal tenant host. Better Auth owns authentication and session mechanics; NanoCore owns canonical users, Workspace relationships, authorization facts, and product policy.
+
 Runtime config is managed through NanoCore-owned routes and schemas. The Agent Skill Interface may expose product-level CLI operations for listing, validating, updating, and reloading runtime config, but it must not become a raw file editor or secret browser.
 
 The authored schema accepts only fields with a current runtime owner. Startup networking owns `server.bind`, `server.publicBaseUrl`, and `server.cors.origins`; Better Auth owns `auth.signup.enabled`; central defaults own the Core and Gateway provider/model selections; Gateway policy owns its enabled flag and provider allowlist. Environment variables may explicitly override deployment values. Unsupported proxy trust, configurable route/auth markers, duplicate Gateway defaults, unused workspace/agent defaults, data-root metadata, diagnostic toggles, the old duplicate feature-flag block, and a consumer-free server extension bag are rejected rather than silently accepted.
@@ -67,12 +70,13 @@ The bundled CLI server-mode contract uses the `OPENKIT_NANOCORE_TOKEN` explicit 
 
 ## Current Implementation Projection
 
-The NanoCore config and identity substrate satisfies the accepted V1 contract, while the accepted bundled CLI projection remains unimplemented:
+The NanoCore config and authentication substrate satisfies its accepted V1 contract, while the owner-independent shared-Workspace identity target and the accepted bundled CLI projection remain incomplete:
 
 - Better Auth is the current server-mode auth implementation.
 - The Better Auth table layout may use provider-owned table names such as `session`. Core identity doctrine still names the conceptual record `AuthSession`; implementation table names must not redefine the product concept.
 - Local mode resolves an implicit local user through `LOCAL_USER_ID` when no authenticated server-mode subject exists.
 - `apps/nanocore/src/auth/middleware.ts` attaches actor context and enforces server-mode authentication for protected APIs.
+- Core currently records Workspace registry owners and active or removed membership edges, but it does not yet implement fixed owner/editor/viewer access, invitations, transfer, disable-safe lifecycle, or the complete centralized Workspace access resolver.
 - Server-mode bearer-token authentication, first-boot bootstrap, scoped token administration, and the reusable credential-storage substrate are implemented by `docs/specs/20260704-remote_auth_credential_bootstrap.md`; the accepted bundled CLI projection remains pending.
 - The removal-only `mcp/` package currently reads `OPENKIT_NANOCORE_TOKEN` or the desktop credential store and ignores the removed raw `OPENKIT_NANOCORE_COOKIE` and `OPENKIT_NANOCORE_AUTHORIZATION` passthrough variables; this is parity evidence, not a continuing channel contract.
 - `apps/nanocore/src/config/bind-host.ts` resolves host and port from explicit environment overrides, then the startup server config, then mode-safe defaults.
@@ -85,13 +89,14 @@ The NanoCore config and identity substrate satisfies the accepted V1 contract, w
 - `apps/nanocore/src/config/runtime-config-files.ts` owns safe runtime config file reads, writes, validation, schema lookup, optimistic revision checks, and path containment.
 - Provider and agent config loaders reject unknown or unsafe fields, inline raw secret shapes, unsafe workspace paths, and unsupported runtime setup shapes.
 
-The target data-root ownership layout is defined by `docs/specs/20260703-storage_layout_record_ownership.md`. That physical storage migration remains owned by the storage-layout spec, not by this config and identity contract.
+The target data-root ownership layout is defined by `docs/specs/20260703-storage_layout_record_ownership.md`, and the complete shared-Workspace identity and authorization lifecycle is defined by `docs/specs/20260715-multi_user_workspace_system.md`. Their storage, schema, policy, and migration work remains outside this config and identity contract.
 
 ## Deferred / Future Work
 
-The following items remain outside this V1 contract:
+The following items remain outside this config and identity contract:
 
-- richer workspace roles and shared-tenancy permission policy beyond active membership
+- the accepted owner/editor/viewer Workspace membership implementation
+- enterprise organizations, legal tenant isolation, custom roles, groups, and delegated role administration
 - deeper audit labels for non-auth policy and workflow records
 - secret-slot and vault-backed config editing
 - data-root migration and backup policy
@@ -102,6 +107,7 @@ The following items remain outside this V1 contract:
 
 - Local mode is for single-user development and must not be treated as the production security model.
 - Server mode is the authenticated product path.
+- One server-mode deployment is one trust domain; multi-user Workspace sharing does not imply multi-tenancy.
 - Server-mode authentication is not workspace authorization; membership facts and permission decisions remain separate required checks.
 - Better Auth is an implementation provider for auth sessions; it does not rename the OpenKit conceptual `AuthSession`.
 - Runtime config editing must go through NanoCore-owned routes and schemas, not raw file browsing through the bundled CLI.
@@ -120,4 +126,5 @@ They remain useful for implementation background, but this spec and the core ide
 - [Storage Model](../core/storage.md)
 - [Permissions Model](../core/permissions.md)
 - [Vault Model](../core/vault.md)
+- [Single-Deployment Multi-User Workspace System](./20260715-multi_user_workspace_system.md)
 - [OpenKit Agent Skill Interface](./20260713-openkit_agent_skill_interface.md)

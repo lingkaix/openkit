@@ -115,7 +115,7 @@ The current required core aspect set contains 20 documents. Future merge or reti
 ### Resources And Agent Supply
 
 - `storage.md` — file-system-first storage layout, SQLite roles, indexes, and workspace data partitioning.
-- `identity.md` — users, workspace membership, auth sessions, tokens, invitations, automations, and integrations.
+- `identity.md` — users, workspace membership, auth sessions, tokens, invitations, automations, integrations, and stable actor references.
 - `vault.md` — secret vault references, grants, injection boundaries, and secret handling constraints.
 - `knowledge.md` — workspace knowledge, source references, proposals, review, and context injection.
 - `agent-supply.md` — agent catalogs, setup contracts, profiles, readiness, capability summaries, and supply model.
@@ -130,7 +130,7 @@ The current required core aspect set contains 20 documents. Future merge or reti
 
 ### Evolution And Compliance
 
-- `contract-evolution.md` — contract evolution, compatibility policy, conformance levels, and fixture expectations.
+- `contract-evolution.md` — stability classes, stabilization mechanisms, breaking-change discipline, conformance dimensions, and fixture expectations.
 
 ## Canonical Term Index
 
@@ -141,24 +141,24 @@ This index routes readers to the owner of each canonical term family. The owner 
 | Human final authority, execution accountability, durable product truth, governed projection, source-traceable learning, explicit trust boundary | `foundation.md` |
 | CoreServer, Workspace, Thread, Turn, Item, Artifact, ApprovalRequest, Channel, TriggerSource | `core-concepts.md` |
 | Product-facing task, chat mode, quick reply, task mode, goal mode projection, plan mode projection, Action Center projection, human attention projection, steering, review, redo, refinement, handoff projection, context compact projection, deliverable projection | `work-model.md` |
-| App, Core, Agent, Agent Adapter, Agent Runtime, workspace service, generative kernel, internal Core agent, Core Assistant, Workflow Coordinator, Task Evaluator | `architecture.md` |
-| Agent, AgentProfile, Runtime, AgentSession, turn assignment, runtime lifecycle | `runtime-model.md` |
+| App, Core, Agent layer boundary, Agent Adapter, workspace service, generative kernel, Internal Core Role, Core Assistant, Workflow Coordinator, Task Evaluator | `architecture.md` |
+| Agent, Runtime, turn assignment, runtime lifecycle | `runtime-model.md` |
 | Protocol records, commands, event envelope, item delta kinds, error shape, lifecycle enums | `protocol.md` |
 | Client/Core communication, Core/agent communication, transport projections, communication planes | `communication.md` |
 | Storage, file-system-first source of truth, SQLite companion store, item log persistence | `storage.md` |
-| User, WorkspaceMember, AuthSession, Token, Invitation, AutomationIdentity, IntegrationIdentity | `identity.md` |
+| User, WorkspaceMember, AuthSession, Token, Invitation, AutomationIdentity, IntegrationIdentity, ActorRef | `identity.md` |
 | SecretVault, VaultReference, VaultGrant, VaultInjection, VaultAudit | `vault.md` |
 | Knowledge Store, Knowledge Page, Knowledge Source, Knowledge Proposal, Knowledge Review, Knowledge Manager, Notebook, Agent-Near Context, Context Package | `knowledge.md` |
-| AgentCatalog, AgentCatalogEntry, AgentSetupContract, catalog readiness, setup materialization | `agent-supply.md` |
+| AgentProfile, AgentCatalog, AgentCatalogEntry, AgentSetupContract, catalog readiness, setup materialization | `agent-supply.md` |
 | Permission, Subject, Action, Resource, Context, PermissionDecision, enforcement point | `permissions.md` |
 | Sandbox, sandbox scope, isolation area, sandbox summary, backend containment | `sandbox.md` |
 | AgentCapability, CapabilityCall, gateway projection, gateway routing, transformer pipeline, capability traffic, rate limits | `agent-capability.md` |
 | AuditEvent, audit projection, audit producer boundary | `audit.md` |
 | UsageRecord, usage unit, attribution, cost projection | `agent-capability.md` |
 | System-wide measurement, non-gateway runtime, storage and network consumption, aggregation and cost direction | `metering.md` |
-| Agent session continuity, snapshot, resume, fork, clone, rollback, crash recovery | `agent-session.md` |
+| AgentSession, continuity, snapshot, resume, fork, clone, rollback, crash recovery | `agent-session.md` |
 | Agent Workflow, Workflow Mechanism, Workflow Mode, Workflow Recipe, Default Workflow Setup, Goal Mode, Intent, Objective, Phase, Plan, Planning Phase, Plan Approval, Bounded Step, Workflow Loop, Gate, Human Attention Gate, Review Gate, Decision, Checkpoint, Context Compaction, Stop Condition, Workflow Evidence, Workflow Graph, dependency, attempt, branch, join, lineage | `agent-workflow.md` |
-| Contract evolution, strict parsing, compatibility change rules, conformance levels, fixture expectations | `contract-evolution.md` |
+| Stability classes, stabilization mechanisms, contract evolution, strict parsing, conformance dimensions, fixture expectations | `contract-evolution.md` |
 
 ## Reading Order
 

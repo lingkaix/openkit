@@ -19,7 +19,6 @@ import {
   StartThreadGoalRequestSchema,
   StartThreadGoalResponseSchema,
   SubmitThreadGoalSteeringRequestSchema,
-  SubmitThreadGoalSteeringResponseSchema,
   type TaskDelegationDecision,
   type ThreadGoalCurrentTask,
   type ThreadGoalSummary,
@@ -45,7 +44,6 @@ import { recordGoalWorkerLaunchDecision } from './policy/permission-decisions.js
 import { approveGoalPlan, reviseGoalPlan } from './runtime/goal-plan-approval.js';
 import { createGoalPlan } from './runtime/goal-planning.js';
 import { createGoalReviewRecord } from './runtime/goal-review-records.js';
-import { getGoalSteeringReadModel, recordActiveGoalSteering } from './runtime/goal-steering.js';
 import {
   createGoalRecord,
   type GoalRecord,
@@ -323,7 +321,11 @@ function buildThreadGoalSummary(
     pendingHumanAttention: projectGoalHumanAttention(goal, threadItems),
     terminalState: projectGoalTerminalState(goal),
     terminalSummary: projectGoalTerminalSummary(goal, tasks, verifications),
-    steering: getGoalSteeringReadModel(workspaceDb, { workspaceId, threadId }),
+    steering: {
+      appliedSteeringCount: 0,
+      pendingFollowUpCount: 0,
+      pendingSteeringCount: 0,
+    },
     updatedAt: goal.updatedAt,
   };
 }
@@ -866,65 +868,11 @@ export function registerGoalRoutes({
       store.getWorkspace(workspaceId);
       store.getThread(workspaceId, threadId);
 
-      if (!coreDb) {
-        return asApiError(
-          'Goal storage is unavailable for this NanoCore instance.',
-          'goal_storage_unavailable',
-          503
-        );
-      }
-
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-      try {
-        const goal = requireLatestActiveGoal(workspaceDb, workspaceId, threadId);
-        const turn = store.createTurn(workspaceId, threadId, parsed.data.message);
-        const timestamp = turn.startedAt ?? new Date().toISOString();
-        const steeringItem = store.createItem({
-          id: `it_goal_steering_${goal.goalId}_${parsed.data.requestId}`,
-          workspaceId,
-          threadId,
-          turnId: turn.id,
-          type: 'user-message',
-          status: 'completed',
-          text: parsed.data.message,
-          createdAt: timestamp,
-          completedAt: timestamp,
-        });
-
-        store.updateTurn(turn.id, {
-          status: 'completed',
-          completedAt: timestamp,
-          durationMs: 0,
-        });
-
-        const recorded = recordActiveGoalSteering(workspaceDb, {
-          workspaceId,
-          threadId,
-          goalId: goal.goalId,
-          requestId: parsed.data.requestId,
-          contentItemId: steeringItem.id,
-          now: () => timestamp,
-        });
-        const summary = buildThreadGoalSummary(
-          workspaceDb,
-          workspaceId,
-          threadId,
-          store.listThreadItems(workspaceId, threadId)
-        );
-
-        if (!summary) {
-          return asApiError('Goal summary is unavailable.', 'goal_summary_unavailable', 500);
-        }
-
-        return c.json(
-          SubmitThreadGoalSteeringResponseSchema.parse({
-            state: recorded.state === 'pending_steering' ? 'queued' : 'blocked',
-            goal: summary,
-          })
-        );
-      } finally {
-        workspaceDb.sqlite.close();
-      }
+      return asApiError(
+        'Goal steering is unavailable until the real worker path can persist delivery proof.',
+        'goal_steering_delivery_unavailable',
+        503
+      );
     } catch (error) {
       return asApiError((error as Error).message, 'goal_steering_failed', 400);
     }

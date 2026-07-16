@@ -106,25 +106,31 @@ export class SimulatedTurnExecutor implements TurnExecutor {
     context: TurnStartRuntimeContext = { requestId: null, workspaceRoots: [] }
   ): Promise<void> {
     const turn = store.getTurnById(turnId);
-    const workspace = store.getWorkspace(turn.workspaceId);
+    if (!turn.agentId) {
+      throw new Error(`Simulator turn has no assigned agent: ${turn.id}`);
+    }
+    const selectedAgent = store.getAgent(turn.workspaceId, turn.agentId);
     const timestamp = turn.startedAt ?? new Date().toISOString();
-    const agentSessionId = simulatorSessionId(turn.threadId);
-    const existingAgentSession = store
-      .listThreadAgentSessions(turn.workspaceId, turn.threadId)
-      .find((session) => session.id === agentSessionId);
-    const agentSession =
-      existingAgentSession ??
-      store.createAgentSession({
-        id: agentSessionId,
-        agentId: workspace.defaults?.defaultAgentId ?? 'agent_codex_host',
-        workspaceId: turn.workspaceId,
-        threadId: turn.threadId,
-        status: 'created',
-        message: null,
-        configVersion: turn.configVersion,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      });
+    const agentSession = store.createAgentSession({
+      id: `session_sim_turn_${turn.id}`,
+      agentId: selectedAgent.id,
+      workspaceId: turn.workspaceId,
+      threadId: turn.threadId,
+      status: 'created',
+      message: null,
+      configVersion: turn.configVersion,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const selectedProfile =
+      selectedAgent.profiles.find((profile) => profile.id === selectedAgent.defaultProfileId) ??
+      selectedAgent.profiles[0] ??
+      null;
+
+    store.updateTurn(turnId, {
+      agentProfileId: selectedProfile?.id ?? null,
+      agentSessionId: agentSession.id,
+    });
     const state: SimulatedTurnState = {
       workspaceId: turn.workspaceId,
       threadId: turn.threadId,
@@ -151,11 +157,15 @@ export class SimulatedTurnExecutor implements TurnExecutor {
     turnId: string,
     context: TurnCommandRuntimeContext = { requestId: null }
   ): Promise<void> {
+    const turnRecord = store.getTurnById(turnId);
+    if (!turnRecord.agentSessionId) {
+      throw new Error(`Simulator turn has no assigned agent session: ${turnId}`);
+    }
     const state = this.pendingByTurnId.get(turnId) ?? {
-      workspaceId: store.getTurnById(turnId).workspaceId,
-      threadId: store.getTurnById(turnId).threadId,
+      workspaceId: turnRecord.workspaceId,
+      threadId: turnRecord.threadId,
       turnId,
-      agentSessionId: simulatorSessionId(store.getTurnById(turnId).threadId),
+      agentSessionId: turnRecord.agentSessionId,
       approvalId: `ap_${turnId}`,
       requestId: context.requestId,
       userInputRequestId: `ui_${turnId}`,
@@ -291,13 +301,21 @@ export class SimulatedTurnExecutor implements TurnExecutor {
     workspaceId: string,
     threadId: string
   ): AgentSessionReadModel {
-    const storedSession = store
-      .listThreadAgentSessions(workspaceId, threadId)
-      .find((session) => session.id === simulatorSessionId(threadId));
+    const sessions = store.listThreadAgentSessions(workspaceId, threadId);
+    const activeSessionId = store
+      .listThreadTurns(workspaceId, threadId)
+      .findLast(
+        (turn) =>
+          !['completed', 'failed', 'interrupted', 'cancelled'].includes(turn.status) &&
+          turn.agentSessionId?.startsWith('session_sim_turn_')
+      )?.agentSessionId;
+    const storedSession =
+      sessions.find((session) => session.id === activeSessionId) ??
+      sessions.findLast((session) => session.id.startsWith('session_sim_turn_'));
 
     return {
-      id: simulatorSessionId(threadId),
-      status: simulatorSessionStatus(store, workspaceId, threadId),
+      id: storedSession?.id ?? `session_sim_${threadId}`,
+      status: storedSession?.status ?? 'ready',
       message: null,
       configVersion: storedSession?.configVersion ?? null,
       workspaceRoots: storedSession?.workspaceRoots ?? [],
@@ -605,19 +623,17 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       version: 2,
       updatedAt: timestamp,
     });
-    const artifactItem = store.createItem({
-      id: `it_artifact_${state.turnId}`,
-      workspaceId: state.workspaceId,
-      threadId: state.threadId,
-      turnId: state.turnId,
-      type: 'artifact-reference',
-      status: 'completed',
-      artifactId: updatedArtifact.id,
-      title: updatedArtifact.title,
-      summary: updatedArtifact.summary,
-      createdAt: timestamp,
-      completedAt: timestamp,
-    });
+    const artifactItem = store
+      .listThreadItems(state.workspaceId, state.threadId)
+      .find(
+        (item) =>
+          item.type === 'artifact-reference' &&
+          item.artifactId === updatedArtifact.id &&
+          item.artifactVersion === updatedArtifact.version
+      );
+    if (!artifactItem) {
+      throw new Error(`Artifact reference was not persisted: ${updatedArtifact.id}`);
+    }
     const completedAt = new Date().toISOString();
     const agentSession = store.updateAgentSession(state.agentSessionId, {
       status: 'idle',
@@ -799,28 +815,4 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       data: { type: 'agent-session-updated', agentSession },
     });
   }
-}
-
-/**
- * Builds the stable simulator session id for a thread.
- */
-function simulatorSessionId(threadId: string): string {
-  return `session_sim_${threadId}`;
-}
-
-/**
- * Maps simulator agent-session records into the visible AgentSessionStatus lifecycle.
- */
-function simulatorSessionStatus(
-  store: FsStore,
-  workspaceId: string,
-  threadId: string
-): AgentSessionReadModel['status'] {
-  const latestSession = store.listThreadAgentSessions(workspaceId, threadId).at(-1);
-
-  if (!latestSession) {
-    return 'ready';
-  }
-
-  return latestSession.status;
 }

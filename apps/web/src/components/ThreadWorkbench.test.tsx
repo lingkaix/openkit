@@ -20,11 +20,10 @@ const composerProps = {
   goal: null,
   goalPlan: null,
   goalPlanFeedback: null,
-  goalSteeringFeedback: null,
+  goalExecutionFeedback: null,
   isApprovingGoalPlan: false,
   isCreatingGoalPlan: false,
   isRunningGoalStep: false,
-  isSubmittingGoalSteering: false,
   isStartingGoal: false,
   models: [{ id: 'model_codex', name: 'Codex', enabled: true }],
   quickChatDisabledMessage: 'Quick chat is not configured.',
@@ -40,7 +39,6 @@ const composerProps = {
   onReviseGoalPlan: () => undefined,
   onRunGoalStep: async () => undefined,
   onStartGoal: async () => undefined,
-  onSubmitGoalSteering: async () => undefined,
   onSubmitQuickChat: async () => undefined,
 };
 const workStatusProps = {
@@ -552,9 +550,7 @@ describe('ThreadWorkbench', () => {
     expect(goalMode).toHaveTextContent(text);
   });
 
-  it('submits queued Goal Mode steering and renders queued and applied state', async () => {
-    const submittedMessages: string[] = [];
-
+  it('does not expose Goal steering before worker delivery proof exists', () => {
     render(() => (
       <ThreadWorkbench
         activeTurnStatus="idle"
@@ -578,9 +574,6 @@ describe('ThreadWorkbench', () => {
         onOpenArtifact={() => undefined}
         onOpenItemLog={() => undefined}
         onRespondApproval={async () => undefined}
-        onSubmitGoalSteering={async (message) => {
-          submittedMessages.push(message);
-        }}
         onSubmitUserInput={async () => undefined}
         onSubmitTurn={async () => undefined}
       />
@@ -588,58 +581,10 @@ describe('ThreadWorkbench', () => {
 
     const goalMode = screen.getByRole('region', { name: /goal mode/i });
 
-    expect(goalMode).toHaveTextContent(/queued steering: 1/i);
-    expect(goalMode).toHaveTextContent(/applied steering: 2/i);
-
-    fireEvent.input(within(goalMode).getByLabelText(/steering input/i), {
-      target: { value: 'Prioritize release notes.' },
-    });
-    fireEvent.click(within(goalMode).getByRole('button', { name: /submit steering/i }));
-
-    await waitFor(() => {
-      expect(submittedMessages).toEqual(['Prioritize release notes.']);
-    });
-  });
-
-  it('shows blocked Goal Mode steering while a human gate is pending', () => {
-    render(() => (
-      <ThreadWorkbench
-        activeTurnStatus="idle"
-        canInterrupt={false}
-        canStartTurn={true}
-        {...composerProps}
-        {...workStatusProps}
-        goal={goalFixture('awaiting_user', {
-          pendingHumanAttention: {
-            required: true,
-            reason: 'Goal is awaiting user input.',
-          },
-          steering: {
-            pendingSteeringCount: 0,
-            pendingFollowUpCount: 1,
-            appliedSteeringCount: 0,
-          },
-        })}
-        goalSteeringFeedback="Input is blocked by a human gate and will be handled as follow-up."
-        isAnsweringUserInput={false}
-        isInterrupting={false}
-        isRespondingToApproval={false}
-        isStartingTurn={false}
-        items={[]}
-        onInterrupt={async () => undefined}
-        onOpenArtifact={() => undefined}
-        onOpenItemLog={() => undefined}
-        onRespondApproval={async () => undefined}
-        onSubmitUserInput={async () => undefined}
-        onSubmitTurn={async () => undefined}
-      />
-    ));
-
-    const goalMode = screen.getByRole('region', { name: /goal mode/i });
-
-    expect(goalMode).toHaveTextContent(/blocked input: 1/i);
-    expect(goalMode).toHaveTextContent(/goal is awaiting user input/i);
-    expect(goalMode).toHaveTextContent(/blocked by a human gate/i);
+    expect(within(goalMode).queryByLabelText(/steering input/i)).not.toBeInTheDocument();
+    expect(
+      within(goalMode).queryByRole('button', { name: /submit steering/i })
+    ).not.toBeInTheDocument();
   });
 
   it('renders completed Goal Mode terminal evidence and artifact links', () => {
@@ -905,7 +850,7 @@ describe('ThreadWorkbench', () => {
         onOpenItemLog={() => undefined}
         onRejectGoalPlan={() => actions.push('reject')}
         onRespondApproval={async () => undefined}
-        onReviseGoalPlan={() => actions.push('revise')}
+        onReviseGoalPlan={(revision?: string) => actions.push(`revise:${revision}`)}
         onSubmitUserInput={async () => undefined}
         onSubmitTurn={async () => undefined}
       />
@@ -917,12 +862,23 @@ describe('ThreadWorkbench', () => {
     expect(planReview).toHaveTextContent(/verify release/i);
     expect(planReview).toHaveTextContent(/which release artifact should be published first/i);
 
+    const revision = within(planReview).getByRole('textbox', {
+      name: /requested plan changes/i,
+    });
+    const requestChanges = within(planReview).getByRole('button', {
+      name: /request changes/i,
+    });
+
+    expect(requestChanges).toBeDisabled();
+    fireEvent.input(revision, { target: { value: '  Reduce the release scope.  ' } });
+    expect(requestChanges).toBeEnabled();
+
     fireEvent.click(within(planReview).getByRole('button', { name: /approve plan/i }));
     fireEvent.click(within(planReview).getByRole('button', { name: /reject plan/i }));
-    fireEvent.click(within(planReview).getByRole('button', { name: /request changes/i }));
+    fireEvent.click(requestChanges);
 
     await waitFor(() => {
-      expect(actions).toEqual(['approve', 'reject', 'revise']);
+      expect(actions).toEqual(['approve', 'reject', 'revise:Reduce the release scope.']);
     });
   });
 

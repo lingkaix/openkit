@@ -439,36 +439,20 @@ function postRawWorkerResponses(
 }
 
 describe('worker inference routes', () => {
-  it('dispatches Responses through the AEP provider and strips caller authority', async () => {
+  it('dispatches canonical Responses through the AEP provider', async () => {
     const fixture = createWorkerInferenceRouteFixture();
-    const scope = fixture.environmentPackage.scope;
     const response = await postWorkerResponses(
       fixture,
       {
-        agentSessionId: scope.agentSessionId,
         client_metadata: { private: true },
         input: 'Hello from the worker',
         metadata: {
-          openkit: {
-            agentId: fixture.environmentPackage.agent.agentId,
-            agentSessionId: scope.agentSessionId,
-            packageSnapshotId: fixture.environmentPackage.snapshotId,
-            requestId: scope.requestId,
-            threadId: scope.threadId,
-            turnId: scope.turnId,
-            workspaceId: scope.workspaceId,
-          },
           trace: 'preserve-me',
         },
         model: 'openai/gpt-5.2',
         prompt_cache_key: 'raw-worker-cache-key',
         prompt_cache_retention: '24h',
-        providerId: 'agent-openrouter',
-        requestId: scope.requestId,
-        threadId: scope.threadId,
-        turnId: scope.turnId,
         user: 'caller-controlled-user',
-        workspaceId: scope.workspaceId,
       },
       {
         'x-codex-turn-state': 'worker-request-state',
@@ -1125,52 +1109,30 @@ describe('worker inference routes', () => {
     expect(fixture.dispatcher.responseCalls).toEqual([]);
   });
 
-  it('strips matching snake-case authority and rejects unknown OpenKit authority', async () => {
+  it('rejects caller authority aliases even when they match trusted AEP authority', async () => {
     const fixture = createWorkerInferenceRouteFixture();
     const scope = fixture.environmentPackage.scope;
-    const accepted = await postWorkerResponses(fixture, {
-      agent_session_id: scope.agentSessionId,
-      input: 'Hello',
-      metadata: {
-        openkit: {
-          providerInstanceId: 'agent-openrouter',
-          routeId: 'nanocore-gateway',
-        },
-      },
-      model: 'openai/gpt-5.2',
-      package_snapshot_id: fixture.environmentPackage.snapshotId,
-      provider_id: 'agent-openrouter',
-      request_id: scope.requestId,
-      workspace_id: scope.workspaceId,
-    });
+    const aliases = [
+      { provider_id: 'agent-openrouter' },
+      { workspaceId: scope.workspaceId },
+      { agent_session_id: scope.agentSessionId },
+      { package_snapshot_id: fixture.environmentPackage.snapshotId },
+      { request_id: scope.requestId },
+      { metadata: { openkit: { routeId: 'nanocore-gateway' } } },
+    ];
 
-    expect(accepted.status).toBe(200);
-    expect(fixture.dispatcher.responseCalls[0]?.request).toEqual({
-      input: 'Hello',
-      model: 'openai/gpt-5.2',
-      prompt_cache_key: expect.stringMatching(/^openkit:responses:request:/),
-      store: false,
-      stream: false,
-    });
-
-    const unknownAuthority = await postWorkerResponses(fixture, {
-      input: 'Hello',
-      metadata: { openkit: { futureAuthority: 'caller-controlled' } },
-      model: 'openai/gpt-5.2',
-    });
-    const snakeCaseConflict = await postWorkerResponses(fixture, {
-      input: 'Hello',
-      model: 'openai/gpt-5.2',
-      workspace_id: 'ws_other',
-    });
-
-    for (const response of [unknownAuthority, snakeCaseConflict]) {
+    for (const alias of aliases) {
+      const response = await postWorkerResponses(fixture, {
+        input: 'Hello',
+        model: 'openai/gpt-5.2',
+        ...alias,
+      });
       expect(response.status).toBe(403);
       await expect(response.json()).resolves.toMatchObject({
         error: { code: 'worker_inference_lineage_mismatch' },
       });
     }
-    expect(fixture.dispatcher.responseCalls).toHaveLength(1);
+    expect(fixture.dispatcher.responseCalls).toEqual([]);
   });
 
   it('fails closed when the durable lease dies or a restored session has no AEP', async () => {
@@ -1219,21 +1181,11 @@ describe('worker inference routes', () => {
     const scope = fixture.environmentPackage.scope;
     const accepted = await postWorkerResponses(fixture, {
       input: 'Hello',
-      metadata: {
-        openkit: {
-          policySnapshotId: fixture.environmentPackage.policy.snapshotId,
-          promptCacheKey: 'runtime-private-cache-key',
-          sessionId: 'runtime-cache-session',
-        },
-      },
       model: 'openai/gpt-5.2',
-      policy_snapshot_id: fixture.environmentPackage.policy.snapshotId,
-      route_id: 'nanocore-gateway',
+      prompt_cache_key: 'runtime-private-cache-key',
       safety_identifier: 'caller-safety-id',
       sessionId: 'runtime-cache-session',
-      snapshot_id: fixture.environmentPackage.snapshotId,
       store: false,
-      workspaceId: scope.workspaceId,
     });
 
     expect(accepted.status).toBe(200);

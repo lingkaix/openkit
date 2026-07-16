@@ -24,6 +24,8 @@ Every material change record MUST link related documents that explain the surrou
 
 Use it for release PRDs, machine-readable task lists, and progress logs after a large agent-driven cycle is complete.
 
+**Selective rehydration:** Keep Core short and normative, keep specifications precise and narrow, and keep change plans execution-focused and permitted to be long when curated evidence requires it. Retain or move into the owning Core document or specification every criterion whose removal could materially change implementation, tests, failure or recovery semantics, ownership, or responsibility. Compression is safe only when two independent implementers reading the remaining authoritative documents would make the same material choices. Execution history remains in the change plan and never becomes design authority.
+
 ## Write Triggers
 
 Write or update a spec when a change has meaningful alternatives, long-term consequences, migration concerns, or protocol/API impact.
@@ -81,3 +83,4 @@ Before finishing documentation or implementation work, check:
 - Material change plans, PR summaries, standalone changes, or release context are captured in `docs/changes/` when they are useful.
 - Long-run release artifacts are archived in `docs/working_logs/`.
 - Links between core docs, product docs, specs, change records, working logs, PRs, and commits are current.
+- Documentation compression, promotion, and reconciliation preserve every criterion needed for two independent implementers to agree on implementation, tests, failure and recovery semantics, ownership, and responsibility.

@@ -176,7 +176,7 @@ describe('WorkerTranscriptWriter', () => {
     expect(terminalRecord).toEqual(events.at(-1));
   });
 
-  it('waits for live acceptance before committing the terminal transcript record', async () => {
+  it('does not let delayed live acceptance block the terminal transcript record', async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-live-order-'));
     let markLiveStarted: (() => void) | undefined;
     let releaseLive: (() => void) | undefined;
@@ -207,14 +207,13 @@ describe('WorkerTranscriptWriter', () => {
       stopReason: 'completed',
     });
 
-    expect(readJsonl(join(sessionDir, 'events.jsonl'))).toHaveLength(1);
-    releaseLive?.();
-    await readyWrite;
     await terminalWrite;
     expect(readJsonl(join(sessionDir, 'events.jsonl'))).toHaveLength(2);
+    releaseLive?.();
+    await readyWrite;
   });
 
-  it('poisons the append queue after live rejection and never writes a terminal record', async () => {
+  it('keeps local transcript writes available after live rejection', async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-live-rejected-'));
     const writer = new WorkerTranscriptWriter({
       appendEvent: async () => {
@@ -229,10 +228,11 @@ describe('WorkerTranscriptWriter', () => {
     );
     await expect(
       writer.writeTerminalOutcome({ status: 'completed', stopReason: 'completed' })
-    ).rejects.toThrow('Live event rejected.');
+    ).resolves.toMatchObject({ event: { type: 'turn.completed' } });
 
     expect(readJsonl(join(sessionDir, 'events.jsonl'))).toEqual([
       expect.objectContaining({ event: expect.objectContaining({ type: 'worker.ready' }) }),
+      expect.objectContaining({ event: expect.objectContaining({ type: 'turn.completed' }) }),
     ]);
   });
 });

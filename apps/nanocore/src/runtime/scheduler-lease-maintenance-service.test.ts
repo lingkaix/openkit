@@ -243,7 +243,9 @@ describe('scheduler lease maintenance service', () => {
     expect(maintenanceEnd).toBeGreaterThan(maintenanceStart);
     expect(wiring).toContain('maxTotalLeaseMs: SCHEDULER_LEASE_MAX_TOTAL_MS');
     expect(wiring).toContain('renewalDurationMs: SCHEDULER_LEASE_RENEWAL_DURATION_MS');
+    expect(wiring).toContain('cleanupExpiredReconnects:');
     expect(wiring).not.toContain('canRenewPackageSnapshot');
+    expect(source).not.toContain('scheduleExpiredReconnectCleanup');
   });
 
   it('runs lease watch before renewal in one maintenance iteration', () => {
@@ -309,6 +311,7 @@ describe('scheduler lease maintenance service', () => {
       mkdirSync(brokenWorkspaceDbPath);
 
       const service = startSchedulerLeaseMaintenanceService(coreDb, {
+        cleanupExpiredReconnects: async () => {},
         intervalMs: 30_000,
         maxTotalLeaseMs: 7_200_000,
         now: () => '2026-07-05T00:10:30.000Z',
@@ -751,6 +754,7 @@ describe('scheduler lease maintenance service', () => {
 
     try {
       const service = startSchedulerLeaseMaintenanceService(coreDb, {
+        cleanupExpiredReconnects: async () => {},
         intervalMs: 30_000,
         maxTotalLeaseMs: 7_200_000,
         now: () => '2026-07-05T00:10:30.000Z',
@@ -770,6 +774,40 @@ describe('scheduler lease maintenance service', () => {
 
       expect(callbacks).toHaveLength(1);
       expect(cleared).toEqual([{ intervalMs: 30_000 }]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('runs expired reconnect cleanup through the existing maintenance timer', async () => {
+    const coreDb = createMigratedCoreDb();
+    const callbacks: Array<() => void> = [];
+    const cleanupCalls: string[] = [];
+
+    try {
+      const service = startSchedulerLeaseMaintenanceService(coreDb, {
+        cleanupExpiredReconnects: async () => {
+          cleanupCalls.push('cleanup');
+        },
+        intervalMs: 30_000,
+        maxTotalLeaseMs: 7_200_000,
+        now: () => '2026-07-05T00:10:30.000Z',
+        renewalDurationMs: 1_800_000,
+        renewalLeadMs: 300_000,
+        setInterval: (callback) => {
+          callbacks.push(callback);
+          return 'timer';
+        },
+      });
+
+      await Promise.resolve();
+      expect(cleanupCalls).toEqual(['cleanup']);
+
+      callbacks[0]?.();
+      await Promise.resolve();
+      expect(cleanupCalls).toEqual(['cleanup', 'cleanup']);
+
+      service.stop();
     } finally {
       coreDb.sqlite.close();
     }

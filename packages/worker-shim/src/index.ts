@@ -21,6 +21,7 @@ export {
   WorkerControlError,
   type WorkerControlFetch,
   type WorkerControlFetchResponse,
+  type WorkerControlFinalStatusInput,
   type WorkerControlHeartbeatInput,
   type WorkerControlTerminalResultInput,
 } from './control-client.js';

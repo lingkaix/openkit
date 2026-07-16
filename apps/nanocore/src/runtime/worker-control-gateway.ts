@@ -3,11 +3,14 @@ import { randomBytes } from 'node:crypto';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import {
   buildWorkerCanonicalTerminalEventRecord,
+  type WorkerControlHeartbeatStatus as ProtocolWorkerControlHeartbeatStatus,
   type WorkerCanonicalEventRecord,
   WorkerCanonicalEventRecordSchema,
   WorkerCanonicalTerminalEventDataSchema,
   type WorkerCapabilityCallSummary,
   WorkerCapabilityCallSummarySchema,
+  type WorkerControlHeartbeatRequest,
+  WorkerControlHeartbeatRequestSchema,
   type WorkerControlResponseEnvelope,
   WorkerControlResponseEnvelopeSchema,
   type WorkerLineage,
@@ -21,14 +24,7 @@ export type WorkerControlLineage = WorkerLineage;
 /**
  * Worker heartbeat lifecycle labels accepted by NanoCore.
  */
-export type WorkerControlHeartbeatStatus =
-  | 'starting'
-  | 'running'
-  | 'idle'
-  | 'awaiting_command'
-  | 'stopping'
-  | 'completed'
-  | 'failed';
+export type WorkerControlHeartbeatStatus = ProtocolWorkerControlHeartbeatStatus;
 
 /**
  * Registration returned when NanoCore arms worker control for one session.
@@ -288,6 +284,14 @@ export interface WorkerControlGatewayOptions {
   onFinalStatusCommitted?: WorkerControlFinalStatusAcceptedHook;
   /** Optional hook called after a new heartbeat is accepted. */
   onHeartbeatAccepted?: WorkerControlHeartbeatAcceptedHook;
+  /** Optional durable authorizer for a process-key reconnect heartbeat. */
+  authorizeReconnectHeartbeat?: (input: {
+    readonly acceptedAt: string;
+    readonly lineage: WorkerControlLineage;
+    readonly reconnectKey: string;
+    readonly sandboxBindingRef: string;
+    readonly workerSequence: number;
+  }) => void;
 }
 
 /** Metadata emitted after one new worker heartbeat is accepted. */
@@ -298,6 +302,8 @@ export interface WorkerControlHeartbeatAcceptedInput {
   readonly lineage: WorkerControlLineage;
   /** Accepted heartbeat snapshot. */
   readonly heartbeat: WorkerControlHeartbeat;
+  /** Optional sequence-zero commitment to the worker process key. */
+  readonly workerProcessKeyHash?: string;
 }
 
 /**
@@ -331,7 +337,11 @@ export type WorkerControlTokenBindingResolution =
       /** The binding is not usable for worker-control authentication. */
       readonly status: 'rejected';
       /** Stable rejection reason projected to a gateway error. */
-      readonly reason: 'binding-not-found' | 'lineage-mismatch' | 'lease-not-live';
+      readonly reason:
+        | 'binding-not-found'
+        | 'lineage-mismatch'
+        | 'lease-not-live'
+        | 'reconnect-required';
     };
 
 /**
@@ -358,7 +368,11 @@ export type WorkerControlFinalStatusTokenBindingResolution =
       /** Binding cannot authorize this final-status request. */
       readonly status: 'rejected';
       /** Stable rejection reason. */
-      readonly reason: 'binding-not-found' | 'lineage-mismatch' | 'lease-not-live';
+      readonly reason:
+        | 'binding-not-found'
+        | 'lineage-mismatch'
+        | 'lease-not-live'
+        | 'reconnect-required';
     };
 
 /** Resolves live acceptance or narrow releasing replay for final status. */
@@ -555,6 +569,7 @@ export class WorkerControlGatewayError extends Error {
  * Process-local worker control gateway serving direct sandbox workers.
  */
 export class WorkerControlGateway {
+  private readonly authorizeReconnectHeartbeat: WorkerControlGatewayOptions['authorizeReconnectHeartbeat'];
   private readonly createToken: () => string;
   private readonly now: () => string;
   private readonly acceptedRecordRecorder: WorkerControlAcceptedRecordRecorder | null;
@@ -576,6 +591,7 @@ export class WorkerControlGateway {
    * @param options Optional deterministic hooks for tests.
    */
   public constructor(options: WorkerControlGatewayOptions = {}) {
+    this.authorizeReconnectHeartbeat = options.authorizeReconnectHeartbeat;
     this.createToken = options.createToken ?? createRandomToken;
     this.now = options.now ?? (() => new Date().toISOString());
     this.acceptedRecordRecorder = options.acceptedRecordRecorder ?? null;
@@ -727,24 +743,46 @@ export class WorkerControlGateway {
    * @returns Updated heartbeat snapshot.
    */
   public recordHeartbeat(
-    input: AuthenticatedWorkerControlInput & {
-      /** Worker sequence number. */
-      sequence: number;
-      /** Current worker lifecycle status. */
-      status: WorkerControlHeartbeatStatus;
-      /** Optional worker status message. */
-      message?: string | null;
-    }
+    input: AuthenticatedWorkerControlInput & WorkerControlHeartbeatRequest
   ): WorkerControlHeartbeat {
+    const request = WorkerControlHeartbeatRequestSchema.parse({
+      body: input.body,
+      lineage: input.lineage,
+      operation: input.operation,
+      ...(input.reconnectKey ? { reconnectKey: input.reconnectKey } : {}),
+      schemaVersion: input.schemaVersion,
+      sequence: input.sequence,
+    });
+    const heartbeatEnvelope = {
+      body: request.body,
+      lineage: request.lineage,
+      operation: request.operation,
+      schemaVersion: request.schemaVersion,
+      sequence: request.sequence,
+    };
+
     /** Accepts and publishes the heartbeat inside the configured transaction boundary. */
     const accept = (): WorkerControlHeartbeat => {
-      const state = this.requireSession(input);
+      const acceptedAt = this.now();
+      const state = this.requireSession(
+        {
+          authorization: input.authorization,
+          lineage: request.lineage,
+        },
+        request.reconnectKey
+          ? {
+              acceptedAt,
+              reconnectKey: request.reconnectKey,
+              workerSequence: request.sequence,
+            }
+          : undefined
+      );
       const sequence = acceptSequencedControlOperation(
         state,
         'heartbeat',
-        input.sequence,
-        input,
-        input.lineage,
+        request.sequence,
+        heartbeatEnvelope,
+        request.lineage,
         this.sequenceRecorder
       );
 
@@ -759,29 +797,32 @@ export class WorkerControlGateway {
       }
 
       const heartbeat: WorkerControlHeartbeat = {
-        lastHeartbeatAt: this.now(),
-        message: input.message ?? null,
-        sequence: input.sequence,
-        status: input.status,
+        lastHeartbeatAt: acceptedAt,
+        message: request.body.message ?? null,
+        sequence: request.sequence,
+        status: request.body.status,
       };
 
       try {
         this.onHeartbeatAccepted?.({
           heartbeat: { ...heartbeat },
-          lineage: { ...input.lineage },
+          lineage: { ...request.lineage },
           sandboxBindingRef: state.token,
+          ...(request.body.processKeyHash
+            ? { workerProcessKeyHash: request.body.processKeyHash }
+            : {}),
         });
         this.recordAcceptedRecord({
           acceptedAt: heartbeat.lastHeartbeatAt,
-          lineage: input.lineage,
+          lineage: request.lineage,
           operation: 'heartbeat',
           record: heartbeat,
-          recordKey: String(input.sequence),
-          sequence: input.sequence,
+          recordKey: String(request.sequence),
+          sequence: request.sequence,
         });
         state.snapshot.heartbeat = heartbeat;
       } catch (error) {
-        rollbackSequencedControlOperation(state, 'heartbeat', input.sequence);
+        rollbackSequencedControlOperation(state, 'heartbeat', request.sequence);
         throw error;
       }
 
@@ -1637,7 +1678,14 @@ export class WorkerControlGateway {
    * @param input Authenticated worker request.
    * @returns Mutable session state.
    */
-  private requireSession(input: AuthenticatedWorkerControlInput): WorkerControlSessionState {
+  private requireSession(
+    input: AuthenticatedWorkerControlInput,
+    reconnect?: {
+      readonly acceptedAt: string;
+      readonly reconnectKey: string;
+      readonly workerSequence: number;
+    }
+  ): WorkerControlSessionState {
     const { state, token } = this.requireTokenSession(input.authorization);
 
     if (!sameSessionLineage(input.lineage, state.lineage)) {
@@ -1646,6 +1694,14 @@ export class WorkerControlGateway {
         'Worker control request lineage does not match the registered package snapshot.',
         403
       );
+    }
+
+    if (reconnect) {
+      this.authorizeReconnectHeartbeat?.({
+        ...reconnect,
+        lineage: input.lineage,
+        sandboxBindingRef: token,
+      });
     }
 
     this.assertTokenBinding(token, input.lineage);
@@ -1746,7 +1802,7 @@ export class WorkerControlGateway {
    * @throws WorkerControlGatewayError Always.
    */
   private throwTokenBindingRejection(
-    reason: 'binding-not-found' | 'lineage-mismatch' | 'lease-not-live'
+    reason: 'binding-not-found' | 'lineage-mismatch' | 'lease-not-live' | 'reconnect-required'
   ): never {
     if (reason === 'binding-not-found') {
       throw new WorkerControlGatewayError(
@@ -1761,6 +1817,14 @@ export class WorkerControlGateway {
         'worker_control_lineage_mismatch',
         'Worker control request lineage does not match the durable lease binding.',
         403
+      );
+    }
+
+    if (reason === 'reconnect-required') {
+      throw new WorkerControlGatewayError(
+        'worker_control_reconnect_required',
+        'Worker control session must reconnect after NanoCore restart.',
+        503
       );
     }
 

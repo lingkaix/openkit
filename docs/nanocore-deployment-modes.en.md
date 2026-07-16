@@ -274,15 +274,26 @@ OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=https://nanocore.example.com/api/worke
 
 `OPENKIT_OPENSHELL_GATEWAY` is optional and defaults to `openshell`. When set, it must match `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}` so it cannot be interpreted as another OpenShell option.
 
-The Gateway continues to bind only to `127.0.0.1:17670` on the Cell host. One acceptable operator-managed transport is an authenticated SSH tunnel created separately from NanoCore:
+The Gateway continues to bind only to `127.0.0.1:17670` on the Cell host. For the current single-Cell helper, dockerd allocates the first OpenShell network from `10.231.0.0/24`, so the sandbox reaches the Cell host at the exact bridge address `10.231.0.1`. One acceptable test transport carries the loopback Gateway forward and exposes the NanoCore worker-control port only on that bridge address:
 
 ```bash
-ssh -o ExitOnForwardFailure=yes -N \
+ssh -N -T \
+  -o BatchMode=yes \
+  -o ExitOnForwardFailure=yes \
+  -o ForwardAgent=no \
+  -o ForwardX11=no \
+  -o PermitLocalCommand=no \
+  -o StrictHostKeyChecking=yes \
+  -o ServerAliveInterval=10 \
+  -o ServerAliveCountMax=2 \
   -L 127.0.0.1:27670:127.0.0.1:17670 \
+  -R 10.231.0.1:23001:127.0.0.1:3000 \
   a1
 ```
 
-`OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL` is the exact credential-free HTTP(S) NanoCore worker-control route as seen from the remote sandbox. It is mandatory for remote placement, must end at `/api/worker-control`, and must be exposed through a separately authenticated network or tunnel path; loopback and unspecified addresses are rejected, and the local `host.openshell.internal` default is not sufficient.
+This test shape requires `GatewayPorts clientspecified` on the Cell host SSH server and sets `OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=http://10.231.0.1:23001/api/worker-control`; replace `3000` with the actual loopback NanoCore port. Never bind the reverse listener to `0.0.0.0`. The exact bridge bind keeps worker-control reachable from Cell sandboxes without exposing it on every A1 interface. The lifecycle helper still runs through its separate fixed SSH command with all forwarding disabled.
+
+`OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL` is the exact credential-free HTTP(S) NanoCore worker-control route as seen from the remote sandbox. It is mandatory for remote placement, must end at `/api/worker-control`, and must be exposed through a separately authenticated network or tunnel path; loopback and unspecified addresses are rejected, and the local `host.openshell.internal` default is not sufficient. A production deployment may use separate authenticated transports for the two directions; the combined tunnel above is the proven disposable A1 test shape.
 
 The SSH target, Gateway origin, and worker-control URL must refer to one coherent placement. NanoCore persists a non-secret digest of the exact Cell controller target and rejects restart cleanup when that digest or the configured Gateway target changes. A remote Gateway without the matching disposable Cell lifecycle target is unsupported, even if the Gateway is reachable.
 
@@ -386,7 +397,7 @@ This verifies one bounded Goal Mode step for every Core mode and Cell placement 
 
 Run real local OpenShell and Goal Mode acceptance on A1 itself. NanoCore, the privileged helper, the stock Gateway, containerd, dockerd, the worker image cache, and the disposable test repository must all be on A1. NanoCore prepares the Cell before materialization and recycles it after success or failure; do not manually delete only the sandbox or provider and treat that as cleanup proof.
 
-For remote acceptance, run NanoCore on the selected NanoCore host, keep the fixed SSH lifecycle target and the operator-managed Gateway transport active, and provide a worker-control URL reachable from the A1 sandbox. The remote backend E2E has already proved stock CLI preflight, Cell prepare, sandbox materialization, and whole-Cell cleanup; full real Codex provenance remains a separate unfinished acceptance gate.
+For remote acceptance, run NanoCore on the selected NanoCore host, keep the fixed SSH lifecycle target and the operator-managed Gateway transport active, and provide a worker-control URL reachable from the A1 sandbox. The remote backend E2E proves stock CLI preflight, Cell prepare, sandbox materialization, and whole-Cell cleanup, and the separate real Codex `0.144.1` provenance acceptance has passed on A1 against stock OpenShell `0.0.80`.
 
 Either acceptance result is valid only when the worker completes, NanoCore cleanup succeeds, the old Cell processes, network, and mutable roots are gone, and the replacement Cell reports its exact Gateway service active plus zero Docker containers and zero OpenShell sandboxes in both stable-empty checks.
 

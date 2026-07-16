@@ -270,6 +270,7 @@ describe('storage migrations', () => {
         'input_hash',
         'response_kind',
         'response_id',
+        'response_json',
         'created_at',
         'expires_at',
       ];
@@ -277,6 +278,17 @@ describe('storage migrations', () => {
       expect(listColumnNames(workspaceDb, 'idempotency_requests')).toEqual(
         idempotencyRequestColumns
       );
+      expect(listColumnNames(workspaceDb, 'pending_user_turns')).toEqual([
+        'pending_turn_id',
+        'workspace_id',
+        'thread_id',
+        'request_id',
+        'content_item_id',
+        'content_digest',
+        'queue_mode',
+        'received_at',
+        'created_at',
+      ]);
       expect(listColumnNames(workspaceDb, 'capability_calls')).toEqual([
         'call_id',
         'workspace_id',

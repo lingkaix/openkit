@@ -822,9 +822,8 @@ export default function App(props: AppProps) {
   const [isCreatingGoalPlan, setIsCreatingGoalPlan] = createSignal(false);
   const [isStartingGoal, setIsStartingGoal] = createSignal(false);
   const [goalPlanFeedback, setGoalPlanFeedback] = createSignal<string | null>(null);
-  const [isSubmittingGoalSteering, setIsSubmittingGoalSteering] = createSignal(false);
   const [isRunningGoalStep, setIsRunningGoalStep] = createSignal(false);
-  const [goalSteeringFeedback, setGoalSteeringFeedback] = createSignal<string | null>(null);
+  const [goalExecutionFeedback, setGoalExecutionFeedback] = createSignal<string | null>(null);
   const [isRefreshingAgentHealth, setIsRefreshingAgentHealth] = createSignal(false);
   const [terminalCommandDraft, setTerminalCommandDraft] = createSignal('pwd');
   const [isQueueingTerminalCommand, setIsQueueingTerminalCommand] = createSignal(false);
@@ -2911,7 +2910,7 @@ export default function App(props: AppProps) {
       setState('threadGoalSummary', summary);
       setState('threadGoalPlan', null);
       setGoalPlanFeedback(null);
-      setGoalSteeringFeedback(null);
+      setGoalExecutionFeedback(null);
     } catch (error) {
       setState('errorMessage', formatUserError(error));
     } finally {
@@ -2939,7 +2938,7 @@ export default function App(props: AppProps) {
 
       setState('threadGoalPlan', response);
       setState('threadGoalSummary', { goal: response.goal });
-      setGoalSteeringFeedback(null);
+      setGoalExecutionFeedback(null);
     } catch (error) {
       setState('errorMessage', formatUserError(error));
     } finally {
@@ -2972,7 +2971,7 @@ export default function App(props: AppProps) {
       setState('threadGoalSummary', { goal: response.goal });
       setState('threadGoalPlan', null);
       setGoalPlanFeedback('Plan approved. Tasks are ready for supervised work.');
-      setGoalSteeringFeedback(null);
+      setGoalExecutionFeedback(null);
     } catch (error) {
       setState('errorMessage', formatUserError(error));
     } finally {
@@ -2981,18 +2980,41 @@ export default function App(props: AppProps) {
   }
 
   /**
-   * Rejects the current Goal Mode plan locally.
+   * Persists one Goal Mode plan revision through NanoCore.
    */
-  function rejectThreadGoalPlan(): void {
-    setState('threadGoalPlan', null);
-    setGoalPlanFeedback('Plan rejected. Draft a new plan before starting work.');
+  async function reviseThreadGoalPlan(revision: string): Promise<void> {
+    const workspace = selectedWorkspace();
+    const thread = selectedThread();
+
+    if (!workspace || !thread || !state.threadGoalPlan) {
+      return;
+    }
+
+    setIsApprovingGoalPlan(true);
+    setState('errorMessage', null);
+    setGoalPlanFeedback(null);
+
+    try {
+      const response = await client.app.reviseThreadGoalPlan(workspace.id, thread.id, {
+        revision,
+      });
+
+      setState('threadGoalSummary', { goal: response.goal });
+      setState('threadGoalPlan', null);
+      setGoalPlanFeedback('Plan revision recorded. Draft a new plan when ready.');
+      setGoalExecutionFeedback(null);
+    } catch (error) {
+      setState('errorMessage', formatUserError(error));
+    } finally {
+      setIsApprovingGoalPlan(false);
+    }
   }
 
   /**
-   * Requests changes for the current Goal Mode plan locally.
+   * Records plan rejection as a request for a replacement plan.
    */
-  function reviseThreadGoalPlan(): void {
-    setGoalPlanFeedback('Changes requested. Update the goal or draft a revised plan.');
+  function rejectThreadGoalPlan(): void {
+    void reviseThreadGoalPlan('Reject this plan and draft a new plan.');
   }
 
   /**
@@ -3008,13 +3030,13 @@ export default function App(props: AppProps) {
 
     setIsRunningGoalStep(true);
     setState('errorMessage', null);
-    setGoalSteeringFeedback(null);
+    setGoalExecutionFeedback(null);
 
     try {
       const response = await client.app.runThreadGoalStep(workspace.id, thread.id);
 
       setState('threadGoalSummary', { goal: response.goal });
-      setGoalSteeringFeedback(
+      setGoalExecutionFeedback(
         response.pendingAttention
           ? response.pendingAttention.reason
           : `Worker step ended with ${response.decision.outcome}.`
@@ -3023,40 +3045,6 @@ export default function App(props: AppProps) {
       setState('errorMessage', formatUserError(error));
     } finally {
       setIsRunningGoalStep(false);
-    }
-  }
-
-  /**
-   * Submits steering for the active Goal Mode thread.
-   */
-  async function submitThreadGoalSteering(message: string): Promise<void> {
-    const workspace = selectedWorkspace();
-    const thread = selectedThread();
-    const trimmedMessage = message.trim();
-
-    if (!workspace || !thread || !trimmedMessage) {
-      return;
-    }
-
-    setIsSubmittingGoalSteering(true);
-    setState('errorMessage', null);
-    setGoalSteeringFeedback(null);
-
-    try {
-      const response = await client.app.submitThreadGoalSteering(workspace.id, thread.id, {
-        message: trimmedMessage,
-      });
-
-      setState('threadGoalSummary', { goal: response.goal });
-      setGoalSteeringFeedback(
-        response.state === 'queued'
-          ? 'Steering queued for the next safe point.'
-          : 'Input is blocked by a human gate and will be handled as follow-up.'
-      );
-    } catch (error) {
-      setState('errorMessage', formatUserError(error));
-    } finally {
-      setIsSubmittingGoalSteering(false);
     }
   }
 
@@ -3972,14 +3960,13 @@ export default function App(props: AppProps) {
                   goal={state.threadGoalSummary?.goal ?? null}
                   goalPlan={state.threadGoalPlan}
                   goalPlanFeedback={goalPlanFeedback()}
-                  goalSteeringFeedback={goalSteeringFeedback()}
+                  goalExecutionFeedback={goalExecutionFeedback()}
                   isApprovingGoalPlan={isApprovingGoalPlan()}
                   isAnsweringUserInput={isAnsweringUserInput()}
                   isCreatingGoalPlan={isCreatingGoalPlan()}
                   isInterrupting={interruptingTurnId() === activeTurn()?.id}
                   isRespondingToApproval={state.isRespondingToApproval}
                   isRunningGoalStep={isRunningGoalStep()}
-                  isSubmittingGoalSteering={isSubmittingGoalSteering()}
                   isStartingGoal={isStartingGoal()}
                   isStartingTurn={state.isStartingTurn}
                   items={selectedSession().items}
@@ -4020,7 +4007,6 @@ export default function App(props: AppProps) {
                   onReviseGoalPlan={reviseThreadGoalPlan}
                   onRunGoalStep={runThreadGoalStep}
                   onStartGoal={startThreadGoal}
-                  onSubmitGoalSteering={submitThreadGoalSteering}
                   onSubmitQuickChat={submitThreadQuickChat}
                   onRespondApproval={submitApprovalDecision}
                   onSubmitUserInput={submitUserInputAnswer}

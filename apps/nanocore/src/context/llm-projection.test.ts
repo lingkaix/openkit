@@ -58,6 +58,7 @@ describe('convertToLlm', () => {
         id: 'item_artifact',
         type: 'artifact-reference',
         artifactId: 'artifact_patch',
+        artifactVersion: 1,
         title: 'Patch summary',
         summary: 'Changed the runner loop.',
       },

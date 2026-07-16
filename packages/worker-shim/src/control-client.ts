@@ -1,3 +1,6 @@
+import { createHash, randomBytes } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
+
 import {
   type WorkerCanonicalEventRecord,
   type WorkerCanonicalTerminalEventDataInput,
@@ -8,6 +11,8 @@ import {
 } from '@openkit/worker-protocol';
 
 const WORKER_CONTROL_REQUEST_TIMEOUT_MS = 10_000;
+const WORKER_CONTROL_OUTAGE_BUDGET_MS = 300_000;
+const WORKER_CONTROL_RETRY_DELAY_MS = 250;
 
 /**
  * Minimal fetch response surface used by the worker control client.
@@ -54,8 +59,6 @@ export interface WorkerControlClientOptions {
   lineage: WorkerLineage;
   /** Optional fetch implementation for tests or alternate runtimes. */
   fetch?: WorkerControlFetch;
-  /** Optional supervisor cancellation signal. */
-  signal?: AbortSignal | undefined;
 }
 
 /**
@@ -163,7 +166,11 @@ export class WorkerControlError extends Error {
 export class WorkerControlClient {
   private readonly fetch: WorkerControlFetch;
   private readonly lineage: WorkerLineage;
-  private readonly signal: AbortSignal | undefined;
+  private nextHeartbeatSequence = 0;
+  private outageStartedAt: number | null = null;
+  private postLaunchRecoveryEnabled = false;
+  private readonly processKey: string;
+  private reconnecting: Promise<unknown> | null = null;
   private readonly token: string;
   private readonly baseUrl: string;
 
@@ -175,9 +182,19 @@ export class WorkerControlClient {
   public constructor(options: WorkerControlClientOptions) {
     this.fetch = options.fetch ?? defaultFetch();
     this.lineage = options.lineage;
-    this.signal = options.signal;
+    this.processKey = randomBytes(32).toString('base64url');
     this.token = options.token;
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
+  }
+
+  /** Enables bounded retry only after the supervised task has launched. */
+  public enablePostLaunchRecovery(): void {
+    this.postLaunchRecoveryEnabled = true;
+  }
+
+  /** Disables retry when the supervisor is already terminating the task. */
+  public disablePostLaunchRecovery(): void {
+    this.postLaunchRecoveryEnabled = false;
   }
 
   /**
@@ -186,8 +203,14 @@ export class WorkerControlClient {
    * @param input Heartbeat payload.
    * @returns Parsed NanoCore response.
    */
-  public async recordHeartbeat(input: WorkerControlHeartbeatInput): Promise<unknown> {
-    return this.postJson('/heartbeat', input);
+  public async recordHeartbeat(
+    input: Omit<WorkerControlHeartbeatInput, 'sequence'>,
+    signal?: AbortSignal
+  ): Promise<unknown> {
+    const result = await this.sendSequencedHeartbeat(input, signal);
+
+    this.clearOutage();
+    return result;
   }
 
   /**
@@ -196,8 +219,11 @@ export class WorkerControlClient {
    * @param input Artifact notice payload.
    * @returns Parsed NanoCore response.
    */
-  public async recordArtifactNotice(input: WorkerControlArtifactInput): Promise<unknown> {
-    return this.postJson('/artifacts', input);
+  public async recordArtifactNotice(
+    input: WorkerControlArtifactInput,
+    signal?: AbortSignal
+  ): Promise<unknown> {
+    return this.request(() => this.postJson('/artifacts', input, signal), signal);
   }
 
   /**
@@ -205,8 +231,11 @@ export class WorkerControlClient {
    *
    * @returns Command poll response.
    */
-  public async pollCommands(): Promise<WorkerControlCommandPoll> {
-    return this.postJson<WorkerControlCommandPoll>('/commands/poll', {});
+  public async pollCommands(signal?: AbortSignal): Promise<WorkerControlCommandPoll> {
+    return this.request(
+      () => this.postJson<WorkerControlCommandPoll>('/commands/poll', {}, signal),
+      signal
+    );
   }
 
   /**
@@ -215,8 +244,8 @@ export class WorkerControlClient {
    * @param commandId NanoCore-issued command id.
    * @returns Parsed NanoCore response.
    */
-  public async acknowledgeCommand(commandId: string): Promise<unknown> {
-    return this.postJson('/commands/ack', { commandId });
+  public async acknowledgeCommand(commandId: string, signal?: AbortSignal): Promise<unknown> {
+    return this.request(() => this.postJson('/commands/ack', { commandId }, signal), signal);
   }
 
   /**
@@ -225,8 +254,11 @@ export class WorkerControlClient {
    * @param input Terminal result payload.
    * @returns Parsed NanoCore response.
    */
-  public async recordTerminalResult(input: WorkerControlTerminalResultInput): Promise<unknown> {
-    return this.postJson('/terminal-results', input);
+  public async recordTerminalResult(
+    input: WorkerControlTerminalResultInput,
+    signal?: AbortSignal
+  ): Promise<unknown> {
+    return this.request(() => this.postJson('/terminal-results', input, signal), signal);
   }
 
   /**
@@ -236,7 +268,8 @@ export class WorkerControlClient {
    * @returns Parsed worker-control response envelope.
    */
   public async recordFinalStatus(
-    input: WorkerControlFinalStatusInput
+    input: WorkerControlFinalStatusInput,
+    signal?: AbortSignal
   ): Promise<WorkerControlResponseEnvelope> {
     const { sequence, ...terminalData } = input;
     const envelope = {
@@ -246,19 +279,11 @@ export class WorkerControlClient {
       sequence,
     };
 
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        return requireAcceptedControlResponse(await this.postJson('/final-status', envelope));
-      } catch (error) {
-        if (
-          attempt === 2 ||
-          this.signal?.aborted ||
-          (error instanceof WorkerControlError && error.status < 500)
-        ) {
-          throw error;
-        }
-      }
-    }
+    return this.request(
+      async () =>
+        requireAcceptedControlResponse(await this.postJson('/final-status', envelope, signal)),
+      signal
+    );
   }
 
   /**
@@ -268,9 +293,142 @@ export class WorkerControlClient {
    * @returns Parsed worker-control response envelope.
    */
   public async appendEvent(
-    record: WorkerCanonicalEventRecord
+    record: WorkerCanonicalEventRecord,
+    signal?: AbortSignal
   ): Promise<WorkerControlResponseEnvelope> {
-    return requireAcceptedControlResponse(await this.postJson('/events/append', { record }));
+    return this.request(
+      async () =>
+        requireAcceptedControlResponse(await this.postJson('/events/append', { record }, signal)),
+      signal
+    );
+  }
+
+  /** Sends one logical heartbeat and advances its sequence only after exact acceptance. */
+  private async sendSequencedHeartbeat(
+    input: Omit<WorkerControlHeartbeatInput, 'sequence'>,
+    signal?: AbortSignal,
+    reconnectFirst = false
+  ): Promise<unknown> {
+    const heartbeat = Object.freeze({ ...input, sequence: this.nextHeartbeatSequence });
+    let presentReconnectKey = reconnectFirst;
+
+    for (;;) {
+      try {
+        const result = await this.postHeartbeat(heartbeat, presentReconnectKey, signal);
+
+        this.nextHeartbeatSequence += 1;
+        return result;
+      } catch (error) {
+        this.requireRetryable(error);
+        if (isReconnectRequired(error) && !reconnectFirst) {
+          return this.reconnect(signal);
+        }
+        presentReconnectKey = isReconnectRequired(error);
+        await this.waitForRetry(signal);
+      }
+    }
+  }
+
+  /** Sends one raw heartbeat envelope with an optional process-key reconnect proof. */
+  private postHeartbeat(
+    heartbeat: WorkerControlHeartbeatInput,
+    reconnect: boolean,
+    signal?: AbortSignal
+  ): Promise<unknown> {
+    return this.postJson(
+      '/heartbeat',
+      {
+        body: {
+          message: heartbeat.message ?? null,
+          ...(heartbeat.sequence === 0
+            ? {
+                processKeyHash: createHash('sha256')
+                  .update(Buffer.from(this.processKey, 'base64url'))
+                  .digest('base64url'),
+              }
+            : {}),
+          status: heartbeat.status,
+        },
+        operation: 'heartbeat',
+        ...(reconnect ? { reconnectKey: this.processKey } : {}),
+        schemaVersion: 1,
+        sequence: heartbeat.sequence,
+      },
+      signal
+    );
+  }
+
+  /** Runs one ordinary control request through the sole bounded retry owner. */
+  private async request<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const result = await this.retry(operation, signal);
+
+    this.clearOutage();
+    return result;
+  }
+
+  /** Retries one immutable request and adopts the lease before replay when required. */
+  private async retry<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    for (;;) {
+      try {
+        return await operation();
+      } catch (error) {
+        this.requireRetryable(error);
+        if (isReconnectRequired(error)) {
+          try {
+            await this.reconnect(signal);
+            continue;
+          } catch (reconnectError) {
+            this.requireRetryable(reconnectError);
+          }
+        }
+        await this.waitForRetry(signal);
+      }
+    }
+  }
+
+  /** Sends one exact-next reconnect heartbeat for all requests blocked by one restart. */
+  private async reconnect(signal?: AbortSignal): Promise<unknown> {
+    if (!this.reconnecting) {
+      const tracked = this.sendSequencedHeartbeat(
+        { message: 'Worker shim reconnecting.', status: 'running' },
+        signal,
+        true
+      ).finally(() => {
+        if (this.reconnecting === tracked) {
+          this.reconnecting = null;
+        }
+      });
+
+      this.reconnecting = tracked;
+    }
+    return this.reconnecting;
+  }
+
+  /** Starts the shared outage budget and rejects definitive or expired failures. */
+  private requireRetryable(error: unknown): void {
+    if (!this.postLaunchRecoveryEnabled || !isRetryableFailure(error)) {
+      throw error;
+    }
+    this.outageStartedAt ??= performance.now();
+    if (performance.now() - this.outageStartedAt >= WORKER_CONTROL_OUTAGE_BUDGET_MS) {
+      throw error;
+    }
+  }
+
+  /** Waits once inside the original outage budget. */
+  private async waitForRetry(signal?: AbortSignal): Promise<void> {
+    await delay(WORKER_CONTROL_RETRY_DELAY_MS, undefined, signal ? { signal } : undefined);
+    if (
+      this.outageStartedAt !== null &&
+      performance.now() - this.outageStartedAt >= WORKER_CONTROL_OUTAGE_BUDGET_MS
+    ) {
+      throw new Error('Worker control outage budget expired.');
+    }
+  }
+
+  /** Clears the outage timer after one caller-visible request is accepted. */
+  private clearOutage(): void {
+    this.outageStartedAt = null;
   }
 
   /**
@@ -280,29 +438,37 @@ export class WorkerControlClient {
    * @param body Request body without lineage.
    * @returns Parsed JSON response.
    */
-  private async postJson<T = unknown>(path: string, body: object): Promise<T> {
-    this.signal?.throwIfAborted();
+  private async postJson<T = unknown>(
+    path: string,
+    body: object,
+    signal?: AbortSignal
+  ): Promise<T> {
+    signal?.throwIfAborted();
     const requestController = new AbortController();
     let abortParent: (() => void) | null = null;
     const abortFailure = new Promise<never>((_resolve, reject) => {
       /** Rejects the in-flight request with the parent cancellation reason. */
       const abort = () => {
-        const reason = abortSignalReason(this.signal);
+        const reason = abortSignalReason(signal);
         requestController.abort(reason);
         reject(reason);
       };
       abortParent = abort;
 
-      if (this.signal?.aborted) {
+      if (signal?.aborted) {
         abort();
         return;
       }
-      this.signal?.addEventListener('abort', abort, { once: true });
+      signal?.addEventListener('abort', abort, { once: true });
     });
     let timeout: ReturnType<typeof setTimeout> | null = null;
     const timeoutFailure = new Promise<never>((_resolve, reject) => {
       timeout = setTimeout(() => {
-        const error = new Error('Worker control request timed out.');
+        const error = new WorkerControlError(
+          'worker_control_request_timeout',
+          408,
+          'Worker control request timed out.'
+        );
         requestController.abort(error);
         reject(error);
       }, WORKER_CONTROL_REQUEST_TIMEOUT_MS);
@@ -353,10 +519,25 @@ export class WorkerControlClient {
         clearTimeout(timeout);
       }
       if (abortParent) {
-        this.signal?.removeEventListener('abort', abortParent);
+        signal?.removeEventListener('abort', abortParent);
       }
     }
   }
+}
+
+/** Returns whether NanoCore requires process-key adoption before request replay. */
+function isReconnectRequired(error: unknown): boolean {
+  return error instanceof WorkerControlError && error.code === 'worker_control_reconnect_required';
+}
+
+/** Restricts post-launch retries to transport failures and explicitly temporary HTTP responses. */
+function isRetryableFailure(error: unknown): boolean {
+  return (
+    isReconnectRequired(error) ||
+    error instanceof TypeError ||
+    (error instanceof WorkerControlError &&
+      (error.status === 408 || error.status === 425 || error.status === 429 || error.status >= 500))
+  );
 }
 
 /**

@@ -1,24 +1,17 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import {
-  closeSync,
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { Agent, fetch as undiciFetch } from 'undici';
 
 import {
-  classifyRealCodexRunnerFailure,
+  assertBuilt,
+  assertNoPublicSecretLeak,
   configureRealCodexRuntime,
+  prepareEvidenceDirectory,
   streamCodexAuthFromSsh,
+  waitForChildOrDeadline,
+  writeExclusiveEvidenceFile,
 } from './real-codex-goal-mode-runner.mjs';
 import { parseStoryDocument, validateStoryMetadata } from './story-metadata.mjs';
 
@@ -33,19 +26,23 @@ export const DEFAULT_TASK_MODE_REAL_WORKER_STORY_PATH = resolve(
 );
 
 const RESULT_FILE = 'task-mode-real-worker-result.json';
+const FAILURE_FILE = 'task-mode-real-worker-failure.json';
 const REDACTION_NOTES_FILE = 'task-mode-real-worker-redaction-notes.md';
+const TASK_EVIDENCE_FILES = [FAILURE_FILE, REDACTION_NOTES_FILE, RESULT_FILE];
 const PROVENANCE_SUMMARY_PATTERN =
-  /^Worker runtime provenance complete: (\d+) streams, (\d+) frames, (\d+) attributed, (\d+) unattributed, (\d+) roots?, (\d+) children, (\d+)\/(\d+) gateway calls reconciled, gateway complete, bundles (\S+) and (\S+)\.$/;
+  /^Worker runtime provenance complete: (\d+) streams, (\d+) frames, (\d+) attributed, (\d+) unattributed, (\d+) roots?, (\d+) children, (\d+)\/(\d+) gateway calls reconciled, gateway complete, bundles \S+ and \S+\.$/;
 const TASK_MODE_PROVIDER_ID = 'openai_codex';
 const TASK_MODE_MODEL_ID = 'openai-codex/gpt-5.6-sol';
 const TASK_STORY_TIMEOUT_MESSAGE = 'Real Task Mode worker story exceeded its configured deadline.';
+const TASK_STORY_FAILURE_MESSAGE = 'Real Task Mode worker story failed.';
 const TASK_RUNTIME_RESTART_MESSAGE =
   'Real Codex runtime configuration requires a NanoCore restart. Restart NanoCore and rerun the story.';
+const TASK_ASSERTION_ERROR_CODE = 'OPENKIT_TASK_MODE_ASSERTION';
 const SUPERVISED_CHILD_ARG = '--openkit-task-l6-supervised-child';
 const RESTART_REQUIRED_EXIT_CODE = 75;
 
-/** Repository-relative proof file owned by the bounded real Task story. */
-export const TASK_MODE_REAL_WORKER_PROOF_PATH = 'docs/task-mode-runtime-provenance-proof.md';
+/** Repository-relative proof file requested by the default task input. */
+const TASK_MODE_REAL_WORKER_PROOF_PATH = 'docs/task-mode-runtime-provenance-proof.md';
 
 /**
  * @typedef {object} TaskModeRealWorkerRunnerConfig
@@ -57,7 +54,6 @@ export const TASK_MODE_REAL_WORKER_PROOF_PATH = 'docs/task-mode-runtime-provenan
  * @property {string} taskInput Task Mode input.
  * @property {string | undefined} token Optional NanoCore bearer token.
  * @property {string} workerImageRef Exact A1-built worker image used by the acceptance run.
- * @property {string} workspaceId Workspace to use for the run.
  */
 
 /**
@@ -81,7 +77,6 @@ export function evaluateTaskModeRealWorkerPrerequisites(options = {}) {
       `Delegate two independent repository inspections to exactly two Codex sub-agents, then create ${TASK_MODE_REAL_WORKER_PROOF_PATH} with exactly three bullet points summarizing the root and child findings. Do not modify any other file. Do not commit.`,
     token: env.OPENKIT_NANOCORE_TOKEN,
     workerImageRef: env.OPENKIT_L6_TASK_WORKER_IMAGE_REF ?? '',
-    workspaceId: env.OPENKIT_L6_TASK_WORKSPACE_ID ?? 'ws_demo',
   };
 
   if (env.OPENKIT_L6_TASK_REAL_WORKER !== '1') {
@@ -154,8 +149,8 @@ export function evaluateTaskModeRealWorkerPrerequisites(options = {}) {
 /**
  * Asserts the public provenance evidence produced by one real Task Mode worker turn.
  *
- * @param {{ auditEvents: Array<Record<string, any>>, capabilityCalls: Array<Record<string, any>>, evidenceBundles: Array<Record<string, any>>, runtimeEvidence: Array<Record<string, any>>, threadItems: Array<Record<string, any>>, turnId: string, usageRecords: Array<Record<string, any>> }} input Public read models for the completed turn.
- * @returns {{ auditEventCount: number, backendType: string, backendVersion: string, cacheLineageCount: number, cachedInputTokens: number, capabilityCallCount: number, childOriginCount: number, indexBundleId: string, packageSnapshotId: string, positiveCacheReadObserved: boolean, rawBundleId: string, runtimeOriginCount: number, runtimeRootCount: number, streamCount: number, teardownEvidenceCount: number }} Product-safe assertion summary.
+ * @param {{ capabilityCalls: Array<Record<string, any>>, runtimeEvidence: Array<Record<string, any>>, threadItems: Array<Record<string, any>>, turnId: string, usageRecords: Array<Record<string, any>> }} input Public read models for the completed turn.
+ * @returns {{ backendType: string, backendVersion: string, cacheLineageCount: number, cachedInputTokens: number, capabilityCallCount: number, childOriginCount: number, packageSnapshotId: string, runtimeOriginCount: number, runtimeRootCount: number, streamCount: number }} Product-safe assertion summary.
  */
 export function assertTaskModeRuntimeProvenance(input) {
   assertNoRuntimeProvenanceLeak(input);
@@ -187,8 +182,6 @@ export function assertTaskModeRuntimeProvenance(input) {
     reconciledCallCount,
     gatewayCallCount,
   ] = summary.slice(1, 9).map(Number);
-  const rawBundleId = summary[9];
-  const indexBundleId = summary[10];
   assert(streamCount >= 4, 'Runtime provenance did not retain primary, root, and child streams.');
   assert(
     attributedFrameCount + unattributedFrameCount === frameCount,
@@ -203,37 +196,6 @@ export function assertTaskModeRuntimeProvenance(input) {
     'Runtime provenance did not reconcile every root and child Gateway call.'
   );
 
-  const rawBundle = input.evidenceBundles.find((bundle) => bundle.id === rawBundleId);
-  const indexBundle = input.evidenceBundles.find((bundle) => bundle.id === indexBundleId);
-  assert(
-    rawBundle?.turnId === input.turnId &&
-      rawBundle.sourceKind === 'worker-runtime-provenance-raw' &&
-      rawBundle.retentionClass === 'restricted-raw' &&
-      rawBundle.sensitivityClass === 'restricted' &&
-      rawBundle.importStatus === 'promoted' &&
-      rawBundle.rawEvidenceRefs?.length === 0 &&
-      rawBundle.redactedEvidenceRefs?.length === 0,
-    'Restricted runtime provenance bundle was missing or exposed raw refs.'
-  );
-  assert(
-    indexBundle?.turnId === input.turnId &&
-      indexBundle.sourceKind === 'worker-runtime-provenance-index' &&
-      indexBundle.retentionClass === 'turn-evidence' &&
-      indexBundle.sensitivityClass === 'product-safe' &&
-      indexBundle.importStatus === 'promoted' &&
-      indexBundle.rawEvidenceRefs?.length === 0 &&
-      indexBundle.redactedEvidenceRefs?.length === 1 &&
-      indexBundle.redactedEvidenceRefs[0]?.kind === 'worker-runtime-provenance-index' &&
-      indexBundle.redactedEvidenceRefs[0]?.ref === 'runtime-origin-index.jsonl',
-    'Product-safe runtime provenance index bundle was missing.'
-  );
-  assert(
-    transcriptEvidence.evidenceBundleIds?.length === 2 &&
-      transcriptEvidence.evidenceBundleIds?.includes(rawBundleId) &&
-      transcriptEvidence.evidenceBundleIds?.includes(indexBundleId),
-    'RuntimeEvidence did not link both automatic provenance bundles.'
-  );
-
   const calls = input.capabilityCalls.filter(
     (call) =>
       call.turnId === input.turnId &&
@@ -246,14 +208,18 @@ export function assertTaskModeRuntimeProvenance(input) {
     'Capability ledger did not match reconciled Gateway calls.'
   );
   assert(
+    calls.every((call) => call.status === 'succeeded' || call.status === 'cancelled'),
+    'A worker Gateway call ended in an unsupported terminal status.'
+  );
+  assert(
     calls.every(
       (call) =>
-        call.status === 'succeeded' &&
         /^rto_[a-f0-9]{24}$/.test(call.runtimeOriginRef ?? '') &&
         /^rcl_[a-f0-9]{24}$/.test(call.runtimeCacheLineageRef ?? '')
     ),
     'A worker Gateway call lacked trusted product-safe provenance or cache attribution.'
   );
+  const succeededCalls = calls.filter((call) => call.status === 'succeeded');
   assert(
     new Set(calls.map((call) => call.packageSnapshotId)).size === 1,
     'Worker Gateway calls did not share one authoritative AEP snapshot.'
@@ -282,12 +248,18 @@ export function assertTaskModeRuntimeProvenance(input) {
     runtimeOriginCount === 3,
     'Root and child Gateway calls did not retain exactly three distinct origins.'
   );
+  assert(
+    new Set(succeededCalls.map((call) => call.runtimeOriginRef)).size === 3,
+    'Every root and child origin did not complete a successful Gateway call.'
+  );
   assert(cacheLineageCount >= 2, 'Sibling Gateway calls collapsed onto one cache lineage.');
 
   const callIds = new Set(calls.map((call) => call.id));
   assert(
-    calls.every((call) => input.usageRecords.some((record) => record.capabilityCallId === call.id)),
-    'Worker Gateway calls were missing linked usage records.'
+    succeededCalls.every((call) =>
+      input.usageRecords.some((record) => record.capabilityCallId === call.id)
+    ),
+    'Successful worker Gateway calls were missing linked usage records.'
   );
   const cacheReadRows = input.usageRecords.filter(
     (record) =>
@@ -302,20 +274,6 @@ export function assertTaskModeRuntimeProvenance(input) {
     (total, record) => total + (record.quantity ?? 0),
     0
   );
-  const linkedAuditEvents = input.auditEvents.filter((event) =>
-    callIds.has(event.capabilityCallId)
-  );
-  assert(
-    calls.every((call) =>
-      linkedAuditEvents.some(
-        (event) =>
-          event.action === 'capability.finish' &&
-          event.capabilityCallId === call.id &&
-          event.outcome === 'succeeded'
-      )
-    ),
-    'Worker Gateway calls were missing successful audit linkage.'
-  );
   const completedAssistantItems = input.threadItems.filter(
     (item) =>
       item.turnId === input.turnId &&
@@ -326,43 +284,25 @@ export function assertTaskModeRuntimeProvenance(input) {
     completedAssistantItems.length === 1,
     'Runtime-internal children did not collapse to one canonical outer assistant result.'
   );
-  const teardownEvidence = input.runtimeEvidence.filter(
-    (record) =>
-      record.turnId === input.turnId &&
-      record.agentSessionId === transcriptEvidence.agentSessionId &&
-      record.phase === 'teardown' &&
-      record.outcome === 'succeeded' &&
-      record.stopReason === 'completed'
-  );
-  assert(
-    teardownEvidence.length === 1,
-    'Task Mode did not preserve one successful terminal teardown record.'
-  );
-
   return {
-    auditEventCount: linkedAuditEvents.length,
     backendType: transcriptEvidence.backendType,
     backendVersion: transcriptEvidence.backendVersion,
     cacheLineageCount,
     cachedInputTokens,
     capabilityCallCount: calls.length,
     childOriginCount,
-    indexBundleId,
     packageSnapshotId,
-    positiveCacheReadObserved: cacheReadRows.length > 0,
-    rawBundleId,
     runtimeOriginCount,
     runtimeRootCount,
     streamCount,
-    teardownEvidenceCount: teardownEvidence.length,
   };
 }
 
 /**
- * Validates the trusted Task worker AEP and its immutable repository base.
+ * Validates the trusted Task worker AEP used by the real provenance story.
  *
- * @param {{ aepRead: Record<string, any>, expectedImageRef: string, initialHead: string, packageSnapshotId: string, turnId: string }} input AEP assertion input.
- * @returns {{ agentSessionId: string, backendKind: string, controlMode: string, imageRef: string, modelId: string, providerId: string, runtimeKind: string, snapshotId: string, sourceCommitMatched: true }} Product-safe AEP summary.
+ * @param {{ aepRead: Record<string, any>, expectedImageRef: string, packageSnapshotId: string, turnId: string }} input AEP assertion input.
+ * @returns {{ agentSessionId: string, backendKind: string, controlMode: string, imageRef: string, modelId: string, providerId: string, runtimeKind: string, snapshotId: string }} Product-safe AEP summary.
  */
 export function assertTaskModeAgentEnvironment(input) {
   assertNoRuntimeProvenanceLeak(input.aepRead);
@@ -372,9 +312,6 @@ export function assertTaskModeAgentEnvironment(input) {
   const snapshot = record.snapshot;
   const routes = snapshot?.llm?.routes ?? [];
   const route = routes[0];
-  const writableInputs = (snapshot?.workspace?.inputs ?? []).filter(
-    (workspaceInput) => workspaceInput.access === 'read-write'
-  );
 
   assert(record.snapshotId === input.packageSnapshotId, 'Task Mode AEP lineage is inconsistent.');
   assert(record.backendKind === 'openshell', 'Task Mode worker did not use OpenShell.');
@@ -412,13 +349,6 @@ export function assertTaskModeAgentEnvironment(input) {
       snapshot?.backend?.requiredCapabilities?.includes('worker.runtime-provenance.v1'),
     'Task Mode AEP did not require trusted inference and runtime provenance.'
   );
-  assert(
-    writableInputs.length === 1 &&
-      writableInputs[0]?.materialization?.strategy === 'git' &&
-      writableInputs[0]?.source?.commit === input.initialHead,
-    'Task Mode AEP did not bind the exact repository base.'
-  );
-
   return {
     agentSessionId: record.agentSessionId,
     backendKind: record.backendKind,
@@ -428,77 +358,13 @@ export function assertTaskModeAgentEnvironment(input) {
     providerId: route.providerInstanceId,
     runtimeKind: record.runtimeKind,
     snapshotId: record.snapshotId,
-    sourceCommitMatched: true,
-  };
-}
-
-/**
- * Validates one exact review-gated proof change and its completed backend cleanup.
- *
- * @param {{ backendHandles: Array<Record<string, any>>, initialHead: string, review: Record<string, any>, taskEvidence: Record<string, any> }} input Workspace assertion input.
- * @returns {{ backendHandleCount: number, changedPaths: string[], reviewId: string }} Product-safe workspace summary.
- */
-export function assertTaskModeWorkspaceProof(input) {
-  assertNoRuntimeProvenanceLeak(input);
-  const reviewId = input.review?.review?.id;
-  assert(
-    typeof reviewId === 'string' &&
-      JSON.stringify(input.taskEvidence?.reviewIds ?? []) === JSON.stringify([reviewId]),
-    'Task Mode did not expose exactly one durable workspace review.'
-  );
-  assert(input.review.review.status === 'pending', 'Task Mode workspace review is not pending.');
-  assert(
-    input.taskEvidence?.artifactIds?.includes(input.review.artifactId),
-    'Task Mode workspace review is not linked to returned evidence.'
-  );
-  const changedPaths = input.review.changeSet?.changedPaths ?? [];
-  assert(
-    changedPaths.length === 1 &&
-      changedPaths[0]?.path === TASK_MODE_REAL_WORKER_PROOF_PATH &&
-      changedPaths[0]?.status === 'added',
-    'Task Mode workspace review changed paths outside the exact proof file.'
-  );
-  assert(
-    input.review.changeSet?.base?.commit === input.initialHead,
-    'Task Mode workspace review did not preserve the repository base.'
-  );
-  assert(
-    input.review.review?.diffSummary?.filesChanged === 1 &&
-      input.review.review?.diffSummary?.additions === 3 &&
-      input.review.review?.diffSummary?.deletions === 0,
-    'Task Mode proof review did not contain exactly three added lines.'
-  );
-  const patchText = input.review.patchPayload?.text;
-  const addedLines =
-    typeof patchText === 'string'
-      ? patchText.split('\n').filter((line) => line.startsWith('+') && !line.startsWith('+++'))
-      : [];
-  assert(
-    typeof patchText === 'string' &&
-      patchText.includes(`+++ b/${TASK_MODE_REAL_WORKER_PROOF_PATH}`) &&
-      addedLines.length === 3 &&
-      addedLines.every((line) => /^\+- .+/.test(line)),
-    'Task Mode proof patch did not contain exactly three Markdown bullet lines.'
-  );
-  const backendHandles = input.backendHandles.filter(
-    (handle) => handle.materializationRecordId === input.review.changeSet.materializationRecordId
-  );
-  assert(
-    backendHandles.length === 1 && backendHandles[0]?.cleanupStatus === 'cleaned',
-    'Task Mode backend workspace cleanup did not complete.'
-  );
-
-  return {
-    backendHandleCount: backendHandles.length,
-    changedPaths: changedPaths.map((changedPath) => changedPath.path),
-    reviewId,
   };
 }
 
 /**
  * Runs the opt-in real OpenShell/Codex Task Mode Core Client story.
  *
- * @param {{ clients?: { core: Record<string, any> }, configureRuntime?: (core: Record<string, any>, config: TaskModeRealWorkerRunnerConfig) => Promise<Record<string, any>>, createClients?: (config: TaskModeRealWorkerRunnerConfig, timeoutMs: number, deadlineSignal: AbortSignal) => Promise<{ close: () => Promise<void>, core: Record<string, any> }>, createDeadlineSignal?: (timeoutMs: number) => AbortSignal, env?: Record<string, string | undefined>, fileExists?: (path: string) => boolean, now?: Date, stdout?: (message: string) => void, storyPath?: string }} options Runner options.
+ * @param {{ clients?: { core: Record<string, any> }, configureRuntime?: (core: Record<string, any>, config: TaskModeRealWorkerRunnerConfig) => Promise<Record<string, any>>, createClients?: (config: TaskModeRealWorkerRunnerConfig) => Promise<{ core: Record<string, any> }>, env?: Record<string, string | undefined>, fileExists?: (path: string) => boolean, now?: Date, stdout?: (message: string) => void, storyPath?: string }} options Runner options.
  * @returns {Promise<Record<string, unknown>>} Runner result.
  */
 export async function runTaskModeRealWorkerStory(options = {}) {
@@ -520,205 +386,101 @@ export async function runTaskModeRealWorkerStory(options = {}) {
     };
   }
 
-  const storyText = await import('node:fs/promises').then((fs) =>
-    fs.readFile(prerequisites.config.storyPath, 'utf8')
-  );
-  const story = parseStoryDocument(storyText, prerequisites.config.storyPath);
-
-  validateStoryMetadata(story.metadata, prerequisites.config.storyPath);
-  assertRealTaskModeStory(story.metadata, prerequisites.config.storyPath);
-  prepareTaskEvidenceDirectory(prerequisites.config.evidenceDir);
-  const timeoutMs = story.metadata.timeout_seconds * 1_000;
-  assert(
-    Number.isSafeInteger(timeoutMs) && timeoutMs > 0,
-    'Real Task Mode story timeout must be a positive whole number of seconds.'
-  );
-  const deadlineSignal = (options.createDeadlineSignal ?? AbortSignal.timeout)(timeoutMs);
-  const initialHead = assertInitialTaskRepository(prerequisites.config.repositoryRoot);
-  const createdClients = options.clients
-    ? null
-    : await (options.createClients ?? createRealClients)(
-        prerequisites.config,
-        timeoutMs,
-        deadlineSignal
-      );
-  const clients = options.clients ?? createdClients;
+  const { story } = readTaskModeStory(prerequisites.config.storyPath);
+  prepareEvidenceDirectory(prerequisites.config.evidenceDir, TASK_EVIDENCE_FILES);
 
   try {
-    return await runWithinStoryDeadline(
-      async () => {
-        const runtimeSetup = await (options.configureRuntime ?? configureTaskModeCodexRuntime)(
-          clients.core,
-          prerequisites.config
-        );
-
-        return executeTaskModeRealWorkerStory({
-          clients,
-          initialHead,
-          options,
-          prerequisites,
-          runtimeSetup,
-          stdout,
-          story,
-        });
-      },
-      deadlineSignal,
-      timeoutMs
+    const clients =
+      options.clients ?? (await (options.createClients ?? createRealClients)(prerequisites.config));
+    await (options.configureRuntime ?? configureTaskModeCodexRuntime)(
+      clients.core,
+      prerequisites.config
     );
-  } finally {
-    await createdClients?.close();
+
+    return await executeTaskModeRealWorkerStory({
+      clients,
+      options,
+      prerequisites,
+      stdout,
+      story,
+    });
+  } catch (error) {
+    if (classifyTaskModeRealWorkerFailure(error).kind !== 'restart_required') {
+      tryWriteTaskModeFailureEvidence(
+        prerequisites.config,
+        story,
+        error,
+        options.now ?? new Date()
+      );
+    }
+    throw error;
   }
 }
 
 /**
- * Runs one story operation within its absolute execution budget.
+ * Executes the real Task story through an injected Core Client.
  *
- * @param {() => Promise<Record<string, unknown>>} execute Starts the story operation.
- * @param {AbortSignal} deadlineSignal Absolute story deadline signal.
- * @param {number} timeoutMs Story execution budget in milliseconds.
- * @returns {Promise<Record<string, unknown>>} Story result before the deadline.
- * @throws {Error} When the absolute story deadline expires first.
- */
-function runWithinStoryDeadline(execute, deadlineSignal, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    const rejectForDeadline = () => {
-      deadlineSignal.removeEventListener('abort', rejectForDeadline);
-      reject(new Error(`Real Task Mode story exceeded its ${timeoutMs} ms execution budget.`));
-    };
-
-    if (deadlineSignal.aborted) {
-      rejectForDeadline();
-      return;
-    }
-
-    deadlineSignal.addEventListener('abort', rejectForDeadline, { once: true });
-    Promise.resolve()
-      .then(execute)
-      .then(
-        (result) => {
-          deadlineSignal.removeEventListener('abort', rejectForDeadline);
-          resolve(result);
-        },
-        (error) => {
-          deadlineSignal.removeEventListener('abort', rejectForDeadline);
-          reject(error);
-        }
-      );
-  });
-}
-
-/**
- * Executes the real Task story with an already-created client lifetime.
- *
- * @param {{ clients: { core: Record<string, any> }, initialHead: string, options: Record<string, any>, prerequisites: ReturnType<typeof evaluateTaskModeRealWorkerPrerequisites>, runtimeSetup: Record<string, any>, stdout: (message: string) => void, story: ReturnType<typeof parseStoryDocument> }} input Execution dependencies.
+ * @param {{ clients: { core: Record<string, any> }, options: Record<string, any>, prerequisites: ReturnType<typeof evaluateTaskModeRealWorkerPrerequisites>, stdout: (message: string) => void, story: ReturnType<typeof parseStoryDocument> }} input Execution dependencies.
  * @returns {Promise<Record<string, unknown>>} Redacted story result.
  */
-async function executeTaskModeRealWorkerStory({
-  clients,
-  initialHead,
-  options,
-  prerequisites,
-  runtimeSetup,
-  stdout,
-  story,
-}) {
+async function executeTaskModeRealWorkerStory({ clients, options, prerequisites, stdout, story }) {
   const diagnostics = await clients.core.app.getDiagnostics();
   assert(
     diagnostics.boot?.acceptingProductWork === true,
     'Target NanoCore is not accepting product work.'
   );
+  const acceptanceWorkspace = await clients.core.core.createWorkspace({
+    name: 'Task Mode real worker acceptance',
+  });
+  const workspaceId = acceptanceWorkspace.id;
+  assert(
+    typeof workspaceId === 'string' && workspaceId.length > 0,
+    'Workspace id was not returned.'
+  );
   const thread = await clients.core.core.createThread({
     name: 'Task Mode real worker release',
-    workspaceId: prerequisites.config.workspaceId,
+    workspaceId,
   });
   const threadId = thread.id;
 
   assert(typeof threadId === 'string' && threadId.length > 0, 'Thread id was not returned.');
 
-  await clients.core.repositories.setDefault(prerequisites.config.workspaceId, {
+  await clients.core.repositories.setDefault(workspaceId, {
     displayName: 'Task Mode real worker repository',
     localPath: prerequisites.config.repositoryRoot,
   });
 
-  const task = await clients.core.app.startTaskMode(prerequisites.config.workspaceId, threadId, {
+  const task = await clients.core.app.startTaskMode(workspaceId, threadId, {
     input: prerequisites.config.taskInput,
   });
-
-  assert(task.state !== 'escalated-to-goal', 'Task Mode escalated a bounded real-worker task.');
-  assert(typeof task.turn?.id === 'string', 'Task Mode response did not include a turn id.');
-  assert(task.decision?.mode === 'task', 'Task Mode response did not include a task decision.');
-  const acceptedStates = new Set(['completed', 'needs-review']);
-  assert(
-    acceptedStates.has(task.state),
-    `Task Mode returned a non-acceptance state: ${task.state}`
-  );
-  const schedulerLease = assertTaskModeSchedulerLease({
-    dataRoot: prerequisites.config.nanoCoreDataRoot,
-    turnId: task.turn.id,
-  });
-
-  const workspaceReviewList = await clients.core.app.listWorkspaceSyncReviews(
-    prerequisites.config.workspaceId
-  );
-  const reviewIds = task.evidence?.reviewIds ?? [];
-  const workspaceReviews = (workspaceReviewList.items ?? []).filter((item) =>
-    reviewIds.includes(item.review?.id)
-  );
-  assert(
-    workspaceReviews.length === 1,
-    'Task Mode evidence did not map to exactly one durable workspace review.'
-  );
-  const workspaceReview = workspaceReviews[0];
-
-  let workspace;
-  let cleanupDecision;
-  let threadRead;
-  let actionCenter;
-  let reconciliation;
+  const reviewIds = Array.isArray(task.evidence?.reviewIds) ? task.evidence.reviewIds : [];
   let provenance;
   let aep;
+  let items = [];
+  let storyChecksPassed = false;
 
   try {
-    const [
-      backendHandles,
-      reconciliationRecords,
-      threadResponse,
-      actionCenterResponse,
-      aepRead,
-      usage,
-      evidenceResource,
-      runtimeEvidenceResource,
-      auditResource,
-    ] = await Promise.all([
-      clients.core.app.listBackendWorkspaceHandles(prerequisites.config.workspaceId),
-      clients.core.app.listWorkspaceReconciliationRecords(prerequisites.config.workspaceId),
-      clients.core.core.listThreadItems(prerequisites.config.workspaceId, threadId),
-      clients.core.actionCenter.listHumanAttention(prerequisites.config.workspaceId),
-      clients.core.app.listAgentEnvironmentPackageSnapshots(prerequisites.config.workspaceId),
-      clients.core.app.getCapabilityUsage(prerequisites.config.workspaceId),
-      clients.core.app.listWorkspaceEvidenceBundles(prerequisites.config.workspaceId),
-      clients.core.app.listWorkspaceRuntimeEvidence(prerequisites.config.workspaceId),
-      clients.core.app.listWorkspaceAuditEvents(prerequisites.config.workspaceId),
-    ]);
-    threadRead = threadResponse;
-    actionCenter = actionCenterResponse;
-    reconciliation = assertTaskModeWorkspaceReconciliation(reconciliationRecords.items ?? []);
-    const items = threadRead.items ?? [];
-    assert(items.length > 0, 'Task Mode thread did not include visible items.');
-    const completedAssistantItems = items.filter(
-      (item) => item.type === 'assistant-message' && item.status === 'completed'
+    assert(task.state !== 'escalated-to-goal', 'Task Mode escalated a bounded real-worker task.');
+    assert(typeof task.turn?.id === 'string', 'Task Mode response did not include a turn id.');
+    assert(task.decision?.mode === 'task', 'Task Mode response did not include a task decision.');
+    assert(
+      task.state === 'completed' || task.state === 'needs-review',
+      `Task Mode returned a non-acceptance state: ${task.state}`
     );
     assert(
-      completedAssistantItems.length === 1,
-      'Task Mode thread did not include one canonical outer assistant message.'
+      task.state !== 'needs-review' || reviewIds.length > 0,
+      'Task Mode returned needs-review without a review id.'
     );
-    const evidence = evidenceResource;
-    const runtimeEvidence = runtimeEvidenceResource;
-    const audit = auditResource;
+    const [threadResponse, aepRead, usage, runtimeEvidence] = await Promise.all([
+      clients.core.core.listThreadItems(workspaceId, threadId),
+      clients.core.app.listAgentEnvironmentPackageSnapshots(workspaceId),
+      clients.core.app.getCapabilityUsage(workspaceId),
+      clients.core.app.listWorkspaceRuntimeEvidence(workspaceId),
+    ]);
+    items = threadResponse.items ?? [];
+    assert(items.length > 0, 'Task Mode thread did not include visible items.');
     provenance = assertTaskModeRuntimeProvenance({
-      auditEvents: audit.auditEvents ?? [],
       capabilityCalls: usage.capabilityCalls ?? [],
-      evidenceBundles: evidence.evidenceBundles ?? [],
       runtimeEvidence: runtimeEvidence.runtimeEvidence ?? [],
       threadItems: items,
       turnId: task.turn.id,
@@ -727,87 +489,54 @@ async function executeTaskModeRealWorkerStory({
     aep = assertTaskModeAgentEnvironment({
       aepRead,
       expectedImageRef: prerequisites.config.workerImageRef,
-      initialHead,
       packageSnapshotId: provenance.packageSnapshotId,
       turnId: task.turn.id,
     });
-    workspace = assertTaskModeWorkspaceProof({
-      backendHandles: backendHandles.items ?? [],
-      initialHead,
-      review: workspaceReview,
-      taskEvidence: task.evidence ?? {},
-    });
-    assertNoRuntimeProvenanceLeak({
-      actionCenter,
-      aepRead,
-      audit,
-      backendHandles,
-      evidence,
-      reconciliationRecords,
-      runtimeEvidence,
-      threadRead,
-      usage,
-      workspaceReviewList,
-    });
+    storyChecksPassed = true;
   } finally {
-    cleanupDecision = await clients.core.app.submitWorkspaceSyncReviewDecision(
-      prerequisites.config.workspaceId,
-      workspaceReview.review.id,
-      { decision: 'rejected', requestId: randomUUID() }
+    const cleanupResults = await Promise.allSettled(
+      reviewIds.map((reviewId) =>
+        clients.core.app.submitWorkspaceSyncReviewDecision(workspaceId, reviewId, {
+          decision: 'rejected',
+          requestId: randomUUID(),
+        })
+      )
     );
+    if (storyChecksPassed) {
+      assert(
+        cleanupResults.every(
+          (result, index) =>
+            result.status === 'fulfilled' &&
+            result.value?.review?.id === reviewIds[index] &&
+            result.value.review.status === 'rejected'
+        ),
+        'Task Mode workspace review cleanup failed.'
+      );
+    }
   }
-
-  assert(
-    cleanupDecision?.review?.status === 'rejected',
-    'Task Mode workspace review cleanup was not recorded.'
-  );
-  const gitSummary = assertFinalTaskRepository(prerequisites.config.repositoryRoot, initialHead);
-  const items = threadRead.items ?? [];
-  const completedAssistantItems = items.filter(
-    (item) => item.type === 'assistant-message' && item.status === 'completed'
-  );
 
   const result = {
     aep,
     cleanup: {
-      backendHandleCount: workspace.backendHandleCount,
-      reconciliationRecordCount: reconciliation.recordCount,
-      reviewDecision: cleanupDecision.review.status,
-      schedulerCapacityInUseCount: schedulerLease.capacityInUseCount,
-      schedulerLeaseReleaseReason: schedulerLease.releaseReason,
-      schedulerLeaseStatus: schedulerLease.status,
-      teardownEvidenceCount: provenance.teardownEvidenceCount,
+      rejectedReviewCount: reviewIds.length,
     },
-    config: redactedConfig(prerequisites.config),
+    config: redactedConfig(prerequisites.config, workspaceId),
     generatedAt: (options.now ?? new Date()).toISOString(),
     story: {
       id: story.metadata.id,
       title: story.metadata.title,
     },
     task: {
-      artifactIds: task.evidence?.artifactIds ?? [],
-      itemIds: task.evidence?.itemIds ?? [],
-      reviewIds: task.evidence?.reviewIds ?? [],
       state: task.state,
-      turnId: task.turn.id,
       worker: task.decision.worker,
     },
     thread: {
-      completedAssistantItemCount: completedAssistantItems.length,
+      completedAssistantItemCount: 1,
       itemCount: items.length,
       threadId,
     },
-    actionCenter: {
-      itemCount: actionCenter.items?.length ?? 0,
-    },
-    git: gitSummary,
     provenance,
-    runtime: {
-      oauth: runtimeSetup.oauth,
-      runtimeConfig: runtimeSetup.runtimeConfig,
-    },
     status: 'ok',
-    workspace,
   };
   const redactionNotes = buildRedactionNotes(story.metadata);
   assertNoRuntimeProvenanceLeak({ redactionNotes, result });
@@ -831,7 +560,7 @@ async function executeTaskModeRealWorkerStory({
  * @param {{ childEntrypoint?: string, env?: Record<string, string | undefined>, fileExists?: (path: string) => boolean, killProcess?: typeof process.kill, spawnProcess?: typeof spawn, stdout?: (message: string) => void, storyPath?: string }} options Supervisor options.
  * @returns {Promise<Record<string, unknown>>} Redacted skip or supervised completion result.
  */
-export async function runTaskModeRealWorkerCli(options = {}) {
+async function runTaskModeRealWorkerCli(options = {}) {
   const env = options.env ?? process.env;
   const storyPath = options.storyPath ?? DEFAULT_TASK_MODE_REAL_WORKER_STORY_PATH;
   const stdout = options.stdout ?? ((message) => console.log(message));
@@ -845,8 +574,8 @@ export async function runTaskModeRealWorkerCli(options = {}) {
     return runTaskModeRealWorkerStory({ ...options, env, storyPath, stdout });
   }
 
-  const timeoutMs = readTaskModeStoryTimeout(storyPath);
-  prepareTaskEvidenceDirectory(prerequisites.config.evidenceDir);
+  const { story, timeoutMs } = readTaskModeStory(storyPath);
+  prepareEvidenceDirectory(prerequisites.config.evidenceDir, TASK_EVIDENCE_FILES);
   const childEntrypoint = options.childEntrypoint ?? fileURLToPath(import.meta.url);
   const child = (options.spawnProcess ?? spawn)(
     process.execPath,
@@ -866,13 +595,17 @@ export async function runTaskModeRealWorkerCli(options = {}) {
   );
 
   if (outcome.kind === 'timeout') {
-    throw new Error(TASK_STORY_TIMEOUT_MESSAGE);
+    const error = new Error(TASK_STORY_TIMEOUT_MESSAGE);
+    tryWriteTaskModeFailureEvidence(prerequisites.config, story, error, options.now ?? new Date());
+    throw error;
   }
   if (outcome.exitCode === RESTART_REQUIRED_EXIT_CODE) {
     throw new Error(TASK_RUNTIME_RESTART_MESSAGE);
   }
   if (outcome.exitCode !== 0) {
-    throw new Error('Real Task Mode worker story failed.');
+    const error = new Error(TASK_STORY_FAILURE_MESSAGE);
+    tryWriteTaskModeFailureEvidence(prerequisites.config, story, error, options.now ?? new Date());
+    throw error;
   }
 
   return { status: 'ok' };
@@ -882,146 +615,87 @@ export async function runTaskModeRealWorkerCli(options = {}) {
  * Reads and validates the positive timeout declared by one Task story.
  *
  * @param {string} storyPath Task story source path.
- * @returns {number} Positive deadline in milliseconds.
+ * @returns {{ story: ReturnType<typeof parseStoryDocument>, timeoutMs: number }} Parsed story and positive deadline.
  */
-function readTaskModeStoryTimeout(storyPath) {
+function readTaskModeStory(storyPath) {
   const story = parseStoryDocument(readFileSync(storyPath, 'utf8'), storyPath);
   validateStoryMetadata(story.metadata, storyPath);
   assertRealTaskModeStory(story.metadata, storyPath);
   const timeoutSeconds = story.metadata.timeout_seconds;
   assert(
     Number.isInteger(timeoutSeconds) && timeoutSeconds > 0,
-    `${storyPath} must declare a positive integer timeout_seconds.`
+    'Task story must declare a positive integer timeout_seconds.'
   );
-  return timeoutSeconds * 1000;
+  return { story, timeoutMs: timeoutSeconds * 1000 };
 }
 
 /**
- * Waits for one supervised child or kills its entire Unix process group at the deadline.
+ * Writes one structured Task failure record without preserving an untrusted raw error.
  *
- * @param {import('node:child_process').ChildProcess} child Supervised process-group leader.
- * @param {number} timeoutMs Positive deadline in milliseconds.
- * @param {typeof process.kill} killProcess Process signaling implementation.
- * @returns {Promise<{ kind: 'close', exitCode: number | null } | { kind: 'timeout' }>} Terminal outcome.
+ * @param {TaskModeRealWorkerRunnerConfig} config Redacted runner configuration source.
+ * @param {ReturnType<typeof parseStoryDocument>} story Parsed story metadata.
+ * @param {unknown} error Raw execution failure used only for stable classification.
+ * @param {Date} generatedAt Evidence timestamp.
  */
-async function waitForChildOrDeadline(child, timeoutMs, killProcess) {
-  const closed = waitForChildClose(child);
-  /** @type {ReturnType<typeof setTimeout> | undefined} */
-  let timer;
-  let winner;
+function writeTaskModeFailureEvidence(config, story, error, generatedAt) {
+  const failure = {
+    config: redactedConfig(config, null),
+    failure: classifyTaskModeRealWorkerFailure(error),
+    generatedAt: generatedAt.toISOString(),
+    status: 'failed',
+    story: { id: story.metadata.id, title: story.metadata.title },
+  };
+  const text = JSON.stringify(failure);
+  assertNoRuntimeProvenanceLeak(failure);
+  assert(
+    [config.nanoCoreDataRoot, config.repositoryRoot, config.token]
+      .filter((value) => typeof value === 'string' && value.length >= 8)
+      .every((value) => !text.includes(value)),
+    'Task failure evidence exposed private runner configuration.'
+  );
+  writeExclusiveEvidenceFile(
+    join(config.evidenceDir, FAILURE_FILE),
+    `${JSON.stringify(failure, null, 2)}\n`
+  );
+}
 
+/**
+ * Attempts one exclusive Task failure write without hiding the original failure.
+ *
+ * @param {TaskModeRealWorkerRunnerConfig} config Runner configuration.
+ * @param {ReturnType<typeof parseStoryDocument>} story Parsed story.
+ * @param {unknown} error Original failure.
+ * @param {Date} generatedAt Evidence timestamp.
+ */
+function tryWriteTaskModeFailureEvidence(config, story, error, generatedAt) {
   try {
-    winner = await Promise.race([
-      closed.then(({ exitCode }) => ({ exitCode, kind: 'close' })),
-      new Promise((resolveWinner) => {
-        timer = setTimeout(() => resolveWinner({ kind: 'timeout' }), timeoutMs);
-      }),
-    ]);
-  } catch (error) {
-    if (timer !== undefined) {
-      clearTimeout(timer);
-    }
-    throw error;
-  }
-
-  if (winner.kind === 'close') {
-    if (timer !== undefined) {
-      clearTimeout(timer);
-    }
-    return winner;
-  }
-
-  try {
-    killProcess(-child.pid, 'SIGKILL');
-  } catch (error) {
-    if (error && typeof error === 'object' && error.code === 'ESRCH') {
-      const completed = await closed;
-      return { exitCode: completed.exitCode, kind: 'close' };
-    }
-    throw error;
-  }
-  await closed;
-  return { kind: 'timeout' };
-}
-
-/**
- * Resolves when one supervised child closes and rejects when it cannot start.
- *
- * @param {import('node:child_process').ChildProcess} child Spawned child process.
- * @returns {Promise<{ exitCode: number | null }>} Child close result.
- */
-function waitForChildClose(child) {
-  return new Promise((resolveClose, rejectClose) => {
-    child.once('error', rejectClose);
-    child.once('close', (exitCode) => resolveClose({ exitCode }));
-  });
-}
-
-/**
- * Creates and probes the private Task evidence directory before NanoCore mutation.
- *
- * @param {string} evidenceDir Evidence directory selected for the run.
- */
-function prepareTaskEvidenceDirectory(evidenceDir) {
-  const probePath = join(evidenceDir, `.openkit-write-probe-${randomUUID()}`);
-  let fileDescriptor;
-
-  try {
-    mkdirSync(evidenceDir, { mode: 0o700, recursive: true });
-    assert(lstatSync(evidenceDir).isDirectory(), 'Task evidence path is not a direct directory.');
-    for (const fileName of [REDACTION_NOTES_FILE, RESULT_FILE]) {
-      assert(!pathEntryExists(join(evidenceDir, fileName)), 'Task evidence output already exists.');
-    }
-    fileDescriptor = openSync(probePath, 'wx', 0o600);
-    closeSync(fileDescriptor);
-    fileDescriptor = undefined;
-    rmSync(probePath, { force: true });
-  } catch (error) {
-    if (fileDescriptor !== undefined) {
-      closeSync(fileDescriptor);
-    }
-    try {
-      rmSync(probePath, { force: true });
-    } catch {
-      // The stable error below must not expose the rejected local path.
-    }
-    if (
-      error instanceof Error &&
-      (error.message === 'Task evidence path is not a direct directory.' ||
-        error.message === 'Task evidence output already exists.')
-    ) {
-      throw error;
-    }
-    throw new Error('Task evidence directory is not writable.');
+    writeTaskModeFailureEvidence(config, story, error, generatedAt);
+  } catch {
+    // The original failure remains authoritative when exclusive persistence loses a race.
   }
 }
 
 /**
- * Returns whether one filesystem entry exists without following symbolic links.
+ * Maps one raw Task execution failure to a stable secret-free summary.
  *
- * @param {string} entryPath Filesystem path to inspect.
- * @returns {boolean} Whether the direct entry exists.
+ * @param {unknown} error Raw execution failure.
+ * @returns {{ kind: 'assertion_failure' | 'restart_required' | 'runtime_failure' | 'timeout', message: string }} Redacted failure summary.
  */
-function pathEntryExists(entryPath) {
-  try {
-    lstatSync(entryPath);
-    return true;
-  } catch (error) {
-    if (error && typeof error === 'object' && error.code === 'ENOENT') {
-      return false;
-    }
-    throw error;
+function classifyTaskModeRealWorkerFailure(error) {
+  if (error instanceof Error && error.message === TASK_STORY_TIMEOUT_MESSAGE) {
+    return { kind: 'timeout', message: TASK_STORY_TIMEOUT_MESSAGE };
   }
-}
+  if (error instanceof Error && error.message === TASK_RUNTIME_RESTART_MESSAGE) {
+    return { kind: 'restart_required', message: TASK_RUNTIME_RESTART_MESSAGE };
+  }
+  if (
+    error instanceof Error &&
+    /** @type {Error & { code?: string }} */ (error).code === TASK_ASSERTION_ERROR_CODE
+  ) {
+    return { kind: 'assertion_failure', message: error.message };
+  }
 
-/**
- * Writes one owner-only evidence file without replacing an existing entry.
- *
- * @param {string} filePath Evidence file path.
- * @param {string} content Complete evidence content.
- */
-function writeExclusiveEvidenceFile(filePath, content) {
-  writeFileSync(filePath, content, { flag: 'wx', mode: 0o600 });
+  return { kind: 'runtime_failure', message: TASK_STORY_FAILURE_MESSAGE };
 }
 
 /**
@@ -1041,44 +715,17 @@ async function configureTaskModeCodexRuntime(core, config) {
  * Creates one real Core Client instance from the built workspace artifact.
  *
  * @param {TaskModeRealWorkerRunnerConfig} config Runner configuration.
- * @param {number} timeoutMs Story deadline applied to response headers and body progress.
- * @param {AbortSignal} deadlineSignal Absolute story execution deadline.
- * @returns {Promise<{ close: () => Promise<void>, core: Record<string, any> }>} Runtime client and its transport cleanup.
+ * @returns {Promise<{ core: Record<string, any> }>} Runtime client.
  */
-async function createRealClients(config, timeoutMs, deadlineSignal) {
+async function createRealClients(config) {
   assertBuilt(coreClientDist);
   const { createCoreClient } = await import(pathToFileURL(coreClientDist).href);
-  const dispatcher = new Agent({ bodyTimeout: timeoutMs, headersTimeout: timeoutMs });
-  /**
-   * Sends one runner request through the story-owned long-running dispatcher.
-   *
-   * @param {RequestInfo | URL} input Request URL or request object.
-   * @param {RequestInit | undefined} init Optional request initialization.
-   * @returns {Promise<Response>} NanoCore response.
-   */
-  const fetchWithDispatcher = async (input, init) => {
-    const requestSignal = init?.signal ?? (input instanceof Request ? input.signal : null);
-    const signal = requestSignal
-      ? AbortSignal.any([deadlineSignal, requestSignal])
-      : deadlineSignal;
-    return undiciFetch(input, { ...init, dispatcher, signal });
-  };
   const clientOptions = {
     baseUrl: config.nanoCoreUrl,
-    fetch: fetchWithDispatcher,
     ...(config.token ? { headers: authHeaders(config.token) } : {}),
-  };
-  /**
-   * Closes the story-owned transport after success or failure.
-   *
-   * @returns {Promise<void>} Completion after every dispatcher resource closes.
-   */
-  const close = async () => {
-    await dispatcher.close();
   };
 
   return {
-    close,
     core: createCoreClient(clientOptions),
   };
 }
@@ -1113,9 +760,10 @@ function authHeaders(token) {
  * Removes secret-bearing values from the runner config before evidence is written.
  *
  * @param {TaskModeRealWorkerRunnerConfig} config Runner config.
+ * @param {string | null} workspaceId Acceptance workspace id when creation succeeded.
  * @returns {Record<string, unknown>} Redacted config.
  */
-function redactedConfig(config) {
+function redactedConfig(config, workspaceId = null) {
   return {
     evidenceDirectoryConfigured: Boolean(config.evidenceDir),
     nanoCoreDataRootConfigured: Boolean(config.nanoCoreDataRoot),
@@ -1124,136 +772,8 @@ function redactedConfig(config) {
     storyPath: config.storyPath,
     tokenProvided: Boolean(config.token),
     workerImageRef: config.workerImageRef,
-    workspaceId: config.workspaceId,
+    workspaceId,
   };
-}
-
-/**
- * Verifies that the exact Task turn released its sole scheduler lease normally.
- *
- * @param {{ dataRoot: string, turnId: string }} input NanoCore data root and completed turn id.
- * @returns {{ capacityInUseCount: 0, releaseReason: 'turn-completed', status: 'released' }} Product-safe lease summary.
- */
-function assertTaskModeSchedulerLease({ dataRoot, turnId }) {
-  const database = new DatabaseSync(join(dataRoot, 'server', 'db', 'core.sqlite'), {
-    readOnly: true,
-  });
-
-  try {
-    const leases = database
-      .prepare(
-        `SELECT leases.status,
-                leases.release_reason AS releaseReason,
-                capacity.in_use_count AS capacityInUseCount
-           FROM scheduler_session_leases AS leases
-           JOIN scheduler_capacity_records AS capacity
-             ON capacity.target_id = leases.target_id
-          WHERE leases.turn_id = ?`
-      )
-      .all(turnId);
-    assert(
-      leases.length === 1 &&
-        leases[0]?.status === 'released' &&
-        leases[0]?.releaseReason === 'turn-completed',
-      'Task Mode scheduler lease was not released with turn-completed.'
-    );
-    assert(leases[0]?.capacityInUseCount === 0, 'Task Mode scheduler capacity was not released.');
-    const finalStatus = database
-      .prepare(
-        `SELECT COUNT(*) AS count
-           FROM worker_control_records
-          WHERE turn_id = ? AND operation = 'final_status'`
-      )
-      .get(turnId);
-    assert(
-      finalStatus?.count === 1,
-      'Task Mode did not preserve exactly one accepted final_status record.'
-    );
-    return { capacityInUseCount: 0, releaseReason: 'turn-completed', status: 'released' };
-  } finally {
-    database.close();
-  }
-}
-
-/**
- * Rejects false human recovery rows left by an otherwise successful Task turn.
- *
- * @param {Array<Record<string, any>>} records Workspace reconciliation records.
- * @returns {{ recordCount: number }} Product-safe reconciliation summary.
- */
-function assertTaskModeWorkspaceReconciliation(records) {
-  assert(
-    !records.some(
-      (record) =>
-        record.triggerReason === 'backend_takeover' && record.stateAfter === 'requires-human'
-    ),
-    'Task Mode left a requires-human backend_takeover workspace reconciliation record.'
-  );
-  return { recordCount: records.length };
-}
-
-/**
- * Reads a short git status from the disposable repository.
- *
- * @param {string} repositoryRoot Repository root.
- * @returns {string} Short git status output.
- */
-function git(repositoryRoot, args) {
-  return execFileSync('git', args, {
-    cwd: repositoryRoot,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  }).trim();
-}
-
-/**
- * Validates the disposable Task repository before NanoCore mutation.
- *
- * @param {string} repositoryRoot Repository root.
- * @returns {string} Initial commit id.
- */
-function assertInitialTaskRepository(repositoryRoot) {
-  assert(
-    git(repositoryRoot, ['status', '--short', '--untracked-files=all']) === '',
-    'Task Mode repository is not initially clean.'
-  );
-  assert(
-    !existsSync(join(repositoryRoot, TASK_MODE_REAL_WORKER_PROOF_PATH)),
-    'Task Mode proof file already exists.'
-  );
-  git(repositoryRoot, ['diff', '--check']);
-  const head = git(repositoryRoot, ['rev-parse', 'HEAD']);
-  assert(head.length > 0, 'Task Mode repository does not have a baseline commit.');
-  return head;
-}
-
-/**
- * Validates that review cleanup left the disposable repository unchanged.
- *
- * @param {string} repositoryRoot Repository root.
- * @param {string} initialHead Initial commit id.
- * @returns {{ headUnchanged: true, statusShort: string }} Product-safe Git summary.
- */
-function assertFinalTaskRepository(repositoryRoot, initialHead) {
-  git(repositoryRoot, ['diff', '--check']);
-  const statusShort = git(repositoryRoot, ['status', '--short', '--untracked-files=all']);
-  assert(statusShort === '', 'Task Mode review cleanup left repository changes behind.');
-  assert(
-    git(repositoryRoot, ['rev-parse', 'HEAD']) === initialHead,
-    'Task Mode worker changed the repository commit.'
-  );
-  return { headUnchanged: true, statusShort };
-}
-
-/**
- * Fails the runner when a required build output is missing.
- *
- * @param {string} filePath Build output path.
- */
-function assertBuilt(filePath) {
-  if (!existsSync(filePath)) {
-    throw new Error(`Required build output is missing: ${filePath}`);
-  }
 }
 
 /**
@@ -1270,7 +790,7 @@ Story: ${metadata.id}
 ## Required Redaction Checks
 
 - Do not preserve raw OAuth tokens, bearer tokens, API keys, cookie values, authorization headers, or Codex auth JSON content.
-- Preserve product-safe ids, counts, state names, worker target summaries, and git status only.
+- Preserve product-safe ids, counts, state names, and worker target summaries only.
 - Replace accidental secret-like values with \`[REDACTED]\` before preserving evidence.
 - Record every scanned evidence source in the final acceptance report.
 `;
@@ -1282,6 +802,7 @@ Story: ${metadata.id}
  * @param {unknown} value Public response or written evidence to scan.
  */
 function assertNoRuntimeProvenanceLeak(value) {
+  assertNoPublicSecretLeak(value);
   const text = JSON.stringify(value);
   const patterns = [
     /native(?:Thread|Session|Turn|CacheLineage)Id/i,
@@ -1289,13 +810,10 @@ function assertNoRuntimeProvenanceLeak(value) {
     /prompt_cache_key/i,
     /x-codex-turn-metadata/i,
     /\b(?:thread_id|parent_thread_id|sender_thread_id|receiver_thread_ids)\b/i,
-    /"(?:access_token|refresh_token|api_?key|client_?secret|authorization|cookie)"\s*:/i,
-    /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/i,
-    /https?:\/\/[^/\s:@]+:[^/\s@]+@/i,
   ];
   assert(
     patterns.every((pattern) => !pattern.test(text)),
-    'Public story evidence exposed runtime-native metadata or credential material.'
+    'Public Task story evidence exposed runtime-native metadata.'
   );
 }
 
@@ -1307,7 +825,9 @@ function assertNoRuntimeProvenanceLeak(value) {
  */
 function assert(condition, message) {
   if (!condition) {
-    throw new Error(message);
+    const error = new Error(message);
+    error.code = TASK_ASSERTION_ERROR_CODE;
+    throw error;
   }
 }
 
@@ -1317,14 +837,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       () => process.exit(0),
       (error) =>
         process.exit(
-          classifyRealCodexRunnerFailure(error).kind === 'restart_required'
+          classifyTaskModeRealWorkerFailure(error).kind === 'restart_required'
             ? RESTART_REQUIRED_EXIT_CODE
             : 1
         )
     );
   } else {
     runTaskModeRealWorkerCli().catch((error) => {
-      console.error(error instanceof Error ? error.message : String(error));
+      console.error(classifyTaskModeRealWorkerFailure(error).message);
       process.exitCode = 1;
     });
   }

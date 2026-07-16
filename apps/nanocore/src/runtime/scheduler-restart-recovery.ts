@@ -14,7 +14,10 @@ import {
   transitionWorkerBackendSessionState,
   type WorkerBackendSessionRecord,
 } from './worker-backend-sessions.js';
+import { getWorkerControlAcceptedFinalStatus } from './worker-control-records.js';
 import type { WorkerGovernanceBackendSessionIdentity } from './worker-governance-backend.js';
+
+const WORKER_RECONNECT_WINDOW_MS = 60_000;
 
 /** Product turn state established by restart recovery projection. */
 export type RecoveredTurnStatus = 'completed' | 'failed' | 'interrupted' | 'cancelled' | 'missing';
@@ -38,43 +41,43 @@ export interface PreAnchorRecoveryContext {
 /** Input for scheduler restart recovery. */
 export interface RunSchedulerRestartRecoveryInput {
   /** Physically destroys one exact durable backend identity. */
-  readonly cleanupBackendSession?: (session: RestartBackendCleanupRequest) => Promise<void>;
+  readonly cleanupBackendSession?: (
+    session: WorkerGovernanceBackendSessionIdentity
+  ) => Promise<void>;
   /** Optional deterministic clock. */
   readonly now?: () => string;
   /** Projects one recovered product turn and returns its authoritative terminal state. */
   readonly projectRecoveredTurn: (
     subject: WorkerBackendSessionRecord | PreAnchorRecoveryContext
   ) => Promise<{ readonly status: RecoveredTurnStatus }>;
-}
-
-/** Exact cleanup request reconstructed only from the durable Core anchor. */
-export interface RestartBackendCleanupRequest extends WorkerGovernanceBackendSessionIdentity {
-  /** Scheduler lease used only for recovery coordination and diagnostics. */
-  readonly leaseId: string;
+  /** Resumes the existing closeout path when final status was durable before the restart. */
+  readonly reconcileAcceptedFinalStatus?: (
+    session: WorkerBackendSessionRecord
+  ) => Promise<{ readonly status: RecoveredTurnStatus }>;
+  /** Restores read-only access to one exact backend session before reconnect is armed. */
+  readonly restoreBackendSession?: (session: WorkerBackendSessionRecord) => Promise<void>;
 }
 
 /** Result of scheduler restart recovery. */
 export interface SchedulerRestartRecoveryResult {
-  /** Always empty because restart never adopts an unproven physical session. */
-  readonly adoptedLeaseIds: string[];
   /** Pre-anchor leases failed after product projection. */
   readonly preLaunchFailedLeaseIds: string[];
   /** Scheduler epoch minted for this process. */
   readonly schedulerEpoch: number;
-  /** Always empty because anchored sessions are cleaned instead of adopted. */
-  readonly staleLeaseIds: string[];
 }
 
 /** Raw non-terminal lease fields required by restart recovery. */
 interface LeaseRecoveryRow extends PreAnchorRecoveryContext {
   readonly backendAnchorState: 'unanchored' | 'anchored';
-  readonly heartbeatDeadline: string;
+  readonly expiresAt: string;
   readonly lastAcceptedHeartbeatAt: string | null;
-  readonly planId: string;
-  readonly poolId: string;
+  readonly lastWorkerSequence: number | null;
   readonly status: string;
   readonly releaseReason: string | null;
-  readonly targetId: string;
+  readonly recoveryDeadline: string | null;
+  readonly recoveryState: string | null;
+  readonly schedulerEpoch: number;
+  readonly workerProcessKeyHash: string | null;
 }
 
 /** Loaded workspace authority used during backend cleanup. */
@@ -90,7 +93,7 @@ interface RecoveryFailure {
 }
 
 /**
- * Cleans every durable backend session and terminalizes its scheduler lease before boot accepts work.
+ * Arms eligible live leases for bounded reconnect and closes every other durable owner at boot.
  *
  * @param coreDb Open Core database handle.
  * @param input Physical cleanup, product projection, and deterministic clock dependencies.
@@ -139,27 +142,84 @@ export async function runSchedulerRestartRecovery(
     }
   }
 
-  if (failures.length > 0) {
-    throw new AggregateError(
-      failures.map(({ error, leaseId }) =>
-        error instanceof Error
-          ? new Error(`Scheduler restart recovery failed for ${leaseId}: ${error.message}`, {
-              cause: error,
-            })
-          : new Error(`Scheduler restart recovery failed for ${leaseId}: ${String(error)}`)
-      ),
-      failures
-        .map(({ error }) => (error instanceof Error ? error.message : String(error)))
-        .join('; ')
-    );
-  }
+  throwRecoveryFailures(failures);
 
   return {
-    adoptedLeaseIds: [],
     preLaunchFailedLeaseIds,
     schedulerEpoch,
-    staleLeaseIds: [],
   };
+}
+
+/**
+ * Cleans only reconnect candidates whose one boot-armed deadline has expired.
+ *
+ * @param coreDb Open Core database handle.
+ * @param input Existing cleanup, projection, and final-status closeout dependencies.
+ */
+export async function runExpiredSchedulerReconnectCleanup(
+  coreDb: CoreDb,
+  input: RunSchedulerRestartRecoveryInput
+): Promise<void> {
+  const timestamp = (input.now ?? (() => new Date().toISOString()))();
+  const failures: RecoveryFailure[] = [];
+  const rows = listNonTerminalLeaseRows(coreDb).filter(
+    (row) =>
+      row.recoveryState === 'awaiting-reconnect' &&
+      row.recoveryDeadline !== null &&
+      row.recoveryDeadline <= timestamp
+  );
+
+  for (const row of rows) {
+    try {
+      const claimed = coreDb.sqlite
+        .prepare(
+          `UPDATE scheduler_session_leases
+           SET recovery_state = 'needs-evidence', recovery_deadline = NULL
+           WHERE lease_id = ?
+             AND scheduler_epoch = ?
+             AND recovery_state = 'awaiting-reconnect'
+             AND recovery_deadline = ?
+             AND recovery_deadline <= ?`
+        )
+        .run(row.leaseId, row.schedulerEpoch, row.recoveryDeadline, timestamp);
+      if (claimed.changes !== 1) {
+        continue;
+      }
+      const session = getWorkerBackendSession(coreDb, row.leaseId);
+      if (!session) {
+        throw new Error(`Scheduler lease ${row.leaseId} has no durable backend session anchor.`);
+      }
+      await recoverAnchoredLease(
+        coreDb,
+        { ...row, recoveryDeadline: null, recoveryState: 'needs-evidence' },
+        session,
+        row.schedulerEpoch,
+        () => timestamp,
+        input
+      );
+    } catch (error) {
+      failures.push({ error, leaseId: row.leaseId });
+    }
+  }
+
+  throwRecoveryFailures(failures);
+}
+
+/** Throws one aggregate after every independent recovery candidate was attempted. */
+function throwRecoveryFailures(failures: readonly RecoveryFailure[]): void {
+  if (failures.length === 0) {
+    return;
+  }
+  throw new AggregateError(
+    failures.map(({ error, leaseId }) =>
+      error instanceof Error
+        ? new Error(`Scheduler restart recovery failed for ${leaseId}: ${error.message}`, {
+            cause: error,
+          })
+        : new Error(`Scheduler restart recovery failed for ${leaseId}: ${String(error)}`)
+    ),
+    failures.map(({ error }) => (error instanceof Error ? error.message : String(error))).join('; ')
+  );
 }
 
 /**
@@ -188,19 +248,21 @@ function listNonTerminalLeaseRows(coreDb: CoreDb): LeaseRecoveryRow[] {
   return coreDb.sqlite
     .prepare(
       `SELECT lease_id AS leaseId,
-              plan_id AS planId,
               workspace_id AS workspaceId,
               thread_id AS threadId,
               turn_id AS turnId,
               agent_session_id AS agentSessionId,
               package_snapshot_id AS packageSnapshotId,
               backend_anchor_state AS backendAnchorState,
-              pool_id AS poolId,
-              target_id AS targetId,
               status,
               release_reason AS releaseReason,
-              heartbeat_deadline AS heartbeatDeadline,
-              last_accepted_heartbeat_at AS lastAcceptedHeartbeatAt
+              recovery_state AS recoveryState,
+              recovery_deadline AS recoveryDeadline,
+              scheduler_epoch AS schedulerEpoch,
+              expires_at AS expiresAt,
+              last_accepted_heartbeat_at AS lastAcceptedHeartbeatAt,
+              last_worker_sequence AS lastWorkerSequence,
+              worker_process_key_hash AS workerProcessKeyHash
        FROM scheduler_session_leases
        WHERE status IN ('planned', 'acquired', 'starting', 'active', 'idle', 'stale', 'releasing')
        ORDER BY lease_id ASC`
@@ -254,6 +316,60 @@ async function recoverAnchoredLease(
   now: () => string,
   input: RunSchedulerRestartRecoveryInput
 ): Promise<void> {
+  const acceptedFinalStatus = await reconcileAcceptedFinalStatus(
+    coreDb,
+    row,
+    originalSession,
+    input
+  );
+  if (acceptedFinalStatus) {
+    if (acceptedFinalStatus.status === 'missing') {
+      throw new Error(`Anchored scheduler lease ${row.leaseId} has no recoverable product turn.`);
+    }
+    terminalizeRecoveredLease(
+      coreDb,
+      row,
+      acceptedFinalStatus.status,
+      schedulerEpoch,
+      'backend-cleanup'
+    );
+    return;
+  }
+  if (hasReconnectAuthority(row, originalSession)) {
+    let backendRestored = false;
+    try {
+      await input.restoreBackendSession?.(originalSession);
+      backendRestored = input.restoreBackendSession !== undefined;
+    } catch {
+      // An unrestorable handle falls through to the existing cleanup path.
+    }
+    if (backendRestored) {
+      const timestamp = now();
+      if (
+        row.expiresAt > timestamp &&
+        (row.recoveryDeadline === null || row.recoveryDeadline > timestamp)
+      ) {
+        const recoveryDeadline =
+          row.recoveryDeadline ??
+          new Date(
+            Math.min(Date.parse(row.expiresAt), Date.parse(timestamp) + WORKER_RECONNECT_WINDOW_MS)
+          ).toISOString();
+        const armed = coreDb.sqlite
+          .prepare(
+            `UPDATE scheduler_session_leases
+             SET recovery_state = 'awaiting-reconnect', recovery_deadline = ?
+             WHERE lease_id = ? AND scheduler_epoch = ? AND status IN ('active', 'idle')
+               AND last_worker_sequence IS NOT NULL AND worker_process_key_hash IS NOT NULL`
+          )
+          .run(recoveryDeadline, row.leaseId, row.schedulerEpoch);
+        if (armed.changes !== 1) {
+          throw new Error(`Scheduler lease ${row.leaseId} changed while arming reconnect.`);
+        }
+        return;
+      }
+    }
+  }
+
   let session = await cleanupPhysicalSession(
     coreDb,
     getWorkerBackendSession(coreDb, row.leaseId) ?? originalSession,
@@ -297,6 +413,57 @@ async function recoverAnchoredLease(
   terminalizeRecoveredLease(coreDb, row, status, schedulerEpoch, 'backend-cleanup');
 }
 
+/** Returns whether one exact live worker has enough durable authority to await reconnect. */
+function hasReconnectAuthority(
+  row: LeaseRecoveryRow,
+  session: WorkerBackendSessionRecord
+): boolean {
+  return (
+    sameRecoveryLineage(row, session) &&
+    (row.status === 'active' || row.status === 'idle') &&
+    session.state === 'launching' &&
+    session.workspaceHandoffState === 'complete' &&
+    row.lastWorkerSequence !== null &&
+    row.lastWorkerSequence >= 1 &&
+    row.workerProcessKeyHash !== null &&
+    (row.recoveryState === null ||
+      (row.recoveryState === 'awaiting-reconnect' && row.recoveryDeadline !== null))
+  );
+}
+
+/** Re-enters normal closeout only when an exact durable final status already exists. */
+async function reconcileAcceptedFinalStatus(
+  coreDb: CoreDb,
+  row: LeaseRecoveryRow,
+  session: WorkerBackendSessionRecord,
+  input: RunSchedulerRestartRecoveryInput
+): Promise<{ readonly status: RecoveredTurnStatus } | null> {
+  if (row.status !== 'releasing' || row.releaseReason !== 'worker-final-status') {
+    return null;
+  }
+  if (!sameRecoveryLineage(row, session)) {
+    return null;
+  }
+  const { requestId } = requireSchedulerSessionLeaseAdmissionContext(coreDb, row.leaseId);
+  const accepted = getWorkerControlAcceptedFinalStatus(coreDb, {
+    agentSessionId: row.agentSessionId,
+    packageSnapshotId: row.packageSnapshotId,
+    requestId,
+    threadId: row.threadId,
+    turnId: row.turnId,
+    workspaceId: row.workspaceId,
+  });
+  if (!accepted) {
+    return null;
+  }
+  if (!input.reconcileAcceptedFinalStatus) {
+    throw new Error(
+      `Scheduler lease ${row.leaseId} requires accepted final-status reconciliation.`
+    );
+  }
+  return input.reconcileAcceptedFinalStatus(session);
+}
+
 /** Cleans one exact durable physical identity and records the stable completion instant. */
 async function cleanupPhysicalSession(
   coreDb: CoreDb,
@@ -312,7 +479,7 @@ async function cleanupPhysicalSession(
     throw new Error('Scheduler restart recovery requires a backend cleanup implementation.');
   }
   try {
-    await cleanupBackendSession(toRestartBackendCleanupRequest(session));
+    await cleanupBackendSession(toRestartBackendIdentity(session));
   } catch (error) {
     transitionWorkerBackendSessionState(coreDb, {
       fromState: 'cleanup-pending',
@@ -331,16 +498,15 @@ async function cleanupPhysicalSession(
 }
 
 /** Reconstructs the backend cleanup boundary from the immutable Core manifest. */
-function toRestartBackendCleanupRequest(
+function toRestartBackendIdentity(
   session: WorkerBackendSessionRecord
-): RestartBackendCleanupRequest {
+): WorkerGovernanceBackendSessionIdentity {
   return {
     agentSessionId: session.agentSessionId,
     backendKind: parseRestartBackendKind(session.backendKind),
     backendSessionId: session.backendSessionId,
     backendTarget: session.backendTarget,
     deploymentId: session.deploymentId,
-    leaseId: session.leaseId,
     packageSnapshotId: session.packageSnapshotId,
     stagingDirectoryRef: session.stagingDirectoryRef,
     transientProviderInstanceId: session.transientProviderInstanceId,
@@ -443,6 +609,18 @@ function assertSessionMatchesLease(
   ) {
     throw new Error(`Worker backend session ${session.leaseId} does not match scheduler lineage.`);
   }
+}
+
+/** Checks the immutable lease/session lineage without throwing during survivor classification. */
+function sameRecoveryLineage(row: LeaseRecoveryRow, session: WorkerBackendSessionRecord): boolean {
+  return (
+    session.leaseId === row.leaseId &&
+    session.workspaceId === row.workspaceId &&
+    session.threadId === row.threadId &&
+    session.turnId === row.turnId &&
+    session.agentSessionId === row.agentSessionId &&
+    session.packageSnapshotId === row.packageSnapshotId
+  );
 }
 
 /** Verifies that the immutable package snapshot owns the exact persisted session lineage. */

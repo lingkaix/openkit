@@ -1,15 +1,15 @@
 # Worker Turn Reliability Envelope
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
 
 ## Owns
 
-This spec owns the implementation-facing reliability envelope for internal-agent and worker-turn execution, including stop reasons, terminal stream behavior, item-to-LLM projection, internal-agent event loops, hook isolation, runtime checkpoints, pending-user-turn handling, continuation policy, and deferred context-compaction boundaries.
+This spec owns the implementation-facing reliability envelope for internal-agent and worker-turn execution, including stop reasons, terminal stream behavior, item-to-LLM projection, internal-agent event loops, hook isolation, runtime checkpoints, pending-user-turn handling, continuation policy, restart-safe terminal handoff after exact same-worker adoption, and deferred context-compaction boundaries.
 
 ## Does Not Own
 
-This spec does not own stable core workflow vocabulary, user-facing work labels, worker-control wire commands, workspace synchronization, runtime scheduling, agent manifest resolution, Agent Environment Package schemas, or UI recovery layouts.
+This spec does not own stable core workflow vocabulary, user-facing work labels, worker-control wire commands or reconnect authorization, workspace synchronization, runtime lease adoption, agent manifest resolution, Agent Environment Package schemas, or UI recovery layouts.
 
 ## Core References
 
@@ -94,11 +94,13 @@ Worker adapters own runtime-native details such as Codex session ids, OpenCode s
 
 ## Current Implementation Projection
 
-The V1 reliability envelope is implemented. The accepted protocol slice is implemented in `packages/protocol`: `StopReason` is a shared enum and terminal `turn.completed` events carry `stopReason` on the event envelope, not on the durable `Turn` record.
+The V1 base reliability envelope is implemented. The active restart slice reuses its existing checkpoint and terminal handoff for the surviving worker rather than adding a recovery workflow. The accepted protocol slice is implemented in `packages/protocol`: `StopReason` is a shared enum and terminal `turn.completed` events carry `stopReason` on the event envelope, not on the durable `Turn` record.
 
 NanoCore has an app-local evented internal-agent loop and `InternalAgentRunner.stream()` path. Internal-agent events now use the accepted app-local event base with `runId`, `agentId`, monotonic `sequence`, and `eventType`; the current `/api/app/quick-chat` product route still exposes the aggregate `run()` response.
 
-NanoCore also has the first app-local worker-turn envelope through `runWorkerTurnLoop()`, worker checkpoint tables, pending user-turn queues, safe-point steering, follow-up queues, `prepareNextTurn()`, interrupted-worker read-model materialization, pending user-turn recovery read models, pending user-turn edit, follow-up conversion, interrupt promotion, and cancellation, terminal checkpoint cleanup, and interrupted-checkpoint retry-to-ready recovery exposed through App API, `@openkit/core-client`, and `@openkit/mcp`. Interrupted-worker read-model rows now advertise the implemented recovery choices directly: inspect evidence, retry the interrupted checkpoint, record terminal worker state, or request human recovery guidance. Checkpoint recovery rows in the Action Center now project only real user actions: open the thread, retry the interrupted checkpoint through the retry endpoint, or record and clear a terminal checkpoint state through the terminal endpoint. They do not project adapter-native checkpoint resume or replay until that contract exists.
+NanoCore also has the first app-local worker-turn envelope through `runWorkerTurnLoop()`, worker checkpoint tables, pending user-turn queues, safe-point steering, follow-up queues, `prepareNextTurn()`, interrupted-worker read-model materialization, generic pending user-turn recovery actions, terminal checkpoint cleanup, and interrupted-checkpoint retry-to-ready recovery exposed through App API, `@openkit/core-client`, and `@openkit/mcp`. Queue selection no longer deletes a pending row before delivery proof, but the real worker path does not yet persist the generic immutable Context Package trace needed to accept Goal steering. Goal-owned recovery mutations therefore remain unavailable rather than reusing the generic edit, conversion, interrupt, or cancellation actions. Interrupted-worker read-model rows advertise the implemented recovery choices directly: inspect evidence, retry the interrupted checkpoint, record terminal worker state, or request human recovery guidance. Checkpoint recovery rows in the Action Center project only real user actions: open the thread, retry the interrupted checkpoint through the retry endpoint, or record and clear a terminal checkpoint state through the terminal endpoint. They do not project adapter-native checkpoint resume or replay until that contract exists.
+
+The active restart slice keeps the checkpoint nonterminal while the exact lease is `awaiting-reconnect`, then continues terminal observation for the same turn after process-key adoption or selects the existing interrupted path after timeout.
 
 The current context-package implementation is a first projection slice: item-to-LLM conversion records deterministic context package digests, included item ids, excluded item decisions, and attachable records, while full file-backed worker package materialization and replay remain owned by `docs/specs/20260703-worker_context_package.md`.
 
@@ -287,6 +289,8 @@ The follow-up queue is user-owned or runtime-owned and supports `one_at_a_time` 
 
 NanoCore's app-local `runWorkerTurnLoop()` is the first worker-turn envelope shell. It drains safe-point steering and follow-up queues, prepares the next worker-visible context, creates the durable turn, writes the pre-worker checkpoint, starts the worker, observes the terminal worker stop reason, records terminal checkpoint evidence, and evaluates `shouldStopAfterTurn()`.
 
+When the owning scheduler lease is `awaiting-reconnect`, the envelope keeps the existing checkpoint nonterminal and must not start another worker, create another checkpoint, or enqueue a replacement continuation. After exact process-key, lineage, and next-sequence adoption of that same lease, the envelope resumes terminal observation and handoff for the same turn; if verification fails or the recovery deadline expires, it enters the existing interrupted-checkpoint recovery path.
+
 The product-facing Goal Mode command is `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/step`. It runs exactly one bounded worker envelope iteration and returns the refreshed goal summary, worker turn metadata, stop decision, evidence refs, and pending attention. The deterministic supervise flow lives under `/goal/test/supervise/step` and is limited to tests, smoke fixtures, and local demos.
 
 Future tool batches should follow Pi's conservative termination semantics: a batch should stop the loop only when every finalized tool result in the batch requests termination.
@@ -319,13 +323,15 @@ interface RuntimeCheckpoint {
 
 The checkpoint is not a promise that in-flight streams can resume.
 
-It is a recovery record that tells NanoCore where the turn stopped and what can safely happen next.
+It is a recovery record that tells NanoCore where the turn stopped and what can safely happen next. Same-worker reconnect reattaches terminal observation to the surviving execution; it does not replay worker launch or claim arbitrary stream resumption.
 
-On restart, NanoCore should materialize an explicit interrupted item or state update into the thread.
+On restart, a checkpoint whose exact lease is `awaiting-reconnect` remains nonterminal at `running_worker` or `recovering` as appropriate. Exact adoption continues the same checkpoint, agent session, turn, and worker; verification failure, timeout, cancellation, or cleanup fencing materializes the existing interrupted item or state update into the thread.
 
-The user or coordinator can then choose retry, resume from a worker session when safe, review partial artifacts, or abort.
+Only after the interrupted path is selected may the user or coordinator choose retry on a replacement execution, review partial artifacts, or abort. No retry or replacement is offered while the bounded exact-adoption window remains open.
 
-Checkpoints are cleared only after terminal turn state, goal task state, evidence refs, read-model state, stop reason, and terminal checkpoint stage are durably saved.
+An accepted final status after adoption drives the existing checkpoint, terminal evidence, product-turn, agent-session, workspace-reconciliation, backend-cleanup, lease, and capacity owners directly. Checkpoints are cleared only after terminal turn state, goal task state, evidence refs, read-model state, stop reason, terminal checkpoint stage, and required workspace handoff are durably saved. No settlement coordinator or parallel domain record exists.
+
+Durable checkpoint, terminal, evidence, and read-model writes replay exactly. App-local turn events are an ephemeral projection and may be delivered at least once if a second crash lands between durable closeout and event projection; consumers must tolerate an equivalent duplicate event.
 
 ### Pending User Turn
 
@@ -360,6 +366,7 @@ NanoCore app-local changes:
 - Add `internalAgentLoop()` below the current definitions and above the stateful runner shell.
 - Keep `InternalAgentRunner.run()` as the first aggregation caller.
 - Add app-local checkpoint storage for worker turns.
+- Reuse the app-local runtime checkpoint and terminal evidence records directly for restart adoption and terminal handoff; add no restart coordinator or closeout workflow.
 - Add context package projection records for worker turns.
 - Add hook diagnostics.
 - Add the app-local `runWorkerTurnLoop()` shell that composes queue draining, next-turn preparation, checkpointing, worker start, terminal outcome recording, and stop-after-turn policy.
@@ -433,7 +440,7 @@ L1 protocol tests should cover `StopReason` enum validation and generated JSON S
 
 L2 contract tests should verify that once a stream starts, provider or adapter failures are emitted as terminal records with stop reasons.
 
-L3 NanoCore black-box tests should cover interrupted worker turn recovery, pending user input preservation, and checkpoint clearing after successful terminal save.
+L3 retains one deterministic NanoCore kill/restart scenario covering awaiting-reconnect without duplicate worker or checkpoint creation, exact same-worker adoption, accepted final status through existing owners, checkpoint clearing, and recovery-timeout fencing.
 
 L4 Web tests should wait until QuickChat streaming is exposed and then verify that message deltas, terminal stop reasons, and error states render without corrupting thread history.
 
@@ -455,7 +462,7 @@ Mitigation: record excluded item ids and exclusion reasons in the context packag
 
 Risk: checkpoints create duplicate side effects after restart.
 
-Mitigation: checkpoints should describe recovery state, while retry or resume actions must pass through idempotent command ids and adapter-specific safety checks.
+Mitigation: an awaiting-reconnect checkpoint cannot launch or retry work; only exact scheduler and worker-control adoption may continue the same worker, and all terminal owners remain idempotent on their existing lineage.
 
 Risk: hook isolation hides important failures.
 
@@ -468,13 +475,14 @@ Mitigation: every isolated hook failure must emit a diagnostic event and appear 
 - `InternalAgentRunner.stream()` is an app-local NanoCore path, not a public Core protocol contract; QuickChat can project streaming later through an App API route after the product surface is ready.
 - The minimum interrupted-worker recovery surface is an item-backed or App API read-model row with checkpoint id, turn id, stage, context digest, stop reason when known, redacted diagnostics, and explicit user or coordinator choices such as retry, resume when adapter-safe, review partial artifacts, or abort.
 - Runtime checkpoints belong to the NanoCore worker-turn loop first; the OpenShell/Codex worker-governance path is the first exercised governed backend, and OpenCode should conform through the same envelope later.
+- Restart adoption reuses the existing runtime checkpoint and terminal-handoff owners directly, never replays worker launch, and never creates a replacement session while exact reconnect remains pending. It adds no settlement row.
 
 ## Deferred Work
 
 - Define the full file-backed worker context package materialization and replay flow in `docs/specs/20260703-worker_context_package.md`.
 - Expose QuickChat streaming through a product App API route when the Web projection needs it.
 - Define autonomous context compaction only after long-running sessions create enough evidence to validate compaction quality and governance.
-- Define adapter-safe in-flight checkpoint resume only after checkpoint records carry explicit replay-safe resume instructions.
+- Complete exact same-worker checkpoint reattachment after bounded worker-control reconnect without replaying worker launch.
 
 ## Links
 

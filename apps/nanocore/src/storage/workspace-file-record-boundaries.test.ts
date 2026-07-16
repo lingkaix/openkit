@@ -751,7 +751,11 @@ describe('workspace file-record write and load boundaries', () => {
     }
 
     store.emitTurnEvent(first.turn.id, event);
-    rmSync(recordRoot, { recursive: true });
+    if (family === 'artifact') {
+      store.deleteArtifact(first.workspace.id, 'ar_missing_event_state');
+    } else {
+      rmSync(recordRoot, { recursive: true });
+    }
 
     expect(() => new FsStore({ dataRoot })).toThrow(/references missing .*state/i);
   });

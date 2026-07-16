@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import {
   type WorkerCanonicalEventRecord,
@@ -43,6 +44,8 @@ export interface WorkerRuntimeProvenanceCollection {
 export interface WorkerTranscriptImportOptions {
   /** Live canonical event records already accepted through worker-control append. */
   acceptedLiveEvents?: WorkerCanonicalEventRecord[];
+  /** Stable server-written timestamp used by restart closeout exact replay. */
+  recordedAt?: string;
 }
 
 /**
@@ -100,8 +103,20 @@ export function importWorkerTranscript(
   if (result.diagnostics.some((diagnostic) => diagnostic.path.startsWith('$.events'))) {
     return result;
   }
-  importItemRecords(store, environmentPackage, payload.itemsJsonl ?? '', result);
-  importArtifactRecords(store, environmentPackage, payload.artifactsJsonl ?? '', result);
+  importItemRecords(
+    store,
+    environmentPackage,
+    payload.itemsJsonl ?? '',
+    options.recordedAt,
+    result
+  );
+  importArtifactRecords(
+    store,
+    environmentPackage,
+    payload.artifactsJsonl ?? '',
+    options.recordedAt,
+    result
+  );
 
   return result;
 }
@@ -193,6 +208,7 @@ function importItemRecords(
   store: FsStore,
   environmentPackage: AgentEnvironmentPackage,
   jsonl: string,
+  recordedAt: string | undefined,
   result: WorkerTranscriptImportResult
 ): void {
   for (const record of parseJsonl(jsonl, '$.items', result.diagnostics)) {
@@ -216,8 +232,8 @@ function importItemRecords(
       continue;
     }
 
-    const timestamp = new Date().toISOString();
-    const item = store.createItem({
+    const timestamp = recordedAt ?? new Date().toISOString();
+    const item = {
       id: `it_worker_${environmentPackage.scope.turnId}_${parsed.data.sequence}`,
       workspaceId: environmentPackage.scope.workspaceId,
       threadId: environmentPackage.scope.threadId,
@@ -227,7 +243,16 @@ function importItemRecords(
       text: itemText(parsed.data.item),
       createdAt: timestamp,
       completedAt: parsed.data.item.status === 'completed' ? timestamp : null,
-    });
+    } as const;
+    const existing = store
+      .listThreadItems(environmentPackage.scope.workspaceId, environmentPackage.scope.threadId)
+      .find((candidate) => candidate.id === item.id);
+    if (existing && !isDeepStrictEqual(existing, item)) {
+      throw new Error(`Worker transcript item replay conflict: ${item.id}`);
+    }
+    if (!existing) {
+      store.createItem(item);
+    }
 
     result.itemIds.push(item.id);
   }
@@ -245,6 +270,7 @@ function importArtifactRecords(
   store: FsStore,
   environmentPackage: AgentEnvironmentPackage,
   jsonl: string,
+  recordedAt: string | undefined,
   result: WorkerTranscriptImportResult
 ): void {
   for (const record of parseJsonl(jsonl, '$.artifacts', result.diagnostics)) {
@@ -268,8 +294,8 @@ function importArtifactRecords(
       continue;
     }
 
-    const timestamp = new Date().toISOString();
-    const artifact = store.createArtifact({
+    const timestamp = recordedAt ?? new Date().toISOString();
+    const artifact = {
       id: `ar_worker_${environmentPackage.scope.turnId}_${parsed.data.sequence}`,
       workspaceId: environmentPackage.scope.workspaceId,
       threadId: environmentPackage.scope.threadId,
@@ -285,8 +311,30 @@ function importArtifactRecords(
       },
       createdAt: timestamp,
       updatedAt: timestamp,
-    });
+    } as const;
+    const existing = store
+      .listArtifacts(environmentPackage.scope.workspaceId)
+      .find((candidate) => candidate.id === artifact.id);
+    if (existing && !isDeepStrictEqual(existing, artifact)) {
+      throw new Error(`Worker transcript artifact replay conflict: ${artifact.id}`);
+    }
+    if (!existing) {
+      store.createArtifact(artifact);
+    }
 
+    const reference = store
+      .listThreadItems(artifact.workspaceId, artifact.threadId)
+      .find(
+        (item) =>
+          item.type === 'artifact-reference' &&
+          item.artifactId === artifact.id &&
+          item.artifactVersion === artifact.version
+      );
+    if (!reference) {
+      throw new Error(`Worker transcript artifact reference is missing: ${artifact.id}`);
+    }
+
+    result.itemIds.push(reference.id);
     result.artifactIds.push(artifact.id);
   }
 }

@@ -99,6 +99,7 @@ import {
 import type { TurnExecutor } from './runtime/types.js';
 import { createWorkerControlCommandDeliveryRecorder } from './runtime/worker-control-commands.js';
 import {
+  type WorkerControlFinalStatusAcceptedHook,
   WorkerControlGateway,
   WorkerControlGatewayError,
   type WorkerControlLineage,
@@ -115,6 +116,7 @@ import { updateBackendWorkspaceHandleCleanupStatus } from './runtime/workspace-s
 import { registerWorkspaceSyncRoutes } from './runtime/workspace-sync-routes.js';
 import {
   acceptSchedulerLeaseHeartbeatByBinding,
+  adoptSchedulerLeaseReconnect,
   completeSchedulerLeaseForTerminalTurn,
   markSchedulerSessionLeaseReleasing,
   resolveSchedulerLeaseTokenBinding,
@@ -344,15 +346,26 @@ export interface CreateAppOptions {
  * Creates the default worker-control gateway for one app instance.
  *
  * @param coreDb Optional server-scope database used for durable scheduler lease binding checks.
+ * @param onFinalStatusCommitted Optional restart-only closeout observer.
  * @returns Worker-control gateway.
  */
-export function createDefaultWorkerControlGateway(coreDb?: CoreDb): WorkerControlGateway {
+export function createDefaultWorkerControlGateway(
+  coreDb?: CoreDb,
+  onFinalStatusCommitted?: WorkerControlFinalStatusAcceptedHook
+): WorkerControlGateway {
   if (!coreDb) {
     return new WorkerControlGateway();
   }
 
   const gateway = new WorkerControlGateway({
     acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
+    authorizeReconnectHeartbeat: (input) => {
+      try {
+        adoptSchedulerLeaseReconnect(coreDb, input);
+      } catch (error) {
+        throwSchedulerHeartbeatGatewayError(error);
+      }
+    },
     commandDeliveryRecorder: createWorkerControlCommandDeliveryRecorder(coreDb),
     onHeartbeatAccepted: (input) => {
       try {
@@ -360,25 +373,13 @@ export function createDefaultWorkerControlGateway(coreDb?: CoreDb): WorkerContro
           acceptedAt: input.heartbeat.lastHeartbeatAt,
           lineage: input.lineage,
           sandboxBindingRef: input.sandboxBindingRef,
+          ...(input.workerProcessKeyHash
+            ? { workerProcessKeyHash: input.workerProcessKeyHash }
+            : {}),
           workerSequence: input.heartbeat.sequence,
         });
       } catch (error) {
-        if (error instanceof SchedulerLeaseHeartbeatRejectedError) {
-          if (error.reason === 'sequence-stale') {
-            throw new WorkerControlGatewayError(
-              'worker_control_sequence_stale',
-              'Worker control heartbeat sequence is stale.',
-              409
-            );
-          }
-
-          throw new WorkerControlGatewayError(
-            'worker_control_lease_not_live',
-            'Worker control request lease is not live.',
-            403
-          );
-        }
-        throw error;
+        throwSchedulerHeartbeatGatewayError(error);
       }
     },
     onFinalStatusAccepted: (input) => {
@@ -415,6 +416,7 @@ export function createDefaultWorkerControlGateway(coreDb?: CoreDb): WorkerContro
       } finally {
         workspaceDb.sqlite.close();
       }
+      onFinalStatusCommitted?.(input);
     },
     resolveFinalStatusTokenBinding: (input) =>
       resolveWorkerControlFinalStatusTokenBinding(coreDb, input),
@@ -426,6 +428,32 @@ export function createDefaultWorkerControlGateway(coreDb?: CoreDb): WorkerContro
 
   rebuildWorkerControlGatewaySessions(coreDb, gateway);
   return gateway;
+}
+
+/** Projects scheduler heartbeat rejections into the stable worker-control error surface. */
+function throwSchedulerHeartbeatGatewayError(error: unknown): never {
+  if (!(error instanceof SchedulerLeaseHeartbeatRejectedError)) {
+    throw error;
+  }
+  if (error.reason === 'sequence-stale') {
+    throw new WorkerControlGatewayError(
+      'worker_control_sequence_stale',
+      'Worker control heartbeat sequence is stale.',
+      409
+    );
+  }
+  if (error.reason === 'lease-changed') {
+    throw new WorkerControlGatewayError(
+      'worker_control_identity_conflict',
+      'Worker control heartbeat identity conflicts with the durable lease binding.',
+      409
+    );
+  }
+  throw new WorkerControlGatewayError(
+    'worker_control_lease_not_live',
+    'Worker control request lease is not live.',
+    403
+  );
 }
 
 /** Input used to create the default process vault backend for an app instance. */
@@ -582,7 +610,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     return label.slice(0, 80);
   }
   const localStore =
-    options.store ?? new FsStore(options.dataRoot ? { dataRoot: options.dataRoot } : {});
+    options.store ??
+    options.storeFactory?.('user_local') ??
+    new FsStore(options.dataRoot ? { dataRoot: options.dataRoot } : {});
   if (options.coreDb) {
     backfillRepositoryDataSourceCatalogs(options.coreDb);
   }
@@ -1419,6 +1449,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     inflightCommands,
     repositoryWorkspaceDb,
     requestStore,
+    startModeWorkerTurn,
   });
 
   registerTurnEventRoutes({ app, requestStore });

@@ -33,13 +33,15 @@ The logical storage hierarchy is:
 ```text
 CoreServer
   User
-    Workspace
+  Workspace
 ```
+
+User and Workspace are independent storage scopes. Identity membership links users to workspaces, while workspace ownership and access relationships must not be encoded by nesting the workspace under the current owner's storage scope.
 
 Storage ownership is divided into three conceptual areas:
 
 - server-owned config, provider instances, agent setup sources, runtime snapshots, scheduler diagnostics, process logs, global indexes, and migration metadata
-- user-owned files, settings, user-local data, user logs, and user-scoped config
+- user-owned files, preferences, user-local data, user logs, user-scoped config, and user-specific workspace ordering or recent-workspace indexes
 - workspace-owned repositories, workspace files, task artifacts, turn and item materialization, workspace knowledge, agent runtime outputs, and workspace-specific logs
 
 The concrete path tree is defined in the server config and data layout spec, not duplicated here.
@@ -85,6 +87,8 @@ These records still belong to the core model. SQLite being their source of truth
 ## Invariants
 
 - Workspace data MUST remain separable enough for backup, export, deletion, migration, and debugging.
+- Workspace-owned storage MUST remain independent from any current human owner's user-owned storage so sharing or owner transfer never requires copying, linking, or moving canonical workspace data.
+- User-visible workspace collections MUST be derived from identity and permission relationships rather than filesystem discovery or user-owned links.
 - File-backed records SHOULD be inspectable and portable unless a data class has a clear reason to use SQLite as source of truth.
 - Derived SQLite indexes SHOULD be rebuildable from file-backed records when SQLite is not the source of truth.
 - Storage layout MUST NOT redefine workspace, thread, turn, item, artifact, knowledge, vault, audit, usage, or agent-session semantics.
@@ -107,7 +111,7 @@ Compaction MAY materialize completed item snapshots, but it MUST NOT change item
 
 ## Storage Scope Direction
 
-User-level and workspace-level databases should be introduced only when ownership scopes need them.
+User-level and workspace-level databases should be introduced only when their independent ownership scopes need them.
 
 SQLite full-text search is the default search index family. Vector search remains an optional future index family until promoted by stable core requirements.
 

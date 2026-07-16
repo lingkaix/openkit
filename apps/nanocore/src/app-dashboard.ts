@@ -286,7 +286,7 @@ function buildWorkspaceWorkSections(
         title: threadTitle(thread),
         status: activeTurn.status,
         mode: 'automation',
-        agentId: store.resolveTurnAgentId(activeTurn),
+        agentId: activeTurn.agentId ?? null,
         summary: thread.preview ?? null,
         updatedAt: activeTurn.startedAt ?? thread.updatedAt,
       });
@@ -443,7 +443,7 @@ export function registerDashboardRoutes({
       const threadItems = store.listThreadItems(workspaceId, threadId);
       const latestTurn = turns.at(-1) ?? null;
       const selectedAgentId = latestTurn
-        ? store.resolveTurnAgentId(latestTurn)
+        ? (latestTurn.agentId ?? null)
         : (workspace.defaults?.defaultAgentId ?? null);
       const threadArtifacts = store
         .listArtifacts(workspaceId)

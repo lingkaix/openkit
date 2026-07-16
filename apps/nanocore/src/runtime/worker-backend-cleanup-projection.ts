@@ -78,7 +78,7 @@ export function projectWorkerBackendCleanup(
           (handle) =>
             (handle.cleanupStatus === 'pending' && handle.updatedAt !== handle.createdAt) ||
             (handle.cleanupStatus === 'cleaned' && handle.updatedAt !== input.completedAt) ||
-            !['pending', 'cleaned'].includes(handle.cleanupStatus)
+            !['pending', 'retained', 'cleaned'].includes(handle.cleanupStatus)
         )
       ) {
         throw new Error(

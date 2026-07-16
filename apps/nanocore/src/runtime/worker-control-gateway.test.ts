@@ -108,6 +108,23 @@ function createCapabilitySummary(
   };
 }
 
+/** Builds one canonical non-initial heartbeat request for direct gateway tests. */
+function heartbeatRequest(
+  authorization: string,
+  lineage: WorkerControlLineage,
+  sequence: number,
+  message?: string
+) {
+  return {
+    authorization,
+    body: { ...(message ? { message } : {}), status: 'running' as const },
+    lineage,
+    operation: 'heartbeat' as const,
+    schemaVersion: 1 as const,
+    sequence,
+  };
+}
+
 describe('WorkerControlGateway', () => {
   it('authenticates sandbox tokens and records live heartbeat plus artifact notices', () => {
     const { environmentPackage, lineage } = createWorkerControlFixture();
@@ -117,13 +134,9 @@ describe('WorkerControlGateway', () => {
     });
     const registration = gateway.registerSession(environmentPackage);
 
-    const heartbeat = gateway.recordHeartbeat({
-      authorization: `Bearer ${registration.token}`,
-      lineage,
-      message: 'Codex worker is running.',
-      sequence: 1,
-      status: 'running',
-    });
+    const heartbeat = gateway.recordHeartbeat(
+      heartbeatRequest(`Bearer ${registration.token}`, lineage, 1, 'Codex worker is running.')
+    );
     const artifact = gateway.recordArtifactNotice({
       artifact: {
         mediaType: 'text/markdown',
@@ -167,12 +180,7 @@ describe('WorkerControlGateway', () => {
     expect(gateway.unregisterSession(environmentPackage.snapshotId)).toBe(true);
     expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)).toBeNull();
     expect(() =>
-      gateway.recordHeartbeat({
-        authorization: `Bearer ${registration.token}`,
-        lineage,
-        sequence: 1,
-        status: 'running',
-      })
+      gateway.recordHeartbeat(heartbeatRequest(`Bearer ${registration.token}`, lineage, 1))
     ).toThrow('missing a valid sandbox token');
     expect(gateway.unregisterSession(environmentPackage.snapshotId)).toBe(false);
   });
@@ -187,20 +195,10 @@ describe('WorkerControlGateway', () => {
     const secondRegistration = gateway.registerSession(environmentPackage);
 
     expect(() =>
-      gateway.recordHeartbeat({
-        authorization: `Bearer ${firstRegistration.token}`,
-        lineage,
-        sequence: 1,
-        status: 'running',
-      })
+      gateway.recordHeartbeat(heartbeatRequest(`Bearer ${firstRegistration.token}`, lineage, 1))
     ).toThrow('missing a valid sandbox token');
     expect(
-      gateway.recordHeartbeat({
-        authorization: `Bearer ${secondRegistration.token}`,
-        lineage,
-        sequence: 1,
-        status: 'running',
-      })
+      gateway.recordHeartbeat(heartbeatRequest(`Bearer ${secondRegistration.token}`, lineage, 1))
     ).toMatchObject({ sequence: 1, status: 'running' });
   });
 
@@ -379,18 +377,8 @@ describe('WorkerControlGateway', () => {
 
     const authorization = `Bearer ${registration.token}`;
 
-    gateway.recordHeartbeat({
-      authorization,
-      lineage,
-      sequence: 1,
-      status: 'running',
-    });
-    gateway.recordHeartbeat({
-      authorization,
-      lineage,
-      sequence: 1,
-      status: 'running',
-    });
+    gateway.recordHeartbeat(heartbeatRequest(authorization, lineage, 1));
+    gateway.recordHeartbeat(heartbeatRequest(authorization, lineage, 1));
     gateway.recordArtifactNotice({
       artifact: { path: '/openkit/artifacts/report.md', title: 'Worker report' },
       authorization,
@@ -485,12 +473,7 @@ describe('WorkerControlGateway', () => {
       },
     });
     const registration = gateway.registerSession(environmentPackage);
-    const heartbeat = {
-      authorization: `Bearer ${registration.token}`,
-      lineage,
-      sequence: 1,
-      status: 'running' as const,
-    };
+    const heartbeat = heartbeatRequest(`Bearer ${registration.token}`, lineage, 1);
 
     expect(() => gateway.recordHeartbeat(heartbeat)).toThrow('heartbeat projection unavailable');
     expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.heartbeat).toBeNull();
@@ -674,12 +657,7 @@ describe('WorkerControlGateway', () => {
     const registration = gateway.registerSession(environmentPackage);
 
     expect(() =>
-      gateway.recordHeartbeat({
-        authorization: 'Bearer wrong',
-        lineage,
-        sequence: 1,
-        status: 'running',
-      })
+      gateway.recordHeartbeat(heartbeatRequest('Bearer wrong', lineage, 1))
     ).toThrowError(
       expect.objectContaining({
         code: 'worker_control_unauthorized',
@@ -687,12 +665,9 @@ describe('WorkerControlGateway', () => {
       }) as WorkerControlGatewayError
     );
     expect(() =>
-      gateway.recordHeartbeat({
-        authorization: `Bearer ${registration.token}`,
-        lineage: { ...lineage, threadId: 'th_other' },
-        sequence: 1,
-        status: 'running',
-      })
+      gateway.recordHeartbeat(
+        heartbeatRequest(`Bearer ${registration.token}`, { ...lineage, threadId: 'th_other' }, 1)
+      )
     ).toThrowError(
       expect.objectContaining({
         code: 'worker_control_lineage_mismatch',
@@ -715,12 +690,7 @@ describe('WorkerControlGateway', () => {
     });
     const registration = gateway.registerSession(environmentPackage);
 
-    gateway.recordHeartbeat({
-      authorization: `Bearer ${registration.token}`,
-      lineage,
-      sequence: 1,
-      status: 'running',
-    });
+    gateway.recordHeartbeat(heartbeatRequest(`Bearer ${registration.token}`, lineage, 1));
 
     expect(resolvedBindings).toEqual([
       {
@@ -851,12 +821,7 @@ describe('WorkerControlGateway', () => {
       sandboxBindingRef: 'lease-binding:control_1',
     });
 
-    gateway.recordHeartbeat({
-      authorization: `Bearer ${registration.token}`,
-      lineage,
-      sequence: 1,
-      status: 'running',
-    });
+    gateway.recordHeartbeat(heartbeatRequest(`Bearer ${registration.token}`, lineage, 1));
 
     expect(registration.token).toBe('lease-binding:control_1');
   });
@@ -870,12 +835,7 @@ describe('WorkerControlGateway', () => {
     const registration = gateway.registerSession(environmentPackage);
 
     expect(() =>
-      gateway.recordHeartbeat({
-        authorization: `Bearer ${registration.token}`,
-        lineage,
-        sequence: 1,
-        status: 'running',
-      })
+      gateway.recordHeartbeat(heartbeatRequest(`Bearer ${registration.token}`, lineage, 1))
     ).toThrowError(
       expect.objectContaining({
         code: 'worker_control_lease_not_live',

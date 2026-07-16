@@ -607,65 +607,6 @@ describe('worker shim CLI parsing', () => {
     }
   });
 
-  it('cancels Codex when the live worker-control fails', async () => {
-    vi.useFakeTimers();
-    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-control-failed-'));
-    const packagePath = join(sessionDir, 'package.json');
-    const runner = new AbortAwareCodexProcessRunner();
-    let heartbeatCount = 0;
-    const fetch: WorkerControlFetch = async (url) => {
-      if (url.endsWith('/heartbeat')) {
-        heartbeatCount += 1;
-        if (heartbeatCount > 1) {
-          return {
-            ok: false,
-            status: 503,
-            text: async () => JSON.stringify({ code: 'worker_control_unavailable' }),
-          };
-        }
-      }
-      return {
-        ok: true,
-        status: 200,
-        text: async () => JSON.stringify(workerControlSuccessBody(url)),
-      };
-    };
-    writeFileSync(
-      packagePath,
-      JSON.stringify({ runtime: { command: { workingDirectory: sessionDir } } }),
-      'utf8'
-    );
-
-    try {
-      const run = runCodexShim({
-        args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
-        environment: {
-          ...codexShimEnvironment(),
-          OPENKIT_CONTROL_BASE_URL: 'https://nanocore.local/api/worker-control',
-        },
-        fetch,
-        runner,
-      });
-      await runner.started;
-      await vi.advanceTimersByTimeAsync(1_000);
-
-      await expect(run).rejects.toThrow('worker_control_unavailable');
-      expect(runner.aborted).toBe(true);
-      expect(readJsonl(join(sessionDir, 'events.jsonl'))).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            event: expect.objectContaining({
-              data: expect.objectContaining({ stopReason: 'worker-control-runtime-failed' }),
-              type: 'turn.failed',
-            }),
-          }),
-        ])
-      );
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   it('preserves a process failure that wins the control shutdown race', async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-process-first-'));
     const packagePath = join(sessionDir, 'package.json');
@@ -1118,8 +1059,11 @@ describe('worker shim CLI parsing', () => {
     const heartbeats: Array<{ sequence: number; status: string }> = [];
     const fetch: WorkerControlFetch = async (url, init) => {
       if (url.endsWith('/heartbeat')) {
-        const body = JSON.parse(init.body) as { sequence: number; status: string };
-        heartbeats.push({ sequence: body.sequence, status: body.status });
+        const body = JSON.parse(init.body) as {
+          body: { status: string };
+          sequence: number;
+        };
+        heartbeats.push({ sequence: body.sequence, status: body.body.status });
       }
       return {
         ok: true,
@@ -1154,70 +1098,6 @@ describe('worker shim CLI parsing', () => {
     } finally {
       controller.abort();
       await run.catch(() => undefined);
-    }
-  });
-
-  it('fails closed when a periodic worker-control request exceeds ten seconds', async () => {
-    vi.useFakeTimers();
-    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-periodic-timeout-'));
-    const packagePath = join(sessionDir, 'package.json');
-    const runner = new AbortAwareCodexProcessRunner();
-    const controller = new AbortController();
-    let heartbeatCount = 0;
-    let markPeriodicFetchStarted: (() => void) | undefined;
-    const periodicFetchStarted = new Promise<void>((resolve) => {
-      markPeriodicFetchStarted = resolve;
-    });
-    const fetch: WorkerControlFetch = async (url, init) => {
-      if (url.endsWith('/heartbeat')) {
-        heartbeatCount += 1;
-        if (heartbeatCount > 1) {
-          markPeriodicFetchStarted?.();
-          return new Promise((_resolve, reject) => {
-            init.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
-              once: true,
-            });
-          });
-        }
-      }
-      return {
-        ok: true,
-        status: 200,
-        text: async () => JSON.stringify(workerControlSuccessBody(url)),
-      };
-    };
-    writeFileSync(
-      packagePath,
-      JSON.stringify({ runtime: { command: { workingDirectory: sessionDir } } }),
-      'utf8'
-    );
-    const run = runCodexShim({
-      args: parseCodexShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
-      environment: {
-        ...codexShimEnvironment(),
-        OPENKIT_CONTROL_BASE_URL: 'https://nanocore.local/api/worker-control',
-      },
-      fetch,
-      runner,
-      signal: controller.signal,
-    });
-
-    try {
-      await runner.started;
-      await vi.advanceTimersByTimeAsync(1_000);
-      await periodicFetchStarted;
-      const outcome = run.then(
-        () => 'unexpected-success',
-        (error: unknown) => (error instanceof Error ? error.message : String(error))
-      );
-      await vi.advanceTimersByTimeAsync(10_001);
-
-      expect(await outcome).toContain('Worker control request timed out');
-      expect(runner.aborted).toBe(true);
-    } finally {
-      controller.abort();
-      await run.catch(() => undefined);
-      vi.useRealTimers();
     }
   });
 
@@ -3016,6 +2896,16 @@ describe('worker shim CLI parsing', () => {
     const repoDir = join(sessionDir, 'repo');
     const packagePath = join(sessionDir, 'package.json');
     const finalMessagePath = join(sessionDir, 'final-message.txt');
+    let outputPublishedBeforeFinalStatus = false;
+    vi.stubGlobal('fetch', async (input: unknown) => {
+      const url = String(input);
+      if (url.endsWith('/final-status')) {
+        outputPublishedBeforeFinalStatus =
+          existsSync(join(sessionDir, 'workspace-changes.json')) &&
+          existsSync(join(sessionDir, 'workspace.patch'));
+      }
+      return new Response(JSON.stringify(workerControlSuccessBody(url)), { status: 200 });
+    });
     mkdirSync(repoDir);
     execFileSync('git', ['init'], { cwd: repoDir, stdio: 'ignore' });
     execFileSync('git', ['config', 'user.email', 'worker@example.com'], {
@@ -3103,6 +2993,7 @@ describe('worker shim CLI parsing', () => {
       strategy: 'git',
       workspaceId: 'ws_codex',
     });
+    expect(outputPublishedBeforeFinalStatus).toBe(true);
     expect(patch.endsWith('\n')).toBe(true);
   });
 

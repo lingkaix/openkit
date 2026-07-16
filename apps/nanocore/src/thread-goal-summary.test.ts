@@ -16,8 +16,9 @@ import {
   updateGoalStatus,
 } from './runtime/goal-store.js';
 import { createGoalVerificationRecord } from './runtime/goal-verification-records.js';
+import { listPendingUserTurns } from './runtime/pending-user-turns.js';
 import type { TurnExecutor, TurnStartRuntimeContext } from './runtime/types.js';
-import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
+import { getWorkerCheckpoint, upsertWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import {
   ensureConfiguredSchedulerBaseline,
   listSchedulerAdmissionEntriesForWorkspace,
@@ -78,6 +79,39 @@ function createWorkspaceDb(coreDb: CoreDb): WorkspaceDb {
 }
 
 /**
+ * Seeds the exact non-terminal Turn and checkpoint pair owned by one active Goal.
+ *
+ * @param store App-local durable store.
+ * @param workspaceDb Open workspace database.
+ * @param threadId Thread that owns the worker Turn.
+ * @param goalId Goal that owns the worker Turn.
+ * @param turnId Stable worker Turn id.
+ * @returns Seeded non-terminal Turn.
+ */
+function seedActiveGoalWorkerTurn(
+  store: ReturnType<typeof createDemoStore>,
+  workspaceDb: WorkspaceDb,
+  threadId: string,
+  goalId: string,
+  turnId: string
+) {
+  const turn = store.createTurn('ws_demo', threadId, 'Continue the active Goal task.', null, {
+    turnId,
+  });
+  const runningTurn = store.updateTurn(turn.id, { status: 'running' });
+  upsertWorkerCheckpoint(workspaceDb, {
+    workspaceId: 'ws_demo',
+    threadId,
+    turnId,
+    goalId,
+    stage: 'running_worker',
+    iteration: 0,
+  });
+
+  return runningTurn;
+}
+
+/**
  * Creates a synchronous worker fixture that completes every started turn with artifact evidence.
  *
  * @param startContexts Optional collector for scheduler-owned start contexts.
@@ -100,7 +134,7 @@ function createCompletingGoalTurnExecutor(
       startContexts.push(context);
       const turn = workerStore.getTurnById(turnId);
       const timestamp = turn.startedAt ?? '2026-05-31T00:00:00.000Z';
-      const artifact = workerStore.createArtifact({
+      workerStore.createArtifact({
         id: `art_${turnId}`,
         workspaceId: turn.workspaceId,
         threadId: turn.threadId,
@@ -113,19 +147,6 @@ function createCompletingGoalTurnExecutor(
         content: { format: 'markdown', body: input },
         createdAt: timestamp,
         updatedAt: timestamp,
-      });
-      workerStore.createItem({
-        id: `it_artifact_${turnId}`,
-        workspaceId: turn.workspaceId,
-        threadId: turn.threadId,
-        turnId,
-        type: 'artifact-reference',
-        status: 'completed',
-        artifactId: artifact.id,
-        title: artifact.title,
-        summary: artifact.summary,
-        createdAt: timestamp,
-        completedAt: timestamp,
       });
       workerStore.updateTurn(turnId, {
         status: 'completed',
@@ -607,11 +628,11 @@ describe('thread goal summary app API', () => {
     }
   });
 
-  it('queues steering for a running goal at the next safe point', async () => {
+  it('fails Goal steering closed when the worker cannot prove delivery', async () => {
     const coreDb = createCoreDb();
     const workspaceDb = createWorkspaceDb(coreDb);
     const store = createDemoStore();
-    const thread = store.createThread('ws_demo', 'Queued steering thread');
+    const thread = store.createThread('ws_demo', 'Unavailable steering delivery');
 
     try {
       createGoalRecord(workspaceDb, {
@@ -619,97 +640,34 @@ describe('thread goal summary app API', () => {
         goalId: 'goal_running',
         workspaceId: 'ws_demo',
         threadId: thread.id,
-        title: 'Steer running goal',
-        objective: 'Keep active work aligned with the user.',
+        title: 'Goal without delivery proof',
+        objective: 'Reject input until the real worker can receive it.',
         status: 'running',
       });
+      seedActiveGoalWorkerTurn(store, workspaceDb, thread.id, 'goal_running', 'turn_goal_running');
 
       const app = createApp({ coreDb, store });
-      const res = await app.request(
+      const response = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/steering`,
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            requestId: 'req_steering',
-            message: 'Prioritize release notes before the publish check.',
+            requestId: 'req_unavailable',
+            message: 'Do not acknowledge input that the worker cannot receive.',
           }),
         }
       );
 
-      expect(res.status).toBe(200);
-      await expect(res.json()).resolves.toMatchObject({
-        state: 'queued',
-        goal: {
-          goalId: 'goal_running',
-          status: 'running',
-          steering: {
-            pendingSteeringCount: 1,
-            pendingFollowUpCount: 0,
-            appliedSteeringCount: 0,
-          },
-        },
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toMatchObject({
+        code: 'goal_steering_delivery_unavailable',
       });
-      expect(store.listThreadItems('ws_demo', thread.id)).toEqual([
-        expect.objectContaining({
-          type: 'user-message',
-          status: 'completed',
-          text: 'Prioritize release notes before the publish check.',
-        }),
-      ]);
-    } finally {
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('blocks steering behind a human gate as pending follow-up input', async () => {
-    const coreDb = createCoreDb();
-    const workspaceDb = createWorkspaceDb(coreDb);
-    const store = createDemoStore();
-    const thread = store.createThread('ws_demo', 'Blocked steering thread');
-
-    try {
-      createGoalRecord(workspaceDb, {
-        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
-        goalId: 'goal_awaiting_user',
-        workspaceId: 'ws_demo',
-        threadId: thread.id,
-        title: 'Await user goal',
-        objective: 'Ask for required user input.',
-        status: 'awaiting_user',
-      });
-
-      const app = createApp({ coreDb, store });
-      const res = await app.request(
-        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/steering`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: 'req_follow_up',
-            message: 'Use the conservative rollout path.',
-          }),
-        }
-      );
-
-      expect(res.status).toBe(200);
-      await expect(res.json()).resolves.toMatchObject({
-        state: 'blocked',
-        goal: {
-          goalId: 'goal_awaiting_user',
-          status: 'awaiting_user',
-          pendingHumanAttention: {
-            required: true,
-            reason: 'Goal is awaiting user input.',
-          },
-          steering: {
-            pendingSteeringCount: 0,
-            pendingFollowUpCount: 1,
-            appliedSteeringCount: 0,
-          },
-        },
-      });
+      expect(store.listThreadItems('ws_demo', thread.id)).toEqual([]);
+      expect(store.listCommandRequests()).toEqual([]);
+      expect(
+        listPendingUserTurns(workspaceDb, { workspaceId: 'ws_demo', threadId: thread.id })
+      ).toEqual([]);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -1875,7 +1833,7 @@ describe('thread goal summary app API', () => {
           queueMicrotask(() => {
             const turn = workerStore.getTurnById(turnId);
             const timestamp = turn.startedAt ?? '2026-05-31T00:00:00.000Z';
-            const artifact = workerStore.createArtifact({
+            workerStore.createArtifact({
               id: `art_async_${turnId}`,
               workspaceId: turn.workspaceId,
               threadId: turn.threadId,
@@ -1891,19 +1849,6 @@ describe('thread goal summary app API', () => {
               },
               createdAt: timestamp,
               updatedAt: timestamp,
-            });
-            workerStore.createItem({
-              id: `it_async_artifact_${turnId}`,
-              workspaceId: turn.workspaceId,
-              threadId: turn.threadId,
-              turnId,
-              type: 'artifact-reference',
-              status: 'completed',
-              artifactId: artifact.id,
-              title: artifact.title,
-              summary: artifact.summary,
-              createdAt: timestamp,
-              completedAt: timestamp,
             });
             const completedTurn = workerStore.updateTurn(turnId, {
               status: 'completed',

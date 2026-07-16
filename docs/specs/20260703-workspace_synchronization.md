@@ -1,7 +1,7 @@
 # Workspace Synchronization
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
 
 ## Owns
 
@@ -65,6 +65,8 @@ patches, bundles, changed-file payloads, artifacts, logs, and evidence. NanoCore
 verifies, stages, reviews, applies, and records results. If NanoCore or the
 backend restarts, recovery resumes from NanoCore-owned records plus verified
 collected evidence, not from backend runtime state alone.
+
+A scheduler lease that is still inside its bounded `awaiting-reconnect` window is not yet a workspace-reconciliation trigger. Workspace collection, review staging, and teardown wait until exact process-key/lineage/sequence adoption continues the same worker or the scheduler selects the existing interrupted recovery path.
 
 Git is the first optimized strategy because OpenKit's self-improvement loop uses
 Git repositories. Git remains one strategy under the broader workspace
@@ -140,6 +142,8 @@ workspace input snapshot
 
 NanoCore owns every lifecycle record. Backends implement lifecycle effects.
 
+Restart handling consults the exact scheduler and worker-control outcome before synchronization acts. `awaiting-reconnect` preserves the existing materialization and backend handle without collection or teardown, exact adoption keeps using those same records, and key, lineage, sequence, or deadline failure enters the existing reconciliation lifecycle.
+
 The materialization plan binds turn inputs to predeclared workspace slots when a reusable session already exists.
 
 If a turn cannot fit the existing session's static workspace layout, provider envelope, policy envelope, or backend capability envelope, NanoCore must ask the agent-session/AEP layer for a replacement session before materializing the turn.
@@ -150,6 +154,10 @@ commit metadata preservation is needed, but patch-first review is the default.
 
 For non-Git workspaces, the first strategy uses a content-addressed filesystem
 snapshot, changed-file manifest, staged files, and conflict-checked file apply.
+
+An accepted final status already persisted before restart resumes normal output collection and terminal handoff without another worker heartbeat because the worker-control contract makes it the last durable-output barrier after runtime provenance and workspace-change publication. Restart recovery calls the existing `BackendWorkspaceHandle`, `WorkerOutputManifest`, `WorkspaceReconciliationRecord`, review, evidence, backend cleanup, turn, lease, and capacity owners directly. Same lineage plus the same canonical digest and stable accepted timestamp is exact replay; a conflict fails closed. No settlement coordinator or second closeout workflow exists.
+
+Durable synchronization records and read models replay exactly. App-local turn events are an ephemeral projection and may be delivered at least once if NanoCore crashes again after the durable writes but before event projection completes; this compromise does not change workspace truth or justify another durable workflow.
 
 Workspace synchronization is review-gated by default. Direct remote push, tag,
 deploy, publish, or protected-branch mutation is a separate explicit
@@ -190,7 +198,7 @@ Rules:
 
 ## Current Implementation Projection
 
-The current implementation realizes the accepted V1 synchronization behavior below:
+The current implementation realizes the accepted base V1 synchronization behavior below. The active restart slice adds bounded awaiting-reconnect preservation, read-only existing-handle restoration, and direct terminal handoff through these owners.
 
 - `packages/app-api-schemas/src/workspace-sync.ts` defines schemas for input snapshots, materialization records, backend workspace handles, worker output manifests, change sets, staged reviews, review patch payloads, and apply results.
 - `apps/nanocore/drizzle/0010_workspace_sync_records.sql` persists input snapshots, materialization records, change sets, and staged reviews.
@@ -213,7 +221,7 @@ The current implementation realizes the accepted V1 synchronization behavior bel
 - Server tests cover review listing, Git patch apply, filesystem staging apply, filesystem permission-change apply, and persisted apply results after app restart.
 - `WorkspaceSynchronizationBackendKindSchema` still includes `host` for host-local staging and deterministic harnesses. It must not be read as permission to reintroduce host execution as a product Worker Agent runtime.
 
-The implementation now persists redacted `BackendWorkspaceHandle` rows at materialization time and carries them through workspace export/import. `WorkspaceMaterializationRecord` and `BackendWorkspaceHandle` bind the owning AEP `packageSnapshotId` separately from the backend `workerSessionId`; terminal events, teardown, stale-lease recovery, and import reminting correlate by package lineage, while review persistence rejects missing materialization records instead of fabricating them from change sets. It also persists `WorkerOutputManifest` rows derived from collected change sets before reviewed change-set readback, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It persists `WorkspaceApplyPlan` rows before accepted Git patch or filesystem staging apply mutations, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It persists `WorkspaceReconciliationRecord` rows for recovery transitions, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It persists `WorkspaceQuarantineRecord` rows for isolated invalid synchronization material, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It automatically promotes materialization readiness evidence, staged review evidence refs, patch digests, and apply-result lineage into the general `EvidenceBundle` ledger, and no `WorkspaceSyncEvidenceBundle` schema, table, API, client or MCP projection, recovery input, or workspace export/import family remains. `WorkspaceReconciliationRecord.evidenceBundleIds` retains recovery-required bundle ids, lifecycle records retain their product-safe refs and digests, and `resume_collection` combines the reconciliation record with matching durable output manifests without requiring live backend reachability. Recovery-specific Action Center rows project `WorkspaceReconciliationRecord` rows in `requires-human`; `resume_collection`, `stage_verified`, `quarantine`, and `abandon` recovery decisions are executable through App API/Core Client/MCP. Terminal recovery decisions set the record retention decision to `teardown-backend`. Filesystem synchronization detects POSIX permission-only changes as `mode_changed`, carries old and new permission summaries on changed paths, records them in apply plans, applies accepted permission changes through the same reviewed filesystem staging path, and reports target path type conflicts during apply preflight before mutating the workspace. Binary changed paths carry artifact-only review presentation with digest, media type, byte size, summary, and typed staged-review diagnostics; binary payloads over 1 MiB use the same artifact-only presentation with an explicit payload-size reason. Worker-control terminal events move matching `BackendWorkspaceHandle` rows from `pending` to `retained`, while governed worker teardown later moves matching handles to `cleaned` after successful backend teardown or `failed` after teardown failure. Scheduler lease maintenance records `WorkspaceReconciliationRecord` recovery triggers when a stale lease still has pending backend workspace handles. Live backend reconnection collection, object-store synchronization, and richer multi-backend recovery orchestration remain deferred future work.
+The implementation now persists redacted `BackendWorkspaceHandle` rows at materialization time and carries them through workspace export/import. `WorkspaceMaterializationRecord` and `BackendWorkspaceHandle` bind the owning AEP `packageSnapshotId` separately from the backend `workerSessionId`; terminal events, teardown, stale-lease recovery, and import reminting correlate by package lineage, while review persistence rejects missing materialization records instead of fabricating them from change sets. It also persists `WorkerOutputManifest` rows derived from collected change sets before reviewed change-set readback, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It persists `WorkspaceApplyPlan` rows before accepted Git patch or filesystem staging apply mutations, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It persists `WorkspaceReconciliationRecord` rows for recovery transitions, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It persists `WorkspaceQuarantineRecord` rows for isolated invalid synchronization material, exposes them through App API/Core Client/MCP, and carries them through workspace export/import. It automatically promotes materialization readiness evidence, staged review evidence refs, patch digests, and apply-result lineage into the general `EvidenceBundle` ledger, and no `WorkspaceSyncEvidenceBundle` schema, table, API, client or MCP projection, recovery input, or workspace export/import family remains. `WorkspaceReconciliationRecord.evidenceBundleIds` retains recovery-required bundle ids, lifecycle records retain their product-safe refs and digests, and `resume_collection` combines the reconciliation record with matching durable output manifests without requiring live backend reachability. Recovery-specific Action Center rows project `WorkspaceReconciliationRecord` rows in `requires-human`; `resume_collection`, `stage_verified`, `quarantine`, and `abandon` recovery decisions are executable through App API/Core Client/MCP. Terminal recovery decisions set the record retention decision to `teardown-backend`. Filesystem synchronization detects POSIX permission-only changes as `mode_changed`, carries old and new permission summaries on changed paths, records them in apply plans, applies accepted permission changes through the same reviewed filesystem staging path, and reports target path type conflicts during apply preflight before mutating the workspace. Binary changed paths carry artifact-only review presentation with digest, media type, byte size, summary, and typed staged-review diagnostics; binary payloads over 1 MiB use the same artifact-only presentation with an explicit payload-size reason. Worker-control terminal events move matching `BackendWorkspaceHandle` rows from `pending` to `retained`, while governed worker teardown later moves matching handles to `cleaned` after successful backend teardown or `failed` after teardown failure. Scheduler lease maintenance records `WorkspaceReconciliationRecord` recovery triggers when a stale lease still has pending backend workspace handles. The active restart slice preserves pending handles during `awaiting-reconnect`, continues the same handle after adoption, and resumes accepted final status through the ordinary collection and cleanup path. Object-store synchronization and richer multi-backend recovery orchestration remain deferred future work.
 
 ## Record Contract
 
@@ -342,6 +350,8 @@ Recovery states:
 - `recovered`
 - `requires-human`
 - `unrecoverable`
+
+`awaiting-reconnect` and exact adoption are scheduler and worker-control outcomes, not additional workspace reconciliation states. They gate whether this spec preserves the current lifecycle or starts reconciliation.
 
 ## Git Strategy
 
@@ -553,23 +563,21 @@ apply reviewed POSIX permission changes when the changed path carries a
 After NanoCore restart:
 
 1. Load active materialization, worker session, review, staging, apply, and backend handle records.
-2. Check whether the backend session is still reachable.
-3. If reachable, collect output manifests and evidence.
-4. If unreachable, use the latest durable materialization record, backend handle, and general evidence bundle refs.
-5. Verify digests and lineage.
-6. Create or update collection and reconciliation state.
-7. Stage a review when a valid change set exists.
-8. Mark the session `requires-human` when evidence is partial or ambiguous.
-9. Quarantine invalid or mismatched output.
+2. Read the exact owning lease and worker-control recovery outcome.
+3. If the lease is `awaiting-reconnect`, preserve the existing materialization and `BackendWorkspaceHandle` in their current nonterminal state; do not collect, stage review, create reconciliation, or tear down while the original worker may continue.
+4. If exact adoption succeeds, keep the same materialization and backend handle. When final status arrives, run the ordinary output-manifest collection, verification, review, and cleanup flow for that same turn.
+5. If durable accepted `final_status` already placed the lease in `releasing`, resume the same terminal handoff and collection flow without requiring another heartbeat.
+6. If reconnect key, lineage, sequence, or deadline verification fails, or the scheduler declares the lease stale, lost, or cleanup-fenced, use the latest durable materialization record, backend handle, output manifests, and general evidence bundle refs to enter the existing reconciliation flow.
+7. Check backend reachability only after one of the collection or reconciliation branches above owns the session, then collect available output manifests and evidence.
+8. Verify digests and lineage, create or update existing collection and reconciliation state, and stage a review when a valid change set exists.
+9. Mark the session `requires-human` when evidence is partial or ambiguous, and quarantine invalid or mismatched output.
 10. Tear down or retain backend state according to the reconciliation result.
 
 Recovery must not apply changes automatically.
 
-Backend sessions should be torn down after recovery only when NanoCore has
-persisted enough verified evidence to reach `recovered`, `unrecoverable`, or
-`quarantined`. If evidence is partial and a human decision is required, NanoCore
-should retain backend state when possible and record the retention decision in
-the `WorkspaceReconciliationRecord`.
+Recovery reuses the existing `BackendWorkspaceHandle`, `WorkerOutputManifest`, `WorkspaceReconciliationRecord`, staged review, quarantine, and general `EvidenceBundle` owners. It must not introduce a synchronization settlement table, copy domain state, duplicate product-turn closeout, or infer execution liveness independently of scheduler and worker-control authorization.
+
+An `awaiting-reconnect` backend session is not yet in workspace recovery and must not be torn down. Backend sessions should be torn down after recovery only when NanoCore has persisted enough verified evidence to reach `recovered`, `unrecoverable`, or `quarantined`. If evidence is partial and a human decision is required, NanoCore should retain backend state when possible and record the retention decision in the `WorkspaceReconciliationRecord`.
 
 ## Recovery Records And Quarantine Contract
 
@@ -616,12 +624,7 @@ evidence summary, and the closed set of safe recovery choices (resume
 collection, stage what was verified, quarantine, abandon with evidence
 retained). Rows resolve when the reconciliation reaches a terminal state.
 
-Recovery triggering binds to the scheduler: a session lease reaching `stale`,
-`lost`, or a fenced takeover per
-`docs/specs/20260703-durable_scheduler_design.md` MUST trigger reconciliation
-evaluation for any non-terminal synchronization lifecycle records tied to that
-lease's agent session. Workspace synchronization owns what recovery does;
-the scheduler owns when execution is declared dead.
+Recovery triggering binds to the scheduler: `awaiting-reconnect` MUST preserve nonterminal synchronization lifecycle records and MUST NOT trigger collection, review staging, or teardown. Exact adoption keeps using the same records. A session lease reaching `stale`, `lost`, or a fenced takeover per `docs/specs/20260703-durable_scheduler_design.md` MUST trigger reconciliation evaluation for any non-terminal synchronization lifecycle records tied to that lease's agent session, while a `releasing` lease with accepted final status resumes existing terminal handoff. Workspace synchronization owns what recovery does; the scheduler owns whether execution remains live.
 
 ## Action Center Projection
 
@@ -696,8 +699,7 @@ the original artifact row is not available in the current store projection, and
 those rows can now resolve accepted, refinement, rejected, and blocked outcomes
 through the durable workspace synchronization review decision route.
 
-The next required implementation step is deeper restart recovery and
-reconciliation across backend paths.
+The active restart slice adds bounded awaiting-reconnect gating, same-handle continuation after exact adoption, and direct terminal handoff through the existing reconciliation and review owners.
 
 ## Rollout / Migration Plan
 
@@ -725,12 +727,13 @@ file APIs, object-store transfer, and optional ephemeral Git branch workflows.
 - Git apply tests that validate digest, byte count, `git apply --check`, durable apply result persistence, and restart-readable apply result records.
 - Filesystem apply tests that validate content-addressed manifests, staged copy, conflict preflight, delete handling, and durable apply result persistence.
 - Worker governance tests for local disposable-Cell OpenShell materialization, evidence persistence, change-set import, review artifact creation, and whole-Cell recycle.
-- Restart recovery tests for reachable backend session, unreachable backend session, partial collection, digest mismatch, quarantine, and `requires-human`.
+- Restart recovery tests for awaiting-reconnect with no collection or teardown, exact adoption with the same materialization and backend handle, accepted final status resuming collection without another heartbeat, reconnect timeout entering existing reconciliation, reachable and unreachable backend sessions, partial collection, digest mismatch, quarantine, and `requires-human`.
 - Binary, permission-change, generated-file, and object-store staged file tests before those paths are marked implemented.
 
 ## Risks & Mitigations
 
 - Risk: Backend state is treated as truth after restart. Mitigation: recover only through NanoCore records plus verified collected evidence.
+- Risk: Restart collection races a worker that is still running during bounded reconnect. Mitigation: scheduler and worker-control recovery outcome gates synchronization; `awaiting-reconnect` preserves the existing handle and forbids collection, review staging, and teardown.
 - Risk: Git tokens in sandbox can bypass review by pushing directly. Mitigation: default to no worker write access to protected remotes and keep push out of the apply contract.
 - Risk: Binary changes bypass review quality. Mitigation: require binary summaries, digests, media type, and explicit review state.
 - Risk: Non-Git file comparison can miss permission or binary changes. Mitigation: use content-addressed manifests and block unsupported permission apply.
@@ -748,6 +751,7 @@ file APIs, object-store transfer, and optional ephemeral Git branch workflows.
 - Workers do not receive GitHub write access in the default path.
 - Filesystem snapshot support is part of the first contract and is already partially implemented for host-dir roots.
 - Partial or ambiguous recovery evidence surfaces as `requires-human`.
+- Exact same-worker reconnect preserves the current materialization and backend handle; only adoption, accepted terminal handoff, or the scheduler's existing interrupted outcome lets synchronization collect or reconcile. Restart adds no settlement coordinator or copied domain state.
 - Permission-only changes use the reviewed filesystem staging path when the staged review records `mode_changed` summaries and apply preflight succeeds; unsupported permission mutations are blocked or quarantined with diagnostics.
 - Long-lived host Codex sessions do not define the product materialization model because host execution is not a product Worker Agent runtime. Governed worker work uses this workspace synchronization model; direct human-driven local work remains outside it unless it needs review-gated workspace synchronization.
 - Previously open questions are resolved by accepted V1 defaults: binary files become artifact-only when they are not safely text-decodable or when a binary payload exceeds 1 MiB. Artifact-only handling carries summaries, digests, media type, byte size, explicit review affordances through staged-review readback, and typed diagnostics when a worker attempts to present binary content as a normal text patch.

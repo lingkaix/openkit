@@ -89,7 +89,7 @@ The high-level setup and runtime supply contract owned by this spec is partially
 - Current AEP resolution includes static worker Skill and MCP catalog fixtures, required direct NanoCore worker control, backend-local inference or an exact trusted NanoCore worker-inference route, transcript paths, workspace roots, provider attachments where allowed, vault references where allowed, policy blocks, and observability blocks.
 - Current AEPs declare `capabilities.mode: disabled` with no routes. Static worker supply does not expose `knowledge.*`, MCP, or any other callable capability family.
 - The full durable server, workspace, user, request, vault, permission, scheduler, and backend capability layer stack remains owned and tracked by `docs/specs/20260703-agent_manifest_aep_resolution.md` rather than by this high-level entry point.
-- The remote backend materialization E2E passes with stock OpenShell `0.0.80`, but the real Codex runtime-provenance acceptance remains pending, so this implementation is not complete.
+- Remote backend materialization and the real Codex `0.144.1` runtime-provenance acceptance both pass on A1 against stock OpenShell `0.0.80`. This high-level contract remains partial for the independent durable layer stack and disabled worker-capability plane described above, not for provenance acceptance.
 
 ## Runtime Placement Mapping
 

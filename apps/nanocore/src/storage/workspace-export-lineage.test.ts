@@ -72,11 +72,39 @@ function createLineageExportInput(
     createdAt: timestamp,
     completedAt: timestamp,
   };
+  const artifact = {
+    id: source.artifactId,
+    workspaceId: source.workspaceId,
+    threadId: source.threadId,
+    turnId: source.turnId,
+    kind: 'summary',
+    title: 'Portable artifact',
+    status: 'ready',
+    summary: 'Portable artifact.',
+    version: 1,
+    content: { format: 'markdown', body: '# Portable' },
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  const artifactReferenceItem = {
+    id: 'it_artifact_source',
+    workspaceId: source.workspaceId,
+    threadId: source.threadId,
+    turnId: source.turnId,
+    type: 'artifact-reference',
+    status: 'completed',
+    artifactId: artifact.id,
+    artifactVersion: artifact.version,
+    title: artifact.title,
+    summary: artifact.summary,
+    createdAt: timestamp,
+    completedAt: timestamp,
+  };
   const turn = {
     id: source.turnId,
     workspaceId: source.workspaceId,
     threadId: source.threadId,
-    items: [item, approvalItem],
+    items: [item, artifactReferenceItem, approvalItem],
     status: 'completed',
     humanGate: null,
     error: null,
@@ -129,20 +157,6 @@ function createLineageExportInput(
     workspaceRoots: [],
   });
   environmentPackage.scope.itemId = missing === 'aep-item' ? 'it_missing' : source.itemId;
-  const artifact = {
-    id: source.artifactId,
-    workspaceId: source.workspaceId,
-    threadId: source.threadId,
-    turnId: source.turnId,
-    kind: 'summary',
-    title: 'Portable artifact',
-    status: 'ready',
-    summary: 'Portable artifact.',
-    version: 1,
-    content: { format: 'markdown', body: '# Portable' },
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  };
   const session = {
     id: source.sessionId,
     agentId: 'agent_codex_host',
@@ -222,7 +236,7 @@ function createLineageExportInput(
         },
       ],
     },
-    itemRevisions: [item, approvalItem],
+    itemRevisions: [item, artifactReferenceItem, approvalItem],
     artifacts: [artifact],
     artifactReviews: [],
     agentSessions: [session],
@@ -603,6 +617,30 @@ function importLineage(input: WriteWorkspaceExportTreeInput) {
 describe('workspace auxiliary lineage reminting', () => {
   it('rewrites every canonical reference, including both AEP layers', () => {
     const input = createLineageExportInput();
+    input.workspaceReconciliationRecords = [
+      {
+        id: 'wrr_source',
+        workspaceId: source.workspaceId,
+        triggerReason: 'restart',
+        affectedRecordIds: ['wmr_source'],
+        backendHandleSummary: {
+          backendKind: 'openshell',
+          handleId: 'bwh_source',
+          workerSessionId: 'worker_source',
+          cleanupStatus: 'pending',
+        },
+        backendReachability: { status: 'unknown', checkedAt: timestamp, detail: null },
+        collectedOutputManifestIds: ['wom_source'],
+        evidenceBundleIds: ['evb_source'],
+        stateBefore: 'ready',
+        stateAfter: 'requires-human',
+        quarantineRefs: [],
+        requiredHumanDecision: 'inspect_recovery',
+        retentionDecision: 'teardown-backend',
+        startedAt: timestamp,
+        finishedAt: null,
+      },
+    ];
     const sourceSnapshotId = (input.agentEnvironmentPackageSnapshots?.[0] as { snapshotId: string })
       .snapshotId;
     const imported = importLineage(input);
@@ -612,16 +650,26 @@ describe('workspace auxiliary lineage reminting', () => {
     const approvalItem = imported.itemRevisions.find(
       (candidate) => candidate.type === 'approval-request'
     );
+    const artifactReferenceItem = imported.itemRevisions.find(
+      (candidate) => candidate.type === 'artifact-reference'
+    );
     const artifact = imported.artifacts[0]!;
     const session = imported.agentSessions[0]!;
     const aep = imported.agentEnvironmentPackageSnapshots[0]!;
     const goal = imported.goalRecords[0]!;
     const grant = imported.vaultGrants[0]!;
 
-    if (approvalItem?.type !== 'approval-request') {
-      throw new Error('Expected imported approval request item.');
+    if (
+      approvalItem?.type !== 'approval-request' ||
+      artifactReferenceItem?.type !== 'artifact-reference'
+    ) {
+      throw new Error('Expected imported approval request and artifact-reference items.');
     }
 
+    expect.soft(artifactReferenceItem).toMatchObject({
+      artifactId: artifact.id,
+      artifactVersion: artifact.version,
+    });
     expect.soft(session.environmentPackageSnapshotId).toBe(aep.snapshotId);
     expect.soft(session).toMatchObject({
       sandboxSummary: null,
@@ -711,6 +759,9 @@ describe('workspace auxiliary lineage reminting', () => {
         { kind: 'artifact', ref: artifact.id },
       ],
     });
+    expect
+      .soft(imported.workspaceReconciliationRecords[0]?.evidenceBundleIds)
+      .toEqual([imported.evidenceBundles[0]?.id]);
     expect.soft(imported.runtimeEvidence[0]).toMatchObject({
       threadId: thread.id,
       turnId: turn.id,
@@ -731,6 +782,7 @@ describe('workspace auxiliary lineage reminting', () => {
       runtimeEvidence: imported.runtimeEvidence,
       usageRecords: imported.usageRecords,
       vaultGrants: imported.vaultGrants,
+      workspaceReconciliationRecords: imported.workspaceReconciliationRecords,
       workspaceRepositories: imported.workspaceRepositories,
     });
     for (const sourceId of [

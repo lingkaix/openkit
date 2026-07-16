@@ -238,8 +238,12 @@ export const SubmitThreadGoalSteeringRequestSchema = z.object({
 
 /** Response payload returned after submitting Goal Mode steering. */
 export const SubmitThreadGoalSteeringResponseSchema = z.object({
-  state: z.enum(['queued', 'blocked']),
-  goal: ThreadGoalSummarySchema,
+  state: z.literal('queued'),
+  pendingTurnId: z.string().min(1),
+  requestId: z.string().min(1),
+  contentItemId: z.string().min(1),
+  goalId: z.string().min(1),
+  activeTurnId: z.string().min(1),
 });
 
 /** Resource reference selected by a Goal Mode plan task. */

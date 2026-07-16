@@ -1619,8 +1619,7 @@ function workspaceReviewCommitMessage(
       `Workspace review worker turn belongs to another workspace: ${review.review.id}`
     );
   }
-  const agentId = turn.agentId ?? store.resolveTurnAgentId(turn);
-  const agent = agentId ? store.getAgent(review.review.workspaceId, agentId) : null;
+  const agent = turn.agentId ? store.getAgent(review.review.workspaceId, turn.agentId) : null;
   const safeAgentId = (agent?.id ?? 'unknown-agent').replace(/[^A-Za-z0-9._+-]/g, '-');
   const workerName =
     (agent?.name ?? 'Unknown OpenKit Agent')

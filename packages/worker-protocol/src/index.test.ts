@@ -4,6 +4,7 @@ import {
   WorkerCanonicalEventRecordSchema,
   WorkerCanonicalTerminalEventDataSchema,
   WorkerCapabilityCallSummarySchema,
+  WorkerControlHeartbeatRequestSchema,
   WorkerControlRequestEnvelopeSchema,
   WorkerControlResponseEnvelopeSchema,
   WorkerErrorEnvelopeSchema,
@@ -347,6 +348,47 @@ describe('worker protocol schemas', () => {
         diagnostics: [],
       }).accepted
     ).toBe(true);
+  });
+
+  it('requires the sequence-zero heartbeat to commit one process key hash', () => {
+    const request = {
+      body: {
+        message: null,
+        processKeyHash: Buffer.alloc(32, 1).toString('base64url'),
+        status: 'starting' as const,
+      },
+      lineage,
+      operation: 'heartbeat' as const,
+      schemaVersion: 1 as const,
+      sequence: 0,
+    };
+
+    expect(WorkerControlRequestEnvelopeSchema.parse(request)).toEqual(request);
+    expect(WorkerControlHeartbeatRequestSchema.parse(request)).toEqual(request);
+    expect(() =>
+      WorkerControlHeartbeatRequestSchema.parse({
+        ...request,
+        body: { message: null, status: 'starting' },
+      })
+    ).toThrow();
+  });
+
+  it('keeps the reconnect key outside the canonical heartbeat envelope', () => {
+    const heartbeat = {
+      body: { message: null, status: 'running' as const },
+      lineage,
+      operation: 'heartbeat' as const,
+      schemaVersion: 1 as const,
+      sequence: 7,
+    };
+    const reconnect = {
+      ...heartbeat,
+      reconnectKey: Buffer.alloc(32, 2).toString('base64url'),
+    };
+
+    expect(WorkerControlRequestEnvelopeSchema.parse(heartbeat)).toEqual(heartbeat);
+    expect(() => WorkerControlRequestEnvelopeSchema.parse(reconnect)).toThrow();
+    expect(WorkerControlHeartbeatRequestSchema.parse(reconnect)).toEqual(reconnect);
   });
 
   it('normalizes worker error envelopes', () => {

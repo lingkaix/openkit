@@ -9,10 +9,10 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { upsertWorkspaceRepositoryResource } from '../workspace/repository-store.js';
 import { prepareNextTurn } from './prepare-next-turn.js';
 import {
-  drainFollowUpInputs,
-  drainSteeringForSafePoint,
   enqueueFollowUpInput,
   enqueueSteeringForSafePoint,
+  selectFollowUpInputs,
+  selectSteeringForSafePoint,
 } from './user-turn-queues.js';
 
 /**
@@ -180,11 +180,11 @@ describe('prepareNextTurn', () => {
           stopConditions: ['Stop when queued input cannot be prepared.'],
         },
         contextProjection: projectionFixture(['item_context']),
-        steeringMessages: drainSteeringForSafePoint(workspaceDb, {
+        steeringMessages: selectSteeringForSafePoint(workspaceDb, {
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
         }),
-        followUpInputs: drainFollowUpInputs(workspaceDb, {
+        followUpInputs: selectFollowUpInputs(workspaceDb, {
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
           drainMode: 'all',

@@ -109,6 +109,9 @@ describe('SimulatedTurnExecutor', () => {
 
         expect(turnResponse.status, JSON.stringify(turn)).toBe(202);
         expect(store.getTurnById(turn.id)).toMatchObject({
+          agentId: 'agent_codex_host',
+          agentProfileId: 'default',
+          agentSessionId: `session_sim_turn_${turn.id}`,
           status: 'awaiting_human',
           humanGate: {
             kind: 'approval',
@@ -243,6 +246,34 @@ describe('SimulatedTurnExecutor', () => {
     } finally {
       coreDb.sqlite.close();
     }
+  });
+
+  it('uses the agent already selected on the turn', async () => {
+    const store = createDemoStore();
+    const executor = new SimulatedTurnExecutor();
+    const firstTurn = store.createTurn('ws_demo', 'th_demo', 'Use the default agent');
+
+    store.updateTurn(firstTurn.id, { agentId: 'agent_codex_host' });
+    await executor.startTurn(store, firstTurn.id, 'Use the default agent');
+    const firstSession = store.getAgentSession(`session_sim_turn_${firstTurn.id}`);
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Use the selected agent');
+
+    store.updateTurn(turn.id, { agentId: 'agent_opencode_host' });
+    await executor.startTurn(store, turn.id, 'Use the selected agent');
+
+    expect(store.getTurnById(turn.id)).toMatchObject({
+      agentId: 'agent_opencode_host',
+      agentProfileId: 'default',
+      agentSessionId: `session_sim_turn_${turn.id}`,
+    });
+    expect(store.getAgentSession(firstSession.id).agentId).toBe('agent_codex_host');
+    expect(store.getTurnById(firstTurn.id).agentSessionId).not.toBe(
+      store.getTurnById(turn.id).agentSessionId
+    );
+
+    await executor.interruptTurn(store, turn.id);
+
+    expect(executor.getAgentSession(store, 'ws_demo', 'th_demo').id).toBe(firstSession.id);
   });
 
   it('uses the simulator as the default executor when requested by environment', async () => {

@@ -2,6 +2,7 @@ import {
   WorkerCanonicalEventRecordSchema,
   WorkerCanonicalTerminalEventDataSchema,
   WorkerCapabilityCallSummarySchema,
+  WorkerControlHeartbeatRequestSchema,
   WorkerControlRequestEnvelopeSchema,
 } from '@openkit/worker-protocol';
 import type { Context, Hono } from 'hono';
@@ -25,20 +26,6 @@ import {
   WorkerControlLineageRequestSchema,
 } from './worker-http.js';
 
-const WorkerControlHeartbeatRequestSchema = z.object({
-  lineage: WorkerControlLineageRequestSchema,
-  sequence: z.number().int().nonnegative(),
-  status: z.enum([
-    'starting',
-    'running',
-    'idle',
-    'awaiting_command',
-    'stopping',
-    'completed',
-    'failed',
-  ]),
-  message: z.string().min(1).nullable().optional(),
-});
 const WorkerControlArtifactNoticeRequestSchema = z.object({
   lineage: WorkerControlLineageRequestSchema,
   sequence: z.number().int().nonnegative(),
@@ -116,10 +103,7 @@ export function registerWorkerControlRoutes({
       return c.json({
         heartbeat: workerControlGateway.recordHeartbeat({
           authorization: c.req.header('authorization') ?? null,
-          lineage: parsed.data.lineage,
-          message: parsed.data.message ?? null,
-          sequence: parsed.data.sequence,
-          status: parsed.data.status,
+          ...parsed.data,
         }),
       });
     } catch (error) {
@@ -499,7 +483,11 @@ function quarantineWorkerControlRejection(input: {
   readonly operation: string;
   readonly route: string;
 }): void {
-  if (!input.coreDb || !(input.error instanceof WorkerControlGatewayError)) {
+  if (
+    !input.coreDb ||
+    !(input.error instanceof WorkerControlGatewayError) ||
+    input.error.code === 'worker_control_reconnect_required'
+  ) {
     return;
   }
 

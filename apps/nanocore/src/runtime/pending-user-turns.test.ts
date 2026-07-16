@@ -80,7 +80,7 @@ describe('pending user turn storage', () => {
     }
   });
 
-  it('treats duplicate request ids as idempotent within one thread scope', () => {
+  it('replays only exact duplicate pending input lineage', () => {
     const workspaceDb = createWorkspaceDb();
 
     try {
@@ -96,8 +96,8 @@ describe('pending user turn storage', () => {
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         requestId: 'req_duplicate',
-        contentItemId: 'item_changed',
-        queueMode: 'blocked_gate',
+        contentItemId: 'item_original',
+        queueMode: 'follow_up',
         receivedAt: '2026-05-31T00:05:00.000Z',
       });
 
@@ -105,6 +105,15 @@ describe('pending user turn storage', () => {
       expect(
         listPendingUserTurns(workspaceDb, { workspaceId: 'ws_demo', threadId: 'th_demo' })
       ).toEqual([first]);
+      expect(() =>
+        enqueuePendingUserTurn(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          requestId: 'req_duplicate',
+          contentItemId: 'item_changed',
+          queueMode: 'blocked_gate',
+        })
+      ).toThrow('Pending user turn request conflicts with existing lineage.');
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -127,8 +136,8 @@ describe('pending user turn storage', () => {
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         requestId,
-        contentItemId: 'item_duplicate',
-        queueMode: 'follow_up',
+        contentItemId: 'item_pending',
+        queueMode: 'safe_point_steering',
         receivedAt: '2026-05-31T00:01:00.000Z',
       });
 

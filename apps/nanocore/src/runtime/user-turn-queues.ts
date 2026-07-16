@@ -1,6 +1,5 @@
 import type { WorkspaceDb } from '../storage/db.js';
 import {
-  consumePendingUserTurn,
   type EnqueuePendingUserTurnInput,
   enqueuePendingUserTurn,
   listPendingUserTurns,
@@ -93,30 +92,27 @@ export function enqueueFollowUpInput(
 }
 
 /**
- * Drains all safe-point steering messages for one thread.
+ * Selects safe-point steering messages without claiming delivery.
  *
  * @param workspaceDb Open workspace-scope database handle.
  * @param input Thread queue scope.
- * @returns Safe-point steering messages in deterministic order.
+ * @returns Safe-point steering messages in deterministic order while their pending rows remain.
  */
-export function drainSteeringForSafePoint(
+export function selectSteeringForSafePoint(
   workspaceDb: WorkspaceDb,
   input: UserTurnQueueScope
 ): SafePointSteeringMessage[] {
-  return drainSelectedPendingTurns(
-    workspaceDb,
-    listByMode(workspaceDb, input, 'safe_point_steering')
-  ).map(createSafePointSteeringMessage);
+  return listByMode(workspaceDb, input, 'safe_point_steering').map(createSafePointSteeringMessage);
 }
 
 /**
- * Drains follow-up inputs for one thread according to the requested drain mode.
+ * Selects follow-up inputs for one thread according to the requested drain mode.
  *
  * @param workspaceDb Open workspace-scope database handle.
  * @param input Thread queue scope and follow-up drain mode.
- * @returns Queued follow-up inputs in deterministic order.
+ * @returns Queued follow-up inputs in deterministic order while their pending rows remain.
  */
-export function drainFollowUpInputs(
+export function selectFollowUpInputs(
   workspaceDb: WorkspaceDb,
   input: DrainFollowUpInputsInput
 ): QueuedFollowUpInput[] {
@@ -124,7 +120,7 @@ export function drainFollowUpInputs(
   const selectedTurns =
     input.drainMode === 'one_at_a_time' ? pendingTurns.slice(0, 1) : pendingTurns;
 
-  return drainSelectedPendingTurns(workspaceDb, selectedTurns).map(createQueuedFollowUpInput);
+  return selectedTurns.map(createQueuedFollowUpInput);
 }
 
 /**
@@ -143,28 +139,6 @@ function listByMode(
   return listPendingUserTurns(workspaceDb, input).filter(
     (pendingTurn) => pendingTurn.queueMode === queueMode
   );
-}
-
-/**
- * Consumes selected pending rows without starting worker turns.
- *
- * @param workspaceDb Open workspace-scope database handle.
- * @param pendingTurns Pending rows selected for delivery.
- * @returns Consumed pending rows in the original selection order.
- */
-function drainSelectedPendingTurns(
-  workspaceDb: WorkspaceDb,
-  pendingTurns: PendingUserTurnRecord[]
-): PendingUserTurnRecord[] {
-  for (const pendingTurn of pendingTurns) {
-    consumePendingUserTurn(workspaceDb, {
-      workspaceId: pendingTurn.workspaceId,
-      threadId: pendingTurn.threadId,
-      requestId: pendingTurn.requestId,
-    });
-  }
-
-  return pendingTurns;
 }
 
 /**

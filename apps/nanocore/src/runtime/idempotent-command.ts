@@ -47,6 +47,8 @@ interface IdempotentCommandOptions<T> {
   readonly input: unknown;
   /** Resource kind returned by this command. */
   readonly responseKind: CommandRequestResponseKind;
+  /** Captures an immutable public response when exact replay cannot use a mutable resource. */
+  readonly responseSnapshot?: (result: T) => unknown;
   /** Executes the command when no duplicate exists. */
   readonly execute: () => Promise<T> | T;
   /** Replays the current resource snapshot for an existing ledger record. */
@@ -108,7 +110,11 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
       requestId: options.requestId,
       scope: options.scope,
       inputHash,
-      response: { kind: options.responseKind, id: options.responseId(result) },
+      response: {
+        kind: options.responseKind,
+        id: options.responseId(result),
+        ...(options.responseSnapshot ? { snapshot: options.responseSnapshot(result) } : {}),
+      },
     });
 
     return result;

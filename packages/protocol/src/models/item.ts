@@ -90,6 +90,7 @@ export const ReasoningItemSchema = BaseItemSchema.extend({
 export const ArtifactReferenceItemSchema = BaseItemSchema.extend({
   type: z.literal('artifact-reference'),
   artifactId: z.string().min(1),
+  artifactVersion: z.number().int().positive(),
   title: z.string().min(1),
   summary: z.string().nullable(),
 });
