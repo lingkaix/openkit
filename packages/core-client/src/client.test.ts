@@ -384,7 +384,6 @@ function appDiagnostics() {
     },
     defaults: {
       quickChat: { providerId: 'provider_demo', model: 'gpt-demo' },
-      internalTasks: { providerId: 'provider_demo', model: 'gpt-demo' },
       gateway: { providerId: null, model: null },
     },
     oauth: {
@@ -403,7 +402,6 @@ function appDiagnostics() {
     },
     capabilities: ['core.questions'],
     runtimeConfig: runtimeConfigStatus(),
-    internalAgents: { agents: [], recentFailures: [], recentHookFailures: [] },
   };
 }
 
@@ -609,22 +607,15 @@ function threadGoalSummary() {
         ready: 0,
         running: 1,
         reviewing: 0,
-        needsRevision: 0,
         completed: 2,
         blocked: 0,
         failed: 0,
-        skipped: 0,
       },
       pendingHumanAttention: {
         required: false,
         reason: null,
       },
       terminalState: null,
-      steering: {
-        pendingSteeringCount: 1,
-        pendingFollowUpCount: 0,
-        appliedSteeringCount: 2,
-      },
       updatedAt: timestamp,
     },
   };
@@ -649,11 +640,9 @@ function threadGoalSummaryForStatus(status: string) {
           ready: 0,
           running: 0,
           reviewing: 0,
-          needsRevision: 0,
           completed: 0,
           blocked: 0,
           failed: 0,
-          skipped: 0,
         },
       },
     };
@@ -689,11 +678,9 @@ function threadGoalSummaryForStatus(status: string) {
           ready: 0,
           running: 0,
           reviewing: 0,
-          needsRevision: 0,
           completed: 3,
           blocked: 0,
           failed: 0,
-          skipped: 0,
         },
         terminalState: {
           status: 'completed',
@@ -701,7 +688,6 @@ function threadGoalSummaryForStatus(status: string) {
         },
         terminalSummary: {
           completedTaskIds: ['task_1', 'task_2', 'task_3'],
-          skippedTaskIds: [],
           blockedTaskIds: [],
           artifactIds: ['artifact_release_log'],
           verificationEvidence: [
@@ -1378,32 +1364,12 @@ function interruptedWorkerState() {
         label: 'Retry interrupted worker turn',
       },
       {
-        kind: 'record_terminal',
-        label: 'Record terminal worker state',
-        allowedTerminalStages: ['completed', 'failed', 'aborted'],
-      },
-      {
         kind: 'request_human',
         label: 'Ask the user how to recover this worker turn',
       },
     ],
     materializedAt: timestamp,
     sourceUpdatedAt: timestamp,
-  };
-}
-
-/** Returns one pending user turn recovery row. */
-function recoveryPendingUserTurn() {
-  return {
-    pendingTurnId: 'put_ws_demo_th_demo_req_pending',
-    workspaceId: 'ws_demo',
-    threadId: 'th_demo',
-    requestId: 'req_pending',
-    contentItemId: 'it_pending',
-    contentDigest: null,
-    queueMode: 'safe_point_steering',
-    receivedAt: timestamp,
-    createdAt: timestamp,
   };
 }
 
@@ -2023,24 +1989,6 @@ describe('createCoreClient', () => {
       },
       'POST /api/app/workspaces/ws_demo/threads/th_demo/task': {
         body: {
-          decision: {
-            mode: 'task',
-            sourceAgentId: 'worker-coordinator',
-            worker: {
-              agentId: 'agent_codex_host',
-              displayName: 'Codex Host Agent',
-              runtime: 'codex',
-            },
-            confidence: 0.86,
-            rationale: 'The request needs bounded worker execution.',
-            requiredApprovals: [],
-            expectedStopCondition: 'one bounded worker turn',
-            escalationRecommended: false,
-            contextRefs: [
-              { kind: 'workspace', id: 'ws_demo' },
-              { kind: 'thread', id: 'th_demo' },
-            ],
-          },
           state: 'running',
           turn: turn(),
           evidence: {
@@ -2824,54 +2772,12 @@ describe('createCoreClient', () => {
       'GET /api/app/recovery/interrupted-workers': {
         body: { items: [interruptedWorkerState()] },
       },
-      'GET /api/app/workspaces/ws_demo/threads/th_demo/recovery/pending-user-turns': {
-        body: { items: [recoveryPendingUserTurn()] },
-      },
-      'POST /api/app/workspaces/ws_demo/threads/th_demo/recovery/pending-user-turns/req_pending/cancel':
-        {
-          body: { cancelled: true },
-        },
-      'POST /api/app/workspaces/ws_demo/threads/th_demo/recovery/pending-user-turns/req_pending/edit':
-        {
-          body: {
-            edited: true,
-            item: {
-              completedAt: timestamp,
-              createdAt: timestamp,
-              id: 'it_pending',
-              status: 'completed',
-              text: 'Edited pending input.',
-              threadId: 'th_demo',
-              turnId: 'turn_demo',
-              type: 'user-message',
-              workspaceId: 'ws_demo',
-            },
-          },
-        },
-      'POST /api/app/workspaces/ws_demo/threads/th_demo/recovery/pending-user-turns/req_pending/follow-up':
-        {
-          body: {
-            converted: true,
-            pendingUserTurn: { ...recoveryPendingUserTurn(), queueMode: 'follow_up' },
-          },
-        },
-      'POST /api/app/workspaces/ws_demo/threads/th_demo/recovery/pending-user-turns/req_pending/interrupt':
-        {
-          body: {
-            promoted: true,
-            turn: turn(),
-          },
-        },
       'POST /api/app/workspaces/ws_demo/threads/th_demo/recovery/interrupted-worker/turn_worker/retry':
         {
           body: {
-            retried: true,
-            turn: { ...turn(), id: 'turn_worker', status: 'interrupted' },
+            outcome: 'released_for_retry',
+            turnId: 'turn_worker',
           },
-        },
-      'POST /api/app/workspaces/ws_demo/threads/th_demo/recovery/interrupted-worker/turn_worker/terminal':
-        {
-          body: { cleared: true },
         },
       'POST /api/app/workspaces/ws_demo/scheduler/admissions/queue_denied/retry': {
         body: { retried: true },
@@ -3009,10 +2915,6 @@ describe('createCoreClient', () => {
     await expect(
       client.app.startTaskMode('ws_demo', 'th_demo', { input: 'Implement the focused fix.' })
     ).resolves.toMatchObject({
-      decision: {
-        mode: 'task',
-        worker: { agentId: 'agent_codex_host' },
-      },
       state: 'running',
     });
     await expect(
@@ -3210,43 +3112,26 @@ describe('createCoreClient', () => {
     await expect(client.app.listInterruptedWorkers()).resolves.toEqual({
       items: [interruptedWorkerState()],
     });
-    await expect(client.app.listRecoveryPendingUserTurns('ws_demo', 'th_demo')).resolves.toEqual({
-      items: [recoveryPendingUserTurn()],
-    });
+    expect(client.app).not.toHaveProperty('listRecoveryPendingUserTurns');
+    expect(client.app).not.toHaveProperty('cancelRecoveryPendingUserTurn');
+    expect(client.app).not.toHaveProperty('convertRecoveryPendingUserTurnToFollowUp');
+    expect(client.app).not.toHaveProperty('editRecoveryPendingUserTurn');
+    expect(client.app).not.toHaveProperty('promoteRecoveryPendingUserTurnToInterrupt');
     await expect(
-      client.app.cancelRecoveryPendingUserTurn('ws_demo', 'th_demo', 'req_pending')
-    ).resolves.toEqual({ cancelled: true });
-    await expect(
-      client.app.editRecoveryPendingUserTurn('ws_demo', 'th_demo', 'req_pending', {
-        text: 'Edited pending input.',
+      client.app.retryInterruptedWorkerCheckpoint('ws_demo', 'th_demo', 'turn_worker', {
+        requestId: 'req_worker_retry',
       })
-    ).resolves.toMatchObject({
-      edited: true,
-      item: { id: 'it_pending', text: 'Edited pending input.' },
+    ).resolves.toEqual({
+      outcome: 'released_for_retry',
+      turnId: 'turn_worker',
     });
-    await expect(
-      client.app.convertRecoveryPendingUserTurnToFollowUp('ws_demo', 'th_demo', 'req_pending')
-    ).resolves.toMatchObject({
-      converted: true,
-      pendingUserTurn: { queueMode: 'follow_up', requestId: 'req_pending' },
-    });
-    await expect(
-      client.app.promoteRecoveryPendingUserTurnToInterrupt('ws_demo', 'th_demo', 'req_pending')
-    ).resolves.toMatchObject({
-      promoted: true,
-      turn: { id: 'turn_demo' },
-    });
-    await expect(
-      client.app.retryInterruptedWorkerCheckpoint('ws_demo', 'th_demo', 'turn_worker')
-    ).resolves.toMatchObject({
-      retried: true,
-      turn: { id: 'turn_worker', status: 'interrupted' },
-    });
-    await expect(
-      client.app.clearInterruptedWorkerCheckpoint('ws_demo', 'th_demo', 'turn_worker', {
-        terminalStage: 'aborted',
-      })
-    ).resolves.toEqual({ cleared: true });
+    expect(
+      requests.find(
+        (request) =>
+          request.path ===
+          '/api/app/workspaces/ws_demo/threads/th_demo/recovery/interrupted-worker/turn_worker/retry'
+      )?.body
+    ).toEqual({ requestId: 'req_worker_retry' });
     await expect(client.app.retrySchedulerAdmission('ws_demo', 'queue_denied')).resolves.toEqual({
       retried: true,
     });
@@ -3310,13 +3195,7 @@ describe('createCoreClient', () => {
       'GET /api/app/agents/agent_demo',
       'GET /api/app/workspaces/ws_demo/action-center',
       'GET /api/app/recovery/interrupted-workers',
-      'GET /api/app/workspaces/ws_demo/threads/th_demo/recovery/pending-user-turns',
-      'POST /api/app/workspaces/ws_demo/threads/th_demo/recovery/pending-user-turns/req_pending/cancel',
-      'POST /api/app/workspaces/ws_demo/threads/th_demo/recovery/pending-user-turns/req_pending/edit',
-      'POST /api/app/workspaces/ws_demo/threads/th_demo/recovery/pending-user-turns/req_pending/follow-up',
-      'POST /api/app/workspaces/ws_demo/threads/th_demo/recovery/pending-user-turns/req_pending/interrupt',
       'POST /api/app/workspaces/ws_demo/threads/th_demo/recovery/interrupted-worker/turn_worker/retry',
-      'POST /api/app/workspaces/ws_demo/threads/th_demo/recovery/interrupted-worker/turn_worker/terminal',
       'POST /api/app/workspaces/ws_demo/scheduler/admissions/queue_denied/retry',
       'POST /api/app/workspaces/ws_demo/scheduler/admissions/queue_queued/cancel',
       'GET /api/app/workspaces/ws_demo/scheduler/admissions',
@@ -3330,12 +3209,9 @@ describe('createCoreClient', () => {
     expect(requests[8]?.body).toEqual({
       materialBase64: Buffer.from('workspace-secret').toString('base64'),
     });
-    expect(requests.at(-9)?.body).toEqual({});
-    expect(requests.at(-8)?.body).toEqual({ text: 'Edited pending input.' });
-    expect(requests.at(-7)?.body).toEqual({});
-    expect(requests.at(-6)?.body).toEqual({});
-    expect(requests.at(-5)?.body).toEqual({});
-    expect(requests.at(-4)?.body).toEqual({ terminalStage: 'aborted' });
+    expect(requests.at(-6)?.body).toBeNull();
+    expect(requests.at(-5)?.body).toBeNull();
+    expect(requests.at(-4)?.body).toEqual({ requestId: 'req_worker_retry' });
     expect(requests.at(-3)?.body).toEqual({});
     expect(requests.at(-2)?.body).toEqual({});
     expect(requests.at(-1)?.body).toBeNull();
@@ -3577,6 +3453,7 @@ describe('createCoreClient', () => {
       verificationUrl: 'https://chatgpt.com/activate',
       userCode: 'OPEN-KIT',
     };
+    const goalPlan = goalPlanPayload();
     const { client, requests } = createFakeClient({
       'GET /api/app/workspaces/ws_demo/dashboard': { body: workspaceDashboard() },
       'GET /api/app/workspaces/ws_demo/threads/th_demo/dashboard': { body: threadDashboard() },
@@ -3599,8 +3476,9 @@ describe('createCoreClient', () => {
               { kind: 'thread', id: 'th_demo' },
             ],
             requiredApprovals: ['plan_approval'],
+            plan: goalPlan,
           },
-          plan: goalPlanPayload(),
+          plan: goalPlan,
         },
       },
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/plan/approve': {
@@ -3619,11 +3497,13 @@ describe('createCoreClient', () => {
       },
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/pause': {
         body: {
+          outcome: 'paused',
           goal: { ...threadGoalSummary().goal, status: 'paused' },
         },
       },
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/resume': {
         body: {
+          outcome: 'resumed',
           goal: threadGoalSummary().goal,
         },
       },
@@ -3643,81 +3523,28 @@ describe('createCoreClient', () => {
               reason: 'Worker result needs review.',
             },
           },
-          worker: {
+          result: {
+            taskId: 'task_1',
             turnId: 'turn_worker',
-            stopReason: 'completed',
-            checkpointStage: 'completed',
-            workerSessionId: null,
-            evidence: {
-              itemIds: ['it_worker_terminal'],
-              artifactIds: ['artifact_release_log'],
-            },
-          },
-          contextAssembly: {
-            contextDigest: 'ctxpkg_sha256_demo',
-            contextRefs: [
-              { kind: 'workspace', id: 'ws_demo' },
-              { kind: 'thread', id: 'th_demo' },
-              { kind: 'item', id: 'it_context' },
-            ],
-            repositoryResourceId: 'repo_default',
-            steeringMessageCount: 1,
-            followUpInputCount: 0,
-          },
-          coordinator: {
-            mode: 'goal',
-            sourceAgentId: 'worker-coordinator',
-            worker: {
-              agentId: 'codex',
-              displayName: 'Codex',
-              runtime: 'codex',
-            },
-            confidence: 0.86,
-            rationale: 'The request needs bounded worker execution and Codex is ready.',
-            requiredApprovals: [],
-            expectedStopCondition: 'one bounded worker turn',
-            escalationRecommended: false,
-            contextRefs: [
-              { kind: 'workspace', id: 'ws_demo' },
-              { kind: 'thread', id: 'th_demo' },
-            ],
-          },
-          decision: {
-            schemaVersion: 1,
-            mode: 'goal',
-            sourceAgentId: 'worker-coordinator',
-            requestId: 'req_goal_step',
             outcome: 'review',
             shouldStop: true,
             stopReason: 'completed',
-            rationale: 'Worker turn completed and needs human review before Goal Mode continues.',
-            contextRefs: [
-              { kind: 'workspace', id: 'ws_demo' },
-              { kind: 'thread', id: 'th_demo' },
-            ],
             evidence: {
               itemIds: ['it_worker_terminal'],
               artifactIds: ['artifact_release_log'],
             },
-          },
-          pendingAttention: {
-            kind: 'review',
-            reason: 'Worker result needs review.',
-            itemId: 'it_worker_terminal',
+            reviewId: 'review_goal_demo_task_1',
           },
         },
       },
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/steering': {
         body: {
           state: 'queued',
-          goal: {
-            ...threadGoalSummary().goal,
-            steering: {
-              pendingSteeringCount: 2,
-              pendingFollowUpCount: 0,
-              appliedSteeringCount: 2,
-            },
-          },
+          pendingTurnId: 'pending_goal_steering',
+          requestId: 'req_goal_steering',
+          contentItemId: 'it_goal_steering',
+          goalId: 'goal_demo',
+          activeTurnId: 'turn_worker',
         },
       },
       'POST /api/app/workspaces/ws_demo/artifacts/artifact_demo/review': {
@@ -3759,18 +3586,27 @@ describe('createCoreClient', () => {
               itemIds: ['item_demo'],
               artifactIds: ['artifact_demo'],
               verificationEvidence: [],
+              prompt: 'Review the worker evidence against the accepted Task.',
+              createdByRequestId: 'goal-step-request-1',
               verdict: 'retry',
               reason: 'Retry with stronger verification.',
+              revisionInstruction: null,
               createdAt: timestamp,
               updatedAt: timestamp,
               resolvedAt: timestamp,
               resolutionRequestId: 'goal-review-request-1',
+              resolvedByActorId: 'user_demo',
             },
             advance: {
               outcome: 'retry',
               task: { taskId: 'task_demo', status: 'ready' },
-              goal: null,
-              nextTask: null,
+              goal: {
+                goalId: 'goal_demo',
+                status: 'running',
+                currentTaskId: null,
+                terminalStopReason: null,
+              },
+              nextReadyTaskId: 'task_demo',
             },
           },
         },
@@ -3828,15 +3664,20 @@ describe('createCoreClient', () => {
         title: 'Ship v0.0.6',
       })
     ).resolves.toEqual({ ...threadGoalSummary(), objectiveItemId: 'it_goal_objective' });
-    await expect(client.app.createThreadGoalPlan('ws_demo', 'th_demo')).resolves.toMatchObject({
+    await expect(
+      client.app.createThreadGoalPlan('ws_demo', 'th_demo', {
+        requestId: 'req_goal_plan_create',
+      })
+    ).resolves.toMatchObject({
       status: 'awaiting_plan_approval',
       planItemId: 'it_goal_plan_goal_demo',
+      planner: { plan: { tasks: [{ taskId: 'task_1' }] } },
       plan: { tasks: [{ taskId: 'task_1' }] },
     });
     await expect(
       client.app.approveThreadGoalPlan('ws_demo', 'th_demo', {
+        requestId: 'req_goal_plan_approve',
         planItemId: 'it_goal_plan_goal_demo',
-        plan: goalPlanPayload(),
       })
     ).resolves.toEqual({
       goal: threadGoalSummary().goal,
@@ -3853,31 +3694,30 @@ describe('createCoreClient', () => {
       revisionItemId: 'it_goal_plan_revision_goal_demo',
       startsWorkerTurn: false,
     });
-    await expect(client.app.pauseThreadGoal('ws_demo', 'th_demo')).resolves.toEqual({
+    await expect(
+      client.app.pauseThreadGoal('ws_demo', 'th_demo', { requestId: 'req_goal_pause' })
+    ).resolves.toEqual({
+      outcome: 'paused',
       goal: { ...threadGoalSummary().goal, status: 'paused' },
     });
     await expect(client.app.resumeThreadGoal('ws_demo', 'th_demo')).resolves.toEqual({
+      outcome: 'resumed',
       goal: threadGoalSummary().goal,
     });
     await expect(
       client.app.runThreadGoalStep('ws_demo', 'th_demo', {
         requestId: 'req_goal_step_1',
-        followUpDrainMode: 'all',
       })
     ).resolves.toMatchObject({
-      worker: {
-        checkpointStage: 'completed',
+      result: {
+        taskId: 'task_1',
+        outcome: 'review',
+        shouldStop: true,
         stopReason: 'completed',
         evidence: {
           artifactIds: ['artifact_release_log'],
         },
-      },
-      decision: {
-        outcome: 'review',
-        shouldStop: true,
-      },
-      pendingAttention: {
-        kind: 'review',
+        reviewId: 'review_goal_demo_task_1',
       },
     });
     expect('runThreadGoalTestSuperviseStep' in client.app).toBe(false);
@@ -3887,11 +3727,11 @@ describe('createCoreClient', () => {
       })
     ).resolves.toMatchObject({
       state: 'queued',
-      goal: {
-        steering: {
-          pendingSteeringCount: 2,
-        },
-      },
+      pendingTurnId: 'pending_goal_steering',
+      requestId: 'req_goal_steering',
+      contentItemId: 'it_goal_steering',
+      goalId: 'goal_demo',
+      activeTurnId: 'turn_worker',
     });
     await expect(
       client.app.submitArtifactReviewDecision('ws_demo', 'artifact_demo', {
@@ -3905,14 +3745,26 @@ describe('createCoreClient', () => {
       },
     });
     await expect(
-      client.app.submitGoalReviewDecision('ws_demo', 'th_demo', 'goal_demo', 'review_demo')
+      client.app.submitGoalReviewDecision('ws_demo', 'th_demo', 'goal_demo', 'review_demo', {
+        verdict: 'retry',
+        reason: 'Retry with stronger verification.',
+      })
     ).resolves.toMatchObject({
       review: {
         reviewId: 'review_demo',
+        verdict: 'retry',
         resolvedAt: timestamp,
       },
       advance: {
         outcome: 'retry',
+        task: { taskId: 'task_demo', status: 'ready' },
+        goal: {
+          goalId: 'goal_demo',
+          status: 'running',
+          currentTaskId: null,
+          terminalStopReason: null,
+        },
+        nextReadyTaskId: 'task_demo',
       },
     });
     await expect(
@@ -4024,9 +3876,33 @@ describe('createCoreClient', () => {
         requestId: expect.any(String),
       }
     );
-    expect(requests.find((request) => request.path.endsWith('/goal/step'))?.body).toMatchObject({
+    expect(
+      requests.find((request) => request.path.endsWith('/goal/plan') && request.method === 'POST')
+        ?.body
+    ).toEqual({
+      requestId: 'req_goal_plan_create',
+    });
+    expect(requests.find((request) => request.path.endsWith('/goal/plan/approve'))?.body).toEqual({
+      requestId: 'req_goal_plan_approve',
+      planItemId: 'it_goal_plan_goal_demo',
+    });
+    expect(requests.find((request) => request.path.endsWith('/goal/pause'))?.body).toEqual({
+      requestId: 'req_goal_pause',
+    });
+    expect(requests.find((request) => request.path.endsWith('/goal/resume'))?.body).toEqual({
+      requestId: expect.any(String),
+    });
+    expect(requests.find((request) => request.path.endsWith('/goal/step'))?.body).toEqual({
       requestId: 'req_goal_step_1',
-      followUpDrainMode: 'all',
+    });
+    expect(
+      requests.find(
+        (request) => request.path.endsWith('/threads/th_demo/goal') && request.method === 'POST'
+      )?.body
+    ).toMatchObject({
+      objective: 'Make v0.0.6 ready to publish.',
+      title: 'Ship v0.0.6',
+      requestId: expect.any(String),
     });
     expect(
       requests.find((request) => request.path.endsWith('/artifacts/artifact_demo/review'))?.body
@@ -4037,8 +3913,10 @@ describe('createCoreClient', () => {
     });
     expect(
       requests.find((request) => request.path.endsWith('/reviews/review_demo/decision'))?.body
-    ).toMatchObject({
+    ).toEqual({
       requestId: expect.any(String),
+      verdict: 'retry',
+      reason: 'Retry with stronger verification.',
     });
     expect(
       requests.find((request) => request.path.endsWith('/knowledge/proposals/kp_demo/decision'))

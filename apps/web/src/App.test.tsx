@@ -75,17 +75,6 @@ type ThreadGoalPlan = Awaited<ReturnType<CoreClient['app']['createThreadGoalPlan
 type TurnEvent = SseEventEnvelope;
 
 /**
- * Creates an empty Goal Mode steering fixture.
- */
-function emptyGoalSteering(): ThreadGoalSummary['steering'] {
-  return {
-    pendingSteeringCount: 0,
-    pendingFollowUpCount: 0,
-    appliedSteeringCount: 0,
-  };
-}
-
-/**
  * Creates runtime config stale-session recovery choices for diagnostics fixtures.
  */
 function runtimeConfigStaleSessionChoices(): RuntimeConfigStatus['staleSessions'][number]['choices'] {
@@ -121,9 +110,9 @@ function bootReadiness(): Awaited<ReturnType<CoreClient['app']['getDiagnostics']
 /**
  * Creates a Goal Mode planner summary fixture.
  */
-function goalPlannerSummary(): Awaited<
-  ReturnType<CoreClient['app']['createThreadGoalPlan']>
->['planner'] {
+function goalPlannerSummary(
+  plan: ThreadGoalPlan
+): Awaited<ReturnType<CoreClient['app']['createThreadGoalPlan']>>['planner'] {
   return {
     mode: 'goal',
     sourceAgentId: 'worker-coordinator',
@@ -134,51 +123,7 @@ function goalPlannerSummary(): Awaited<
       { kind: 'thread', id: 'th_demo' },
     ],
     requiredApprovals: ['plan_approval'],
-  };
-}
-
-/**
- * Creates a Goal Mode worker context assembly fixture.
- */
-function goalStepContextAssembly(): Awaited<
-  ReturnType<CoreClient['app']['runThreadGoalStep']>
->['contextAssembly'] {
-  return {
-    contextDigest: 'ctxpkg_sha256_demo',
-    contextRefs: [
-      { kind: 'workspace', id: 'ws_demo' },
-      { kind: 'thread', id: 'th_demo' },
-      { kind: 'item', id: 'it_context' },
-    ],
-    repositoryResourceId: 'repo_default',
-    steeringMessageCount: 1,
-    followUpInputCount: 0,
-  };
-}
-
-/**
- * Creates a Goal Mode coordinator decision fixture.
- */
-function goalStepCoordinator(): Awaited<
-  ReturnType<CoreClient['app']['runThreadGoalStep']>
->['coordinator'] {
-  return {
-    mode: 'goal',
-    sourceAgentId: 'worker-coordinator',
-    worker: {
-      agentId: 'codex',
-      displayName: 'Codex',
-      runtime: 'codex',
-    },
-    confidence: 0.86,
-    rationale: 'The Goal Mode step needs bounded worker execution and Codex is ready.',
-    requiredApprovals: [],
-    expectedStopCondition: 'one bounded worker turn',
-    escalationRecommended: false,
-    contextRefs: [
-      { kind: 'workspace', id: 'ws_demo' },
-      { kind: 'thread', id: 'th_demo' },
-    ],
+    plan,
   };
 }
 
@@ -253,9 +198,6 @@ interface FakeClientOptions {
   appDiagnosticsDefaultProviders?: Awaited<
     ReturnType<CoreClient['app']['getDiagnostics']>
   >['defaultProviders'];
-  appDiagnosticsInternalAgents?: Awaited<
-    ReturnType<CoreClient['app']['getDiagnostics']>
-  >['internalAgents'];
   codexOAuthAccounts?: Awaited<ReturnType<CoreClient['oauth']['openaiCodex']['listAccounts']>>;
   createCodexOAuthAccountError?: Error;
   setupDiagnostics?: Awaited<ReturnType<CoreClient['app']['getSetupDiagnostics']>>;
@@ -278,7 +220,11 @@ interface FakeClientOptions {
     threadId: string,
     input: Parameters<CoreClient['app']['approveThreadGoalPlan']>[2]
   ): void;
-  onCreateThreadGoalPlan?(workspaceId: string, threadId: string): void;
+  onCreateThreadGoalPlan?(
+    workspaceId: string,
+    threadId: string,
+    input: Parameters<CoreClient['app']['createThreadGoalPlan']>[2]
+  ): void;
   onReviseThreadGoalPlan?(
     workspaceId: string,
     threadId: string,
@@ -1702,18 +1648,15 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
           ready: 0,
           running: 0,
           reviewing: 0,
-          needsRevision: 0,
           completed: 0,
           blocked: 0,
           failed: 0,
-          skipped: 0,
         },
         pendingHumanAttention: {
           required: false,
           reason: null,
         },
         terminalState: null,
-        steering: emptyGoalSteering(),
         updatedAt: timestamp,
       } as const;
       currentThreadGoalSummary = { goal };
@@ -1722,8 +1665,8 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
         objectiveItemId: `it_goal_${threadId}`,
       };
     },
-    createThreadGoalPlan: async (workspaceId, threadId) => {
-      options.onCreateThreadGoalPlan?.(workspaceId, threadId);
+    createThreadGoalPlan: async (workspaceId, threadId, input) => {
+      options.onCreateThreadGoalPlan?.(workspaceId, threadId, input);
       const goal: ThreadGoalSummary = {
         goalId: `goal_${threadId}`,
         workspaceId,
@@ -1737,18 +1680,15 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
           ready: 0,
           running: 0,
           reviewing: 0,
-          needsRevision: 0,
           completed: 0,
           blocked: 0,
           failed: 0,
-          skipped: 0,
         },
         pendingHumanAttention: {
           required: true,
           reason: 'Plan approval is required.',
         },
         terminalState: null,
-        steering: emptyGoalSteering(),
         updatedAt: timestamp,
       };
       const plan: ThreadGoalPlan = {
@@ -1793,7 +1733,7 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
         status: 'awaiting_plan_approval',
         goal,
         planItemId: `it_plan_${threadId}`,
-        planner: goalPlannerSummary(),
+        planner: goalPlannerSummary(plan),
         plan,
       };
     },
@@ -1812,18 +1752,15 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
           ready: 1,
           running: 0,
           reviewing: 0,
-          needsRevision: 0,
           completed: 0,
           blocked: 0,
           failed: 0,
-          skipped: 0,
         },
         pendingHumanAttention: {
           required: false,
           reason: null,
         },
         terminalState: null,
-        steering: emptyGoalSteering(),
         updatedAt: timestamp,
       };
       currentThreadGoalSummary = { goal };
@@ -1853,18 +1790,15 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
           ready: 0,
           running: 0,
           reviewing: 0,
-          needsRevision: 0,
           completed: 0,
           blocked: 0,
           failed: 0,
-          skipped: 0,
         },
         pendingHumanAttention: {
           required: false,
           reason: null,
         },
         terminalState: null,
-        steering: emptyGoalSteering(),
         updatedAt: timestamp,
       };
       currentThreadGoalSummary = { goal };
@@ -1894,58 +1828,32 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
           ready: 0,
           running: 0,
           reviewing: 1,
-          needsRevision: 0,
           completed: 0,
           blocked: 0,
           failed: 0,
-          skipped: 0,
         },
         pendingHumanAttention: {
           required: true,
           reason: 'Worker result needs review.',
         },
         terminalState: null,
-        steering: emptyGoalSteering(),
         updatedAt: timestamp,
       };
       currentThreadGoalSummary = { goal };
 
       return {
         goal,
-        worker: {
+        result: {
+          taskId: 'task_1',
           turnId: `tu_goal_${threadId}`,
-          stopReason: 'completed',
-          checkpointStage: 'completed',
-          workerSessionId: null,
-          evidence: {
-            itemIds: [`it_goal_${threadId}`],
-            artifactIds: ['artifact_goal_result'],
-          },
-        },
-        contextAssembly: goalStepContextAssembly(),
-        coordinator: goalStepCoordinator(),
-        decision: {
-          schemaVersion: 1,
-          mode: 'goal',
-          sourceAgentId: 'worker-coordinator',
-          requestId: 'req_goal_step_web_test',
           outcome: 'review',
           shouldStop: true,
           stopReason: 'completed',
-          rationale: 'Worker result needs review before Goal Mode continues.',
-          contextRefs: [
-            { kind: 'workspace', id: workspaceId },
-            { kind: 'thread', id: threadId },
-          ],
           evidence: {
             itemIds: [`it_goal_${threadId}`],
             artifactIds: ['artifact_goal_result'],
           },
-        },
-        pendingAttention: {
-          kind: 'review',
-          reason: 'Worker result needs review.',
-          itemId: `it_goal_${threadId}`,
+          reviewId: `review_tu_goal_${threadId}`,
         },
       };
     },
@@ -1995,7 +1903,7 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
         workspaceApplyResult: null,
       };
     },
-    submitGoalReviewDecision: async (workspaceId, threadId, goalId, reviewId, input = {}) => {
+    submitGoalReviewDecision: async (workspaceId, threadId, goalId, reviewId, input) => {
       options.onSubmitGoalReviewDecision?.(workspaceId, threadId, goalId, reviewId, input);
 
       return {
@@ -2009,18 +1917,27 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
           itemIds: [],
           artifactIds: ['artifact_demo'],
           verificationEvidence: [],
-          verdict: 'refine',
-          reason: 'Refine with stronger evidence.',
+          prompt: 'Review the worker evidence.',
+          createdByRequestId: 'goal-step-request',
+          verdict: 'accept',
+          reason: null,
+          revisionInstruction: null,
           createdAt: timestamp,
           updatedAt: timestamp,
           resolvedAt: timestamp,
           resolutionRequestId: input.requestId ?? 'goal-review-request',
+          resolvedByActorId: 'user_demo',
         },
         advance: {
-          outcome: 'needs_revision',
-          task: { taskId: 'task_demo', status: 'needs_revision' },
-          goal: null,
-          nextTask: null,
+          outcome: 'complete_goal',
+          task: { taskId: 'task_demo', status: 'completed' },
+          goal: {
+            goalId,
+            status: 'completed',
+            currentTaskId: null,
+            terminalStopReason: 'completed',
+          },
+          nextReadyTaskId: null,
         },
       };
     },
@@ -2121,7 +2038,6 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
       },
       defaults: {
         quickChat: { providerId: 'openai', model: 'gpt-5.4' },
-        internalTasks: { providerId: null, model: null },
         gateway: { providerId: null, model: null },
       },
       oauth: {
@@ -2136,11 +2052,6 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
       },
       capabilities: META_RESPONSE.capabilities,
       runtimeConfig: runtimeConfigStatus(),
-      internalAgents: options.appDiagnosticsInternalAgents ?? {
-        agents: [],
-        recentFailures: [],
-        recentHookFailures: [],
-      },
     }),
     oauthAccounts: async () =>
       options.codexOAuthAccounts ?? {
@@ -2728,22 +2639,6 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
       deleteAutomation: implementations.automationDelete,
       quickChat: implementations.quickChat,
       listInterruptedWorkers: async () => ({ items: [] }),
-      listRecoveryPendingUserTurns: async () => ({ items: [] }),
-      cancelRecoveryPendingUserTurn: async () => {
-        throw new Error('Pending user-turn cancellation fixture not configured.');
-      },
-      editRecoveryPendingUserTurn: async () => {
-        throw new Error('Pending user-turn edit fixture not configured.');
-      },
-      convertRecoveryPendingUserTurnToFollowUp: async () => {
-        throw new Error('Pending user-turn follow-up fixture not configured.');
-      },
-      promoteRecoveryPendingUserTurnToInterrupt: async () => {
-        throw new Error('Pending user-turn interrupt fixture not configured.');
-      },
-      clearInterruptedWorkerCheckpoint: async () => {
-        throw new Error('Interrupted worker checkpoint fixture not configured.');
-      },
       retryInterruptedWorkerCheckpoint: async () => {
         throw new Error('Interrupted worker checkpoint retry fixture not configured.');
       },
@@ -2884,6 +2779,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   cleanup();
 });
 
@@ -3024,14 +2920,62 @@ describe('App', () => {
     expect(artifactReviewCalls).toBe(0);
   });
 
-  it('dispatches goal review Action Center actions through the goal review client route', async () => {
+  it.each([
+    {
+      name: 'accept',
+      actionLabel: 'Accept review',
+      promptValue: null,
+      expectsPrompt: false,
+      expectedInput: { verdict: 'accept' },
+    },
+    {
+      name: 'refine',
+      actionLabel: 'Request refinement',
+      promptValue: 'Add verification from the real worker output.',
+      expectsPrompt: true,
+      expectedInput: {
+        verdict: 'refine',
+        revisionInstruction: 'Add verification from the real worker output.',
+      },
+    },
+    {
+      name: 'retry',
+      actionLabel: 'Retry work',
+      promptValue: 'The provider failure was transient.',
+      expectsPrompt: true,
+      expectedInput: { verdict: 'retry', reason: 'The provider failure was transient.' },
+    },
+    {
+      name: 'abort',
+      actionLabel: 'Abort goal',
+      promptValue: 'The objective is no longer required.',
+      expectsPrompt: true,
+      expectedInput: { verdict: 'abort', reason: 'The objective is no longer required.' },
+    },
+    {
+      name: 'cancelled refinement',
+      actionLabel: 'Request refinement',
+      promptValue: null,
+      expectsPrompt: true,
+      expectedInput: null,
+    },
+  ] as const)('dispatches the canonical Goal Review $name action without using artifact review', async ({
+    actionLabel,
+    expectedInput,
+    expectsPrompt,
+    promptValue,
+  }) => {
     let artifactReviewCalls = 0;
-    let goalReviewCall: {
+    const goalReviewCalls: Array<{
       workspaceId: string;
       threadId: string;
       goalId: string;
       reviewId: string;
-    } | null = null;
+      input: NonNullable<Parameters<CoreClient['app']['submitGoalReviewDecision']>[4]>;
+    }> = [];
+    const prompt = vi.spyOn(window, 'prompt').mockReturnValue(promptValue);
+    const decisionHref =
+      '/api/app/workspaces/ws_demo/threads/th_demo/goals/goal_demo/reviews/review_demo/decision';
     const humanAttention: HumanAttentionRow[] = [
       {
         id: 'goal-review:ws_demo:th_demo:goal_demo:review_demo',
@@ -3043,7 +2987,7 @@ describe('App', () => {
         goalId: 'goal_demo',
         taskId: 'task_demo',
         title: 'Review worker output',
-        summary: 'Worker output needs refinement.',
+        summary: 'Worker output needs a canonical review decision.',
         severity: 'needs_input',
         createdAt: '2026-04-15T09:00:00.000Z',
         source: {
@@ -3053,15 +2997,17 @@ describe('App', () => {
           taskId: 'task_demo',
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
-          verdict: 'refine',
         },
         actions: [
+          { kind: 'accept_review', label: 'Accept review', method: 'POST', href: decisionHref },
           {
             kind: 'request_refinement',
             label: 'Request refinement',
             method: 'POST',
-            href: '/api/app/workspaces/ws_demo/threads/th_demo/goals/goal_demo/reviews/review_demo/decision',
+            href: decisionHref,
           },
+          { kind: 'retry_work', label: 'Retry work', method: 'POST', href: decisionHref },
+          { kind: 'abort', label: 'Abort goal', method: 'POST', href: decisionHref },
         ],
       },
     ];
@@ -3073,8 +3019,8 @@ describe('App', () => {
           onSubmitArtifactReviewDecision: () => {
             artifactReviewCalls += 1;
           },
-          onSubmitGoalReviewDecision: (workspaceId, threadId, goalId, reviewId) => {
-            goalReviewCall = { workspaceId, threadId, goalId, reviewId };
+          onSubmitGoalReviewDecision: (workspaceId, threadId, goalId, reviewId, input) => {
+            goalReviewCalls.push({ workspaceId, threadId, goalId, reviewId, input });
           },
         })}
       />
@@ -3082,15 +3028,27 @@ describe('App', () => {
 
     await screen.findByRole('button', { name: /demo workspace/i });
     fireEvent.click(await screen.findByRole('button', { name: /action center/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /request refinement/i }));
+    expect(screen.getByRole('button', { name: 'Accept review' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Request refinement' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry work' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Abort goal' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: actionLabel }));
 
-    await waitFor(() => expect(goalReviewCall).not.toBeNull());
-    expect(goalReviewCall).toEqual({
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      goalId: 'goal_demo',
-      reviewId: 'review_demo',
-    });
+    if (expectedInput === null) {
+      await waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
+      expect(goalReviewCalls).toHaveLength(0);
+      expect(screen.getByText('Review worker output')).toBeInTheDocument();
+    } else {
+      await waitFor(() => expect(goalReviewCalls).toHaveLength(1));
+      expect(goalReviewCalls[0]).toMatchObject({
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        goalId: 'goal_demo',
+        reviewId: 'review_demo',
+        input: expectedInput,
+      });
+      expect(prompt).toHaveBeenCalledTimes(expectsPrompt ? 1 : 0);
+    }
     expect(artifactReviewCalls).toBe(0);
   });
 
@@ -3575,6 +3533,7 @@ describe('App', () => {
 
   it('drafts and approves a Goal Mode plan without starting a worker', async () => {
     let createdPlanCount = 0;
+    let createdPlan: Parameters<CoreClient['app']['createThreadGoalPlan']>[2] | null = null;
     let approvedPlan: Parameters<CoreClient['app']['approveThreadGoalPlan']>[2] | null = null;
     let workerStepCount = 0;
 
@@ -3582,8 +3541,9 @@ describe('App', () => {
       <App
         client={createFakeClient({
           threadGoalSummary: { goal: null },
-          onCreateThreadGoalPlan: () => {
+          onCreateThreadGoalPlan: (_workspaceId, _threadId, input) => {
             createdPlanCount += 1;
+            createdPlan = input;
           },
           onApproveThreadGoalPlan: (_workspaceId, _threadId, input) => {
             approvedPlan = input;
@@ -3614,7 +3574,11 @@ describe('App', () => {
 
     await waitFor(() => {
       expect(createdPlanCount).toBe(1);
-      expect(approvedPlan?.planItemId).toBe('it_plan_th_demo');
+      expect(createdPlan).toEqual({ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) });
+      expect(approvedPlan).toEqual({
+        requestId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        planItemId: 'it_plan_th_demo',
+      });
     });
     expect(workerStepCount).toBe(0);
   });
@@ -3658,7 +3622,12 @@ describe('App', () => {
     fireEvent.click(within(planReview).getByRole('button', { name: /request changes/i }));
 
     await waitFor(() => {
-      expect(revisions).toEqual([{ revision: 'Reduce the release scope.' }]);
+      expect(revisions).toEqual([
+        {
+          requestId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+          revision: 'Reduce the release scope.',
+        },
+      ]);
     });
     expect(planReview).toHaveTextContent(/draft a bounded plan/i);
 
@@ -3667,8 +3636,14 @@ describe('App', () => {
 
     await waitFor(() => {
       expect(revisions).toEqual([
-        { revision: 'Reduce the release scope.' },
-        { revision: 'Reject this plan and draft a new plan.' },
+        {
+          requestId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+          revision: 'Reduce the release scope.',
+        },
+        {
+          requestId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+          revision: 'Reject this plan and draft a new plan.',
+        },
       ]);
     });
     expect(workerStepCount).toBe(0);
@@ -3725,18 +3700,15 @@ describe('App', () => {
                 ready: 1,
                 running: 0,
                 reviewing: 0,
-                needsRevision: 0,
                 completed: 0,
                 blocked: 0,
                 failed: 0,
-                skipped: 0,
               },
               pendingHumanAttention: {
                 required: false,
                 reason: null,
               },
               terminalState: null,
-              steering: emptyGoalSteering(),
               updatedAt: '2026-04-15T09:00:00.000Z',
             },
           },
@@ -3992,71 +3964,6 @@ describe('App', () => {
     expect(screen.getByText(/Gateway default provider/i)).toBeInTheDocument();
     expect(screen.getByText(/gateway-openai/i)).toBeInTheDocument();
     expect(screen.getAllByText(/canonical/i).length).toBeGreaterThan(0);
-  });
-
-  it('renders internal agent diagnostics from nanocore app APIs without raw failure details', async () => {
-    render(() => (
-      <App
-        client={createFakeClient({
-          appDiagnosticsInternalAgents: {
-            agents: [
-              {
-                allowedTools: ['readWorkspaceSummary', 'webSearch'],
-                defaultProviderUse: 'quickChat',
-                displayName: 'QuickChatAgent',
-                id: 'quick-chat',
-                provider: {
-                  configured: true,
-                  model: 'gpt-5.1',
-                  providerId: 'openai',
-                },
-                supportedModes: ['chat'],
-              },
-              {
-                allowedTools: ['readAgentReadiness', 'draftWorkerDelegation'],
-                defaultProviderUse: 'internalTasks',
-                displayName: 'WorkerCoordinatorAgent',
-                id: 'worker-coordinator',
-                provider: {
-                  configured: false,
-                  providerId: 'openrouter',
-                  reason: 'model-missing',
-                },
-                supportedModes: ['automation', 'delegation', 'plan', 'review'],
-              },
-            ],
-            recentFailures: [
-              {
-                agentId: 'quick-chat',
-                code: 'internal_agent_failed',
-                details: {
-                  prompt: '[redacted]',
-                  token: '[redacted]',
-                },
-                message: 'upstream Authorization: Bearer [redacted]',
-                occurredAt: '2026-05-26T00:00:00.000Z',
-                status: 'error',
-                stopReason: 'error',
-              },
-            ],
-            recentHookFailures: [],
-          },
-        })}
-      />
-    ));
-
-    await screen.findByRole('button', { name: /demo workspace/i });
-    fireEvent.click(screen.getByRole('button', { name: /^settings$/i }));
-    fireEvent.click(screen.getByRole('button', { name: /^diagnostics$/i }));
-
-    expect(await screen.findByText(/Internal agents/i)).toBeInTheDocument();
-    expect(screen.getByText('QuickChatAgent')).toBeInTheDocument();
-    expect(screen.getByText('openai / gpt-5.1')).toBeInTheDocument();
-    expect(screen.getByText('WorkerCoordinatorAgent')).toBeInTheDocument();
-    expect(screen.getByText(/openrouter needs model/i)).toBeInTheDocument();
-    expect(screen.getByText('internal_agent_failed')).toBeInTheDocument();
-    expect(screen.getByText('upstream Authorization: Bearer [redacted]')).toBeInTheDocument();
-    expect(screen.queryByText(/prompt/i)).not.toBeInTheDocument();
   });
 
   it('renders setup readiness diagnostics without raw secrets', async () => {

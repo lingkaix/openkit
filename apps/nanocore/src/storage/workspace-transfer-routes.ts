@@ -57,8 +57,10 @@ import {
   listExportableGoalReviewRecords,
 } from '../runtime/goal-review-records.js';
 import {
+  importGoalPlanRecords,
   importGoalRecords,
   importGoalTasks,
+  listExportableGoalPlanRecords,
   listExportableGoalRecords,
   listExportableGoalTasks,
 } from '../runtime/goal-store.js';
@@ -70,10 +72,6 @@ import {
   importMcpToolSchemaSnapshots,
   listExportableMcpToolSchemaSnapshots,
 } from '../runtime/mcp-tool-schema-snapshots.js';
-import {
-  importPendingUserTurns,
-  listExportablePendingUserTurns,
-} from '../runtime/pending-user-turns.js';
 import {
   importWorkspaceRuntimeEvidence,
   listWorkspaceRuntimeEvidence,
@@ -294,12 +292,12 @@ function collectWorkspaceExportRows(
       capabilityCalls: [],
       evidenceBundles: [],
       gitPushRecords: [],
+      goalPlanRecords: [],
       goalRecords: [],
       goalReviewRecords: [],
       goalTasks: [],
       goalVerificationRecords: [],
       mcpToolSchemaSnapshots: [],
-      pendingUserTurns: [],
       permissionDecisions: [],
       resolvedAgentSetups: [],
       runtimeEvidence: [],
@@ -324,41 +322,43 @@ function collectWorkspaceExportRows(
 
   const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
   try {
-    const workspaceSyncRecords = listExportableWorkspaceSyncRecords(workspaceDb, workspaceId);
-    return {
-      auditEvents: listWorkspaceAuditEvents(workspaceDb, workspaceId),
-      agentEnvironmentPackageSnapshots: listExportableAgentEnvironmentPackageSnapshots(
-        workspaceDb,
-        workspaceId
-      ),
-      capabilityCalls: listWorkspaceCapabilityCalls(workspaceDb, workspaceId),
-      evidenceBundles: listWorkspaceEvidenceBundles(workspaceDb, workspaceId),
-      gitPushRecords: listExportableGitPushRecords(workspaceDb, workspaceId),
-      goalRecords: listExportableGoalRecords(workspaceDb, workspaceId),
-      goalReviewRecords: listExportableGoalReviewRecords(workspaceDb, workspaceId),
-      goalTasks: listExportableGoalTasks(workspaceDb, workspaceId),
-      goalVerificationRecords: listExportableGoalVerificationRecords(workspaceDb, workspaceId),
-      mcpToolSchemaSnapshots: listExportableMcpToolSchemaSnapshots(workspaceDb, workspaceId),
-      pendingUserTurns: listExportablePendingUserTurns(workspaceDb, workspaceId),
-      permissionDecisions: listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId),
-      resolvedAgentSetups: listExportableResolvedAgentSetups(workspaceDb, workspaceId),
-      runtimeEvidence: listWorkspaceRuntimeEvidence(workspaceDb, workspaceId),
-      usageRecords: listWorkspaceUsageRecords(workspaceDb, workspaceId),
-      vaultUseRecords: listExportableWorkspaceVaultUseRecords(workspaceDb, workspaceId),
-      workerCheckpoints: listExportableWorkerCheckpoints(workspaceDb, workspaceId),
-      workspaceApplyPlans: listExportableWorkspaceApplyPlans(workspaceDb, workspaceId),
-      workspaceApplyResults: listExportableWorkspaceApplyResults(workspaceDb, workspaceId),
-      workspaceReconciliationRecords: listExportableWorkspaceReconciliationRecords(
-        workspaceDb,
-        workspaceId
-      ),
-      workspaceQuarantineRecords: listExportableWorkspaceQuarantineRecords(
-        workspaceDb,
-        workspaceId
-      ),
-      workspaceRepositories: listExportableWorkspaceRepositoryResources(workspaceDb, workspaceId),
-      workspaceSyncRecords,
-    };
+    return workspaceDb.sqlite.transaction(() => {
+      const workspaceSyncRecords = listExportableWorkspaceSyncRecords(workspaceDb, workspaceId);
+      return {
+        auditEvents: listWorkspaceAuditEvents(workspaceDb, workspaceId),
+        agentEnvironmentPackageSnapshots: listExportableAgentEnvironmentPackageSnapshots(
+          workspaceDb,
+          workspaceId
+        ),
+        capabilityCalls: listWorkspaceCapabilityCalls(workspaceDb, workspaceId),
+        evidenceBundles: listWorkspaceEvidenceBundles(workspaceDb, workspaceId),
+        gitPushRecords: listExportableGitPushRecords(workspaceDb, workspaceId),
+        goalRecords: listExportableGoalRecords(workspaceDb, workspaceId),
+        goalPlanRecords: listExportableGoalPlanRecords(workspaceDb, workspaceId),
+        goalReviewRecords: listExportableGoalReviewRecords(workspaceDb, workspaceId),
+        goalTasks: listExportableGoalTasks(workspaceDb, workspaceId),
+        goalVerificationRecords: listExportableGoalVerificationRecords(workspaceDb, workspaceId),
+        mcpToolSchemaSnapshots: listExportableMcpToolSchemaSnapshots(workspaceDb, workspaceId),
+        permissionDecisions: listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId),
+        resolvedAgentSetups: listExportableResolvedAgentSetups(workspaceDb, workspaceId),
+        runtimeEvidence: listWorkspaceRuntimeEvidence(workspaceDb, workspaceId),
+        usageRecords: listWorkspaceUsageRecords(workspaceDb, workspaceId),
+        vaultUseRecords: listExportableWorkspaceVaultUseRecords(workspaceDb, workspaceId),
+        workerCheckpoints: listExportableWorkerCheckpoints(workspaceDb, workspaceId),
+        workspaceApplyPlans: listExportableWorkspaceApplyPlans(workspaceDb, workspaceId),
+        workspaceApplyResults: listExportableWorkspaceApplyResults(workspaceDb, workspaceId),
+        workspaceReconciliationRecords: listExportableWorkspaceReconciliationRecords(
+          workspaceDb,
+          workspaceId
+        ),
+        workspaceQuarantineRecords: listExportableWorkspaceQuarantineRecords(
+          workspaceDb,
+          workspaceId
+        ),
+        workspaceRepositories: listExportableWorkspaceRepositoryResources(workspaceDb, workspaceId),
+        workspaceSyncRecords,
+      };
+    })();
   } finally {
     workspaceDb.sqlite.close();
   }
@@ -427,12 +427,14 @@ function importWorkspaceDatabaseRows({
     importWorkspaceReconciliationRecords(workspaceDb, snapshot.workspaceReconciliationRecords);
     importWorkspaceQuarantineRecords(workspaceDb, snapshot.workspaceQuarantineRecords);
     importWorkspacePermissionDecisions(workspaceDb, snapshot.permissionDecisions);
-    importGoalRecords(workspaceDb, snapshot.goalRecords);
-    importGoalTasks(workspaceDb, snapshot.goalTasks);
+    workspaceDb.sqlite.transaction(() => {
+      importGoalRecords(workspaceDb, snapshot.goalRecords);
+      importGoalPlanRecords(workspaceDb, snapshot.goalPlanRecords);
+      importGoalTasks(workspaceDb, snapshot.goalTasks);
+    })();
     importGoalReviewRecords(workspaceDb, snapshot.goalReviewRecords);
     importGoalVerificationRecords(workspaceDb, snapshot.goalVerificationRecords);
     importMcpToolSchemaSnapshots(workspaceDb, snapshot.mcpToolSchemaSnapshots);
-    importPendingUserTurns(workspaceDb, snapshot.pendingUserTurns);
     importResolvedAgentSetups(workspaceDb, snapshot.resolvedAgentSetups);
     importWorkspaceVaultUseRecords(workspaceDb, snapshot.vaultUseRecords);
     importWorkerCheckpoints(workspaceDb, snapshot.workerCheckpoints);
@@ -654,6 +656,7 @@ export function registerWorkspaceTransferRoutes({
       evidenceBundles: workspaceRowFamilies.evidenceBundles,
       gitPushRecords: workspaceRowFamilies.gitPushRecords,
       goalRecords: workspaceRowFamilies.goalRecords,
+      goalPlanRecords: workspaceRowFamilies.goalPlanRecords,
       goalReviewRecords: workspaceRowFamilies.goalReviewRecords,
       goalTasks: workspaceRowFamilies.goalTasks,
       goalVerificationRecords: workspaceRowFamilies.goalVerificationRecords,
@@ -665,7 +668,6 @@ export function registerWorkspaceTransferRoutes({
           )
         : [],
       mcpToolSchemaSnapshots: workspaceRowFamilies.mcpToolSchemaSnapshots,
-      pendingUserTurns: workspaceRowFamilies.pendingUserTurns,
       permissionDecisions: workspaceRowFamilies.permissionDecisions,
       resolvedAgentSetups: workspaceRowFamilies.resolvedAgentSetups,
       runtimeEvidence: workspaceRowFamilies.runtimeEvidence,

@@ -13,13 +13,10 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  CancelRecoveryPendingUserTurnResponseSchema,
   CancelSchedulerAdmissionResponseSchema,
   CapabilityUsageResponseSchema,
-  ConvertRecoveryPendingUserTurnToFollowUpResponseSchema,
   DataRootBackupCreateResponseSchema,
   DataRootBackupVerifyResponseSchema,
-  EditRecoveryPendingUserTurnResponseSchema,
   ListHumanAttentionResponseSchema,
   ListSchedulerAdmissionsResponseSchema,
   ListServerAuditEventsResponseSchema,
@@ -33,7 +30,6 @@ import {
   ListWorkspaceRuntimeEvidenceResponseSchema,
   ListWorkspaceVaultGrantsResponseSchema,
   ListWorkspaceVaultUseRecordsResponseSchema,
-  PromoteRecoveryPendingUserTurnToInterruptResponseSchema,
   RestartRuntimeConfigStaleSessionResponseSchema,
   RetryInterruptedWorkerCheckpointResponseSchema,
   RetrySchedulerAdmissionResponseSchema,
@@ -81,9 +77,12 @@ import {
 } from './config/runtime-config.js';
 import { createInjectionPlan, listInjectionPlans } from './injection-plans.js';
 import { createInjectionReceipt, listInjectionReceipts } from './injection-receipts.js';
+import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
+import { createWorkerCoordinatorDecision } from './internal-agents/worker-coordinator.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { createDemoWorkspaceForUser, FsStore, type FsStoreOptions } from './lib/store.js';
 import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
+import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
@@ -94,6 +93,7 @@ import {
   stageFilesystemWorkspaceChanges,
 } from './runtime/filesystem-workspace-sync.js';
 import { listGitPushRecords, recordGitPushRecord } from './runtime/git-push-records.js';
+import { GoalPlanOutputSchema } from './runtime/goal-plan.js';
 import {
   createGoalReviewRecord,
   getGoalReviewRecord,
@@ -101,8 +101,10 @@ import {
   resolveGoalReviewRecord,
 } from './runtime/goal-review-records.js';
 import {
+  createGoalPlanRecord,
   createGoalRecord,
   createGoalTask,
+  getGoalRecord,
   listGoalRecordsForThread,
   listGoalTasks,
   updateGoalStatus,
@@ -112,7 +114,6 @@ import {
   createGoalVerificationRecord,
   listGoalVerificationRecordsForTask,
 } from './runtime/goal-verification-records.js';
-import { enqueuePendingUserTurn, listPendingUserTurns } from './runtime/pending-user-turns.js';
 import type {
   AgentSessionReadModel,
   TurnCommandRuntimeContext,
@@ -121,6 +122,7 @@ import type {
 } from './runtime/types.js';
 import {
   getWorkerCheckpoint,
+  listExportableWorkerCheckpoints,
   updateWorkerCheckpoint,
   upsertWorkerCheckpoint,
 } from './runtime/worker-checkpoints.js';
@@ -145,6 +147,8 @@ import {
 } from './runtime/workspace-sync-records.js';
 import {
   createSchedulerAdmissionEntry,
+  createSchedulerPlacementPlan,
+  createSchedulerSessionLease,
   denySchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
   requireSchedulerSessionLease,
@@ -171,6 +175,18 @@ import {
   upsertWorkspaceRepositoryResource,
 } from './workspace/repository-store.js';
 
+const GOAL_TASK_RECORD_FIXTURE = {
+  resources: [],
+  expectedArtifacts: [],
+  verificationChecks: [{ kind: 'manual' as const, description: 'Verify the task outcome.' }],
+  reviewPolicy: {
+    required: true,
+    reviewers: ['human' as const],
+    instructions: 'Review the completed task.',
+  },
+  escalationConditions: [],
+};
+
 /**
  * Opens a migrated Core database for turn-start repository tests.
  *
@@ -195,6 +211,74 @@ function openTestWorkspaceDb(coreDb: CoreDb, workspaceId: string): WorkspaceDb {
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, workspaceId);
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
+}
+
+/**
+ * Records the exact scheduler lease lineage used by interrupted-worker retry route tests.
+ *
+ * @param coreDb Open Core database handle.
+ * @param input Turn and lease state to record.
+ */
+function recordWorkerRetryLease(
+  coreDb: CoreDb,
+  input: {
+    readonly agentSessionId: string;
+    readonly recoveryState: 'awaiting-reconnect' | null;
+    readonly releaseReason: string | null;
+    readonly status: 'active' | 'released';
+    readonly threadId: string;
+    readonly turnId: string;
+  }
+): void {
+  createSchedulerAdmissionEntry(coreDb, {
+    priorityClass: 'interactive',
+    profileRef: 'agent_codex_host',
+    queueEntryId: `queue_${input.turnId}`,
+    requestId: `request_${input.turnId}`,
+    requestedAgentId: 'agent_codex_host',
+    requiredPoolConstraints: ['openshell.local'],
+    threadId: input.threadId,
+    turnId: input.turnId,
+    turnInput: 'Run interrupted-worker retry fixture.',
+    workspaceId: 'ws_demo',
+  });
+  createSchedulerPlacementPlan(coreDb, {
+    degradedOptionalFeatures: [],
+    expectedControlMode: 'poll',
+    expectedDataPlaneMode: 'openshell-files',
+    heartbeatIntervalMs: 10_000,
+    heartbeatTimeoutMs: 30_000,
+    planId: `plan_${input.turnId}`,
+    plannedLeaseDurationMs: 900_000,
+    policyDecisionIds: [],
+    queueEntryId: `queue_${input.turnId}`,
+    schedulerEpoch: 1,
+    selectedPoolId: 'pool_local',
+    selectedTargetId: 'target_local',
+  });
+  createSchedulerSessionLease(coreDb, {
+    agentSessionId: input.agentSessionId,
+    expiresAt: '2099-01-01T01:00:00.000Z',
+    heartbeatDeadline: '2099-01-01T00:10:00.000Z',
+    leaseId: `lease_${input.turnId}`,
+    packageSnapshotId: `aepsnap_${input.turnId}`,
+    planId: `plan_${input.turnId}`,
+    sandboxTokenBindingRef: `lease-binding:lease_${input.turnId}`,
+    startupDeadline: '2099-01-01T00:05:00.000Z',
+  });
+  coreDb.sqlite
+    .prepare(
+      `UPDATE scheduler_session_leases
+       SET status = ?, release_reason = ?, recovery_state = ?, recovery_deadline = ?
+       WHERE lease_id = ?`
+    )
+    .run(
+      input.status,
+      input.releaseReason,
+      input.recoveryState,
+      input.recoveryState === 'awaiting-reconnect' ? '2099-01-01T00:05:00.000Z' : null,
+      `lease_${input.turnId}`
+    );
 }
 
 /**
@@ -360,7 +444,7 @@ class FakeTurnExecutor implements TurnExecutor {
     const timestamp = turn.startedAt ?? new Date().toISOString();
     const requestId = context.requestId ?? null;
     const agentSession = store.createAgentSession({
-      id: `session_${turn.threadId}`,
+      id: context.agentSessionId ?? `session_${turn.threadId}`,
       agentId: 'agent_codex_host',
       workspaceId: turn.workspaceId,
       threadId: turn.threadId,
@@ -369,6 +453,7 @@ class FakeTurnExecutor implements TurnExecutor {
       createdAt: timestamp,
       updatedAt: timestamp,
     });
+    store.updateTurn(turnId, { agentSessionId: agentSession.id });
     const userItem = store.createItem({
       id: `it_user_${turnId}`,
       workspaceId: turn.workspaceId,
@@ -394,6 +479,10 @@ class FakeTurnExecutor implements TurnExecutor {
     const completedTurn = store.updateTurn(turnId, {
       status: 'completed',
       completedAt: assistantItem.completedAt,
+    });
+    store.updateAgentSession(agentSession.id, {
+      status: 'idle',
+      updatedAt: assistantItem.completedAt ?? timestamp,
     });
 
     store.emitTurnEvent(turnId, {
@@ -2831,141 +2920,6 @@ describe('nanocore server', () => {
     }
   });
 
-  it('exports and imports pending user turns as line-oriented records', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-pending-route-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const sourceTurn = store.createTurn('ws_demo', 'th_demo', 'Queue pending user turn', null, {
-      turnId: 'turn_pending_import_1',
-    });
-    store.createItem({
-      id: 'item_pending_import_1',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: sourceTurn.id,
-      type: 'user-message',
-      status: 'completed',
-      text: 'Queued input',
-      createdAt: '2026-07-06T00:02:59.000Z',
-      completedAt: '2026-07-06T00:02:59.000Z',
-    });
-    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-    try {
-      enqueuePendingUserTurn(sourceDb, {
-        contentItemId: 'item_pending_import_1',
-        queueMode: 'safe_point_steering',
-        receivedAt: '2026-07-06T00:03:00.000Z',
-        requestId: '00000000-0000-4000-8000-00000000d791',
-        threadId: 'th_demo',
-        workspaceId: 'ws_demo',
-      });
-    } finally {
-      sourceDb.sqlite.close();
-    }
-    const app = createApp({ coreDb, dataRoot, store });
-    const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
-    const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
-
-    expect(exported.checkedFiles).toContain('records/pending-user-turns.jsonl');
-
-    const importRes = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: exported.exportId,
-        requestId: '00000000-0000-4000-8000-00000000d792',
-      }),
-    });
-
-    expect(importRes.status, await importRes.clone().text()).toBe(200);
-    const body = WorkspaceImportResponseSchema.parse(await importRes.json());
-    const importedThreadId = `th_imported_${body.importedWorkspaceId}_1`;
-    const importedItemId = `it_imported_${body.importedWorkspaceId}_1`;
-    const importedDb = openTestWorkspaceDb(coreDb, body.importedWorkspaceId);
-    try {
-      expect(
-        listPendingUserTurns(importedDb, {
-          workspaceId: body.importedWorkspaceId,
-          threadId: importedThreadId,
-        })
-      ).toEqual([
-        expect.objectContaining({
-          contentItemId: importedItemId,
-          pendingTurnId: `${body.importedWorkspaceId}:${importedThreadId}:00000000-0000-4000-8000-00000000d791`,
-          queueMode: 'safe_point_steering',
-          requestId: '00000000-0000-4000-8000-00000000d791',
-          threadId: importedThreadId,
-          workspaceId: body.importedWorkspaceId,
-        }),
-      ]);
-      const pendingAuditRows = importedDb.sqlite
-        .prepare('SELECT action FROM audit_events WHERE action = ?')
-        .all('human.pending_user_turn.enqueue') as Array<Record<string, unknown>>;
-      expect(pendingAuditRows).toHaveLength(1);
-    } finally {
-      importedDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('cancels recovery pending user turns through App API', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-user-turn-cancel-route-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-    try {
-      enqueuePendingUserTurn(workspaceDb, {
-        contentItemId: 'item_pending_cancel_route',
-        queueMode: 'safe_point_steering',
-        receivedAt: '2026-07-06T00:03:00.000Z',
-        requestId: 'req_pending_cancel_route',
-        threadId: 'th_demo',
-        workspaceId: 'ws_demo',
-      });
-    } finally {
-      workspaceDb.sqlite.close();
-    }
-    const app = createApp({ coreDb, dataRoot, store });
-
-    const cancelRes = await app.request(
-      '/api/app/workspaces/ws_demo/threads/th_demo/recovery/pending-user-turns/req_pending_cancel_route/cancel',
-      { method: 'POST' }
-    );
-
-    expect(cancelRes.status, await cancelRes.clone().text()).toBe(200);
-    expect(CancelRecoveryPendingUserTurnResponseSchema.parse(await cancelRes.json())).toEqual({
-      cancelled: true,
-    });
-
-    const reopenedDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-    try {
-      expect(
-        listPendingUserTurns(reopenedDb, { workspaceId: 'ws_demo', threadId: 'th_demo' })
-      ).toEqual([]);
-      expect(
-        reopenedDb.sqlite
-          .prepare(
-            `SELECT action, outcome, summary
-            FROM audit_events
-            WHERE action = 'human.pending_user_turn.cancel'`
-          )
-          .all()
-      ).toEqual([
-        {
-          action: 'human.pending_user_turn.cancel',
-          outcome: 'cancelled',
-          summary: 'Pending user turn cancelled.',
-        },
-      ]);
-    } finally {
-      reopenedDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
-  });
-
   it('lists workspace-filtered scheduler admissions through App API', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-scheduler-admission-list-route-'));
     const coreDb = openCoreDb(dataRoot);
@@ -3192,6 +3146,8 @@ describe('nanocore server', () => {
         workspaceId: 'ws_demo',
         threadId: 'th_runtime',
         turnId: 'turn_runtime',
+        requestId: 'req_turn_runtime',
+        requestInputHash: 'sha256:turn_runtime',
         stage: 'running_worker',
         iteration: 1,
         workerSessionId: 'session_runtime',
@@ -3528,277 +3484,43 @@ describe('nanocore server', () => {
     }
   });
 
-  it('edits recovery pending user turn item text through App API', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-user-turn-edit-route-'));
+  it('does not expose generic pending-input recovery through App API', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-user-turn-route-absence-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const thread = store.createThread('ws_demo', 'Pending edit route');
-    const turn = store.createTurn('ws_demo', thread.id, 'Queue pending input');
-    const item = store.createItem({
-      completedAt: '2026-07-06T00:03:00.000Z',
-      createdAt: '2026-07-06T00:03:00.000Z',
-      id: 'item_pending_edit_route',
-      status: 'completed',
-      text: 'Original pending input.',
-      threadId: thread.id,
-      turnId: turn.id,
-      type: 'user-message',
-      workspaceId: 'ws_demo',
-    });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-    try {
-      enqueuePendingUserTurn(workspaceDb, {
-        contentItemId: item.id,
-        queueMode: 'safe_point_steering',
-        receivedAt: '2026-07-06T00:03:00.000Z',
-        requestId: 'req_pending_edit_route',
-        threadId: thread.id,
-        workspaceId: 'ws_demo',
-      });
-    } finally {
-      workspaceDb.sqlite.close();
-    }
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = createApp({ coreDb, dataRoot, store: createDemoStore({ dataRoot }) });
 
-    const editRes = await app.request(
-      `/api/app/workspaces/ws_demo/threads/${thread.id}/recovery/pending-user-turns/req_pending_edit_route/edit`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text: 'Edited pending input.' }),
+    try {
+      const routes = [
+        ['POST', '/api/app/workspaces/ws_demo/threads/th_demo/recovery/interrupted-worker'],
+        ['GET', '/api/app/workspaces/ws_demo/threads/th_demo/recovery/pending-user-turns'],
+        [
+          'POST',
+          '/api/app/workspaces/ws_demo/threads/th_demo/recovery/pending-user-turns/req_demo/edit',
+        ],
+        [
+          'POST',
+          '/api/app/workspaces/ws_demo/threads/th_demo/recovery/pending-user-turns/req_demo/interrupt',
+        ],
+        [
+          'POST',
+          '/api/app/workspaces/ws_demo/threads/th_demo/recovery/pending-user-turns/req_demo/cancel',
+        ],
+        [
+          'POST',
+          '/api/app/workspaces/ws_demo/threads/th_demo/recovery/pending-user-turns/req_demo/follow-up',
+        ],
+        [
+          'POST',
+          '/api/app/workspaces/ws_demo/threads/th_demo/recovery/interrupted-worker/turn_demo/terminal',
+        ],
+      ];
+
+      for (const [method, route] of routes) {
+        const response = await app.request(route!, { method });
+        expect(response.status, route).toBe(404);
       }
-    );
-
-    expect(editRes.status, await editRes.clone().text()).toBe(200);
-    expect(EditRecoveryPendingUserTurnResponseSchema.parse(await editRes.json())).toEqual({
-      edited: true,
-      item: expect.objectContaining({
-        id: item.id,
-        text: 'Edited pending input.',
-      }),
-    });
-    expect(
-      store.listThreadItems('ws_demo', thread.id).find((candidate) => candidate.id === item.id)
-    ).toMatchObject({
-      text: 'Edited pending input.',
-    });
-
-    const reopenedDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-    try {
-      expect(
-        reopenedDb.sqlite
-          .prepare(
-            `SELECT action, outcome, summary
-            FROM audit_events
-            WHERE action = 'human.pending_user_turn.edit'`
-          )
-          .all()
-      ).toEqual([
-        {
-          action: 'human.pending_user_turn.edit',
-          outcome: 'succeeded',
-          summary: 'Pending user turn edited.',
-        },
-      ]);
     } finally {
-      reopenedDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('converts recovery pending user turns to follow-up through App API', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-user-turn-follow-up-route-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-    try {
-      enqueuePendingUserTurn(workspaceDb, {
-        contentItemId: 'item_pending_follow_up_route',
-        queueMode: 'safe_point_steering',
-        receivedAt: '2026-07-06T00:04:00.000Z',
-        requestId: 'req_pending_follow_up_route',
-        threadId: 'th_demo',
-        workspaceId: 'ws_demo',
-      });
-    } finally {
-      workspaceDb.sqlite.close();
-    }
-    const app = createApp({ coreDb, dataRoot, store });
-
-    const convertRes = await app.request(
-      '/api/app/workspaces/ws_demo/threads/th_demo/recovery/pending-user-turns/req_pending_follow_up_route/follow-up',
-      { method: 'POST' }
-    );
-
-    expect(convertRes.status, await convertRes.clone().text()).toBe(200);
-    expect(
-      ConvertRecoveryPendingUserTurnToFollowUpResponseSchema.parse(await convertRes.json())
-    ).toMatchObject({
-      converted: true,
-      pendingUserTurn: {
-        contentItemId: 'item_pending_follow_up_route',
-        queueMode: 'follow_up',
-        requestId: 'req_pending_follow_up_route',
-      },
-    });
-
-    const reopenedDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-    try {
-      expect(
-        listPendingUserTurns(reopenedDb, { workspaceId: 'ws_demo', threadId: 'th_demo' })
-      ).toMatchObject([{ queueMode: 'follow_up' }]);
-      expect(
-        reopenedDb.sqlite
-          .prepare(
-            `SELECT action, outcome, summary
-            FROM audit_events
-            WHERE action = 'human.pending_user_turn.convert_follow_up'`
-          )
-          .all()
-      ).toEqual([
-        {
-          action: 'human.pending_user_turn.convert_follow_up',
-          outcome: 'succeeded',
-          summary: 'Pending user turn converted to follow-up.',
-        },
-      ]);
-    } finally {
-      reopenedDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('promotes recovery pending user turns to active-turn interrupts through App API', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-user-turn-interrupt-route-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const thread = store.createThread('ws_demo', 'Pending interrupt route');
-    const turn = store.createTurn('ws_demo', thread.id, 'Active turn');
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-    try {
-      enqueuePendingUserTurn(workspaceDb, {
-        contentItemId: 'item_pending_interrupt_route',
-        queueMode: 'safe_point_steering',
-        receivedAt: '2026-07-06T00:05:00.000Z',
-        requestId: 'req_pending_interrupt_route',
-        threadId: thread.id,
-        workspaceId: 'ws_demo',
-      });
-    } finally {
-      workspaceDb.sqlite.close();
-    }
-    const app = createApp({ coreDb, dataRoot, store, turnExecutor: new FakeTurnExecutor() });
-
-    const promoteRes = await app.request(
-      `/api/app/workspaces/ws_demo/threads/${thread.id}/recovery/pending-user-turns/req_pending_interrupt_route/interrupt`,
-      { method: 'POST' }
-    );
-
-    expect(promoteRes.status, await promoteRes.clone().text()).toBe(200);
-    expect(
-      PromoteRecoveryPendingUserTurnToInterruptResponseSchema.parse(await promoteRes.json())
-    ).toMatchObject({
-      promoted: true,
-      turn: { id: turn.id, status: 'interrupted' },
-    });
-
-    const reopenedDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-    try {
-      expect(
-        listPendingUserTurns(reopenedDb, { workspaceId: 'ws_demo', threadId: thread.id })
-      ).toEqual([]);
-      expect(
-        reopenedDb.sqlite
-          .prepare(
-            `SELECT action, outcome, summary
-            FROM audit_events
-            WHERE action = 'human.pending_user_turn.promote_interrupt'`
-          )
-          .all()
-      ).toEqual([
-        {
-          action: 'human.pending_user_turn.promote_interrupt',
-          outcome: 'succeeded',
-          summary: 'Pending user turn promoted to interrupt.',
-        },
-      ]);
-    } finally {
-      reopenedDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('rejects pending-input interrupt promotion when the executor cannot interrupt', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-user-turn-no-interrupt-route-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const thread = store.createThread('ws_demo', 'Unsupported pending interrupt route');
-    const turn = store.createTurn('ws_demo', thread.id, 'Keep active turn running');
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-    try {
-      enqueuePendingUserTurn(workspaceDb, {
-        contentItemId: 'item_pending_no_interrupt_route',
-        queueMode: 'safe_point_steering',
-        receivedAt: '2026-07-06T00:06:00.000Z',
-        requestId: 'req_pending_no_interrupt_route',
-        threadId: thread.id,
-        workspaceId: 'ws_demo',
-      });
-    } finally {
-      workspaceDb.sqlite.close();
-    }
-    const interruptTurn = vi.fn(async () => undefined);
-    const turnExecutor: TurnExecutor = {
-      capabilities: {
-        approvals: false,
-        artifacts: false,
-        interrupts: false,
-        questions: false,
-        workspaceConfig: true,
-        workspaceKnowledgeEditing: false,
-      },
-      eventFamilies: [],
-      interruptTurn,
-      startTurn: async () => undefined,
-    };
-    const app = createApp({ coreDb, dataRoot, store, turnExecutor });
-
-    const promoteRes = await app.request(
-      `/api/app/workspaces/ws_demo/threads/${thread.id}/recovery/pending-user-turns/req_pending_no_interrupt_route/interrupt`,
-      { method: 'POST' }
-    );
-
-    await expect(promoteRes.json()).resolves.toMatchObject({ code: 'interrupts_not_supported' });
-    expect(promoteRes.status).toBe(501);
-    expect(interruptTurn).not.toHaveBeenCalled();
-    expect(store.getTurn('ws_demo', thread.id, turn.id)).toEqual(turn);
-
-    const reopenedDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-    try {
-      expect(
-        listPendingUserTurns(reopenedDb, { workspaceId: 'ws_demo', threadId: thread.id })
-      ).toEqual([
-        expect.objectContaining({
-          contentItemId: 'item_pending_no_interrupt_route',
-          queueMode: 'safe_point_steering',
-          requestId: 'req_pending_no_interrupt_route',
-        }),
-      ]);
-      expect(
-        reopenedDb.sqlite
-          .prepare(
-            `SELECT action
-            FROM audit_events
-            WHERE action = 'human.pending_user_turn.promote_interrupt'`
-          )
-          .all()
-      ).toEqual([]);
-    } finally {
-      reopenedDb.sqlite.close();
       coreDb.sqlite.close();
     }
   });
@@ -3845,13 +3567,34 @@ describe('nanocore server', () => {
     });
   });
 
-  it('retries interrupted worker checkpoints by reopening the owning goal task', async () => {
+  it('releases one authoritatively interrupted goal task and replays its command', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-interrupted-worker-retry-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     const thread = store.createThread('ws_demo', 'Interrupted worker retry route');
     const turn = store.createTurn('ws_demo', thread.id, 'Interrupted worker');
+    const agentSessionId = 'as_interrupted_retry';
+    const completedAt = '2026-07-17T05:00:00.000Z';
+    store.createAgentSession({
+      agentId: 'agent_codex_host',
+      createdAt: turn.startedAt ?? completedAt,
+      id: agentSessionId,
+      message: 'Worker execution was interrupted during NanoCore restart recovery.',
+      status: 'interrupted',
+      threadId: thread.id,
+      updatedAt: completedAt,
+      workspaceId: 'ws_demo',
+    });
+    const interruptedTurn = store.updateTurn(turn.id, {
+      agentSessionId,
+      completedAt,
+      error: {
+        code: 'worker_governance_restart_recovery',
+        message: 'Worker execution was interrupted during NanoCore restart recovery.',
+      },
+      status: 'interrupted',
+    });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     try {
       createGoalRecord(workspaceDb, {
@@ -3866,15 +3609,18 @@ describe('nanocore server', () => {
       updateGoalStatus(workspaceDb, {
         currentTaskId: 'task_retry',
         goalId: 'goal_retry',
+        planItemId: 'it_goal_plan_retry',
         status: 'running',
         threadId: thread.id,
         workspaceId: 'ws_demo',
       });
       createGoalTask(workspaceDb, {
+        ...GOAL_TASK_RECORD_FIXTURE,
         acceptanceCriteria: ['Retry is queued.'],
         contextBudgetTokens: 1024,
         dependsOnTaskIds: [],
         goalId: 'goal_retry',
+        planItemId: 'it_goal_plan_retry',
         objective: 'Retry the interrupted task.',
         orderIndex: 0,
         status: 'running',
@@ -3892,26 +3638,52 @@ describe('nanocore server', () => {
         taskId: 'task_retry',
         threadId: thread.id,
         turnId: turn.id,
-        workerSessionId: 'worker_retry',
+        requestId: `req_${turn.id}`,
+        requestInputHash: `sha256:${turn.id}`,
+        workerSessionId: agentSessionId,
         workspaceId: 'ws_demo',
       });
     } finally {
       workspaceDb.sqlite.close();
     }
+    recordWorkerRetryLease(coreDb, {
+      agentSessionId,
+      recoveryState: null,
+      releaseReason: 'scheduler-restart-backend-cleanup',
+      status: 'released',
+      threadId: thread.id,
+      turnId: turn.id,
+    });
     const app = createApp({ coreDb, dataRoot, store });
+    const recoveryBefore = await app.request('/api/app/recovery/interrupted-workers');
+    expect(recoveryBefore.status, await recoveryBefore.clone().text()).toBe(200);
+    await expect(recoveryBefore.json()).resolves.toMatchObject({
+      items: [
+        expect.objectContaining({
+          checkpointId: `ws_demo:${thread.id}:${turn.id}`,
+          choices: expect.arrayContaining([expect.objectContaining({ kind: 'retry' })]),
+        }),
+      ],
+    });
+
+    const request = {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ requestId: 'req_worker_recovery_retry' }),
+    } as const;
 
     const retryRes = await app.request(
       `/api/app/workspaces/ws_demo/threads/${thread.id}/recovery/interrupted-worker/${turn.id}/retry`,
-      { method: 'POST' }
+      request
     );
 
     expect(retryRes.status, await retryRes.clone().text()).toBe(200);
-    expect(
-      RetryInterruptedWorkerCheckpointResponseSchema.parse(await retryRes.json())
-    ).toMatchObject({
-      retried: true,
-      turn: { id: turn.id, status: 'interrupted' },
+    const response = RetryInterruptedWorkerCheckpointResponseSchema.parse(await retryRes.json());
+    expect(response).toEqual({
+      outcome: 'released_for_retry',
+      turnId: turn.id,
     });
+    expect(store.getTurnById(turn.id)).toEqual(interruptedTurn);
 
     const reopenedDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     try {
@@ -3923,10 +3695,118 @@ describe('nanocore server', () => {
           workspaceId: 'ws_demo',
         })[0]?.status
       ).toBe('ready');
+      expect(getGoalRecord(reopenedDb, 'ws_demo', thread.id, 'goal_retry')).toMatchObject({
+        currentTaskId: null,
+        status: 'running',
+      });
+      expect(
+        store.getCommandRequest(
+          'worker.recovery.retry',
+          'req_worker_recovery_retry',
+          { workspaceId: 'ws_demo', threadId: thread.id, turnId: turn.id },
+          reopenedDb
+        )
+      ).toMatchObject({
+        response: { id: turn.id, kind: 'turn' },
+      });
     } finally {
       reopenedDb.sqlite.close();
-      coreDb.sqlite.close();
     }
+
+    const replay = await app.request(
+      `/api/app/workspaces/ws_demo/threads/${thread.id}/recovery/interrupted-worker/${turn.id}/retry`,
+      request
+    );
+    expect(replay.status, await replay.clone().text()).toBe(200);
+    await expect(replay.json()).resolves.toEqual(response);
+    expect(store.getTurnById(turn.id)).toEqual(interruptedTurn);
+    expect(requireSchedulerSessionLease(coreDb, `lease_${turn.id}`)).toMatchObject({
+      recoveryState: null,
+      releaseReason: 'scheduler-restart-backend-cleanup',
+      status: 'released',
+    });
+    coreDb.sqlite.close();
+  });
+
+  it('rejects interrupted-worker retry while exact reconnect remains pending', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-reconnect-pending-route-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const thread = store.createThread('ws_demo', 'Reconnect pending retry route');
+    const turn = store.createTurn('ws_demo', thread.id, 'Reconnect original worker');
+    const agentSessionId = 'as_reconnect_pending';
+    store.createAgentSession({
+      agentId: 'agent_codex_host',
+      createdAt: turn.startedAt ?? '2026-07-17T05:00:00.000Z',
+      id: agentSessionId,
+      message: null,
+      status: 'busy',
+      threadId: thread.id,
+      updatedAt: '2026-07-17T05:00:00.000Z',
+      workspaceId: 'ws_demo',
+    });
+    store.updateTurn(turn.id, { agentSessionId });
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    try {
+      upsertWorkerCheckpoint(workspaceDb, {
+        contextDigest: 'sha256:reconnect-pending',
+        diagnosticsSummary: 'Original worker may reconnect.',
+        iteration: 1,
+        stage: 'running_worker',
+        threadId: thread.id,
+        turnId: turn.id,
+        requestId: `req_${turn.id}`,
+        requestInputHash: `sha256:${turn.id}`,
+        workerSessionId: agentSessionId,
+        workspaceId: 'ws_demo',
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+    recordWorkerRetryLease(coreDb, {
+      agentSessionId,
+      recoveryState: 'awaiting-reconnect',
+      releaseReason: null,
+      status: 'active',
+      threadId: thread.id,
+      turnId: turn.id,
+    });
+    const turnBefore = store.getTurnById(turn.id);
+    const sessionBefore = store.getAgentSession(agentSessionId);
+    const leaseBefore = requireSchedulerSessionLease(coreDb, `lease_${turn.id}`);
+    const checkpointDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const checkpointBefore = getWorkerCheckpoint(checkpointDb, 'ws_demo', thread.id, turn.id);
+    checkpointDb.sqlite.close();
+    const app = createApp({
+      coreDb,
+      dataRoot,
+      store,
+      workerControlGateway: new WorkerControlGateway(),
+    });
+
+    const list = await app.request('/api/app/recovery/interrupted-workers');
+    await expect(list.json()).resolves.toEqual({ items: [] });
+    const retry = await app.request(
+      `/api/app/workspaces/ws_demo/threads/${thread.id}/recovery/interrupted-worker/${turn.id}/retry`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ requestId: 'req_reconnect_pending_retry' }),
+      }
+    );
+
+    expect(retry.status).toBe(409);
+    await expect(retry.json()).resolves.toMatchObject({ code: 'worker_reconnect_pending' });
+    expect(store.getTurnById(turn.id)).toEqual(turnBefore);
+    expect(store.getAgentSession(agentSessionId)).toEqual(sessionBefore);
+    expect(requireSchedulerSessionLease(coreDb, `lease_${turn.id}`)).toEqual(leaseBefore);
+    const reopenedDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    expect(getWorkerCheckpoint(reopenedDb, 'ws_demo', thread.id, turn.id)).toEqual(
+      checkpointBefore
+    );
+    reopenedDb.sqlite.close();
+    coreDb.sqlite.close();
   });
 
   it('exports and imports worker checkpoints as line-oriented records', async () => {
@@ -3944,6 +3824,8 @@ describe('nanocore server', () => {
         diagnosticsSummary: 'checkpoint diagnostics',
         iteration: 3,
         now: () => '2026-07-06T00:04:00.000Z',
+        requestId: 'req_checkpoint',
+        requestInputHash: 'sha256:checkpoint-request',
         stage: 'running_worker',
         threadId: 'th_demo',
         turnId: 'tu_checkpoint',
@@ -3983,6 +3865,8 @@ describe('nanocore server', () => {
           contextDigest: 'sha256:checkpoint-context',
           goalId: null,
           iteration: 3,
+          requestId: 'req_checkpoint',
+          requestInputHash: 'sha256:checkpoint-request',
           stage: 'running_worker',
           taskId: null,
           threadId: importedThreadId,
@@ -4006,6 +3890,33 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
+    const sourcePlan = GoalPlanOutputSchema.parse({
+      schemaVersion: 1,
+      goalSummary: 'Import this goal.',
+      assumptions: [],
+      tasks: [
+        {
+          taskId: 'task_import_1',
+          title: 'Import task',
+          objective: 'Import this task.',
+          acceptanceCriteria: ['Task imported.'],
+          contextBudgetTokens: 12000,
+          resources: [],
+          expectedArtifacts: [],
+          verificationChecks: [{ kind: 'manual', description: 'Confirm imported task.' }],
+          reviewPolicy: {
+            required: true,
+            reviewers: ['human'],
+            instructions: 'Review the imported task.',
+          },
+          dependsOnTaskIds: [],
+          escalationConditions: [],
+        },
+      ],
+      risks: [],
+      questions: [],
+      verificationApproach: 'Confirm the imported task record.',
+    });
     const sourceTurn = store.createTurn('ws_demo', 'th_demo', 'Create portable goal', null, {
       turnId: 'turn_goal_import_1',
     });
@@ -4020,6 +3931,23 @@ describe('nanocore server', () => {
       createdAt: '2026-07-06T00:04:59.000Z',
       completedAt: '2026-07-06T00:04:59.000Z',
     });
+    store.createItem({
+      id: 'item_goal_plan_import_1',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: sourceTurn.id,
+      type: 'plan',
+      status: 'completed',
+      title: 'Import goal',
+      summary: sourcePlan.goalSummary,
+      steps: sourcePlan.tasks.map((task) => ({
+        id: task.taskId,
+        title: task.title,
+        status: 'pending',
+      })),
+      createdAt: '2026-07-06T00:05:00.000Z',
+      completedAt: '2026-07-06T00:05:00.000Z',
+    });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     try {
       createGoalRecord(sourceDb, {
@@ -4033,19 +3961,32 @@ describe('nanocore server', () => {
         workspaceId: 'ws_demo',
         now: () => '2026-07-06T00:05:00.000Z',
       });
-      createGoalTask(sourceDb, {
-        acceptanceCriteria: ['Task imported.'],
-        contextBudgetTokens: 12000,
-        dependsOnTaskIds: [],
-        goalId: 'goal_import_1',
-        objective: 'Import this task.',
-        orderIndex: 1,
-        status: 'ready',
-        taskId: 'task_import_1',
-        threadId: 'th_demo',
-        title: 'Import task',
-        verificationChecks: [{ kind: 'manual', description: 'Confirm imported task.' }],
+      createGoalPlanRecord(sourceDb, {
         workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        goalId: 'goal_import_1',
+        planItemId: 'item_goal_plan_import_1',
+        plan: sourcePlan,
+        createdByRequestId: 'goal-plan-import-1',
+        now: () => '2026-07-06T00:05:00.000Z',
+      });
+      const sourcePlanTask = sourcePlan.tasks[0]!;
+      createGoalTask(sourceDb, {
+        ...sourcePlanTask,
+        goalId: 'goal_import_1',
+        planItemId: 'item_goal_plan_import_1',
+        orderIndex: 0,
+        status: 'ready',
+        threadId: 'th_demo',
+        workspaceId: 'ws_demo',
+        now: () => '2026-07-06T00:05:01.000Z',
+      });
+      updateGoalStatus(sourceDb, {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        goalId: 'goal_import_1',
+        status: 'running',
+        planItemId: 'item_goal_plan_import_1',
         now: () => '2026-07-06T00:05:01.000Z',
       });
     } finally {
@@ -4122,6 +4063,33 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
+    const sourceEvidencePlan = GoalPlanOutputSchema.parse({
+      schemaVersion: 1,
+      goalSummary: 'Import goal evidence.',
+      assumptions: [],
+      tasks: [
+        {
+          taskId: 'task_evidence_1',
+          title: 'Import evidence task',
+          objective: 'Import goal evidence task.',
+          acceptanceCriteria: ['Evidence imported.'],
+          contextBudgetTokens: 12000,
+          resources: [],
+          expectedArtifacts: [{ kind: 'artifact', description: 'Portable goal evidence.' }],
+          verificationChecks: [{ kind: 'test', description: 'Run the evidence test.' }],
+          reviewPolicy: {
+            required: true,
+            reviewers: ['human'],
+            instructions: 'Review the imported evidence.',
+          },
+          dependsOnTaskIds: [],
+          escalationConditions: [],
+        },
+      ],
+      risks: [],
+      questions: [],
+      verificationApproach: 'Import and inspect the evidence records.',
+    });
     const sourceTurn = store.createTurn('ws_demo', 'th_demo', 'Collect goal evidence', null, {
       turnId: 'turn_evidence_1',
     });
@@ -4135,6 +4103,23 @@ describe('nanocore server', () => {
       text: 'Evidence collected',
       createdAt: '2026-07-06T00:05:59.000Z',
       completedAt: '2026-07-06T00:05:59.000Z',
+    });
+    store.createItem({
+      id: 'item_goal_plan_evidence_1',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: sourceTurn.id,
+      type: 'plan',
+      status: 'completed',
+      title: 'Import evidence goal',
+      summary: sourceEvidencePlan.goalSummary,
+      steps: sourceEvidencePlan.tasks.map((task) => ({
+        id: task.taskId,
+        title: task.title,
+        status: 'pending',
+      })),
+      createdAt: '2026-07-06T00:06:00.000Z',
+      completedAt: '2026-07-06T00:06:00.000Z',
     });
     store.createArtifact({
       id: 'artifact_evidence_1',
@@ -4156,36 +4141,52 @@ describe('nanocore server', () => {
         goalId: 'goal_evidence_1',
         objective: 'Import goal evidence.',
         status: 'reviewing',
+        currentTaskId: 'task_evidence_1',
         threadId: 'th_demo',
         title: 'Import evidence goal',
         workspaceExists: () => true,
         workspaceId: 'ws_demo',
         now: () => '2026-07-06T00:06:00.000Z',
       });
-      const sourceTask = createGoalTask(sourceDb, {
-        acceptanceCriteria: ['Evidence imported.'],
-        contextBudgetTokens: 12000,
-        dependsOnTaskIds: [],
-        goalId: 'goal_evidence_1',
-        objective: 'Import goal evidence task.',
-        orderIndex: 1,
-        status: 'reviewing',
-        taskId: 'task_evidence_1',
-        threadId: 'th_demo',
-        title: 'Import evidence task',
+      createGoalPlanRecord(sourceDb, {
         workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        goalId: 'goal_evidence_1',
+        planItemId: 'item_goal_plan_evidence_1',
+        plan: sourceEvidencePlan,
+        createdByRequestId: 'goal-plan-evidence-1',
+        now: () => '2026-07-06T00:06:00.000Z',
+      });
+      const sourceEvidenceTask = sourceEvidencePlan.tasks[0]!;
+      const sourceTask = createGoalTask(sourceDb, {
+        ...sourceEvidenceTask,
+        goalId: 'goal_evidence_1',
+        planItemId: 'item_goal_plan_evidence_1',
+        orderIndex: 0,
+        status: 'reviewing',
+        threadId: 'th_demo',
+        workspaceId: 'ws_demo',
+        now: () => '2026-07-06T00:06:01.000Z',
+      });
+      updateGoalStatus(sourceDb, {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        goalId: 'goal_evidence_1',
+        status: 'reviewing',
+        planItemId: 'item_goal_plan_evidence_1',
+        currentTaskId: 'task_evidence_1',
         now: () => '2026-07-06T00:06:01.000Z',
       });
       createGoalReviewRecord(sourceDb, {
         artifactIds: ['artifact_evidence_1'],
         goalId: 'goal_evidence_1',
         itemIds: ['item_evidence_1'],
-        reason: 'Evidence review accepted.',
+        prompt: 'Review the imported Goal evidence.',
+        createdByRequestId: 'goal-step-evidence-1',
         reviewId: 'gr_evidence_1',
         taskId: 'task_evidence_1',
         threadId: 'th_demo',
         turnId: 'turn_evidence_1',
-        verdict: 'accept',
         verificationEvidence: [{ kind: 'manual', summary: 'Looks good.' }],
         workspaceId: 'ws_demo',
         now: () => '2026-07-06T00:06:02.000Z',
@@ -4193,16 +4194,18 @@ describe('nanocore server', () => {
       resolveGoalReviewRecord(sourceDb, {
         goalId: 'goal_evidence_1',
         requestId: 'goal-review-evidence-resolution-1',
+        actorId: 'user_demo',
+        verdict: 'accept',
         resolutionSnapshot: {
           outcome: 'complete_goal',
-          task: { ...sourceTask, status: 'completed' },
+          task: { taskId: sourceTask.taskId, status: 'completed' },
           goal: {
-            ...sourceGoal,
+            goalId: sourceGoal.goalId,
             status: 'completed',
             currentTaskId: null,
             terminalStopReason: 'completed',
           },
-          nextTask: null,
+          nextReadyTaskId: null,
         },
         reviewId: 'gr_evidence_1',
         threadId: 'th_demo',
@@ -4267,19 +4270,24 @@ describe('nanocore server', () => {
           artifactIds: [importedArtifactId],
           goalId: importedGoalId,
           itemIds: [importedItemId],
+          prompt: 'Review the imported Goal evidence.',
           reviewId: `review_imported_${body.importedWorkspaceId}_1`,
           resolutionSnapshot: {
             outcome: 'complete_goal',
-            task: expect.objectContaining({
-              taskId: importedTaskId,
-              workspaceId: body.importedWorkspaceId,
-            }),
-            goal: expect.objectContaining({
+            task: { taskId: importedTaskId, status: 'completed' },
+            goal: {
               goalId: importedGoalId,
-              workspaceId: body.importedWorkspaceId,
-            }),
-            nextTask: null,
+              status: 'completed',
+              currentTaskId: null,
+              terminalStopReason: 'completed',
+            },
+            nextReadyTaskId: null,
           },
+          createdByRequestId: 'goal-step-evidence-1',
+          reason: null,
+          revisionInstruction: null,
+          resolutionRequestId: 'goal-review-evidence-resolution-1',
+          resolvedByActorId: 'user_demo',
           taskId: importedTaskId,
           turnId: importedTurnId,
           verdict: 'accept',
@@ -4657,9 +4665,12 @@ describe('nanocore server', () => {
 
   it('starts Task Mode through the worker coordinator and one bounded worker turn', async () => {
     const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, turnExecutor: executor });
+    const app = createApp({ coreDb, store, turnExecutor: executor });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-task-mode-repository-'));
+    const requestId = '0190f4c8-0000-7000-8000-000000000301';
+    const input = 'Implement the focused Task Mode fix.';
 
     mkdirSync(join(repositoryPath, '.git'));
 
@@ -4675,21 +4686,14 @@ describe('nanocore server', () => {
 
       const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
         method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000301',
-          input: 'Implement the focused Task Mode fix.',
-        }),
+        body: JSON.stringify({ requestId, input }),
         headers: { 'content-type': 'application/json' },
       });
 
       expect(res.status).toBe(202);
       const parsed = StartTaskModeResponseSchema.parse(await res.json());
 
-      expect(parsed.decision).toMatchObject({
-        mode: 'task',
-        sourceAgentId: 'worker-coordinator',
-        worker: { agentId: 'agent_codex_host', runtime: 'codex' },
-      });
+      expect(parsed).not.toHaveProperty('decision');
       expect(parsed.state).toBe('completed');
       expect(parsed.turn.status).toBe('completed');
       expect(parsed.turn.id).toMatch(/^turn_0190f4c8-0000-7000-8000-000000000301/);
@@ -4702,6 +4706,67 @@ describe('nanocore server', () => {
         artifactIds: [],
         reviewIds: [],
       });
+      const workerInput = store
+        .listThreadItems('ws_demo', 'th_demo')
+        .find((item) => item.id === `it_user_${parsed.turn.id}`);
+      expect(workerInput?.type).toBe('user-message');
+      const expectedWorkerRequest = createWorkerCoordinatorDecision({
+        prompt: input,
+        readiness: [
+          {
+            agentId: 'agent_codex_host',
+            displayName: 'Codex Host Agent',
+            runtime: 'codex',
+            readiness: 'ready',
+          },
+        ],
+        threadState: { status: 'idle', threadId: 'th_demo' },
+        workspaceSummary: { name: 'Demo Workspace', workspaceId: 'ws_demo' },
+      }).workerRequest;
+      expect(expectedWorkerRequest).not.toBeNull();
+      expect(
+        StructuredWorkerDelegationRequestSchema.parse(
+          JSON.parse(workerInput?.type === 'user-message' ? workerInput.text : '')
+        )
+      ).toEqual(expectedWorkerRequest);
+      expect(
+        store.getCommandRequest('task.start', requestId, {
+          threadId: 'th_demo',
+          workspaceId: 'ws_demo',
+        })?.response.snapshot
+      ).toBeUndefined();
+
+      const replayRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
+        method: 'POST',
+        body: JSON.stringify({ requestId, input }),
+        headers: { 'content-type': 'application/json' },
+      });
+      const conflictRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
+        method: 'POST',
+        body: JSON.stringify({ requestId, input: 'Implement a different focused Task Mode fix.' }),
+        headers: { 'content-type': 'application/json' },
+      });
+
+      expect(replayRes.status).toBe(202);
+      expect(StartTaskModeResponseSchema.parse(await replayRes.json())).toEqual(parsed);
+      store.updateTurn(parsed.turn.id, { status: 'cancelled' });
+      const cancelledReplayRes = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/task',
+        {
+          method: 'POST',
+          body: JSON.stringify({ requestId, input }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+
+      expect(cancelledReplayRes.status).toBe(409);
+      await expect(cancelledReplayRes.json()).resolves.toMatchObject({
+        code: 'recovery_required',
+      });
+      expect(conflictRes.status).toBe(409);
+      await expect(conflictRes.json()).resolves.toMatchObject({
+        code: 'idempotency_key_conflict',
+      });
       expect(executor.startContexts).toHaveLength(1);
       const sandboxBindingRef = executor.startContexts[0]!.sandboxBindingRef!;
       expect(
@@ -4711,6 +4776,99 @@ describe('nanocore server', () => {
         releaseReason: 'turn-completed',
         turnId: parsed.turn.id,
       });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('recovers a direct Task receipt from its terminal checkpoint without another worker turn', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const executor = new FakeTurnExecutor();
+    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-task-receipt-recovery-'));
+    const requestId = '0190f4c8-0000-7000-8000-000000000302';
+    const input = 'Implement the focused Task receipt recovery fix.';
+
+    mkdirSync(join(repositoryPath, '.git'));
+
+    try {
+      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+        method: 'PUT',
+        body: JSON.stringify({
+          displayName: 'Task receipt recovery repository',
+          localPath: repositoryPath,
+        }),
+        headers: { 'content-type': 'application/json' },
+      });
+      const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
+        throw new Error('simulated Task receipt write failure');
+      });
+      const firstRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
+        method: 'POST',
+        body: JSON.stringify({ requestId, input }),
+        headers: { 'content-type': 'application/json' },
+      });
+      receiptWrite.mockRestore();
+
+      expect(firstRes.status).toBe(409);
+      await expect(firstRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      const turns = store.listThreadTurns('ws_demo', 'th_demo');
+      expect(turns).toHaveLength(1);
+      const turn = turns[0]!;
+      const checkpointDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      try {
+        expect(listExportableWorkerCheckpoints(checkpointDb, 'ws_demo')).toEqual([
+          expect.objectContaining({
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            turnId: turn.id,
+            goalId: null,
+            taskId: null,
+            requestId,
+            stage: 'completed',
+            stopReason: 'completed',
+          }),
+        ]);
+      } finally {
+        checkpointDb.sqlite.close();
+      }
+
+      const conflictRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
+        method: 'POST',
+        body: JSON.stringify({ requestId, input: 'Implement a different Task result.' }),
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(conflictRes.status).toBe(409);
+      await expect(conflictRes.json()).resolves.toMatchObject({
+        code: 'idempotency_key_conflict',
+      });
+      expect(executor.startContexts).toHaveLength(1);
+
+      const replayRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
+        method: 'POST',
+        body: JSON.stringify({ requestId, input }),
+        headers: { 'content-type': 'application/json' },
+      });
+
+      expect(replayRes.status).toBe(202);
+      expect(StartTaskModeResponseSchema.parse(await replayRes.json())).toMatchObject({
+        state: 'completed',
+        turn: { id: turn.id },
+      });
+      expect(executor.startContexts).toHaveLength(1);
+      expect(
+        store.getCommandRequest('task.start', requestId, {
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+        })
+      ).not.toBeNull();
+      const recoveredDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      try {
+        expect(getWorkerCheckpoint(recoveredDb, 'ws_demo', 'th_demo', turn.id)).toBeNull();
+      } finally {
+        recoveredDb.sqlite.close();
+      }
     } finally {
       coreDb.sqlite.close();
     }
@@ -4745,10 +4903,12 @@ describe('nanocore server', () => {
     }
   });
 
-  it('does not project Task Mode completion while the worker turn waits for human input', async () => {
+  it('closes a direct Task Gate as blocked without resuming worker execution', async () => {
     const coreDb = createCoreDb();
     const app = createApp({ coreDb, turnExecutor: new SimulatedTurnExecutor() });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-task-mode-paused-repository-'));
+    const taskRequestId = '0190f4c8-0000-7000-8000-000000000308';
+    const taskInput = 'Implement the bounded Task Mode simulator fix.';
 
     mkdirSync(join(repositoryPath, '.git'));
 
@@ -4765,8 +4925,8 @@ describe('nanocore server', () => {
       const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
         method: 'POST',
         body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000308',
-          input: 'Implement the bounded Task Mode simulator fix.',
+          requestId: taskRequestId,
+          input: taskInput,
         }),
         headers: { 'content-type': 'application/json' },
       });
@@ -4783,6 +4943,49 @@ describe('nanocore server', () => {
           `it_approval_request_${parsed.turn.id}`,
         ])
       );
+      expect(parsed.turn.humanGate?.kind).toBe('approval');
+      if (parsed.turn.humanGate?.kind !== 'approval') {
+        throw new Error('Expected the simulator approval Gate.');
+      }
+      const approvalRes = await app.request(
+        `/api/approvals/${parsed.turn.humanGate.approvalRequestId}/respond`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: '0190f4c8-0000-7000-8000-000000000309',
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            turnId: parsed.turn.id,
+            decision: 'granted',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+      expect(approvalRes.status).toBe(200);
+
+      const replayRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
+        method: 'POST',
+        body: JSON.stringify({ requestId: taskRequestId, input: taskInput }),
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(replayRes.status).toBe(202);
+      const replay = StartTaskModeResponseSchema.parse(await replayRes.json());
+      expect(replay).toMatchObject({
+        state: 'blocked',
+        turn: { id: parsed.turn.id, status: 'completed' },
+        completion: null,
+      });
+      expect(replay.evidence.itemIds).toContain(`it_approval_decision_${parsed.turn.id}`);
+      expect(replay.evidence.itemIds).not.toContain(`it_user_input_request_${parsed.turn.id}`);
+      expect(replay.evidence.artifactIds).toEqual([]);
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      try {
+        expect(
+          getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', parsed.turn.id)
+        ).toBeNull();
+      } finally {
+        workspaceDb.sqlite.close();
+      }
     } finally {
       coreDb.sqlite.close();
     }
@@ -4911,9 +5114,12 @@ describe('nanocore server', () => {
 
   it('starts Task Mode when Chat Mode accepts a task handoff', async () => {
     const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, turnExecutor: executor });
+    const app = createApp({ coreDb, store, turnExecutor: executor });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-chat-task-handoff-repository-'));
+    const requestId = '0190f4c8-0000-7000-8000-000000000305';
+    const input = 'Implement the focused Task Mode fix.';
 
     mkdirSync(join(repositoryPath, '.git'));
 
@@ -4929,25 +5135,60 @@ describe('nanocore server', () => {
 
       const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
         method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000305',
-          input: 'Implement the focused Task Mode fix.',
-        }),
+        body: JSON.stringify({ requestId, input }),
         headers: { 'content-type': 'application/json' },
       });
 
       expect(res.status).toBe(202);
       const parsed = StartChatModeResponseSchema.parse(await res.json());
+      const acceptedTurnIds = store
+        .listThreadTurns('ws_demo', 'th_demo')
+        .map((turn) => turn.id)
+        .sort();
+
+      const replayRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
+        method: 'POST',
+        body: JSON.stringify({ requestId, input }),
+        headers: { 'content-type': 'application/json' },
+      });
+      const conflictRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
+        method: 'POST',
+        body: JSON.stringify({ requestId, input: 'Implement a different focused Task Mode fix.' }),
+        headers: { 'content-type': 'application/json' },
+      });
+      const directTaskRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
+        method: 'POST',
+        body: JSON.stringify({ requestId, input }),
+        headers: { 'content-type': 'application/json' },
+      });
 
       expect(parsed).toMatchObject({
         outcome: 'task-handoff',
         handoff: { targetMode: 'task' },
         item: { type: 'status', title: 'Task Mode handoff' },
       });
-      expect(executor.startContexts).toHaveLength(1);
-      expect(executor.startContexts[0]).toMatchObject({
-        requestId: '0190f4c8-0000-7000-8000-000000000305',
+      expect(replayRes.status).toBe(202);
+      const replay = StartChatModeResponseSchema.parse(await replayRes.json());
+      expect(replay.turn.id).toBe(parsed.turn.id);
+      expect(replay.item.id).toBe(parsed.item.id);
+      expect(replay.handoff).toEqual(parsed.handoff);
+      expect(conflictRes.status).toBe(409);
+      await expect(conflictRes.json()).resolves.toMatchObject({
+        code: 'idempotency_key_conflict',
       });
+      expect(directTaskRes.status).toBe(202);
+      const directTask = StartTaskModeResponseSchema.parse(await directTaskRes.json());
+      expect(acceptedTurnIds).not.toContain(directTask.turn.id);
+      expect(executor.startContexts).toHaveLength(2);
+      expect(executor.startContexts[0]).toMatchObject({
+        requestId,
+      });
+      expect(
+        store
+          .listThreadTurns('ws_demo', 'th_demo')
+          .map((turn) => turn.id)
+          .sort()
+      ).toEqual([...acceptedTurnIds, directTask.turn.id].sort());
     } finally {
       coreDb.sqlite.close();
     }
@@ -5646,6 +5887,7 @@ describe('nanocore server', () => {
         {
           method: 'POST',
           body: JSON.stringify({
+            requestId: 'goal-start-quick-chat',
             objective: 'Plan a multi-step release goal.',
           }),
           headers: { 'content-type': 'application/json' },
@@ -5657,56 +5899,6 @@ describe('nanocore server', () => {
         code: 'workspace_kind_not_supported',
         message: expect.stringContaining('Quick Chat workspace'),
       });
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('includes Knowledge Manager context refs in Task Mode delegation decisions', async () => {
-    const coreDb = createCoreDb();
-    const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, turnExecutor: executor });
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-task-mode-knowledge-repository-'));
-
-    mkdirSync(join(repositoryPath, '.git'));
-
-    try {
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Task Mode knowledge repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-      const knowledgeRes = await app.request('/api/workspaces/ws_demo/knowledge', {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000303',
-          kind: 'project-context',
-          title: 'Task context smoke',
-          content: 'Workers should preserve the task context smoke requirement.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-      const knowledge = (await knowledgeRes.json()) as { id: string };
-
-      const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000304',
-          input: 'Implement the Task context smoke fix.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-
-      expect(res.status).toBe(202);
-      const parsed = StartTaskModeResponseSchema.parse(await res.json());
-
-      expect(parsed.decision.contextRefs).toEqual(
-        expect.arrayContaining([{ kind: 'knowledge', id: knowledge.id }])
-      );
-      expect(executor.startContexts).toHaveLength(1);
     } finally {
       coreDb.sqlite.close();
     }
@@ -5763,16 +5955,16 @@ describe('nanocore server', () => {
 
   it('escalates Task Mode requests that need Goal Mode planning', async () => {
     const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, turnExecutor: executor });
+    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const requestId = '0190f4c8-0000-7000-8000-000000000307';
+    const input = 'Plan a multi-step release goal for NanoCore.';
 
     try {
       const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
         method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000307',
-          input: 'Plan a multi-step release goal for NanoCore.',
-        }),
+        body: JSON.stringify({ requestId, input }),
         headers: { 'content-type': 'application/json' },
       });
 
@@ -5780,22 +5972,59 @@ describe('nanocore server', () => {
       const parsed = StartTaskModeResponseSchema.parse(await res.json());
 
       expect(parsed).toMatchObject({
-        decision: null,
         state: 'escalated-to-goal',
         escalation: {
           targetMode: 'goal',
-          goalId: 'goal_1',
+          goalId: expect.stringMatching(/^goal_/),
         },
       });
       expect(executor.startContexts).toHaveLength(0);
+      expect(parsed).not.toHaveProperty('decision');
+      expect(
+        store.getCommandRequest('task.start', requestId, {
+          threadId: 'th_demo',
+          workspaceId: 'ws_demo',
+        })?.response.snapshot
+      ).toBeUndefined();
+
+      const replayRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
+        method: 'POST',
+        body: JSON.stringify({ requestId, input }),
+        headers: { 'content-type': 'application/json' },
+      });
+
+      expect(replayRes.status).toBe(202);
+      expect(StartTaskModeResponseSchema.parse(await replayRes.json())).toEqual(parsed);
 
       const goalRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/goal');
       const goal = ThreadGoalSummaryResponseSchema.parse(await goalRes.json()).goal;
 
       expect(goal).toMatchObject({
-        goalId: 'goal_1',
         objective: 'Plan a multi-step release goal for NanoCore.',
         status: 'planning',
+      });
+      expect(goal?.goalId).toBe(parsed.escalation?.goalId);
+      expect(store.listCommandRequests().map((record) => record.command)).toEqual(['task.start']);
+
+      const creationItem = parsed.turn.items.find((item) => item.type === 'user-message');
+
+      if (!creationItem) {
+        throw new Error('Expected the Goal creation Item.');
+      }
+
+      store.updateItem(creationItem.id, { status: 'in_progress', completedAt: null });
+      const contradictedReplayRes = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/task',
+        {
+          method: 'POST',
+          body: JSON.stringify({ requestId, input }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+
+      expect(contradictedReplayRes.status).toBe(409);
+      await expect(contradictedReplayRes.json()).resolves.toMatchObject({
+        code: 'recovery_required',
       });
     } finally {
       coreDb.sqlite.close();
@@ -6295,9 +6524,6 @@ describe('nanocore server', () => {
       expect(admissionCountWhileActive).toBe(0);
       expect(executor.startContexts).toHaveLength(0);
       expect(store.listThreadItems('ws_demo', thread.id)).toEqual([]);
-      expect(
-        listPendingUserTurns(workspaceDb, { workspaceId: 'ws_demo', threadId: thread.id })
-      ).toEqual([]);
       expect(store.listThreadTurns('ws_demo', thread.id).map((turn) => turn.id)).toEqual([
         activeTurn.id,
       ]);
@@ -6324,9 +6550,6 @@ describe('nanocore server', () => {
           text: body.input,
         })
       );
-      expect(
-        listPendingUserTurns(workspaceDb, { workspaceId: 'ws_demo', threadId: thread.id })
-      ).toEqual([]);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -9315,6 +9538,7 @@ describe('nanocore server', () => {
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Goal review decision');
+    const turn = store.createTurn('ws_demo', thread.id, 'Review the first Goal Task');
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
 
     try {
@@ -9329,9 +9553,11 @@ describe('nanocore server', () => {
         now: () => '2026-05-31T00:00:00.000Z',
       });
       createGoalTask(workspaceDb, {
+        ...GOAL_TASK_RECORD_FIXTURE,
         workspaceId: 'ws_demo',
         threadId: thread.id,
         goalId: 'goal_route',
+        planItemId: 'it_goal_plan_route',
         taskId: 'task_route_1',
         title: 'First reviewed task',
         objective: 'Complete the first reviewed task.',
@@ -9343,9 +9569,11 @@ describe('nanocore server', () => {
         now: () => '2026-05-31T00:00:00.000Z',
       });
       createGoalTask(workspaceDb, {
+        ...GOAL_TASK_RECORD_FIXTURE,
         workspaceId: 'ws_demo',
         threadId: thread.id,
         goalId: 'goal_route',
+        planItemId: 'it_goal_plan_route',
         taskId: 'task_route_2',
         title: 'Dependent task',
         objective: 'Continue after the first task is accepted.',
@@ -9356,26 +9584,36 @@ describe('nanocore server', () => {
         status: 'pending',
         now: () => '2026-05-31T00:00:30.000Z',
       });
+      updateGoalStatus(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_route',
+        status: 'reviewing',
+        planItemId: 'it_goal_plan_route',
+        currentTaskId: 'task_route_1',
+        now: () => '2026-05-31T00:00:30.000Z',
+      });
       createGoalReviewRecord(workspaceDb, {
         reviewId: 'review_route',
         workspaceId: 'ws_demo',
         threadId: thread.id,
         goalId: 'goal_route',
         taskId: 'task_route_1',
-        verdict: 'accept',
-        reason: 'Accept the first task and continue.',
+        turnId: turn.id,
+        prompt: 'Review the first Task evidence.',
+        createdByRequestId: 'goal-step-route-1',
         now: () => '2026-05-31T00:01:00.000Z',
       });
 
       const href = `/api/app/workspaces/ws_demo/threads/${thread.id}/goals/goal_route/reviews/review_route/decision`;
       const firstRes = await app.request(href, {
         method: 'POST',
-        body: JSON.stringify({ requestId: 'goal-review-request-1' }),
+        body: JSON.stringify({ requestId: 'goal-review-request-1', verdict: 'accept' }),
         headers: { 'content-type': 'application/json' },
       });
       const secondRes = await app.request(href, {
         method: 'POST',
-        body: JSON.stringify({ requestId: 'goal-review-request-1' }),
+        body: JSON.stringify({ requestId: 'goal-review-request-1', verdict: 'accept' }),
         headers: { 'content-type': 'application/json' },
       });
 
@@ -9384,19 +9622,35 @@ describe('nanocore server', () => {
       const first = await firstRes.json();
       const second = await secondRes.json();
       expect(second).toEqual(first);
+      workspaceDb.sqlite
+        .prepare(
+          `DELETE FROM idempotency_requests
+          WHERE command_name = 'goal.review.decide'
+            AND request_id = 'goal-review-request-1'`
+        )
+        .run();
+      const snapshotFallbackRes = await app.request(href, {
+        method: 'POST',
+        body: JSON.stringify({ requestId: 'goal-review-request-1', verdict: 'accept' }),
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(snapshotFallbackRes.status).toBe(200);
+      expect(await snapshotFallbackRes.json()).toEqual(first);
       expect(first).toMatchObject({
         advance: {
           outcome: 'complete_next_task',
           task: { taskId: 'task_route_1', status: 'completed' },
-          goal: { status: 'running', currentTaskId: 'task_route_2' },
-          nextTask: { taskId: 'task_route_2', status: 'ready' },
+          goal: { status: 'running', currentTaskId: null },
+          nextReadyTaskId: 'task_route_2',
         },
       });
       expect(
         getGoalReviewRecord(workspaceDb, 'ws_demo', thread.id, 'goal_route', 'review_route')
       ).toMatchObject({
         resolvedAt: expect.any(String),
+        verdict: 'accept',
         resolutionRequestId: 'goal-review-request-1',
+        resolvedByActorId: 'user_local',
       });
       expect(
         listGoalTasks(workspaceDb, {
@@ -9413,7 +9667,7 @@ describe('nanocore server', () => {
           workspaceId: 'ws_demo',
           threadId: thread.id,
         }).find((goal) => goal.goalId === 'goal_route')
-      ).toMatchObject({ status: 'running', currentTaskId: 'task_route_2' });
+      ).toMatchObject({ status: 'running', currentTaskId: null });
 
       updateGoalTask(workspaceDb, {
         workspaceId: 'ws_demo',
@@ -9432,12 +9686,47 @@ describe('nanocore server', () => {
       });
       const delayedReplayRes = await app.request(href, {
         method: 'POST',
-        body: JSON.stringify({ requestId: 'goal-review-request-1' }),
+        body: JSON.stringify({ requestId: 'goal-review-request-1', verdict: 'accept' }),
         headers: { 'content-type': 'application/json' },
       });
 
       expect(delayedReplayRes.status).toBe(200);
       expect(await delayedReplayRes.json()).toEqual(first);
+      const conflictingReplay = await app.request(href, {
+        method: 'POST',
+        body: JSON.stringify({
+          requestId: 'goal-review-request-1',
+          verdict: 'abort',
+          reason: 'Abort instead.',
+        }),
+        headers: { 'content-type': 'application/json' },
+      });
+      const staleDecision = await app.request(href, {
+        method: 'POST',
+        body: JSON.stringify({ requestId: 'goal-review-request-2', verdict: 'accept' }),
+        headers: { 'content-type': 'application/json' },
+      });
+
+      expect(conflictingReplay.status).toBe(409);
+      expect(await conflictingReplay.json()).toMatchObject({ code: 'idempotency_key_conflict' });
+      expect(staleDecision.status).toBe(409);
+      expect(await staleDecision.json()).toMatchObject({ code: 'stale' });
+
+      workspaceDb.sqlite
+        .prepare(
+          `UPDATE goal_review_records
+          SET resolved_by_actor_id = NULL
+          WHERE workspace_id = 'ws_demo' AND review_id = 'review_route'`
+        )
+        .run();
+      const recoveryRequired = await app.request(href, {
+        method: 'POST',
+        body: JSON.stringify({ requestId: 'goal-review-request-3', verdict: 'accept' }),
+        headers: { 'content-type': 'application/json' },
+      });
+
+      expect(recoveryRequired.status).toBe(409);
+      expect(await recoveryRequired.json()).toMatchObject({ code: 'recovery_required' });
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -9449,6 +9738,7 @@ describe('nanocore server', () => {
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Final goal review decision');
+    const turn = store.createTurn('ws_demo', thread.id, 'Review the final Goal Task');
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
 
     try {
@@ -9463,9 +9753,11 @@ describe('nanocore server', () => {
         now: () => '2026-05-31T01:00:00.000Z',
       });
       createGoalTask(workspaceDb, {
+        ...GOAL_TASK_RECORD_FIXTURE,
         workspaceId: 'ws_demo',
         threadId: thread.id,
         goalId: 'goal_final_review',
+        planItemId: 'it_goal_plan_final_review',
         taskId: 'task_final_review',
         title: 'Final reviewed task',
         objective: 'Complete the goal.',
@@ -9476,14 +9768,24 @@ describe('nanocore server', () => {
         status: 'reviewing',
         now: () => '2026-05-31T01:00:30.000Z',
       });
+      updateGoalStatus(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_final_review',
+        status: 'reviewing',
+        planItemId: 'it_goal_plan_final_review',
+        currentTaskId: 'task_final_review',
+        now: () => '2026-05-31T01:00:30.000Z',
+      });
       createGoalReviewRecord(workspaceDb, {
         reviewId: 'review_final_route',
         workspaceId: 'ws_demo',
         threadId: thread.id,
         goalId: 'goal_final_review',
         taskId: 'task_final_review',
-        verdict: 'accept',
-        reason: 'Accept the final task and complete the goal.',
+        turnId: turn.id,
+        prompt: 'Review the final Task evidence.',
+        createdByRequestId: 'goal-step-final-1',
         now: () => '2026-05-31T01:01:00.000Z',
       });
 
@@ -9491,7 +9793,10 @@ describe('nanocore server', () => {
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goals/goal_final_review/reviews/review_final_route/decision`,
         {
           method: 'POST',
-          body: JSON.stringify({ requestId: 'goal-review-final-request-1' }),
+          body: JSON.stringify({
+            requestId: 'goal-review-final-request-1',
+            verdict: 'accept',
+          }),
           headers: { 'content-type': 'application/json' },
         }
       );
@@ -9502,7 +9807,7 @@ describe('nanocore server', () => {
           outcome: 'complete_goal',
           task: { taskId: 'task_final_review', status: 'completed' },
           goal: { status: 'completed', currentTaskId: null, terminalStopReason: 'completed' },
-          nextTask: null,
+          nextReadyTaskId: null,
         },
       });
       expect(
@@ -9545,6 +9850,7 @@ describe('nanocore server', () => {
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Goal review rollback');
+    const turn = store.createTurn('ws_demo', thread.id, 'Review the rollback Goal Task');
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
 
     try {
@@ -9559,9 +9865,11 @@ describe('nanocore server', () => {
         now: () => '2026-05-31T02:00:00.000Z',
       });
       createGoalTask(workspaceDb, {
+        ...GOAL_TASK_RECORD_FIXTURE,
         workspaceId: 'ws_demo',
         threadId: thread.id,
         goalId: 'goal_review_rollback',
+        planItemId: 'it_goal_plan_review_rollback',
         taskId: 'task_review_rollback_1',
         title: 'Reviewed rollback task',
         objective: 'Remain reviewing after a failed decision.',
@@ -9573,9 +9881,11 @@ describe('nanocore server', () => {
         now: () => '2026-05-31T02:00:30.000Z',
       });
       createGoalTask(workspaceDb, {
+        ...GOAL_TASK_RECORD_FIXTURE,
         workspaceId: 'ws_demo',
         threadId: thread.id,
         goalId: 'goal_review_rollback',
+        planItemId: 'it_goal_plan_review_rollback',
         taskId: 'task_review_rollback_2',
         title: 'Dependent rollback task',
         objective: 'Remain pending after a failed decision.',
@@ -9586,14 +9896,24 @@ describe('nanocore server', () => {
         status: 'pending',
         now: () => '2026-05-31T02:01:00.000Z',
       });
+      updateGoalStatus(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_review_rollback',
+        status: 'reviewing',
+        planItemId: 'it_goal_plan_review_rollback',
+        currentTaskId: 'task_review_rollback_1',
+        now: () => '2026-05-31T02:01:00.000Z',
+      });
       createGoalReviewRecord(workspaceDb, {
         reviewId: 'review_rollback',
         workspaceId: 'ws_demo',
         threadId: thread.id,
         goalId: 'goal_review_rollback',
         taskId: 'task_review_rollback_1',
-        verdict: 'accept',
-        reason: 'Accept the first task atomically.',
+        turnId: turn.id,
+        prompt: 'Review the first Task atomically.',
+        createdByRequestId: 'goal-step-rollback-1',
         now: () => '2026-05-31T02:01:30.000Z',
       });
       workspaceDb.sqlite.exec(`CREATE TRIGGER fail_goal_review_resolution
@@ -9606,7 +9926,10 @@ describe('nanocore server', () => {
       const href = `/api/app/workspaces/ws_demo/threads/${thread.id}/goals/goal_review_rollback/reviews/review_rollback/decision`;
       const failedResponse = await app.request(href, {
         method: 'POST',
-        body: JSON.stringify({ requestId: 'goal-review-rollback-request-1' }),
+        body: JSON.stringify({
+          requestId: 'goal-review-rollback-request-1',
+          verdict: 'accept',
+        }),
         headers: { 'content-type': 'application/json' },
       });
       const reviewAfterFailure = getGoalReviewRecord(
@@ -9629,12 +9952,21 @@ describe('nanocore server', () => {
       workspaceDb.sqlite.exec('DROP TRIGGER fail_goal_review_resolution');
       const retryResponse = await app.request(href, {
         method: 'POST',
-        body: JSON.stringify({ requestId: 'goal-review-rollback-request-1' }),
+        body: JSON.stringify({
+          requestId: 'goal-review-rollback-request-1',
+          verdict: 'accept',
+        }),
         headers: { 'content-type': 'application/json' },
       });
 
       expect(failedResponse.status).not.toBe(200);
-      expect(reviewAfterFailure).toMatchObject({ resolvedAt: null, resolutionRequestId: null });
+      expect(reviewAfterFailure).toMatchObject({
+        verdict: null,
+        resolvedAt: null,
+        resolutionRequestId: null,
+        resolvedByActorId: null,
+        resolutionSnapshot: null,
+      });
       expect(tasksAfterFailure).toEqual([
         { taskId: 'task_review_rollback_1', status: 'reviewing' },
         { taskId: 'task_review_rollback_2', status: 'pending' },
@@ -9645,8 +9977,8 @@ describe('nanocore server', () => {
         advance: {
           outcome: 'complete_next_task',
           task: { taskId: 'task_review_rollback_1', status: 'completed' },
-          goal: { status: 'running', currentTaskId: 'task_review_rollback_2' },
-          nextTask: { taskId: 'task_review_rollback_2', status: 'ready' },
+          goal: { status: 'running', currentTaskId: null },
+          nextReadyTaskId: 'task_review_rollback_2',
         },
       });
     } finally {
@@ -11180,19 +11512,15 @@ describe('nanocore server', () => {
         },
       ]),
       turnExecutor: new FakeTurnExecutor(),
-      internalAgentRunner: {
-        getDiagnostics: () => ({
-          agents: [],
-          recentFailures: [],
-        }),
-        run: async () => {
+      llmPiAiClient: {
+        createChatCompletion: async () => {
           throw new OpenAICompatibleProviderError({
             status: 429,
             code: 'rate_limit_exceeded',
-            message: 'Rate limit exceeded: 5 requests per minute.',
+            message: 'Rate limit exceeded token=tok_private_rate_limit.',
           });
         },
-      },
+      } as unknown as PiAiGatewayClient,
     });
     const res = await app.request('/api/app/quick-chat', {
       method: 'POST',
@@ -11207,7 +11535,7 @@ describe('nanocore server', () => {
     expect(res.status, JSON.stringify(body)).toBe(429);
     expect(body).toMatchObject({
       code: 'provider_rate_limited',
-      message: 'Rate limit exceeded: 5 requests per minute.',
+      message: 'Rate limit exceeded token=[redacted]',
       details: {
         providerCode: 'rate_limit_exceeded',
         providerStatus: 429,

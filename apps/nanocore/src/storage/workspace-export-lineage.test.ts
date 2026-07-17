@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
+import { computeGoalPlanDigest, GoalPlanOutputSchema } from '../runtime/goal-plan.js';
 import {
   type WriteWorkspaceExportTreeInput,
   writeWorkspaceExportTree,
@@ -19,6 +20,7 @@ const source = {
   goalId: 'goal_source',
   grantId: 'grant_source',
   itemId: 'it_source',
+  planItemId: 'it_goal_plan_source',
   sessionId: 'as_source',
   taskId: 'task_source',
   threadId: 'th_source',
@@ -37,7 +39,6 @@ function createLineageExportInput(
     | 'evidence-goal'
     | 'git-approval'
     | 'goal-item'
-    | 'pending-thread'
     | 'permission-approval'
     | 'repository-grant'
     | 'resolved-turn'
@@ -100,11 +101,24 @@ function createLineageExportInput(
     createdAt: timestamp,
     completedAt: timestamp,
   };
+  const planItem = {
+    id: source.planItemId,
+    workspaceId: source.workspaceId,
+    threadId: source.threadId,
+    turnId: source.turnId,
+    type: 'plan',
+    status: 'completed',
+    title: 'Portable goal plan',
+    summary: 'Keep lineage portable.',
+    steps: [{ id: source.taskId, title: 'Portable task', status: 'pending' }],
+    createdAt: timestamp,
+    completedAt: timestamp,
+  };
   const turn = {
     id: source.turnId,
     workspaceId: source.workspaceId,
     threadId: source.threadId,
-    items: [item, artifactReferenceItem, approvalItem],
+    items: [item, planItem, artifactReferenceItem, approvalItem],
     status: 'completed',
     humanGate: null,
     error: null,
@@ -186,7 +200,44 @@ function createLineageExportInput(
     createdAt: timestamp,
     updatedAt: timestamp,
   };
-
+  const goalPlan = GoalPlanOutputSchema.parse({
+    schemaVersion: 1,
+    goalSummary: 'Keep lineage portable.',
+    assumptions: [],
+    tasks: [
+      {
+        taskId: source.taskId,
+        title: 'Portable task',
+        objective: 'Verify lineage.',
+        acceptanceCriteria: ['Lineage is portable.'],
+        contextBudgetTokens: 1_000,
+        resources: [
+          {
+            kind: 'item',
+            reference: source.itemId,
+            reason: 'The source Item carries the task context.',
+          },
+          {
+            kind: 'artifact',
+            reference: source.artifactId,
+            reason: 'The source Artifact carries the task evidence.',
+          },
+        ],
+        expectedArtifacts: [{ kind: 'artifact', description: 'Portable task evidence.' }],
+        verificationChecks: [{ kind: 'manual', description: 'Review portable lineage.' }],
+        reviewPolicy: {
+          required: true,
+          reviewers: ['human'],
+          instructions: 'Review the portable Task evidence.',
+        },
+        dependsOnTaskIds: [],
+        escalationConditions: ['Escalate if portable lineage is incomplete.'],
+      },
+    ],
+    risks: [],
+    questions: [],
+    verificationApproach: 'Review every reminted reference.',
+  });
   return {
     exportRoot: join(mkdtempSync(join(tmpdir(), 'openkit-workspace-lineage-')), 'export'),
     exportId: 'wsexp_lineage',
@@ -236,7 +287,7 @@ function createLineageExportInput(
         },
       ],
     },
-    itemRevisions: [item, artifactReferenceItem, approvalItem],
+    itemRevisions: [item, planItem, artifactReferenceItem, approvalItem],
     artifacts: [artifact],
     artifactReviews: [],
     agentSessions: [session],
@@ -339,7 +390,7 @@ function createLineageExportInput(
           },
           { kind: 'artifact', ref: source.artifactId },
         ],
-        redactedEvidenceRefs: [],
+        redactedEvidenceRefs: [{ kind: 'worker', ref: source.turnId }],
         contentDigests: ['sha256:evidence'],
         retentionClass: 'turn-evidence',
         sensitivityClass: 'product-safe',
@@ -388,19 +439,6 @@ function createLineageExportInput(
         collectedAt: timestamp,
       },
     ],
-    pendingUserTurns: [
-      {
-        pendingTurnId: `${source.workspaceId}:${source.threadId}:request_pending`,
-        workspaceId: source.workspaceId,
-        threadId: missing === 'pending-thread' ? 'th_missing' : source.threadId,
-        requestId: 'request_pending',
-        contentItemId: source.itemId,
-        contentDigest: 'sha256:pending',
-        queueMode: 'follow_up',
-        receivedAt: timestamp,
-        createdAt: timestamp,
-      },
-    ],
     workerCheckpoints: [
       {
         checkpointId: `${source.workspaceId}:${source.threadId}:${source.turnId}`,
@@ -409,6 +447,8 @@ function createLineageExportInput(
         turnId: missing === 'checkpoint-turn' ? 'tu_missing' : source.turnId,
         goalId: source.goalId,
         taskId: source.taskId,
+        requestId: 'request_source',
+        requestInputHash: 'sha256:request-source',
         stage: 'running_worker',
         iteration: 1,
         workerSessionId: missing ? null : 'worker_source',
@@ -429,27 +469,34 @@ function createLineageExportInput(
         title: 'Portable goal',
         objective: 'Keep lineage portable.',
         createdByItemId: missing === 'goal-item' ? 'it_missing' : source.itemId,
-        planItemId: source.itemId,
+        planItemId: source.planItemId,
         currentTaskId: source.taskId,
         terminalStopReason: null,
         createdAt: timestamp,
         updatedAt: timestamp,
       },
     ],
-    goalTasks: [
+    goalPlanRecords: [
       {
-        taskId: source.taskId,
+        ...goalPlan,
         workspaceId: source.workspaceId,
         threadId: source.threadId,
         goalId: source.goalId,
+        planItemId: source.planItemId,
+        planDigest: computeGoalPlanDigest(goalPlan),
+        createdByRequestId: 'goal-plan-source-1',
+        createdAt: timestamp,
+      },
+    ],
+    goalTasks: [
+      {
+        ...goalPlan.tasks[0],
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        goalId: source.goalId,
+        planItemId: source.planItemId,
         status: 'reviewing',
-        title: 'Portable task',
-        objective: 'Verify lineage.',
-        orderIndex: 1,
-        dependsOnTaskIds: [],
-        acceptanceCriteria: ['Lineage is portable.'],
-        contextBudgetTokens: 1_000,
-        verificationChecks: [],
+        orderIndex: 0,
         createdAt: timestamp,
         updatedAt: timestamp,
       },
@@ -465,12 +512,16 @@ function createLineageExportInput(
         itemIds: [source.itemId],
         artifactIds: [source.artifactId],
         verificationEvidence: [],
-        verdict: 'accept',
-        reason: 'Portable.',
+        prompt: 'Review the portable Task evidence.',
+        createdByRequestId: 'goal-step-portable-1',
+        verdict: null,
+        reason: null,
+        revisionInstruction: null,
         createdAt: timestamp,
         updatedAt: timestamp,
         resolvedAt: null,
         resolutionRequestId: null,
+        resolvedByActorId: null,
         resolutionSnapshot: null,
       },
     ],
@@ -568,8 +619,27 @@ function createLineageExportInput(
         logRefs: [],
         testOutputRefs: [],
         ignoredOutputs: [],
-        evidenceRefs: [],
+        evidenceRefs: [{ kind: 'worker', ref: source.turnId }],
         collectedAt: timestamp,
+      },
+    ],
+    workspaceChangeSets: [
+      {
+        id: 'wcs_source',
+        materializationRecordId: 'wmr_source',
+        inputSnapshotId: 'wis_source',
+        workspaceId: source.workspaceId,
+        resourceId: 'repo_source',
+        strategy: 'git',
+        base: { commit: 'abc000', contentDigest: null },
+        head: { commit: 'abc123', contentDigest: null },
+        changedPaths: [],
+        patch: null,
+        bundle: null,
+        artifactIds: [missing === 'sync-artifact' ? 'ar_missing' : source.artifactId],
+        evidenceRefs: [{ kind: 'worker', ref: source.turnId }],
+        redaction: { status: 'no-sensitive-content-found', notes: [] },
+        createdAt: timestamp,
       },
     ],
     vaultReferences: [
@@ -615,6 +685,252 @@ function importLineage(input: WriteWorkspaceExportTreeInput) {
 }
 
 describe('workspace auxiliary lineage reminting', () => {
+  it.each([
+    ['Goal', 'records/goal-records.jsonl', 'verifying'],
+    ['Goal Task', 'records/goal-tasks.jsonl', 'skipped'],
+    ['Goal Task', 'records/goal-tasks.jsonl', 'needs_revision'],
+  ])('rejects an imported %s with an unowned lifecycle status', (_label, path, status) => {
+    const verified = writeWorkspaceExportTree(createLineageExportInput());
+    const fileContents = new Map(verified.fileContents);
+    const record = JSON.parse(fileContents.get(path) ?? '') as Record<string, unknown>;
+
+    fileContents.set(path, JSON.stringify({ ...record, status }));
+
+    expect(() =>
+      readWorkspaceImportSnapshot({
+        verified: { ...verified, fileContents },
+        targetWorkspaceId,
+      })
+    ).toThrow();
+  });
+
+  it('rejects Goal Plan digest corruption and Task divergence', () => {
+    const verified = writeWorkspaceExportTree(createLineageExportInput());
+    const planPath = 'records/goal-plan-records.jsonl';
+    const planText = verified.fileContents.get(planPath);
+
+    expect(planText).toBeDefined();
+    if (!planText) {
+      return;
+    }
+
+    const planFiles = new Map(verified.fileContents);
+    const plan = JSON.parse(planText) as Record<string, unknown>;
+    planFiles.set(planPath, JSON.stringify({ ...plan, planDigest: 'sha256:corrupt' }));
+    expect(() =>
+      readWorkspaceImportSnapshot({
+        verified: { ...verified, fileContents: planFiles },
+        targetWorkspaceId,
+      })
+    ).toThrow('Goal Plan digest');
+
+    const taskFiles = new Map(verified.fileContents);
+    const taskPath = 'records/goal-tasks.jsonl';
+    const task = JSON.parse(taskFiles.get(taskPath) ?? '') as Record<string, unknown>;
+    taskFiles.set(
+      taskPath,
+      JSON.stringify({ ...task, objective: 'Divergent imported objective.' })
+    );
+    expect(() =>
+      readWorkspaceImportSnapshot({
+        verified: { ...verified, fileContents: taskFiles },
+        targetWorkspaceId,
+      })
+    ).toThrow('Goal Task does not match its immutable Plan');
+  });
+
+  it('rejects a Goal Plan whose Item projection has the wrong type or Thread', () => {
+    const wrongType = createLineageExportInput();
+    const wrongTypePlanItem = {
+      id: source.planItemId,
+      workspaceId: source.workspaceId,
+      threadId: source.threadId,
+      turnId: source.turnId,
+      type: 'assistant-message',
+      status: 'completed',
+      text: 'This is not a Plan projection.',
+      createdAt: timestamp,
+      completedAt: timestamp,
+    };
+    wrongType.itemRevisions = wrongType.itemRevisions.map((record) => {
+      const item = record as Record<string, unknown>;
+      return item.id === source.planItemId ? wrongTypePlanItem : item;
+    });
+    wrongType.turns = wrongType.turns.map((record) => {
+      const turn = record as Record<string, unknown>;
+      return {
+        ...turn,
+        items: (turn.items as Array<Record<string, unknown>>).map((item) =>
+          item.id === source.planItemId ? wrongTypePlanItem : item
+        ),
+      };
+    });
+    expect(() => importLineage(wrongType)).toThrow('Goal Plan has invalid lineage');
+
+    const wrongThread = createLineageExportInput();
+    const sourceTurn = wrongThread.turns[0] as Record<string, unknown>;
+    const sourceTurnItems = sourceTurn.items as Array<Record<string, unknown>>;
+    const sourcePlanItem = wrongThread.itemRevisions.find(
+      (record) => (record as Record<string, unknown>).id === source.planItemId
+    ) as Record<string, unknown>;
+    const movedPlanItem = { ...sourcePlanItem, threadId: 'th_other', turnId: 'tu_other' };
+    wrongThread.threads = [
+      ...wrongThread.threads,
+      {
+        ...(wrongThread.threads[0] as Record<string, unknown>),
+        id: 'th_other',
+        name: 'Other thread',
+      },
+    ];
+    wrongThread.turns = [
+      {
+        ...sourceTurn,
+        items: sourceTurnItems.filter((item) => item.id !== source.planItemId),
+      },
+      {
+        ...sourceTurn,
+        id: 'tu_other',
+        threadId: 'th_other',
+        items: [movedPlanItem],
+      },
+    ];
+    wrongThread.itemRevisions = wrongThread.itemRevisions.map((record) => {
+      const item = record as Record<string, unknown>;
+      return item.id === source.planItemId ? movedPlanItem : item;
+    });
+    expect(() => importLineage(wrongThread)).toThrow('Goal Plan has invalid lineage');
+  });
+
+  it('preserves a valid Plan-only Task before approval', () => {
+    const input = createLineageExportInput();
+    input.goalRecords = (input.goalRecords ?? []).map((record) => ({
+      ...(record as Record<string, unknown>),
+      status: 'awaiting_plan_approval',
+      currentTaskId: null,
+    }));
+    input.goalTasks = [];
+    input.goalReviewRecords = [];
+    input.goalVerificationRecords = [];
+    input.workerCheckpoints = [];
+    input.runtimeEvidence = [];
+
+    const imported = importLineage(input);
+
+    expect(imported.goalTasks).toEqual([]);
+    expect(imported.goalPlanRecords).toHaveLength(1);
+    expect(imported.goalPlanRecords[0]?.tasks).toHaveLength(1);
+    expect(imported.goalPlanRecords[0]?.planDigest).toBe(
+      computeGoalPlanDigest(imported.goalPlanRecords[0]!)
+    );
+  });
+
+  it('rejects approved Task rows while a Goal awaits Plan approval', () => {
+    const input = createLineageExportInput();
+    input.goalRecords = (input.goalRecords ?? []).map((record) => ({
+      ...(record as Record<string, unknown>),
+      status: 'awaiting_plan_approval',
+      currentTaskId: null,
+    }));
+
+    expect(() => importLineage(input)).toThrow('Goal lifecycle has incoherent Task authority');
+  });
+
+  it.each([
+    'running',
+    'paused',
+    'reviewing',
+    'completed',
+    'blocked',
+    'aborted',
+    'failed',
+  ] as const)('rejects a %s Goal without its complete approved Task set', (status) => {
+    const input = createLineageExportInput();
+    input.goalRecords = (input.goalRecords ?? []).map((record) => ({
+      ...(record as Record<string, unknown>),
+      status,
+      currentTaskId: null,
+    }));
+    input.goalTasks = [];
+    input.goalReviewRecords = [];
+    input.goalVerificationRecords = [];
+    input.workerCheckpoints = [];
+
+    expect(() => importLineage(input)).toThrow('Goal lifecycle has incoherent Task authority');
+  });
+
+  it.each([
+    'ask_user',
+    'decompose',
+    'block',
+  ])('rejects an imported Goal Review with unsupported verdict %s', (verdict) => {
+    const verified = writeWorkspaceExportTree(createLineageExportInput());
+    const fileContents = new Map(verified.fileContents);
+    const path = 'records/goal-review-records.jsonl';
+    const record = JSON.parse(fileContents.get(path) ?? '') as Record<string, unknown>;
+
+    fileContents.set(path, JSON.stringify({ ...record, verdict }));
+
+    expect(() =>
+      readWorkspaceImportSnapshot({
+        verified: { ...verified, fileContents },
+        targetWorkspaceId,
+      })
+    ).toThrow();
+  });
+
+  it('rejects an imported Goal Review with a partial decision tuple', () => {
+    const verified = writeWorkspaceExportTree(createLineageExportInput());
+    const fileContents = new Map(verified.fileContents);
+    const path = 'records/goal-review-records.jsonl';
+    const record = JSON.parse(fileContents.get(path) ?? '') as Record<string, unknown>;
+
+    fileContents.set(path, JSON.stringify({ ...record, verdict: 'accept' }));
+
+    expect(() =>
+      readWorkspaceImportSnapshot({
+        verified: { ...verified, fileContents },
+        targetWorkspaceId,
+      })
+    ).toThrow();
+  });
+
+  it('rejects an imported Goal Review with an unsupported resolution outcome', () => {
+    const verified = writeWorkspaceExportTree(createLineageExportInput());
+    const fileContents = new Map(verified.fileContents);
+    const path = 'records/goal-review-records.jsonl';
+    const record = JSON.parse(fileContents.get(path) ?? '') as Record<string, unknown>;
+
+    fileContents.set(
+      path,
+      JSON.stringify({
+        ...record,
+        verdict: 'abort',
+        reason: 'Abort the Goal.',
+        resolvedAt: timestamp,
+        resolutionRequestId: 'goal-review-resolution-1',
+        resolvedByActorId: 'user_source',
+        resolutionSnapshot: {
+          outcome: 'blocked',
+          task: { taskId: source.taskId, status: 'failed' },
+          goal: {
+            goalId: source.goalId,
+            status: 'aborted',
+            currentTaskId: null,
+            terminalStopReason: 'aborted',
+          },
+          nextReadyTaskId: null,
+        },
+      })
+    );
+
+    expect(() =>
+      readWorkspaceImportSnapshot({
+        verified: { ...verified, fileContents },
+        targetWorkspaceId,
+      })
+    ).toThrow();
+  });
+
   it('rewrites every canonical reference, including both AEP layers', () => {
     const input = createLineageExportInput();
     input.workspaceReconciliationRecords = [
@@ -647,6 +963,7 @@ describe('workspace auxiliary lineage reminting', () => {
     const thread = imported.threads[0]!;
     const turn = imported.turns[0]!;
     const item = imported.itemRevisions[0]!;
+    const planItem = imported.itemRevisions.find((candidate) => candidate.type === 'plan');
     const approvalItem = imported.itemRevisions.find(
       (candidate) => candidate.type === 'approval-request'
     );
@@ -657,13 +974,16 @@ describe('workspace auxiliary lineage reminting', () => {
     const session = imported.agentSessions[0]!;
     const aep = imported.agentEnvironmentPackageSnapshots[0]!;
     const goal = imported.goalRecords[0]!;
+    const plan = imported.goalPlanRecords[0]!;
+    const task = imported.goalTasks[0]!;
     const grant = imported.vaultGrants[0]!;
 
     if (
       approvalItem?.type !== 'approval-request' ||
-      artifactReferenceItem?.type !== 'artifact-reference'
+      artifactReferenceItem?.type !== 'artifact-reference' ||
+      planItem?.type !== 'plan'
     ) {
-      throw new Error('Expected imported approval request and artifact-reference items.');
+      throw new Error('Expected imported Plan, approval request, and artifact-reference items.');
     }
 
     expect.soft(artifactReferenceItem).toMatchObject({
@@ -699,22 +1019,51 @@ describe('workspace auxiliary lineage reminting', () => {
       },
     });
     expect.soft(imported.resolvedAgentSetups[0]!.turnId).toBe(turn.id);
-    expect.soft(imported.pendingUserTurns[0]).toMatchObject({
-      workspaceId: targetWorkspaceId,
-      threadId: thread.id,
-      contentItemId: item.id,
-    });
     expect.soft(imported.workerCheckpoints[0]).toMatchObject({
       workspaceId: targetWorkspaceId,
       threadId: thread.id,
       turnId: turn.id,
       workerSessionId: 'worker_source',
+      requestId: 'request_source',
+      requestInputHash: 'sha256:request-source',
     });
     expect.soft(imported.goalRecords[0]).toMatchObject({
       workspaceId: targetWorkspaceId,
       threadId: thread.id,
       createdByItemId: item.id,
-      planItemId: item.id,
+      planItemId: planItem.id,
+    });
+    expect.soft(plan).toMatchObject({
+      workspaceId: targetWorkspaceId,
+      threadId: thread.id,
+      goalId: goal.goalId,
+      planItemId: planItem.id,
+      createdByRequestId: 'goal-plan-source-1',
+      tasks: [{ taskId: task.taskId }],
+    });
+    expect
+      .soft(planItem.steps.map((step) => step.id))
+      .toEqual(plan.tasks.map((entry) => entry.taskId));
+    expect.soft(plan.planDigest).toBe(computeGoalPlanDigest(plan));
+    expect.soft(plan.tasks[0]?.resources).toEqual([
+      {
+        kind: 'item',
+        reference: item.id,
+        reason: 'The source Item carries the task context.',
+      },
+      {
+        kind: 'artifact',
+        reference: artifact.id,
+        reason: 'The source Artifact carries the task evidence.',
+      },
+    ]);
+    expect.soft(task).toMatchObject({
+      workspaceId: targetWorkspaceId,
+      threadId: thread.id,
+      goalId: goal.goalId,
+      planItemId: planItem.id,
+      taskId: plan.tasks[0]?.taskId,
+      resources: plan.tasks[0]?.resources,
     });
     expect.soft(imported.goalReviewRecords[0]).toMatchObject({
       workspaceId: targetWorkspaceId,
@@ -722,6 +1071,15 @@ describe('workspace auxiliary lineage reminting', () => {
       turnId: turn.id,
       itemIds: [item.id],
       artifactIds: [artifact.id],
+      prompt: 'Review the portable Task evidence.',
+      createdByRequestId: 'goal-step-portable-1',
+      verdict: null,
+      reason: null,
+      revisionInstruction: null,
+      resolvedAt: null,
+      resolutionRequestId: null,
+      resolvedByActorId: null,
+      resolutionSnapshot: null,
     });
     expect.soft(imported.goalVerificationRecords[0]).toMatchObject({
       workspaceId: targetWorkspaceId,
@@ -731,6 +1089,14 @@ describe('workspace auxiliary lineage reminting', () => {
       artifactIds: [artifact.id],
     });
     expect.soft(imported.workerOutputManifests[0]!.artifactIds).toEqual([artifact.id]);
+    expect
+      .soft(imported.workerOutputManifests[0]!.evidenceRefs)
+      .toEqual([{ kind: 'worker', ref: turn.id }]);
+    expect.soft(imported.workspaceChangeSets[0]).toMatchObject({
+      artifactIds: [artifact.id],
+      evidenceRefs: [{ kind: 'worker', ref: turn.id }],
+      workspaceId: targetWorkspaceId,
+    });
     expect.soft(grant).toMatchObject({
       targetAgentSessionId: session.id,
       approvalId: approvalItem.approvalRequestId,
@@ -758,6 +1124,7 @@ describe('workspace auxiliary lineage reminting', () => {
         { kind: 'goal', ref: goal.goalId },
         { kind: 'artifact', ref: artifact.id },
       ],
+      redactedEvidenceRefs: [{ kind: 'worker', ref: turn.id }],
     });
     expect
       .soft(imported.workspaceReconciliationRecords[0]?.evidenceBundleIds)
@@ -782,6 +1149,8 @@ describe('workspace auxiliary lineage reminting', () => {
       runtimeEvidence: imported.runtimeEvidence,
       usageRecords: imported.usageRecords,
       vaultGrants: imported.vaultGrants,
+      workerOutputManifests: imported.workerOutputManifests,
+      workspaceChangeSets: imported.workspaceChangeSets,
       workspaceReconciliationRecords: imported.workspaceReconciliationRecords,
       workspaceRepositories: imported.workspaceRepositories,
     });
@@ -807,7 +1176,6 @@ describe('workspace auxiliary lineage reminting', () => {
     ['evidence-goal', 'goal_missing'],
     ['git-approval', 'apr_missing'],
     ['goal-item', 'it_missing'],
-    ['pending-thread', 'th_missing'],
     ['permission-approval', 'apr_missing'],
     ['repository-grant', 'grant_missing'],
     ['resolved-turn', 'tu_missing'],

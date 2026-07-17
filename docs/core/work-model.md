@@ -25,6 +25,7 @@ Workspace -> Thread -> Turn -> Item[]
 - Product-facing terms such as task, job, goal, deliverable, review, redo, and refinement must map to their owning durable records instead of creating parallel truth.
 - The thread narrative and ordered Item history remain the user-visible source of truth even when surfaces group, summarize, or highlight work.
 - Quick reply, delegated work, long-running goals, grounded collaboration, and human attention must preserve the same Core backbone.
+- An explicit interruption or uncertain external outcome is a legitimate work state when Core cannot safely prove continuation or completion. The product should preserve prior history, explain what is known, and offer only the inspect or new-attempt actions authorized by the owning workflow.
 
 ## Product Projection
 
@@ -55,7 +56,7 @@ Product modes are user-facing projections over the same Core work backbone.
 | --- | --- |
 | Chat Mode | Immediate answers, clarification, and lightweight state lookup inside Core. It does not start worker execution unless an explicit visible handoff enters another mode. |
 | Task Mode | Bounded, near-term delegated work with worker execution when needed. It does not require plan negotiation by default and escalates when work becomes multi-step, ambiguous, high-risk, multi-agent, or long-running. |
-| Goal Mode | Durable objective-driven work for long-running, ambiguous, high-risk, multi-step, or multi-agent outcomes. It advances through visible planning when needed, bounded steps, evidence, human attention, review, and explicit stop decisions rather than an invisible autonomous loop. |
+| Goal Mode | Durable objective-driven work for long-running, ambiguous, high-risk, multi-step, or multi-agent outcomes. Every V1 worker step belongs to one explicitly approved Plan, which may be a one-Task lightweight Plan for low-risk work; Goal Mode then advances through bounded steps, evidence, human attention, review, and explicit stop decisions rather than an invisible autonomous loop. |
 | Plan Mode | A product label for planning-heavy interaction. It does not require every workflow to begin with a plan or create a separate runtime. |
 
 Transitions between modes must remain visible in Thread history. Workflow mechanisms such as plans, bounded steps, gates, decisions, evidence, and checkpoints belong to the workflow owner.
@@ -70,7 +71,7 @@ OpenKit uses four composable product modes for human attention:
 | --- | --- |
 | Approval Gate | A blocking authorization decision for safety, policy, budget, credential use, irreversible operations, or external side effects. |
 | Elicitation Gate | A blocking answer to a question, missing input, planning choice, or recovery choice. It is not authorization. |
-| Steering Input | Non-terminal user input that corrects or extends active work and is delivered through the owning safe-point, interruption, queue, or follow-up behavior. |
+| Steering Input | Non-terminal user input that corrects or extends active work only through a delivery contract accepted by the owning workflow. Unsupported active-work input is rejected rather than assigned an inferred delivery behavior. |
 | Review And Acceptance | Human or agent evaluation of plans, artifacts, diffs, knowledge proposals, evidence, or outcomes that may lead to acceptance, refinement, redo, rejection, deferral, escalation, or stop. |
 
 Only Approval Gate and Elicitation Gate are blocking human gates. The four modes may compose without becoming four new Core objects or a parallel workflow engine.
@@ -101,12 +102,13 @@ Deliverable, task, job, and goal are product-facing terms. A Deliverable normall
 
 | Product term | Stable product meaning |
 | --- | --- |
-| Steering | User direction during active work. The product must show whether it was applied, queued, interrupted current work, or became follow-up work. |
+| Steering | User direction during active work. The product must show the exact accepted or rejected outcome proved by the owning delivery contract; a projection must not claim delivery, interruption, or follow-up on its own. |
 | Review | Evaluation by a user, another agent, or both. Review remains visible through normal Thread history, evidence, decisions, and outputs. |
 | Redo | A replacement attempt that preserves the prior result and its history. |
 | Refinement | A follow-up that keeps the prior result as context while requesting changes. |
 | Handoff | A visible transfer of responsibility that explains why it happened, what context and constraints moved, and who or what acts next. |
 | Context compact | A traceable summary used for continuation, handoff, retry, recovery, or worker execution without replacing its source history. |
+| Interruption | A truthful stop when execution or its external outcome cannot be proved. It preserves the prior attempt and may require inspection or a new authorized Turn; it does not promise transparent resume or automatic repair. |
 
 Reusable understanding produced by context compaction belongs to Knowledge. Runtime continuity produced by compaction belongs to the agent-session owner.
 
@@ -122,18 +124,21 @@ Long-running work must keep progress, pending attention, evidence, review state,
 
 Persistence and resumption must use owning durable records rather than hidden coordinator conversation memory or agent-private state.
 
+When exact continuation cannot be proved, preserving an interrupted attempt and requiring a new authorized Turn is an acceptable product outcome. Retry must not overwrite the earlier attempt or imply that an uncertain external effect did not occur.
+
 ## Invariants
 
 - Product projections MUST preserve canonical identity, order, lineage, and owning authority; they MUST NOT independently accept, apply, recover, or terminalize work.
 - Quick Chat MUST remain an owner-only lightweight Workspace and MUST NOT silently become a project or worker-execution boundary.
 - Chat Mode MUST NOT hide worker execution; entry into Task Mode or Goal Mode MUST be explicit in Thread history.
 - Task Mode MUST remain bounded delegated work, while Goal Mode MUST remain durable governed objective work.
+- For an approved Goal step, the immutable Goal Task snapshot MUST own every task-specific worker-request fact; neither a mode service nor Coordinator may replace an accepted fact with a default or reconstruct it from a Plan Item, caller payload, or current projection.
 - Human attention MUST use the four composable product modes without turning Action Center into a new authority.
 - Grounded collaboration MUST preserve exact subject and version context through owning records without creating a hidden feedback log.
 - Work-produced Artifact mutations MUST remain Item-backed. A Workspace-only import or registration MAY omit Thread and Turn lineage only with explicit provenance; its first introduction into a Thread and every later work-produced mutation MUST create exact Item-backed lineage.
 - Redo and refinement MUST create new traceable work without mutating or deleting prior attempts; refinement MUST explicitly carry the selected prior result as context.
 - Accepted Steering Input MUST have one current owning delivery path and an authoritative outcome. If immediate receipt or durable later delivery cannot be proven, the input MUST NOT be accepted as Steering Input or represented as delivered.
 - Concurrent and replayed commands MUST remain bound to their originally accepted Workspace, Thread, subject, and work lineage; a newer current projection MUST NOT retarget them or create duplicate Turns, Items, decisions, or side effects.
-- After acceptance, failure or restart MUST leave work either durably pending and recoverable or explicitly terminal under its owning records; accepted input, decisions, lineage, and prior attempts MUST NOT be silently dropped, duplicated, or reconstructed from runtime memory or a latest-current projection.
+- After acceptance, failure or restart MUST leave work durably pending, explicitly interrupted or uncertain, or terminal under its owning records; accepted input, decisions, lineage, and prior attempts MUST NOT be silently dropped, duplicated, or reconstructed from runtime memory or a latest-current projection. Automatic recovery is not required when a safe inspect or new-attempt path is explicit.
 - A failed mutation MUST NOT leave partially applied or contradictory durable truth visible as authoritative.
 - Review, handoff, and context compact MUST preserve traceability to prior Thread history and Artifacts.

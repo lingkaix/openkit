@@ -201,7 +201,9 @@ async function assertGoalModeRoutes(baseUrl) {
 
   assertGoalStatus(started, 'planning', 'start goal');
 
-  const planned = await postJson(`${goalRoute}/plan`, 'create goal plan', {});
+  const planned = await postJson(`${goalRoute}/plan`, 'create goal plan', {
+    requestId: randomUUID(),
+  });
 
   assertGoalStatus(planned, 'awaiting_plan_approval', 'create goal plan');
 
@@ -214,8 +216,8 @@ async function assertGoalModeRoutes(baseUrl) {
   }
 
   const approved = await postJson(`${goalRoute}/plan/approve`, 'approve goal plan', {
+    requestId: randomUUID(),
     planItemId: planned.planItemId,
-    plan: planned.plan,
   });
 
   assertGoalStatus(approved, 'running', 'approve goal plan');

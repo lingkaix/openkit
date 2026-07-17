@@ -11,6 +11,7 @@ import type {
   SessionWorkspaceMaterializationPlan,
   WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
+import type { StopReason } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
@@ -45,8 +46,10 @@ import {
 } from './worker-backend-sessions.js';
 import {
   type AcceptedWorkerFinalStatus,
+  canonicalStopReasonForAcceptedWorkerFinalStatus,
   getWorkerControlAcceptedFinalStatus,
   listWorkerControlAcceptedEvents,
+  turnStatusForCanonicalWorkerStopReason,
 } from './worker-control-records.js';
 import type {
   WorkerGovernanceBackend,
@@ -56,7 +59,7 @@ import type {
 } from './worker-governance-backend.js';
 import { importWorkerRuntimeProvenance } from './worker-runtime-provenance.js';
 import { importWorkerTranscript } from './worker-transcript.js';
-import { terminalizeGovernedWorkerTurnFailure } from './worker-turn-failure.js';
+import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 import { recordFilesystemWorkspaceStagingRoot } from './workspace-filesystem-staging.js';
 import {
   buildWorkspaceInputSnapshots,
@@ -497,7 +500,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     store: FsStore,
     environmentPackage: AgentEnvironmentPackage,
     session: WorkerBackendSessionRecord
-  ): Promise<'completed' | 'failed'> {
+  ): Promise<'cancelled' | 'completed' | 'failed'> {
     if (!this.coreDb || store.getUserId() !== environmentPackage.scope.userId) {
       throw new Error('Restart closeout requires the exact durable Core and store owner.');
     }
@@ -518,8 +521,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     if (!accepted) {
       throw new Error('Restart closeout requires the exact durable final status.');
     }
-    const status = accepted.status;
-    const recoveredStatus = status === 'completed' ? 'completed' : 'failed';
+    const stopReason = canonicalStopReasonForAcceptedWorkerFinalStatus(accepted);
+    if (stopReason === 'ask_user') {
+      throw new Error('Restart closeout cannot project ask_user without an exact human Gate.');
+    }
+    const recoveredStatus = turnStatusForCanonicalWorkerStopReason(stopReason);
     const workspaceDb = this.openWorkspaceDb(
       store.getUserId(),
       environmentPackage.scope.workspaceId
@@ -564,20 +570,36 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         return recoveredStatus;
       }
 
-      if (status === 'completed') {
+      if (
+        stopReason === 'completed' ||
+        stopReason === 'length' ||
+        stopReason === 'budget_exhausted'
+      ) {
         this.completeTurn(
           store,
           turn,
           environmentPackage.scope.agentSessionId,
-          environmentPackage.scope.requestId ?? null
+          environmentPackage.scope.requestId ?? null,
+          stopReason
         );
+      } else if (recoveredStatus === 'cancelled') {
+        terminalizeGovernedWorkerTurn({
+          agentSessionId: environmentPackage.scope.agentSessionId,
+          completedAt: this.now(),
+          errorCode: 'worker_governance_turn_cancelled',
+          message: 'Worker reported an aborted terminal status.',
+          outcome: 'cancelled',
+          requestId: environmentPackage.scope.requestId ?? null,
+          store,
+          turnId: turn.id,
+        });
       } else {
         this.failTurn(
           store,
           turn,
           environmentPackage.scope.agentSessionId,
           environmentPackage.scope.requestId ?? null,
-          new Error(`Worker reported terminal status: ${status}.`)
+          new Error(`Worker reported terminal status: ${accepted.status}.`)
         );
       }
       return recoveredStatus;
@@ -1199,12 +1221,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    * @param turnScope Turn whose ids scope the terminal records.
    * @param agentSessionId Agent session completed by the turn.
    * @param requestId Request id.
+   * @param stopReason Canonical successful terminal reason.
    */
   private completeTurn(
     store: FsStore,
     turnScope: ReturnType<FsStore['getTurnById']>,
     agentSessionId: string,
-    requestId: string | null
+    requestId: string | null,
+    stopReason: Extract<StopReason, 'budget_exhausted' | 'completed' | 'length'> = 'completed'
   ): void {
     const completedAt = this.now();
     const agentSession = store.updateAgentSession(agentSessionId, {
@@ -1227,7 +1251,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       workspaceId: turnScope.workspaceId,
     });
     store.emitTurnEvent(turnScope.id, {
-      data: { stopReason: 'completed', turn, type: 'turn-completed' },
+      data: { stopReason, turn, type: 'turn-completed' },
       event: 'turn.completed',
       requestId,
       threadId: turnScope.threadId,
@@ -1254,11 +1278,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     error: unknown
   ): void {
     const message = error instanceof Error ? error.message : 'The governed worker turn failed.';
-    terminalizeGovernedWorkerTurnFailure({
+    terminalizeGovernedWorkerTurn({
       agentSessionId,
       completedAt: this.now(),
       errorCode: 'worker_governance_turn_failed',
       message,
+      outcome: 'failed',
       requestId,
       store,
       turnId: turnScope.id,

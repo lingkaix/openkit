@@ -11,6 +11,7 @@ import {
   getGoalRecord,
   listGoalRecordsForThread,
   listGoalTasks,
+  reserveGoalTaskForWorkerTurn,
   updateGoalStatus,
   updateGoalTask,
 } from './goal-store.js';
@@ -25,6 +26,43 @@ function createWorkspaceDb(): WorkspaceDb {
   const workspaceDb = openWorkspaceDb(dataRoot, 'user_demo', 'ws_demo');
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
+}
+
+/**
+ * Creates complete immutable execution facts for one direct Goal Task store fixture.
+ *
+ * @returns Production-shaped Goal Task execution fields.
+ */
+function goalTaskExecutionFields() {
+  return {
+    planItemId: 'it_goal_plan_demo',
+    resources: [
+      {
+        kind: 'repository' as const,
+        reference: 'repo_default',
+        reason: 'Use the linked workspace repository.',
+      },
+    ],
+    expectedArtifacts: [
+      {
+        kind: 'test-result' as const,
+        description: 'Focused verification result.',
+      },
+    ],
+    verificationChecks: [
+      {
+        kind: 'test' as const,
+        description: 'Run focused tests.',
+        command: 'pnpm test',
+      },
+    ],
+    reviewPolicy: {
+      required: true,
+      reviewers: ['human'] as const,
+      instructions: 'Review the focused task evidence.',
+    },
+    escalationConditions: ['Escalate when the repository is unavailable.'],
+  };
 }
 
 describe('goal store', () => {
@@ -182,6 +220,72 @@ describe('goal store', () => {
     }
   });
 
+  it('reserves one ready task only while its exact goal remains runnable', () => {
+    const workspaceDb = createWorkspaceDb();
+
+    try {
+      createGoalRecord(workspaceDb, {
+        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
+        goalId: 'goal_reservation',
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        title: 'Reserve task',
+        objective: 'Fence one Goal task reservation.',
+        status: 'paused',
+      });
+      createGoalTask(workspaceDb, {
+        ...goalTaskExecutionFields(),
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        goalId: 'goal_reservation',
+        taskId: 'task_ready',
+        title: 'Ready task',
+        objective: 'Run only after a fenced reservation.',
+        orderIndex: 0,
+        dependsOnTaskIds: [],
+        acceptanceCriteria: ['The reservation is atomic.'],
+        contextBudgetTokens: 8000,
+        status: 'ready',
+      });
+      createGoalTask(workspaceDb, {
+        ...goalTaskExecutionFields(),
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        goalId: 'goal_reservation',
+        taskId: 'task_later',
+        title: 'Later ready task',
+        objective: 'Wait until the first ready task finishes.',
+        orderIndex: 1,
+        dependsOnTaskIds: [],
+        acceptanceCriteria: ['Stable ready order is preserved.'],
+        contextBudgetTokens: 8000,
+        status: 'ready',
+      });
+      const input = {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        goalId: 'goal_reservation',
+        taskId: 'task_ready',
+      };
+
+      expect(reserveGoalTaskForWorkerTurn(workspaceDb, input)).toBe(false);
+      expect(listGoalTasks(workspaceDb, input)[0]?.status).toBe('ready');
+
+      updateGoalStatus(workspaceDb, { ...input, status: 'running' });
+      expect(reserveGoalTaskForWorkerTurn(workspaceDb, { ...input, taskId: 'task_later' })).toBe(
+        false
+      );
+      expect(reserveGoalTaskForWorkerTurn(workspaceDb, input)).toBe(true);
+      expect(getGoalRecord(workspaceDb, 'ws_demo', 'th_demo', 'goal_reservation')).toMatchObject({
+        currentTaskId: 'task_ready',
+        status: 'running',
+      });
+      expect(listGoalTasks(workspaceDb, input)[0]?.status).toBe('running');
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
   it('creates, lists, and updates goal tasks in deterministic order', () => {
     const workspaceDb = createWorkspaceDb();
 
@@ -197,6 +301,7 @@ describe('goal store', () => {
       });
 
       createGoalTask(workspaceDb, {
+        ...goalTaskExecutionFields(),
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         goalId: 'goal_demo',
@@ -210,6 +315,7 @@ describe('goal store', () => {
         now: () => '2026-05-31T00:02:00.000Z',
       });
       const first = createGoalTask(workspaceDb, {
+        ...goalTaskExecutionFields(),
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         goalId: 'goal_demo',
@@ -231,6 +337,11 @@ describe('goal store', () => {
         dependsOnTaskIds: [],
         acceptanceCriteria: ['Helper tests pass.'],
         contextBudgetTokens: 6000,
+        planItemId: 'it_goal_plan_demo',
+        resources: goalTaskExecutionFields().resources,
+        expectedArtifacts: goalTaskExecutionFields().expectedArtifacts,
+        reviewPolicy: goalTaskExecutionFields().reviewPolicy,
+        escalationConditions: goalTaskExecutionFields().escalationConditions,
       });
       expect(
         listGoalTasks(workspaceDb, {
@@ -246,13 +357,12 @@ describe('goal store', () => {
         goalId: 'goal_demo',
         taskId: 'task_later',
         status: 'ready',
-        orderIndex: 0,
         now: () => '2026-05-31T00:10:00.000Z',
       });
 
       expect(updated).toMatchObject({
         status: 'ready',
-        orderIndex: 0,
+        orderIndex: 2,
         updatedAt: '2026-05-31T00:10:00.000Z',
       });
       expect(
@@ -261,7 +371,7 @@ describe('goal store', () => {
           threadId: 'th_demo',
           goalId: 'goal_demo',
         }).map((task) => task.taskId)
-      ).toEqual(['task_later', 'task_first']);
+      ).toEqual(['task_first', 'task_later']);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -281,6 +391,7 @@ describe('goal store', () => {
         now: () => '2026-05-31T00:00:00.000Z',
       });
       createGoalTask(workspaceDb, {
+        ...goalTaskExecutionFields(),
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         goalId: 'goal_demo',
@@ -332,6 +443,7 @@ describe('goal store', () => {
         now: () => '2026-05-31T00:00:00.000Z',
       });
       createGoalTask(workspaceDb, {
+        ...goalTaskExecutionFields(),
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         goalId: 'goal_demo',
@@ -350,7 +462,6 @@ describe('goal store', () => {
         goalId: 'goal_demo',
         taskId: 'task_status_audit',
         status: 'pending',
-        orderIndex: 2,
         now: () => '2026-05-31T00:02:00.000Z',
       });
       expect(
@@ -420,6 +531,7 @@ describe('goal store', () => {
 
       expect(() =>
         createGoalTask(workspaceDb, {
+          ...goalTaskExecutionFields(),
           workspaceId: 'ws_other',
           threadId: 'th_demo',
           goalId: 'goal_demo',

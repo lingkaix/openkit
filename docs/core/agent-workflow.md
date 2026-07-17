@@ -33,6 +33,7 @@ Goal Mode and the accepted unified `openkit` Skill's loop recipe are OpenKit's d
 - Default setup is not a universal model. Goal Mode, one-step loops, Action Center projections, artifacts, and evidence bundles form the current recommended setup, not the definition of all agent workflows.
 - Keep the default backbone small. Use workspace, thread, turn, item, artifact, approval, and agent session records before promoting richer workflow objects.
 - Move work forward in bounded, reviewable steps. A worker step should produce observable items, artifacts, evidence, pending human attention, or a terminal state before the next step begins.
+- Deliver the accepted worker request itself. A Turn-owned worker input must preserve the exact Coordinator-composed request; routing summaries, dashboard projections, context summaries, and checkpoints cannot substitute for that request or prove its delivery.
 - Keep human decisions explicit. Plan approval, user input, sensitive action approval, review, retry, refinement, acceptance, and stop decisions must be visible and auditable.
 - Treat channels as projections. Web UI, the unified end-user Agent Skill Interface, desktop apps, automations, and future integrations may operate the same workflow mechanisms, but they do not redefine them.
 - Keep agent-private loops private until Core needs them. Tool retries, model self-reflection, private planner traces, and runtime-native task graphs should not become core records unless Core must schedule, retry, show, approve, audit, or attach artifacts to them.
@@ -81,7 +82,7 @@ Goal Mode and the accepted unified `openkit` Skill's loop recipe are OpenKit's d
 
 `Stop Condition` is the explicit condition that determines when a workflow is complete, blocked, rejected, or intentionally paused.
 
-`Workflow Evidence` is the item-backed, artifact-backed, audit-backed, or external-check-backed material used to decide whether the workflow may continue or close.
+`Workflow Evidence` is the item-backed, artifact-backed, review-backed, checkpoint-backed, or external-check-backed material used to decide whether the workflow may continue or close. Audit may project or reference that evidence, but an audit row does not authorize progression, recovery, or terminalization.
 
 `Goal Mode` is the current built-in workflow mode for objective-driven, reviewable worker-agent work.
 
@@ -148,13 +149,13 @@ Agent Workflow coordinates internal Core roles without turning those roles into 
 
 The Core Assistant may handle quick replies, clarification, simple state reads, and triage. When the request becomes non-trivial worker-agent work, it should hand the workflow to the Workflow Coordinator instead of directly calling worker agents.
 
-The Workflow Coordinator owns workflow progression. It selects the workflow mode or recipe, prepares or updates plans when needed, advances bounded steps, chooses worker agents, composes the final worker prompt and worker context, handles gates, collects evidence, and decides whether the workflow should continue, refine, retry, hand off, pause, block, accept, or close.
+The Workflow Coordinator owns bounded structured decisions for workflow progression. It selects a mode and worker, semantically composes the worker request and context from authorized inputs, produces plan and delegation decisions, and decides the workflow-level stop outcome. It does not persist mode state, execute progression effects, or materialize and deliver worker context; the owning workflow boundary performs those effects through Core-owned records and services.
 
-The Knowledge Manager owns knowledge retrieval support and knowledge maintenance. Before a bounded step, the Workflow Coordinator may ask the Knowledge Manager for relevant knowledge or source material. The Knowledge Manager returns source-traceable material, exclusions, uncertainty, or proposals. The Workflow Coordinator decides how to package that material into the worker context.
+The Knowledge Manager owns knowledge retrieval support and knowledge maintenance. Before a bounded step, the owning workflow boundary may ask the Knowledge Manager for relevant knowledge or source material and supply the authorized result to the Workflow Coordinator. The Knowledge Manager returns source-traceable material, exclusions, uncertainty, or proposals; the Coordinator owns semantic inclusion and composition, while the workflow boundary owns persistence, materialization, and delivery.
 
 After the worker capability plane is implemented, worker agents may request additional knowledge through Core-governed capability and knowledge boundaries. Those future requests should route to the Knowledge Manager or a Knowledge Manager-backed service rather than letting the worker read the Knowledge Store directly. A selected Knowledge reference becomes worker-visible only when Core explicitly binds it into the worker input or a materialized Context Package; selection alone does not imply delivery.
 
-`Context Package` is a data projection owned by `knowledge.md` and projected into workflow. It is not a separate Internal Core Role. The Knowledge Manager prepares knowledge-derived material for the package, while the Workflow Coordinator assembles the final worker context for the specific step.
+`Context Package` is a data projection owned by `knowledge.md` and projected into workflow. It is not a separate Internal Core Role. The Knowledge Manager prepares knowledge-derived material, the Workflow Coordinator composes the semantic worker context for the specific step, and the owning workflow boundary persists, materializes, and delivers that context.
 
 The future Task Evaluator may review task outcomes, workflow or Skill updates, test evidence, verification results, and measured improvement before changes are accepted. Until its evaluation model is designed, it remains a placeholder role rather than a required workflow mechanism.
 
@@ -174,7 +175,7 @@ The current default workflow setup is:
 
 ```text
 Goal Mode
-  + planning and plan approval when useful
+  + one approved Plan before every V1 worker step, lightweight when sufficient
   + one bounded worker step at a time
   + Action Center projections for human attention
   + artifacts and evidence bundles for review
@@ -185,13 +186,13 @@ This setup is recommended when the user wants reviewable worker-agent work witho
 
 It is not the only workflow Core can support.
 
-Future workflows may use the same mechanisms for research workflows, maintenance workflows, batch workflows, multi-agent review workflows, automation workflows, or user-defined workspace workflows.
+Future workflows may reuse these mechanisms only after an accepted specification names their owner, lifecycle, failure semantics, and verification. The examples of research, maintenance, batch, multi-agent review, automation, or user-defined workflows do not authorize new records, modes, runtimes, or product surfaces.
 
 ## Goal Mode Projection
 
 Goal Mode is the current built-in workflow mode over Agent Workflow mechanisms.
 
-It binds a thread to an objective, optional planning, bounded steps, review state, evidence, human attention, and terminal status.
+It binds a Thread to an objective, an approved plan for every V1 worker step, bounded steps, review state, evidence, human attention, and terminal status.
 
 Goal Mode must not become a hidden autonomous loop. It should advance through explicit gates, bounded worker steps, visible review state, and human decisions.
 
@@ -231,7 +232,7 @@ When compaction captures runtime continuity, `agent-session.md` owns the session
 
 When compaction promotes reusable learning, `knowledge.md` owns the resulting knowledge proposal or knowledge update.
 
-When compaction prepares material for the next bounded step, the Workflow Coordinator owns final worker-context assembly, with Knowledge Manager support for knowledge-derived material.
+When compaction prepares material for the next bounded step, the Workflow Coordinator owns semantic worker-context composition, the owning workflow boundary owns persistence, materialization, and delivery, and the Knowledge Manager supports knowledge-derived material.
 
 Handoff is a workflow mechanism for moving work from one agent, profile, role, mode, or channel to another while preserving history and decision traceability.
 
@@ -273,7 +274,7 @@ An agent workflow may pause for:
 
 Action Center is an App API and product-surface projection over pending human attention. It should not become the canonical workflow store.
 
-The canonical workflow state remains item-backed, objective-backed, approval-backed, artifact-backed, review-backed, evidence-backed, checkpoint-backed, and audit-backed records owned by Core.
+The canonical workflow state remains item-backed, objective-backed, approval-backed, artifact-backed, review-backed, evidence-backed, and checkpoint-backed records owned by Core. Audit records are derived evidence projections and MUST NOT become workflow authority.
 
 ## Agent Skill Loop Projection
 
@@ -325,7 +326,7 @@ If a future graph is promoted, it should be designed around explicit workflow an
 - A workflow mode MUST compose Core-owned mechanisms instead of making channel-local or agent-private state the product source of truth.
 - The default workflow setup MUST NOT be treated as the only valid workflow shape.
 - The Core Assistant MUST NOT directly call worker agents for non-trivial work; it should route that work to the Workflow Coordinator.
-- The Workflow Coordinator MUST NOT bypass the Knowledge Manager or Core-governed knowledge boundary when worker context needs reusable knowledge.
+- Workflow execution MUST NOT bypass the Knowledge Manager or Core-governed knowledge boundary when worker context needs reusable knowledge.
 - The Knowledge Manager MUST NOT own the whole task workflow or silently update high-impact knowledge without the required review gate.
 - Worker agents MUST NOT read the Knowledge Store directly. Core MUST supply selected Knowledge through prepared context packages or, after the worker capability plane exists, through Core-governed capability and knowledge boundaries.
 - Context packages MUST remain data projections, not Internal Core Roles.

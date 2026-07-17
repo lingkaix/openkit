@@ -1,4 +1,9 @@
-import { and, asc, eq } from 'drizzle-orm';
+import {
+  type GoalReviewResolutionSnapshot,
+  GoalReviewResolutionSnapshotSchema,
+  type GoalReviewVerdict,
+} from '@openkit/app-api-schemas';
+import { and, asc, eq, isNull } from 'drizzle-orm';
 
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import {
@@ -6,131 +11,161 @@ import {
   redactInternalAgentText,
 } from '../internal-agents/redaction.js';
 import type { WorkspaceDb } from '../storage/db.js';
-import { type GoalReviewVerdict, goalReviewRecords } from '../storage/schema/index.js';
+import { goalReviewRecords } from '../storage/schema/index.js';
 import { getGoalRecord, listGoalTasks } from './goal-store.js';
-import type { AdvanceGoalAfterReviewResult } from './goal-supervise-advance.js';
 
-/**
- * JSON-compatible evidence captured for a review record after redaction.
- */
+/** JSON-compatible evidence captured for a Review record after redaction. */
 export type GoalReviewVerificationEvidence = unknown;
 
-/**
- * Stored app-local review record for one goal task checkpoint.
- */
-export interface GoalReviewRecord {
-  /** Stable review id. */
-  readonly reviewId: string;
-  /** Workspace that owns the reviewed task. */
-  readonly workspaceId: string;
-  /** Thread that owns the reviewed task. */
-  readonly threadId: string;
-  /** Goal that owns the reviewed task. */
-  readonly goalId: string;
-  /** Goal task reviewed by this record. */
-  readonly taskId: string;
-  /** Optional worker or reviewer turn associated with the review. */
-  readonly turnId: string | null;
-  /** Item ids considered by the review. */
-  readonly itemIds: readonly string[];
-  /** Artifact ids considered by the review. */
-  readonly artifactIds: readonly string[];
-  /** Redacted verification evidence considered by the review. */
-  readonly verificationEvidence: readonly GoalReviewVerificationEvidence[];
-  /** Review verdict. */
-  readonly verdict: GoalReviewVerdict;
-  /** Redacted human-readable review reason. */
-  readonly reason: string;
-  /** ISO timestamp for review record creation. */
-  readonly createdAt: string;
-  /** ISO timestamp for latest review record update. */
-  readonly updatedAt: string;
-  /** ISO timestamp when the review was resolved through the Action Center. */
-  readonly resolvedAt: string | null;
-  /** Request id that resolved this review, if resolved. */
-  readonly resolutionRequestId: string | null;
-  /** Immutable first successful task-graph advance result. */
-  readonly resolutionSnapshot: AdvanceGoalAfterReviewResult | null;
+/** Stable failures produced while claiming or replaying one Review resolution. */
+export type GoalReviewResolutionErrorCode =
+  | 'idempotency_key_conflict'
+  | 'stale'
+  | 'recovery_required';
+
+/** Error raised when a Goal Review cannot be resolved or replayed safely. */
+export class GoalReviewResolutionError extends Error {
+  /** Stable App API error code. */
+  public readonly code: GoalReviewResolutionErrorCode;
+  /** HTTP conflict status shared by Review authority failures. */
+  public readonly status = 409;
+
+  /**
+   * Creates one Goal Review authority error.
+   *
+   * @param code Stable error code.
+   * @param message Product-safe error message.
+   */
+  public constructor(code: GoalReviewResolutionErrorCode, message: string) {
+    super(message);
+    this.name = 'GoalReviewResolutionError';
+    this.code = code;
+  }
 }
 
-/**
- * Input used to create one goal review record.
- */
-export interface CreateGoalReviewRecordInput {
-  /** Stable review id. */
+/** Stored app-local Review record for one Goal Task checkpoint. */
+export interface GoalReviewRecord {
+  /** Stable Review id. */
   readonly reviewId: string;
-  /** Workspace that owns the reviewed task. */
+  /** Workspace that owns the reviewed Task. */
   readonly workspaceId: string;
-  /** Thread that owns the reviewed task. */
+  /** Thread that owns the reviewed Task. */
   readonly threadId: string;
-  /** Goal that owns the reviewed task. */
+  /** Goal that owns the reviewed Task. */
   readonly goalId: string;
-  /** Goal task reviewed by this record. */
+  /** Goal Task reviewed by this record. */
   readonly taskId: string;
-  /** Optional worker or reviewer turn associated with the review. */
-  readonly turnId?: string | null;
-  /** Item ids considered by the review. */
+  /** Worker Turn whose output is under review. */
+  readonly turnId: string;
+  /** Item ids considered by the Review. */
+  readonly itemIds: readonly string[];
+  /** Artifact ids considered by the Review. */
+  readonly artifactIds: readonly string[];
+  /** Redacted verification evidence considered by the Review. */
+  readonly verificationEvidence: readonly GoalReviewVerificationEvidence[];
+  /** Redacted human-facing decision prompt fixed at creation. */
+  readonly prompt: string;
+  /** Goal step request that created the Review. */
+  readonly createdByRequestId: string;
+  /** Human verdict, null while unresolved. */
+  readonly verdict: GoalReviewVerdict | null;
+  /** Redacted human-readable reason when supplied. */
+  readonly reason: string | null;
+  /** Redacted refinement instruction, only for a refine verdict. */
+  readonly revisionInstruction: string | null;
+  /** ISO timestamp for Review creation. */
+  readonly createdAt: string;
+  /** ISO timestamp for the latest Review update. */
+  readonly updatedAt: string;
+  /** ISO timestamp when the Review was resolved. */
+  readonly resolvedAt: string | null;
+  /** Request id that resolved the Review. */
+  readonly resolutionRequestId: string | null;
+  /** Authenticated actor that resolved the Review. */
+  readonly resolvedByActorId: string | null;
+  /** Immutable first successful Task and Goal result. */
+  readonly resolutionSnapshot: GoalReviewResolutionSnapshot | null;
+}
+
+/** Input used to create one unresolved Goal Review record. */
+export interface CreateGoalReviewRecordInput {
+  /** Stable Review id. */
+  readonly reviewId: string;
+  /** Workspace that owns the reviewed Task. */
+  readonly workspaceId: string;
+  /** Thread that owns the reviewed Task. */
+  readonly threadId: string;
+  /** Goal that owns the reviewed Task. */
+  readonly goalId: string;
+  /** Goal Task reviewed by this record. */
+  readonly taskId: string;
+  /** Worker Turn whose output is under review. */
+  readonly turnId: string;
+  /** Item ids considered by the Review. */
   readonly itemIds?: readonly string[];
-  /** Artifact ids considered by the review. */
+  /** Artifact ids considered by the Review. */
   readonly artifactIds?: readonly string[];
-  /** Verification evidence considered by the review. */
+  /** Verification evidence considered by the Review. */
   readonly verificationEvidence?: readonly GoalReviewVerificationEvidence[];
-  /** Review verdict. */
-  readonly verdict: GoalReviewVerdict;
-  /** Human-readable review reason, redacted before storage. */
-  readonly reason: string;
+  /** Human-facing Review prompt, redacted before storage. */
+  readonly prompt: string;
+  /** Goal step request that created the Review. */
+  readonly createdByRequestId: string;
   /** Optional clock used by deterministic tests. */
   readonly now?: () => string;
 }
 
-/**
- * Input used to identify a goal task review record list.
- */
+/** Input used to identify a Goal Task Review list. */
 export interface GoalReviewRecordListInput {
-  /** Workspace that owns the reviewed task. */
+  /** Workspace that owns the reviewed Task. */
   readonly workspaceId: string;
-  /** Thread that owns the reviewed task. */
+  /** Thread that owns the reviewed Task. */
   readonly threadId: string;
-  /** Goal that owns the reviewed task. */
+  /** Goal that owns the reviewed Task. */
   readonly goalId: string;
-  /** Goal task reviewed by the records. */
+  /** Goal Task reviewed by the records. */
   readonly taskId: string;
 }
 
-/**
- * Input used to resolve one goal review record after applying its verdict.
- */
+/** Input used to claim or replay one Goal Review resolution. */
 export interface ResolveGoalReviewRecordInput {
-  /** Workspace that owns the reviewed task. */
+  /** Workspace that owns the reviewed Task. */
   readonly workspaceId: string;
-  /** Thread that owns the reviewed task. */
+  /** Thread that owns the reviewed Task. */
   readonly threadId: string;
-  /** Goal that owns the reviewed task. */
+  /** Goal that owns the reviewed Task. */
   readonly goalId: string;
   /** Review record to resolve. */
   readonly reviewId: string;
-  /** Request id that resolved the review. */
+  /** Request id claiming the Review. */
   readonly requestId: string;
-  /** Immutable task-graph advance result to store with the first resolution. */
-  readonly resolutionSnapshot: AdvanceGoalAfterReviewResult;
+  /** Authenticated actor claiming the Review. */
+  readonly actorId: string;
+  /** Human Review verdict. */
+  readonly verdict: GoalReviewVerdict;
+  /** Optional human-readable reason. */
+  readonly reason?: string;
+  /** Required instruction for a refine verdict. */
+  readonly revisionInstruction?: string;
+  /** Immutable Task and Goal result produced in the owning transaction. */
+  readonly resolutionSnapshot: GoalReviewResolutionSnapshot;
   /** Optional clock used by deterministic tests. */
   readonly now?: () => string;
 }
 
 /**
- * Creates one app-local goal review record after confirming goal task ownership.
+ * Creates one unresolved Review after confirming Goal Task ownership.
  *
  * @param workspaceDb Open workspace-scope database handle.
- * @param input Goal review record creation input.
- * @returns Stored goal review record.
- * @throws Error when the goal or task does not exist in the requested scope.
+ * @param input Review creation input.
+ * @returns Stored unresolved Review.
+ * @throws Error when the Goal or Task does not exist in the requested scope.
  */
 export function createGoalReviewRecord(
   workspaceDb: WorkspaceDb,
   input: CreateGoalReviewRecordInput
 ): GoalReviewRecord {
   assertGoalTaskExists(workspaceDb, input);
-
   const timestamp = input.now?.() ?? new Date().toISOString();
 
   workspaceDb.db
@@ -141,16 +176,23 @@ export function createGoalReviewRecord(
       threadId: input.threadId,
       goalId: input.goalId,
       taskId: input.taskId,
-      turnId: input.turnId ?? null,
+      turnId: input.turnId,
       itemIdsJson: JSON.stringify(input.itemIds ?? []),
       artifactIdsJson: JSON.stringify(input.artifactIds ?? []),
       verificationEvidenceJson: JSON.stringify(
         redactVerificationEvidence(input.verificationEvidence)
       ),
-      verdict: input.verdict,
-      reason: redactInternalAgentText(input.reason),
+      prompt: redactInternalAgentText(input.prompt),
+      createdByRequestId: input.createdByRequestId,
+      verdict: null,
+      reason: null,
+      revisionInstruction: null,
       createdAt: timestamp,
       updatedAt: timestamp,
+      resolvedAt: null,
+      resolutionRequestId: null,
+      resolvedByActorId: null,
+      resolutionSnapshotJson: null,
     })
     .run();
 
@@ -166,14 +208,14 @@ export function createGoalReviewRecord(
 }
 
 /**
- * Reads one review record by workspace, thread, goal, and review id.
+ * Reads one Review by workspace, thread, Goal, and Review id.
  *
  * @param workspaceDb Open workspace-scope database handle.
  * @param workspaceId Workspace id.
  * @param threadId Thread id.
  * @param goalId Goal id.
  * @param reviewId Review id.
- * @returns Stored review record, or null.
+ * @returns Stored Review, or null.
  */
 export function getGoalReviewRecord(
   workspaceDb: WorkspaceDb,
@@ -200,11 +242,11 @@ export function getGoalReviewRecord(
 }
 
 /**
- * Lists review records for one goal task in deterministic order.
+ * Lists Reviews for one Goal Task in deterministic order.
  *
  * @param workspaceDb Open workspace-scope database handle.
- * @param input Goal task review list input.
- * @returns Stored review records.
+ * @param input Goal Task Review list input.
+ * @returns Stored Reviews.
  */
 export function listGoalReviewRecordsForTask(
   workspaceDb: WorkspaceDb,
@@ -227,11 +269,11 @@ export function listGoalReviewRecordsForTask(
 }
 
 /**
- * Lists all goal review records for one workspace in stable export order.
+ * Lists all Goal Review records for one workspace in stable export order.
  *
  * @param workspaceDb Open workspace-scope database handle.
  * @param workspaceId Workspace id.
- * @returns Goal review records in stable order.
+ * @returns Goal Review records in stable order.
  */
 export function listExportableGoalReviewRecords(
   workspaceDb: WorkspaceDb,
@@ -252,30 +294,35 @@ export function listExportableGoalReviewRecords(
 }
 
 /**
- * Replays imported goal review records without emitting review audit events.
+ * Replays imported Goal Review records without emitting audit events.
  *
  * @param workspaceDb Open target workspace database handle.
- * @param records Goal review records to replay.
+ * @param records Goal Review records to replay.
  */
 export function importGoalReviewRecords(
   workspaceDb: WorkspaceDb,
   records: readonly GoalReviewRecord[]
 ): void {
   for (const record of records) {
+    assertGoalReviewRecordConsistency(record);
     workspaceDb.db
       .insert(goalReviewRecords)
       .values({
         artifactIdsJson: JSON.stringify(record.artifactIds),
         createdAt: record.createdAt,
+        createdByRequestId: record.createdByRequestId,
         goalId: record.goalId,
         itemIdsJson: JSON.stringify(record.itemIds),
+        prompt: record.prompt,
         reason: record.reason,
         resolvedAt: record.resolvedAt,
+        resolvedByActorId: record.resolvedByActorId,
         resolutionRequestId: record.resolutionRequestId,
         resolutionSnapshotJson: record.resolutionSnapshot
           ? JSON.stringify(record.resolutionSnapshot)
           : null,
         reviewId: record.reviewId,
+        revisionInstruction: record.revisionInstruction,
         taskId: record.taskId,
         threadId: record.threadId,
         turnId: record.turnId,
@@ -290,12 +337,12 @@ export function importGoalReviewRecords(
 }
 
 /**
- * Marks one goal review record as resolved after its verdict has been applied.
+ * Claims one unresolved Review or replays its winning request.
  *
  * @param workspaceDb Open workspace-scope database handle.
- * @param input Scoped review resolution input.
- * @returns Resolved review record.
- * @throws Error when the review record does not exist in the requested scope.
+ * @param input Scoped Review resolution input.
+ * @returns Resolved Review record.
+ * @throws GoalReviewResolutionError for conflict, stale, or contradictory state.
  */
 export function resolveGoalReviewRecord(
   workspaceDb: WorkspaceDb,
@@ -308,19 +355,33 @@ export function resolveGoalReviewRecord(
     input.goalId,
     input.reviewId
   );
+  const reason = input.reason ? redactInternalAgentText(input.reason) : null;
+  const revisionInstruction = input.revisionInstruction
+    ? redactInternalAgentText(input.revisionInstruction)
+    : null;
+  assertDecisionInput(input.verdict, reason, revisionInstruction);
 
-  if (existing.resolvedAt) {
-    return existing;
+  if (existing.resolvedAt !== null) {
+    return replayResolvedGoalReview(existing, input, reason, revisionInstruction);
   }
 
+  const parsedSnapshot = GoalReviewResolutionSnapshotSchema.safeParse(input.resolutionSnapshot);
+  if (!parsedSnapshot.success) {
+    throw recoveryRequired('Goal Review resolution snapshot is missing.');
+  }
+  const resolutionSnapshot = parsedSnapshot.data;
+  assertResolutionMatchesReview(existing, input.verdict, resolutionSnapshot);
   const timestamp = input.now?.() ?? new Date().toISOString();
-
-  workspaceDb.db
+  const result = workspaceDb.db
     .update(goalReviewRecords)
     .set({
+      verdict: input.verdict,
+      reason,
+      revisionInstruction,
       resolvedAt: timestamp,
       resolutionRequestId: input.requestId,
-      resolutionSnapshotJson: JSON.stringify(input.resolutionSnapshot),
+      resolvedByActorId: input.actorId,
+      resolutionSnapshotJson: JSON.stringify(resolutionSnapshot),
       updatedAt: timestamp,
     })
     .where(
@@ -328,30 +389,77 @@ export function resolveGoalReviewRecord(
         eq(goalReviewRecords.workspaceId, input.workspaceId),
         eq(goalReviewRecords.threadId, input.threadId),
         eq(goalReviewRecords.goalId, input.goalId),
-        eq(goalReviewRecords.reviewId, input.reviewId)
+        eq(goalReviewRecords.reviewId, input.reviewId),
+        isNull(goalReviewRecords.verdict),
+        isNull(goalReviewRecords.reason),
+        isNull(goalReviewRecords.revisionInstruction),
+        isNull(goalReviewRecords.resolvedAt),
+        isNull(goalReviewRecords.resolutionRequestId),
+        isNull(goalReviewRecords.resolvedByActorId),
+        isNull(goalReviewRecords.resolutionSnapshotJson)
       )
     )
     .run();
 
-  return requireGoalReviewRecord(
+  const resolved = requireGoalReviewRecord(
     workspaceDb,
     input.workspaceId,
     input.threadId,
     input.goalId,
     input.reviewId
   );
+  if (result.changes !== 1) {
+    return replayResolvedGoalReview(resolved, input, reason, revisionInstruction);
+  }
+  return resolved;
 }
 
 /**
- * Reads one review record or throws a scoped ownership error.
+ * Returns the winning resolution for an identical request.
+ *
+ * @param record Resolved Review record.
+ * @param input Attempted resolution input.
+ * @param reason Redacted attempted reason.
+ * @param revisionInstruction Redacted attempted refinement instruction.
+ * @returns Existing winning Review.
+ * @throws GoalReviewResolutionError for changed input or a competing request.
+ */
+function replayResolvedGoalReview(
+  record: GoalReviewRecord,
+  input: ResolveGoalReviewRecordInput,
+  reason: string | null,
+  revisionInstruction: string | null
+): GoalReviewRecord {
+  if (record.resolutionRequestId !== input.requestId) {
+    throw new GoalReviewResolutionError(
+      'stale',
+      'Goal Review was already resolved by another request.'
+    );
+  }
+  if (
+    record.resolvedByActorId !== input.actorId ||
+    record.verdict !== input.verdict ||
+    record.reason !== reason ||
+    record.revisionInstruction !== revisionInstruction
+  ) {
+    throw new GoalReviewResolutionError(
+      'idempotency_key_conflict',
+      'The requestId was already used for different Goal Review input.'
+    );
+  }
+  return record;
+}
+
+/**
+ * Reads one Review or throws a scoped ownership error.
  *
  * @param workspaceDb Open workspace-scope database handle.
  * @param workspaceId Workspace id.
  * @param threadId Thread id.
  * @param goalId Goal id.
  * @param reviewId Review id.
- * @returns Stored review record.
- * @throws Error when the review record does not exist in the requested scope.
+ * @returns Stored Review.
+ * @throws Error when the Review does not exist in the requested scope.
  */
 function requireGoalReviewRecord(
   workspaceDb: WorkspaceDb,
@@ -361,31 +469,29 @@ function requireGoalReviewRecord(
   reviewId: string
 ): GoalReviewRecord {
   const record = getGoalReviewRecord(workspaceDb, workspaceId, threadId, goalId, reviewId);
-
   if (!record) {
     throw new Error(
       `Goal review record not found: ${workspaceId}/${threadId}/${goalId}/${reviewId}`
     );
   }
-
   return record;
 }
 
 /**
- * Records audit lineage for stored goal review evidence.
+ * Records audit lineage for one unresolved Review request.
  *
  * @param workspaceDb Open workspace-scope database handle.
- * @param record Stored review record.
+ * @param record Stored unresolved Review.
  */
 function recordGoalReviewAuditEvent(workspaceDb: WorkspaceDb, record: GoalReviewRecord): void {
   recordWorkspaceAuditEvent({
     action: 'goal.review.record',
     category: 'system',
     now: new Date(record.createdAt),
-    outcome: goalReviewAuditOutcome(record.verdict),
+    outcome: 'succeeded',
     resource: `goal-review:${record.reviewId}`,
-    severity: record.verdict === 'accept' ? 'info' : 'warning',
-    summary: `Goal review ${record.verdict}: ${record.reason}`,
+    severity: 'info',
+    summary: `Goal review requested: ${record.prompt}`,
     threadId: record.threadId,
     turnId: record.turnId,
     workspaceDb,
@@ -394,48 +500,31 @@ function recordGoalReviewAuditEvent(workspaceDb: WorkspaceDb, record: GoalReview
 }
 
 /**
- * Maps a goal review verdict to an audit outcome.
+ * Confirms a Goal Task exists in the requested scope.
  *
- * @param verdict Stored goal review verdict.
- * @returns Audit event outcome.
- */
-function goalReviewAuditOutcome(
-  verdict: GoalReviewVerdict
-): 'succeeded' | 'failed' | 'denied' | 'cancelled' {
-  return verdict === 'accept' ? 'succeeded' : verdict === 'abort' ? 'cancelled' : 'failed';
-}
-
-/**
- * Confirms a goal task exists in the requested workspace, thread, and goal scope.
- *
- * @param coreDb Open Core database handles.
- * @param input Goal task scope.
- * @throws Error when the goal or task does not exist in the requested scope.
+ * @param workspaceDb Open workspace-scope database handle.
+ * @param input Goal Task scope.
+ * @throws Error when the Goal or Task does not exist.
  */
 function assertGoalTaskExists(workspaceDb: WorkspaceDb, input: GoalReviewRecordListInput): void {
   const goal = getGoalRecord(workspaceDb, input.workspaceId, input.threadId, input.goalId);
-
   if (!goal) {
     throw new Error(`Goal not found: ${input.workspaceId}/${input.threadId}/${input.goalId}`);
   }
-
-  const task = listGoalTasks(workspaceDb, input).find(
-    (candidate) => candidate.taskId === input.taskId
-  );
-
-  if (!task) {
+  if (!listGoalTasks(workspaceDb, input).some((task) => task.taskId === input.taskId)) {
     throw new Error(`Goal task not found: ${input.goalId}/${input.taskId}`);
   }
 }
 
 /**
- * Maps a goal review row to a store record.
+ * Maps a database row to a validated Review record.
  *
- * @param row Goal review row.
- * @returns Goal review store record.
+ * @param row Goal Review database row.
+ * @returns Validated Review record.
+ * @throws GoalReviewResolutionError when the stored decision tuple is contradictory.
  */
 function mapGoalReviewRecordRow(row: typeof goalReviewRecords.$inferSelect): GoalReviewRecord {
-  return {
+  const record: GoalReviewRecord = {
     reviewId: row.reviewId,
     workspaceId: row.workspaceId,
     threadId: row.threadId,
@@ -445,18 +534,116 @@ function mapGoalReviewRecordRow(row: typeof goalReviewRecords.$inferSelect): Goa
     itemIds: parseStringArray(row.itemIdsJson),
     artifactIds: parseStringArray(row.artifactIdsJson),
     verificationEvidence: parseEvidenceArray(row.verificationEvidenceJson),
+    prompt: row.prompt,
+    createdByRequestId: row.createdByRequestId,
     verdict: row.verdict,
     reason: row.reason,
+    revisionInstruction: row.revisionInstruction,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     resolvedAt: row.resolvedAt,
     resolutionRequestId: row.resolutionRequestId,
+    resolvedByActorId: row.resolvedByActorId,
     resolutionSnapshot: parseResolutionSnapshot(row.resolutionSnapshotJson),
   };
+  assertGoalReviewRecordConsistency(record);
+  return record;
 }
 
 /**
- * Redacts review verification evidence before it is serialized for storage.
+ * Rejects partial or semantically inconsistent decision tuples.
+ *
+ * @param record Goal Review record to validate.
+ * @throws GoalReviewResolutionError when the record is contradictory.
+ */
+export function assertGoalReviewRecordConsistency(record: GoalReviewRecord): void {
+  const unresolved =
+    record.verdict === null &&
+    record.reason === null &&
+    record.revisionInstruction === null &&
+    record.resolvedAt === null &&
+    record.resolutionRequestId === null &&
+    record.resolvedByActorId === null &&
+    record.resolutionSnapshot === null;
+  if (unresolved) {
+    return;
+  }
+  if (
+    record.verdict === null ||
+    record.resolvedAt === null ||
+    record.resolutionRequestId === null ||
+    record.resolvedByActorId === null ||
+    record.resolutionSnapshot === null
+  ) {
+    throw recoveryRequired('Goal Review contains a partial decision tuple.');
+  }
+  assertDecisionInput(record.verdict, record.reason, record.revisionInstruction);
+  assertResolutionMatchesReview(record, record.verdict, record.resolutionSnapshot);
+}
+
+/**
+ * Validates conditional decision fields.
+ *
+ * @param verdict Human Review verdict.
+ * @param reason Optional decision reason.
+ * @param revisionInstruction Optional refinement instruction.
+ * @throws GoalReviewResolutionError when required fields are absent or misplaced.
+ */
+function assertDecisionInput(
+  verdict: GoalReviewVerdict,
+  reason: string | null,
+  revisionInstruction: string | null
+): void {
+  if ((verdict === 'retry' || verdict === 'abort') && reason === null) {
+    throw recoveryRequired(`Goal Review ${verdict} decision is missing its reason.`);
+  }
+  if (verdict === 'refine' && revisionInstruction === null) {
+    throw recoveryRequired('Goal Review refine decision is missing its revision instruction.');
+  }
+  if (verdict !== 'refine' && revisionInstruction !== null) {
+    throw recoveryRequired('Goal Review revision instruction exists without a refine verdict.');
+  }
+}
+
+/**
+ * Validates resolution ownership and verdict mapping.
+ *
+ * @param record Review that owns the result.
+ * @param verdict Human Review verdict.
+ * @param snapshot Bounded resolution result.
+ * @throws GoalReviewResolutionError when ids or outcome disagree with the Review.
+ */
+function assertResolutionMatchesReview(
+  record: Pick<GoalReviewRecord, 'goalId' | 'taskId'>,
+  verdict: GoalReviewVerdict,
+  snapshot: GoalReviewResolutionSnapshot
+): void {
+  const expectedOutcomes =
+    verdict === 'accept'
+      ? ['complete_next_task', 'complete_goal']
+      : verdict === 'abort'
+        ? ['aborted']
+        : [verdict];
+  if (!expectedOutcomes.includes(snapshot.outcome)) {
+    throw recoveryRequired('Goal Review verdict and resolution outcome are inconsistent.');
+  }
+  if (snapshot.task.taskId !== record.taskId || snapshot.goal.goalId !== record.goalId) {
+    throw recoveryRequired('Goal Review resolution ownership does not match the Review record.');
+  }
+}
+
+/**
+ * Creates one recovery-required authority error.
+ *
+ * @param message Product-safe contradiction summary.
+ * @returns Recovery-required error.
+ */
+function recoveryRequired(message: string): GoalReviewResolutionError {
+  return new GoalReviewResolutionError('recovery_required', message);
+}
+
+/**
+ * Redacts Review verification evidence before serialization.
  *
  * @param evidence Verification evidence values.
  * @returns Redacted evidence array.
@@ -465,89 +652,53 @@ function redactVerificationEvidence(
   evidence: readonly GoalReviewVerificationEvidence[] | undefined
 ): readonly GoalReviewVerificationEvidence[] {
   const redacted = redactInternalAgentDiagnosticValue(evidence ?? []);
-
-  if (!Array.isArray(redacted)) {
-    return [];
-  }
-
-  return redacted;
+  return Array.isArray(redacted) ? redacted : [];
 }
 
 /**
- * Parses a stored JSON string array.
+ * Parses one stored JSON string array.
  *
- * @param value JSON string value to parse.
+ * @param value JSON string value.
  * @returns Parsed string array.
- * @throws Error when the stored JSON is malformed.
+ * @throws Error when the value is malformed.
  */
 function parseStringArray(value: string): string[] {
   const parsed = JSON.parse(value) as unknown;
-
   if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== 'string')) {
     throw new Error('Stored goal review JSON field is not a string array.');
   }
-
   return parsed;
 }
 
 /**
- * Parses a stored JSON evidence array.
+ * Parses one stored JSON evidence array.
  *
- * @param value JSON string value to parse.
+ * @param value JSON string value.
  * @returns Parsed evidence array.
- * @throws Error when the stored JSON is malformed.
+ * @throws Error when the value is malformed.
  */
 function parseEvidenceArray(value: string): GoalReviewVerificationEvidence[] {
   const parsed = JSON.parse(value) as unknown;
-
   if (!Array.isArray(parsed)) {
     throw new Error('Stored goal review evidence field is not an array.');
   }
-
   return parsed;
 }
 
 /**
- * Parses one stored Goal Review resolution snapshot.
+ * Parses one stored bounded resolution snapshot.
  *
  * @param value Nullable JSON snapshot text.
- * @returns Parsed immutable resolution snapshot.
- * @throws Error when the stored JSON is malformed.
+ * @returns Parsed snapshot, or null.
+ * @throws GoalReviewResolutionError when the stored snapshot is malformed.
  */
-function parseResolutionSnapshot(value: string | null): AdvanceGoalAfterReviewResult | null {
+function parseResolutionSnapshot(value: string | null): GoalReviewResolutionSnapshot | null {
   if (value === null) {
     return null;
   }
-
-  const parsed = JSON.parse(value) as unknown;
-
-  if (
-    !parsed ||
-    typeof parsed !== 'object' ||
-    Array.isArray(parsed) ||
-    ![
-      'complete_next_task',
-      'complete_goal',
-      'continue',
-      'retry',
-      'needs_revision',
-      'decompose',
-      'awaiting_human',
-      'blocked',
-      'aborted',
-    ].includes(String((parsed as { outcome?: unknown }).outcome)) ||
-    !(parsed as { task?: unknown }).task ||
-    typeof (parsed as { task?: unknown }).task !== 'object' ||
-    Array.isArray((parsed as { task?: unknown }).task) ||
-    ((parsed as { goal?: unknown }).goal !== null &&
-      (typeof (parsed as { goal?: unknown }).goal !== 'object' ||
-        Array.isArray((parsed as { goal?: unknown }).goal))) ||
-    ((parsed as { nextTask?: unknown }).nextTask !== null &&
-      (typeof (parsed as { nextTask?: unknown }).nextTask !== 'object' ||
-        Array.isArray((parsed as { nextTask?: unknown }).nextTask)))
-  ) {
-    throw new Error('Stored goal review resolution snapshot is malformed.');
+  try {
+    return GoalReviewResolutionSnapshotSchema.parse(JSON.parse(value));
+  } catch {
+    throw recoveryRequired('Stored Goal Review resolution snapshot is malformed.');
   }
-
-  return parsed as AdvanceGoalAfterReviewResult;
 }

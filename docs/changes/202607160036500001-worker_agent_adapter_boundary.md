@@ -12,6 +12,12 @@ OpenKit will use Codex, OpenCode, and Pi as three concrete challenges against on
 
 This change removes Codex- and OpenCode-specific assumptions from NanoCore product and governance code, establishes a small worker-side adapter contract, implements the three runtime adapters, and gives each runtime an independently reviewable integration specification.
 
+## Inherited Audit Responsibility (2026-07-17)
+
+This plan is work package WP-2 of the [OpenKit Execution Program](./202607172152230001-openkit_execution_program.md) and absorbs audit group G03 from the [alignment audit](./202607111941330001-core_spec_implementation_alignment_audit.md). The G03 document set (C04 Runtime Model, C05 Agent Session, C13 Agent Supply, C16 Sandbox, S20-S38, S64-S66, and their supporting projections) and the G03 exit criteria in the audit ledger are inherited inputs. The program's convergence rules bind all work here.
+
+Before implementation starts, record the G03 audit preamble in this plan per Execution Program rule 11: the authority map for the concepts this plan touches, findings classified with the audit's finding codes (in-scope findings fold into this plan's frozen scope; everything else is ticketed to the program Backlog), and confirmation of the inherited exit criteria. The preamble is review-only, bounded to at most one review day, and authorizes no implementation. The S21, S25, and S29 consolidation reviews assigned by the audit's Remaining Execution dispositions happen here; supersede a candidate only when a named current owner absorbs every continuing contract.
+
 ## Primary Acceptance Criterion
 
 A hypothetical fourth runtime passes architectural review only when its production implementation diff is limited to exactly:

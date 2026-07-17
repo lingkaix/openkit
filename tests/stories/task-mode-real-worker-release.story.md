@@ -55,8 +55,8 @@ Verify that a release owner can use the public OpenKit App API through Core Clie
 ## Expected Outcomes
 
 - The public Task Mode operation returns a Task Mode response rather than a hidden local execution path.
-- The response includes a Workflow Coordinator Task Mode decision with a selected worker.
-- The returned state is `completed` or `needs-review`; non-terminal, blocked, failed, human-gated, and escalated states cannot satisfy this completed-turn acceptance story.
+- The response projects the accepted Turn, `completed` state, and existing evidence identifiers without copying the internal Workflow Coordinator launch decision.
+- The returned state is `completed`; cancelled, non-terminal, blocked, failed, human-gated, and escalated states cannot satisfy this completed-turn acceptance story.
 - The thread contains visible Task Mode items.
 - The thread contains exactly one completed outer assistant message from the real worker path; runtime-internal child messages do not become canonical OpenKit items.
 - The turn has exactly one AEP snapshot shared by every worker Gateway call, with OpenShell, Codex, direct NanoCore control, the exact A1-built image supplied through `OPENKIT_L6_TASK_WORKER_IMAGE_REF`, provider `openai_codex`, model `openai-codex/gpt-5.6-sol`, one placeholder NanoCore Gateway route, no credential or vault projection, no secret visibility, and both trusted relay and runtime provenance capabilities.

@@ -16,8 +16,7 @@ export { evidenceBundles } from './evidence-bundles.js';
 export type { GitPushRecordOutcome } from './git-push-records.js';
 export { gitPushRecords } from './git-push-records.js';
 export type { GoalRecordStatus, GoalTaskStatus } from './goal-records.js';
-export { goalRecords, goalTasks } from './goal-records.js';
-export type { GoalReviewVerdict } from './goal-review-records.js';
+export { goalPlanRecords, goalRecords, goalTasks } from './goal-records.js';
 export { goalReviewRecords } from './goal-review-records.js';
 export type { GoalVerificationStatus } from './goal-verification-records.js';
 export { goalVerificationRecords } from './goal-verification-records.js';
@@ -27,8 +26,6 @@ export type { InjectionReceiptRevocationStatus } from './injection-receipts.js';
 export { injectionReceipts } from './injection-receipts.js';
 export type { McpToolSchemaSnapshotSource } from './mcp-tool-schema-snapshots.js';
 export { mcpToolSchemaSnapshots } from './mcp-tool-schema-snapshots.js';
-export type { PendingUserTurnQueueMode } from './pending-user-turns.js';
-export { pendingUserTurns } from './pending-user-turns.js';
 export type { PermissionDecisionResult } from './permission-decisions.js';
 export { permissionDecisions } from './permission-decisions.js';
 export type {

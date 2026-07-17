@@ -85,6 +85,16 @@ OpenKit uses four stability classes from `docs/core/contract-evolution.md`:
 
 This specification classifies contract families. It does not claim that every durable family has already passed its release gate.
 
+## Precision And Reliability Scope
+
+The two-independent-implementers precision bar applies fully to `Durable` families because incompatible implementations could corrupt persisted or portable truth, authority, identity, audit, or cross-release meaning. Their owning Core and specifications must preserve exact authority, lifecycle, conflict, failure, migration, and observable acceptance rules.
+
+`Release-coupled` surfaces require one clear same-release implementation, typed failure behavior, and tests sufficient for the risk they carry. They do not require byte-exact response replay, per-command crash reconstruction, cross-release compatibility, or an L1-L6 copy of every assertion. `Private` implementation details require only the checks needed to protect a promoted boundary.
+
+Reliability work follows the current small-deployment profile. Security, authorization, credentials, containment, data loss, durable authority, and irreversible external effects remain strict. Availability, cleanup, projection, and reconnect behavior may use a documented `interrupted`, `recovery_required`, inspection, or new-request fallback instead of transparent repair.
+
+Future scale and availability are non-authorizing until a current accepted specification promotes them. A deferred multi-process, multi-target, fairness, hot-failover, or transparent-recovery idea creates no current field, state, record, compatibility, runner, harness, or test obligation.
+
 ## Durable Baseline
 
 The following families are `Durable` once their readiness gates pass.
@@ -101,7 +111,7 @@ The following families are `Durable` once their readiness gates pass.
 | Permission and approval | NGAC-aligned policy vocabulary, product-action mapping, decision semantics, enforcement points, approval linkage, and fail-closed behavior. | Policy fixtures, deterministic decision tests, explicit operation mapping, atomic terminal transitions, required features for new authority, and audit linkage. |
 | Vault and secret boundaries | Secret references, grants, non-secret metadata, injection authority, redaction, and the rule that raw secret material stays outside ordinary product records. | Strict schemas, backend isolation, fail-closed binding, secret scanning, redaction tests, and audited use records. |
 | Audit and accountability | Auditable event categories, actor or subject attribution, resource and decision linkage, outcome, redaction, and required producer coverage. | Versioned schema, actor-safe fields, producer coverage matrix, retention rules, export behavior, and completeness diagnostics. |
-| Shared-write correctness | Append ordering, immutable history, expected-revision behavior for mutable shared records, atomic first-writer transitions, and conflict-safe workspace apply. | Single-writer or atomic append, revision compare-and-swap, transaction tests, typed conflicts, idempotency, and recovery tests. |
+| Shared-write correctness | Append ordering, immutable history, expected-revision behavior for mutable shared records, atomic first-writer transitions, conflict-safe workspace apply, and the central command-idempotency default. | Single-writer or atomic append, revision compare-and-swap, transaction tests, typed conflicts, and receipt-backed replay; request-owned effects without a receipt default to `recovery_required` without inference, synthesis, settlement, or repair. |
 
 Durable classification does not freeze one TypeScript type, route, table, or directory forever. It freezes the contract's meaning and requires an explicit transition when the representation changes.
 
@@ -125,7 +135,7 @@ The release gate for this class is:
 - one owning schema or operation source
 - one exact contract identity or digest
 - all first-party producers and consumers updated in the same coordinated release
-- L2 contract and L3 process coverage for every supported operation family
+- risk-appropriate L2 contract and L3 process coverage for boundaries that cannot be proved at a lower layer
 - a typed incompatibility when identities do not match
 - no legacy route, alias, payload, Skill, CLI, or client path left behind
 
@@ -210,6 +220,7 @@ Boundary tests must prevent private fields from leaking into protocol, App API, 
 - First-party clients, CLI, Skill, and Web use the same operation/schema owners.
 - Mismatch fails clearly before unsupported work.
 - Old projections are removed rather than deprecated.
+- Tests sit at the lowest layer that proves the changed invariant; a higher-layer test is required only when it proves a distinct integration risk.
 
 ## Current Implementation Projection
 
@@ -258,11 +269,11 @@ No code or data migration occurs merely because this classification is accepted.
 ## Testing Strategy
 
 - L0 documentation checks verify that active specs declare `Status` and `Implementation`, classify new supported surfaces, and do not reintroduce removed compatibility language.
-- L1 package tests verify strict schemas, version identities, required features, redaction, and private-boundary exclusions.
-- L2 contract tests verify durable fixtures and exact-release projection alignment.
-- L3 NanoCore tests verify version mismatch, migration, fail-closed authority, and same-release public operations.
+- L1 package tests verify strict schemas, version identities, required features, redaction, and private-boundary exclusions where those risks exist.
+- L2 contract tests verify durable fixtures and exact-release projection alignment that crosses package boundaries.
+- L3 NanoCore tests verify representative process-only risks such as restart, migration, fail-closed authority, and one same-release public path; they do not repeat every L1-L2 assertion.
 - L5 artifact tests verify generated schemas, OpenAPI, CLI/Skill artifacts, exports, backups, and release identity.
-- L6 stories verify that representative durable work survives an upgrade while exact-release clients operate as one set.
+- L6 stories verify only representative end-to-end product intent that lower layers cannot establish. Existing runners are reused; this baseline authorizes no dedicated acceptance platform.
 
 ## Risks And Mitigations
 

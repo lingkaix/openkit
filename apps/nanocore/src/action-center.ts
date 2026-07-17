@@ -11,7 +11,6 @@ import type { ArtifactReviewStatus, FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
 import { listGoalReviewRecordsForTask } from './runtime/goal-review-records.js';
 import { type GoalRecord, listGoalRecordsForThread, listGoalTasks } from './runtime/goal-store.js';
-import { listPendingUserTurns } from './runtime/pending-user-turns.js';
 import { listWorkerControlRejectedEvidenceForWorkspace } from './runtime/worker-control-rejected-evidence.js';
 import { materializeInterruptedWorkerStates } from './runtime/worker-recovery.js';
 import { listWorkspaceReconciliationRecords } from './runtime/workspace-reconciliation-records.js';
@@ -321,9 +320,8 @@ function runtimeRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] {
     ...workerControlRejectedEvidenceRows(input.coreDb, input.workspaceId),
     ...schedulerOrphanWorkerRows(input.coreDb, input.workspaceId),
     ...(input.workspaceDb
-      ? pendingInputRows(input.store, input.workspaceDb, input.workspaceId)
+      ? checkpointRows(input.coreDb, input.store, input.workspaceDb, input.workspaceId)
       : []),
-    ...(input.workspaceDb ? checkpointRows(input.workspaceDb, input.workspaceId) : []),
     ...(input.workspaceDb ? workspaceRecoveryRows(input.workspaceDb, input.workspaceId) : []),
     ...(input.workspaceDb ? goalRows(input.store, input.workspaceDb, input.workspaceId) : []),
   ];
@@ -529,52 +527,21 @@ function schedulerAdmissionActions(
 }
 
 /**
- * Projects pending user turns into pending-input rows.
- *
- * @param store Request-scoped workspace store.
- * @param workspaceDb Open workspace-scope database handle.
- * @param workspaceId Workspace id to inspect.
- * @returns Pending-input rows.
- */
-function pendingInputRows(
-  store: FsStore,
-  workspaceDb: WorkspaceDb,
-  workspaceId: string
-): HumanAttentionRow[] {
-  return store.listThreads(workspaceId).flatMap((thread) =>
-    listPendingUserTurns(workspaceDb, { workspaceId, threadId: thread.id }).map((pendingTurn) => ({
-      id: `pending-input:${pendingTurn.pendingTurnId}`,
-      kind: 'pending_input',
-      workspaceId,
-      threadId: thread.id,
-      itemId: pendingTurn.contentItemId ?? undefined,
-      title: pendingInputTitle(pendingTurn.queueMode),
-      summary: pendingInputSummary(pendingTurn.queueMode),
-      severity: pendingTurn.queueMode === 'blocked_gate' ? 'needs_input' : 'info',
-      createdAt: pendingTurn.createdAt,
-      recommendedAction: 'Open the thread to review the queued input.',
-      source: {
-        type: 'pending_user_turn',
-        pendingTurnId: pendingTurn.pendingTurnId,
-        requestId: pendingTurn.requestId,
-        queueMode: pendingTurn.queueMode,
-        workspaceId,
-        threadId: thread.id,
-      },
-      actions: pendingInputActions(workspaceId, thread.id, pendingTurn.requestId),
-    }))
-  );
-}
-
-/**
  * Projects non-terminal worker checkpoints into checkpoint recovery rows.
  *
+ * @param coreDb Open Core database handle.
+ * @param store Product store that owns the source Turn and Agent Session.
  * @param workspaceDb Open workspace-scope database handle.
  * @param workspaceId Workspace id to inspect.
  * @returns Checkpoint recovery rows.
  */
-function checkpointRows(workspaceDb: WorkspaceDb, workspaceId: string): HumanAttentionRow[] {
-  return materializeInterruptedWorkerStates(workspaceDb)
+function checkpointRows(
+  coreDb: CoreDb,
+  store: FsStore,
+  workspaceDb: WorkspaceDb,
+  workspaceId: string
+): HumanAttentionRow[] {
+  return materializeInterruptedWorkerStates(coreDb, store, workspaceDb)
     .filter((checkpoint) => checkpoint.workspaceId === workspaceId)
     .map((checkpoint) => ({
       id: `checkpoint:${checkpoint.checkpointId}`,
@@ -599,21 +566,17 @@ function checkpointRows(workspaceDb: WorkspaceDb, workspaceId: string): HumanAtt
         stage: checkpoint.stage,
         stopReason: checkpoint.stopReason,
       },
-      actions: [
-        openThreadAction(checkpoint.threadId),
-        {
-          kind: 'retry_from_checkpoint',
-          label: 'Retry',
-          method: 'POST',
-          href: `/api/app/workspaces/${workspaceId}/threads/${checkpoint.threadId}/recovery/interrupted-worker/${checkpoint.turnId}/retry`,
-        },
-        {
-          kind: 'clear_checkpoint',
-          label: 'Record terminal',
-          method: 'POST',
-          href: `/api/app/workspaces/${workspaceId}/threads/${checkpoint.threadId}/recovery/interrupted-worker/${checkpoint.turnId}/terminal`,
-        },
-      ],
+      actions: checkpoint.choices.some((choice) => choice.kind === 'retry')
+        ? [
+            openThreadAction(checkpoint.threadId),
+            {
+              kind: 'retry_from_checkpoint',
+              label: 'Retry',
+              method: 'POST',
+              href: `/api/app/workspaces/${workspaceId}/threads/${checkpoint.threadId}/recovery/interrupted-worker/${checkpoint.turnId}/retry`,
+            },
+          ]
+        : [openThreadAction(checkpoint.threadId)],
     }));
 }
 
@@ -787,23 +750,23 @@ function goalReviewRows(workspaceDb: WorkspaceDb, goal: GoalRecord): HumanAttent
       .filter((review) => review.taskId === task.taskId)
       .filter((review) => review.resolvedAt === null)
       .filter(
-        (review) =>
-          review.verdict !== 'accept' ||
-          (goal.status === 'reviewing' && task.status === 'reviewing')
+        () =>
+          goal.status === 'reviewing' &&
+          goal.currentTaskId === task.taskId &&
+          task.status === 'reviewing'
       )
       .map((review) => ({
         id: `goal-review:${review.workspaceId}:${review.threadId}:${review.goalId}:${review.reviewId}`,
-        kind: review.verdict === 'decompose' ? 'review_cap' : 'artifact_review',
+        kind: 'artifact_review' as const,
         workspaceId: review.workspaceId,
         threadId: review.threadId,
-        turnId: review.turnId ?? undefined,
+        turnId: review.turnId,
         artifactId: review.artifactIds[0] ?? undefined,
         goalId: review.goalId,
         taskId: review.taskId,
-        title: review.verdict === 'ask_user' ? 'Goal review needs input' : 'Review worker output',
-        summary: review.reason,
-        severity:
-          review.verdict === 'block' || review.verdict === 'abort' ? 'blocked' : 'needs_input',
+        title: 'Review worker output',
+        summary: review.prompt,
+        severity: 'needs_input' as const,
         createdAt: review.updatedAt,
         source: {
           type: 'goal_review',
@@ -812,9 +775,8 @@ function goalReviewRows(workspaceDb: WorkspaceDb, goal: GoalRecord): HumanAttent
           taskId: review.taskId,
           workspaceId: review.workspaceId,
           threadId: review.threadId,
-          verdict: review.verdict,
         },
-        actions: goalReviewActions(review, review.artifactIds[0]),
+        actions: goalReviewActions(review),
       }))
   );
 }
@@ -1137,140 +1099,21 @@ function workspaceRecoveryActions(
  * Builds review actions for one goal review row.
  *
  * @param review Goal Review record to resolve.
- * @param artifactId Optional artifact id to open.
  * @returns Human Attention actions.
  */
-function goalReviewActions(
-  review: {
-    readonly workspaceId: string;
-    readonly threadId: string;
-    readonly goalId: string;
-    readonly reviewId: string;
-    readonly verdict: string;
-  },
-  artifactId?: string
-): HumanAttentionAction[] {
+function goalReviewActions(review: {
+  readonly workspaceId: string;
+  readonly threadId: string;
+  readonly goalId: string;
+  readonly reviewId: string;
+}): HumanAttentionAction[] {
   const href = `/api/app/workspaces/${review.workspaceId}/threads/${review.threadId}/goals/${review.goalId}/reviews/${review.reviewId}/decision`;
-  const verdictAction = goalReviewVerdictAction(review.verdict, href);
 
   return [
-    ...(verdictAction ? [verdictAction] : []),
-    openThreadAction(review.threadId),
-    ...(artifactId
-      ? [
-          {
-            kind: 'open_artifact' as const,
-            label: 'Open artifact',
-            method: 'GET' as const,
-            href: `/artifacts/${artifactId}`,
-          },
-        ]
-      : []),
-  ];
-}
-
-/**
- * Builds the executable action that corresponds to one stored review verdict.
- *
- * @param verdict Stored Goal Review verdict.
- * @param href Decision route for resolving the review.
- * @returns Matching executable action, or null when opening context is the action.
- */
-function goalReviewVerdictAction(verdict: string, href: string): HumanAttentionAction | null {
-  switch (verdict) {
-    case 'accept':
-      return { kind: 'accept_review', label: 'Accept review', method: 'POST', href };
-    case 'refine':
-    case 'decompose':
-      return { kind: 'request_refinement', label: 'Request refinement', method: 'POST', href };
-    case 'retry':
-      return { kind: 'retry_work', label: 'Retry work', method: 'POST', href };
-    case 'block':
-      return { kind: 'mark_blocked', label: 'Mark blocked', method: 'POST', href };
-    case 'abort':
-      return { kind: 'abort', label: 'Abort goal', method: 'POST', href };
-    default:
-      return null;
-  }
-}
-
-/**
- * Returns a pending-input title for one queue mode.
- *
- * @param queueMode Queue mode to describe.
- * @returns Human-readable title.
- */
-function pendingInputTitle(queueMode: string): string {
-  if (queueMode === 'safe_point_steering') {
-    return 'Input queued for a safe point';
-  }
-
-  if (queueMode === 'blocked_gate') {
-    return 'Input blocked behind a human gate';
-  }
-
-  return 'Follow-up input is queued';
-}
-
-/**
- * Returns a pending-input summary for one queue mode.
- *
- * @param queueMode Queue mode to describe.
- * @returns Human-readable summary.
- */
-function pendingInputSummary(queueMode: string): string {
-  if (queueMode === 'safe_point_steering') {
-    return 'The user message is queued until the worker reaches a safe point.';
-  }
-
-  if (queueMode === 'blocked_gate') {
-    return 'The user message is waiting behind a blocking human gate.';
-  }
-
-  return 'The user message is queued as a follow-up turn.';
-}
-
-/**
- * Builds actions for one pending-input Action Center row.
- *
- * @param workspaceId Workspace that owns the pending input.
- * @param threadId Thread that owns the pending input.
- * @param requestId Pending user turn request id.
- * @returns Product actions for reviewing, editing, or cancelling pending input.
- */
-function pendingInputActions(
-  workspaceId: string,
-  threadId: string,
-  requestId: string
-): HumanAttentionAction[] {
-  const base = `/api/app/workspaces/${workspaceId}/threads/${threadId}/recovery/pending-user-turns/${requestId}`;
-
-  return [
-    openThreadAction(threadId),
-    {
-      kind: 'edit_pending_input',
-      label: 'Edit pending input',
-      method: 'POST',
-      href: `${base}/edit`,
-    },
-    {
-      kind: 'convert_pending_input_to_follow_up',
-      label: 'Convert to follow-up',
-      method: 'POST',
-      href: `${base}/follow-up`,
-    },
-    {
-      kind: 'promote_pending_input_to_interrupt',
-      label: 'Promote to interrupt',
-      method: 'POST',
-      href: `${base}/interrupt`,
-    },
-    {
-      kind: 'cancel_pending_input',
-      label: 'Cancel pending input',
-      method: 'POST',
-      href: `${base}/cancel`,
-    },
+    { kind: 'accept_review', label: 'Accept review', method: 'POST', href },
+    { kind: 'request_refinement', label: 'Request refinement', method: 'POST', href },
+    { kind: 'retry_work', label: 'Retry work', method: 'POST', href },
+    { kind: 'abort', label: 'Abort goal', method: 'POST', href },
   ];
 }
 

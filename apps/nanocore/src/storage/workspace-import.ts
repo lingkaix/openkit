@@ -3,6 +3,8 @@ import {
   BackendWorkspaceHandleSchema,
   EvidenceBundleRecordSchema,
   GitPushRecordSchema,
+  GoalReviewResolutionSnapshotSchema,
+  GoalReviewVerdictSchema,
   KnowledgeClaimSchema,
   KnowledgeConflictSchema,
   KnowledgeManagerContextPackageTraceRecordSchema,
@@ -54,6 +56,15 @@ import type {
   KnowledgeSourceRecord,
 } from '../lib/store.js';
 import type { AgentEnvironmentPackageSnapshotRecord } from '../runtime/aep-snapshot-ledger.js';
+import {
+  assertValidGoalPlanGraph,
+  computeGoalPlanDigest,
+  GoalPlanOutputSchema,
+  type GoalPlanTask,
+  GoalPlanTaskSchema,
+  selectGoalPlanPayload,
+} from '../runtime/goal-plan.js';
+import { assertGoalReviewRecordConsistency } from '../runtime/goal-review-records.js';
 import { createWorkerRuntimeProvenanceEvidenceId } from '../runtime/runtime-evidence.js';
 import {
   createWorkerRuntimeProvenanceBundleId,
@@ -259,22 +270,6 @@ type ExportedWorkspacePermissionDecision = z.infer<
   typeof ExportedWorkspacePermissionDecisionSchema
 >;
 
-const ExportedPendingUserTurnSchema = z
-  .object({
-    pendingTurnId: z.string().min(1),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    requestId: z.string().min(1),
-    contentItemId: z.string().min(1).nullable(),
-    contentDigest: z.string().min(1).nullable(),
-    queueMode: z.enum(['safe_point_steering', 'follow_up', 'blocked_gate']),
-    receivedAt: z.string().datetime(),
-    createdAt: z.string().datetime(),
-  })
-  .strict();
-
-type ExportedPendingUserTurn = z.infer<typeof ExportedPendingUserTurnSchema>;
-
 const ExportedStopReasonSchema = z.enum([
   'completed',
   'aborted',
@@ -292,14 +287,12 @@ const ExportedWorkerCheckpointSchema = z
     turnId: z.string().min(1),
     goalId: z.string().min(1).nullable(),
     taskId: z.string().min(1).nullable(),
+    requestId: z.string().min(1),
+    requestInputHash: z.string().min(1),
     stage: z.enum([
       'preparing',
       'running_worker',
       'waiting_for_user',
-      'reviewing',
-      'verifying',
-      'saving',
-      'recovering',
       'completed',
       'failed',
       'aborted',
@@ -327,8 +320,8 @@ const ExportedGoalRecordSchema = z
       'awaiting_plan_approval',
       'running',
       'awaiting_user',
+      'paused',
       'reviewing',
-      'verifying',
       'completed',
       'blocked',
       'aborted',
@@ -347,63 +340,30 @@ const ExportedGoalRecordSchema = z
 
 type ExportedGoalRecord = z.infer<typeof ExportedGoalRecordSchema>;
 
-const ExportedGoalVerificationCheckSchema = z
-  .object({
-    kind: z.enum(['command', 'test', 'manual']),
-    description: z.string().min(1).max(1_000),
-    command: z.string().min(1).max(1_000).optional(),
-  })
-  .strict();
+const ExportedGoalPlanRecordSchema = GoalPlanOutputSchema.extend({
+  workspaceId: z.string().min(1),
+  threadId: z.string().min(1),
+  goalId: z.string().min(1),
+  planItemId: z.string().min(1),
+  planDigest: z.string().min(1),
+  createdByRequestId: z.string().min(1),
+  createdAt: z.string().datetime(),
+}).strict();
 
-const ExportedGoalTaskSchema = z
-  .object({
-    taskId: z.string().min(1),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    goalId: z.string().min(1),
-    status: z.enum([
-      'pending',
-      'ready',
-      'running',
-      'reviewing',
-      'needs_revision',
-      'completed',
-      'blocked',
-      'failed',
-      'skipped',
-    ]),
-    title: z.string().min(1),
-    objective: z.string().min(1),
-    orderIndex: z.number().int(),
-    dependsOnTaskIds: z.array(z.string().min(1)),
-    acceptanceCriteria: z.array(z.string().min(1)),
-    contextBudgetTokens: z.number().int().positive(),
-    verificationChecks: z.array(ExportedGoalVerificationCheckSchema),
-    createdAt: z.string().datetime(),
-    updatedAt: z.string().datetime(),
-  })
-  .strict();
+type ExportedGoalPlanRecord = z.infer<typeof ExportedGoalPlanRecordSchema>;
+
+const ExportedGoalTaskSchema = GoalPlanTaskSchema.extend({
+  workspaceId: z.string().min(1),
+  threadId: z.string().min(1),
+  goalId: z.string().min(1),
+  planItemId: z.string().min(1),
+  status: z.enum(['pending', 'ready', 'running', 'reviewing', 'completed', 'blocked', 'failed']),
+  orderIndex: z.number().int().nonnegative(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict();
 
 type ExportedGoalTask = z.infer<typeof ExportedGoalTaskSchema>;
-
-const ExportedGoalReviewResolutionSnapshotSchema = z
-  .object({
-    outcome: z.enum([
-      'complete_next_task',
-      'complete_goal',
-      'continue',
-      'retry',
-      'needs_revision',
-      'decompose',
-      'awaiting_human',
-      'blocked',
-      'aborted',
-    ]),
-    task: ExportedGoalTaskSchema,
-    goal: ExportedGoalRecordSchema.nullable(),
-    nextTask: ExportedGoalTaskSchema.nullable(),
-  })
-  .strict();
 
 const ExportedGoalReviewRecordSchema = z
   .object({
@@ -412,17 +372,21 @@ const ExportedGoalReviewRecordSchema = z
     threadId: z.string().min(1),
     goalId: z.string().min(1),
     taskId: z.string().min(1),
-    turnId: z.string().min(1).nullable(),
+    turnId: z.string().min(1),
     itemIds: z.array(z.string().min(1)),
     artifactIds: z.array(z.string().min(1)),
     verificationEvidence: z.array(z.unknown()),
-    verdict: z.enum(['accept', 'refine', 'retry', 'decompose', 'ask_user', 'block', 'abort']),
-    reason: z.string().min(1),
+    prompt: z.string().min(1),
+    createdByRequestId: z.string().min(1),
+    verdict: GoalReviewVerdictSchema.nullable(),
+    reason: z.string().min(1).nullable(),
+    revisionInstruction: z.string().min(1).nullable(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
     resolvedAt: z.string().datetime().nullable(),
     resolutionRequestId: z.string().min(1).nullable(),
-    resolutionSnapshot: ExportedGoalReviewResolutionSnapshotSchema.nullable(),
+    resolvedByActorId: z.string().min(1).nullable(),
+    resolutionSnapshot: GoalReviewResolutionSnapshotSchema.nullable(),
   })
   .strict();
 
@@ -677,12 +641,12 @@ export interface WorkspaceImportSnapshot {
   workspaceQuarantineRecords: WorkspaceQuarantineRecord[];
   /** Imported workspace permission decision rows. */
   permissionDecisions: ExportedWorkspacePermissionDecision[];
-  /** Imported pending user turn rows. */
-  pendingUserTurns: ExportedPendingUserTurn[];
   /** Imported worker checkpoint rows. */
   workerCheckpoints: ExportedWorkerCheckpoint[];
   /** Imported Goal Mode goal rows. */
   goalRecords: ExportedGoalRecord[];
+  /** Imported immutable Goal Plan rows. */
+  goalPlanRecords: ExportedGoalPlanRecord[];
   /** Imported Goal Mode task rows. */
   goalTasks: ExportedGoalTask[];
   /** Imported Goal Mode review rows. */
@@ -711,6 +675,8 @@ interface ImportRemintContext {
   turnIds: Map<string, string>;
   /** Imported item ids keyed by source id. */
   itemIds: Map<string, string>;
+  /** Source Item ownership and type keyed by source id. */
+  itemLineage: Map<string, Pick<Item, 'workspaceId' | 'threadId' | 'type'>>;
   /** Imported artifact ids keyed by source id. */
   artifactIds: Map<string, string>;
   /** Imported agent-session ids keyed by source id. */
@@ -725,6 +691,10 @@ interface ImportRemintContext {
   goalIds: Map<string, string>;
   /** Imported Goal task ids keyed by source id. */
   goalTaskIds: Map<string, string>;
+  /** Source Plan Item ids whose step projections carry Goal Task ids. */
+  goalPlanItemIds: Set<string>;
+  /** Source Goal and Task pairs that have approved durable Task rows. */
+  goalTaskRecordKeys: Set<string>;
   /** Imported Goal review ids keyed by source id. */
   goalReviewIds: Map<string, string>;
   /** Imported Goal verification ids keyed by source id. */
@@ -763,6 +733,7 @@ export function readWorkspaceImportSnapshot(
     threadIds: new Map(),
     turnIds: new Map(),
     itemIds: new Map(),
+    itemLineage: new Map(),
     artifactIds: new Map(),
     agentSessionIds: new Map(),
     approvalRequestIds: new Map(),
@@ -770,14 +741,33 @@ export function readWorkspaceImportSnapshot(
     knowledgeSourceIds: new Map(),
     goalIds: new Map(),
     goalTaskIds: new Map(),
+    goalPlanItemIds: new Set(),
+    goalTaskRecordKeys: new Set(),
     goalReviewIds: new Map(),
     goalVerificationIds: new Map(),
     vaultGrantIds: new Map(),
     evidenceBundleIds: new Map(),
     knowledgeIds: new Set(),
   };
+  const exportedGoalAuthority = {
+    goals: readOptionalImportJsonl(context.files, 'records/goal-records.jsonl').map((record) =>
+      ExportedGoalRecordSchema.parse(record)
+    ),
+    plans: readOptionalImportJsonl(context.files, 'records/goal-plan-records.jsonl').map((record) =>
+      ExportedGoalPlanRecordSchema.parse(record)
+    ),
+    tasks: readOptionalImportJsonl(context.files, 'records/goal-tasks.jsonl').map((record) =>
+      ExportedGoalTaskSchema.parse(record)
+    ),
+  };
+  context.goalTaskIds = createStableGoalTaskIdMap(
+    exportedGoalAuthority.plans,
+    exportedGoalAuthority.tasks,
+    context.targetWorkspaceId
+  );
+  context.goalPlanItemIds = new Set(exportedGoalAuthority.plans.map((plan) => plan.planItemId));
   const canonical = readCanonicalImportState(context);
-  const goalRuntime = readGoalRuntimeControlState(context);
+  const goalRuntime = readGoalRuntimeControlState(context, exportedGoalAuthority);
   const securityRuntime = readSecurityRuntimeLedgerState(context);
   const workspaceSync = readWorkspaceSyncImportState(context);
   const portableFileState = readPortableImportState(context, canonical.knowledgeProposals);
@@ -824,9 +814,9 @@ export function readWorkspaceImportSnapshot(
     workspaceReconciliationRecords: workspaceSync.workspaceReconciliationRecords,
     workspaceQuarantineRecords: workspaceSync.workspaceQuarantineRecords,
     permissionDecisions: securityRuntime.permissionDecisions,
-    pendingUserTurns: goalRuntime.pendingUserTurns,
     workerCheckpoints: goalRuntime.workerCheckpoints,
     goalRecords: goalRuntime.goalRecords,
+    goalPlanRecords: goalRuntime.goalPlanRecords,
     goalTasks: goalRuntime.goalTasks,
     goalReviewRecords: goalRuntime.goalReviewRecords,
     goalVerificationRecords: goalRuntime.goalVerificationRecords,
@@ -905,11 +895,17 @@ function readCanonicalImportState(context: ImportRemintContext) {
     (record) => ItemSchema.parse(record)
   );
   const itemIds = new Map<string, string>();
+  const itemLineage = new Map<string, Pick<Item, 'workspaceId' | 'threadId' | 'type'>>();
   const approvalRequestIds = new Map<string, string>();
   const userInputRequestIds = new Map<string, string>();
   for (const revision of exportedItemRevisions) {
     if (!itemIds.has(revision.id)) {
       itemIds.set(revision.id, `it_imported_${context.targetWorkspaceId}_${itemIds.size + 1}`);
+      itemLineage.set(revision.id, {
+        workspaceId: revision.workspaceId,
+        threadId: revision.threadId,
+        type: revision.type,
+      });
     }
     if (
       (revision.type === 'approval-request' || revision.type === 'approval-decision') &&
@@ -1039,6 +1035,11 @@ function readCanonicalImportState(context: ImportRemintContext) {
     };
     if (item.type === 'artifact-reference') {
       rewritten.artifactId = requiredMapValue(artifactIds, item.artifactId, 'artifact');
+    } else if (item.type === 'plan' && context.goalPlanItemIds.has(item.id)) {
+      rewritten.steps = item.steps.map((step) => ({
+        ...step,
+        id: requiredMapValue(context.goalTaskIds, step.id, 'goal task'),
+      }));
     } else if (item.type === 'approval-request' || item.type === 'approval-decision') {
       rewritten.approvalRequestId = requiredMapValue(
         approvalRequestIds,
@@ -1295,6 +1296,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
   context.threadIds = threadIds;
   context.turnIds = turnIds;
   context.itemIds = itemIds;
+  context.itemLineage = itemLineage;
   context.artifactIds = artifactIds;
   context.agentSessionIds = agentSessionIds;
   context.approvalRequestIds = approvalRequestIds;
@@ -1324,32 +1326,40 @@ function readCanonicalImportState(context: ImportRemintContext) {
  * Reconstructs Goal Mode and worker-control records after canonical ids are known.
  *
  * @param context Shared import lineage and verified bytes.
+ * @param authority Parsed Goal, Plan, and Task authority records.
  * @returns Imported Goal Mode and worker-control records.
  * @throws Error when a control record references missing exported state.
  */
-function readGoalRuntimeControlState(context: ImportRemintContext) {
-  const { artifactIds, itemIds, threadIds, turnIds } = context;
-  const exportedGoalRecords = readOptionalImportJsonl(
-    context.files,
-    'records/goal-records.jsonl'
-  ).map((record) => ExportedGoalRecordSchema.parse(record));
-  const goalIds = new Map(
-    exportedGoalRecords.map((record, index) => [
-      record.goalId,
-      `goal_imported_${context.targetWorkspaceId}_${index + 1}`,
-    ])
-  );
-  const exportedGoalTasks = readOptionalImportJsonl(context.files, 'records/goal-tasks.jsonl').map(
-    (record) => ExportedGoalTaskSchema.parse(record)
-  );
-  const goalTaskIds = new Map(
-    exportedGoalTasks.map((record, index) => [
-      record.taskId,
-      `task_imported_${context.targetWorkspaceId}_${index + 1}`,
-    ])
-  );
+function readGoalRuntimeControlState(
+  context: ImportRemintContext,
+  authority: {
+    readonly goals: readonly ExportedGoalRecord[];
+    readonly plans: readonly ExportedGoalPlanRecord[];
+    readonly tasks: readonly ExportedGoalTask[];
+  }
+) {
+  const { artifactIds, itemIds, itemLineage, threadIds, turnIds } = context;
+  const exportedGoalRecords = authority.goals;
+  const exportedGoalPlanRecords = authority.plans;
+  const exportedGoalTasks = authority.tasks;
+  const goalIds = new Map<string, string>();
+  for (const [index, record] of exportedGoalRecords.entries()) {
+    if (goalIds.has(record.goalId)) {
+      throw new Error(`Goal identity is duplicated: ${record.goalId}`);
+    }
+    goalIds.set(record.goalId, `goal_imported_${context.targetWorkspaceId}_${index + 1}`);
+  }
+  const goalTaskIds = context.goalTaskIds;
+  const goalTaskRecordKeys = assertGoalAuthorityConsistency({
+    sourceWorkspaceId: context.report.exportedWorkspaceId,
+    goals: exportedGoalRecords,
+    plans: exportedGoalPlanRecords,
+    tasks: exportedGoalTasks,
+    itemLineage,
+  });
   context.goalIds = goalIds;
   context.goalTaskIds = goalTaskIds;
+  context.goalTaskRecordKeys = goalTaskRecordKeys;
   const goalRecords = exportedGoalRecords.map((record) =>
     rewriteImportedGoalRecord(
       record,
@@ -1360,26 +1370,28 @@ function readGoalRuntimeControlState(context: ImportRemintContext) {
       goalTaskIds
     )
   );
-  const goalTasks = exportedGoalTasks.map((record) =>
-    rewriteImportedGoalTask(record, context.targetWorkspaceId, threadIds, goalIds, goalTaskIds)
+  const goalPlanRecords = exportedGoalPlanRecords.map((record) =>
+    rewriteImportedGoalPlanRecord(
+      record,
+      context.targetWorkspaceId,
+      threadIds,
+      itemIds,
+      artifactIds,
+      goalIds,
+      goalTaskIds
+    )
   );
-  const pendingUserTurns = readOptionalImportJsonl(
-    context.files,
-    'records/pending-user-turns.jsonl'
-  ).map((record) => {
-    const parsed = ExportedPendingUserTurnSchema.parse(record);
-    const threadId = requiredMapValue(threadIds, parsed.threadId, 'thread');
-
-    return ExportedPendingUserTurnSchema.parse({
-      ...parsed,
-      pendingTurnId: `${context.targetWorkspaceId}:${threadId}:${parsed.requestId}`,
-      workspaceId: context.targetWorkspaceId,
-      threadId,
-      contentItemId: parsed.contentItemId
-        ? requiredMapValue(itemIds, parsed.contentItemId, 'item')
-        : null,
-    });
-  });
+  const goalTasks = exportedGoalTasks.map((record) =>
+    rewriteImportedGoalTask(
+      record,
+      context.targetWorkspaceId,
+      threadIds,
+      itemIds,
+      artifactIds,
+      goalIds,
+      goalTaskIds
+    )
+  );
   const workerCheckpoints = readOptionalImportJsonl(
     context.files,
     'records/worker-turn-checkpoints.jsonl'
@@ -1387,6 +1399,12 @@ function readGoalRuntimeControlState(context: ImportRemintContext) {
     const parsed = ExportedWorkerCheckpointSchema.parse(record);
     const threadId = requiredMapValue(threadIds, parsed.threadId, 'thread');
     const turnId = requiredMapValue(turnIds, parsed.turnId, 'turn');
+    assertApprovedGoalTaskReference(
+      parsed.goalId,
+      parsed.taskId,
+      goalTaskRecordKeys,
+      'Worker checkpoint'
+    );
 
     return ExportedWorkerCheckpointSchema.parse({
       ...parsed,
@@ -1402,7 +1420,17 @@ function readGoalRuntimeControlState(context: ImportRemintContext) {
   const exportedGoalReviewRecords = readOptionalImportJsonl(
     context.files,
     'records/goal-review-records.jsonl'
-  ).map((record) => ExportedGoalReviewRecordSchema.parse(record));
+  ).map((record) => {
+    const parsed = ExportedGoalReviewRecordSchema.parse(record);
+    assertGoalReviewRecordConsistency(parsed);
+    assertApprovedGoalTaskReference(
+      parsed.goalId,
+      parsed.taskId,
+      goalTaskRecordKeys,
+      'Goal Review'
+    );
+    return parsed;
+  });
   const goalReviewIds = new Map(
     exportedGoalReviewRecords.map((record, index) => [
       record.reviewId,
@@ -1419,7 +1447,7 @@ function readGoalRuntimeControlState(context: ImportRemintContext) {
       threadId: requiredMapValue(threadIds, parsed.threadId, 'thread'),
       goalId: requiredMapValue(goalIds, parsed.goalId, 'goal'),
       taskId: requiredMapValue(goalTaskIds, parsed.taskId, 'goal task'),
-      turnId: parsed.turnId ? requiredMapValue(turnIds, parsed.turnId, 'turn') : null,
+      turnId: requiredMapValue(turnIds, parsed.turnId, 'turn'),
       itemIds: parsed.itemIds.map((itemId) => requiredMapValue(itemIds, itemId, 'item')),
       artifactIds: parsed.artifactIds.map((artifactId) =>
         requiredMapValue(artifactIds, artifactId, 'artifact')
@@ -1427,31 +1455,16 @@ function readGoalRuntimeControlState(context: ImportRemintContext) {
       resolutionSnapshot: resolutionSnapshot
         ? {
             ...resolutionSnapshot,
-            task: rewriteImportedGoalTask(
-              resolutionSnapshot.task,
-              context.targetWorkspaceId,
-              threadIds,
-              goalIds,
-              goalTaskIds
-            ),
-            goal: resolutionSnapshot.goal
-              ? rewriteImportedGoalRecord(
-                  resolutionSnapshot.goal,
-                  context.targetWorkspaceId,
-                  threadIds,
-                  itemIds,
-                  goalIds,
-                  goalTaskIds
-                )
-              : null,
-            nextTask: resolutionSnapshot.nextTask
-              ? rewriteImportedGoalTask(
-                  resolutionSnapshot.nextTask,
-                  context.targetWorkspaceId,
-                  threadIds,
-                  goalIds,
-                  goalTaskIds
-                )
+            task: {
+              ...resolutionSnapshot.task,
+              taskId: requiredMapValue(goalTaskIds, resolutionSnapshot.task.taskId, 'goal task'),
+            },
+            goal: {
+              ...resolutionSnapshot.goal,
+              goalId: requiredMapValue(goalIds, resolutionSnapshot.goal.goalId, 'goal'),
+            },
+            nextReadyTaskId: resolutionSnapshot.nextReadyTaskId
+              ? requiredMapValue(goalTaskIds, resolutionSnapshot.nextReadyTaskId, 'goal task')
               : null,
           }
         : null,
@@ -1469,8 +1482,14 @@ function readGoalRuntimeControlState(context: ImportRemintContext) {
     ])
   );
   context.goalVerificationIds = goalVerificationIds;
-  const goalVerificationRecords = exportedGoalVerificationRecords.map((parsed) =>
-    ExportedGoalVerificationRecordSchema.parse({
+  const goalVerificationRecords = exportedGoalVerificationRecords.map((parsed) => {
+    assertApprovedGoalTaskReference(
+      parsed.goalId,
+      parsed.taskId,
+      goalTaskRecordKeys,
+      'Goal Verification'
+    );
+    return ExportedGoalVerificationRecordSchema.parse({
       ...parsed,
       verificationId: requiredMapValue(
         goalVerificationIds,
@@ -1486,8 +1505,8 @@ function readGoalRuntimeControlState(context: ImportRemintContext) {
       artifactIds: parsed.artifactIds.map((artifactId) =>
         requiredMapValue(artifactIds, artifactId, 'artifact')
       ),
-    })
-  );
+    });
+  });
   const mcpToolSchemaSnapshots = readOptionalImportJsonl(
     context.files,
     'records/mcp-tool-schema-snapshots.jsonl'
@@ -1501,9 +1520,9 @@ function readGoalRuntimeControlState(context: ImportRemintContext) {
   });
 
   return {
-    pendingUserTurns,
     workerCheckpoints,
     goalRecords,
+    goalPlanRecords,
     goalTasks,
     goalReviewRecords,
     goalVerificationRecords,
@@ -1523,11 +1542,11 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
     agentEnvironmentPackageSnapshotIds,
     agentSessionIds,
     approvalRequestIds,
-    artifactIds,
     evidenceBundleIds,
     goalIds,
     goalReviewIds,
     goalTaskIds,
+    goalTaskRecordKeys,
     goalVerificationIds,
     itemIds,
     report,
@@ -1882,28 +1901,8 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
       agentSessionId: parsed.agentSessionId
         ? requiredMapValue(agentSessionIds, parsed.agentSessionId, 'agent session')
         : null,
-      rawEvidenceRefs: rewriteEvidenceBundleRefs(
-        parsed.rawEvidenceRefs,
-        report.exportedWorkspaceId,
-        context.targetWorkspaceId,
-        threadIds,
-        turnIds,
-        goalIds,
-        artifactIds,
-        itemIds,
-        agentSessionIds
-      ),
-      redactedEvidenceRefs: rewriteEvidenceBundleRefs(
-        parsed.redactedEvidenceRefs,
-        report.exportedWorkspaceId,
-        context.targetWorkspaceId,
-        threadIds,
-        turnIds,
-        goalIds,
-        artifactIds,
-        itemIds,
-        agentSessionIds
-      ),
+      rawEvidenceRefs: rewriteEvidenceRefs(parsed.rawEvidenceRefs, context),
+      redactedEvidenceRefs: rewriteEvidenceRefs(parsed.redactedEvidenceRefs, context),
       ...(provenancePackage ? { contentDigests: [provenancePackage.digest] } : {}),
       workspaceId: context.targetWorkspaceId,
     });
@@ -1915,6 +1914,12 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
       ? exportedEvidenceBundles.find((bundle) => bundle.id === sourceIndexId)
       : undefined;
     const targetIndexDigest = provenancePackage?.digest;
+    assertApprovedGoalTaskReference(
+      parsed.goalId,
+      parsed.taskId,
+      goalTaskRecordKeys,
+      'Runtime Evidence'
+    );
 
     return RuntimeEvidenceRecordSchema.parse({
       ...parsed,
@@ -2148,6 +2153,7 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
       artifactIds: parsed.artifactIds.map((artifactId) =>
         requiredMapValue(artifactIds, artifactId, 'artifact')
       ),
+      evidenceRefs: rewriteEvidenceRefs(parsed.evidenceRefs, context),
       workspaceId: context.targetWorkspaceId,
     });
   });
@@ -2162,6 +2168,7 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
       artifactIds: parsed.artifactIds.map((artifactId) =>
         requiredMapValue(artifactIds, artifactId, 'artifact')
       ),
+      evidenceRefs: rewriteEvidenceRefs(parsed.evidenceRefs, context),
       workspaceId: context.targetWorkspaceId,
     });
   });
@@ -2916,6 +2923,218 @@ function readExportedArtifacts(
 }
 
 /**
+ * Builds one stable Task-id map from Plan order before approved Task rows.
+ *
+ * @param plans Exported immutable Goal Plans.
+ * @param tasks Exported approved Goal Task rows.
+ * @param workspaceId Imported Workspace id used in deterministic ids.
+ * @returns Source-to-target Task identity map including Plan-only Tasks.
+ */
+function createStableGoalTaskIdMap(
+  plans: readonly ExportedGoalPlanRecord[],
+  tasks: readonly ExportedGoalTask[],
+  workspaceId: string
+): Map<string, string> {
+  const result = new Map<string, string>();
+
+  /**
+   * Adds one source Task id exactly once in first-seen order.
+   *
+   * @param taskId Source Task id.
+   * @returns Nothing.
+   */
+  const add = (taskId: string): void => {
+    if (!result.has(taskId)) {
+      result.set(taskId, `task_imported_${workspaceId}_${result.size + 1}`);
+    }
+  };
+
+  for (const plan of plans) {
+    for (const task of plan.tasks) {
+      add(task.taskId);
+    }
+  }
+  for (const task of tasks) {
+    add(task.taskId);
+    task.dependsOnTaskIds.forEach(add);
+  }
+  return result;
+}
+
+/**
+ * Validates immutable Goal, Plan, and approved Task ownership before reminting.
+ *
+ * @param input Exported authority rows and canonical Item identities.
+ * @returns Source Goal-and-Task keys that have approved durable Task rows.
+ * @throws Error when ownership, digest, graph, identity, or Task facts disagree.
+ */
+function assertGoalAuthorityConsistency(input: {
+  readonly sourceWorkspaceId: string;
+  readonly goals: readonly ExportedGoalRecord[];
+  readonly plans: readonly ExportedGoalPlanRecord[];
+  readonly tasks: readonly ExportedGoalTask[];
+  readonly itemLineage: ReadonlyMap<string, Pick<Item, 'workspaceId' | 'threadId' | 'type'>>;
+}): Set<string> {
+  const goalsById = new Map(input.goals.map((goal) => [goal.goalId, goal]));
+  const plansByKey = new Map<string, ExportedGoalPlanRecord>();
+  const taskRecordKeys = new Set<string>();
+
+  for (const goal of input.goals) {
+    if (goal.workspaceId !== input.sourceWorkspaceId) {
+      throw new Error(`Goal has invalid Workspace lineage: ${goal.goalId}`);
+    }
+  }
+  for (const plan of input.plans) {
+    const goal = goalsById.get(plan.goalId);
+    const planItem = input.itemLineage.get(plan.planItemId);
+    const key = goalPlanRecordKey(plan.goalId, plan.planItemId);
+    if (plansByKey.has(key)) {
+      throw new Error(`Goal Plan identity is duplicated: ${plan.planItemId}`);
+    }
+    if (
+      !goal ||
+      plan.workspaceId !== input.sourceWorkspaceId ||
+      plan.threadId !== goal.threadId ||
+      !planItem ||
+      planItem.workspaceId !== input.sourceWorkspaceId ||
+      planItem.threadId !== plan.threadId ||
+      planItem.type !== 'plan'
+    ) {
+      throw new Error(`Goal Plan has invalid lineage: ${plan.planItemId}`);
+    }
+    if (plan.questions.length !== 0) {
+      throw new Error(`Goal Plan authority cannot retain unresolved questions: ${plan.planItemId}`);
+    }
+    assertValidGoalPlanGraph(plan.tasks);
+    if (plan.planDigest !== computeGoalPlanDigest(plan)) {
+      throw new Error(`Goal Plan digest does not match its payload: ${plan.planItemId}`);
+    }
+    plansByKey.set(key, plan);
+  }
+  for (const task of input.tasks) {
+    const goal = goalsById.get(task.goalId);
+    const taskKey = goalTaskRecordKey(task.goalId, task.taskId);
+    const plan = plansByKey.get(goalPlanRecordKey(task.goalId, task.planItemId));
+    const plannedTask = plan?.tasks[task.orderIndex];
+    if (taskRecordKeys.has(taskKey)) {
+      throw new Error(`Goal Task identity is duplicated: ${task.goalId}/${task.taskId}`);
+    }
+    if (
+      !goal ||
+      !plan ||
+      task.workspaceId !== input.sourceWorkspaceId ||
+      task.threadId !== goal.threadId ||
+      task.planItemId !== goal.planItemId ||
+      !plannedTask ||
+      JSON.stringify(selectGoalPlanTaskPayload(task)) !== JSON.stringify(plannedTask)
+    ) {
+      throw new Error(`Goal Task does not match its immutable Plan: ${task.goalId}/${task.taskId}`);
+    }
+    taskRecordKeys.add(taskKey);
+  }
+  for (const goal of input.goals) {
+    if (
+      (goal.planItemId !== null &&
+        !plansByKey.has(goalPlanRecordKey(goal.goalId, goal.planItemId))) ||
+      (goal.currentTaskId !== null &&
+        !taskRecordKeys.has(goalTaskRecordKey(goal.goalId, goal.currentTaskId)))
+    ) {
+      throw new Error(`Goal has incomplete Plan or Task authority: ${goal.goalId}`);
+    }
+    const activePlan =
+      goal.planItemId === null
+        ? undefined
+        : plansByKey.get(goalPlanRecordKey(goal.goalId, goal.planItemId));
+    const goalTasks = input.tasks.filter((task) => task.goalId === goal.goalId);
+    const hasNoApprovedTasks = goalTasks.length === 0;
+    const hasCompleteApprovedTasks =
+      activePlan !== undefined && goalTasks.length === activePlan.tasks.length;
+    const hasNoActivePlanOrTasks = goal.planItemId === null && hasNoApprovedTasks;
+    const lifecycleIsCoherent =
+      goal.status === 'planning'
+        ? hasNoActivePlanOrTasks
+        : goal.status === 'awaiting_plan_approval'
+          ? activePlan !== undefined && hasNoApprovedTasks
+          : goal.status === 'awaiting_user'
+            ? hasNoActivePlanOrTasks || hasCompleteApprovedTasks
+            : goal.status === 'failed'
+              ? hasNoActivePlanOrTasks || hasCompleteApprovedTasks
+              : hasCompleteApprovedTasks;
+    if (!lifecycleIsCoherent) {
+      throw new Error(`Goal lifecycle has incoherent Task authority: ${goal.goalId}`);
+    }
+  }
+  return taskRecordKeys;
+}
+
+/**
+ * Selects the exact immutable Task facts shared by a Goal Plan and Goal Task row.
+ *
+ * @param task Task payload or persisted Task row carrying extra lineage.
+ * @returns Strict Goal Plan Task payload.
+ */
+function selectGoalPlanTaskPayload(task: GoalPlanTask): GoalPlanTask {
+  return GoalPlanTaskSchema.parse({
+    taskId: task.taskId,
+    title: task.title,
+    objective: task.objective,
+    acceptanceCriteria: task.acceptanceCriteria,
+    contextBudgetTokens: task.contextBudgetTokens,
+    resources: task.resources,
+    expectedArtifacts: task.expectedArtifacts,
+    verificationChecks: task.verificationChecks,
+    reviewPolicy: task.reviewPolicy,
+    dependsOnTaskIds: task.dependsOnTaskIds,
+    escalationConditions: task.escalationConditions,
+  });
+}
+
+/**
+ * Builds the source identity key for one immutable Goal Plan.
+ *
+ * @param goalId Source Goal id.
+ * @param planItemId Source Plan Item id.
+ * @returns Composite Goal Plan identity key.
+ */
+function goalPlanRecordKey(goalId: string, planItemId: string): string {
+  return `${goalId}\u0000${planItemId}`;
+}
+
+/**
+ * Builds the source identity key for one approved Goal Task row.
+ *
+ * @param goalId Source Goal id.
+ * @param taskId Source Task id.
+ * @returns Composite approved Goal Task identity key.
+ */
+function goalTaskRecordKey(goalId: string, taskId: string): string {
+  return `${goalId}\u0000${taskId}`;
+}
+
+/**
+ * Requires an execution-time Task reference to name an approved durable Task row.
+ *
+ * @param goalId Source Goal id carried by the referencing record.
+ * @param taskId Optional source Task id carried by the referencing record.
+ * @param taskRecordKeys Approved source Goal-and-Task identities.
+ * @param label Referencing record family used in failure messages.
+ * @throws Error when a Task reference is missing its approved Task row.
+ */
+function assertApprovedGoalTaskReference(
+  goalId: string | null,
+  taskId: string | null,
+  taskRecordKeys: ReadonlySet<string>,
+  label: string
+): void {
+  if (
+    taskId !== null &&
+    (goalId === null || !taskRecordKeys.has(goalTaskRecordKey(goalId, taskId)))
+  ) {
+    throw new Error(`${label} references a Goal Task without an approved Task row: ${taskId}`);
+  }
+}
+
+/**
  * Rewrites one imported Goal record and its canonical references.
  *
  * @param record Exported Goal record.
@@ -2950,11 +3169,52 @@ function rewriteImportedGoalRecord(
 }
 
 /**
+ * Rewrites one immutable Goal Plan and recomputes its digest after complete reminting.
+ *
+ * @param record Exported immutable Goal Plan.
+ * @param workspaceId Imported Workspace id.
+ * @param threadIds Imported Thread ids keyed by source id.
+ * @param itemIds Imported Item ids keyed by source id.
+ * @param artifactIds Imported Artifact ids keyed by source id.
+ * @param goalIds Imported Goal ids keyed by source id.
+ * @param taskIds Imported Goal Task ids keyed by source id.
+ * @returns Immutable Goal Plan with reminted lineage and digest.
+ */
+function rewriteImportedGoalPlanRecord(
+  record: ExportedGoalPlanRecord,
+  workspaceId: string,
+  threadIds: ReadonlyMap<string, string>,
+  itemIds: ReadonlyMap<string, string>,
+  artifactIds: ReadonlyMap<string, string>,
+  goalIds: ReadonlyMap<string, string>,
+  taskIds: ReadonlyMap<string, string>
+): ExportedGoalPlanRecord {
+  const plan = GoalPlanOutputSchema.parse({
+    ...selectGoalPlanPayload(record),
+    tasks: record.tasks.map((task) =>
+      rewriteGoalPlanTaskPayload(task, itemIds, artifactIds, taskIds)
+    ),
+  });
+  assertValidGoalPlanGraph(plan.tasks);
+  return ExportedGoalPlanRecordSchema.parse({
+    ...record,
+    ...plan,
+    workspaceId,
+    threadId: requiredMapValue(threadIds, record.threadId, 'thread'),
+    goalId: requiredMapValue(goalIds, record.goalId, 'goal'),
+    planItemId: requiredMapValue(itemIds, record.planItemId, 'item'),
+    planDigest: computeGoalPlanDigest(plan),
+  });
+}
+
+/**
  * Rewrites one imported Goal task and its Goal dependency references.
  *
  * @param record Exported Goal task.
  * @param workspaceId Imported workspace id.
  * @param threadIds Imported thread ids keyed by source id.
+ * @param itemIds Imported Item ids keyed by source id.
+ * @param artifactIds Imported Artifact ids keyed by source id.
  * @param goalIds Imported Goal ids keyed by source id.
  * @param taskIds Imported Goal task ids keyed by source id.
  * @returns Goal task with deterministic imported lineage.
@@ -2963,16 +3223,55 @@ function rewriteImportedGoalTask(
   record: ExportedGoalTask,
   workspaceId: string,
   threadIds: ReadonlyMap<string, string>,
+  itemIds: ReadonlyMap<string, string>,
+  artifactIds: ReadonlyMap<string, string>,
   goalIds: ReadonlyMap<string, string>,
   taskIds: ReadonlyMap<string, string>
 ): ExportedGoalTask {
   return ExportedGoalTaskSchema.parse({
     ...record,
-    taskId: requiredMapValue(taskIds, record.taskId, 'goal task'),
+    ...rewriteGoalPlanTaskPayload(record, itemIds, artifactIds, taskIds),
     workspaceId,
     threadId: requiredMapValue(threadIds, record.threadId, 'thread'),
     goalId: requiredMapValue(goalIds, record.goalId, 'goal'),
-    dependsOnTaskIds: record.dependsOnTaskIds.map((taskId) =>
+    planItemId: requiredMapValue(itemIds, record.planItemId, 'item'),
+  });
+}
+
+/**
+ * Rewrites one exact Goal Plan Task payload without adding lifecycle state.
+ *
+ * @param task Source Goal Plan Task facts.
+ * @param itemIds Imported Item ids keyed by source id.
+ * @param artifactIds Imported Artifact ids keyed by source id.
+ * @param taskIds Imported Goal Task ids keyed by source id.
+ * @returns Strict Goal Plan Task payload with reminted references.
+ */
+function rewriteGoalPlanTaskPayload(
+  task: GoalPlanTask,
+  itemIds: ReadonlyMap<string, string>,
+  artifactIds: ReadonlyMap<string, string>,
+  taskIds: ReadonlyMap<string, string>
+): GoalPlanTask {
+  return GoalPlanTaskSchema.parse({
+    ...selectGoalPlanTaskPayload(task),
+    taskId: requiredMapValue(taskIds, task.taskId, 'goal task'),
+    resources: task.resources.map((resource) => {
+      if (resource.kind === 'item') {
+        return {
+          ...resource,
+          reference: requiredMapValue(itemIds, resource.reference, 'item'),
+        };
+      }
+      if (resource.kind === 'artifact') {
+        return {
+          ...resource,
+          reference: requiredMapValue(artifactIds, resource.reference, 'artifact'),
+        };
+      }
+      return resource;
+    }),
+    dependsOnTaskIds: task.dependsOnTaskIds.map((taskId) =>
       requiredMapValue(taskIds, taskId, 'goal task')
     ),
   });
@@ -3116,56 +3415,43 @@ function requiredMapValue<T>(records: ReadonlyMap<string, T>, sourceId: string, 
 }
 
 /**
- * Rewrites workspace references in evidence bundle refs.
+ * Rewrites portable evidence references through imported canonical lineage.
  *
- * @param refs Evidence bundle references from an export.
- * @param sourceWorkspaceId Workspace id recorded in the export.
- * @param targetWorkspaceId Workspace id used for imported records.
- * @param threadIds Imported thread ids keyed by source id.
- * @param turnIds Imported turn ids keyed by source id.
- * @param goalIds Imported goal ids keyed by source id.
- * @param artifactIds Imported artifact ids keyed by source id.
- * @param itemIds Imported item ids keyed by source id.
- * @param agentSessionIds Imported agent session ids keyed by source id.
+ * @param refs Evidence references from an export.
+ * @param context Imported canonical lineage maps.
  * @returns Evidence refs with direct workspace refs rewritten.
  */
-function rewriteEvidenceBundleRefs(
+function rewriteEvidenceRefs(
   refs: EvidenceBundleRecord['redactedEvidenceRefs'],
-  sourceWorkspaceId: string,
-  targetWorkspaceId: string,
-  threadIds: ReadonlyMap<string, string>,
-  turnIds: ReadonlyMap<string, string>,
-  goalIds: ReadonlyMap<string, string>,
-  artifactIds: ReadonlyMap<string, string>,
-  itemIds: ReadonlyMap<string, string>,
-  agentSessionIds: ReadonlyMap<string, string>
+  context: ImportRemintContext
 ): EvidenceBundleRecord['redactedEvidenceRefs'] {
   return refs.map((ref) => {
     let rewritten = ref.ref;
     switch (ref.kind) {
       case 'workspace':
-        if (ref.ref !== sourceWorkspaceId) {
+        if (ref.ref !== context.report.exportedWorkspaceId) {
           throw new Error(`Evidence ref references missing exported workspace: ${ref.ref}`);
         }
-        rewritten = targetWorkspaceId;
+        rewritten = context.targetWorkspaceId;
         break;
       case 'thread':
-        rewritten = requiredMapValue(threadIds, ref.ref, 'thread');
+        rewritten = requiredMapValue(context.threadIds, ref.ref, 'thread');
         break;
       case 'turn':
-        rewritten = requiredMapValue(turnIds, ref.ref, 'turn');
+      case 'worker':
+        rewritten = requiredMapValue(context.turnIds, ref.ref, 'turn');
         break;
       case 'goal':
-        rewritten = requiredMapValue(goalIds, ref.ref, 'goal');
+        rewritten = requiredMapValue(context.goalIds, ref.ref, 'goal');
         break;
       case 'artifact':
-        rewritten = requiredMapValue(artifactIds, ref.ref, 'artifact');
+        rewritten = requiredMapValue(context.artifactIds, ref.ref, 'artifact');
         break;
       case 'item':
-        rewritten = requiredMapValue(itemIds, ref.ref, 'item');
+        rewritten = requiredMapValue(context.itemIds, ref.ref, 'item');
         break;
       case 'agent-session':
-        rewritten = requiredMapValue(agentSessionIds, ref.ref, 'agent session');
+        rewritten = requiredMapValue(context.agentSessionIds, ref.ref, 'agent session');
         break;
     }
     return rewritten === ref.ref ? ref : { ...ref, ref: rewritten };

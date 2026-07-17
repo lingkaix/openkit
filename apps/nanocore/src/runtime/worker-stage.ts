@@ -7,10 +7,6 @@ export const WORKER_TURN_STAGES = [
   'preparing',
   'running_worker',
   'waiting_for_user',
-  'reviewing',
-  'verifying',
-  'saving',
-  'recovering',
   'completed',
   'failed',
   'aborted',
@@ -45,7 +41,11 @@ export function isTerminalWorkerTurnStage(
  * @returns Worker checkpoint stage that should be persisted for the terminal outcome.
  */
 export function workerTurnStageForStopReason(stopReason: StopReason): WorkerTurnStage {
-  if (stopReason === 'completed') {
+  if (
+    stopReason === 'completed' ||
+    stopReason === 'length' ||
+    stopReason === 'budget_exhausted'
+  ) {
     return 'completed';
   }
 

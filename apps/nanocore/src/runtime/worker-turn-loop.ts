@@ -5,13 +5,6 @@ import type { WorkspaceDb } from '../storage/db.js';
 import type { PreparedNextTurn } from './prepare-next-turn.js';
 import { type StopAfterTurnDecision, shouldStopAfterTurn } from './stop-after-turn.js';
 import {
-  type FollowUpDrainMode,
-  type QueuedFollowUpInput,
-  type SafePointSteeringMessage,
-  selectFollowUpInputs,
-  selectSteeringForSafePoint,
-} from './user-turn-queues.js';
-import {
   createWorkerCheckpointContextDiagnostics,
   createWorkerCheckpointEvidenceDiagnostics,
   updateWorkerCheckpoint,
@@ -21,21 +14,9 @@ import {
 import { workerTurnStageForStopReason } from './worker-stage.js';
 
 /**
- * Queued inputs available while preparing one worker turn.
- */
-export interface WorkerTurnLoopPrepareInput {
-  /** Safe-point steering drained before worker context preparation. */
-  readonly steeringMessages: readonly SafePointSteeringMessage[];
-  /** Follow-up inputs drained before worker context preparation. */
-  readonly followUpInputs: readonly QueuedFollowUpInput[];
-}
-
-/**
  * Effect that prepares worker-visible context and delegation data.
  */
-export type WorkerTurnLoopPrepareEffect = (
-  input: WorkerTurnLoopPrepareInput
-) => PreparedNextTurn | Promise<PreparedNextTurn>;
+export type WorkerTurnLoopPrepareEffect = () => PreparedNextTurn | Promise<PreparedNextTurn>;
 
 /**
  * Input passed to the worker turn reservation effect.
@@ -58,7 +39,7 @@ export interface WorkerTurnLoopReserveTurnResult {
  */
 export type WorkerTurnLoopReserveTurnEffect = (
   input: WorkerTurnLoopReserveTurnInput
-) => WorkerTurnLoopReserveTurnResult | Promise<WorkerTurnLoopReserveTurnResult>;
+) => WorkerTurnLoopReserveTurnResult;
 
 /**
  * Input passed to the worker start effect.
@@ -132,12 +113,14 @@ export interface RunWorkerTurnLoopInput {
   readonly goalId?: string | null;
   /** Optional goal task id associated with the worker turn. */
   readonly taskId?: string | null;
+  /** Command request that owns this worker envelope. */
+  readonly requestId: string;
+  /** Hash of the canonical command input without raw request content. */
+  readonly requestInputHash: string;
   /** Whether a normal completion should stop for review. */
   readonly reviewRequired: boolean;
   /** Remaining worker iterations after this turn. */
   readonly remainingWorkerIterations: number;
-  /** Follow-up queue drain mode for this safe point. */
-  readonly followUpDrainMode?: FollowUpDrainMode;
   /** Effect that prepares worker-visible context. */
   readonly prepare: WorkerTurnLoopPrepareEffect;
   /** Effect that reserves stable worker turn lineage before checkpointing. */
@@ -171,8 +154,6 @@ export interface RunWorkerTurnLoopResult {
   };
   /** Product-safe summary of the context selected for this worker turn. */
   readonly contextAssembly: WorkerCheckpointContextAssemblySummary;
-  /** Queued inputs selected for this worker turn. */
-  readonly queues: WorkerTurnLoopPrepareInput;
 }
 
 /**
@@ -185,32 +166,35 @@ export interface RunWorkerTurnLoopResult {
 export async function runWorkerTurnLoop(
   input: RunWorkerTurnLoopInput
 ): Promise<RunWorkerTurnLoopResult> {
-  const queues = selectWorkerTurnQueues(input);
-  const prepared = await input.prepare(queues);
+  const prepared = await input.prepare();
   const contextAssembly = createContextAssemblySummary(prepared);
-  const turn = await input.reserveTurn({ prepared });
-  recordWorkerTurnLaunchDecision({
-    workspaceDb: input.workspaceDb,
-    workspaceId: input.workspaceId,
-    threadId: input.threadId,
-    turnId: turn.turnId,
-    goalId: input.goalId ?? null,
-    taskId: input.taskId ?? null,
-    ...(input.now ? { now: new Date(input.now()) } : {}),
-  });
-
-  upsertWorkerCheckpoint(input.workspaceDb, {
-    workspaceId: input.workspaceId,
-    threadId: input.threadId,
-    turnId: turn.turnId,
-    goalId: input.goalId ?? null,
-    taskId: input.taskId ?? null,
-    stage: 'preparing',
-    iteration: 0,
-    contextDigest: prepared.contextPackageDigest,
-    diagnosticsSummary: createWorkerCheckpointContextDiagnostics(contextAssembly),
-    ...(input.now ? { now: input.now } : {}),
-  });
+  const turn = input.workspaceDb.sqlite.transaction(() => {
+    const reserved = input.reserveTurn({ prepared });
+    recordWorkerTurnLaunchDecision({
+      workspaceDb: input.workspaceDb,
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      turnId: reserved.turnId,
+      goalId: input.goalId ?? null,
+      taskId: input.taskId ?? null,
+      ...(input.now ? { now: new Date(input.now()) } : {}),
+    });
+    upsertWorkerCheckpoint(input.workspaceDb, {
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      turnId: reserved.turnId,
+      goalId: input.goalId ?? null,
+      taskId: input.taskId ?? null,
+      requestId: input.requestId,
+      requestInputHash: input.requestInputHash,
+      stage: 'preparing',
+      iteration: 0,
+      contextDigest: prepared.contextPackageDigest,
+      diagnosticsSummary: createWorkerCheckpointContextDiagnostics(contextAssembly),
+      ...(input.now ? { now: input.now } : {}),
+    });
+    return reserved;
+  })();
 
   let workerSessionId: string | null = null;
 
@@ -261,7 +245,6 @@ export async function runWorkerTurnLoop(
       stopDecision,
       evidence,
       contextAssembly,
-      queues,
     };
   } catch (error) {
     updateWorkerCheckpoint(input.workspaceDb, {
@@ -292,27 +275,5 @@ function createContextAssemblySummary(
     contextDigest: prepared.contextPackageDigest,
     contextRefs: prepared.delegationRequest.contextRefs,
     repositoryResourceId: prepared.repository.resourceId,
-    steeringMessageCount: prepared.steeringMessages.length,
-    followUpInputCount: prepared.followUpInputs.length,
-  };
-}
-
-/**
- * Selects queued safe-point steering and follow-up inputs without claiming delivery.
- *
- * @param input Worker turn loop input.
- * @returns Queue payload selected for context preparation.
- */
-function selectWorkerTurnQueues(input: RunWorkerTurnLoopInput): WorkerTurnLoopPrepareInput {
-  return {
-    steeringMessages: selectSteeringForSafePoint(input.workspaceDb, {
-      workspaceId: input.workspaceId,
-      threadId: input.threadId,
-    }),
-    followUpInputs: selectFollowUpInputs(input.workspaceDb, {
-      workspaceId: input.workspaceId,
-      threadId: input.threadId,
-      drainMode: input.followUpDrainMode ?? 'one_at_a_time',
-    }),
   };
 }

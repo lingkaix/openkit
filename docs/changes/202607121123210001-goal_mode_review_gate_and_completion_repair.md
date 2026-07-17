@@ -4,6 +4,8 @@ Type: change-plan
 Status: completed
 Date: 2026-07-12
 
+Current-contract note (2026-07-17): This completed record preserves the behavior accepted for its 2026-07-12 repair. The later grouped G01 audit removed Goal Task status `skipped` because no lifecycle producer, successor, recovery rule, or completion predicate owned it, and replaced the historical default-accept Review with one unresolved Review plus exact `accept`, `refine`, `retry`, and `abort` decisions. References below to Tasks completing as skipped, a preselected default verdict, an accept-only Action Center row, multi-verdict Review as a non-goal, or caller-selected Review skipping are historical and are superseded by the Goal Mode Coordination and Human Attention specifications. Atomic Review ownership and immutable replay snapshots remain current.
+
 ## Intent
 
 Restore the accepted Goal Mode invariant that one completed worker turn advances exactly one goal task, stops at an actionable human gate when review is required, and completes the goal only after every required task is accepted or skipped.

@@ -56,6 +56,7 @@ function seedGoalTasks(workspaceDb: WorkspaceDb): void {
     workspaceId: 'ws_demo',
     threadId: 'th_demo',
     goalId: 'goal_demo',
+    planItemId: 'item_plan_demo',
     taskId: 'task_demo',
     title: 'Verify task',
     objective: 'Run focused verification.',
@@ -63,12 +64,28 @@ function seedGoalTasks(workspaceDb: WorkspaceDb): void {
     dependsOnTaskIds: [],
     acceptanceCriteria: ['Verification evidence is durable.'],
     contextBudgetTokens: 8000,
+    resources: [],
+    expectedArtifacts: [{ kind: 'test-result', description: 'Focused verification results.' }],
+    verificationChecks: [
+      {
+        kind: 'test',
+        description: 'Run the focused NanoCore tests.',
+        command: 'pnpm --filter @openkit/nanocore test',
+      },
+    ],
+    reviewPolicy: {
+      required: true,
+      reviewers: ['human'],
+      instructions: 'Review the focused verification results.',
+    },
+    escalationConditions: [],
     now: () => '2026-05-31T00:01:00.000Z',
   });
   createGoalTask(workspaceDb, {
     workspaceId: 'ws_demo',
     threadId: 'th_demo',
     goalId: 'goal_demo',
+    planItemId: 'item_plan_demo',
     taskId: 'task_other',
     title: 'Other task',
     objective: 'Run other verification.',
@@ -76,6 +93,17 @@ function seedGoalTasks(workspaceDb: WorkspaceDb): void {
     dependsOnTaskIds: [],
     acceptanceCriteria: ['Other verification is durable.'],
     contextBudgetTokens: 8000,
+    resources: [],
+    expectedArtifacts: [{ kind: 'test-result', description: 'Other verification results.' }],
+    verificationChecks: [
+      { kind: 'manual', description: 'Confirm the other verification result is durable.' },
+    ],
+    reviewPolicy: {
+      required: true,
+      reviewers: ['human'],
+      instructions: 'Review the other verification results.',
+    },
+    escalationConditions: [],
     now: () => '2026-05-31T00:01:30.000Z',
   });
 }

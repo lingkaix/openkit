@@ -1967,6 +1967,28 @@ export function listRestorableSchedulerSessionLeases(
 }
 
 /**
+ * Lists scheduler leases for one exact product Turn lineage.
+ *
+ * @param coreDb Open Core database handle.
+ * @param input Exact Workspace, Thread, and Turn lineage.
+ * @returns Matching leases in deterministic acquisition order.
+ */
+export function listSchedulerSessionLeasesForTurn(
+  coreDb: CoreDb,
+  input: { readonly workspaceId: string; readonly threadId: string; readonly turnId: string }
+): SchedulerSessionLeaseRecord[] {
+  const rows = coreDb.sqlite
+    .prepare(
+      `${schedulerSessionLeaseSelectSql()}
+      WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
+      ORDER BY acquired_at ASC, lease_id ASC`
+    )
+    .all(input.workspaceId, input.threadId, input.turnId) as SchedulerSessionLeaseRow[];
+
+  return rows.map(mapSchedulerSessionLeaseRow);
+}
+
+/**
  * Resolves the admission authority context for one scheduler session lease.
  *
  * @param coreDb Open Core database handle.

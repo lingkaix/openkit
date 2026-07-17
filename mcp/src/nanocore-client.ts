@@ -1,11 +1,8 @@
 import type {
   ApproveThreadGoalPlanRequest,
-  ClearInterruptedWorkerCheckpointRequest,
   ConsumeOpenKitBootstrapTokenRequest,
   CreateAutomationRequest,
   CreateOpenKitAccessTokenRequest,
-  EditRecoveryPendingUserTurnRequest,
-  GoalStepReviewPolicyOverride,
   KnowledgeManagerAnswerRequest,
   KnowledgeManagerDraftProposalRequest,
   KnowledgeManagerHealthCheckRequest,
@@ -109,14 +106,6 @@ export interface ThreadScopeInput extends WorkspaceScopeInput {
   threadId: string;
 }
 
-/** Input for clearing one interrupted worker checkpoint. */
-export interface ClearInterruptedWorkerCheckpointInput extends ThreadScopeInput {
-  /** Worker turn id represented by the checkpoint. */
-  turnId: string;
-  /** Terminal stage that was durably recorded before cleanup. */
-  terminalStage: ClearInterruptedWorkerCheckpointRequest['terminalStage'];
-}
-
 /** Input for retrying one interrupted worker checkpoint. */
 export interface RetryInterruptedWorkerCheckpointInput extends ThreadScopeInput {
   /** Worker turn id represented by the checkpoint. */
@@ -133,32 +122,6 @@ export interface RetrySchedulerAdmissionInput extends WorkspaceScopeInput {
 export interface CancelSchedulerAdmissionInput extends WorkspaceScopeInput {
   /** Scheduler admission queue entry id. */
   queueEntryId: string;
-}
-
-/** Input for cancelling one pending user turn. */
-export interface CancelRecoveryPendingUserTurnInput extends ThreadScopeInput {
-  /** Pending user turn request id. */
-  requestId: string;
-}
-
-/** Input for converting one pending user turn to follow-up delivery. */
-export interface ConvertRecoveryPendingUserTurnToFollowUpInput extends ThreadScopeInput {
-  /** Pending user turn request id. */
-  requestId: string;
-}
-
-/** Input for promoting one pending user turn to an active-turn interrupt. */
-export interface PromoteRecoveryPendingUserTurnToInterruptInput extends ThreadScopeInput {
-  /** Pending user turn request id. */
-  requestId: string;
-}
-
-/** Input for editing one pending user turn. */
-export interface EditRecoveryPendingUserTurnInput
-  extends ThreadScopeInput,
-    EditRecoveryPendingUserTurnRequest {
-  /** Pending user turn request id. */
-  requestId: string;
 }
 
 /** Input for reading interface and NanoCore readiness. */
@@ -492,8 +455,6 @@ export interface DraftGoalPlanInput extends ThreadScopeInput {
 export interface ApproveGoalPlanInput extends ThreadScopeInput {
   /** Plan item id returned by NanoCore plan drafting. */
   planItemId: string;
-  /** Plan payload returned by NanoCore plan drafting and approved by the human. */
-  plan: unknown;
   /** Request id for idempotent mutation tracking. */
   requestId: string;
 }
@@ -508,10 +469,6 @@ export interface ReviseGoalPlanInput extends ThreadScopeInput {
 
 /** Input for running one bounded Goal Mode step. */
 export interface StepGoalInput extends ThreadScopeInput {
-  /** Follow-up draining mode for the worker step. */
-  followUpDrainMode: 'one_at_a_time';
-  /** Optional review policy override accepted by NanoCore. */
-  reviewPolicyOverride?: GoalStepReviewPolicyOverride | undefined;
   /** Request id for idempotent mutation tracking. */
   requestId: string;
 }
@@ -746,22 +703,6 @@ export interface OpenKitNanoCoreClient {
   listWorkspaces(): Promise<unknown>;
   /** Lists interrupted worker recovery states. */
   listInterruptedWorkers(): Promise<unknown>;
-  /** Lists pending user turns preserved for one thread recovery state. */
-  listRecoveryPendingUserTurns(input: ThreadScopeInput): Promise<unknown>;
-  /** Cancels one pending user turn preserved for thread recovery. */
-  cancelRecoveryPendingUserTurn(input: CancelRecoveryPendingUserTurnInput): Promise<unknown>;
-  /** Converts one pending user turn preserved for thread recovery to follow-up delivery. */
-  convertRecoveryPendingUserTurnToFollowUp(
-    input: ConvertRecoveryPendingUserTurnToFollowUpInput
-  ): Promise<unknown>;
-  /** Promotes one pending user turn preserved for thread recovery to an active-turn interrupt. */
-  promoteRecoveryPendingUserTurnToInterrupt(
-    input: PromoteRecoveryPendingUserTurnToInterruptInput
-  ): Promise<unknown>;
-  /** Edits one pending user turn preserved for thread recovery. */
-  editRecoveryPendingUserTurn(input: EditRecoveryPendingUserTurnInput): Promise<unknown>;
-  /** Clears one interrupted worker checkpoint after terminal state is recorded. */
-  clearInterruptedWorkerCheckpoint(input: ClearInterruptedWorkerCheckpointInput): Promise<unknown>;
   /** Queues one interrupted worker checkpoint for retry. */
   retryInterruptedWorkerCheckpoint(input: RetryInterruptedWorkerCheckpointInput): Promise<unknown>;
   /** Requeues one denied scheduler admission. */
@@ -861,9 +802,9 @@ export function createNanoCoreFacade(
   return {
     approveGoalPlan: (input) =>
       client.app.approveThreadGoalPlan(input.workspaceId, input.threadId, {
-        plan: input.plan as ApproveThreadGoalPlanRequest['plan'],
+        requestId: input.requestId,
         planItemId: input.planItemId,
-      }),
+      } satisfies ApproveThreadGoalPlanRequest),
     reviseGoalPlan: (input) =>
       client.app.reviseThreadGoalPlan(input.workspaceId, input.threadId, {
         requestId: input.requestId,
@@ -880,7 +821,10 @@ export function createNanoCoreFacade(
         requestId: input.requestId,
         workspaceId: input.workspaceId,
       }),
-    draftGoalPlan: (input) => client.app.createThreadGoalPlan(input.workspaceId, input.threadId),
+    draftGoalPlan: (input) =>
+      client.app.createThreadGoalPlan(input.workspaceId, input.threadId, {
+        requestId: input.requestId,
+      }),
     executeGitPush: (input) =>
       client.repositories.executeGitPush(input.workspaceId, input.repositoryResourceId, {
         approvalRequestId: input.approvalRequestId,
@@ -892,30 +836,6 @@ export function createNanoCoreFacade(
         localPath: input.localPath,
       }),
     listInterruptedWorkers: () => client.app.listInterruptedWorkers(),
-    listRecoveryPendingUserTurns: (input) =>
-      client.app.listRecoveryPendingUserTurns(input.workspaceId, input.threadId),
-    cancelRecoveryPendingUserTurn: (input) =>
-      client.app.cancelRecoveryPendingUserTurn(input.workspaceId, input.threadId, input.requestId),
-    convertRecoveryPendingUserTurnToFollowUp: (input) =>
-      client.app.convertRecoveryPendingUserTurnToFollowUp(
-        input.workspaceId,
-        input.threadId,
-        input.requestId
-      ),
-    promoteRecoveryPendingUserTurnToInterrupt: (input) =>
-      client.app.promoteRecoveryPendingUserTurnToInterrupt(
-        input.workspaceId,
-        input.threadId,
-        input.requestId
-      ),
-    editRecoveryPendingUserTurn: (input) =>
-      client.app.editRecoveryPendingUserTurn(input.workspaceId, input.threadId, input.requestId, {
-        text: input.text,
-      }),
-    clearInterruptedWorkerCheckpoint: (input) =>
-      client.app.clearInterruptedWorkerCheckpoint(input.workspaceId, input.threadId, input.turnId, {
-        terminalStage: input.terminalStage,
-      }),
     retryInterruptedWorkerCheckpoint: (input) =>
       client.app.retryInterruptedWorkerCheckpoint(input.workspaceId, input.threadId, input.turnId),
     retrySchedulerAdmission: (input) =>
@@ -1196,12 +1116,35 @@ export function createNanoCoreFacade(
       }
 
       if (row.source.type === 'goal_review') {
+        const verdict =
+          input.actionId === 'accept_review'
+            ? 'accept'
+            : input.actionId === 'request_refinement'
+              ? 'refine'
+              : input.actionId === 'retry_work'
+                ? 'retry'
+                : input.actionId === 'abort'
+                  ? 'abort'
+                  : null;
+        if (!verdict || input.decision !== verdict) {
+          throw new Error('Goal Review action and decision do not match.');
+        }
+
         return client.app.submitGoalReviewDecision(
           input.workspaceId,
           row.source.threadId,
           row.source.goalId,
           row.source.reviewId,
-          { requestId: input.requestId }
+          {
+            requestId: input.requestId,
+            verdict,
+            ...(verdict === 'refine' && input.comment
+              ? { revisionInstruction: input.comment }
+              : {}),
+            ...((verdict === 'retry' || verdict === 'abort') && input.comment
+              ? { reason: input.comment }
+              : {}),
+          }
         );
       }
 
@@ -1259,6 +1202,7 @@ export function createNanoCoreFacade(
     startGoal: (input) =>
       client.app.startThreadGoal(input.workspaceId, input.threadId, {
         objective: input.objective,
+        requestId: input.requestId,
       }),
     startNanoCore: async () => ({
       allowStartup: options.allowStartup === true,
@@ -1277,9 +1221,7 @@ export function createNanoCoreFacade(
       client.runtimeConfig.restartStaleSession(input.workspaceId, input.sessionId),
     stepGoal: (input) =>
       client.app.runThreadGoalStep(input.workspaceId, input.threadId, {
-        followUpDrainMode: input.followUpDrainMode,
         requestId: input.requestId,
-        ...(input.reviewPolicyOverride ? { reviewPolicyOverride: input.reviewPolicyOverride } : {}),
       }),
     submitSteering: (input) =>
       client.app.submitThreadGoalSteering(input.workspaceId, input.threadId, {

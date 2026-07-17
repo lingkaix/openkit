@@ -42,9 +42,12 @@ import { ensureTurnFeedback } from '../runtime/feedback.js';
 import type { RuntimeAgent } from '../runtime/types.js';
 import {
   getCommandRequestRecord,
+  getCommandRequestRecordFromDb,
   listCommandRequestRecords,
   recordCommandRequestRecord,
+  recordCommandRequestRecordInDb,
 } from '../storage/command-request-records.js';
+import type { WorkspaceDb } from '../storage/db.js';
 import {
   ensureLayout,
   ensureWorkspaceLayout,
@@ -178,6 +181,8 @@ export type CommandRequestName =
   | 'thread.create'
   | 'thread.update'
   | 'thread.archive'
+  | 'chat.start'
+  | 'task.start'
   | 'turn.start'
   | 'turn.input.submit'
   | 'turn.interrupt'
@@ -190,7 +195,15 @@ export type CommandRequestName =
   | 'workspace_sync.recovery.decide'
   | 'knowledge.proposal.draft'
   | 'knowledge.proposal.decide'
-  | 'goal.review.decide';
+  | 'goal.start'
+  | 'goal.plan'
+  | 'goal.plan.approve'
+  | 'goal.plan.revise'
+  | 'goal.pause'
+  | 'goal.resume'
+  | 'goal.step'
+  | 'goal.review.decide'
+  | 'worker.recovery.retry';
 
 /**
  * Resource kind returned by an idempotent command.
@@ -211,6 +224,8 @@ export type CommandRequestResponseKind =
   | 'workspace_sync_review'
   | 'knowledge_proposal'
   | 'knowledge_proposal_review'
+  | 'goal'
+  | 'goal_plan'
   | 'goal_review';
 
 /**
@@ -960,14 +975,21 @@ export class FsStore {
    * @param command Stable command name.
    * @param requestId Caller-supplied idempotency id.
    * @param scope Non-secret command scope ids.
+   * @param workspaceDb Optional open Workspace database for transaction-local reads.
    * @returns Matching command request record, or null.
    */
   public getCommandRequest(
     command: CommandRequestName,
     requestId: string,
-    scope: CommandRequestScope
+    scope: CommandRequestScope,
+    workspaceDb?: WorkspaceDb
   ): CommandRequestRecord | null {
     const key = commandRequestKey(command, requestId, scope);
+
+    if (workspaceDb) {
+      this.assertCommandWorkspaceDb(scope, workspaceDb);
+      return getCommandRequestRecordFromDb(workspaceDb, key, now());
+    }
 
     if (this.dataRoot) {
       return getCommandRequestRecord(this.dataRoot, this.userId, scope.workspaceId, key, now());
@@ -982,9 +1004,13 @@ export class FsStore {
    * Records the resource pointer for a completed idempotent command.
    *
    * @param input Idempotency record input.
+   * @param workspaceDb Optional open Workspace database for transaction-local writes.
    * @returns Persisted idempotency record.
    */
-  public recordCommandRequest(input: CommandRequestRecordInput): CommandRequestRecord {
+  public recordCommandRequest(
+    input: CommandRequestRecordInput,
+    workspaceDb?: WorkspaceDb
+  ): CommandRequestRecord {
     const createdAt = input.createdAt ?? now();
     const record: CommandRequestRecord = {
       key: commandRequestKey(input.command, input.requestId, input.scope),
@@ -997,13 +1023,29 @@ export class FsStore {
       expiresAt: input.expiresAt ?? commandRequestExpiresAt(createdAt),
     };
 
-    if (this.dataRoot) {
+    if (workspaceDb) {
+      this.assertCommandWorkspaceDb(input.scope, workspaceDb);
+      recordCommandRequestRecordInDb(workspaceDb, record);
+    } else if (this.dataRoot) {
       recordCommandRequestRecord(this.dataRoot, this.userId, record);
     } else {
       this.commandRequests.set(record.key, record);
     }
 
     return record;
+  }
+
+  /**
+   * Confirms that an open Workspace database owns one command scope.
+   *
+   * @param scope Command scope that must name a Workspace.
+   * @param workspaceDb Open Workspace database supplied by the caller.
+   * @throws Error when actor or Workspace ownership does not match.
+   */
+  private assertCommandWorkspaceDb(scope: CommandRequestScope, workspaceDb: WorkspaceDb): void {
+    if (scope.workspaceId !== workspaceDb.workspaceId || workspaceDb.userId !== this.userId) {
+      throw new Error('Command request database does not match its actor and Workspace scope.');
+    }
   }
 
   /**

@@ -8,11 +8,36 @@ import type { z } from 'zod';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { upsertWorkspaceRepositoryResource } from '../workspace/repository-store.js';
-import { createGoalRecord, createGoalTask } from './goal-store.js';
+import { createGoalRecord, createGoalTask, updateGoalStatus } from './goal-store.js';
 import { prepareGoalTaskDelegation } from './goal-task-delegation.js';
-import { enqueueFollowUpInput, enqueueSteeringForSafePoint } from './user-turn-queues.js';
 
 type Item = z.infer<typeof ItemSchema>;
+
+const TASK_EXECUTION_CONTRACT = {
+  resources: [
+    {
+      kind: 'repository' as const,
+      reference: 'linked workspace repository',
+      reason: 'The task verifies the release repository.',
+    },
+  ],
+  expectedArtifacts: [
+    { kind: 'test-result' as const, description: 'Release verification output.' },
+  ],
+  verificationChecks: [
+    {
+      kind: 'test' as const,
+      description: 'Run release verification.',
+      command: 'pnpm -w verify:release',
+    },
+  ],
+  reviewPolicy: {
+    required: true,
+    reviewers: ['human'] as const,
+    instructions: 'Review the release verification evidence.',
+  },
+  escalationConditions: ['Escalate if release verification cannot run.'],
+};
 
 /**
  * Opens a migrated Core database for goal task delegation tests.
@@ -55,8 +80,9 @@ function addReadyRepository(coreDb: CoreDb, workspaceId: string, userId = 'user_
  * Creates one ready goal task fixture.
  *
  * @param workspaceDb Open workspace-scope database handle.
+ * @param taskPlanItemId Immutable Plan id recorded on the Task.
  */
-function addReadyGoalTask(workspaceDb: WorkspaceDb): void {
+function addReadyGoalTask(workspaceDb: WorkspaceDb, taskPlanItemId = 'it_plan'): void {
   createGoalRecord(workspaceDb, {
     workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
     goalId: 'goal_demo',
@@ -65,6 +91,13 @@ function addReadyGoalTask(workspaceDb: WorkspaceDb): void {
     title: 'Ship release',
     objective: 'Make v0.0.6 ready.',
   });
+  updateGoalStatus(workspaceDb, {
+    workspaceId: 'ws_demo',
+    threadId: 'th_demo',
+    goalId: 'goal_demo',
+    status: 'running',
+    planItemId: 'it_plan',
+  });
   createGoalTask(workspaceDb, {
     workspaceId: 'ws_demo',
     threadId: 'th_demo',
@@ -72,10 +105,12 @@ function addReadyGoalTask(workspaceDb: WorkspaceDb): void {
     taskId: 'task_demo',
     title: 'Run verification',
     objective: 'Run the release verification checks.',
+    planItemId: taskPlanItemId,
     orderIndex: 0,
     dependsOnTaskIds: [],
     acceptanceCriteria: ['Verification checks pass.'],
     contextBudgetTokens: 12_000,
+    ...TASK_EXECUTION_CONTRACT,
     status: 'ready',
   });
 }
@@ -115,7 +150,7 @@ function threadItems(): Item[] {
 }
 
 describe('goal task delegation preparation', () => {
-  it('prepares a structured worker delegation request for a selected goal task', () => {
+  it('prepares authorized delegation facts for a selected goal task', () => {
     const coreDb = createCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'user_local', 'ws_demo');
 
@@ -123,20 +158,6 @@ describe('goal task delegation preparation', () => {
       applyScopedMigrations(workspaceDb);
       addReadyRepository(coreDb, 'ws_demo');
       addReadyGoalTask(workspaceDb);
-      const steering = enqueueSteeringForSafePoint(workspaceDb, {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        requestId: 'req_steering',
-        contentDigest: 'digest_steering',
-        contentItemId: 'it_steering',
-      });
-      const followUp = enqueueFollowUpInput(workspaceDb, {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        requestId: 'req_follow',
-        contentDigest: 'digest_follow',
-        contentItemId: 'it_follow',
-      });
 
       const prepared = prepareGoalTaskDelegation(coreDb, workspaceDb, {
         workspaceId: 'ws_demo',
@@ -144,23 +165,22 @@ describe('goal task delegation preparation', () => {
         goalId: 'goal_demo',
         taskId: 'task_demo',
         threadItems: threadItems(),
-        steeringMessages: [
-          {
-            kind: 'safe_point_steering_message',
-            owner: 'system',
-            startsWorkerTurn: false,
-            pendingTurn: steering,
-          },
-        ],
-        followUpInputs: [
-          {
-            kind: 'queued_follow_up_input',
-            owner: 'user',
-            startsWorkerTurn: false,
-            pendingTurn: followUp,
-          },
-        ],
+      });
+
+      expect(prepared.repository.resourceId).toBe('repo_default');
+      expect(prepared.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
+      expect(prepared).toMatchObject({
+        objective: 'Run the release verification checks.',
+        contextRefs: [{ kind: 'item', id: 'it_context' }],
+      });
+      expect(prepared.workerRequestDetails).toEqual({
+        acceptanceCriteria: ['Verification checks pass.'],
+        resources: TASK_EXECUTION_CONTRACT.resources,
         expectedArtifacts: [{ kind: 'test-result', description: 'Release verification output.' }],
+        constraints: {
+          maxContextTokens: 12_000,
+          maxWorkerIterations: 1,
+        },
         verification: [
           {
             kind: 'test',
@@ -168,34 +188,9 @@ describe('goal task delegation preparation', () => {
             command: 'pnpm -w verify:release',
           },
         ],
-        stopConditions: ['Stop if release verification fails.'],
-      });
-
-      expect(prepared.repository.resourceId).toBe('repo_default');
-      expect(prepared.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
-      expect(prepared.steeringMessages.map((message) => message.pendingTurn.requestId)).toEqual([
-        'req_steering',
-      ]);
-      expect(prepared.followUpInputs.map((message) => message.pendingTurn.requestId)).toEqual([
-        'req_follow',
-      ]);
-      expect(prepared.delegationRequest).toMatchObject({
-        objective: 'Run the release verification checks.',
-        acceptanceCriteria: ['Verification checks pass.'],
-        contextRefs: [
-          { kind: 'workspace', id: 'ws_demo' },
-          { kind: 'thread', id: 'th_demo' },
-          { kind: 'item', id: 'it_context' },
-          { kind: 'item', id: 'it_steering' },
-          { kind: 'item', id: 'it_follow' },
-        ],
-        expectedArtifacts: [{ kind: 'test-result', description: 'Release verification output.' }],
-        verification: [
-          {
-            kind: 'test',
-            command: 'pnpm -w verify:release',
-          },
-        ],
+        reviewPolicy: TASK_EXECUTION_CONTRACT.reviewPolicy,
+        escalationConditions: TASK_EXECUTION_CONTRACT.escalationConditions,
+        reviewContext: null,
       });
     } finally {
       workspaceDb.sqlite.close();
@@ -219,11 +214,6 @@ describe('goal task delegation preparation', () => {
         goalId: 'goal_demo',
         taskId: 'task_demo',
         threadItems: threadItems(),
-        steeringMessages: [],
-        followUpInputs: [],
-        expectedArtifacts: [],
-        verification: [{ kind: 'manual', description: 'Manual verification.' }],
-        stopConditions: ['Stop after manual verification.'],
       });
 
       expect(prepared.repository.workspaceId).toBe('ws_demo');
@@ -248,13 +238,31 @@ describe('goal task delegation preparation', () => {
           goalId: 'goal_demo',
           taskId: 'task_demo',
           threadItems: threadItems(),
-          steeringMessages: [],
-          followUpInputs: [],
-          expectedArtifacts: [],
-          verification: [{ kind: 'manual', description: 'Manual verification.' }],
-          stopConditions: ['Stop after manual verification.'],
         })
       ).toThrow('Workspace repository not ready: ws_demo');
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects a Task whose immutable Plan lineage differs from its Goal', () => {
+    const coreDb = createCoreDb();
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'user_local', 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      addReadyGoalTask(workspaceDb, 'it_other_plan');
+
+      expect(() =>
+        prepareGoalTaskDelegation(coreDb, workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          goalId: 'goal_demo',
+          taskId: 'task_demo',
+          threadItems: threadItems(),
+        })
+      ).toThrow('Goal task Plan lineage does not match the Goal.');
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();

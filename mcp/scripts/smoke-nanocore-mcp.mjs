@@ -489,7 +489,6 @@ try {
     workspaceId,
     threadId,
     planItemId: plan.raw.planItemId,
-    plan: plan.raw.plan,
     requestId: requestIds.planApprove,
   });
   const step = await callTool(mcp, 'openkit.step_goal', {
@@ -497,7 +496,7 @@ try {
     threadId,
     requestId: requestIds.step,
   });
-  assert(step.raw.worker.turnId, 'Worker turn id was not returned.');
+  assert(step.raw.result.turnId, 'Worker turn id was not returned.');
 
   let goal = await callTool(mcp, 'openkit.read_goal', { workspaceId, threadId });
   let actionCenter = await callTool(mcp, 'openkit.read_action_center', {
@@ -558,7 +557,7 @@ try {
     Array.isArray(evidence.evidenceBundles),
     'Evidence resource did not return a bundle list.'
   );
-  const artifactId = step.raw.worker.evidence.artifactIds[0] ?? null;
+  const artifactId = step.raw.result.evidence.artifactIds[0] ?? null;
   const artifact = artifactId
     ? await callTool(mcp, 'openkit.read_artifact', { workspaceId, artifactId })
     : null;

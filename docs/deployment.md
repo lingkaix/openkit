@@ -34,6 +34,16 @@ These axes are conceptual placement shapes, not the exact runtime config enum va
 
 Local and server deployments should use the same data-root hierarchy. Local mode is an auth and user-resolution posture with a reserved local user scope; it is not a separate storage tree.
 
+## Current Small-Deployment Baseline
+
+The current engineering target is one NanoCore process per data root, one logical SQLite writer over local scoped databases, a small team that is typically under ten people, and one configured local or remote worker target with one active worker slot. The team-size statement is a design and verification profile, not a hard authorization or membership limit.
+
+The configured worker target may be local or remote, but V1 chooses it from deployment configuration rather than a dynamic fleet. The remote path uses the accepted stock OpenShell Cell and its authenticated operator-managed transport; remote placement does not expand the baseline into a multi-node Core or a general cluster scheduler.
+
+This baseline does not promise multiple NanoCore writers, shared-database coordination, high availability, hot failover, dynamic multi-target placement, cross-workspace fairness, or transparent recovery from every crash boundary. A bounded same-worker reconnect may preserve useful work after NanoCore restart; when exact adoption or terminal proof fails, explicit interruption, inspection, cleanup, and a new authorized attempt are acceptable.
+
+Future managed or scaled deployment descriptions are non-authorizing. They create no current record, state, configuration, compatibility, implementation, runner, harness, or test requirement until an accepted current design promotes a concrete need.
+
 ## Release Artifact Placement
 
 Release artifacts are deployable projections of the Core and worker placement model.
@@ -151,3 +161,4 @@ Deployment must not require writing secret values into prompts, knowledge, manif
 - Deployment MUST NOT require writing secret values into prompts, knowledge, manifests, item logs, normal workspace files, or container images.
 - Backend-native state MUST be normalized into OpenKit records before it becomes product-visible.
 - Release artifacts MUST be traceable to their source version and MUST NOT become owners of product state, policy decisions, or vault secrets.
+- The current baseline MUST remain operable with one NanoCore process, local SQLite storage, and one configured worker target; future scale assumptions MUST NOT become present deployment requirements.

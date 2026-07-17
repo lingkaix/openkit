@@ -5,7 +5,14 @@ import { describe, expect, it } from 'vitest';
 
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
-import { createGoalRecord, createGoalTask, getGoalRecord, listGoalTasks } from './goal-store.js';
+import {
+  createGoalRecord,
+  createGoalTask,
+  getGoalRecord,
+  listGoalTasks,
+  updateGoalStatus,
+  updateGoalTask,
+} from './goal-store.js';
 import { advanceGoalAfterReview } from './goal-supervise-advance.js';
 
 /**
@@ -34,12 +41,14 @@ function seedDependentGoal(workspaceDb: WorkspaceDb): void {
     title: 'Advance goal',
     objective: 'Advance after review.',
     status: 'reviewing',
+    currentTaskId: 'task_1',
     now: () => '2026-05-31T00:00:00.000Z',
   });
   createGoalTask(workspaceDb, {
     workspaceId: 'ws_demo',
     threadId: 'th_demo',
     goalId: 'goal_demo',
+    planItemId: 'item_plan_demo',
     taskId: 'task_1',
     title: 'First task',
     objective: 'Complete first task.',
@@ -47,6 +56,17 @@ function seedDependentGoal(workspaceDb: WorkspaceDb): void {
     dependsOnTaskIds: [],
     acceptanceCriteria: ['First task accepted.'],
     contextBudgetTokens: 8000,
+    resources: [],
+    expectedArtifacts: [{ kind: 'artifact', description: 'First task result.' }],
+    verificationChecks: [
+      { kind: 'manual', description: 'Confirm the first task meets its acceptance criterion.' },
+    ],
+    reviewPolicy: {
+      required: true,
+      reviewers: ['human'],
+      instructions: 'Review the first task result.',
+    },
+    escalationConditions: [],
     status: 'reviewing',
     now: () => '2026-05-31T00:01:00.000Z',
   });
@@ -54,6 +74,7 @@ function seedDependentGoal(workspaceDb: WorkspaceDb): void {
     workspaceId: 'ws_demo',
     threadId: 'th_demo',
     goalId: 'goal_demo',
+    planItemId: 'item_plan_demo',
     taskId: 'task_2',
     title: 'Second task',
     objective: 'Continue with second task.',
@@ -61,6 +82,17 @@ function seedDependentGoal(workspaceDb: WorkspaceDb): void {
     dependsOnTaskIds: ['task_1'],
     acceptanceCriteria: ['Second task becomes ready.'],
     contextBudgetTokens: 8000,
+    resources: [],
+    expectedArtifacts: [{ kind: 'artifact', description: 'Second task result.' }],
+    verificationChecks: [
+      { kind: 'manual', description: 'Confirm the second task meets its acceptance criterion.' },
+    ],
+    reviewPolicy: {
+      required: true,
+      reviewers: ['human'],
+      instructions: 'Review the second task result.',
+    },
+    escalationConditions: [],
     status: 'pending',
     now: () => '2026-05-31T00:01:30.000Z',
   });
@@ -82,11 +114,16 @@ describe('goal supervise advance', () => {
         now: () => '2026-05-31T00:02:00.000Z',
       });
 
-      expect(result).toMatchObject({
+      expect(result).toEqual({
         outcome: 'complete_next_task',
-        nextTask: { taskId: 'task_2', status: 'ready' },
         task: { taskId: 'task_1', status: 'completed' },
-        goal: { status: 'running', currentTaskId: 'task_2' },
+        goal: {
+          goalId: 'goal_demo',
+          status: 'running',
+          currentTaskId: null,
+          terminalStopReason: null,
+        },
+        nextReadyTaskId: 'task_2',
       });
       expect(
         listGoalTasks(workspaceDb, {
@@ -103,7 +140,7 @@ describe('goal supervise advance', () => {
     }
   });
 
-  it('does not unlock dependents when review needs revision', () => {
+  it('returns the reviewed task to ready when refinement is requested', () => {
     const workspaceDb = createWorkspaceDb();
 
     try {
@@ -117,10 +154,16 @@ describe('goal supervise advance', () => {
         verdict: 'refine',
       });
 
-      expect(result).toMatchObject({
-        outcome: 'needs_revision',
-        nextTask: null,
-        task: { taskId: 'task_1', status: 'needs_revision' },
+      expect(result).toEqual({
+        outcome: 'refine',
+        task: { taskId: 'task_1', status: 'ready' },
+        goal: {
+          goalId: 'goal_demo',
+          status: 'running',
+          currentTaskId: null,
+          terminalStopReason: null,
+        },
+        nextReadyTaskId: 'task_1',
       });
       expect(
         listGoalTasks(workspaceDb, {
@@ -148,10 +191,16 @@ describe('goal supervise advance', () => {
         verdict: 'retry',
       });
 
-      expect(result).toMatchObject({
+      expect(result).toEqual({
         outcome: 'retry',
-        nextTask: { taskId: 'task_1', status: 'ready' },
         task: { taskId: 'task_1', status: 'ready' },
+        goal: {
+          goalId: 'goal_demo',
+          status: 'running',
+          currentTaskId: null,
+          terminalStopReason: null,
+        },
+        nextReadyTaskId: 'task_1',
       });
       expect(
         listGoalTasks(workspaceDb, {
@@ -165,7 +214,7 @@ describe('goal supervise advance', () => {
     }
   });
 
-  it('moves blocked review outcomes into blocked goal state', () => {
+  it('aborts the goal and fails the reviewed task', () => {
     const workspaceDb = createWorkspaceDb();
 
     try {
@@ -176,14 +225,19 @@ describe('goal supervise advance', () => {
         threadId: 'th_demo',
         goalId: 'goal_demo',
         taskId: 'task_1',
-        verdict: 'block',
+        verdict: 'abort',
       });
 
-      expect(result).toMatchObject({
-        outcome: 'blocked',
-        nextTask: null,
-        task: { status: 'blocked' },
-        goal: { status: 'blocked' },
+      expect(result).toEqual({
+        outcome: 'aborted',
+        task: { taskId: 'task_1', status: 'failed' },
+        goal: {
+          goalId: 'goal_demo',
+          status: 'aborted',
+          currentTaskId: null,
+          terminalStopReason: 'aborted',
+        },
+        nextReadyTaskId: null,
       });
     } finally {
       workspaceDb.sqlite.close();
@@ -202,6 +256,21 @@ describe('goal supervise advance', () => {
         taskId: 'task_1',
         verdict: 'accept',
       });
+      updateGoalTask(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        goalId: 'goal_demo',
+        taskId: 'task_2',
+        status: 'reviewing',
+      });
+      updateGoalStatus(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        goalId: 'goal_demo',
+        status: 'reviewing',
+        currentTaskId: 'task_2',
+        terminalStopReason: null,
+      });
 
       const result = advanceGoalAfterReview(workspaceDb, {
         workspaceId: 'ws_demo',
@@ -212,11 +281,16 @@ describe('goal supervise advance', () => {
         now: () => '2026-05-31T00:03:00.000Z',
       });
 
-      expect(result).toMatchObject({
+      expect(result).toEqual({
         outcome: 'complete_goal',
-        nextTask: null,
         task: { taskId: 'task_2', status: 'completed' },
-        goal: { status: 'completed', currentTaskId: null, terminalStopReason: 'completed' },
+        goal: {
+          goalId: 'goal_demo',
+          status: 'completed',
+          currentTaskId: null,
+          terminalStopReason: 'completed',
+        },
+        nextReadyTaskId: null,
       });
       expect(getGoalRecord(workspaceDb, 'ws_demo', 'th_demo', 'goal_demo')?.status).toBe(
         'completed'

@@ -67,9 +67,9 @@ The smoke spec stays skipped unless `OPENKIT_E2E_REAL_CODEX=1` is set, `codex` r
 
 The server listens on `http://localhost:3000` and exposes the demo protocol surface under `/api`.
 
-The unified Human Attention Action Center is available at `GET /api/app/workspaces/:workspaceId/action-center`. It replaces the old split pending approvals and pending questions endpoints, and projects approval gates, user-input gates, Goal Mode attention, pending input, checkpoint recovery, scheduler admissions, agent readiness failures, artifact review, durable workspace review, and explicit knowledge proposal records into one App API read model. Scheduler admission readback is available at `GET /api/app/workspaces/:workspaceId/scheduler/admissions`; it returns workspace-filtered queued and denied admissions with queue position and denial reasons, but excludes raw turn input, user ids, captured cwd, and workspace root paths. Scheduler admission actions are available at `POST /api/app/workspaces/:workspaceId/scheduler/admissions/:queueEntryId/retry` for denied admissions and `POST /api/app/workspaces/:workspaceId/scheduler/admissions/:queueEntryId/cancel` for queued or denied admissions. Durable workspace review decisions are available at `POST /api/app/workspaces/:workspaceId/workspace-sync/reviews/:reviewId/decision` for accepted, refinement, rejected, and blocked outcomes.
+The unified Human Attention Action Center is available at `GET /api/app/workspaces/:workspaceId/action-center`. It replaces the old split pending approvals and pending questions endpoints, and projects approval gates, user-input gates, Goal Mode attention, checkpoint recovery, scheduler admissions, agent readiness failures, artifact review, durable workspace review, and explicit knowledge proposal records into one App API read model. Generic pending-input rows and recovery actions are absent until the exact S16 Goal steering owner and immutable delivery proof exist. Interrupted-worker rows require the exact interrupted Turn and recorded Session plus a matching terminal restart-cleanup lease; a strict request-identified retry releases only the existing checkpoint and applicable Goal Task for a later fresh start, and never rewrites the old Turn, changes scheduler authority, or starts a worker. Scheduler admission readback is available at `GET /api/app/workspaces/:workspaceId/scheduler/admissions`; it returns workspace-filtered queued and denied admissions with queue position and denial reasons, but excludes raw turn input, user ids, captured cwd, and workspace root paths. Scheduler admission actions are available at `POST /api/app/workspaces/:workspaceId/scheduler/admissions/:queueEntryId/retry` for denied admissions and `POST /api/app/workspaces/:workspaceId/scheduler/admissions/:queueEntryId/cancel` for queued or denied admissions. Durable workspace review decisions are available at `POST /api/app/workspaces/:workspaceId/workspace-sync/reviews/:reviewId/decision` for accepted, refinement, rejected, and blocked outcomes.
 
-Live default-accept Goal Review rows created by human-reviewed steps expose an accept action; accepting one atomically resolves the review and advances the goal task graph.
+Live Goal Review rows created by human-reviewed steps expose accept, refinement, retry, and abort actions without a preselected verdict; one decision atomically resolves the Review and advances or closes the Goal Task graph. Direct Task and Chat-to-Task deliver the complete Coordinator request as compact JSON through the existing Turn path. Goal launches read the complete immutable approved Goal Task, preserve its exact active Plan lineage, and deliver one schema-valid Coordinator request containing every accepted Task request fact plus the latest eligible Review context without changing previous Turns or evidence.
 
 Redacted Agent Environment Package snapshot readback is available at `GET /api/app/workspaces/:workspaceId/agent-environment/snapshots` and `GET /api/app/workspaces/:workspaceId/agent-environment/snapshots/:snapshotId`. These routes return durable workspace-owned package snapshots for diagnostics and evidence without exposing backend-private fields, raw credentials, or host-local runtime references.
 
@@ -144,10 +144,12 @@ curl -s http://127.0.0.1:3000/api/app/workspaces/ws_demo/threads/th_demo/goal \
 Draft a plan with:
 
 ```bash
-curl -s -X POST http://127.0.0.1:3000/api/app/workspaces/ws_demo/threads/th_demo/goal/plan
+curl -s -X POST http://127.0.0.1:3000/api/app/workspaces/ws_demo/threads/th_demo/goal/plan \
+  -H 'content-type: application/json' \
+  --data '{"requestId":"goal-plan-1"}'
 ```
 
-Approve the returned `planItemId` and `plan` with `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/plan/approve`, or request changes with `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/plan/revise` to return the goal to planning before a revised draft is approved.
+Plan creation treats `requestId` as command identity and replays the original immutable Plan without another planning Turn or Item. A complete Plan record can repair a missing creation receipt because `createdByRequestId` proves the winning Workspace transaction; question, error, or partial owner tuples instead return `409 recovery_required`. Approve only the returned `planItemId` with `{ "requestId": "goal-plan-approve-1", "planItemId": "..." }` at `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/plan/approve`; NanoCore loads the immutable Plan and never accepts caller Plan content. Request changes with `{ "requestId": "goal-plan-revise-1", "revision": "..." }` at `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/plan/revise` before drafting a new immutable Plan. An identical revision request replays its original Goal and Item without another Turn; changed input conflicts, while a revision Turn or Item found without its matching command receipt returns `409 recovery_required` rather than inferring a winner.
 
 Read the active Goal Mode summary with:
 
@@ -158,11 +160,15 @@ curl -s http://127.0.0.1:3000/api/app/workspaces/ws_demo/threads/th_demo/goal
 Pause and resume an active goal at a safe workflow boundary with:
 
 ```bash
-curl -s -X POST http://127.0.0.1:3000/api/app/workspaces/ws_demo/threads/th_demo/goal/pause
-curl -s -X POST http://127.0.0.1:3000/api/app/workspaces/ws_demo/threads/th_demo/goal/resume
+curl -s -X POST http://127.0.0.1:3000/api/app/workspaces/ws_demo/threads/th_demo/goal/pause \
+  -H 'content-type: application/json' \
+  -d '{"requestId":"goal-pause-1"}'
+curl -s -X POST http://127.0.0.1:3000/api/app/workspaces/ws_demo/threads/th_demo/goal/resume \
+  -H 'content-type: application/json' \
+  -d '{"requestId":"goal-resume-1"}'
 ```
 
-Pause is accepted only for a running goal when the thread has no active running or human-gated worker turn. While the goal is paused, `/goal/step` returns `goal_paused`; resume returns the same durable goal to `running` so the next bounded step continues from stored goal and task state.
+Pause is accepted only for a running goal when the thread has no pending, running, or human-gated worker turn; resume applies the same safe-boundary check to a paused goal. Each response separates the historical command result from current resource truth through `outcome: "paused" | "resumed"` and the current `goal` projection, so replay after a later opposite transition remains truthful. While the goal is paused, `/goal/step` returns `goal_paused`; explicit resume changes only the same durable Goal to `running` and does not resume a Turn, Session, sandbox, lease, or worker.
 
 Goal steering currently fails closed with `goal_steering_delivery_unavailable` and creates no business records until the real worker path can persist an immutable Context Package delivery trace.
 
@@ -171,12 +177,12 @@ Run one real bounded worker step with:
 ```bash
 curl -s http://127.0.0.1:3000/api/app/workspaces/ws_demo/threads/th_demo/goal/step \
   -H 'content-type: application/json' \
-  --data '{"requestId":"goal-step-1","followUpDrainMode":"one_at_a_time"}'
+  --data '{"requestId":"goal-step-1"}'
 ```
 
-The real step route requires a ready workspace repository before worker checkpointing begins, asks Workflow Coordinator for the selected worker summary, records the worker context digest and product-safe context assembly summary in the checkpoint, normalizes terminal worker outcomes to stable stop reasons, and clears terminal checkpoints only after the goal and task read models are saved.
+The real step route requires a ready workspace repository before worker checkpointing begins, loads the complete immutable Goal Task selected by stable Plan order, requires exact active Plan lineage, asks Workflow Coordinator to compose one lossless worker request, and derives the reserved Turn from `requestId`. One Workspace transaction reserves the runnable Goal and first ready Task, records the allowed worker-launch decision, and writes the request-bound `preparing` checkpoint. The response is exactly `{ goal, result }`; duplicate requests replay the bounded original result through its durable Goal, Task, Turn, evidence, and Review owners, while any uncleared checkpoint blocks a competing step. NanoCore publishes the command receipt before terminal checkpoint cleanup. Missing or contradictory Task facts, owner tuples, or post-fence launch state fail as `recovery_required` without rerunning Coordinator, reselecting context, or starting replacement work.
 
-`reviewPolicyOverride` accepts `human` or `none` and defaults to `human`. `human` creates a durable actionable unresolved Goal Review after the completed step; accepting it atomically advances the task graph. `none` skips only that step's review and still advances dependencies and remaining tasks.
+The immutable Goal Task review policy is the sole post-step Review authority. `required=true` creates a durable actionable unresolved Goal Review whose canonical accept, refine, retry, or abort decision atomically updates the reviewed Task, Goal, and immutable resolution snapshot; `required=false` takes the same accepted closeout path without a Review. The step request rejects caller review-policy and input-drain overrides.
 
 NanoCore stores and projects task-scoped verification evidence, but it does not yet run Task Evaluator loops or enforce an independent final-verifier completion gate.
 

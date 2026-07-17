@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createWorkerCoordinatorDecision,
+  createWorkerCoordinatorGoalPlanDraft,
   createWorkerCoordinatorGoalStopDecision,
-  WORKER_COORDINATOR_AGENT_DEFINITION,
+  projectWorkerCoordinatorGoalPlanDraft,
 } from './worker-coordinator.js';
 
 const READY_CODEX = {
@@ -31,7 +32,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
 
     expect(decision).toMatchObject({
       decision: 'worker_turn',
-      requiredUserAction: 'confirm_worker_turn',
+      requiredUserAction: 'none',
       selectedWorkerCandidate: {
         agentId: 'agent_codex',
         runtime: 'codex',
@@ -50,7 +51,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
 
     expect(decision).toMatchObject({
       decision: 'worker_turn',
-      requiredUserAction: 'confirm_worker_turn',
+      requiredUserAction: 'none',
       selectedWorkerCandidate: {
         agentId: 'agent_codex',
         runtime: 'codex',
@@ -79,7 +80,6 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       },
       constraints: {
         maxWorkerIterations: 1,
-        requiresUserConfirmation: true,
       },
       contextRefs: [
         { kind: 'workspace', id: 'ws_demo' },
@@ -98,25 +98,80 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
     });
 
-    expect(decision.workerRequest).toMatchObject({
+    expect(decision.workerRequest).toEqual({
       schemaVersion: 1,
       objective: 'Implement the release dashboard and run focused tests.',
-      acceptanceCriteria: expect.arrayContaining([
+      acceptanceCriteria: [
         'The bounded worker task satisfies the requested objective.',
-      ]),
+        'The worker reports verification evidence or a clear blocker.',
+      ],
       contextRefs: [
         { kind: 'workspace', id: 'ws_demo' },
         { kind: 'thread', id: 'th_demo' },
       ],
+      resources: [],
+      expectedArtifacts: [
+        {
+          kind: 'code-change',
+          description: 'Focused workspace changes needed to satisfy the objective.',
+        },
+        {
+          kind: 'test-result',
+          description: 'Verification evidence from the focused checks.',
+        },
+      ],
       constraints: {
+        maxContextTokens: 240_000,
         maxWorkerIterations: 1,
-        requiresUserConfirmation: true,
       },
+      verification: [
+        {
+          kind: 'manual',
+          description: 'Run the checks named by the worker task or explain why they cannot run.',
+        },
+      ],
       reviewPolicy: {
-        required: true,
+        required: false,
         reviewers: ['human'],
+        instructions: 'Review the worker result, changed files, and verification evidence.',
+      },
+      escalationConditions: [
+        'Escalate if repository setup is missing or invalid.',
+        'Escalate if the task requires broader decomposition.',
+      ],
+      reviewContext: null,
+    });
+  });
+
+  it('drafts one complete deterministic Goal Plan for review', () => {
+    const input = {
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      goalId: 'goal_demo',
+      title: 'Ship release',
+      objective: 'Make the next release ready.',
+    };
+    const draft = createWorkerCoordinatorGoalPlanDraft(input);
+
+    expect(draft).toMatchObject({
+      mode: 'goal',
+      sourceAgentId: 'worker-coordinator',
+      requiredApprovals: ['plan_approval'],
+      plan: {
+        schemaVersion: 1,
+        goalSummary: 'Make the next release ready.',
+        tasks: [
+          {
+            taskId: 'task_1',
+            title: 'Ship release',
+            objective: 'Make the next release ready.',
+          },
+        ],
+        questions: [],
       },
     });
+    const storedPlan = { ...draft.plan, risks: ['Preserve the immutable Plan on replay.'] };
+    expect(projectWorkerCoordinatorGoalPlanDraft(input, storedPlan).plan).toBe(storedPlan);
   });
 
   it('selects OpenCode when the user explicitly asks for OpenCode', () => {
@@ -129,7 +184,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
 
     expect(decision).toMatchObject({
       decision: 'worker_turn',
-      requiredUserAction: 'confirm_worker_turn',
+      requiredUserAction: 'none',
       selectedWorkerCandidate: {
         agentId: 'agent_opencode',
         runtime: 'opencode',
@@ -239,6 +294,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
     'Run Goal Mode step: Refine the current implementation.',
     'Run Goal Mode step: Hand off findings into a document.',
     'Run Goal Mode step: Retry the focused verification.',
+    '  Run Goal Mode step: Implement the accepted task.\n',
   ])('does not reclassify an approved Goal Mode step prompt: %s', (prompt) => {
     const decision = createWorkerCoordinatorDecision({
       prompt,
@@ -255,6 +311,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
         runtime: 'codex',
       },
     });
+    expect(decision.workerRequest?.objective).toBe(prompt);
   });
 
   it.each([
@@ -298,20 +355,6 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
     });
   });
 
-  it('exposes only readiness, thread, workspace, and delegation-draft tools', () => {
-    expect(WORKER_COORDINATOR_AGENT_DEFINITION).toMatchObject({
-      id: 'worker-coordinator',
-      category: 'routing',
-      defaultProviderUse: 'internalTasks',
-      allowedTools: [
-        'readWorkspaceSummary',
-        'readThreadSummary',
-        'readAgentReadiness',
-        'draftWorkerDelegation',
-      ],
-    });
-  });
-
   it('creates evidence-backed Goal Mode stop decisions', () => {
     const decision = createWorkerCoordinatorGoalStopDecision({
       workspaceId: 'ws_demo',
@@ -325,6 +368,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
         shouldStop: true,
         stopReason: 'completed',
       },
+      hasOtherIncompleteTasksAfterAddressedTaskCompletion: false,
       evidence: {
         itemIds: ['it_worker_terminal'],
         artifactIds: ['artifact_release_log'],
@@ -349,5 +393,42 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
         artifactIds: ['artifact_release_log'],
       },
     });
+  });
+
+  it('decides Goal continuation from pre-mutation task state', () => {
+    const input = {
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      requestId: 'req_goal_step',
+      goalId: 'goal_demo',
+      taskId: 'task_demo',
+      turnId: 'turn_worker',
+      stopDecision: {
+        outcome: 'complete' as const,
+        shouldStop: true,
+        stopReason: 'completed' as const,
+      },
+      evidence: { itemIds: [], artifactIds: [] },
+    };
+
+    expect(
+      createWorkerCoordinatorGoalStopDecision({
+        ...input,
+        hasOtherIncompleteTasksAfterAddressedTaskCompletion: true,
+      })
+    ).toMatchObject({ outcome: 'continue', shouldStop: false });
+    expect(
+      createWorkerCoordinatorGoalStopDecision({
+        ...input,
+        hasOtherIncompleteTasksAfterAddressedTaskCompletion: false,
+      })
+    ).toMatchObject({ outcome: 'complete', shouldStop: true });
+    expect(() =>
+      createWorkerCoordinatorGoalStopDecision({
+        ...input,
+        hasOtherIncompleteTasksAfterAddressedTaskCompletion: true,
+        stopDecision: { outcome: 'continue', shouldStop: false, stopReason: 'length' },
+      })
+    ).toThrow('lower-level continue');
   });
 });

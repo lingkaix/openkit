@@ -50,7 +50,7 @@ describe('nanocore e2e goal planning', () => {
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ requestId: randomUUID() }),
       }
     );
     const planPayload = (await planResponse.json()) as {
@@ -73,8 +73,8 @@ describe('nanocore e2e goal planning', () => {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
+          requestId: randomUUID(),
           planItemId: planPayload.planItemId,
-          plan: planPayload.plan,
         }),
       }
     );
@@ -143,7 +143,7 @@ describe('nanocore e2e goal planning', () => {
       },
       advance: {
         outcome: 'complete_goal',
-        nextTaskId: null,
+        nextReadyTaskId: null,
       },
     });
   });

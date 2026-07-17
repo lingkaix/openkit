@@ -26,7 +26,7 @@
     "test:smoke": "pnpm --filter @openkit/nanocore build && node tests/smoke/nanocore-health-smoke.mjs && pnpm --filter @openkit/web build && node tests/smoke/web-preview-smoke.mjs",
     "test:stories": "pnpm run test:stories:deterministic",
     "test:stories:deterministic": "node --test tests/story-runner/*.test.mjs && pnpm run test:stories:mcp && pnpm --filter @openkit/web e2e:stories",
-    "test:stories:mcp": "pnpm --filter @openkit/app-api-schemas build && pnpm --filter @openkit/core-client build && pnpm --filter @openkit/mcp build && pnpm --filter @openkit/nanocore build && node tests/story-runner/goal-mode-mcp-smoke-runner.mjs && node tests/story-runner/task-mode-mcp-smoke-runner.mjs && node tests/story-runner/chat-mode-mcp-smoke-runner.mjs && node tests/story-runner/workspace-portability-mcp-runner.mjs && node tests/story-runner/recovery-mcp-smoke-runner.mjs",
+    "test:stories:mcp": "pnpm --filter @openkit/app-api-schemas build && pnpm --filter @openkit/core-client build && pnpm --filter @openkit/mcp build && pnpm --filter @openkit/nanocore build && node tests/story-runner/goal-mode-mcp-smoke-runner.mjs && node tests/story-runner/task-mode-mcp-smoke-runner.mjs && node tests/story-runner/chat-mode-mcp-smoke-runner.mjs && node tests/story-runner/workspace-portability-mcp-runner.mjs",
     "test:stories:real-codex": "node tests/story-runner/real-codex-goal-mode-runner.mjs",
     "test:stories:real-provider": "node tests/story-runner/pi-ai-real-provider-runner.mjs",
     "test:stories:real-task-mode": "node tests/story-runner/task-mode-real-worker-runner.mjs",

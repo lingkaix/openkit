@@ -56,16 +56,10 @@ const requiredTools = [
   'openkit.suggest_knowledge_repairs',
   'openkit.check_knowledge_health',
   'openkit.list_interrupted_workers',
-  'openkit.clear_interrupted_worker_checkpoint',
   'openkit.retry_interrupted_worker_checkpoint',
   'openkit.retry_scheduler_admission',
   'openkit.cancel_scheduler_admission',
   'openkit.read_scheduler_admissions',
-  'openkit.list_recovery_pending_user_turns',
-  'openkit.cancel_recovery_pending_user_turn',
-  'openkit.edit_recovery_pending_user_turn',
-  'openkit.convert_recovery_pending_user_turn_to_follow_up',
-  'openkit.promote_recovery_pending_user_turn_to_interrupt',
   'openkit.list_workspaces',
   'openkit.create_workspace',
   'openkit.update_workspace',
@@ -264,20 +258,11 @@ function createFakeNanoCoreClient(): {
       executeGitPush: (input) => record('executeGitPush', input),
       linkRepository: (input) => record('linkRepository', input),
       listInterruptedWorkers: () => record('listInterruptedWorkers', {}),
-      clearInterruptedWorkerCheckpoint: (input) =>
-        record('clearInterruptedWorkerCheckpoint', input),
       retryInterruptedWorkerCheckpoint: (input) =>
         record('retryInterruptedWorkerCheckpoint', input),
       retrySchedulerAdmission: (input) => record('retrySchedulerAdmission', input),
       cancelSchedulerAdmission: (input) => record('cancelSchedulerAdmission', input),
       readSchedulerAdmissions: (input) => record('readSchedulerAdmissions', input),
-      listRecoveryPendingUserTurns: (input) => record('listRecoveryPendingUserTurns', input),
-      cancelRecoveryPendingUserTurn: (input) => record('cancelRecoveryPendingUserTurn', input),
-      editRecoveryPendingUserTurn: (input) => record('editRecoveryPendingUserTurn', input),
-      convertRecoveryPendingUserTurnToFollowUp: (input) =>
-        record('convertRecoveryPendingUserTurnToFollowUp', input),
-      promoteRecoveryPendingUserTurnToInterrupt: (input) =>
-        record('promoteRecoveryPendingUserTurnToInterrupt', input),
       listRuntimeConfigFiles: () => record('listRuntimeConfigFiles', {}),
       listWorkspaces: () => record('listWorkspaces', {}),
       readRuntimeConfigFile: (input) => record('readRuntimeConfigFile', input),
@@ -337,6 +322,15 @@ describe('OpenKit AI Interface registry', () => {
     const registry = createOpenKitAiInterface({ nanoCore: client });
 
     expect(registry.listTools().map((tool) => tool.name)).toEqual([...requiredTools]);
+    expect(registry.listTools().map((tool) => tool.name)).not.toEqual(
+      expect.arrayContaining([
+        'openkit.list_recovery_pending_user_turns',
+        'openkit.cancel_recovery_pending_user_turn',
+        'openkit.convert_recovery_pending_user_turn_to_follow_up',
+        'openkit.edit_recovery_pending_user_turn',
+        'openkit.promote_recovery_pending_user_turn_to_interrupt',
+      ])
+    );
     expect(registry.listResources().map((resource) => resource.uri)).toEqual([
       ...requiredResources,
     ]);
@@ -391,7 +385,6 @@ describe('OpenKit AI Interface registry', () => {
       'openkit.check_knowledge_health',
       'openkit.list_interrupted_workers',
       'openkit.read_scheduler_admissions',
-      'openkit.list_recovery_pending_user_turns',
       'openkit.list_workspaces',
       'openkit.list_automations',
       'openkit.read_workspace_resources',
@@ -810,14 +803,31 @@ describe('OpenKit AI Interface registry', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('rejects unsupported Goal Mode review policy overrides', async () => {
+  it('rejects retired Goal Mode request overrides before effects', async () => {
     const { calls, client } = createFakeNanoCoreClient();
     const registry = createOpenKitAiInterface({ nanoCore: client });
 
     await expect(
       registry.callTool('openkit.step_goal', {
         requestId: explicitRequestId,
-        reviewPolicyOverride: 'auto',
+        reviewPolicyOverride: 'human',
+        threadId: 'th_demo',
+        workspaceId: 'ws_demo',
+      })
+    ).rejects.toThrow();
+    await expect(
+      registry.callTool('openkit.step_goal', {
+        followUpDrainMode: 'one_at_a_time',
+        requestId: explicitRequestId,
+        threadId: 'th_demo',
+        workspaceId: 'ws_demo',
+      })
+    ).rejects.toThrow();
+    await expect(
+      registry.callTool('openkit.approve_goal_plan', {
+        plan: { schemaVersion: 1 },
+        planItemId: 'it_plan',
+        requestId: explicitRequestId,
         threadId: 'th_demo',
         workspaceId: 'ws_demo',
       })
@@ -969,35 +979,6 @@ describe('OpenKit AI Interface registry', () => {
     });
   });
 
-  it('routes interrupted worker checkpoint cleanup through a mutating tool', async () => {
-    const { calls, client } = createFakeNanoCoreClient();
-    const registry = createOpenKitAiInterface({ nanoCore: client });
-
-    const response = await registry.callTool('openkit.clear_interrupted_worker_checkpoint', {
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'turn_worker',
-      terminalStage: 'aborted',
-    });
-
-    expect(calls).toEqual([
-      {
-        method: 'clearInterruptedWorkerCheckpoint',
-        input: {
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_worker',
-          terminalStage: 'aborted',
-        },
-      },
-    ]);
-    expect(response).toMatchObject({
-      ok: true,
-      summary: 'Interrupted worker checkpoint cleared.',
-      workspaceId: 'ws_demo',
-    });
-  });
-
   it('routes interrupted worker checkpoint retry through a mutating tool', async () => {
     const { calls, client } = createFakeNanoCoreClient();
     const registry = createOpenKitAiInterface({ nanoCore: client });
@@ -1071,132 +1052,6 @@ describe('OpenKit AI Interface registry', () => {
     expect(response).toMatchObject({
       ok: true,
       summary: 'Scheduler admission cancelled.',
-      workspaceId: 'ws_demo',
-    });
-  });
-
-  it('routes pending user turn recovery reads through a read-only tool', async () => {
-    const { calls, client } = createFakeNanoCoreClient();
-    const registry = createOpenKitAiInterface({ nanoCore: client });
-
-    const response = await registry.callTool('openkit.list_recovery_pending_user_turns', {
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-    });
-
-    expect(calls).toEqual([
-      {
-        method: 'listRecoveryPendingUserTurns',
-        input: { threadId: 'th_demo', workspaceId: 'ws_demo' },
-      },
-    ]);
-    expect(response).toMatchObject({
-      ok: true,
-      summary: 'Recovery pending user turns read.',
-      workspaceId: 'ws_demo',
-    });
-  });
-
-  it('routes pending user turn cancellation through a mutating tool', async () => {
-    const { calls, client } = createFakeNanoCoreClient();
-    const registry = createOpenKitAiInterface({ nanoCore: client });
-
-    const response = await registry.callTool('openkit.cancel_recovery_pending_user_turn', {
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      requestId: 'req_pending',
-    });
-
-    expect(calls).toEqual([
-      {
-        method: 'cancelRecoveryPendingUserTurn',
-        input: { requestId: 'req_pending', threadId: 'th_demo', workspaceId: 'ws_demo' },
-      },
-    ]);
-    expect(response).toMatchObject({
-      ok: true,
-      summary: 'Recovery pending user turn cancelled.',
-      workspaceId: 'ws_demo',
-    });
-  });
-
-  it('routes pending user turn edits through a mutating tool', async () => {
-    const { calls, client } = createFakeNanoCoreClient();
-    const registry = createOpenKitAiInterface({ nanoCore: client });
-
-    const response = await registry.callTool('openkit.edit_recovery_pending_user_turn', {
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      requestId: 'req_pending',
-      text: 'Edited pending input.',
-    });
-
-    expect(calls).toEqual([
-      {
-        method: 'editRecoveryPendingUserTurn',
-        input: {
-          requestId: 'req_pending',
-          text: 'Edited pending input.',
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
-        },
-      },
-    ]);
-    expect(response).toMatchObject({
-      ok: true,
-      summary: 'Recovery pending user turn edited.',
-      workspaceId: 'ws_demo',
-    });
-  });
-
-  it('routes pending user turn follow-up conversion through a mutating tool', async () => {
-    const { calls, client } = createFakeNanoCoreClient();
-    const registry = createOpenKitAiInterface({ nanoCore: client });
-
-    const response = await registry.callTool(
-      'openkit.convert_recovery_pending_user_turn_to_follow_up',
-      {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        requestId: 'req_pending',
-      }
-    );
-
-    expect(calls).toEqual([
-      {
-        method: 'convertRecoveryPendingUserTurnToFollowUp',
-        input: { requestId: 'req_pending', threadId: 'th_demo', workspaceId: 'ws_demo' },
-      },
-    ]);
-    expect(response).toMatchObject({
-      ok: true,
-      summary: 'Recovery pending user turn converted to follow-up.',
-      workspaceId: 'ws_demo',
-    });
-  });
-
-  it('routes pending user turn interrupt promotion through a mutating tool', async () => {
-    const { calls, client } = createFakeNanoCoreClient();
-    const registry = createOpenKitAiInterface({ nanoCore: client });
-
-    const response = await registry.callTool(
-      'openkit.promote_recovery_pending_user_turn_to_interrupt',
-      {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        requestId: 'req_pending',
-      }
-    );
-
-    expect(calls).toEqual([
-      {
-        method: 'promoteRecoveryPendingUserTurnToInterrupt',
-        input: { requestId: 'req_pending', threadId: 'th_demo', workspaceId: 'ws_demo' },
-      },
-    ]);
-    expect(response).toMatchObject({
-      ok: true,
-      summary: 'Recovery pending user turn promoted to interrupt.',
       workspaceId: 'ws_demo',
     });
   });
@@ -2037,7 +1892,6 @@ describe('OpenKit AI Interface registry', () => {
     expect(calls[0]).toMatchObject({
       method: 'stepGoal',
       input: {
-        followUpDrainMode: 'one_at_a_time',
         requestId: explicitRequestId,
         threadId: 'th_demo',
         workspaceId: 'ws_demo',

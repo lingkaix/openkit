@@ -98,7 +98,6 @@ pnpm -w test:stories:mcp
 - `nanocore-restart-reconnection.story.md`: opt-in Core Client acceptance story for one real remote OpenShell/Codex Task that reconnects, completes, and cleans its original public backend handle after a local NanoCore restart.
 - `openkit-local-self-check.story.md`: deterministic local Web/NanoCore self-check flow backed by `tests/story-runner/openkit-local-self-check.spec.ts`.
 - `pi-ai-gateway-real-provider.story.md`: opt-in real-provider validation for NanoCore public gateway routing through pi-ai, backed by `tests/story-runner/pi-ai-real-provider-runner.mjs`.
-- `recovery-mcp-smoke.story.md`: deterministic MCP-backed recovery acceptance flow covering interrupted worker reads, pending input edit/follow-up/cancel, and checkpoint retry.
 - `task-mode-real-worker-release.story.md`: opt-in MCP-backed real OpenShell/Codex Task Mode validation against an existing NanoCore deployment and disposable repository.
 - `task-mode-mcp-smoke.story.md`: deterministic MCP-backed Task Mode acceptance flow covering `openkit.start_task`, bounded self-check work, Action Center gates, artifact completion, and Task-to-Goal escalation.
 - `worker-mcp-governed-tool-use.story.md`: agentic-only Worker MCP acceptance story covering governed tool calls, approval-required tools, audit evidence, usage rows, and credential redaction.

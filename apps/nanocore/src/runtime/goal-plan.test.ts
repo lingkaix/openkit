@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { createDeterministicGoalPlanFallback, GoalPlanOutputSchema } from './goal-plan.js';
+import {
+  assertValidGoalPlanGraph,
+  computeGoalPlanDigest,
+  createDeterministicGoalPlanFallback,
+  GoalPlanOutputSchema,
+} from './goal-plan.js';
 
 /**
  * Creates a valid Goal Mode plan output fixture.
@@ -86,6 +91,87 @@ describe('goal plan output schema', () => {
     delete invalid.tasks[0]?.contextBudgetTokens;
 
     expect(() => GoalPlanOutputSchema.parse(invalid)).toThrow();
+  });
+
+  it('rejects unknown fields and non-human reviewers', () => {
+    const plan = validPlanOutput() as { tasks: Array<Record<string, unknown>> } & Record<
+      string,
+      unknown
+    >;
+    plan.unowned = true;
+    expect(() => GoalPlanOutputSchema.parse(plan)).toThrow();
+
+    delete plan.unowned;
+    plan.tasks[0]!.reviewPolicy = {
+      required: true,
+      reviewers: ['worker'],
+      instructions: 'Let the worker approve itself.',
+    };
+    expect(() => GoalPlanOutputSchema.parse(plan)).toThrow();
+  });
+
+  it('computes one canonical digest independent of object key order', () => {
+    const plan = GoalPlanOutputSchema.parse(validPlanOutput());
+    const reordered = {
+      verificationApproach: plan.verificationApproach,
+      questions: plan.questions,
+      risks: plan.risks,
+      tasks: plan.tasks,
+      assumptions: plan.assumptions,
+      goalSummary: plan.goalSummary,
+      schemaVersion: plan.schemaVersion,
+    };
+
+    expect(computeGoalPlanDigest(plan)).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(computeGoalPlanDigest(reordered)).toBe(computeGoalPlanDigest(plan));
+    const orderedRisks = [...plan.risks, 'A second ordered risk.'];
+    expect(computeGoalPlanDigest({ ...plan, risks: orderedRisks })).not.toBe(
+      computeGoalPlanDigest({ ...plan, risks: [...orderedRisks].reverse() })
+    );
+  });
+
+  it('keeps the digest stable after JSON storage omits optional undefined fields', () => {
+    const input = validPlanOutput() as { tasks: Array<Record<string, unknown>> } & Record<
+      string,
+      unknown
+    >;
+    const plan = GoalPlanOutputSchema.parse({
+      ...input,
+      tasks: [
+        {
+          ...(input.tasks[0] ?? {}),
+          verificationChecks: [
+            {
+              kind: 'manual',
+              description: 'Review the stored result.',
+              command: undefined,
+            },
+          ],
+        },
+      ],
+    });
+    const storedPlan = GoalPlanOutputSchema.parse(JSON.parse(JSON.stringify(plan)));
+
+    expect(computeGoalPlanDigest(plan)).toBe(computeGoalPlanDigest(storedPlan));
+  });
+
+  it('rejects duplicate, self, missing, and cyclic dependencies', () => {
+    const plan = GoalPlanOutputSchema.parse(validPlanOutput());
+    const task = plan.tasks[0]!;
+
+    expect(() => assertValidGoalPlanGraph([task, task])).toThrow(/duplicated/);
+    expect(() => assertValidGoalPlanGraph([{ ...task, dependsOnTaskIds: [task.taskId] }])).toThrow(
+      /itself/
+    );
+    expect(() =>
+      assertValidGoalPlanGraph([{ ...task, dependsOnTaskIds: ['task_missing'] }])
+    ).toThrow(/missing/);
+    expect(() =>
+      assertValidGoalPlanGraph([
+        { ...task, dependsOnTaskIds: ['task_2'] },
+        { ...task, taskId: 'task_2', dependsOnTaskIds: [task.taskId] },
+      ])
+    ).toThrow(/cycle/);
   });
 
   it('creates a deterministic fallback plan that validates against the plan schema', () => {

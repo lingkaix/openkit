@@ -2,7 +2,7 @@ import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { Item, ThreadGoalSummary, TurnEvent } from '../lib/app-types';
+import type { Item, ThreadGoalPlanReview, ThreadGoalSummary, TurnEvent } from '../lib/app-types';
 import { reconcileTurnItems, ThreadWorkbench } from './ThreadWorkbench';
 
 const baseItem = {
@@ -95,22 +95,15 @@ function goalFixture(
       ready: 0,
       running: 0,
       reviewing: 0,
-      needsRevision: 0,
       completed: 0,
       blocked: 0,
       failed: 0,
-      skipped: 0,
     },
     pendingHumanAttention: {
       required: false,
       reason: null,
     },
     terminalState: null,
-    steering: {
-      pendingSteeringCount: 0,
-      pendingFollowUpCount: 0,
-      appliedSteeringCount: 0,
-    },
     updatedAt: '2026-04-15T09:00:00.000Z',
     ...overrides,
   };
@@ -479,11 +472,9 @@ describe('ThreadWorkbench', () => {
           ready: 1,
           running: 1,
           reviewing: 0,
-          needsRevision: 0,
           completed: 2,
           blocked: 0,
           failed: 0,
-          skipped: 0,
         },
       }),
       label: 'running',
@@ -506,11 +497,9 @@ describe('ThreadWorkbench', () => {
           ready: 0,
           running: 0,
           reviewing: 0,
-          needsRevision: 0,
           completed: 3,
           blocked: 0,
           failed: 0,
-          skipped: 0,
         },
         terminalState: {
           status: 'completed',
@@ -558,13 +547,7 @@ describe('ThreadWorkbench', () => {
         canStartTurn={true}
         {...composerProps}
         {...workStatusProps}
-        goal={goalFixture('running', {
-          steering: {
-            pendingSteeringCount: 1,
-            pendingFollowUpCount: 0,
-            appliedSteeringCount: 2,
-          },
-        })}
+        goal={goalFixture('running', {})}
         isAnsweringUserInput={false}
         isInterrupting={false}
         isRespondingToApproval={false}
@@ -604,7 +587,6 @@ describe('ThreadWorkbench', () => {
           },
           terminalSummary: {
             completedTaskIds: ['task_1'],
-            skippedTaskIds: [],
             blockedTaskIds: [],
             artifactIds: ['artifact_release_log'],
             verificationEvidence: [
@@ -674,7 +656,6 @@ describe('ThreadWorkbench', () => {
           },
           terminalSummary: {
             completedTaskIds: ['task_1'],
-            skippedTaskIds: [],
             blockedTaskIds: ['task_2'],
             artifactIds: [],
             verificationEvidence: [
@@ -715,6 +696,43 @@ describe('ThreadWorkbench', () => {
 
   it('renders a Goal Mode plan and exposes approve, reject, and revise actions', async () => {
     const actions: string[] = [];
+    const plan: ThreadGoalPlanReview['plan'] = {
+      schemaVersion: 1,
+      goalSummary: 'Make the release ready for end users.',
+      assumptions: ['The release can be verified locally.'],
+      tasks: [
+        {
+          taskId: 'task_1',
+          title: 'Verify release',
+          objective: 'Run the release checks.',
+          acceptanceCriteria: ['Release checks pass.'],
+          contextBudgetTokens: 12_000,
+          resources: [],
+          expectedArtifacts: [
+            {
+              kind: 'test-result',
+              description: 'Release verification result.',
+            },
+          ],
+          verificationChecks: [
+            {
+              kind: 'test',
+              description: 'Run the release smoke suite.',
+            },
+          ],
+          reviewPolicy: {
+            required: true,
+            reviewers: ['human'],
+            instructions: 'Review the smoke result.',
+          },
+          dependsOnTaskIds: [],
+          escalationConditions: [],
+        },
+      ],
+      risks: [],
+      questions: ['Which release artifact should be published first?'],
+      verificationApproach: 'Run deterministic release checks.',
+    };
 
     render(() => (
       <ThreadWorkbench
@@ -736,22 +754,15 @@ describe('ThreadWorkbench', () => {
             ready: 0,
             running: 0,
             reviewing: 0,
-            needsRevision: 0,
             completed: 0,
             blocked: 0,
             failed: 0,
-            skipped: 0,
           },
           pendingHumanAttention: {
             required: true,
             reason: 'Plan approval is required.',
           },
           terminalState: null,
-          steering: {
-            pendingSteeringCount: 0,
-            pendingFollowUpCount: 0,
-            appliedSteeringCount: 0,
-          },
           updatedAt: '2026-04-15T09:00:00.000Z',
         }}
         goalPlan={{
@@ -770,22 +781,15 @@ describe('ThreadWorkbench', () => {
               ready: 0,
               running: 0,
               reviewing: 0,
-              needsRevision: 0,
               completed: 0,
               blocked: 0,
               failed: 0,
-              skipped: 0,
             },
             pendingHumanAttention: {
               required: true,
               reason: 'Plan approval is required.',
             },
             terminalState: null,
-            steering: {
-              pendingSteeringCount: 0,
-              pendingFollowUpCount: 0,
-              appliedSteeringCount: 0,
-            },
             updatedAt: '2026-04-15T09:00:00.000Z',
           },
           planner: {
@@ -798,44 +802,9 @@ describe('ThreadWorkbench', () => {
               { kind: 'thread', id: 'th_demo' },
             ],
             requiredApprovals: ['plan_approval'],
+            plan,
           },
-          plan: {
-            schemaVersion: 1,
-            goalSummary: 'Make the release ready for end users.',
-            assumptions: ['The release can be verified locally.'],
-            tasks: [
-              {
-                taskId: 'task_1',
-                title: 'Verify release',
-                objective: 'Run the release checks.',
-                acceptanceCriteria: ['Release checks pass.'],
-                contextBudgetTokens: 12_000,
-                resources: [],
-                expectedArtifacts: [
-                  {
-                    kind: 'test-result',
-                    description: 'Release verification result.',
-                  },
-                ],
-                verificationChecks: [
-                  {
-                    kind: 'test',
-                    description: 'Run the release smoke suite.',
-                  },
-                ],
-                reviewPolicy: {
-                  required: true,
-                  reviewers: ['human'],
-                  instructions: 'Review the smoke result.',
-                },
-                dependsOnTaskIds: [],
-                escalationConditions: [],
-              },
-            ],
-            risks: [],
-            questions: ['Which release artifact should be published first?'],
-            verificationApproach: 'Run deterministic release checks.',
-          },
+          plan,
         }}
         isAnsweringUserInput={false}
         isInterrupting={false}

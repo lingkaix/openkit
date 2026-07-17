@@ -856,6 +856,15 @@ setInterval(() => {}, 1000);
 
     const startGoalCall = calls.find((call) => call.name === 'openkit.start_goal');
     assert.equal(startGoalCall.input.objective, REAL_CODEX_GOAL_OBJECTIVE);
+    const approveGoalPlanCall = calls.find((call) => call.name === 'openkit.approve_goal_plan');
+    assert.deepEqual(Object.keys(approveGoalPlanCall.input).sort(), [
+      'planItemId',
+      'requestId',
+      'threadId',
+      'workspaceId',
+    ]);
+    assert.equal(approveGoalPlanCall.input.planItemId, 'it_plan_1');
+    assert.match(approveGoalPlanCall.input.requestId, /^[0-9a-f-]{36}$/);
     const goalReviewCall = calls.find((call) => call.name === 'openkit.resolve_action_center_item');
     assert.equal(goalReviewCall.input.actionId, 'accept_review');
     assert.equal(goalReviewCall.input.decision, 'accept');
@@ -1080,15 +1089,15 @@ function createFakeGoalClients(input) {
         case 'openkit.step_goal':
           return {
             raw: {
-              decision: { outcome: 'review', stopReason: 'completed' },
               goal: { ...planningGoalFixture(), status: 'reviewing' },
-              pendingAttention: { kind: 'review' },
-              worker: {
-                checkpointStage: 'completed',
+              result: {
                 evidence: { artifactIds: ['artifact_1'], itemIds: ['it_assistant_1'] },
+                outcome: 'review',
+                reviewId: 'review_1',
+                shouldStop: true,
                 stopReason: 'completed',
+                taskId: 'task_1',
                 turnId: 'turn_1',
-                workerSessionId: 'as_1',
               },
             },
           };
@@ -1458,7 +1467,6 @@ function completedGoalFixture() {
       blockedTaskIds: [],
       completedTaskIds: ['task_1'],
       risks: [],
-      skippedTaskIds: [],
       suggestedNextWork: [],
       verificationEvidence: [
         {

@@ -11,8 +11,9 @@ import {
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
+import { GoalReviewResolutionOutcomeSchema, GoalReviewVerdictSchema } from './action-center.js';
 import { MaterializedWorkspaceRootSchema } from './runtime-config.js';
-import { TaskDelegationDecisionSchema, TaskModeContextRefSchema } from './task-mode.js';
+import { TaskModeContextRefSchema } from './task-mode.js';
 
 /** Product work modes surfaced by app-level dashboard read models. */
 export const ProductWorkModeSchema = z.enum([
@@ -106,7 +107,6 @@ export const GoalReadModelStatusSchema = z.enum([
   'paused',
   'awaiting_user',
   'reviewing',
-  'verifying',
   'completed',
   'blocked',
   'aborted',
@@ -119,11 +119,9 @@ export const GoalTaskReadModelStatusSchema = z.enum([
   'ready',
   'running',
   'reviewing',
-  'needs_revision',
   'completed',
   'blocked',
   'failed',
-  'skipped',
 ]);
 
 /** Current task summary inside a thread goal read model. */
@@ -140,11 +138,9 @@ export const GoalTaskCountsSchema = z.object({
   ready: z.number().int().nonnegative(),
   running: z.number().int().nonnegative(),
   reviewing: z.number().int().nonnegative(),
-  needsRevision: z.number().int().nonnegative(),
   completed: z.number().int().nonnegative(),
   blocked: z.number().int().nonnegative(),
   failed: z.number().int().nonnegative(),
-  skipped: z.number().int().nonnegative(),
 });
 
 /** Pending human attention summary for one goal read model. */
@@ -171,19 +167,11 @@ export const GoalTerminalVerificationEvidenceSchema = z.object({
 /** Structured terminal summary for one closed Goal Mode run. */
 export const GoalTerminalSummarySchema = z.object({
   completedTaskIds: z.array(z.string().min(1)).max(100),
-  skippedTaskIds: z.array(z.string().min(1)).max(100),
   blockedTaskIds: z.array(z.string().min(1)).max(100),
   artifactIds: z.array(z.string().min(1)).max(100),
   verificationEvidence: z.array(GoalTerminalVerificationEvidenceSchema).max(100),
   risks: z.array(z.string().min(1).max(1_000)).max(50),
   suggestedNextWork: z.array(z.string().min(1).max(1_000)).max(50),
-});
-
-/** Steering summary for active Goal Mode user input. */
-export const GoalSteeringSummarySchema = z.object({
-  pendingSteeringCount: z.number().int().nonnegative(),
-  pendingFollowUpCount: z.number().int().nonnegative(),
-  appliedSteeringCount: z.number().int().nonnegative(),
 });
 
 /** Thread-level Goal Mode summary read model. */
@@ -199,7 +187,6 @@ export const ThreadGoalSummarySchema = z.object({
   pendingHumanAttention: GoalPendingHumanAttentionSchema,
   terminalState: GoalTerminalStateSchema.nullable(),
   terminalSummary: GoalTerminalSummarySchema.nullable().optional(),
-  steering: GoalSteeringSummarySchema,
   updatedAt: z.string().min(1),
 });
 
@@ -210,6 +197,7 @@ export const ThreadGoalSummaryResponseSchema = z.object({
 
 /** Request body for starting Goal Mode from one thread. */
 export const StartThreadGoalRequestSchema = z.object({
+  requestId: z.string().min(1),
   objective: z.string().min(1),
   title: z.string().min(1).optional(),
 });
@@ -220,13 +208,29 @@ export const StartThreadGoalResponseSchema = z.object({
   objectiveItemId: z.string().min(1),
 });
 
+/** Request body for pausing Goal Mode at one safe thread boundary. */
+export const PauseThreadGoalRequestSchema = z
+  .object({
+    requestId: z.string().min(1),
+  })
+  .strict();
+
 /** Response payload returned after pausing Goal Mode for one thread. */
 export const PauseThreadGoalResponseSchema = z.object({
+  outcome: z.literal('paused'),
   goal: ThreadGoalSummarySchema,
 });
 
+/** Request body for resuming Goal Mode at one safe thread boundary. */
+export const ResumeThreadGoalRequestSchema = z
+  .object({
+    requestId: z.string().min(1),
+  })
+  .strict();
+
 /** Response payload returned after resuming Goal Mode for one thread. */
 export const ResumeThreadGoalResponseSchema = z.object({
+  outcome: z.literal('resumed'),
   goal: ThreadGoalSummarySchema,
 });
 
@@ -266,13 +270,10 @@ export const ThreadGoalPlanVerificationCheckSchema = z.object({
   command: z.string().min(1).max(1_000).optional(),
 });
 
-/** Human or automated review policy proposed for one Goal Mode plan task. */
+/** Human review policy proposed for one Goal Mode plan task. */
 export const ThreadGoalPlanReviewPolicySchema = z.object({
   required: z.boolean(),
-  reviewers: z
-    .array(z.enum(['human', 'internal', 'worker']))
-    .min(1)
-    .max(3),
+  reviewers: z.tuple([z.literal('human')]),
   instructions: z.string().min(1).max(2_000),
 });
 
@@ -310,7 +311,15 @@ export const GoalPlanPlannerSummarySchema = z.object({
   rationale: z.string().min(1),
   contextRefs: z.array(TaskModeContextRefSchema).min(1).max(50),
   requiredApprovals: z.array(z.string().min(1)).max(20),
+  plan: ThreadGoalPlanSchema,
 });
+
+/** Request body for creating one Goal Mode plan. */
+export const CreateThreadGoalPlanRequestSchema = z
+  .object({
+    requestId: z.string().min(1),
+  })
+  .strict();
 
 /** Response payload returned after creating a Goal Mode plan. */
 export const CreateThreadGoalPlanResponseSchema = z.object({
@@ -322,10 +331,12 @@ export const CreateThreadGoalPlanResponseSchema = z.object({
 });
 
 /** Request body for approving one Goal Mode plan. */
-export const ApproveThreadGoalPlanRequestSchema = z.object({
-  planItemId: z.string().min(1),
-  plan: ThreadGoalPlanSchema,
-});
+export const ApproveThreadGoalPlanRequestSchema = z
+  .object({
+    requestId: z.string().min(1),
+    planItemId: z.string().min(1),
+  })
+  .strict();
 
 /** Ready task summary returned after approving one Goal Mode plan. */
 export const ApprovedThreadGoalTaskSchema = z.object({
@@ -341,10 +352,12 @@ export const ApproveThreadGoalPlanResponseSchema = z.object({
 });
 
 /** Request body for asking Goal Mode to revise the active plan draft. */
-export const ReviseThreadGoalPlanRequestSchema = z.object({
-  requestId: z.string().min(1).optional(),
-  revision: z.string().min(1).max(4_000),
-});
+export const ReviseThreadGoalPlanRequestSchema = z
+  .object({
+    requestId: z.string().min(1),
+    revision: z.string().min(1).max(4_000),
+  })
+  .strict();
 
 /** Response payload returned after requesting Goal Mode plan revisions. */
 export const ReviseThreadGoalPlanResponseSchema = z.object({
@@ -353,87 +366,40 @@ export const ReviseThreadGoalPlanResponseSchema = z.object({
   startsWorkerTurn: z.literal(false),
 });
 
-/** Follow-up queue drain policy for one real Goal Mode worker step. */
-export const GoalStepFollowUpDrainModeSchema = z.enum(['one_at_a_time', 'all']);
-
-/** Review policy override requested for one real Goal Mode worker step. */
-export const GoalStepReviewPolicyOverrideSchema = z.enum(['human', 'none']);
-
-/** Product-facing pending attention returned by one real Goal Mode worker step. */
-export const GoalStepPendingAttentionSchema = z.object({
-  kind: z.enum(['review', 'user_input', 'blocked', 'failed', 'interrupted']),
-  reason: z.string().min(1),
-  itemId: z.string().min(1).nullable(),
-});
-
 /** Product-safe context assembly summary for one bounded worker step. */
 export const GoalStepContextAssemblySchema = z.object({
   contextDigest: z.string().min(1),
   contextRefs: z.array(TaskModeContextRefSchema).min(1).max(50),
   repositoryResourceId: z.string().min(1),
-  steeringMessageCount: z.number().int().nonnegative(),
-  followUpInputCount: z.number().int().nonnegative(),
 });
-
-/** App-local worker checkpoint stage returned by one real Goal Mode worker step. */
-export const GoalStepCheckpointStageSchema = z.enum([
-  'preparing',
-  'running_worker',
-  'waiting_for_user',
-  'reviewing',
-  'verifying',
-  'saving',
-  'recovering',
-  'completed',
-  'failed',
-  'aborted',
-]);
 
 /** Request body for running one real bounded Goal Mode worker step. */
-export const RunThreadGoalStepRequestSchema = z.object({
-  requestId: z.string().min(1),
-  followUpDrainMode: GoalStepFollowUpDrainModeSchema.optional(),
-  reviewPolicyOverride: GoalStepReviewPolicyOverrideSchema.optional(),
-});
+export const RunThreadGoalStepRequestSchema = z
+  .object({
+    requestId: z.string().min(1),
+  })
+  .strict();
 
 /** Response payload returned after running one real bounded Goal Mode worker step. */
 export const RunThreadGoalStepResponseSchema = z.object({
   goal: ThreadGoalSummarySchema,
-  worker: z.object({
+  result: z.object({
+    taskId: z.string().min(1),
     turnId: z.string().min(1),
-    stopReason: StopReasonSchema.nullable(),
-    checkpointStage: GoalStepCheckpointStageSchema,
-    workerSessionId: z.string().min(1).nullable(),
-    evidence: z.object({
-      itemIds: z.array(z.string().min(1)).max(100),
-      artifactIds: z.array(z.string().min(1)).max(100),
-    }),
-  }),
-  contextAssembly: GoalStepContextAssemblySchema,
-  coordinator: TaskDelegationDecisionSchema,
-  decision: z.object({
-    schemaVersion: z.literal(1),
-    mode: z.literal('goal'),
-    sourceAgentId: z.literal('worker-coordinator'),
-    requestId: z.string().min(1),
     outcome: z.enum(['continue', 'review', 'ask_user', 'block', 'abort', 'complete']),
     shouldStop: z.boolean(),
     stopReason: StopReasonSchema,
-    rationale: z.string().min(1),
-    contextRefs: z.array(TaskModeContextRefSchema).min(1).max(50),
     evidence: z.object({
       itemIds: z.array(z.string().min(1)).max(100),
       artifactIds: z.array(z.string().min(1)).max(100),
     }),
+    reviewId: z.string().min(1).nullable(),
   }),
-  pendingAttention: GoalStepPendingAttentionSchema.nullable(),
 });
 
 /** Request body for running one deterministic Goal Mode supervise step. */
 export const RunThreadGoalTestSuperviseStepRequestSchema = z.object({
-  verdict: z
-    .enum(['accept', 'refine', 'retry', 'decompose', 'ask_user', 'block', 'abort'])
-    .default('accept'),
+  verdict: GoalReviewVerdictSchema.default('accept'),
 });
 
 /** Response payload returned after running one deterministic Goal Mode supervise step. */
@@ -447,21 +413,11 @@ export const RunThreadGoalTestSuperviseStepResponseSchema = z.object({
   }),
   review: z.object({
     reviewId: z.string().min(1),
-    verdict: z.enum(['accept', 'refine', 'retry', 'decompose', 'ask_user', 'block', 'abort']),
+    verdict: GoalReviewVerdictSchema,
   }),
   advance: z.object({
-    outcome: z.enum([
-      'complete_next_task',
-      'complete_goal',
-      'continue',
-      'retry',
-      'needs_revision',
-      'decompose',
-      'awaiting_human',
-      'blocked',
-      'aborted',
-    ]),
-    nextTaskId: z.string().min(1).nullable(),
+    outcome: GoalReviewResolutionOutcomeSchema,
+    nextReadyTaskId: z.string().min(1).nullable(),
   }),
 });
 
@@ -477,10 +433,6 @@ export const WorkerRecoveryStageSchema = z.enum([
   'preparing',
   'running_worker',
   'waiting_for_user',
-  'reviewing',
-  'verifying',
-  'saving',
-  'recovering',
   'completed',
   'failed',
   'aborted',
@@ -496,11 +448,6 @@ export const InterruptedWorkerRecoveryChoiceSchema = z.discriminatedUnion('kind'
   z.object({
     kind: z.literal('retry'),
     label: z.string().min(1),
-  }),
-  z.object({
-    kind: z.literal('record_terminal'),
-    label: z.string().min(1),
-    allowedTerminalStages: z.array(z.enum(['completed', 'failed', 'aborted'])).length(3),
   }),
   z.object({
     kind: z.literal('request_human'),
@@ -530,86 +477,22 @@ export const InterruptedWorkerStateSchema = z.object({
   sourceUpdatedAt: z.string().min(1),
 });
 
-/** Pending user turn row surfaced by recovery diagnostics. */
-export const RecoveryPendingUserTurnSchema = z.object({
-  pendingTurnId: z.string().min(1),
-  workspaceId: z.string().min(1),
-  threadId: z.string().min(1),
-  requestId: z.string().min(1),
-  contentItemId: z.string().min(1).nullable(),
-  contentDigest: z.string().min(1).nullable(),
-  queueMode: z.enum(['follow_up', 'safe_point_steering']),
-  receivedAt: z.string().min(1),
-  createdAt: z.string().min(1),
-});
-
-/** Response payload returned after creating deterministic recovery state. */
-export const CreateInterruptedRecoveryStateResponseSchema = z.object({
-  checkpoint: z.object({
-    checkpointId: z.string().min(1),
-    turnId: z.string().min(1),
-    stage: WorkerRecoveryStageSchema,
-  }),
-  pendingUserTurn: RecoveryPendingUserTurnSchema,
-});
-
 /** Response payload listing materialized interrupted worker states. */
 export const ListInterruptedWorkerStatesResponseSchema = z.object({
   items: z.array(InterruptedWorkerStateSchema),
 });
 
-/** Response payload listing pending user turns for one thread. */
-export const ListRecoveryPendingUserTurnsResponseSchema = z.object({
-  items: z.array(RecoveryPendingUserTurnSchema),
-});
-
-/** Response payload returned after pending user turn cancellation is attempted. */
-export const CancelRecoveryPendingUserTurnResponseSchema = z.object({
-  cancelled: z.boolean(),
-});
-
-/** Response payload returned after pending user turn follow-up conversion is attempted. */
-export const ConvertRecoveryPendingUserTurnToFollowUpResponseSchema = z.object({
-  converted: z.boolean(),
-  pendingUserTurn: RecoveryPendingUserTurnSchema.nullable(),
-});
-
-/** Response payload returned after pending user turn interrupt promotion is attempted. */
-export const PromoteRecoveryPendingUserTurnToInterruptResponseSchema = z.object({
-  promoted: z.boolean(),
-  turn: TurnSchema.nullable(),
-});
-
-/** Request body for editing one pending user turn item. */
-export const EditRecoveryPendingUserTurnRequestSchema = z.object({
-  text: z.string().min(1).max(20_000),
-});
-
-/** Response payload returned after pending user turn edit is attempted. */
-export const EditRecoveryPendingUserTurnResponseSchema = z.object({
-  edited: z.boolean(),
-  item: z
-    .object({
-      id: z.string().min(1),
-      text: z.string().min(1),
-    })
-    .nullable(),
-});
-
-/** Request body for clearing one interrupted worker checkpoint after terminal save. */
-export const ClearInterruptedWorkerCheckpointRequestSchema = z.object({
-  terminalStage: z.enum(['completed', 'failed', 'aborted']),
-});
-
-/** Response payload returned after checkpoint cleanup is attempted. */
-export const ClearInterruptedWorkerCheckpointResponseSchema = z.object({
-  cleared: z.boolean(),
-});
+/** Request body for releasing one authoritatively interrupted worker attempt for later retry. */
+export const RetryInterruptedWorkerCheckpointRequestSchema = z
+  .object({
+    requestId: z.string().min(1),
+  })
+  .strict();
 
 /** Response payload returned after retrying one interrupted worker checkpoint. */
 export const RetryInterruptedWorkerCheckpointResponseSchema = z.object({
-  retried: z.boolean(),
-  turn: TurnSchema.nullable(),
+  outcome: z.literal('released_for_retry'),
+  turnId: z.string().min(1),
 });
 
 /** Response payload returned after retrying one denied scheduler admission. */
@@ -833,8 +716,6 @@ export type GoalTerminalVerificationEvidence = z.infer<
 >;
 /** Structured terminal summary for one closed Goal Mode run. */
 export type GoalTerminalSummary = z.infer<typeof GoalTerminalSummarySchema>;
-/** Steering summary for active Goal Mode user input. */
-export type GoalSteeringSummary = z.infer<typeof GoalSteeringSummarySchema>;
 /** Thread-level Goal Mode summary read model. */
 export type ThreadGoalSummary = z.infer<typeof ThreadGoalSummarySchema>;
 /** Thread goal summary response payload. */
@@ -843,8 +724,12 @@ export type ThreadGoalSummaryResponse = z.infer<typeof ThreadGoalSummaryResponse
 export type StartThreadGoalRequest = z.infer<typeof StartThreadGoalRequestSchema>;
 /** Response payload returned after starting Goal Mode from one thread. */
 export type StartThreadGoalResponse = z.infer<typeof StartThreadGoalResponseSchema>;
+/** Request body for pausing Goal Mode at one safe thread boundary. */
+export type PauseThreadGoalRequest = z.infer<typeof PauseThreadGoalRequestSchema>;
 /** Response payload returned after pausing Goal Mode for one thread. */
 export type PauseThreadGoalResponse = z.infer<typeof PauseThreadGoalResponseSchema>;
+/** Request body for resuming Goal Mode at one safe thread boundary. */
+export type ResumeThreadGoalRequest = z.infer<typeof ResumeThreadGoalRequestSchema>;
 /** Response payload returned after resuming Goal Mode for one thread. */
 export type ResumeThreadGoalResponse = z.infer<typeof ResumeThreadGoalResponseSchema>;
 /** Request body for submitting steering to an active Goal Mode thread. */
@@ -859,12 +744,14 @@ export type ThreadGoalPlanTaskResource = z.infer<typeof ThreadGoalPlanTaskResour
 export type ThreadGoalPlanExpectedArtifact = z.infer<typeof ThreadGoalPlanExpectedArtifactSchema>;
 /** Verification check proposed for one Goal Mode plan task. */
 export type ThreadGoalPlanVerificationCheck = z.infer<typeof ThreadGoalPlanVerificationCheckSchema>;
-/** Human or automated review policy proposed for one Goal Mode plan task. */
+/** Human review policy proposed for one Goal Mode plan task. */
 export type ThreadGoalPlanReviewPolicy = z.infer<typeof ThreadGoalPlanReviewPolicySchema>;
 /** One task proposed by a Goal Mode plan. */
 export type ThreadGoalPlanTask = z.infer<typeof ThreadGoalPlanTaskSchema>;
 /** Reviewable Goal Mode plan payload exchanged by App API routes. */
 export type ThreadGoalPlan = z.infer<typeof ThreadGoalPlanSchema>;
+/** Request body for creating one Goal Mode plan. */
+export type CreateThreadGoalPlanRequest = z.infer<typeof CreateThreadGoalPlanRequestSchema>;
 /** Response payload returned after creating a Goal Mode plan. */
 export type CreateThreadGoalPlanResponse = z.infer<typeof CreateThreadGoalPlanResponseSchema>;
 /** Request body for approving one Goal Mode plan. */
@@ -877,14 +764,6 @@ export type ApproveThreadGoalPlanResponse = z.infer<typeof ApproveThreadGoalPlan
 export type ReviseThreadGoalPlanRequest = z.infer<typeof ReviseThreadGoalPlanRequestSchema>;
 /** Response payload returned after requesting Goal Mode plan revisions. */
 export type ReviseThreadGoalPlanResponse = z.infer<typeof ReviseThreadGoalPlanResponseSchema>;
-/** Follow-up queue drain policy for one real Goal Mode worker step. */
-export type GoalStepFollowUpDrainMode = z.infer<typeof GoalStepFollowUpDrainModeSchema>;
-/** Review policy override requested for one real Goal Mode worker step. */
-export type GoalStepReviewPolicyOverride = z.infer<typeof GoalStepReviewPolicyOverrideSchema>;
-/** Product-facing pending attention returned by one real Goal Mode worker step. */
-export type GoalStepPendingAttention = z.infer<typeof GoalStepPendingAttentionSchema>;
-/** App-local worker checkpoint stage returned by one real Goal Mode worker step. */
-export type GoalStepCheckpointStage = z.infer<typeof GoalStepCheckpointStageSchema>;
 /** Request body for running one real bounded Goal Mode worker step. */
 export type RunThreadGoalStepRequest = z.infer<typeof RunThreadGoalStepRequestSchema>;
 /** Response payload returned after running one real bounded Goal Mode worker step. */
@@ -909,49 +788,15 @@ export type RunThreadGoalTestSuperviseStepResponse = z.infer<
 export type WorkerRecoveryStage = z.infer<typeof WorkerRecoveryStageSchema>;
 /** Materialized interrupted worker state row surfaced by recovery diagnostics. */
 export type InterruptedWorkerState = z.infer<typeof InterruptedWorkerStateSchema>;
-/** Pending user turn row surfaced by recovery diagnostics. */
-export type RecoveryPendingUserTurn = z.infer<typeof RecoveryPendingUserTurnSchema>;
-/** Response payload returned after creating deterministic recovery state. */
-export type CreateInterruptedRecoveryStateResponse = z.infer<
-  typeof CreateInterruptedRecoveryStateResponseSchema
->;
 /** Response payload listing materialized interrupted worker states. */
 export type ListInterruptedWorkerStatesResponse = z.infer<
   typeof ListInterruptedWorkerStatesResponseSchema
 >;
-/** Response payload listing pending user turns for one thread. */
-export type ListRecoveryPendingUserTurnsResponse = z.infer<
-  typeof ListRecoveryPendingUserTurnsResponseSchema
+/** Request body for releasing one authoritatively interrupted worker attempt for later retry. */
+export type RetryInterruptedWorkerCheckpointRequest = z.infer<
+  typeof RetryInterruptedWorkerCheckpointRequestSchema
 >;
-/** Response payload returned after pending user turn cancellation is attempted. */
-export type CancelRecoveryPendingUserTurnResponse = z.infer<
-  typeof CancelRecoveryPendingUserTurnResponseSchema
->;
-/** Response payload returned after pending user turn follow-up conversion is attempted. */
-export type ConvertRecoveryPendingUserTurnToFollowUpResponse = z.infer<
-  typeof ConvertRecoveryPendingUserTurnToFollowUpResponseSchema
->;
-/** Response payload returned after pending user turn interrupt promotion is attempted. */
-export type PromoteRecoveryPendingUserTurnToInterruptResponse = z.infer<
-  typeof PromoteRecoveryPendingUserTurnToInterruptResponseSchema
->;
-/** Request body for editing one pending user turn item. */
-export type EditRecoveryPendingUserTurnRequest = z.infer<
-  typeof EditRecoveryPendingUserTurnRequestSchema
->;
-/** Response payload returned after pending user turn edit is attempted. */
-export type EditRecoveryPendingUserTurnResponse = z.infer<
-  typeof EditRecoveryPendingUserTurnResponseSchema
->;
-/** Request body for clearing one interrupted worker checkpoint after terminal save. */
-export type ClearInterruptedWorkerCheckpointRequest = z.infer<
-  typeof ClearInterruptedWorkerCheckpointRequestSchema
->;
-/** Response payload returned after checkpoint cleanup is attempted. */
-export type ClearInterruptedWorkerCheckpointResponse = z.infer<
-  typeof ClearInterruptedWorkerCheckpointResponseSchema
->;
-
+/** Stable result returned after releasing one authoritatively interrupted worker attempt. */
 export type RetryInterruptedWorkerCheckpointResponse = z.infer<
   typeof RetryInterruptedWorkerCheckpointResponseSchema
 >;

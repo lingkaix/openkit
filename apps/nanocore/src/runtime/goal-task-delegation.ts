@@ -7,13 +7,9 @@ import {
   type LlmProjectionPolicy,
 } from '../context/projection-policy.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { GoalReviewResolutionError, listGoalReviewRecordsForTask } from './goal-review-records.js';
 import { getGoalRecord, listGoalTasks } from './goal-store.js';
-import {
-  type PreparedNextTurn,
-  type PrepareNextTurnTaskState,
-  prepareNextTurn,
-} from './prepare-next-turn.js';
-import type { QueuedFollowUpInput, SafePointSteeringMessage } from './user-turn-queues.js';
+import { type PreparedNextTurnContext, prepareNextTurnContext } from './prepare-next-turn.js';
 
 type Item = z.infer<typeof ItemSchema>;
 
@@ -42,16 +38,6 @@ export interface PrepareGoalTaskDelegationInput {
   readonly taskId: string;
   /** Durable thread items to project into worker-visible context. */
   readonly threadItems: readonly Item[];
-  /** Queued safe-point steering messages selected for this turn. */
-  readonly steeringMessages: readonly SafePointSteeringMessage[];
-  /** Queued follow-up inputs selected for this turn. */
-  readonly followUpInputs: readonly QueuedFollowUpInput[];
-  /** Expected artifacts or file changes from the worker task. */
-  readonly expectedArtifacts?: PrepareNextTurnTaskState['expectedArtifacts'];
-  /** Verification commands or checks expected after worker execution. */
-  readonly verification?: PrepareNextTurnTaskState['verification'];
-  /** Stop conditions for the worker turn. */
-  readonly stopConditions?: readonly string[];
 }
 
 /**
@@ -60,14 +46,14 @@ export interface PrepareGoalTaskDelegationInput {
  * @param coreDb Open Core database handles for repository context.
  * @param workspaceDb Open workspace-scope database handle for goal task state.
  * @param input Goal task delegation input.
- * @returns Prepared next-turn payload with repository, delegation request, and context digest.
+ * @returns Authorized Task facts and context prepared for Coordinator composition.
  * @throws Error when the goal, task, repository, or context package is unavailable.
  */
 export function prepareGoalTaskDelegation(
   coreDb: CoreDb,
   workspaceDb: WorkspaceDb,
   input: PrepareGoalTaskDelegationInput
-): PreparedNextTurn {
+): PreparedNextTurnContext {
   const goal = getGoalRecord(workspaceDb, input.workspaceId, input.threadId, input.goalId);
 
   if (!goal) {
@@ -83,38 +69,110 @@ export function prepareGoalTaskDelegation(
   if (!task) {
     throw new Error(`Goal task not found: ${input.goalId}/${input.taskId}`);
   }
+  if (goal.planItemId === null || task.planItemId !== goal.planItemId) {
+    throw new GoalReviewResolutionError(
+      'recovery_required',
+      'Goal task Plan lineage does not match the Goal.'
+    );
+  }
 
   const contextProjection = convertToLlm(input.threadItems, GOAL_WORKER_CONTEXT_POLICY);
+  const reviewContext = latestGoalReviewContext(workspaceDb, {
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    goalId: goal.goalId,
+    taskId: task.taskId,
+  });
 
-  return prepareNextTurn(coreDb, {
+  return prepareNextTurnContext(coreDb, {
     workspaceId: input.workspaceId,
     ...(input.userId === undefined ? {} : { userId: input.userId }),
     threadId: input.threadId,
-    goalState: {
-      goalId: goal.goalId,
-      title: goal.title,
-      objective: goal.objective,
-      acceptanceCriteria: ['Goal objective remains satisfied.'],
-    },
     taskState: {
-      taskId: task.taskId,
-      title: task.title,
       objective: task.objective,
       acceptanceCriteria: task.acceptanceCriteria,
-      expectedArtifacts: input.expectedArtifacts ?? [
-        { kind: 'artifact', description: 'Worker result summary and implementation evidence.' },
-      ],
-      verification:
-        input.verification ??
-        task.verificationChecks.map((check) => ({
-          kind: check.kind,
-          description: check.description,
-          ...(check.command ? { command: check.command } : {}),
-        })),
-      stopConditions: input.stopConditions ?? ['Stop after completing the selected goal task.'],
+      resources: task.resources,
+      expectedArtifacts: task.expectedArtifacts,
+      contextBudgetTokens: task.contextBudgetTokens,
+      verification: task.verificationChecks,
+      reviewPolicy: task.reviewPolicy,
+      escalationConditions: task.escalationConditions,
     },
     contextProjection,
-    steeringMessages: input.steeringMessages,
-    followUpInputs: input.followUpInputs,
+    reviewContext,
   });
+}
+
+/**
+ * Selects the sticky latest resolved Review context for one ready Goal Task.
+ *
+ * @param workspaceDb Open workspace-scope database handle.
+ * @param input Exact Goal Task lineage selected for delegation.
+ * @returns Resolved refine or retry context, or null when the Task has no Review.
+ * @throws GoalReviewResolutionError when the latest Review contradicts a ready Task.
+ */
+function latestGoalReviewContext(
+  workspaceDb: WorkspaceDb,
+  input: {
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly goalId: string;
+    readonly taskId: string;
+  }
+): PreparedNextTurnContext['workerRequestDetails']['reviewContext'] {
+  const latest = listGoalReviewRecordsForTask(workspaceDb, input).at(-1);
+
+  if (!latest) {
+    return null;
+  }
+
+  const snapshot = latest.resolutionSnapshot;
+  const resolvedTupleMatches =
+    latest.resolvedAt !== null &&
+    latest.resolutionRequestId !== null &&
+    latest.resolvedByActorId !== null &&
+    snapshot !== null &&
+    (latest.verdict === 'refine' || latest.verdict === 'retry') &&
+    snapshot.outcome === latest.verdict &&
+    snapshot.task.taskId === input.taskId &&
+    snapshot.task.status === 'ready' &&
+    snapshot.goal.goalId === input.goalId &&
+    snapshot.goal.status === 'running' &&
+    snapshot.goal.currentTaskId === null &&
+    snapshot.goal.terminalStopReason === null &&
+    snapshot.nextReadyTaskId === input.taskId;
+
+  if (!resolvedTupleMatches) {
+    throw new GoalReviewResolutionError(
+      'recovery_required',
+      'Latest Goal Review contradicts the selected ready Task.'
+    );
+  }
+
+  if (latest.verdict === 'refine' && latest.revisionInstruction !== null) {
+    return {
+      reviewId: latest.reviewId,
+      verdict: 'refine',
+      reason: latest.reason,
+      revisionInstruction: latest.revisionInstruction,
+      priorTurnId: latest.turnId,
+      evidence: { itemIds: [...latest.itemIds], artifactIds: [...latest.artifactIds] },
+    };
+  }
+
+  if (latest.verdict === 'retry' && latest.reason !== null && latest.revisionInstruction === null) {
+    return {
+      reviewId: latest.reviewId,
+      verdict: 'retry',
+      reason: latest.reason,
+      revisionInstruction: null,
+      priorTurnId: latest.turnId,
+      evidence: { itemIds: [...latest.itemIds], artifactIds: [...latest.artifactIds] },
+    };
+  }
+
+  throw new GoalReviewResolutionError(
+    'recovery_required',
+    'Latest Goal Review decision fields are contradictory.'
+  );
 }

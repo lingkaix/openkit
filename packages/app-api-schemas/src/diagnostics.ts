@@ -1,4 +1,4 @@
-import { MetaResponseSchema, StopReasonSchema } from '@openkit/protocol';
+import { MetaResponseSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { CodexOAuthAccountsPayloadSchema } from './oauth.js';
 import { addRawSecretIssues } from './raw-secrets.js';
@@ -187,87 +187,6 @@ export const SetupDiagnosticsResponseSchema = z
     addRawSecretIssues(value, ctx, []);
   });
 
-/** Internal agent mode exposed through App Diagnostics. */
-export const InternalAgentModeSchema = z.enum([
-  'chat',
-  'automation',
-  'plan',
-  'review',
-  'organize',
-  'delegation',
-]);
-
-/** Internal Core tool exposed through App Diagnostics. */
-export const InternalCoreToolSchema = z.enum([
-  'readWorkspaceSummary',
-  'readThreadSummary',
-  'readAgentReadiness',
-  'searchWorkspaceItems',
-  'searchKnowledge',
-  'webSearch',
-  'fetchPageText',
-  'draftWorkerDelegation',
-  'proposeKnowledgeEntry',
-  'summarizeArtifacts',
-]);
-
-/** Internal agent provider diagnostics. */
-export const InternalAgentProviderDiagnosticSchema = z.union([
-  z.object({
-    configured: z.literal(true),
-    model: z.string().min(1),
-    providerId: z.string().min(1),
-    reason: z.never().optional(),
-  }),
-  z.object({
-    configured: z.literal(false),
-    model: z.never().optional(),
-    providerId: z.string().min(1).optional(),
-    reason: z.enum(['provider-missing', 'model-missing']),
-  }),
-]);
-
-/** Internal agent diagnostics. */
-export const InternalAgentDiagnosticsSchema = z.object({
-  agents: z.array(
-    z.object({
-      allowedTools: z.array(InternalCoreToolSchema),
-      defaultProviderUse: z.enum(['quickChat', 'internalTasks']),
-      displayName: z.string().min(1),
-      id: z.string().min(1),
-      provider: InternalAgentProviderDiagnosticSchema,
-      supportedModes: z.array(InternalAgentModeSchema),
-    })
-  ),
-  recentFailures: z.array(
-    z.object({
-      agentId: z.string().min(1),
-      code: z.string().min(1),
-      details: z.unknown(),
-      message: z.string(),
-      occurredAt: z.string(),
-      status: z.enum(['completed', 'error', 'aborted']),
-      stopReason: StopReasonSchema,
-    })
-  ),
-  recentHookFailures: z.array(
-    z.object({
-      eventType: z.enum([
-        'agent_start',
-        'turn_start',
-        'message_start',
-        'message_update',
-        'message_end',
-        'turn_end',
-        'agent_end',
-      ]),
-      hookId: z.string().min(1),
-      message: z.string(),
-      mode: z.enum(['observational', 'critical']),
-    })
-  ),
-});
-
 const BootReadinessStateSchema = z.enum(['ready', 'degraded', 'failed']);
 
 /** Machine-readable reason for one boot readiness subsystem state. */
@@ -319,11 +238,12 @@ export const AppDiagnosticsResponseSchema = z
     }),
     providers: ProvidersDiagnosticsSchema,
     defaultProviders: DefaultProvidersDiagnosticsSchema,
-    defaults: z.object({
-      quickChat: z.object({ providerId: z.string().nullable(), model: z.string().nullable() }),
-      internalTasks: z.object({ providerId: z.string().nullable(), model: z.string().nullable() }),
-      gateway: z.object({ providerId: z.string().nullable(), model: z.string().nullable() }),
-    }),
+    defaults: z
+      .object({
+        quickChat: z.object({ providerId: z.string().nullable(), model: z.string().nullable() }),
+        gateway: z.object({ providerId: z.string().nullable(), model: z.string().nullable() }),
+      })
+      .strict(),
     oauth: z
       .object({
         openaiCodexAccounts: CodexOAuthAccountsPayloadSchema,
@@ -331,7 +251,6 @@ export const AppDiagnosticsResponseSchema = z
       .strict(),
     capabilities: MetaResponseSchema.shape.capabilities,
     runtimeConfig: RuntimeConfigStatusSchema,
-    internalAgents: InternalAgentDiagnosticsSchema,
   })
   .strict()
   .superRefine((value, ctx) => {

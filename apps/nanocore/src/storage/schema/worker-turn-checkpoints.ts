@@ -21,6 +21,10 @@ export const workerTurnCheckpoints = sqliteTable(
     goalId: text('goal_id'),
     /** Optional goal task id associated with the worker turn. */
     taskId: text('task_id'),
+    /** Command request that owns this worker envelope. */
+    requestId: text('request_id').notNull(),
+    /** Hash of the canonical command input without raw request content. */
+    requestInputHash: text('request_input_hash').notNull(),
     /** Recovery stage recorded for the worker turn. */
     stage: text('stage').$type<WorkerTurnStage>().notNull(),
     /** Worker iteration count at the checkpoint. */

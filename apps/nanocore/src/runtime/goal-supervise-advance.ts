@@ -1,140 +1,159 @@
-import type { StopReason } from '@openkit/protocol';
+import type { GoalReviewResolutionSnapshot, GoalReviewVerdict } from '@openkit/app-api-schemas';
 
 import type { WorkspaceDb } from '../storage/db.js';
-import type { GoalReviewVerdict } from '../storage/schema/index.js';
-import { applyGoalReviewDecision } from './goal-review-decision.js';
-import type { GoalRecord, GoalTaskRecord } from './goal-store.js';
+import { GoalReviewResolutionError } from './goal-review-records.js';
+import type { GoalTaskRecord } from './goal-store.js';
 import { listGoalTasks, updateGoalStatus, updateGoalTask } from './goal-store.js';
 import { selectNextReadyGoalTask } from './goal-task-selector.js';
 
 /**
- * Supervise-loop outcome after a reviewed task is applied.
- */
-export type GoalSuperviseAdvanceOutcome =
-  | 'complete_next_task'
-  | 'complete_goal'
-  | 'continue'
-  | 'retry'
-  | 'needs_revision'
-  | 'decompose'
-  | 'awaiting_human'
-  | 'blocked'
-  | 'aborted';
-
-/**
- * Input used to advance a goal after review.
+ * Input used to advance a Goal after one human Review decision.
  */
 export interface AdvanceGoalAfterReviewInput {
-  /** Workspace that owns the reviewed task. */
+  /** Workspace that owns the reviewed Task. */
   readonly workspaceId: string;
-  /** Thread that owns the reviewed task. */
+  /** Thread that owns the reviewed Task. */
   readonly threadId: string;
-  /** Goal that owns the reviewed task. */
+  /** Goal that owns the reviewed Task. */
   readonly goalId: string;
-  /** Reviewed task id. */
+  /** Reviewed Task id. */
   readonly taskId: string;
-  /** Review verdict to apply. */
+  /** Human Review verdict to apply. */
   readonly verdict: GoalReviewVerdict;
   /** Optional clock used by deterministic tests. */
   readonly now?: () => string;
 }
 
 /**
- * Result returned after a goal is advanced past a review checkpoint.
- */
-export interface AdvanceGoalAfterReviewResult {
-  /** Supervise-loop outcome. */
-  readonly outcome: GoalSuperviseAdvanceOutcome;
-  /** Updated reviewed task. */
-  readonly task: GoalTaskRecord;
-  /** Updated goal when goal state changed. */
-  readonly goal: GoalRecord | null;
-  /** Next task selected for execution, if any. */
-  readonly nextTask: GoalTaskRecord | null;
-}
-
-/**
- * Applies review, unlocks eligible dependents, and selects the next supervise step.
+ * Applies one human Review verdict and returns its bounded immutable result.
  *
  * @param workspaceDb Open workspace-scope database handle.
- * @param input Review advance input.
- * @returns Supervise-loop advance result.
- * @throws Error when the goal or task does not exist in the requested scope.
+ * @param input Scoped Review decision.
+ * @returns Bounded Task and Goal resolution snapshot.
+ * @throws GoalReviewResolutionError when accepted state has no valid continuation.
  */
 export function advanceGoalAfterReview(
   workspaceDb: WorkspaceDb,
   input: AdvanceGoalAfterReviewInput
-): AdvanceGoalAfterReviewResult {
-  const decision = applyGoalReviewDecision(workspaceDb, input);
-
-  if (decision.terminal || decision.outcome === 'awaiting_human') {
-    return {
-      goal: decision.goal,
-      nextTask: null,
-      outcome: decision.outcome,
-      task: decision.task,
-    };
-  }
-
-  if (decision.outcome === 'retry') {
-    const goal = setGoalCurrentTask(workspaceDb, input, decision.task.taskId, 'running', null);
+): GoalReviewResolutionSnapshot {
+  if (input.verdict === 'refine' || input.verdict === 'retry') {
+    const task = updateReviewedTask(workspaceDb, input, 'ready');
+    const goal = updateResolutionGoal(workspaceDb, input, 'running', null);
 
     return {
+      outcome: input.verdict,
+      task: { taskId: task.taskId, status: 'ready' },
       goal,
-      nextTask: decision.task,
-      outcome: 'retry',
-      task: decision.task,
+      nextReadyTaskId: task.taskId,
     };
   }
 
-  if (decision.outcome === 'needs_revision' || decision.outcome === 'decompose') {
+  if (input.verdict === 'abort') {
+    const task = updateReviewedTask(workspaceDb, input, 'failed');
+    const goal = updateResolutionGoal(workspaceDb, input, 'aborted', 'aborted');
+
     return {
-      goal: decision.goal,
-      nextTask: null,
-      outcome: decision.outcome,
-      task: decision.task,
+      outcome: 'aborted',
+      task: { taskId: task.taskId, status: 'failed' },
+      goal,
+      nextReadyTaskId: null,
     };
   }
 
+  const task = updateReviewedTask(workspaceDb, input, 'completed');
   const tasks = unlockDependentTasks(workspaceDb, input);
-  const nextTask = selectNextReadyGoalTask(tasks);
+  const nextReadyTask = selectNextReadyGoalTask(tasks);
 
-  if (nextTask) {
-    const goal = setGoalCurrentTask(workspaceDb, input, nextTask.taskId, 'running', null);
+  if (nextReadyTask) {
+    const goal = updateResolutionGoal(workspaceDb, input, 'running', null);
 
     return {
-      goal,
-      nextTask,
       outcome: 'complete_next_task',
-      task: decision.task,
+      task: { taskId: task.taskId, status: 'completed' },
+      goal,
+      nextReadyTaskId: nextReadyTask.taskId,
     };
   }
 
-  if (tasks.every((task) => task.status === 'completed' || task.status === 'skipped')) {
-    const goal = setGoalCurrentTask(workspaceDb, input, null, 'completed', 'completed');
+  if (tasks.every((candidate) => candidate.status === 'completed')) {
+    const goal = updateResolutionGoal(workspaceDb, input, 'completed', 'completed');
 
     return {
-      goal,
-      nextTask: null,
       outcome: 'complete_goal',
-      task: decision.task,
+      task: { taskId: task.taskId, status: 'completed' },
+      goal,
+      nextReadyTaskId: null,
     };
   }
+
+  throw new GoalReviewResolutionError(
+    'recovery_required',
+    'Accepted Goal Review has no valid next-ready Task or completed Goal.'
+  );
+}
+
+/**
+ * Updates the reviewed Task to its resolved lifecycle state.
+ *
+ * @param workspaceDb Open workspace-scope database handle.
+ * @param input Scoped Review decision.
+ * @param status Task status produced by the verdict.
+ * @returns Updated Task record.
+ */
+function updateReviewedTask(
+  workspaceDb: WorkspaceDb,
+  input: AdvanceGoalAfterReviewInput,
+  status: Extract<GoalTaskRecord['status'], 'ready' | 'completed' | 'failed'>
+): GoalTaskRecord {
+  return updateGoalTask(workspaceDb, {
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    goalId: input.goalId,
+    taskId: input.taskId,
+    status,
+    ...(input.now ? { now: input.now } : {}),
+  });
+}
+
+/**
+ * Updates the Goal after Review while leaving launch authority unclaimed.
+ *
+ * @param workspaceDb Open workspace-scope database handle.
+ * @param input Scoped Review decision.
+ * @param status Goal status produced by the verdict.
+ * @param terminalStopReason Terminal stop reason, or null.
+ * @returns Bounded updated Goal projection.
+ */
+function updateResolutionGoal(
+  workspaceDb: WorkspaceDb,
+  input: AdvanceGoalAfterReviewInput,
+  status: GoalReviewResolutionSnapshot['goal']['status'],
+  terminalStopReason: GoalReviewResolutionSnapshot['goal']['terminalStopReason']
+): GoalReviewResolutionSnapshot['goal'] {
+  const goal = updateGoalStatus(workspaceDb, {
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    goalId: input.goalId,
+    status,
+    currentTaskId: null,
+    terminalStopReason,
+    ...(input.now ? { now: input.now } : {}),
+  });
 
   return {
-    goal: decision.goal,
-    nextTask: null,
-    outcome: 'continue',
-    task: decision.task,
+    goalId: goal.goalId,
+    status,
+    currentTaskId: null,
+    terminalStopReason,
   };
 }
 
 /**
- * Unlocks pending goal tasks whose dependencies are all completed.
+ * Unlocks pending Tasks whose dependencies are all completed.
  *
  * @param workspaceDb Open workspace-scope database handle.
- * @param input Review advance input.
- * @returns Latest goal task list after unlocks.
+ * @param input Scoped Review decision.
+ * @returns Latest Goal Task list after unlocks.
  */
 function unlockDependentTasks(
   workspaceDb: WorkspaceDb,
@@ -164,32 +183,4 @@ function unlockDependentTasks(
   }
 
   return listGoalTasks(workspaceDb, input);
-}
-
-/**
- * Updates goal state for the selected current task.
- *
- * @param workspaceDb Open workspace-scope database handle.
- * @param input Review advance input.
- * @param currentTaskId Current task id, or null.
- * @param status Goal status to write.
- * @param terminalStopReason Terminal stop reason to write.
- * @returns Updated goal record.
- */
-function setGoalCurrentTask(
-  workspaceDb: WorkspaceDb,
-  input: AdvanceGoalAfterReviewInput,
-  currentTaskId: string | null,
-  status: GoalRecord['status'],
-  terminalStopReason: StopReason | null
-): GoalRecord {
-  return updateGoalStatus(workspaceDb, {
-    workspaceId: input.workspaceId,
-    threadId: input.threadId,
-    goalId: input.goalId,
-    status,
-    currentTaskId,
-    terminalStopReason,
-    ...(input.now ? { now: input.now } : {}),
-  });
 }

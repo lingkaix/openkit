@@ -11,38 +11,28 @@ import {
   AppSearchResponseSchema,
   type AutomationRecord,
   AutomationRecordSchema,
-  type CancelRecoveryPendingUserTurnResponse,
-  CancelRecoveryPendingUserTurnResponseSchema,
   type CancelSchedulerAdmissionResponse,
   CancelSchedulerAdmissionResponseSchema,
   type CapabilityUsageResponse,
   CapabilityUsageResponseSchema,
-  type ClearInterruptedWorkerCheckpointRequest,
-  ClearInterruptedWorkerCheckpointRequestSchema,
-  type ClearInterruptedWorkerCheckpointResponse,
-  ClearInterruptedWorkerCheckpointResponseSchema,
   type ConsumeOpenKitBootstrapTokenRequest,
   ConsumeOpenKitBootstrapTokenRequestSchema,
   type ConsumeOpenKitBootstrapTokenResponse,
   ConsumeOpenKitBootstrapTokenResponseSchema,
-  type ConvertRecoveryPendingUserTurnToFollowUpResponse,
-  ConvertRecoveryPendingUserTurnToFollowUpResponseSchema,
   type CreateAutomationRequest,
   CreateAutomationRequestSchema,
   type CreateOpenKitAccessTokenRequest,
   CreateOpenKitAccessTokenRequestSchema,
   type CreateOpenKitAccessTokenResponse,
   CreateOpenKitAccessTokenResponseSchema,
+  type CreateThreadGoalPlanRequest,
+  CreateThreadGoalPlanRequestSchema,
   type CreateThreadGoalPlanResponse,
   CreateThreadGoalPlanResponseSchema,
   type DataRootBackupCreateResponse,
   DataRootBackupCreateResponseSchema,
   type DataRootBackupVerifyResponse,
   DataRootBackupVerifyResponseSchema,
-  type EditRecoveryPendingUserTurnRequest,
-  EditRecoveryPendingUserTurnRequestSchema,
-  type EditRecoveryPendingUserTurnResponse,
-  EditRecoveryPendingUserTurnResponseSchema,
   type GetAgentEnvironmentPackageSnapshotResponse,
   GetAgentEnvironmentPackageSnapshotResponseSchema,
   type GetWorkspaceApplyResultResponse,
@@ -91,8 +81,6 @@ import {
   ListKnowledgeSourcesResponseSchema,
   type ListOpenKitAccessTokensResponse,
   ListOpenKitAccessTokensResponseSchema,
-  type ListRecoveryPendingUserTurnsResponse,
-  ListRecoveryPendingUserTurnsResponseSchema,
   type ListSchedulerAdmissionsResponse,
   ListSchedulerAdmissionsResponseSchema,
   type ListServerAuditEventsResponse,
@@ -139,14 +127,14 @@ import {
   ListWorkspaceVaultUseRecordsResponseSchema,
   type MaterializeKnowledgeContextPackageResponse,
   MaterializeKnowledgeContextPackageResponseSchema,
+  type PauseThreadGoalRequest,
+  PauseThreadGoalRequestSchema,
   type PauseThreadGoalResponse,
   PauseThreadGoalResponseSchema,
   type PromoteKnowledgeClaimRequest,
   PromoteKnowledgeClaimRequestSchema,
   type PromoteKnowledgeClaimResponse,
   PromoteKnowledgeClaimResponseSchema,
-  type PromoteRecoveryPendingUserTurnToInterruptResponse,
-  PromoteRecoveryPendingUserTurnToInterruptResponseSchema,
   type QueueAgentSessionTerminalCommandRequest,
   QueueAgentSessionTerminalCommandRequestSchema,
   type QueueAgentSessionTerminalCommandResponse,
@@ -179,10 +167,14 @@ import {
   ResolveKnowledgeConflictRequestSchema,
   type ResolveKnowledgeConflictResponse,
   ResolveKnowledgeConflictResponseSchema,
+  type ResumeThreadGoalRequest,
+  ResumeThreadGoalRequestSchema,
   type ResumeThreadGoalResponse,
   ResumeThreadGoalResponseSchema,
   type RetrieveKnowledgeRequest,
   RetrieveKnowledgeRequestSchema,
+  type RetryInterruptedWorkerCheckpointRequest,
+  RetryInterruptedWorkerCheckpointRequestSchema,
   type RetryInterruptedWorkerCheckpointResponse,
   RetryInterruptedWorkerCheckpointResponseSchema,
   type RetrySchedulerAdmissionResponse,
@@ -290,10 +282,19 @@ export type SubmitThreadGoalSteeringInput = OptionalRequestId<SubmitThreadGoalSt
 
 /** Goal Mode real worker step input with optional caller-provided request id. */
 export type RunThreadGoalStepInput = OptionalRequestId<RunThreadGoalStepRequest>;
+/** Goal Mode pause input with optional caller-provided request id. */
+export type PauseThreadGoalInput = OptionalRequestId<PauseThreadGoalRequest>;
+/** Goal Mode resume input with optional caller-provided request id. */
+export type ResumeThreadGoalInput = OptionalRequestId<ResumeThreadGoalRequest>;
+/** Interrupted-worker retry input with optional caller-provided request id. */
+export type RetryInterruptedWorkerCheckpointInput =
+  OptionalRequestId<RetryInterruptedWorkerCheckpointRequest>;
 /** Task Mode start input with optional caller-provided request id. */
-export type StartTaskModeInput = StartTaskModeRequest;
+export type StartTaskModeInput = OptionalRequestId<StartTaskModeRequest>;
 /** Chat Mode start input with optional caller-provided request id. */
-export type StartChatModeInput = StartChatModeRequest;
+export type StartChatModeInput = OptionalRequestId<StartChatModeRequest>;
+/** Goal Mode start input with optional caller-provided request id. */
+export type StartThreadGoalInput = OptionalRequestId<StartThreadGoalRequest>;
 /** Knowledge Manager answer request input. */
 export type KnowledgeManagerAnswerInput = KnowledgeManagerAnswerRequest;
 /** Knowledge Manager context-material request input. */
@@ -321,7 +322,10 @@ export type RetrieveKnowledgeInput = RetrieveKnowledgeRequest;
 /** Artifact review decision input with optional caller-provided request id. */
 export type SubmitArtifactReviewDecisionInput = SubmitArtifactReviewDecisionRequest;
 /** Goal Review decision input with optional caller-provided request id. */
-export type SubmitGoalReviewDecisionInput = SubmitGoalReviewDecisionRequest;
+export type SubmitGoalReviewDecisionInput = Omit<SubmitGoalReviewDecisionRequest, 'requestId'> & {
+  /** Optional caller-provided request id; the client generates one when omitted. */
+  requestId?: SubmitGoalReviewDecisionRequest['requestId'];
+};
 /** Knowledge proposal decision input with optional caller-provided request id. */
 export type SubmitKnowledgeProposalDecisionInput = SubmitKnowledgeProposalDecisionRequest;
 /** Durable workspace synchronization review decision input with optional caller-provided request id. */
@@ -341,9 +345,6 @@ export interface RotateOpenKitAccessTokenInput {
 export type VaultAdminUnlockInput = VaultAdminUnlockRequest;
 /** Vault admin Codex auth JSON bootstrap input. */
 export type VaultAdminBootstrapCodexAuthJsonInput = VaultAdminBootstrapCodexAuthJsonRequest;
-/** Interrupted worker checkpoint cleanup input. */
-export type ClearInterruptedWorkerCheckpointInput = ClearInterruptedWorkerCheckpointRequest;
-
 /** NanoCore App API client for read models and app-local commands. */
 export interface AppApiClient {
   /** Reads one workspace dashboard read model. */
@@ -356,12 +357,13 @@ export interface AppApiClient {
   startThreadGoal(
     workspaceId: string,
     threadId: string,
-    input: StartThreadGoalRequest
+    input: StartThreadGoalInput
   ): Promise<StartThreadGoalResponse>;
   /** Creates a deterministic Goal Mode plan for one planning goal. */
   createThreadGoalPlan(
     workspaceId: string,
-    threadId: string
+    threadId: string,
+    input: CreateThreadGoalPlanRequest
   ): Promise<CreateThreadGoalPlanResponse>;
   /** Approves one Goal Mode plan and persists its ready tasks. */
   approveThreadGoalPlan(
@@ -376,9 +378,17 @@ export interface AppApiClient {
     input: ReviseThreadGoalPlanRequest
   ): Promise<ReviseThreadGoalPlanResponse>;
   /** Pauses the active Goal Mode workflow for one thread. */
-  pauseThreadGoal(workspaceId: string, threadId: string): Promise<PauseThreadGoalResponse>;
+  pauseThreadGoal(
+    workspaceId: string,
+    threadId: string,
+    input?: PauseThreadGoalInput
+  ): Promise<PauseThreadGoalResponse>;
   /** Resumes a paused Goal Mode workflow for one thread. */
-  resumeThreadGoal(workspaceId: string, threadId: string): Promise<ResumeThreadGoalResponse>;
+  resumeThreadGoal(
+    workspaceId: string,
+    threadId: string,
+    input?: ResumeThreadGoalInput
+  ): Promise<ResumeThreadGoalResponse>;
   /** Runs one real bounded Goal Mode worker step. */
   runThreadGoalStep(
     workspaceId: string,
@@ -504,7 +514,7 @@ export interface AppApiClient {
     threadId: string,
     goalId: string,
     reviewId: string,
-    input?: SubmitGoalReviewDecisionInput
+    input: SubmitGoalReviewDecisionInput
   ): Promise<SubmitGoalReviewDecisionResponse>;
   /** Records one app-local knowledge proposal decision. */
   submitKnowledgeProposalDecision(
@@ -683,48 +693,12 @@ export interface AppApiClient {
   quickChat(input: QuickChatRequest): Promise<QuickChatResponse>;
   /** Lists interrupted worker recovery states. */
   listInterruptedWorkers(): Promise<ListInterruptedWorkerStatesResponse>;
-  /** Lists pending user turns preserved for one thread recovery state. */
-  listRecoveryPendingUserTurns(
-    workspaceId: string,
-    threadId: string
-  ): Promise<ListRecoveryPendingUserTurnsResponse>;
-  /** Cancels one pending user turn preserved for thread recovery. */
-  cancelRecoveryPendingUserTurn(
-    workspaceId: string,
-    threadId: string,
-    requestId: string
-  ): Promise<CancelRecoveryPendingUserTurnResponse>;
-  /** Edits one pending user turn item preserved for thread recovery. */
-  editRecoveryPendingUserTurn(
-    workspaceId: string,
-    threadId: string,
-    requestId: string,
-    input: EditRecoveryPendingUserTurnRequest
-  ): Promise<EditRecoveryPendingUserTurnResponse>;
-  /** Converts one pending user turn to follow-up delivery. */
-  convertRecoveryPendingUserTurnToFollowUp(
-    workspaceId: string,
-    threadId: string,
-    requestId: string
-  ): Promise<ConvertRecoveryPendingUserTurnToFollowUpResponse>;
-  /** Promotes one pending user turn to an interrupt for the active turn. */
-  promoteRecoveryPendingUserTurnToInterrupt(
-    workspaceId: string,
-    threadId: string,
-    requestId: string
-  ): Promise<PromoteRecoveryPendingUserTurnToInterruptResponse>;
-  /** Clears one interrupted worker checkpoint after terminal state is recorded. */
-  clearInterruptedWorkerCheckpoint(
-    workspaceId: string,
-    threadId: string,
-    turnId: string,
-    input: ClearInterruptedWorkerCheckpointInput
-  ): Promise<ClearInterruptedWorkerCheckpointResponse>;
   /** Queues one interrupted worker checkpoint for retry through the owning task. */
   retryInterruptedWorkerCheckpoint(
     workspaceId: string,
     threadId: string,
-    turnId: string
+    turnId: string,
+    input?: RetryInterruptedWorkerCheckpointInput
   ): Promise<RetryInterruptedWorkerCheckpointResponse>;
   /** Requeues one denied scheduler admission. */
   retrySchedulerAdmission(
@@ -765,16 +739,19 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal`,
         ThreadGoalSummaryResponseSchema
       ),
-    startThreadGoal: (workspaceId, threadId, input) =>
-      transport.postJson(
+    startThreadGoal: (workspaceId, threadId, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
         `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal`,
-        StartThreadGoalRequestSchema.parse(input),
+        StartThreadGoalRequestSchema.parse(request),
         StartThreadGoalResponseSchema
-      ),
-    createThreadGoalPlan: (workspaceId, threadId) =>
+      );
+    },
+    createThreadGoalPlan: (workspaceId, threadId, input) =>
       transport.postJson(
         `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal/plan`,
-        {},
+        CreateThreadGoalPlanRequestSchema.parse(input),
         CreateThreadGoalPlanResponseSchema
       ),
     approveThreadGoalPlan: (workspaceId, threadId, input) =>
@@ -789,18 +766,24 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         ReviseThreadGoalPlanRequestSchema.parse(input),
         ReviseThreadGoalPlanResponseSchema
       ),
-    pauseThreadGoal: (workspaceId, threadId) =>
-      transport.postJson(
+    pauseThreadGoal: (workspaceId, threadId, input = {}) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
         `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal/pause`,
-        {},
+        PauseThreadGoalRequestSchema.parse(request),
         PauseThreadGoalResponseSchema
-      ),
-    resumeThreadGoal: (workspaceId, threadId) =>
-      transport.postJson(
+      );
+    },
+    resumeThreadGoal: (workspaceId, threadId, input = {}) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
         `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal/resume`,
-        {},
+        ResumeThreadGoalRequestSchema.parse(request),
         ResumeThreadGoalResponseSchema
-      ),
+      );
+    },
     runThreadGoalStep: (workspaceId, threadId, input = {}) => {
       const request = withRequestId(input);
 
@@ -964,7 +947,7 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         SubmitArtifactReviewDecisionResponseSchema
       );
     },
-    submitGoalReviewDecision: (workspaceId, threadId, goalId, reviewId, input = {}) => {
+    submitGoalReviewDecision: (workspaceId, threadId, goalId, reviewId, input) => {
       const request = { ...input, requestId: input.requestId ?? createRequestId() };
 
       return transport.postJson(
@@ -1251,47 +1234,15 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         '/api/app/recovery/interrupted-workers',
         ListInterruptedWorkerStatesResponseSchema
       ),
-    listRecoveryPendingUserTurns: (workspaceId, threadId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/recovery/pending-user-turns`,
-        ListRecoveryPendingUserTurnsResponseSchema
-      ),
-    cancelRecoveryPendingUserTurn: (workspaceId, threadId, requestId) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/recovery/pending-user-turns/${requestId}/cancel`,
-        {},
-        CancelRecoveryPendingUserTurnResponseSchema
-      ),
-    editRecoveryPendingUserTurn: (workspaceId, threadId, requestId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/recovery/pending-user-turns/${requestId}/edit`,
-        EditRecoveryPendingUserTurnRequestSchema.parse(input),
-        EditRecoveryPendingUserTurnResponseSchema
-      ),
-    convertRecoveryPendingUserTurnToFollowUp: (workspaceId, threadId, requestId) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/recovery/pending-user-turns/${requestId}/follow-up`,
-        {},
-        ConvertRecoveryPendingUserTurnToFollowUpResponseSchema
-      ),
-    promoteRecoveryPendingUserTurnToInterrupt: (workspaceId, threadId, requestId) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/recovery/pending-user-turns/${requestId}/interrupt`,
-        {},
-        PromoteRecoveryPendingUserTurnToInterruptResponseSchema
-      ),
-    clearInterruptedWorkerCheckpoint: (workspaceId, threadId, turnId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/recovery/interrupted-worker/${turnId}/terminal`,
-        ClearInterruptedWorkerCheckpointRequestSchema.parse(input),
-        ClearInterruptedWorkerCheckpointResponseSchema
-      ),
-    retryInterruptedWorkerCheckpoint: (workspaceId, threadId, turnId) =>
-      transport.postJson(
+    retryInterruptedWorkerCheckpoint: (workspaceId, threadId, turnId, input = {}) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
         `/api/app/workspaces/${workspaceId}/threads/${threadId}/recovery/interrupted-worker/${turnId}/retry`,
-        {},
+        RetryInterruptedWorkerCheckpointRequestSchema.parse(request),
         RetryInterruptedWorkerCheckpointResponseSchema
-      ),
+      );
+    },
     retrySchedulerAdmission: (workspaceId, queueEntryId) =>
       transport.postJson(
         `/api/app/workspaces/${workspaceId}/scheduler/admissions/${queueEntryId}/retry`,

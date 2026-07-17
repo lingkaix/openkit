@@ -20,8 +20,6 @@ type CodexOAuthAccountSummary = NonNullable<
 >['accounts'][number];
 type CodexOAuthStatusPayload = CodexOAuthAccountSummary;
 type CodexOAuthLoginMode = NonNullable<CodexOAuthStatusPayload['mode']>;
-/** Internal agent diagnostic row returned by NanoCore app diagnostics. */
-type InternalAgentDiagnostic = NonNullable<AppDiagnostics['internalAgents']>['agents'][number];
 
 /**
  * Display state for the default-provider diagnostics metric.
@@ -123,21 +121,6 @@ function formatRoleDefaultProvider(
     detail: `Credentials missing from ${origin}.`,
     value: provider.providerId,
   };
-}
-
-/**
- * Formats one internal agent provider selection.
- *
- * @param provider Internal agent provider diagnostic.
- * @returns Compact provider/model selection label.
- */
-function formatInternalAgentProvider(provider: InternalAgentDiagnostic['provider']): string {
-  if (provider.configured) {
-    return `${provider.providerId} / ${provider.model}`;
-  }
-
-  const reason = provider.reason.replaceAll('-', ' ');
-  return provider.providerId ? `${provider.providerId} needs ${reason}` : reason;
 }
 
 /**
@@ -452,63 +435,6 @@ export function DiagnosticsPanel(props: DiagnosticsPanelProps) {
           )}
         </Show>
       </div>
-
-      <section class="mt-5">
-        <div class="ui-section-header mb-3 flex flex-wrap items-center justify-between gap-3">
-          <h4 class="font-display text-base font-semibold">Internal agents</h4>
-          <span class="badge badge-outline">
-            {props.appDiagnostics?.internalAgents?.agents.length ?? 0} agents
-          </span>
-        </div>
-        <Show
-          when={(props.appDiagnostics?.internalAgents?.agents.length ?? 0) > 0}
-          fallback={<div class="empty-state">No internal agent diagnostics available.</div>}
-        >
-          <div class="space-y-2">
-            <For each={props.appDiagnostics?.internalAgents?.agents ?? []}>
-              {(agent) => (
-                <article class="event-line">
-                  <div class="flex flex-wrap items-start justify-between gap-2">
-                    <div>
-                      <span class="font-semibold">{agent.displayName}</span>
-                      <p class="text-xs opacity-70">{agent.id}</p>
-                    </div>
-                    <span class="badge badge-outline badge-sm">{agent.defaultProviderUse}</span>
-                  </div>
-                  <p class="mt-2 text-xs opacity-70">
-                    {formatInternalAgentProvider(agent.provider)}
-                  </p>
-                  <div class="mt-2 flex flex-wrap gap-1">
-                    <For each={agent.supportedModes}>
-                      {(mode) => <span class="badge badge-outline badge-sm">{mode}</span>}
-                    </For>
-                    <For each={agent.allowedTools}>
-                      {(tool) => <span class="badge badge-ghost badge-sm">{tool}</span>}
-                    </For>
-                  </div>
-                </article>
-              )}
-            </For>
-          </div>
-        </Show>
-        <Show when={(props.appDiagnostics?.internalAgents?.recentFailures.length ?? 0) > 0}>
-          <div class="mt-3 space-y-2">
-            <h5 class="text-sm font-semibold">Recent internal agent failures</h5>
-            <For each={props.appDiagnostics?.internalAgents?.recentFailures ?? []}>
-              {(failure) => (
-                <article class="event-line">
-                  <div class="flex flex-wrap items-start justify-between gap-2">
-                    <span class="font-semibold">{failure.code}</span>
-                    <span class="badge badge-outline badge-sm">{failure.agentId}</span>
-                  </div>
-                  <p class="mt-2 text-xs opacity-70">{failure.message}</p>
-                  <p class="mt-1 text-xs opacity-50">{failure.occurredAt}</p>
-                </article>
-              )}
-            </For>
-          </div>
-        </Show>
-      </section>
 
       <section class="mt-5">
         <div class="ui-section-header mb-3 flex flex-wrap items-center justify-between gap-3">

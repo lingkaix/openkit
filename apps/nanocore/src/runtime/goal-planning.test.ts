@@ -6,8 +6,8 @@ import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { createDeterministicGoalPlanFallback } from './goal-plan.js';
-import { createGoalPlan } from './goal-planning.js';
-import { createGoalRecord, getGoalRecord } from './goal-store.js';
+import { createGoalPlan, readGoalPlanCreation } from './goal-planning.js';
+import { createGoalRecord, getGoalPlanRecord, getGoalRecord } from './goal-store.js';
 
 /**
  * Opens a migrated workspace database for goal planning tests.
@@ -43,14 +43,15 @@ describe('goal planning path', () => {
         workspaceId: 'ws_demo',
         threadId: thread.id,
         goalId: 'goal_demo',
+        requestId: 'req_goal_plan_create',
       });
 
       expect(result.status).toBe('awaiting_plan_approval');
-      expect(result.planItem.id).toBe('it_goal_plan_tu_1');
       expect(result.plan.tasks).toHaveLength(1);
       expect(store.listThreadItems('ws_demo', thread.id)).toEqual([
         expect.objectContaining({
-          id: 'it_goal_plan_tu_1',
+          id: result.planItem.id,
+          causationId: 'req_goal_plan_create',
           type: 'plan',
           status: 'completed',
           title: 'Ship v0.0.6',
@@ -64,8 +65,60 @@ describe('goal planning path', () => {
       ]);
       expect(getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_demo')).toMatchObject({
         status: 'awaiting_plan_approval',
-        planItemId: 'it_goal_plan_tu_1',
+        planItemId: result.planItem.id,
       });
+      expect(
+        getGoalPlanRecord(workspaceDb, 'ws_demo', thread.id, result.planItem.id)
+      ).toMatchObject({
+        goalId: 'goal_demo',
+        planItemId: result.planItem.id,
+        planDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+        createdByRequestId: 'req_goal_plan_create',
+        tasks: result.plan.tasks,
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('fails closed when the Goal loses its planning transition fence', async () => {
+    const workspaceDb = createWorkspaceDb();
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Plan transition fence thread');
+
+    try {
+      createGoalRecord(workspaceDb, {
+        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
+        goalId: 'goal_fence',
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        title: 'Fence plan creation',
+        objective: 'Do not overwrite a newer Goal transition.',
+        status: 'failed',
+      });
+
+      await expect(
+        createGoalPlan({
+          workspaceDb,
+          store,
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: 'goal_fence',
+          requestId: 'req_goal_plan_fence',
+        })
+      ).rejects.toMatchObject({ code: 'recovery_required' });
+      expect(
+        workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM goal_plan_records').get()
+      ).toEqual({ count: 0 });
+      expect(() =>
+        readGoalPlanCreation({
+          workspaceDb,
+          store,
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          requestId: 'req_goal_plan_fence',
+        })
+      ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -96,6 +149,7 @@ describe('goal planning path', () => {
         workspaceId: 'ws_demo',
         threadId: thread.id,
         goalId: 'goal_questions',
+        requestId: 'req_goal_plan_questions',
         planner: () => ({
           ...plan,
           questions: [
@@ -115,6 +169,18 @@ describe('goal planning path', () => {
         status: 'awaiting_user',
         planItemId: null,
       });
+      expect(
+        workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM goal_plan_records').get()
+      ).toEqual({ count: 0 });
+      expect(() =>
+        readGoalPlanCreation({
+          workspaceDb,
+          store,
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          requestId: 'req_goal_plan_questions',
+        })
+      ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -141,6 +207,7 @@ describe('goal planning path', () => {
         workspaceId: 'ws_demo',
         threadId: thread.id,
         goalId: 'goal_failure',
+        requestId: 'req_goal_plan_failure',
         planner: () => {
           throw new Error('planner unavailable');
         },
@@ -156,6 +223,15 @@ describe('goal planning path', () => {
         status: 'failed',
         terminalStopReason: 'error',
       });
+      expect(() =>
+        readGoalPlanCreation({
+          workspaceDb,
+          store,
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          requestId: 'req_goal_plan_failure',
+        })
+      ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
     } finally {
       workspaceDb.sqlite.close();
     }

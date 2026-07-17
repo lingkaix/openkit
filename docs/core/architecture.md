@@ -16,6 +16,7 @@ OpenKit coordinates work across changing product surfaces, agent runtimes, adapt
 - Only Core validates and commits durable product truth. Apps, channels, internal roles, adapters, and runtimes may submit inputs, decisions, candidate records, results, or evidence through an owning Core contract.
 - Apps, channels, Skills, CLIs, and API clients are governed projections over Core contracts rather than independent workflow or state owners.
 - Runtime-native commands, events, sessions, provider payloads, and diagnostics remain behind the adapter boundary unless another Core aspect deliberately promotes a stable product projection.
+- Core storage and an Agent Runtime are separate effect domains. A local transaction can commit Core truth, but it cannot make an external process, provider, sandbox, repository, or network effect atomically commit with that truth.
 - Deployment and storage choices must not change product-state ownership, policy authority, review semantics, or trust boundaries.
 - Workspace services expose governed Core contracts rather than raw storage, provider, sandbox, or adapter internals.
 
@@ -41,6 +42,8 @@ Apps and channels submit intent and commands through public Core contracts and r
 Core is the coordination and governance plane. It owns admission and routing, scheduling, Core-owned product-record lifecycle transitions, policy and approval gates, durable record validation and commit, storage coordination, and product-safe projections.
 
 Core may coordinate context, capabilities, workspace changes, evidence, audit, and usage through their owning aspects. It must not absorb coding, research, browser operation, shell execution, long-running tool loops, or other heavy domain execution merely because it supervises that work.
+
+When Core cannot prove whether an external runtime effect occurred, it may preserve the accepted lineage and expose an interrupted or uncertain outcome that requires inspection or a new authorized attempt. It must not guess, duplicate the effect, or create a settlement workflow solely to hide that boundary.
 
 ### Agent Adapter
 
@@ -69,7 +72,7 @@ Core may use lightweight internal roles for coordination. These roles remain ins
 | Role | Stable responsibility | Prohibited ownership |
 | --- | --- | --- |
 | Core Assistant | Lightweight reply, clarification, state-query, and triage coordination. | Non-trivial worker execution or long-running workflow progression. |
-| Workflow Coordinator | Coordination of non-trivial workflow routing, bounded progression, worker selection, gates, evidence, and stop decisions. | Heavy execution, private workflow truth, or direct Knowledge Store ownership. |
+| Workflow Coordinator | Bounded structured decisions for workflow routing, worker selection, semantic worker-context composition, planning, and stopping. | Durable mode state, workflow side effects, context materialization or delivery, heavy execution, or direct Knowledge Store ownership. |
 | Knowledge Manager | Governed knowledge retrieval and maintenance coordination. | Overall workflow progression or final worker-context authority. |
 | Task Evaluator | Reserved direction for governed evaluation of outcomes, verification, and improvement proposals. | Current worker execution or an unpromoted concrete evaluation architecture. |
 
@@ -81,6 +84,7 @@ Internal roles may produce decisions or proposals only through normal Core servi
 - Architecture does not make every runtime capability a stable Core feature; unsupported operations remain unsupported until an owning contract is accepted and implemented.
 - Architecture does not make internal roles worker runtimes or require an agent where deterministic Core code is sufficient.
 - Architecture does not define workspace object lifecycles, workflow algorithms, storage layout, transport recovery, sandbox containment, or provider behavior; their owning aspects retain those decisions.
+- Architecture does not promise cross-domain atomicity, high availability, transparent failover, or automatic recovery for every external effect.
 - Future workspace services do not authorize speculative entities, generalized workbenches, or parallel governance systems.
 
 ## Invariants
@@ -89,6 +93,7 @@ Internal roles may produce decisions or proposals only through normal Core servi
 - Apps and channels MUST NOT become a second source of workflow, policy, identity, review, storage, or lifecycle truth.
 - Agent adapters and runtimes MUST NOT write, terminalize, or reinterpret Core-owned product state directly.
 - Runtime-native commands, events, sessions, provider details, and evidence formats MUST remain behind the adapter boundary unless another Core aspect promotes a stable projection.
+- Core MUST NOT claim atomic completion across its durable store and an external runtime effect without an owning contract that supplies real proof. An unprovable outcome MUST remain explicit rather than being repaired by inference.
 - Adding an agent runtime MUST NOT add runtime-specific product, workflow, policy, governance, or canonical-schema branches to Core.
 - Internal Core roles MUST remain inside the coordination plane and MUST NOT maintain private product or workflow state.
 - Workspace services MUST expose governed Core contracts and MUST NOT expose raw storage, credentials, provider clients, sandbox control, or adapter internals.

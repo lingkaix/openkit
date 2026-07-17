@@ -17,7 +17,7 @@ Implementation: Not Started
 ## Does Not Own
 
 - The canonical internal-role table. `docs/core/architecture.md` owns it; this spec proposes the resolution of its Task Evaluator placeholder as a follow-up core update.
-- Workflow Coordinator routing, worker selection, or context assembly. `docs/specs/20260704-workflow_coordinator_internal_agent.md` owns those.
+- Workflow Coordinator routing, worker selection, or semantic worker-context composition. `docs/specs/20260704-workflow_coordinator_internal_agent.md` owns those; mode specs own durable state, materialization, and delivery.
 - Knowledge model, knowledge proposals, or Knowledge Manager maintenance behavior. `docs/core/knowledge.md` and `docs/specs/20260702-knowledge_store_governance_rules.md` own those; this spec only defines how rubric and lesson updates flow through the existing knowledge proposal path.
 - Goal Mode, Task Mode, or Chat Mode semantics. The mode specs own those.
 - Skill file format, Skill Catalog storage, or Skill Creator authoring UX. This spec depends on Skill Catalog versioning but does not define it.
@@ -152,7 +152,7 @@ Each workspace owns three assets.
 
 Curation rules: harvesting favors signal-clear cases; fixed failures must enter the suite once fixed; suites stay small (target 10-30 tasks per workspace) and stratified; the Reflector proposes additions, replacements, and retirements; humans approve suite changes on the lightweight tier. Suite content changes are versioned as immutable snapshots.
 
-**Rubric / preference profile.** Distilled, source-traceable statements of what this workspace considers good work, maintained as governed knowledge records and updated only through knowledge proposals. Rubrics serve two consumers: the Judge (as grading criteria) and the Workflow Coordinator (as context material for future work). Rubric records must cite the feedback events they were distilled from.
+**Rubric / preference profile.** Distilled, source-traceable statements of what this workspace considers good work, maintained as governed knowledge records and updated only through knowledge proposals. Rubrics serve two consumers: the Judge as grading criteria and Workflow Coordinator decisions as authorized context material for future work. Rubric records must cite the feedback events they were distilled from.
 
 **Outcome telemetry links.** References connecting each promoted change to downstream signals that arrive after promotion: user redo/refinement rates, review outcomes, skill version pin changes, and external outcome data where the workspace has it (for example ad performance metrics in a creative workspace). External ground truth validates or invalidates promotions over time; it does not gate them synchronously.
 
@@ -240,16 +240,6 @@ The loop consumes, in decreasing order of trust:
 - Snapshot pinning plus batch separation removes the Reflector's write path into its own evaluation.
 - All Reflector, Harness, and Judge activity lands in audit under `docs/core/audit.md` categories.
 
-## Rollout Phases
-
-**Phase 1 — Memory loop (no new infrastructure).** Reflector ships with rubric/lesson distillation only: mine redo/steering/review events, submit knowledge proposals, feed rubrics into Coordinator context. Value arrives immediately through the existing knowledge path while harness work proceeds.
-
-**Phase 2 — Skill loop.** Evaluation Harness V1: harvested suites, snapshot versioning, work/judge sandbox split, fixed budgets, mechanical gate, pairwise judging, evidence bundles. Skill-version and prompt-template proposals go live behind full Action Center approval. Requires Skill Catalog versioning.
-
-**Phase 3 — Coordination reflection.** Counterfactual review of Coordinator decisions (routing, worker selection, context assembly, policy drafts) producing `coordinator-spec-draft` proposals and guard-metric dashboards. No automated mutation of coordination behavior.
-
-**Phase 4 — Long-horizon tier.** A small set (5-10) of day-scale L6 stories with trajectory scoring and error continuation, run per release; results feed Phase 3 analysis.
-
 ## Resolved Design Questions
 
 The following questions were raised during drafting and resolved by discussion. The shared reasoning: guarantee properties by mechanism rather than convention (pinning, quorum, additive-only diffs, TTL), and reuse existing primitives rather than inventing parallel ones (context packages, conflict detection, metering, backup scope).
@@ -260,7 +250,7 @@ The following questions were raised during drafting and resolved by discussion. 
 
 ### Context snapshot fidelity
 
-Replay freezes the worker context package, not the workspace. The context package is already the source-traceable record of what the Coordinator actually assembled, making it the most faithful and cheapest replay unit. Tasks that need files get a minimal fixture materialized at harvest time from the files the original trajectory actually touched. Staleness is handled by retirement rather than synchronization: suite refresh detects fixture drift from current workspace reality and flags drifted tasks for replacement — consistent with the rotation rule that suites must be refreshed from recent real work anyway.
+Replay freezes the worker context package, not the workspace. The context package is the source-traceable record of what the Coordinator semantically composed and the owning mode service materialized, making it the most faithful and cheapest replay unit. Tasks that need files get a minimal fixture materialized at harvest time from the files the original trajectory actually touched. Staleness is handled by retirement rather than synchronization: suite refresh detects fixture drift from current workspace reality and flags drifted tasks for replacement — consistent with the rotation rule that suites must be refreshed from recent real work anyway.
 
 ### Judge model routing
 

@@ -467,7 +467,6 @@ async function executeRealCodexGoalModeStory({ config, env, options, stdout, sto
   );
 
   const approval = await clients.registry.callTool('openkit.approve_goal_plan', {
-    plan: draft.raw.plan,
     planItemId: draft.raw.planItemId,
     requestId: randomUUID(),
     threadId,
@@ -483,21 +482,17 @@ async function executeRealCodexGoalModeStory({ config, env, options, stdout, sto
     workspaceId: config.workspaceId,
   });
   publicSurfaces.push(step);
-  const turnId = step.raw?.worker?.turnId;
+  const stepResult = step.raw?.result;
+  const turnId = stepResult?.turnId;
   assert(typeof turnId === 'string' && turnId.length > 0, 'Goal step did not start a real turn.');
   assert(
-    typeof step.raw?.worker?.workerSessionId === 'string',
-    'Goal step did not return a worker session.'
+    typeof stepResult?.taskId === 'string' && stepResult.taskId.length > 0,
+    'Goal step did not return its durable Task owner.'
   );
-  assert(
-    step.raw?.worker?.stopReason === 'completed',
-    'Goal worker did not complete successfully.'
-  );
-  assert(
-    step.raw?.worker?.checkpointStage === 'completed',
-    'Goal worker checkpoint was not terminal.'
-  );
-  assert(step.raw?.decision?.outcome === 'review', 'Goal worker did not stop for explicit review.');
+  assert(stepResult?.stopReason === 'completed', 'Goal worker did not complete successfully.');
+  assert(stepResult?.outcome === 'review', 'Goal worker did not stop for explicit review.');
+  assert(stepResult.shouldStop === true, 'Goal review outcome did not stop the Goal loop.');
+  assert(typeof stepResult.reviewId === 'string', 'Goal step did not return its Review owner.');
 
   const actionCenter = await clients.registry.callTool('openkit.read_action_center', {
     limit: 20,
@@ -543,6 +538,11 @@ async function executeRealCodexGoalModeStory({ config, env, options, stdout, sto
   );
 
   const goalReview = goalReviewRows[0];
+  assert(
+    goalReview.source.reviewId === stepResult.reviewId &&
+      goalReview.source.taskId === stepResult.taskId,
+    'Goal step result did not match the durable Action Center review owner.'
+  );
   assert(
     goalReview.actions?.some((action) => action.kind === 'accept_review'),
     'Goal review did not expose the accepted verdict action.'

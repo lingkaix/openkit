@@ -1,17 +1,14 @@
-import { z } from 'zod';
-
+import { createDeterministicGoalPlanFallback, type GoalPlanOutput } from '../runtime/goal-plan.js';
 import type { StopAfterTurnDecision } from '../runtime/stop-after-turn.js';
 import {
   createStructuredWorkerDelegationRequest,
   createWorkerDelegationDraft,
   type DelegationContextRef,
   type StructuredWorkerDelegationRequest,
-  StructuredWorkerDelegationRequestSchema,
+  type StructuredWorkerDelegationRequestInput,
+  WORKER_COORDINATOR_AGENT_ID,
   type WorkerDelegationDraft,
-  WorkerDelegationDraftSchema,
 } from './delegation.js';
-import { WORKER_COORDINATOR_AGENT_ID, WORKER_COORDINATOR_CORE_TOOL_ALLOWLIST } from './tools.js';
-import type { InternalAgentDefinition } from './types.js';
 
 /**
  * Routing decision kind produced by WorkerCoordinatorAgent.
@@ -112,6 +109,11 @@ export interface WorkerCoordinatorInput {
   readonly recentFailures?: readonly WorkerCoordinatorFailureContext[];
   /** Source context references prepared before worker delegation. */
   readonly contextRefs?: readonly DelegationContextRef[];
+  /** Authorized request facts that Coordinator must compose with objective and context refs. */
+  readonly workerRequestDetails?: Omit<
+    StructuredWorkerDelegationRequestInput,
+    'objective' | 'contextRefs'
+  >;
 }
 
 /**
@@ -166,6 +168,8 @@ export interface WorkerCoordinatorGoalPlanDraftSummary {
   readonly contextRefs: readonly DelegationContextRef[];
   /** Human approvals required before worker execution. */
   readonly requiredApprovals: readonly string[];
+  /** Complete bounded Plan proposed for immutable review. */
+  readonly plan: GoalPlanOutput;
 }
 
 /**
@@ -186,6 +190,8 @@ export interface WorkerCoordinatorGoalStopDecisionInput {
   readonly turnId: string;
   /** Lower-level worker-loop stop decision. */
   readonly stopDecision: StopAfterTurnDecision;
+  /** Whether another Goal Task remains incomplete after accepting the addressed Task. */
+  readonly hasOtherIncompleteTasksAfterAddressedTaskCompletion: boolean;
   /** Evidence produced by the worker turn. */
   readonly evidence: {
     /** Worker turn item ids used as evidence. */
@@ -227,66 +233,6 @@ export interface WorkerCoordinatorGoalStopDecision {
 }
 
 /**
- * Zod schema for WorkerCoordinatorAgent output validation.
- */
-export const WorkerCoordinatorDecisionSchema = z.object({
-  decision: z.enum([
-    'quick_chat',
-    'worker_turn',
-    'goal',
-    'clarify',
-    'review',
-    'refinement',
-    'retry',
-    'handoff',
-    'unsupported',
-    'blocked',
-  ]),
-  confidence: z.number().min(0).max(1),
-  explanation: z.string().min(1),
-  selectedWorkerCandidate: z
-    .object({
-      agentId: z.string().min(1),
-      displayName: z.string().min(1),
-      runtime: z.enum(['codex', 'opencode']),
-      readiness: z.enum(['ready', 'blocked', 'unknown']),
-      reasons: z.array(z.string()).optional(),
-    })
-    .nullable(),
-  requiredUserAction: z.enum([
-    'none',
-    'confirm_worker_turn',
-    'choose_worker',
-    'refine_request',
-    'review_ready',
-  ]),
-  delegationDraft: WorkerDelegationDraftSchema.nullable(),
-  workerRequest: StructuredWorkerDelegationRequestSchema.nullable(),
-});
-
-/**
- * Built-in lightweight internal agent for worker routing decisions.
- */
-export const WORKER_COORDINATOR_AGENT_DEFINITION: InternalAgentDefinition<WorkerCoordinatorDecision> =
-  {
-    id: WORKER_COORDINATOR_AGENT_ID,
-    displayName: 'WorkerCoordinatorAgent',
-    purpose:
-      'Route user prompts between quick chat, review, refinement, handoff, and worker turns.',
-    category: 'routing',
-    supportedModes: ['automation', 'plan', 'review', 'delegation'],
-    defaultProviderUse: 'internalTasks',
-    systemPrompt:
-      'You are WorkerCoordinatorAgent, a lightweight OpenKit Core coordination agent. Return structured routing decisions only. Do not start workers, edit files, run shell commands, browse, or call runtime-native tools.',
-    allowedTools: WORKER_COORDINATOR_CORE_TOOL_ALLOWLIST,
-    limits: {
-      maxInputMessages: 8,
-      timeoutMs: 20_000,
-    },
-    outputSchema: WorkerCoordinatorDecisionSchema,
-  };
-
-/**
  * Creates a deterministic worker routing decision from bounded Core read models.
  *
  * @param input Worker coordinator input read model.
@@ -295,8 +241,8 @@ export const WORKER_COORDINATOR_AGENT_DEFINITION: InternalAgentDefinition<Worker
 export function createWorkerCoordinatorDecision(
   input: WorkerCoordinatorInput
 ): WorkerCoordinatorDecision {
-  const prompt = input.prompt.trim();
-  const normalizedPrompt = prompt.toLowerCase();
+  const prompt = input.prompt;
+  const normalizedPrompt = prompt.trim().toLowerCase();
   const approvedGoalStep = input.routingContext === 'goal_step';
 
   if (isUnsupportedPrompt(normalizedPrompt)) {
@@ -379,7 +325,7 @@ export function createWorkerCoordinatorDecision(
       workerRequest: null,
     };
   }
-  if (!requiresWorker(normalizedPrompt)) {
+  if (!approvedGoalStep && !requiresWorker(normalizedPrompt)) {
     return {
       decision: 'quick_chat',
       confidence: 0.62,
@@ -402,13 +348,50 @@ export function createWorkerCoordinatorDecision(
     { kind: 'thread' as const, id: input.threadState.threadId },
     ...(input.contextRefs ?? []),
   ];
+  const workerRequestDetails = input.workerRequestDetails ?? {
+    acceptanceCriteria: [
+      'The bounded worker task satisfies the requested objective.',
+      'The worker reports verification evidence or a clear blocker.',
+    ],
+    expectedArtifacts: [
+      {
+        kind: 'code-change' as const,
+        description: 'Focused workspace changes needed to satisfy the objective.',
+      },
+      {
+        kind: 'test-result' as const,
+        description: 'Verification evidence from the focused checks.',
+      },
+    ],
+    resources: [],
+    constraints: {
+      maxContextTokens: 240_000,
+      maxWorkerIterations: 1,
+    },
+    verification: [
+      {
+        kind: 'manual' as const,
+        description: 'Run the checks named by the worker task or explain why they cannot run.',
+      },
+    ],
+    reviewPolicy: {
+      required: false,
+      reviewers: ['human'],
+      instructions: 'Review the worker result, changed files, and verification evidence.',
+    },
+    escalationConditions: [
+      'Escalate if repository setup is missing or invalid.',
+      'Escalate if the task requires broader decomposition.',
+    ],
+    reviewContext: null,
+  };
 
   return {
     decision: 'worker_turn',
     confidence: selected.runtime === 'codex' ? 0.86 : 0.8,
     explanation: `The request needs bounded worker execution and ${selected.displayName} is ready.`,
     selectedWorkerCandidate: selected,
-    requiredUserAction: 'confirm_worker_turn',
+    requiredUserAction: 'none',
     delegationDraft: createWorkerDelegationDraft({
       prompt,
       workspaceId: input.workspaceSummary.workspaceId,
@@ -417,42 +400,9 @@ export function createWorkerCoordinatorDecision(
       ...(input.contextRefs ? { contextRefs: input.contextRefs } : {}),
     }),
     workerRequest: createStructuredWorkerDelegationRequest({
+      ...workerRequestDetails,
       objective: prompt,
-      acceptanceCriteria: [
-        'The bounded worker task satisfies the requested objective.',
-        'The worker reports verification evidence or a clear blocker.',
-      ],
       contextRefs,
-      expectedArtifacts: [
-        {
-          kind: 'code-change',
-          description: 'Focused workspace changes needed to satisfy the objective.',
-        },
-        {
-          kind: 'test-result',
-          description: 'Verification evidence from the focused checks.',
-        },
-      ],
-      constraints: {
-        maxContextTokens: 240_000,
-        maxWorkerIterations: 1,
-        requiresUserConfirmation: true,
-        stopConditions: [
-          'Stop if repository setup is missing or invalid.',
-          'Stop if the task requires broader decomposition.',
-        ],
-      },
-      verification: [
-        {
-          kind: 'manual',
-          description: 'Run the checks named by the worker task or explain why they cannot run.',
-        },
-      ],
-      reviewPolicy: {
-        required: true,
-        reviewers: ['human'],
-        instructions: 'Review the worker result, changed files, and verification evidence.',
-      },
     }),
   };
 }
@@ -466,6 +416,26 @@ export function createWorkerCoordinatorDecision(
 export function createWorkerCoordinatorGoalPlanDraft(
   input: WorkerCoordinatorGoalPlanDraftInput
 ): WorkerCoordinatorGoalPlanDraftSummary {
+  return projectWorkerCoordinatorGoalPlanDraft(
+    input,
+    createDeterministicGoalPlanFallback({
+      goalTitle: input.title,
+      objective: input.objective,
+    })
+  );
+}
+
+/**
+ * Projects one existing immutable Plan through the Workflow Coordinator summary shape.
+ *
+ * @param input Goal planning context used for product-safe summary metadata.
+ * @param plan Existing authoritative Plan that must not be regenerated during replay.
+ * @returns Product-facing plan draft summary for the supplied Plan.
+ */
+export function projectWorkerCoordinatorGoalPlanDraft(
+  input: WorkerCoordinatorGoalPlanDraftInput,
+  plan: GoalPlanOutput
+): WorkerCoordinatorGoalPlanDraftSummary {
   return {
     mode: 'goal',
     sourceAgentId: WORKER_COORDINATOR_AGENT_ID,
@@ -476,6 +446,7 @@ export function createWorkerCoordinatorGoalPlanDraft(
       { kind: 'thread', id: input.threadId },
     ],
     requiredApprovals: ['plan_approval'],
+    plan,
   };
 }
 
@@ -488,15 +459,24 @@ export function createWorkerCoordinatorGoalPlanDraft(
 export function createWorkerCoordinatorGoalStopDecision(
   input: WorkerCoordinatorGoalStopDecisionInput
 ): WorkerCoordinatorGoalStopDecision {
+  if (input.stopDecision.outcome === 'continue') {
+    throw new Error('Goal Mode lower-level continue is invalid.');
+  }
+  const outcome =
+    input.stopDecision.outcome === 'complete' &&
+    input.hasOtherIncompleteTasksAfterAddressedTaskCompletion
+      ? 'continue'
+      : input.stopDecision.outcome;
+
   return {
     schemaVersion: 1,
     mode: 'goal',
     sourceAgentId: WORKER_COORDINATOR_AGENT_ID,
     requestId: input.requestId,
-    outcome: input.stopDecision.outcome,
-    shouldStop: input.stopDecision.shouldStop,
+    outcome,
+    shouldStop: outcome !== 'continue',
     stopReason: input.stopDecision.stopReason,
-    rationale: rationaleForGoalStopDecision(input.stopDecision.outcome),
+    rationale: rationaleForGoalStopDecision(outcome),
     contextRefs: [
       { kind: 'workspace', id: input.workspaceId },
       { kind: 'thread', id: input.threadId },

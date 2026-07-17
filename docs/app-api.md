@@ -2,7 +2,7 @@
 
 Status: Accepted
 Date: 2026-05-31
-Updated: 2026-07-15
+Updated: 2026-07-17
 
 ## Purpose
 
@@ -30,15 +30,16 @@ The App API, `@openkit/core-client`, bundled CLI, unified Skill, and Web are rel
 | --- | --- |
 | Stable Core concepts and object boundaries | `docs/core/core-concepts.md` |
 | Stable Core command, event, item, lifecycle, and stream semantics | `docs/core/protocol.md` and `docs/core/communication.md` |
+| Accepted workflow semantics, authority, failure, recovery, and verification contracts | The owning accepted file under `docs/specs/` |
 | Core protocol records, requests, responses, errors, and event envelopes | `@openkit/protocol` |
 | App API payload schemas | `@openkit/app-api-schemas` |
 | NanoCore HTTP route behavior, status codes, and server-side redaction | `apps/nanocore` |
 | Typed browser and integration-test client behavior | `@openkit/core-client` |
 | Generated OpenAPI document and drift checks | `docs/specs/20260704-app_api_openapi_projection.md` |
 | Web UI workflows that consume App API projections | `apps/web` |
-| Prior implementation plans and trade-off notes | `docs/specs/` and `docs/working_logs/` |
+| Change execution, rollout evidence, and archived work logs | `docs/changes/` and `docs/working_logs/` |
 
-When this document conflicts with a package schema, route implementation, or test, fix the drift instead of treating this document as executable truth.
+Accepted Core and specification contracts own the semantic target. Package schemas, routes, generated OpenAPI, clients, and tests own the currently executable projection and must be corrected when they conflict with that target; this document must label such divergence instead of silently treating current code as authorization. For a fact that is purely about the current route or payload shape and has no semantic design consequence, verified code and generated-contract evidence remain authoritative.
 
 ## Ownership
 
@@ -46,7 +47,7 @@ When this document conflicts with a package schema, route implementation, or tes
 
 `@openkit/app-api-schemas` owns runtime-neutral schemas for NanoCore App API payloads.
 
-`apps/nanocore` owns App API route behavior, read-model builders, runtime config services, diagnostics assembly, OAuth coordination, Chat Mode execution, internal-agent projections, and gateway routing.
+`apps/nanocore` owns App API route behavior, read-model builders, runtime config services, diagnostics assembly, OAuth coordination, Chat Mode execution, and gateway routing.
 
 `@openkit/core-client` owns transport, response validation, request ID insertion, SSE iteration, and the composed TypeScript client surface.
 
@@ -60,7 +61,7 @@ The App API owns:
 - Settings, setup, runtime config, diagnostics, OAuth, and browser-auth payloads.
 - Dashboard-local search across app records.
 - Automation definitions and scheduling control surfaces.
-- Chat Mode, Task Mode, Goal Mode, and NanoCore internal-agent product projections.
+- Chat Mode, Task Mode, and Goal Mode product projections over their owning durable records.
 - Knowledge and notebook product projections over Core knowledge semantics.
 - Workspace repository resource setup and redacted diagnostics.
 - Thread Goal Mode planning, plan approval, steering, progress, terminal summaries, and stored verification evidence projections.
@@ -116,21 +117,25 @@ Current Core projection route families include the following.
 | Artifacts | `GET /api/workspaces/:workspaceId/artifacts`, `GET /api/workspaces/:workspaceId/artifacts/:artifactId`, `PATCH /api/workspaces/:workspaceId/artifacts/:artifactId`, `GET /api/workspaces/:workspaceId/artifacts/:artifactId/content` |
 | Turn stream | `GET /api/workspaces/:workspaceId/threads/:threadId/events?turnId=:turnId&since=:sequence` |
 
+The current generic Artifact `PATCH` route accepts title, status, and summary changes without an expected Artifact version or the exact `artifact-reference` Item lineage required by the target contract. It remains current-state documentation only, is excluded from the target command ledger, and is removal-only until an accepted owner-specific mutation contract replaces it. New consumers MUST use the producing Turn or accepted Artifact Review owner instead of extending this route or inventing `artifact.metadata.update`.
+
 All mutating Core projection routes require `requestId`.
 
 `@openkit/core-client` may generate a missing client-side `requestId`, but NanoCore still validates that the final request body includes one.
 
 NanoCore persists command idempotency in the SQLite database that owns the command scope: workspace-scoped commands use that workspace's `workspace.sqlite`, while commands without a workspace scope such as `workspace.create` use the actor's `user.sqlite`.
 
-The target ledger covers `workspace.create`, `workspace.update`, `knowledge.create`, `knowledge.update`, `knowledge.delete`, `thread.create`, `thread.update`, `thread.archive`, `turn.start`, `turn.input.submit`, `turn.interrupt`, `git_push.approval.request`, `approval.respond`, `artifact.metadata.update`, `artifact.review.decide`, and `goal.review.decide`.
+The target ledger covers `workspace.create`, `workspace.update`, `knowledge.create`, `knowledge.update`, `knowledge.delete`, `thread.create`, `thread.update`, `thread.archive`, `turn.start`, `turn.input.submit`, `turn.interrupt`, `chat.start`, `task.start`, `goal.start`, `goal.plan`, `goal.plan.approve`, `goal.plan.revise`, `goal.pause`, `goal.resume`, `goal.step`, `goal.steering.send`, `goal.steering.follow_up`, `goal.steering.cancel`, `goal.review.decide`, `worker.recovery.retry`, `git_push.approval.request`, `approval.respond`, `artifact.import`, `artifact.introduce`, `artifact.review.decide`, `material.create`, `material.save`, `material.bind`, `material.unbind`, `material.exclude`, and `material.restore`.
 
-Duplicate requests with the same command, resource scope, `requestId`, and canonical input hash return the current resource snapshot for the original response resource.
+By default, duplicate requests with the same command, resource scope, `requestId`, and canonical input hash return the current resource snapshot for the original response resource. An owning accepted specification MAY instead require one bounded immutable non-secret result snapshot when a command spans multiple owners or reports a completed transition that no single current resource can replay; that snapshot is evidence only and cannot own lifecycle state. `goal.steering.send` always replays its original immutable `queued` acceptance response even after delivery reaches a terminal state.
 
 Concurrent duplicates in one server process await the same command result instead of racing a second mutation.
 
 Reusing the same command, resource scope, and `requestId` with different input returns `409 idempotency_key_conflict`.
 
-Idempotency records retain only command name, request ID, non-secret scope IDs, input hash, response resource kind and ID, creation timestamp, and expiry timestamp.
+Idempotency records retain only command name, request ID, non-secret scope IDs, input hash, response resource kind and ID, creation timestamp, and expiry timestamp. A multi-owner command that cannot replay from one current resource MAY retain one bounded schema-specific non-secret result snapshot; `goal.step` is limited to Goal, task, Turn, outcome, stop reason, evidence, and review identifiers. Such a snapshot is replay evidence only and MUST NOT drive business transitions or become a second workflow owner.
+
+Within the active workflow contract group, `task.start` stores no payload snapshot and replays from its response Turn plus existing Item, Artifact, Review, and Goal owners. `chat.start` is the narrower mutable-clarification exception: its accepted specification permits only a closed result kind, the HTTP success status, and required downstream Task Turn or Goal and Goal Turn identifiers. The normal receipt resource identifier names the original Chat Turn; NanoCore derives the initiating and result Item identifiers from that Turn and the closed result-kind mapping. Neither command may retain a Turn, Item, Coordinator decision, completion text, explanation, prompt, or response body in the ledger.
 
 They are retained for seven days and must not contain prompts, knowledge content, context package content, provider config, OAuth state, secrets, full request bodies, or full response bodies.
 
@@ -186,21 +191,37 @@ Goal Mode is an App API workflow over the stable Core workspace, thread, turn, a
 
 Current route families are `GET /api/app/workspaces/:workspaceId/threads/:threadId/goal`, `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal`, `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/plan`, `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/plan/approve`, `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/plan/revise`, `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/pause`, `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/resume`, `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/step`, `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/steering`, and `POST /api/app/workspaces/:workspaceId/threads/:threadId/goals/:goalId/reviews/:reviewId/decision`.
 
-The summary route returns no-goal, planning, awaiting-plan-approval, running, paused, reviewing, verifying, awaiting-user, blocked, failed, aborted, and completed read models.
+The summary route returns no-goal, planning, awaiting-plan-approval, running, paused, reviewing, awaiting-user, blocked, failed, aborted, and completed read models. Goal schemas and workspace import reject the unowned `verifying` lifecycle value; verification remains a separate evidence record rather than a Goal state.
 
-Goal summaries can include the current task, task counts, pending human attention, queued and applied steering counts, terminal stop reason, terminal summary, stored task verification evidence, artifact ids, risks, and suggested next work. Task Evaluator loops and an independent final-verifier completion gate remain deferred.
+Goal summaries can include the current task, task counts, pending human attention, terminal stop reason, terminal summary, stored task verification evidence, artifact ids, risks, and suggested next work. They expose no queued or applied steering counts until the exact S16 durable state exists; fixed zero values are not an implementation. Task Evaluator loops and an independent final-verifier completion gate remain deferred.
 
-The start route records the objective as a durable user-message item and rejects a second active goal in the same thread.
+Goal Task read models, NanoCore storage and workspace-import contracts, and generated OpenAPI reject the unowned `skipped` and `needs_revision` states. Task counts and terminal summaries expose neither state.
 
-The plan route currently uses the app-local planner path and deterministic fallback to produce an approvable plan.
+The start, plan creation, approval, revision, pause, resume, and bounded step routes require a client-visible `requestId`. Goal start records the objective as a deterministic durable user-message Item and rejects a second active Goal in the same Thread. Pause and resume accept exactly `{ requestId }`; the Core Client may generate a missing client-side identity, but NanoCore rejects an absent or extended raw request body.
 
-The approval route persists ordered goal tasks and marks dependency-free tasks ready without starting a worker turn.
+Pause and resume separate the historical command result from mutable Goal truth: pause returns `{ outcome: "paused", goal }`, resume returns `{ outcome: "resumed", goal }`, and `goal` is the current projection of the exact original Goal named by the command receipt. The receipt contains only that Goal id and never a copied Goal response. NanoCore reads or writes that receipt in the same Workspace transaction as the status transition, requires `currentTaskId=null`, `terminalStopReason=null`, and no non-terminal `pending`, `running`, or `awaiting_human` Turn, and replays without repeating the transition or resolving a newer Goal. The existing Goal and Task reservation writes now recheck and commit together so a concurrent bounded step cannot silently undo an accepted pause; this narrow lifecycle mutex does not satisfy the still-open complete `goal.step` launch-fence contract.
 
-The step route starts one bounded worker envelope iteration. The request requires `requestId` and may include `followUpDrainMode` plus `reviewPolicyOverride: human | none`; omission defaults to `human`. The response returns the refreshed goal summary, worker turn id, stop reason, checkpoint stage, redacted or nullable worker session id, evidence item and artifact ids, stop decision, and product-facing pending attention.
+The plan route accepts exactly `{ requestId }`, obtains one complete validated Plan from Workflow Coordinator, stores it as an immutable Workspace-scoped `GoalPlanRecord`, and returns both that Plan and its lightweight `plan` Item projection. The record and `GoalRecord.planItemId` are approval authority; the Item proves visible Workspace and Thread lineage but cannot replace, mutate, or reconstruct Plan content. Revision requires `{ requestId, revision }`, preserves the old immutable Plan and Item, clears the active pointer, and records the revision as a deterministic request-owned Item before a later plan command creates a new authority pair.
 
-`human` creates a durable actionable unresolved Goal Review. Accepting it atomically resolves the review and advances the task graph. `none` skips only that completed step's review and still advances dependencies and remaining tasks.
+Approval accepts exactly `{ requestId, planItemId }`; NanoCore loads the active immutable Plan server-side, verifies its digest, Goal and Plan Item lineage, and graph, then creates every complete ordered immutable Goal Task snapshot and changes the Goal to `running` with `currentTaskId=null` in one Workspace transaction. Dependency-free Tasks start `ready`, dependent Tasks start `pending`, and no worker Turn starts. A non-active Plan id returns `stale`; missing, corrupt, lineage-invalid, or partially applied authority returns `recovery_required`; graph invalidity returns `goal_plan_invalid`; no path trusts caller Plan content or repairs authority from the lightweight Item or current read model.
 
-The steering route records active safe-point steering or human-gated follow-up input and returns whether the input was queued or blocked.
+Approval exact replay and changed-input conflict use the existing app-local command receipt. The accepted two-store compromise persists that receipt immediately after the Workspace approval transaction; if a crash leaves the complete approved Goal and Task tuple without its receipt, retry returns `recovery_required` instead of inferring the winning request, synthesizing a receipt, reverting Tasks, or creating a settlement workflow.
+
+Workspace export reads Goal, historical and active Plan, and Goal Task records from one SQLite snapshot. Import validates source digests and Plan/Task coherence before reminting, applies all imported rows in one transaction, remints identity-bearing references through the canonical maps, recomputes each Plan digest only after reminting, and rejects malformed, duplicate, incomplete, or incoherent records instead of dropping or repairing them.
+
+The step route accepts exactly `{ requestId }` and starts one bounded worker envelope iteration. It reads the complete immutable approved Goal Task, verifies its active Plan lineage, and gives Workflow Coordinator the exact objective, acceptance criteria, ordered resources, expected Artifacts, context budget, verification checks, review policy, escalation conditions, and eligible Review context; incomplete or mismatched request facts return `recovery_required` before step effects. The parsed Coordinator request becomes the existing Turn, scheduler, AEP, worker, and Turn-owned Item input as compact JSON. `reviewPolicyOverride`, `followUpDrainMode`, and generic queue fields are rejected rather than treated as compatibility input. The response is exactly `{ goal, result }`, where `goal` is the current projection of the original Goal and `result` contains only `taskId`, `turnId`, `outcome`, `shouldStop`, `stopReason`, Item and Artifact evidence ids, and nullable `reviewId`. Coordinator, Context Assembly, worker Session, checkpoint-stage, and duplicate pending-attention projections remain with their owning diagnostics, recovery, Goal, and Action Center records rather than the replay receipt. NanoCore now derives the Turn from request identity, commits the runnable Goal, first ready Task, allowed launch decision, and request-bound `preparing` checkpoint together, performs receipt-first replay, blocks competing steps behind any uncleared Goal checkpoint, and publishes the bounded receipt before terminal cleanup.
+
+A Goal worker user-input or approval gate is an acknowledged nonterminal step result. The response or decision command attaches its Item to the same Turn, closes that old Turn and checkpoint, returns the Task to `ready`, leaves the Goal `running` with `currentTaskId=null`, and requires a new `goal.step`; approval denial preserves its durable denial evidence for the next Coordinator input. The command receipt is published only after the exact Item, Turn, checkpoint, Goal Task, and Goal tuple is durable, and no path resumes the prior worker Session.
+
+`POST /api/turns` accepts two strict payloads. Ordinary input is exactly `{ workspaceId, threadId, requestId, input, modelId? }`; a response to an exact user-input gate is exactly `{ workspaceId, threadId, turnId, requestId, answers }`, where `answers` is `{ [questionId]: [string] }`, its keys equal every and only question id in the referenced completed request Item, and the one array member is non-empty. V1 has no multi-select mode. Request producers reject duplicate question ids before writing the Item. A gate containing a secret question returns `400 secret_input_not_supported` before writes until a safe secret-answer owner exists. Unknown fields, mixed `input` and `answers`, zero or multiple values, and missing or extra answers return `400 invalid_request`; a missing or terminal Turn returns `409 stale`, an existing Turn without an active gate returns `409 not_awaiting_input`, and duplicate ids or a missing or contradictory durable gate-to-Item owner tuple returns `409 recovery_required`. Every failure occurs before a response Item or command receipt. Approval decisions continue through the approval route, and both gate commands commit Core business owners before any non-authoritative runtime notification.
+
+Terminal checkpoint recovery is a derived read over existing final-status, Turn, Session, checkpoint, evidence, mode, review, backend, lease, capacity, and command-receipt owners. Live closeout, exact replay, and boot recovery use the same Task or Goal classifier. A complete deterministic tuple may publish a missing receipt and clear the checkpoint; a terminal checkpoint with zero mode closeout writes may execute the original mode transaction once; any partial, conflicting, or non-canonical tuple stays discoverable as `recovery_required`. The App API does not expose a caller-selected closeout label or persist another recovery phase.
+
+An immutable Goal Task with `reviewPolicy.required=true` creates a durable actionable unresolved Goal Review whose evidence, prompt, worker Turn, and creating step request are fixed but whose decision tuple is initially null; `required=false` takes the same accepted closeout path without a Review. The resolution request requires `requestId` and one exact verdict from `accept`, `refine`, `retry`, or `abort`; `refine` also requires `revisionInstruction`, while `retry` and `abort` require `reason`. One Workspace transaction records the authenticated actor and decision, applies the verdict, and stores the bounded immutable Task, Goal, outcome, and next-ready projection defined by the Goal Mode specification without another Coordinator call. First-writer compare-and-set, exact replay, input conflict, stale request, contradictory-state recovery, workspace portability, and generated OpenAPI use that same bounded contract. A later `refine` or `retry` step creates a new Turn whose exact compact-JSON Coordinator request carries the eligible Review context and prior evidence; the latest eligible context remains sticky until a newer Review supersedes it or the Task terminates.
+
+The Goal steering route is currently reserved and returns `503 goal_steering_delivery_unavailable` before Item, pending-row, command, Turn, or scheduler writes because the real worker path lacks the immutable delivery trace required by S16. The accepted future path may return `queued` only after the exact active Goal and Turn have that delivery owner; human-gate responses remain separate commands.
+
+The accepted terminal steering targets are `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/steering/:pendingTurnId/follow-up` as `convertGoalSteeringToFollowUp` and `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/steering/:pendingTurnId/cancel` as `cancelGoalSteering`. Each request body is exactly `{ requestId }`, where that identity belongs to the terminal command and remains distinct from the original send request stored by the pending owner. The follow-up response is exactly `{ state: "follow-up", pendingTurnId, requestId, sourceRequestId, contentItemId, goalId, activeTurnId, followUpTurnId, followUpItemId }`; the cancel response omits only the two follow-up identities and has `state="cancelled"`. S16 owns their completed Core-local history-Turn, proof-snapshot, replay, cleanup, and failure predicates. These target routes remain unimplemented and MUST NOT be added before the shared S16 authority exists.
 
 The test supervise-step route is a deterministic test-support surface for local e2e and story validation. It is not the product path and should not be used by Web outside deterministic fixtures.
 
@@ -222,7 +243,9 @@ The Action Center slice returns unified Human Attention rows for pending human a
 
 Current route families are `GET /api/app/workspaces/:workspaceId/action-center`, `POST /api/app/workspaces/:workspaceId/artifacts/:artifactId/review`, and `POST /api/app/workspaces/:workspaceId/threads/:threadId/goals/:goalId/reviews/:reviewId/decision`.
 
-The Goal Review projection includes live default-accept unresolved rows with an executable accept action; other verdicts retain their own projected actions.
+The Goal Review projection exposes one unresolved evidence row with `accept_review`, `request_refinement`, `retry_work`, and `abort` actions and no verdict in its source. First-party clients map those action kinds to the four canonical decisions; refinement, retry, and abort collect their required instruction or reason before calling the decision route, and cancellation leaves the row unresolved.
+
+The current unversioned Artifact review route cannot identify the reviewed Artifact version, does not implement S16's version-owned decision and follow-up contract, and is removal-only. It MUST NOT remain as a fallback or alias after the versioned target route below is implemented.
 
 Approval response mutation stays on the Core command path at `POST /api/approvals/:approvalRequestId/respond`.
 
@@ -232,9 +255,37 @@ Schema ownership lives in `packages/app-api-schemas/src/agents.ts`, `packages/ap
 
 Client methods live under `client.agents` and `client.actionCenter`.
 
+### Artifact And Material Interaction Target
+
+The accepted S16 target adds the following App API operations. These method, path, and `operationId` identities are closed; implementation MUST replace the removal-only Artifact mutation and review shapes instead of adding aliases.
+
+| Method and path | `operationId` | Success identity |
+| --- | --- | --- |
+| `POST /api/app/workspaces/:workspaceId/artifacts/imports` | `importWorkspaceArtifact` | `{ artifactId, artifactVersion }` |
+| `POST /api/app/workspaces/:workspaceId/threads/:threadId/artifacts/:artifactId/introductions` | `introduceWorkspaceArtifact` | `{ artifactId, artifactVersion, turnId, itemId }` |
+| `GET /api/app/workspaces/:workspaceId/artifacts/:artifactId/reviews` | `listArtifactReviews` | `{ reviews }`, ordered by `artifactVersion` ascending |
+| `POST /api/app/workspaces/:workspaceId/artifacts/:artifactId/versions/:artifactVersion/review/decision` | `submitArtifactReviewDecision` | `{ reviewId, artifactId, artifactVersion, decision, followUpTurnId }` |
+| `GET /api/app/workspaces/:workspaceId/materials` | `listWorkspaceMaterials` | `{ materials }`, ordered by `createdAt`, then `materialId` |
+| `POST /api/app/workspaces/:workspaceId/materials` | `createWorkspaceMaterial` | `{ materialId }` |
+| `GET /api/app/workspaces/:workspaceId/materials/:materialId` | `getWorkspaceMaterial` | `{ material }` |
+| `GET /api/app/workspaces/:workspaceId/materials/:materialId/revisions` | `listWorkspaceMaterialRevisions` | `{ revisions }`, ordered by `createdAt`, then `revisionId` |
+| `POST /api/app/workspaces/:workspaceId/materials/:materialId/revisions` | `saveWorkspaceMaterialRevision` | `{ materialId, revisionId }` |
+| `GET /api/app/workspaces/:workspaceId/materials/:materialId/revisions/:revisionId` | `getWorkspaceMaterialRevision` | `{ revision }` |
+| `GET /api/app/workspaces/:workspaceId/threads/:threadId/material` | `getThreadMaterial` | `{ material }`, where `material` is the singular Thread projection or null |
+| `POST /api/app/workspaces/:workspaceId/threads/:threadId/materials/:materialId/bind` | `bindThreadMaterial` | `{ materialId, threadId, outcome: "bound" }` |
+| `POST /api/app/workspaces/:workspaceId/threads/:threadId/materials/:materialId/unbind` | `unbindThreadMaterial` | `{ materialId, threadId, outcome: "unbound" }` |
+| `POST /api/app/workspaces/:workspaceId/threads/:threadId/materials/:materialId/exclude` | `excludeThreadMaterial` | `{ materialId, threadId, outcome: "excluded" }` |
+| `POST /api/app/workspaces/:workspaceId/threads/:threadId/materials/:materialId/restore` | `restoreThreadMaterial` | `{ materialId, threadId, outcome: "included" }` |
+
+Mutation request bodies are exactly the canonical inputs in S16 plus the required `requestId`; path identifiers are scope, not duplicated caller input. Artifact import returns version 1, Artifact introduction returns the deterministic completed Turn and Item, and Artifact Review decision returns the version-owned Review plus nullable deterministic follow-up Turn. Material responses return stable identities only; callers use the read operations for current projections. Exact replay returns the same success identity, changed input returns `idempotency_key_conflict`, and typed conflict, stale, busy, and recovery results follow S16 without success-shaped error payloads.
+
+The Artifact Review list exposes only S16's closed `ArtifactReviewView`, never the full owner row or its `decisionRequestId`. Material list, detail, revision-summary, exact-revision-content, and Thread material responses use only the other closed public view shapes in S16; owner-only request proof is not added to a response. The Thread material read does not retain expected-base conflict state. Workspace Sync Review remains a different owner and route family under S49; its exact `artifactId` relationship excludes that presentation Artifact from generic Artifact Review projection, and neither route may translate or fall back to the other.
+
+These operations are target contracts until their schemas, NanoCore routes, generated OpenAPI entries, Core Client methods, and first-party consumers land together. The user-facing removal-only MCP package gains no corresponding methods; Agent-facing use is projected through the transport-neutral operation catalog, bundled CLI, and unified Skill only after the App API contract is executable.
+
 ### Diagnostics And Setup
 
-The Settings diagnostics slice returns service status, gateway endpoint status, gateway usage summaries, provider diagnostics, provider registry summaries, default provider selections, Codex OAuth account summaries, runtime config status, internal-agent availability, and capability flags.
+The Settings diagnostics slice returns service status, gateway endpoint status, gateway usage summaries, provider diagnostics, provider registry summaries, Core, Quick Chat, and Gateway default selections, Codex OAuth account summaries, runtime config status, and capability flags. `GET /api/app/diagnostics` does not expose a generic internal-agent registry, failure ledger, hook ledger, or `internalTasks` default; the strict App API schema rejects those removed fields.
 
 Current route families are `GET /api/app/diagnostics` and `GET /api/setup/diagnostics`.
 
@@ -310,7 +361,7 @@ Schema ownership lives in `packages/app-api-schemas/src/automation.ts`.
 
 Client methods live under `client.app`.
 
-### Chat Mode And Internal Agents
+### Chat Mode And Quick Chat
 
 Chat Mode is the lightweight App API projection over the Core Assistant contract.
 
@@ -318,15 +369,19 @@ It is not a replacement for the Core turn protocol, Task Mode, or Goal Mode.
 
 It must not allocate a worker session directly.
 
-The current implementation route family is `POST /api/app/quick-chat`.
+Current route families are `POST /api/app/quick-chat` for the standalone provider-backed Quick Chat call and `POST /api/app/workspaces/:workspaceId/threads/:threadId/chat` for Thread-scoped Chat Mode.
 
-Current behavior returns completed, non-streaming responses.
+Standalone Quick Chat returns one completed, non-streaming response. Thread-scoped Chat Mode returns one typed answer, clarification, Task handoff, Goal handoff, or refusal outcome; system failure uses the typed App API error contract rather than a success-shaped outcome.
 
-Persistence and `GET /api/app/quick-chat/:quickChatId` are not part of the current contract.
+When Thread-scoped Chat runs in a Quick Chat Workspace and selects a Task or Goal intent, the project guard returns the durable `refused` outcome with reason `project_workspace_required`. The initiating Chat command owns the terminal Turn, user and refusal Items, and replay receipt; no downstream Task or Goal tuple exists. Direct project-only routes against Quick Chat continue to return their stable App API error before mutation.
+
+Standalone Quick Chat persistence and `GET /api/app/quick-chat/:quickChatId` are not part of the current contract. Thread-scoped Chat Mode persists its user input and answer, clarification, or handoff projection through the ordinary Thread and Item owners.
 
 The accepted target is `docs/specs/20260704-chat_mode_assistant.md`: Assistant answers, clarification gates, Task Mode handoff, and Goal Mode handoff are product projections over Core Assistant and Workflow Coordinator records. The `quick-chat` route name is implementation debt if it cannot carry that target clearly.
 
-Schema ownership lives in `packages/app-api-schemas/src/quick-chat.ts` and internal-agent diagnostics live in `packages/app-api-schemas/src/diagnostics.ts`.
+Quick Chat schema ownership lives in `packages/app-api-schemas/src/quick-chat.ts`, Thread-scoped Chat Mode schema ownership lives in `packages/app-api-schemas/src/chat-mode.ts`, and provider and default-selection diagnostics remain in `packages/app-api-schemas/src/diagnostics.ts`.
+
+`ChatModeOutcomeSchema` exposes only successful product projections: answer, clarification, Task handoff, Goal handoff, or refusal. System failure uses the typed App API error contract and is never encoded as a success-shaped `failed` response.
 
 Client methods live under `client.app`.
 

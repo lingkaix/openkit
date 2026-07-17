@@ -56,6 +56,7 @@ describe('approved goal task persistence', () => {
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         goalId: 'goal_tasks',
+        planItemId: 'it_goal_plan_tasks',
         plan,
       });
 
@@ -73,7 +74,12 @@ describe('approved goal task persistence', () => {
           orderIndex: task.orderIndex,
           dependsOnTaskIds: task.dependsOnTaskIds,
           status: task.status,
+          planItemId: task.planItemId,
+          resources: task.resources,
+          expectedArtifacts: task.expectedArtifacts,
           verificationChecks: task.verificationChecks,
+          reviewPolicy: task.reviewPolicy,
+          escalationConditions: task.escalationConditions,
         }))
       ).toEqual([
         {
@@ -81,14 +87,24 @@ describe('approved goal task persistence', () => {
           orderIndex: 0,
           dependsOnTaskIds: [],
           status: 'ready',
+          planItemId: 'it_goal_plan_tasks',
+          resources: firstTaskPlan.tasks[0].resources,
+          expectedArtifacts: firstTaskPlan.tasks[0].expectedArtifacts,
           verificationChecks: firstTaskPlan.tasks[0].verificationChecks,
+          reviewPolicy: firstTaskPlan.tasks[0].reviewPolicy,
+          escalationConditions: firstTaskPlan.tasks[0].escalationConditions,
         },
         {
           taskId: 'task_2',
           orderIndex: 1,
           dependsOnTaskIds: ['task_1'],
           status: 'pending',
+          planItemId: 'it_goal_plan_tasks',
+          resources: firstTaskPlan.tasks[0].resources,
+          expectedArtifacts: firstTaskPlan.tasks[0].expectedArtifacts,
           verificationChecks: firstTaskPlan.tasks[0].verificationChecks,
+          reviewPolicy: firstTaskPlan.tasks[0].reviewPolicy,
+          escalationConditions: firstTaskPlan.tasks[0].escalationConditions,
         },
       ]);
     } finally {
@@ -120,6 +136,7 @@ describe('approved goal task persistence', () => {
           workspaceId: 'ws_demo',
           threadId,
           goalId: 'goal_1',
+          planItemId: `it_goal_plan_${threadId}`,
           plan,
         });
       }
@@ -143,7 +160,7 @@ describe('approved goal task persistence', () => {
     }
   });
 
-  it('rejects invalid dependency references before writing goal tasks', () => {
+  it('rejects invalid dependency graphs before writing goal tasks', () => {
     const workspaceDb = createWorkspaceDb();
 
     try {
@@ -166,6 +183,7 @@ describe('approved goal task persistence', () => {
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
           goalId: 'goal_bad_dep',
+          planItemId: 'it_goal_plan_bad_dep',
           plan: {
             ...plan,
             tasks: [
@@ -177,6 +195,27 @@ describe('approved goal task persistence', () => {
           },
         })
       ).toThrow('Plan task task_1 depends on missing task task_missing.');
+      expect(() =>
+        persistApprovedGoalTasks({
+          workspaceDb,
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          goalId: 'goal_bad_dep',
+          planItemId: 'it_goal_plan_bad_dep',
+          plan: {
+            ...plan,
+            tasks: [
+              { ...plan.tasks[0], dependsOnTaskIds: ['task_2'] },
+              {
+                ...plan.tasks[0],
+                taskId: 'task_2',
+                title: 'Second cyclic task',
+                dependsOnTaskIds: ['task_1'],
+              },
+            ],
+          },
+        })
+      ).toThrow('Plan task dependencies contain a cycle.');
       expect(
         listGoalTasks(workspaceDb, {
           workspaceId: 'ws_demo',

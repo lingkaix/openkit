@@ -21,6 +21,8 @@ This model supplies those cross-aspect invariants without replacing the speciali
 - Apps, channels, skills, CLIs, adapters, indexes, and caches are projections over Core contracts. A projection must not become an independent workflow or authority source.
 - Learning and self-improvement must remain source-traceable, reviewable, and reversible. Derived knowledge must not silently replace human intent or accepted product truth.
 - Trust, authorization, credential, execution, data-loss, and external-effect boundaries must be explicit. Missing authority or unverifiable lineage fails closed.
+- Reliability and assurance should be proportional to the documented deployment scale, consequence, and trust boundary. Safe interruption, inspection, or a new authorized attempt may be the correct outcome when transparent recovery would require another authority or workflow.
+- Future scale, availability, and deployment hypotheses are non-authorizing until an accepted current design promotes them.
 - Core should coordinate and govern work while specialized agents and runtimes perform heavy execution.
 
 ## Canonical Terms
@@ -47,6 +49,8 @@ Foundation does not require every action to wait for a human. Automation may pro
 
 Foundation does not make runtime-native state authoritative merely because it is durable inside a provider, sandbox, repository, or external service.
 
+Foundation does not require every accepted operation to recover transparently after process, transport, or runtime failure. A bounded fallback may preserve the authoritative history, expose an `interrupted` or otherwise explicitly uncertain outcome, and require inspection or a new authorized attempt.
+
 Foundation does not promise compatibility with obsolete internal contracts. Contract evolution follows the clean current model.
 
 ## Invariants
@@ -59,6 +63,8 @@ Foundation does not promise compatibility with obsolete internal contracts. Cont
 - Consequential state transitions and external effects MUST be observable and explainable through product-safe records.
 - Learning and self-improvement outputs MUST retain source provenance and a reviewable supersession or reversal path.
 - Every system responsibility, bounded fallback, and accepted compromise MUST have one accepted owner, an explicit scope, and defined failure behavior; a component MUST NOT expand into parallel product, workflow, orchestration, or authority ownership.
+- Assurance depth MUST follow the documented risk and deployment profile. Security, authorization, credential, containment, data-loss, and irreversible-effect boundaries MUST remain strict, while ordinary availability and recovery MAY end in a safe, explicit, inspectable interruption.
+- Future scale or availability goals MUST NOT create current entities, states, abstractions, compatibility paths, runners, harnesses, or verification obligations before an accepted current design authorizes them.
 - Secret values MUST NOT enter stable product records.
 - Private runtime handles and unrestricted native payloads MUST remain private unless an owning Core boundary validates a bounded product-safe projection.
 - Missing authority, unverifiable lineage, ambiguous ownership, and unsupported required semantics MUST fail closed.

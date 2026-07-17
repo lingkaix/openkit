@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
+  canonicalStopReasonForAcceptedWorkerFinalStatus,
   listWorkerControlAcceptedEvents,
   recordWorkerControlAcceptedRecord,
   waitForWorkerControlFinalStatus,
@@ -223,6 +224,7 @@ describe('durable worker final-status wait', () => {
       await expect(completion).resolves.toEqual({
         acceptedAt: '2026-07-15T00:01:01.000Z',
         status: 'completed',
+        stopReason: 'completed',
       });
     } finally {
       vi.useRealTimers();
@@ -265,9 +267,51 @@ describe('durable worker final-status wait', () => {
         leaseId: 'lease_events_1',
         lineage,
       })
-    ).resolves.toEqual({ acceptedAt: '2026-07-15T00:00:25.000Z', status: 'completed' });
+    ).resolves.toEqual({
+      acceptedAt: '2026-07-15T00:00:25.000Z',
+      status: 'completed',
+      stopReason: 'completed',
+    });
 
     coreDb.sqlite.close();
     vi.useRealTimers();
+  });
+});
+
+describe('accepted worker final-status canonicalization', () => {
+  it.each([
+    ['completed', 'completed'],
+    ['blocked', 'length'],
+    ['blocked', 'budget_exhausted'],
+    ['blocked', 'ask_user'],
+    ['cancelled', 'aborted'],
+    ['interrupted', 'aborted'],
+    ['failed', 'error'],
+    ['degraded', 'error'],
+    ['lost', 'error'],
+  ] as const)('canonicalizes %s with %s', (status, stopReason) => {
+    expect(
+      canonicalStopReasonForAcceptedWorkerFinalStatus({
+        acceptedAt: '2026-07-15T00:01:01.000Z',
+        status,
+        stopReason,
+      })
+    ).toBe(stopReason);
+  });
+
+  it.each([
+    ['completed', 'error'],
+    ['blocked', 'completed'],
+    ['cancelled', 'error'],
+    ['failed', 'failed'],
+    ['lost', 'unknown'],
+  ] as const)('rejects incompatible %s with %s', (status, stopReason) => {
+    expect(() =>
+      canonicalStopReasonForAcceptedWorkerFinalStatus({
+        acceptedAt: '2026-07-15T00:01:01.000Z',
+        status,
+        stopReason,
+      })
+    ).toThrow('Accepted worker final status has no canonical Core StopReason.');
   });
 });

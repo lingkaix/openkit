@@ -27,7 +27,12 @@ function createFakeCoreClient(): {
     {
       id: 'row_goal_review',
       kind: 'review',
-      actions: [{ kind: 'accept' }],
+      actions: [
+        { kind: 'accept_review' },
+        { kind: 'request_refinement' },
+        { kind: 'retry_work' },
+        { kind: 'abort' },
+      ],
       source: {
         type: 'goal_review',
         threadId: 'th_demo',
@@ -128,8 +133,8 @@ function createFakeCoreClient(): {
           record('app.registerKnowledgeSource', { input, workspaceId }),
         suggestKnowledgeRepairs: (workspaceId: string, input: unknown) =>
           record('app.suggestKnowledgeRepairs', { input, workspaceId }),
-        createThreadGoalPlan: (workspaceId: string, threadId: string) =>
-          record('app.createThreadGoalPlan', { threadId, workspaceId }),
+        createThreadGoalPlan: (workspaceId: string, threadId: string, input: unknown) =>
+          record('app.createThreadGoalPlan', { input, threadId, workspaceId }),
         draftKnowledgeProposal: (workspaceId: string, input: unknown) =>
           record('app.draftKnowledgeProposal', { input, workspaceId }),
         getThreadDashboard: (workspaceId: string, threadId: string) =>
@@ -171,18 +176,6 @@ function createFakeCoreClient(): {
         getAgentEnvironmentPackageSnapshot: (workspaceId: string, snapshotId: string) =>
           record('app.getAgentEnvironmentPackageSnapshot', { snapshotId, workspaceId }),
         getStorageLayoutReport: () => record('app.getStorageLayoutReport'),
-        clearInterruptedWorkerCheckpoint: (
-          workspaceId: string,
-          threadId: string,
-          turnId: string,
-          input: unknown
-        ) =>
-          record('app.clearInterruptedWorkerCheckpoint', {
-            input,
-            threadId,
-            turnId,
-            workspaceId,
-          }),
         retryInterruptedWorkerCheckpoint: (workspaceId: string, threadId: string, turnId: string) =>
           record('app.retryInterruptedWorkerCheckpoint', {
             threadId,
@@ -207,42 +200,6 @@ function createFakeCoreClient(): {
         listWorkspacePermissionDecisions: (workspaceId: string) =>
           record('app.listWorkspacePermissionDecisions', { workspaceId }),
         listServerPermissionDecisions: () => record('app.listServerPermissionDecisions'),
-        listRecoveryPendingUserTurns: (workspaceId: string, threadId: string) =>
-          record('app.listRecoveryPendingUserTurns', { threadId, workspaceId }),
-        cancelRecoveryPendingUserTurn: (workspaceId: string, threadId: string, requestId: string) =>
-          record('app.cancelRecoveryPendingUserTurn', { requestId, threadId, workspaceId }),
-        convertRecoveryPendingUserTurnToFollowUp: (
-          workspaceId: string,
-          threadId: string,
-          requestId: string
-        ) =>
-          record('app.convertRecoveryPendingUserTurnToFollowUp', {
-            requestId,
-            threadId,
-            workspaceId,
-          }),
-        promoteRecoveryPendingUserTurnToInterrupt: (
-          workspaceId: string,
-          threadId: string,
-          requestId: string
-        ) =>
-          record('app.promoteRecoveryPendingUserTurnToInterrupt', {
-            requestId,
-            threadId,
-            workspaceId,
-          }),
-        editRecoveryPendingUserTurn: (
-          workspaceId: string,
-          threadId: string,
-          requestId: string,
-          input: unknown
-        ) =>
-          record('app.editRecoveryPendingUserTurn', {
-            input,
-            requestId,
-            threadId,
-            workspaceId,
-          }),
         listOpenKitAccessTokens: () => record('app.listOpenKitAccessTokens'),
         createOpenKitAccessToken: (input: unknown) => record('app.createOpenKitAccessToken', input),
         revokeOpenKitAccessToken: (tokenId: string) =>
@@ -431,12 +388,16 @@ describe('NanoCore public client facade', () => {
       threadId: 'th_demo',
       objective: 'Improve one test.',
     });
+    await facade.draftGoalPlan({
+      requestId: 'req_plan_draft',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+    });
     await facade.approveGoalPlan({
       requestId: 'req_plan_approve',
       workspaceId: 'ws_demo',
       threadId: 'th_demo',
       planItemId: 'it_plan',
-      plan: { schemaVersion: 1 },
     });
     await facade.reviseGoalPlan({
       requestId: 'req_plan_revise',
@@ -448,7 +409,6 @@ describe('NanoCore public client facade', () => {
       requestId: 'req_step',
       workspaceId: 'ws_demo',
       threadId: 'th_demo',
-      followUpDrainMode: 'one_at_a_time',
     });
     await facade.submitSteering({
       requestId: 'req_steering',
@@ -526,7 +486,15 @@ describe('NanoCore public client facade', () => {
         input: {
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
-          input: { objective: 'Improve one test.' },
+          input: { objective: 'Improve one test.', requestId: 'req_goal_start' },
+        },
+      },
+      {
+        method: 'app.createThreadGoalPlan',
+        input: {
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          input: { requestId: 'req_plan_draft' },
         },
       },
       {
@@ -534,7 +502,7 @@ describe('NanoCore public client facade', () => {
         input: {
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
-          input: { planItemId: 'it_plan', plan: { schemaVersion: 1 } },
+          input: { requestId: 'req_plan_approve', planItemId: 'it_plan' },
         },
       },
       {
@@ -553,7 +521,7 @@ describe('NanoCore public client facade', () => {
         input: {
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
-          input: { requestId: 'req_step', followUpDrainMode: 'one_at_a_time' },
+          input: { requestId: 'req_step' },
         },
       },
       {
@@ -789,30 +757,6 @@ describe('NanoCore public client facade', () => {
     ]);
   });
 
-  it('routes interrupted worker checkpoint cleanup through the public App API client', async () => {
-    const { calls, client } = createFakeCoreClient();
-    const facade = createNanoCoreFacade(client);
-
-    await facade.clearInterruptedWorkerCheckpoint({
-      terminalStage: 'aborted',
-      threadId: 'th_demo',
-      turnId: 'turn_worker',
-      workspaceId: 'ws_demo',
-    });
-
-    expect(calls).toEqual([
-      {
-        method: 'app.clearInterruptedWorkerCheckpoint',
-        input: {
-          input: { terminalStage: 'aborted' },
-          threadId: 'th_demo',
-          turnId: 'turn_worker',
-          workspaceId: 'ws_demo',
-        },
-      },
-    ]);
-  });
-
   it('routes interrupted worker checkpoint retry through the public App API client', async () => {
     const { calls, client } = createFakeCoreClient();
     const facade = createNanoCoreFacade(client);
@@ -875,114 +819,16 @@ describe('NanoCore public client facade', () => {
     ]);
   });
 
-  it('routes pending user turn recovery reads through the public App API client', async () => {
+  it('does not expose generic pending-input recovery', () => {
     const { calls, client } = createFakeCoreClient();
     const facade = createNanoCoreFacade(client);
 
-    await facade.listRecoveryPendingUserTurns({
-      threadId: 'th_demo',
-      workspaceId: 'ws_demo',
-    });
-
-    expect(calls).toEqual([
-      {
-        method: 'app.listRecoveryPendingUserTurns',
-        input: {
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
-        },
-      },
-    ]);
-  });
-
-  it('routes pending user turn cancellation through the public App API client', async () => {
-    const { calls, client } = createFakeCoreClient();
-    const facade = createNanoCoreFacade(client);
-
-    await facade.cancelRecoveryPendingUserTurn({
-      requestId: 'req_pending',
-      threadId: 'th_demo',
-      workspaceId: 'ws_demo',
-    });
-
-    expect(calls).toEqual([
-      {
-        method: 'app.cancelRecoveryPendingUserTurn',
-        input: {
-          requestId: 'req_pending',
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
-        },
-      },
-    ]);
-  });
-
-  it('routes pending user turn edits through the public App API client', async () => {
-    const { calls, client } = createFakeCoreClient();
-    const facade = createNanoCoreFacade(client);
-
-    await facade.editRecoveryPendingUserTurn({
-      requestId: 'req_pending',
-      text: 'Edited pending input.',
-      threadId: 'th_demo',
-      workspaceId: 'ws_demo',
-    });
-
-    expect(calls).toEqual([
-      {
-        method: 'app.editRecoveryPendingUserTurn',
-        input: {
-          input: { text: 'Edited pending input.' },
-          requestId: 'req_pending',
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
-        },
-      },
-    ]);
-  });
-
-  it('routes pending user turn follow-up conversion through the public App API client', async () => {
-    const { calls, client } = createFakeCoreClient();
-    const facade = createNanoCoreFacade(client);
-
-    await facade.convertRecoveryPendingUserTurnToFollowUp({
-      requestId: 'req_pending',
-      threadId: 'th_demo',
-      workspaceId: 'ws_demo',
-    });
-
-    expect(calls).toEqual([
-      {
-        method: 'app.convertRecoveryPendingUserTurnToFollowUp',
-        input: {
-          requestId: 'req_pending',
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
-        },
-      },
-    ]);
-  });
-
-  it('routes pending user turn interrupt promotion through the public App API client', async () => {
-    const { calls, client } = createFakeCoreClient();
-    const facade = createNanoCoreFacade(client);
-
-    await facade.promoteRecoveryPendingUserTurnToInterrupt({
-      requestId: 'req_pending',
-      threadId: 'th_demo',
-      workspaceId: 'ws_demo',
-    });
-
-    expect(calls).toEqual([
-      {
-        method: 'app.promoteRecoveryPendingUserTurnToInterrupt',
-        input: {
-          requestId: 'req_pending',
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
-        },
-      },
-    ]);
+    expect(facade).not.toHaveProperty('listRecoveryPendingUserTurns');
+    expect(facade).not.toHaveProperty('cancelRecoveryPendingUserTurn');
+    expect(facade).not.toHaveProperty('convertRecoveryPendingUserTurnToFollowUp');
+    expect(facade).not.toHaveProperty('editRecoveryPendingUserTurn');
+    expect(facade).not.toHaveProperty('promoteRecoveryPendingUserTurnToInterrupt');
+    expect(calls).toEqual([]);
   });
 
   it('routes Knowledge Source registry calls through the public App API client', async () => {
@@ -1692,9 +1538,33 @@ describe('NanoCore public client facade', () => {
     await facade.resolveActionCenterItem({
       workspaceId: 'ws_demo',
       rowId: 'row_goal_review',
-      actionId: 'accept',
+      actionId: 'accept_review',
       decision: 'accept',
-      requestId: 'req_goal_review',
+      requestId: 'req_goal_review_accept',
+    });
+    await facade.resolveActionCenterItem({
+      workspaceId: 'ws_demo',
+      rowId: 'row_goal_review',
+      actionId: 'request_refinement',
+      decision: 'refine',
+      comment: 'Cover the restart edge case.',
+      requestId: 'req_goal_review_refine',
+    });
+    await facade.resolveActionCenterItem({
+      workspaceId: 'ws_demo',
+      rowId: 'row_goal_review',
+      actionId: 'retry_work',
+      decision: 'retry',
+      comment: 'Retry with the corrected inputs.',
+      requestId: 'req_goal_review_retry',
+    });
+    await facade.resolveActionCenterItem({
+      workspaceId: 'ws_demo',
+      rowId: 'row_goal_review',
+      actionId: 'abort',
+      decision: 'abort',
+      comment: 'The objective is no longer valid.',
+      requestId: 'req_goal_review_abort',
     });
     await facade.resolveActionCenterItem({
       workspaceId: 'ws_demo',
@@ -1740,7 +1610,49 @@ describe('NanoCore public client facade', () => {
           threadId: 'th_demo',
           goalId: 'goal_demo',
           reviewId: 'review_demo',
-          input: { requestId: 'req_goal_review' },
+          input: { requestId: 'req_goal_review_accept', verdict: 'accept' },
+        },
+      },
+      {
+        method: 'app.submitGoalReviewDecision',
+        input: {
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          goalId: 'goal_demo',
+          reviewId: 'review_demo',
+          input: {
+            requestId: 'req_goal_review_refine',
+            verdict: 'refine',
+            revisionInstruction: 'Cover the restart edge case.',
+          },
+        },
+      },
+      {
+        method: 'app.submitGoalReviewDecision',
+        input: {
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          goalId: 'goal_demo',
+          reviewId: 'review_demo',
+          input: {
+            requestId: 'req_goal_review_retry',
+            verdict: 'retry',
+            reason: 'Retry with the corrected inputs.',
+          },
+        },
+      },
+      {
+        method: 'app.submitGoalReviewDecision',
+        input: {
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          goalId: 'goal_demo',
+          reviewId: 'review_demo',
+          input: {
+            requestId: 'req_goal_review_abort',
+            verdict: 'abort',
+            reason: 'The objective is no longer valid.',
+          },
         },
       },
       {

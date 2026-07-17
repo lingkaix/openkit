@@ -13,7 +13,7 @@ import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import type { FsStore } from './lib/store.js';
-import { createGoalRecord, createGoalTask } from './runtime/goal-store.js';
+import { createGoalRecord, createGoalTask, updateGoalStatus } from './runtime/goal-store.js';
 import { createConfiguredTurnExecutor } from './runtime/turn-executor-factory.js';
 import type { TurnExecutor } from './runtime/types.js';
 import { WorkerControlGateway } from './runtime/worker-control-gateway.js';
@@ -152,9 +152,11 @@ describe('NanoCore deployment mode matrix', () => {
 
       expect(response.status).toBe(200);
       expect(payload).toMatchObject({
-        decision: {
+        result: {
           outcome: 'review',
           shouldStop: true,
+          stopReason: 'completed',
+          reviewId: expect.any(String),
         },
         goal: {
           status: 'reviewing',
@@ -164,13 +166,6 @@ describe('NanoCore deployment mode matrix', () => {
           pendingHumanAttention: {
             required: true,
           },
-        },
-        pendingAttention: {
-          kind: 'review',
-        },
-        worker: {
-          stopReason: 'completed',
-          checkpointStage: 'completed',
         },
       });
 
@@ -327,6 +322,7 @@ function seedRepositoryAndGoal(
       workspaceId: 'ws_demo',
       threadId,
       goalId: `goal_loop_${runtimePlacement.replace(/-/g, '_')}`,
+      planItemId: `it_goal_plan_${runtimePlacement.replace(/-/g, '_')}`,
       taskId: `task_loop_${runtimePlacement.replace(/-/g, '_')}`,
       title: `Step ${runtimePlacement}`,
       objective: `Produce reviewable evidence through ${runtimePlacement}.`,
@@ -334,8 +330,24 @@ function seedRepositoryAndGoal(
       dependsOnTaskIds: [],
       acceptanceCriteria: ['A worker result is available for human review.'],
       contextBudgetTokens: 12_000,
+      resources: [],
+      expectedArtifacts: [],
       verificationChecks: [{ kind: 'manual', description: 'Review the matrix worker result.' }],
+      reviewPolicy: {
+        required: true,
+        reviewers: ['human'],
+        instructions: 'Review the matrix worker result.',
+      },
+      escalationConditions: [],
       status: 'ready',
+      now: () => '2026-06-28T00:00:00.000Z',
+    });
+    updateGoalStatus(workspaceDb, {
+      workspaceId: 'ws_demo',
+      threadId,
+      goalId: `goal_loop_${runtimePlacement.replace(/-/g, '_')}`,
+      status: 'running',
+      planItemId: `it_goal_plan_${runtimePlacement.replace(/-/g, '_')}`,
       now: () => '2026-06-28T00:00:00.000Z',
     });
   } finally {

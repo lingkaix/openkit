@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
 import {
@@ -47,11 +46,6 @@ import { createSetupDiagnostics } from './diagnostics/setup.js';
 import { createDiagnosticsSnapshot } from './diagnostics/snapshot.js';
 import { registerGoalRoutes } from './goal-routes.js';
 import { registerGovernanceRoutes } from './governance-routes.js';
-import { InternalAgentRunner } from './internal-agents/runner.js';
-import type {
-  InternalAgentDefaultProviderUse,
-  InternalAgentDiagnosticsSnapshot,
-} from './internal-agents/types.js';
 import type { WorkerCoordinatorCandidate } from './internal-agents/worker-coordinator.js';
 import { registerKnowledgeRoutes } from './knowledge-routes.js';
 import { AutomationStore } from './lib/automation-store.js';
@@ -289,14 +283,6 @@ function workerRuntimeForAgent(agentId: string, agentName: string): 'codex' | 'o
 }
 
 /**
- * Minimal internal agent runner surface used by app routes and diagnostics.
- */
-type AppInternalAgentRunner = Pick<InternalAgentRunner, 'run'> & {
-  /** Returns safe internal-agent diagnostics without prompts or secrets. */
-  getDiagnostics(): InternalAgentDiagnosticsSnapshot;
-};
-
-/**
  * Construction options for the Hono app.
  */
 export interface CreateAppOptions {
@@ -311,8 +297,6 @@ export interface CreateAppOptions {
   llmPiAiClient?: PiAiGatewayClient;
   llmCodexResponsesClient?: CodexResponsesClient;
   llmGatewayDispatcher?: LLMGatewayProviderDispatcher;
-  /** Optional internal agent runner override for tests. */
-  internalAgentRunner?: AppInternalAgentRunner;
   gatewayUsageTracker?: GatewayUsageTracker;
   /** Loaded operator config used for app diagnostics defaults. */
   openKitConfig?: OpenKitConfig;
@@ -687,7 +671,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     configuredWorkerRuntime?.turnExecutor ??
     createConfiguredTurnExecutor({ workerControlGateway });
   const workerPlacement = configuredWorkerRuntime?.placement ?? options.workerPlacement ?? 'local';
-  let internalAgentRunner = options.internalAgentRunner ?? null;
   const app = new Hono<{ Variables: AuthVariables }>();
 
   app.use(async (c, next) => {
@@ -921,7 +904,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     readonly threadId: string;
     readonly prompt: string;
     readonly modelId?: string | undefined;
-    readonly requestId?: string | undefined;
+    readonly requestId: string;
     readonly requestedAgentId: string;
     readonly reservedTurnId?: string | undefined;
   }): Promise<z.infer<typeof TurnSchema>> {
@@ -930,7 +913,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       input: {
         input: input.prompt,
         modelId: input.modelId,
-        requestId: input.requestId ?? randomUUID(),
+        requestId: input.requestId,
         threadId: input.threadId,
         workspaceId: input.workspaceId,
       },
@@ -1088,50 +1071,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         providerId: gatewayDefaultProviderId(),
         model: gatewayDefaultModel(),
       },
-      internalTasks: {
-        providerId: runtimeConfig().openKitConfig.defaults?.coreProviderId ?? null,
-        model: runtimeConfig().openKitConfig.defaults?.coreModel ?? null,
-      },
       gateway: {
         providerId: gatewayDefaultProviderId(),
         model: gatewayDefaultModel(),
       },
     };
-  }
-
-  /**
-   * Resolves provider and model defaults for internal agents.
-   *
-   * @param defaultUse Internal agent provider default slot.
-   * @returns Provider id and model selected for the requested slot.
-   */
-  function internalAgentDefaultSelection(defaultUse: InternalAgentDefaultProviderUse) {
-    if (defaultUse === 'quickChat') {
-      return {
-        providerId: gatewayDefaultProviderId(),
-        model: gatewayDefaultModel(),
-      };
-    }
-
-    return {
-      providerId: runtimeConfig().openKitConfig.defaults?.coreProviderId ?? null,
-      model: runtimeConfig().openKitConfig.defaults?.coreModel ?? null,
-    };
-  }
-
-  /**
-   * Returns the app-local internal agent runner.
-   *
-   * @returns Internal agent runner backed by current provider defaults and Gateway dispatcher.
-   */
-  function getInternalAgentRunner(): AppInternalAgentRunner {
-    internalAgentRunner ??= new InternalAgentRunner({
-      defaultSelectionResolver: internalAgentDefaultSelection,
-      llmClient: llmGatewayDispatcher,
-      providerResolver: resolveGatewayProvider,
-    });
-
-    return internalAgentRunner;
   }
 
   app.use('/api/worker-control/*', browserCors);
@@ -1238,7 +1182,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
             workerControlGateway
           )
         ),
-        internalAgents: getInternalAgentRunner().getDiagnostics(),
       })
     );
   });
@@ -1310,9 +1253,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     coreDb: options.coreDb,
     gatewayDefaultModel,
     gatewayDefaultProviderId,
-    getInternalAgentRunner,
+    inflightCommands,
+    llmGatewayDispatcher,
     repositoryWorkspaceDb,
     requestStore,
+    resolveGatewayProvider,
     runtimeConfig,
     startModeWorkerTurn,
     workerCoordinatorCandidates,
@@ -1368,6 +1313,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     app,
     assertProjectWorkspace,
     coreDb: options.coreDb,
+    inflightCommands,
     repositoryWorkspaceDb,
     requestStore,
     startModeWorkerTurn,
@@ -1378,6 +1324,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     app,
     assertProjectWorkspace,
     coreDb: options.coreDb,
+    inflightCommands,
     mode,
     repositoryWorkspaceDb,
     requestStore,
@@ -1391,7 +1338,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     coreDb: options.coreDb,
     repositoryWorkspaceDb,
     requestStore,
-    turnExecutor,
     visibleWorkspacesForActor,
   });
 

@@ -6,7 +6,7 @@ export const StartChatModeRequestSchema = z.object({
   input: z.string().min(1),
   providerId: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
-  requestId: z.string().min(1).optional(),
+  requestId: z.string().min(1),
 });
 
 /** Terminal routing outcome selected by Core Assistant. */
@@ -16,7 +16,6 @@ export const ChatModeOutcomeSchema = z.enum([
   'task-handoff',
   'goal-handoff',
   'refused',
-  'failed',
 ]);
 
 /** App API projection for a Chat Mode handoff status item. */

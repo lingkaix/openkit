@@ -17,9 +17,11 @@ import type { FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
 import {
   type GoalReviewRecord,
+  GoalReviewResolutionError,
   getGoalReviewRecord,
   resolveGoalReviewRecord,
 } from './runtime/goal-review-records.js';
+import { getGoalRecord, listGoalTasks } from './runtime/goal-store.js';
 import { advanceGoalAfterReview } from './runtime/goal-supervise-advance.js';
 import {
   commandInputHash,
@@ -481,15 +483,12 @@ export function registerReviewDecisionRoutes({
 
       const input = parsed.data;
 
-      if (!input.requestId) {
-        return asApiError('requestId is required.', 'invalid_request', 400);
-      }
-
       const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
       const threadId = c.req.param('threadId');
       const goalId = c.req.param('goalId');
       const reviewId = c.req.param('reviewId');
+      const actorId = c.get('actor').userId;
 
       store.getWorkspace(workspaceId);
       store.getThread(workspaceId, threadId);
@@ -521,7 +520,47 @@ export function registerReviewDecisionRoutes({
               }
 
               if (review.resolvedAt) {
-                return buildGoalReviewDecisionResponse(review);
+                if (!review.resolutionSnapshot) {
+                  throw new GoalReviewResolutionError(
+                    'recovery_required',
+                    'Resolved Goal Review is missing its resolution snapshot.'
+                  );
+                }
+                return buildGoalReviewDecisionResponse(
+                  resolveGoalReviewRecord(workspaceDb, {
+                    workspaceId,
+                    threadId,
+                    goalId,
+                    reviewId,
+                    requestId: input.requestId,
+                    actorId,
+                    verdict: input.verdict,
+                    ...(input.reason ? { reason: input.reason } : {}),
+                    ...(input.revisionInstruction
+                      ? { revisionInstruction: input.revisionInstruction }
+                      : {}),
+                    resolutionSnapshot: review.resolutionSnapshot,
+                  })
+                );
+              }
+
+              const goal = getGoalRecord(workspaceDb, workspaceId, threadId, goalId);
+              const task = listGoalTasks(workspaceDb, {
+                workspaceId,
+                threadId,
+                goalId,
+              }).find((candidate) => candidate.taskId === review.taskId);
+              if (
+                !goal ||
+                !task ||
+                goal.status !== 'reviewing' ||
+                goal.currentTaskId !== task.taskId ||
+                task.status !== 'reviewing'
+              ) {
+                throw new GoalReviewResolutionError(
+                  'recovery_required',
+                  'Unresolved Goal Review does not own the current reviewing Goal and Task.'
+                );
               }
 
               const resolutionSnapshot = advanceGoalAfterReview(workspaceDb, {
@@ -529,7 +568,7 @@ export function registerReviewDecisionRoutes({
                 threadId,
                 goalId,
                 taskId: review.taskId,
-                verdict: review.verdict,
+                verdict: input.verdict,
               });
 
               const resolved = resolveGoalReviewRecord(workspaceDb, {
@@ -537,7 +576,13 @@ export function registerReviewDecisionRoutes({
                 threadId,
                 goalId,
                 reviewId,
-                requestId: input.requestId as string,
+                requestId: input.requestId,
+                actorId,
+                verdict: input.verdict,
+                ...(input.reason ? { reason: input.reason } : {}),
+                ...(input.revisionInstruction
+                  ? { revisionInstruction: input.revisionInstruction }
+                  : {}),
                 resolutionSnapshot,
               });
 
@@ -569,6 +614,9 @@ export function registerReviewDecisionRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
+      if (error instanceof GoalReviewResolutionError) {
+        return asApiError(error.message, error.code, error.status);
+      }
       return asCommandError(error, 'goal_review_decision_failed');
     }
   });

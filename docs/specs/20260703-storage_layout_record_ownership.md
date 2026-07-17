@@ -7,7 +7,7 @@ Implementation: Diverged
 
 This spec closes the storage design gap beneath the file-system-first principle.
 
-The clean target is scope-owned storage: server records live under server ownership, user records live under user ownership, and workspace records live under workspace ownership. SQLite exists for indexes, ledgers, query, and transactional coordination, but it must not become a hidden product model that competes with file-backed workspace history.
+The clean target is scope-owned storage: server records live under server ownership, user records live under user ownership, and workspace records live under workspace ownership. File-backed records remain the default for inspectable history; SQLite may own an explicitly named transactional record graph when its owning specification requires atomic compare-and-set and command-receipt publication. It must not become an unnamed product model that competes with another authority.
 
 The important call is to stop organizing persistence by feature module. Storage should be organized by ownership, recovery boundary, backup boundary, and export boundary.
 
@@ -16,6 +16,7 @@ The important call is to stop organizing persistence by feature module. Storage 
 - Target physical `DATA_ROOT` ownership layout for server, user, and owner-independent workspace scopes.
 - Source-of-truth decisions for file-backed records, SQLite source-of-truth ledgers, and derived SQLite records.
 - Storage ownership for worker runtime outputs, OpenShell evidence, staged reviews, apply results, audit, usage, capability calls, permission decisions, vault metadata, and recovery checkpoints.
+- The Workspace SQLite transaction boundary for Workspace Material identity, immutable inline revisions, Thread bindings, their command receipts, and version-keyed Artifact Review history.
 - Migration posture from the current single-database implementation to ownership-scoped storage.
 - Record lineage requirements for importing runtime-produced evidence into canonical product history.
 - Storage structure extension rules for future record families and derived directories.
@@ -27,6 +28,7 @@ The important call is to stop organizing persistence by feature module. Storage 
 - Workspace synchronization protocol semantics.
 - Vault secret backend implementation or secret material storage.
 - Web UI read models beyond naming their storage source.
+- Material, binding, worker-delivery, or Artifact Review product semantics, which remain owned by `docs/specs/20260713-work_resource_interaction_model.md`.
 
 ## Core References
 
@@ -125,7 +127,7 @@ File-backed source-of-truth records:
 - append-only item logs
 - turn input attachments under `turns/<turnId>/inputs/`, which are work-history records whose lifecycle follows thread retention; they become Knowledge Sources only through the explicit registration contract in `docs/specs/20260703-knowledge_store_implementation.md`
 - artifacts and artifact metadata
-- knowledge pages, sources, derived representations, proposals, and reviews
+- knowledge pages, sources, derived representations, proposals, and Knowledge reviews
 - context package manifests and traces
 - agent environment package snapshots
 - workspace materialization records
@@ -146,6 +148,8 @@ SQLite source-of-truth records:
 - scheduler leases, capacity records, worker-control ledgers, and the small recovery fields and cleanup fences on their existing owning rows
 - migration metadata
 - operational recovery checkpoints that require transactions
+- `WorkspaceMaterial`, immutable `WorkspaceMaterialRevision`, and `ThreadMaterialBinding` rows plus their command receipts in `workspace.sqlite`
+- version-keyed `ArtifactReview` rows in `workspace.sqlite`
 
 Audit-family rows home in the database of their `ownerScope` per the Storage Scope Homing decision in `docs/specs/20260703-audit_usage_evidence_records.md`: workspace-lineage rows in `workspace.sqlite`, server control-plane rows in `core.sqlite`, user-identity rows in `user.sqlite`. Workspace deletion produces a sealed server-owned audit closure export under `server/exports/` before removal.
 
@@ -161,6 +165,27 @@ SQLite-derived records:
 - cached diagnostics
 
 Derived records must be rebuildable from file-backed records or authoritative SQLite ledgers.
+
+## G01 Material And Artifact Review Transaction Boundary
+
+The Phase 1 Material graph is an explicit exception to the ordinary file-backed workspace-history default. Its three authoritative families and the command ledger that acknowledges their mutations live in the same `workspace.sqlite`; no Material authority exists under `files/`, `sources/`, `knowledge/`, `artifacts/`, or a private Material directory.
+
+The exact logical keys and storage payloads are:
+
+| Record | Key and required storage contract |
+| --- | --- |
+| `WorkspaceMaterial` | Primary key `(workspaceId, materialId)`; stores `title`, `kind`, nullable `currentRevisionId`, `sensitivity`, `lastMutationRequestId`, `createdAt`, and `updatedAt`. |
+| `WorkspaceMaterialRevision` | Primary key `(workspaceId, materialId, revisionId)`; immutable; stores nullable `parentRevisionId`, `mediaType`, `contentDigest`, exact canonical UTF-8 `content`, `authorId`, `createdByRequestId`, and `createdAt`. The revision id is unique within its Material and its parent, when present, belongs to that same Material. |
+| `ThreadMaterialBinding` | Primary key `(workspaceId, threadId, materialId)`; stores `bindingState`, nullable `latestQueuedRevisionId`, `inclusionState`, `lastMutationRequestId`, `createdAt`, and `updatedAt`. The queued revision, when present, belongs to the bound Material. The owning transaction permits at most one `bindingState=bound` row per `(workspaceId, threadId)`. |
+| `ArtifactReview` | Primary key `(workspaceId, artifactId, artifactVersion)` with a unique deterministic `reviewId`; stores the exact reviewed `contentDigest`, nullable `sourceThreadId`, `sourceTurnId`, and `sourceAgentId`, nullable first-writer `decision`, `decisionActorId`, `decisionRequestId`, `feedback`, `decidedAt`, and deterministic `followUpTurnId`, plus `createdAt`. Later Artifact versions insert new rows and never update or replace prior-version history. |
+
+`WorkspaceMaterialRevision.content` is the canonical content. `mediaType` is derived from Material kind and `contentDigest` verifies the exact stored bytes. Revisions form one complete linear parent chain from the unique null-parent root to `WorkspaceMaterial.currentRevisionId`; a null current pointer means no revisions, no revision has multiple children, and timestamps do not order the chain. A `contentRef`, filesystem path, blob locator, delta-only revision, or Material content file is not an alternative authority and is not authorized for Phase 1.
+
+Material creation commits the new `WorkspaceMaterial` and its completed command receipt in one Workspace transaction. Material save commits the immutable revision, compare-and-set current pointer, coalesced queue update for every bound binding, request lineage, and completed receipt in one Workspace transaction. Bind, unbind, exclude, and restore transitions likewise commit the binding mutation and receipt together. A failed precondition rolls back every named row and publishes no success receipt. Exact replay reads the completed receipt and returns the same result; it does not add a pending mutation, receipt-reconstruction path, settlement row, or second Material owner.
+
+`ArtifactReview` stores one unresolved-or-decided owner for one exact Artifact version rather than one mutable record keyed only by Artifact id. Creation eligibility, Workspace Sync exclusion, first-writer decision, refinement or redo Turn reservation, cross-file receipt-gap handling, and recovery remain exactly those defined by S16; this storage decision adds no Review lifecycle, queue, workflow, or alias to staged Workspace Review. An `accepted`, `rejected`, or `deferred` decision commits its Review row and completed receipt together in `workspace.sqlite`. A `needs_refinement` or `redo` claim commits its reserved follow-up identity before cross-store Turn and admission effects and publishes the receipt only after their exact terminal proof; a complete follow-up tuple without that receipt fails closed and is not reconstructed.
+
+S51 exports these four authoritative row families as strict line-oriented records, then imports them through one target Workspace transaction after validating and rewriting their complete identity graph. Deployment-local command receipts do not travel. S51 rewrites every Material and Artifact Review request-proof field to its reserved non-command `import-lineage:` token, which remains historical lineage and is never receipt-reconstruction or access authority; the complete import transaction is not a command-receipt half-state. A database file or Material content directory is never the portable representation.
 
 ## Structure Evolution Rules
 
@@ -205,10 +230,13 @@ Most scoped record-family ownership is implemented, but the accepted owner-indep
 - `rebuildWorkspaceDerivedIndexes` rebuilds the first workspace-derived index file at `indexes/search.json` from file-backed workspace projections and authoritative workspace snapshot records, deleting stale derived index files before writing the rebuilt index.
 - `rebuildExistingWorkspaceDerivedIndexes` runs the same derived-index rebuild at boot for existing workspace directories that have a canonical `workspace.json` projection, skipping half-built workspace directories without that projection.
 - The server-scope database currently holds Better Auth or auth implementation rows, server settings, users, scheduler coordination, worker-control ledgers, and durable backend-session lifecycle rows. Restart closeout reuses those owners and adds no settlement table.
-- Workspace repository resources, worker-turn checkpoints, pending user turns, Goal Mode goal records, Goal Mode task records, Goal Mode review records, Goal Mode verification records, workspace apply results, workspace input snapshots, workspace materialization records, workspace change sets, staged workspace reviews, workspace filesystem staging roots, and workspace-scoped permission decisions now live in workspace-owned `workspace.sqlite` files with workspace-scoped migration ledgers.
+- Workspace repository resources, worker-turn checkpoints, Goal Mode goal records, Goal Mode task records, Goal Mode review records, Goal Mode verification records, workspace apply results, workspace input snapshots, workspace materialization records, workspace change sets, staged workspace reviews, workspace filesystem staging roots, and workspace-scoped permission decisions now live in workspace-owned `workspace.sqlite` files with workspace-scoped migration ledgers. Exact S16 Goal pending input will also be workspace-owned if implemented, but no pending-input table or record owner exists today.
+- The accepted S16 target permits at most one `PendingUserTurnRecord` per `(workspaceId, threadId)` in `workspace.sqlite`. It stores the exact original Goal, active Turn, request, content Item, input kind, nullable Material identity/revision/digest tuple, queue mode, receipt time, and three nullable terminal-claim fence fields. The completed input Item remains the product-visible content owner; a Material selection is resolved only from the row's exact tuple. Application preserves that tuple in the accepted Context Package trace, while follow-up and cancellation preserve it in their existing terminal command records before winner-owned deletion. The row and command receipt do not form a second queue, ordering table, or delivery workflow, and the current implementation still has no such table.
 - Worker checkpoint rows carry workspace/thread/turn lineage, context package digest, stage, stop reason, and redacted diagnostics.
+- The accepted `WorkspaceMaterial`, `WorkspaceMaterialRevision`, and `ThreadMaterialBinding` tables, their same-transaction receipts, and their mutation surfaces are not implemented.
+- The current app-local Artifact Review is a JSON file at `reviews/artifacts/<artifactId>.json`, keyed only by Artifact id and shaped around mutable `pending`, `completed`, or `failed` lifecycle state. It is not the accepted version-keyed `workspace.sqlite` owner and must be replaced rather than treated as target truth.
 
-`users/<userId>/db/user.sqlite` has a concrete open path and migration ledger. The current Workspace database path is `users/<userId>/workspaces/<workspaceId>/db/workspace.sqlite`; the accepted replacement is `workspaces/<workspaceId>/db/workspace.sqlite`. Repository, worker checkpoint, pending user turn, Goal Mode goal/task/review/verification, apply-result, workspace synchronization review, filesystem staging, and workspace permission-decision rows are the first workspace-owned domain rows moved out of the server database.
+`users/<userId>/db/user.sqlite` has a concrete open path and migration ledger. The current Workspace database path is `users/<userId>/workspaces/<workspaceId>/db/workspace.sqlite`; the accepted replacement is `workspaces/<workspaceId>/db/workspace.sqlite`. Repository, worker checkpoint, Goal Mode goal/task/review/verification, apply-result, workspace synchronization review, filesystem staging, and workspace permission-decision rows are the first workspace-owned domain rows moved out of the server database.
 
 The workspace physical `memory/` directory has been replaced by `knowledge/`. OpenKit-owned protocol, App API, MCP, NanoCore, core-client, and Web surfaces now use `knowledge`; remaining `memory` mentions in active implementation are ordinary in-memory wording, resource-limit options, or fail-closed unsupported layout guards.
 
@@ -251,7 +279,6 @@ runtime/
       workspace-changes/
 reviews/
   workspace/
-  artifacts/
 evidence/
   bundles/
   backend/
@@ -386,6 +413,8 @@ Post-baseline import is an explicit contract with three verifiable rules:
 - Workspace domain rows are workspace-scoped even if the gateway, scheduler, or runtime lives in the server process. Deployment-wide scheduler rows remain server-scoped when they fence scheduler epoch, lease, capacity, or physical cleanup atomically; direct restart closeout follows product-safe lineage into the existing workspace owners and never copies workspace-domain payload into a server settlement row. Rows with no workspace context are server-scoped.
 - Quarantined worker output should be retained by default as restricted redacted evidence for a bounded retention window, not silently deleted at rejection time.
 - Derived indexes and read models must be rebuildable from file-backed records or authoritative SQLite ledgers.
+- Phase 1 Material identity, canonical inline revision content, Thread binding, and their command receipts are one `workspace.sqlite` transaction graph. No Material filesystem authority, `contentRef`, pending mutation, receipt reconstruction, or settlement state is permitted.
+- Artifact Review history is keyed by exact Artifact version in `workspace.sqlite`; a later version never overwrites an earlier decision, and the row does not alias staged Workspace Review or create a second Review workflow.
 - A temporary migration report is allowed; permanent legacy readers for old layout paths are not part of the target.
 - A read-only storage baseline report exists for the current internal migration; it reports current database ledgers and quarantined storage files, but it does not repair legacy state or preserve compatibility readers.
 - The first derived index rebuild path exists for workspace search and treats `indexes/` as disposable derived state. Boot invokes it for existing workspaces with canonical projections, but the index file itself is not a source of truth.
@@ -412,6 +441,9 @@ Post-baseline import is an explicit contract with three verifiable rules:
 - Backup tests should prove a workspace can be copied with its `workspace.sqlite`, files, and evidence manifests.
 - Recovery tests should rebuild derived indexes after deleting `indexes/`.
 - Schema evolution tests should prove unknown optional storage metadata is tolerated and unsupported required features fail closed.
+- Material transaction tests should prove create, save, bind, unbind, exclude, and restore commit their authoritative rows and completed command receipt together; conflict and injected failure should leave neither a partial mutation nor a receipt.
+- Material storage tests should prove revision content is inline, immutable, digest-verified, parent-scoped, and unresolvable through any `contentRef` or Material file path.
+- Artifact Review tests should prove `(workspaceId, artifactId, artifactVersion)` uniqueness, deterministic `reviewId`, immutable prior-version history, exact digest and source lineage, and rejection of Artifact-id-only overwrite or staged-review aliasing.
 
 ## Risks & Mitigations
 
@@ -432,5 +464,7 @@ Post-baseline import is an explicit contract with three verifiable rules:
 - `docs/specs/20260715-multi_user_workspace_system.md`
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260703-workspace_synchronization.md`
+- `docs/specs/20260704-workspace_backup_export_import.md`
 - `docs/specs/20260629-worker_runtime_communication_model.md`
 - `docs/specs/20260711-worker_runtime_subagent_provenance.md`
+- `docs/specs/20260713-work_resource_interaction_model.md`

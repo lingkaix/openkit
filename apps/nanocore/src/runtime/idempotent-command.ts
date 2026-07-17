@@ -8,6 +8,7 @@ import {
   commandRequestKey,
   type FsStore,
 } from '../lib/store.js';
+import type { WorkspaceDb } from '../storage/db.js';
 
 /** Error raised when one idempotency key is reused for different command input. */
 export class IdempotencyKeyConflictError extends Error {
@@ -35,6 +36,8 @@ export interface InflightIdempotentCommand {
 interface IdempotentCommandOptions<T> {
   /** Store that owns the idempotency ledger. */
   readonly store: FsStore;
+  /** Optional open Workspace database for receipt-first reads and writes. */
+  readonly workspaceDb?: WorkspaceDb;
   /** Process-local in-flight command maps keyed by actor-scoped store. */
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   /** Stable command name. */
@@ -69,7 +72,8 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
   const existingRecord = options.store.getCommandRequest(
     options.command,
     options.requestId,
-    options.scope
+    options.scope,
+    options.workspaceDb
   );
 
   if (existingRecord) {
@@ -105,17 +109,20 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
   const promise = (async () => {
     const result = await options.execute();
 
-    options.store.recordCommandRequest({
-      command: options.command,
-      requestId: options.requestId,
-      scope: options.scope,
-      inputHash,
-      response: {
-        kind: options.responseKind,
-        id: options.responseId(result),
-        ...(options.responseSnapshot ? { snapshot: options.responseSnapshot(result) } : {}),
+    options.store.recordCommandRequest(
+      {
+        command: options.command,
+        requestId: options.requestId,
+        scope: options.scope,
+        inputHash,
+        response: {
+          kind: options.responseKind,
+          id: options.responseId(result),
+          ...(options.responseSnapshot ? { snapshot: options.responseSnapshot(result) } : {}),
+        },
       },
-    });
+      options.workspaceDb
+    );
 
     return result;
   })();

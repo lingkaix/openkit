@@ -8,28 +8,22 @@ import {
   AppSearchResponseSchema,
   AutomationRecordSchema,
   CancelOpenAICodexOAuthRequestSchema,
-  CancelRecoveryPendingUserTurnResponseSchema,
   CancelSchedulerAdmissionResponseSchema,
   CapabilityUsageResponseSchema,
-  ClearInterruptedWorkerCheckpointRequestSchema,
-  ClearInterruptedWorkerCheckpointResponseSchema,
   CodexOAuthAccountSummarySchema,
   CodexOAuthAccountsPayloadSchema,
   CodexOAuthStatusPayloadSchema,
   ConsumeOpenKitBootstrapTokenRequestSchema,
   ConsumeOpenKitBootstrapTokenResponseSchema,
-  ConvertRecoveryPendingUserTurnToFollowUpResponseSchema,
   CreateAutomationRequestSchema,
-  CreateInterruptedRecoveryStateResponseSchema,
   CreateOpenAICodexOAuthAccountRequestSchema,
   CreateOpenKitAccessTokenRequestSchema,
   CreateOpenKitAccessTokenResponseSchema,
+  CreateThreadGoalPlanRequestSchema,
   CreateThreadGoalPlanResponseSchema,
   DataRootBackupCreateResponseSchema,
   DataRootBackupVerifyRequestSchema,
   DataRootBackupVerifyResponseSchema,
-  EditRecoveryPendingUserTurnRequestSchema,
-  EditRecoveryPendingUserTurnResponseSchema,
   ExecuteGitPushRequestSchema,
   ExecuteGitPushResponseSchema,
   GetAgentCatalogEntryResponseSchema,
@@ -61,7 +55,6 @@ import {
   ListKnowledgeObservationsResponseSchema,
   ListKnowledgeSourcesResponseSchema,
   ListOpenKitAccessTokensResponseSchema,
-  ListRecoveryPendingUserTurnsResponseSchema,
   ListSchedulerAdmissionsResponseSchema,
   ListServerAuditEventsResponseSchema,
   ListServerPermissionDecisionsResponseSchema,
@@ -87,10 +80,10 @@ import {
   ListWorkspaceVaultGrantsResponseSchema,
   ListWorkspaceVaultUseRecordsResponseSchema,
   MaterializeKnowledgeContextPackageResponseSchema,
+  PauseThreadGoalRequestSchema,
   PauseThreadGoalResponseSchema,
   PromoteKnowledgeClaimRequestSchema,
   PromoteKnowledgeClaimResponseSchema,
-  PromoteRecoveryPendingUserTurnToInterruptResponseSchema,
   QueueAgentSessionTerminalCommandRequestSchema,
   QueueAgentSessionTerminalCommandResponseSchema,
   QuickChatRequestSchema,
@@ -110,8 +103,10 @@ import {
   ResolveKnowledgeConflictRequestSchema,
   ResolveKnowledgeConflictResponseSchema,
   RestartRuntimeConfigStaleSessionResponseSchema,
+  ResumeThreadGoalRequestSchema,
   ResumeThreadGoalResponseSchema,
   RetrieveKnowledgeRequestSchema,
+  RetryInterruptedWorkerCheckpointRequestSchema,
   RetryInterruptedWorkerCheckpointResponseSchema,
   RetrySchedulerAdmissionResponseSchema,
   ReviseThreadGoalPlanRequestSchema,
@@ -1425,35 +1420,6 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/interrupted-worker': {
-        post: {
-          operationId: 'createInterruptedRecoveryState',
-          tags: ['app-utils'],
-          summary: 'Create deterministic interrupted worker recovery state.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Created deterministic interrupted worker recovery state.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/CreateInterruptedRecoveryStateResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
       '/api/app/recovery/interrupted-workers': {
         get: {
           operationId: 'listInterruptedWorkers',
@@ -1482,12 +1448,12 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/interrupted-worker/{turnId}/terminal':
+      '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/interrupted-worker/{turnId}/retry':
         {
           post: {
-            operationId: 'clearInterruptedWorkerCheckpoint',
+            operationId: 'retryInterruptedWorkerCheckpoint',
             tags: ['app-utils'],
-            summary: 'Clear one interrupted worker checkpoint after terminal state is saved.',
+            summary: 'Release one interrupted worker attempt for a later retry.',
             security: [{ bearerAuth: [] }, { sessionCookie: [] }],
             parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER, TURN_ID_PARAMETER],
             requestBody: {
@@ -1495,41 +1461,11 @@ export function createAppOpenApiDocument() {
               content: {
                 [JSON_CONTENT_TYPE]: {
                   schema: {
-                    $ref: '#/components/schemas/ClearInterruptedWorkerCheckpointRequest',
+                    $ref: '#/components/schemas/RetryInterruptedWorkerCheckpointRequest',
                   },
                 },
               },
             },
-            responses: {
-              '200': {
-                description: 'Checkpoint cleanup result.',
-                content: {
-                  [JSON_CONTENT_TYPE]: {
-                    schema: {
-                      $ref: '#/components/schemas/ClearInterruptedWorkerCheckpointResponse',
-                    },
-                  },
-                },
-              },
-              default: {
-                description: 'Protocol error envelope.',
-                content: {
-                  [JSON_CONTENT_TYPE]: {
-                    schema: { $ref: '#/components/schemas/ApiError' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/interrupted-worker/{turnId}/retry':
-        {
-          post: {
-            operationId: 'retryInterruptedWorkerCheckpoint',
-            tags: ['app-utils'],
-            summary: 'Queue one interrupted worker checkpoint for retry.',
-            security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-            parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER, TURN_ID_PARAMETER],
             responses: {
               '200': {
                 description: 'Checkpoint retry result.',
@@ -1649,201 +1585,6 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/pending-user-turns': {
-        get: {
-          operationId: 'listRecoveryPendingUserTurns',
-          tags: ['app-utils'],
-          summary: 'List pending user turns for one thread recovery state.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Pending user turns for the thread recovery state.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/ListRecoveryPendingUserTurnsResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/pending-user-turns/{requestId}/cancel':
-        {
-          post: {
-            operationId: 'cancelRecoveryPendingUserTurn',
-            tags: ['app-utils'],
-            summary: 'Cancel one pending user turn for one thread recovery state.',
-            security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-            parameters: [
-              WORKSPACE_ID_PARAMETER,
-              THREAD_ID_PARAMETER,
-              {
-                name: 'requestId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
-            ],
-            responses: {
-              '200': {
-                description: 'Pending user turn cancellation result.',
-                content: {
-                  [JSON_CONTENT_TYPE]: {
-                    schema: {
-                      $ref: '#/components/schemas/CancelRecoveryPendingUserTurnResponse',
-                    },
-                  },
-                },
-              },
-              default: {
-                description: 'Protocol error envelope.',
-                content: {
-                  [JSON_CONTENT_TYPE]: {
-                    schema: { $ref: '#/components/schemas/ApiError' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/pending-user-turns/{requestId}/edit':
-        {
-          post: {
-            operationId: 'editRecoveryPendingUserTurn',
-            tags: ['app-utils'],
-            summary: 'Edit one pending user turn for one thread recovery state.',
-            security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-            parameters: [
-              WORKSPACE_ID_PARAMETER,
-              THREAD_ID_PARAMETER,
-              {
-                name: 'requestId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
-            ],
-            requestBody: {
-              required: true,
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/EditRecoveryPendingUserTurnRequest',
-                  },
-                },
-              },
-            },
-            responses: {
-              '200': {
-                description: 'Pending user turn edit result.',
-                content: {
-                  [JSON_CONTENT_TYPE]: {
-                    schema: {
-                      $ref: '#/components/schemas/EditRecoveryPendingUserTurnResponse',
-                    },
-                  },
-                },
-              },
-              default: {
-                description: 'Protocol error envelope.',
-                content: {
-                  [JSON_CONTENT_TYPE]: {
-                    schema: { $ref: '#/components/schemas/ApiError' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/pending-user-turns/{requestId}/follow-up':
-        {
-          post: {
-            operationId: 'convertRecoveryPendingUserTurnToFollowUp',
-            tags: ['app-utils'],
-            summary: 'Convert one pending user turn to follow-up delivery.',
-            security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-            parameters: [
-              WORKSPACE_ID_PARAMETER,
-              THREAD_ID_PARAMETER,
-              {
-                name: 'requestId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
-            ],
-            responses: {
-              '200': {
-                description: 'Pending user turn follow-up conversion result.',
-                content: {
-                  [JSON_CONTENT_TYPE]: {
-                    schema: {
-                      $ref: '#/components/schemas/ConvertRecoveryPendingUserTurnToFollowUpResponse',
-                    },
-                  },
-                },
-              },
-              default: {
-                description: 'Protocol error envelope.',
-                content: {
-                  [JSON_CONTENT_TYPE]: {
-                    schema: { $ref: '#/components/schemas/ApiError' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/pending-user-turns/{requestId}/interrupt':
-        {
-          post: {
-            operationId: 'promoteRecoveryPendingUserTurnToInterrupt',
-            tags: ['app-utils'],
-            summary: 'Promote one pending user turn to an active-turn interrupt.',
-            security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-            parameters: [
-              WORKSPACE_ID_PARAMETER,
-              THREAD_ID_PARAMETER,
-              {
-                name: 'requestId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
-            ],
-            responses: {
-              '200': {
-                description: 'Pending user turn interrupt promotion result.',
-                content: {
-                  [JSON_CONTENT_TYPE]: {
-                    schema: {
-                      $ref: '#/components/schemas/PromoteRecoveryPendingUserTurnToInterruptResponse',
-                    },
-                  },
-                },
-              },
-              default: {
-                description: 'Protocol error envelope.',
-                content: {
-                  [JSON_CONTENT_TYPE]: {
-                    schema: { $ref: '#/components/schemas/ApiError' },
-                  },
-                },
-              },
-            },
-          },
-        },
       '/api/app/search': {
         get: {
           operationId: 'searchApp',
@@ -2142,6 +1883,14 @@ export function createAppOpenApiDocument() {
           summary: 'Draft one Goal Mode plan.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
+          requestBody: {
+            required: true,
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/CreateThreadGoalPlanRequest' },
+              },
+            },
+          },
           responses: {
             '200': {
               description: 'Drafted Goal Mode plan.',
@@ -2239,6 +1988,14 @@ export function createAppOpenApiDocument() {
           summary: 'Pause one active Goal Mode workflow.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
+          requestBody: {
+            required: true,
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/PauseThreadGoalRequest' },
+              },
+            },
+          },
           responses: {
             '200': {
               description: 'Paused Goal Mode workflow.',
@@ -2266,6 +2023,14 @@ export function createAppOpenApiDocument() {
           summary: 'Resume one paused Goal Mode workflow.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
+          requestBody: {
+            required: true,
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/ResumeThreadGoalRequest' },
+              },
+            },
+          },
           responses: {
             '200': {
               description: 'Resumed Goal Mode workflow.',
@@ -4834,11 +4599,8 @@ export function createAppOpenApiDocument() {
         AutomationRecord: toJsonSchema(AutomationRecordSchema),
         CancelOpenAICodexOAuthRequest: toJsonSchema(CancelOpenAICodexOAuthRequestSchema),
         CapabilityUsageResponse: toJsonSchema(CapabilityUsageResponseSchema),
-        ClearInterruptedWorkerCheckpointRequest: toJsonSchema(
-          ClearInterruptedWorkerCheckpointRequestSchema
-        ),
-        ClearInterruptedWorkerCheckpointResponse: toJsonSchema(
-          ClearInterruptedWorkerCheckpointResponseSchema
+        RetryInterruptedWorkerCheckpointRequest: toJsonSchema(
+          RetryInterruptedWorkerCheckpointRequestSchema
         ),
         RetryInterruptedWorkerCheckpointResponse: toJsonSchema(
           RetryInterruptedWorkerCheckpointResponseSchema
@@ -4855,14 +4617,12 @@ export function createAppOpenApiDocument() {
           ConsumeOpenKitBootstrapTokenResponseSchema
         ),
         CreateAutomationRequest: toJsonSchema(CreateAutomationRequestSchema),
-        CreateInterruptedRecoveryStateResponse: toJsonSchema(
-          CreateInterruptedRecoveryStateResponseSchema
-        ),
         CreateOpenKitAccessTokenRequest: toJsonSchema(CreateOpenKitAccessTokenRequestSchema),
         CreateOpenKitAccessTokenResponse: toJsonSchema(CreateOpenKitAccessTokenResponseSchema),
         CreateOpenAICodexOAuthAccountRequest: toJsonSchema(
           CreateOpenAICodexOAuthAccountRequestSchema
         ),
+        CreateThreadGoalPlanRequest: toJsonSchema(CreateThreadGoalPlanRequestSchema),
         CreateThreadGoalPlanResponse: toJsonSchema(CreateThreadGoalPlanResponseSchema),
         DataRootBackupCreateResponse: toJsonSchema(DataRootBackupCreateResponseSchema),
         DataRootBackupVerifyRequest: toJsonSchema(DataRootBackupVerifyRequestSchema),
@@ -4922,9 +4682,6 @@ export function createAppOpenApiDocument() {
           ListInterruptedWorkerStatesResponseSchema
         ),
         ListOpenKitAccessTokensResponse: toJsonSchema(ListOpenKitAccessTokensResponseSchema),
-        ListRecoveryPendingUserTurnsResponse: toJsonSchema(
-          ListRecoveryPendingUserTurnsResponseSchema
-        ),
         ListSchedulerAdmissionsResponse: toJsonSchema(ListSchedulerAdmissionsResponseSchema),
         ListServerAuditEventsResponse: toJsonSchema(ListServerAuditEventsResponseSchema),
         ListServerPermissionDecisionsResponse: toJsonSchema(
@@ -4947,19 +4704,6 @@ export function createAppOpenApiDocument() {
         ),
         ListWorkspacePermissionDecisionsResponse: toJsonSchema(
           ListWorkspacePermissionDecisionsResponseSchema
-        ),
-        CancelRecoveryPendingUserTurnResponse: toJsonSchema(
-          CancelRecoveryPendingUserTurnResponseSchema
-        ),
-        ConvertRecoveryPendingUserTurnToFollowUpResponse: toJsonSchema(
-          ConvertRecoveryPendingUserTurnToFollowUpResponseSchema
-        ),
-        PromoteRecoveryPendingUserTurnToInterruptResponse: toJsonSchema(
-          PromoteRecoveryPendingUserTurnToInterruptResponseSchema
-        ),
-        EditRecoveryPendingUserTurnRequest: toJsonSchema(EditRecoveryPendingUserTurnRequestSchema),
-        EditRecoveryPendingUserTurnResponse: toJsonSchema(
-          EditRecoveryPendingUserTurnResponseSchema
         ),
         ListThreadItemsResponse: toJsonSchema(ListThreadItemsResponseSchema),
         ListAutomationsResponse: toJsonSchema(ListAutomationsResponseSchema),
@@ -5027,9 +4771,11 @@ export function createAppOpenApiDocument() {
         RegisterKnowledgeSourceRequest: toJsonSchema(RegisterKnowledgeSourceRequestSchema),
         RegisterKnowledgeSourceResponse: toJsonSchema(RegisterKnowledgeSourceResponseSchema),
         RetrieveKnowledgeRequest: toJsonSchema(RetrieveKnowledgeRequestSchema),
+        PauseThreadGoalRequest: toJsonSchema(PauseThreadGoalRequestSchema),
         PauseThreadGoalResponse: toJsonSchema(PauseThreadGoalResponseSchema),
         ReviseThreadGoalPlanRequest: toJsonSchema(ReviseThreadGoalPlanRequestSchema),
         ReviseThreadGoalPlanResponse: toJsonSchema(ReviseThreadGoalPlanResponseSchema),
+        ResumeThreadGoalRequest: toJsonSchema(ResumeThreadGoalRequestSchema),
         ResumeThreadGoalResponse: toJsonSchema(ResumeThreadGoalResponseSchema),
         RevokeOpenKitAccessTokenResponse: toJsonSchema(RevokeOpenKitAccessTokenResponseSchema),
         RotateOpenKitAccessTokenRequest: toJsonSchema(RotateOpenKitAccessTokenRequestSchema),

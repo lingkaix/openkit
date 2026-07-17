@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { terminalizeGovernedWorkerTurnFailure } from './worker-turn-failure.js';
+import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 
 /** Creates one persisted running turn and busy agent session. */
 function createFixture() {
@@ -28,11 +28,26 @@ function createFixture() {
 
 /** Runs the shared governed-worker failure projection. */
 function projectFailure(store: FsStore) {
-  return terminalizeGovernedWorkerTurnFailure({
+  return terminalizeGovernedWorkerTurn({
     agentSessionId: 'as_worker_failure',
     completedAt: '2026-07-15T00:01:00.000Z',
     errorCode: 'worker_governance_restart_recovery',
     message: 'Worker execution stopped during NanoCore restart recovery.',
+    outcome: 'failed',
+    requestId: null,
+    store,
+    turnId: 'turn_worker_failure',
+  });
+}
+
+/** Runs the shared governed-worker interruption projection. */
+function projectInterruption(store: FsStore) {
+  return terminalizeGovernedWorkerTurn({
+    agentSessionId: 'as_worker_failure',
+    completedAt: '2026-07-15T00:01:00.000Z',
+    errorCode: 'worker_governance_restart_recovery',
+    message: 'Worker execution was interrupted during NanoCore restart recovery.',
+    outcome: 'interrupted',
     requestId: null,
     store,
     turnId: 'turn_worker_failure',
@@ -62,6 +77,38 @@ describe('governed worker turn failure projection', () => {
             event.event === 'turn.completed' &&
             event.data.type === 'turn-completed' &&
             event.data.stopReason === 'error'
+        )
+    ).toHaveLength(1);
+  });
+
+  it('interrupts an anchored turn and session exactly once after restart cleanup', () => {
+    const { dataRoot, store } = createFixture();
+
+    expect(projectInterruption(store)).toMatchObject({ status: 'interrupted' });
+    expect(projectInterruption(new FsStore({ dataRoot }))).toMatchObject({
+      status: 'interrupted',
+    });
+
+    const reloaded = new FsStore({ dataRoot });
+    expect(reloaded.getTurnById('turn_worker_failure')).toMatchObject({
+      error: {
+        code: 'worker_governance_restart_recovery',
+        message: 'Worker execution was interrupted during NanoCore restart recovery.',
+      },
+      status: 'interrupted',
+    });
+    expect(reloaded.getAgentSession('as_worker_failure')).toMatchObject({
+      message: 'Worker execution was interrupted during NanoCore restart recovery.',
+      status: 'interrupted',
+    });
+    expect(
+      reloaded
+        .getTurnEvents('turn_worker_failure')
+        .filter(
+          (event) =>
+            event.event === 'turn.completed' &&
+            event.data.type === 'turn-completed' &&
+            event.data.stopReason === 'aborted'
         )
     ).toHaveLength(1);
   });

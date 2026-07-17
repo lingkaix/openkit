@@ -6,10 +6,7 @@ import { describe, expect, it } from 'vitest';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { listPendingUserTurns } from './pending-user-turns.js';
-import { enqueueFollowUpInput, enqueueSteeringForSafePoint } from './user-turn-queues.js';
 import { getWorkerCheckpoint } from './worker-checkpoints.js';
-import type { WorkerTurnLoopPrepareInput } from './worker-turn-loop.js';
 import { runWorkerTurnLoop } from './worker-turn-loop.js';
 
 /**
@@ -37,45 +34,24 @@ function createWorkspaceDb(coreDb: CoreDb): WorkspaceDb {
 }
 
 describe('worker turn loop', () => {
-  it('selects queued inputs without consuming them before delivery proof', async () => {
+  it('runs one worker turn and persists its checkpoint', async () => {
     const coreDb = createCoreDb();
     const workspaceDb = createWorkspaceDb(coreDb);
 
     try {
-      enqueueSteeringForSafePoint(workspaceDb, {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        requestId: 'steer_1',
-        contentDigest: 'digest_steer_1',
-        contentItemId: 'it_steer_1',
-      });
-      enqueueFollowUpInput(workspaceDb, {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        requestId: 'follow_1',
-        contentDigest: 'digest_follow_1',
-        contentItemId: 'it_follow_1',
-      });
-      enqueueFollowUpInput(workspaceDb, {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        requestId: 'follow_2',
-        contentDigest: 'digest_follow_2',
-        contentItemId: 'it_follow_2',
-      });
-
-      const prepareInputs: WorkerTurnLoopPrepareInput[] = [];
+      const prepareCalls: unknown[][] = [];
       const result = await runWorkerTurnLoop({
         workspaceDb,
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         goalId: 'goal_demo',
         taskId: 'task_demo',
+        requestId: 'req_worker_1',
+        requestInputHash: 'sha256:worker_1',
         reviewRequired: true,
         remainingWorkerIterations: 1,
-        followUpDrainMode: 'one_at_a_time',
-        prepare: (input) => {
-          prepareInputs.push(input);
+        prepare: (...args) => {
+          prepareCalls.push(args);
 
           return {
             repository: {
@@ -90,26 +66,26 @@ describe('worker turn loop', () => {
               updatedAt: '2026-05-31T00:00:00.000Z',
             },
             delegationRequest: {
+              schemaVersion: 1,
               objective: 'Run the selected task.',
               acceptanceCriteria: ['Task passes.'],
               contextRefs: [],
+              resources: [],
               expectedArtifacts: [],
               constraints: {
                 maxContextTokens: 1000,
                 maxWorkerIterations: 1,
-                requiresUserConfirmation: true,
-                stopConditions: ['Stop after completion.'],
               },
               verification: [],
               reviewPolicy: {
                 required: true,
-                reviewers: ['internal'],
+                reviewers: ['human'],
                 instructions: 'Review the worker result.',
               },
+              escalationConditions: [],
+              reviewContext: null,
             },
             contextPackageDigest: 'ctxpkg_sha256_demo',
-            steeringMessages: input.steeringMessages,
-            followUpInputs: input.followUpInputs,
           };
         },
         reserveTurn: () => ({ turnId: 'turn_worker_1' }),
@@ -121,13 +97,8 @@ describe('worker turn loop', () => {
         }),
       });
 
-      expect(prepareInputs).toHaveLength(1);
-      expect(
-        prepareInputs[0]?.steeringMessages.map((message) => message.pendingTurn.requestId)
-      ).toEqual(['steer_1']);
-      expect(
-        prepareInputs[0]?.followUpInputs.map((message) => message.pendingTurn.requestId)
-      ).toEqual(['follow_1']);
+      expect(prepareCalls).toEqual([[]]);
+      expect(result).not.toHaveProperty('queues');
       expect(result).toMatchObject({
         turnId: 'turn_worker_1',
         workerSessionId: 'session_worker_1',
@@ -157,11 +128,6 @@ describe('worker turn loop', () => {
         reason_code: 'worker_turn_start_allowed',
         result: 'allow',
       });
-      expect(
-        listPendingUserTurns(workspaceDb, { workspaceId: 'ws_demo', threadId: 'th_demo' }).map(
-          (turn) => turn.requestId
-        )
-      ).toEqual(['steer_1', 'follow_1', 'follow_2']);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -173,12 +139,6 @@ describe('worker turn loop', () => {
     const workspaceDb = createWorkspaceDb(coreDb);
 
     try {
-      enqueueSteeringForSafePoint(workspaceDb, {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        requestId: 'steer_failed',
-        contentItemId: 'it_steer_failed',
-      });
       await expect(
         runWorkerTurnLoop({
           workspaceDb,
@@ -186,6 +146,8 @@ describe('worker turn loop', () => {
           threadId: 'th_demo',
           goalId: 'goal_demo',
           taskId: 'task_demo',
+          requestId: 'req_worker_error',
+          requestInputHash: 'sha256:worker_error',
           reviewRequired: false,
           remainingWorkerIterations: 0,
           prepare: () => ({
@@ -201,26 +163,26 @@ describe('worker turn loop', () => {
               updatedAt: '2026-05-31T00:00:00.000Z',
             },
             delegationRequest: {
+              schemaVersion: 1,
               objective: 'Run the selected task.',
               acceptanceCriteria: ['Task passes.'],
               contextRefs: [],
+              resources: [],
               expectedArtifacts: [],
               constraints: {
                 maxContextTokens: 1000,
                 maxWorkerIterations: 1,
-                requiresUserConfirmation: true,
-                stopConditions: ['Stop after completion.'],
               },
               verification: [],
               reviewPolicy: {
                 required: true,
-                reviewers: ['internal'],
+                reviewers: ['human'],
                 instructions: 'Review the worker result.',
               },
+              escalationConditions: [],
+              reviewContext: null,
             },
             contextPackageDigest: 'ctxpkg_sha256_demo',
-            steeringMessages: [],
-            followUpInputs: [],
           }),
           reserveTurn: () => ({ turnId: 'turn_worker_error' }),
           startWorker: () => {
@@ -237,11 +199,6 @@ describe('worker turn loop', () => {
         stopReason: 'error',
         diagnosticsSummary: 'Worker failed Authorization: Bearer [redacted]',
       });
-      expect(
-        listPendingUserTurns(workspaceDb, { workspaceId: 'ws_demo', threadId: 'th_demo' }).map(
-          (turn) => turn.requestId
-        )
-      ).toEqual(['steer_failed']);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();

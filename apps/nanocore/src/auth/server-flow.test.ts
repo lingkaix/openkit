@@ -366,7 +366,10 @@ describe('server auth flow', () => {
         {
           method: 'POST',
           headers: { cookie: firstCookie, 'content-type': 'application/json' },
-          body: JSON.stringify({ objective: 'First user goal.' }),
+          body: JSON.stringify({
+            requestId: 'goal-start-first-user',
+            objective: 'First user goal.',
+          }),
         }
       );
       const secondGoal = await app.request(
@@ -374,7 +377,10 @@ describe('server auth flow', () => {
         {
           method: 'POST',
           headers: { cookie: secondCookie, 'content-type': 'application/json' },
-          body: JSON.stringify({ objective: 'Second user goal.' }),
+          body: JSON.stringify({
+            requestId: 'goal-start-second-user',
+            objective: 'Second user goal.',
+          }),
         }
       );
 

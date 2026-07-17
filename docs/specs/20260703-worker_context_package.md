@@ -3,7 +3,7 @@
 Status: Accepted
 Implementation: Partial
 
-Implementation note: the accepted V1 projection slices are implemented; the Replay Reconstruction contract below is accepted but not yet implemented beyond digest-checked materialization readback.
+Implementation note: item projection, digest records, and standalone Knowledge materialization are implemented. Task and Goal mode services deliver the exact Coordinator-composed request, but they still lack the accepted Turn-owned immutable delivery trace defined below and do not yet bind Workspace Material revisions into that trace. Replay Reconstruction stops at digest-checked materialization readback. The G01 shared delivery-trace slice is accepted target design and remains unimplemented.
 
 ## Summary
 
@@ -20,6 +20,7 @@ This spec supersedes `docs/specs/superseded/20260702-worker_context_taxonomy.md`
 - The boundary between retrieved context candidates and context actually injected into a worker runtime.
 - Package traceability across selected, excluded, summarized, and policy-filtered material.
 - The current implementation projection for provider-visible context digests and attachment records.
+- The one immutable worker-Turn delivery trace shared by Task Mode, Goal Mode, Work Resource Interaction, replay, and later G07 Knowledge review.
 
 ## Does Not Own
 
@@ -29,6 +30,7 @@ This spec supersedes `docs/specs/superseded/20260702-worker_context_taxonomy.md`
 - Workspace materialization, writable roots, patch review, or artifact transfer.
 - Vault storage, raw secret handling, or credential injection.
 - Web UI notebook interactions or domain-specific source-of-truth schemas.
+- A delivery receipt, workflow, settlement lifecycle, worker acknowledgement, or claim that the model understood package content.
 
 ## Core References
 
@@ -64,9 +66,9 @@ The current implementation is the accepted V1 context package projection:
 - The projection result records `policyVersion`, `contextPackageDigest`, included item ids, excluded item policy decisions, and provider messages.
 - `createContextPackageRecord` creates an attachable record for `internal-agent` and `worker-turn` targets with digest, policy version, included item ids, and excluded item ids.
 - Tests cover deterministic context package digests and attachment records.
-- Worker-turn checkpoint storage carries a `contextPackageDigest` and, for real Goal Mode worker steps, a product-safe context assembly summary containing selected context refs, repository resource id, and queued steering or follow-up counts while the step remains recoverable.
-- No generic worker-turn `context-package.json` trace is currently persisted or delivered by the real Goal worker launch. The in-memory attachment record and mutable checkpoint diagnostics are not accepted delivery proof, so Goal steering must fail closed until this specification's turn-owned trace and materialization path are implemented.
-- Knowledge Manager context material preparation now returns, persists, exposes, and materializes a package-level trace with `contextPackageId`, deterministic `contextPackageDigest`, `policyVersion`, selected knowledge entry ids, selected explicit artifact ids, selected explicit workspace-owned file paths, selected explicit workspace-root file refs, selected accepted claim ids, selected unresolved conflict ids, excluded candidate count, and the effective selection budget. The same response includes the selected accepted claims, explicit artifact records, explicit workspace-owned file summaries, explicit workspace-root file summaries, unresolved conflicts related to selected knowledge or claims, and a compact `knowledge-context-v1` policy summary. NanoCore appends the returned response snapshot to `knowledge/context-packages/<YYYYMM>.jsonl`, App API/Core Client/MCP expose readback by context package id, and `POST /api/app/workspaces/:workspaceId/knowledge/manager/context/:contextPackageId/materialization` writes the worker-visible `/openkit/context` snapshot under workspace-owned storage. `GET /api/app/workspaces/:workspaceId/knowledge/manager/context/:contextPackageId/materialization`, `client.app.readKnowledgeContextPackageMaterialization`, and `openkit.read_knowledge_context_package_materialization` read the already materialized snapshot back without rematerializing and verify worker-visible file digests against `package.json`. This snapshot includes `package.json`, `instructions.md`, one Markdown file per selected knowledge material, one text file per registered source referenced by selected knowledge material, one file per explicitly selected inline artifact, one file under `/openkit/context/workspace/<relativePath>` per explicitly selected workspace-owned text file, one file under `/openkit/context/workspace-roots/<rootId>/<relativePath>` per explicitly selected materialized workspace-root text file, and `policy.json` without assembling a prompt; OpenShell mounting uses the materialized-dir workspace input path. The manifest records entry count, file count, materialized content bytes, estimated token count, worker-visible paths, package-relative paths, `normal` or `redacted` sensitivity labels for each entry, source entry provenance fields for source id, kind, URI, content digest, derived representation id, and citation label, workspace file provenance through `workspace:<relativePath>` references, and workspace-root file provenance through `workspace-root:<rootId>:<relativePath>` references plus source content digests. Materialized worker-visible files redact raw-secret-shaped values before writing and record `sensitive_content` decisions in `policy.json`; unavailable referenced sources are skipped with `source_unavailable` materialization decisions.
+- Worker-turn checkpoint storage carries the diagnostic field `contextDigest` and, for real Goal Mode worker steps, a product-safe context assembly summary containing only selected context refs and repository resource id while the step remains recoverable. Checkpoint `contextDigest` is not the accepted trace's `contextPackageDigest`, carries no queued-steering or follow-up count, and is not delivery proof.
+- The real Task and Goal launch paths now deliver the exact Coordinator request as compact JSON and retain those bytes in the Turn-owned `user-message` Item, but no generic worker-turn `context-package.json` trace is persisted or delivered. The in-memory attachment record and mutable checkpoint diagnostics are not accepted Context Package delivery proof, so Goal steering must fail closed until this specification's turn-owned trace and materialization path are implemented.
+- The standalone Knowledge context operation returns and persists a Knowledge-selected package-level trace and its existing App API materialization operation can write a `/openkit/context` snapshot under the Context Package and Knowledge Store owners. Those are explicit operation effects, not a Knowledge Manager private lifecycle, and they do not prove that Task or Goal Mode delivered the snapshot to a worker. The trace contains `contextPackageId`, deterministic `contextPackageDigest`, `policyVersion`, selected knowledge entry ids, selected explicit artifact ids, selected explicit workspace-owned file paths, selected explicit workspace-root file refs, selected accepted claim ids, selected unresolved conflict ids, excluded candidate count, and the effective selection budget. The same response includes selected claims, artifacts, workspace file summaries, unresolved conflicts, and a compact `knowledge-context-v1` policy summary. NanoCore appends it to `knowledge/context-packages/<YYYYMM>.jsonl`; the readback and materialization routes verify the stored package and per-file digests without assembling a prompt. The snapshot contains `package.json`, `instructions.md`, selected material files, and `policy.json`; it applies package bounds, provenance, sensitivity labels, raw-secret-shaped material redaction, and `source_unavailable` decisions. Mode services now bind the exact Coordinator-composed request, but they must still bind this snapshot into the same accepted worker Turn before claiming Context Package delivery.
 - The current projection policy classifies durable items as user, assistant, artifact, approval, diagnostic, review, goal, tool, knowledge, handoff, or file-change categories. The `knowledge` category covers knowledge-derived context projection items.
 - Current exclusion reasons are item-projection reasons only: `policy_excluded`, `ui_only`, `diagnostic_noise`, `artifact_pointer`, `approval_gate`, `goal_state_not_needed`, `review_context_not_needed`, `empty_content`, `sensitive_content`, and `unsupported_item_type`.
 
@@ -88,7 +90,7 @@ It should answer:
 
 The package hides source diversity without hiding provenance. A worker receives a coherent task package, while NanoCore preserves whether each selected piece came from a note, source file, derived representation, knowledge page, artifact, external observation, work-history record, runtime capability summary, or policy summary.
 
-Context package preparation is not a separate internal agent. The Knowledge Manager selects, filters, cites, and prepares knowledge-derived or source-derived material. The Workflow Coordinator combines that material with task instructions, workflow state, constraints, available capabilities, stop conditions, and review policy into the final worker context for a specific bounded step.
+Context package preparation is not a separate internal agent. The Knowledge Manager selects, filters, cites, and prepares knowledge-derived or source-derived material. The Workflow Coordinator semantically combines authorized material with task instructions, workflow state, constraints, available capabilities, stop conditions, and review policy for a specific bounded step. The owning Task or Goal mode service persists, materializes, and delivers that decision.
 
 ## Ownership Boundary With Knowledge
 
@@ -103,7 +105,7 @@ This spec owns the worker-facing projection mechanics for that concept:
 - digest and replay requirements
 - implementation projection from current item-to-LLM context records
 
-Knowledge-derived material is prepared by the Knowledge Manager. Final worker-context assembly is performed by the Workflow Coordinator. The context package is not an internal agent, not a knowledge store, and not a second source of truth.
+Knowledge-derived material is prepared by the Knowledge Manager. Semantic worker-context composition is performed by the Workflow Coordinator; the owning mode service performs persistence, materialization, and delivery. The context package is not an internal agent, not a knowledge store, and not a second source of truth.
 
 ## Knowledge, Sources, And Package Model
 
@@ -154,12 +156,13 @@ The worker-visible package should be materialized under:
 /openkit/context/sources/
 /openkit/context/artifacts/
 /openkit/context/workspace/
+/openkit/context/workspace/materials/
 /openkit/context/policy.json
 ```
 
-The exact file set is selected by the AEP snapshot, Knowledge Manager material selection, and Workflow Coordinator context assembly.
+The exact file set is constrained by the AEP snapshot, Knowledge Manager material selection, and Workflow Coordinator semantic context decision, then materialized by the owning mode service without adding excluded material.
 
-`package.json` is the index. It carries ids, digests, relative paths, source references, sensitivity labels, and budget metadata.
+`package.json` is the worker-visible index. It carries package lineage, relative paths, source references, sensitivity labels, budget metadata, and the digest inventory for every other package file. It MUST NOT contain `contextPackageDigest` or an inventory entry for itself. The Turn-owned trace computes the actual `package.json` digest after that file is complete and includes it in `fileInventory`; this one-way ordering prevents a self-referential digest.
 
 ## Input Categories
 
@@ -230,7 +233,43 @@ The trace should record:
 - selection timestamp
 - package digest
 
-The trace may split item-visible summaries from audit-only detail.
+The trace may split item-visible summaries from audit-only detail outside the accepted worker-Turn trace below. The worker-Turn trace itself is one immutable record rather than a mutable trace plus a second delivery receipt.
+
+## Accepted Worker-Turn Delivery Trace
+
+The first production delivery trace is the shared G01 implementation slice of this specification. S39 owns the trace shape and replay proof; Task or Goal Mode owns the worker request and Turn lifecycle; S16 owns Workspace Material revision, binding, queue, and active-input semantics. Completing this shared slice does not close the broader G07 Knowledge group.
+
+Each worker Turn has exactly one trace whose durable identity is `(workspaceId, threadId, turnId)`. The trace has no independent lifecycle id: `contextPackageId` is exactly `ctxpkg_${turnId}`, and the canonical workspace path is exactly `threads/<threadId>/turns/<turnId>/context-package.json`. A Core-local Turn, including workspace-only Artifact introduction, MUST NOT create this trace.
+
+The immutable trace fields are exact:
+
+| Field | Contract |
+| --- | --- |
+| `schemaVersion` | Exactly `1`. |
+| `contextPackageId` | Exactly `ctxpkg_${turnId}`. |
+| `workspaceId`, `threadId`, `turnId` | The one accepted worker Turn lineage and storage scope. |
+| `requestId` | The immutable Task, Goal step, or outer-command request that reserved the Turn. |
+| `goalId`, `taskId` | Both null for a direct Task Turn; both non-null and mutually valid for a Goal worker Turn. A half-null pair is invalid. |
+| `agentSessionId`, `packageSnapshotId` | The exact accepted Agent Session and AEP snapshot used by the Turn admission. |
+| `workerRequestItemId`, `workerRequestDigest` | The same Turn's immutable `user-message` Item and `sha256:` digest over its exact compact UTF-8 worker-request bytes. |
+| `workspaceInputSnapshotId`, `workspaceMaterializationRecordId` | The exact Workspace handoff owners used by the accepted admission; the Materialization Record is `ready`. |
+| `policyVersion` | Exactly `worker-context-v1` for this slice. |
+| `includedItemIds` | Ordered Item ids actually included. `workerRequestItemId` is first; S13's validated latest Goal Gate request/response pair and any other selected prior Items follow canonical Thread Item order. |
+| `excludedItems` | Exactly `{ itemId, reason }` for every considered Item not included. |
+| `materialSelections` | The exact included Workspace Material revision entries defined below. |
+| `materialExclusions` | Exactly `{ materialId, revisionId, sensitivity, reason }` for every addressed Material revision not included. |
+| `fileInventory` | Exactly `{ path, byteLength, contentDigest }` for every worker-visible package file, including the completed `package.json`. |
+| `contextPackageDigest` | `ctxpkg_sha256_` plus 64 lowercase hexadecimal digits over the canonical JSON object containing every other listed field. |
+
+Canonical JSON recursively sorts object keys. `includedItemIds` retains delivery order; the worker-request Item is first, then every selected prior Item follows canonical Thread Item order. A non-null S13 `latestGateContextItemId` requires both its uniquely matching request Item and response or decision Item in this ordered set and in the worker request's Item context refs. `excludedItems` sorts by `itemId`; Material selections and exclusions sort by `(materialId, revisionId)`; and `fileInventory` sorts by `path`. Every `reason` is one baseline value from this specification, `byteLength` is the exact UTF-8 byte count, and every `contentDigest` uses `sha256:` plus 64 lowercase hexadecimal digits. `contextPackageDigest` excludes only its own field and includes every other trace authority field, including the digest of the completed worker-visible `package.json`; there is no timestamp in the trace. Accepted time remains owned by the existing Turn and scheduler admission rather than introducing mutable trace state.
+
+Each `materialSelections` entry is exactly `{ materialId, revisionId, parentRevisionId, mediaType, contentDigest, packagePath, inclusionReason, sensitivity, sensitivityDecision }`. `inclusionReason` is exactly `thread_binding` or `goal_steering`; `sensitivityDecision` is exactly `included`; and `packagePath` is `workspace/materials/<materialId>/<revisionId>.md` for Markdown or `.txt` for plain text. The trace's Workspace handoff records MUST preserve every selected revision and digest. No entry may substitute a newer revision or a caller-provided byte string.
+
+A Material with `sensitivity=restricted` MUST appear only in `materialExclusions` with reason `sensitive_content`; its title, canonical content, digest, package path, or derived summary MUST NOT enter the worker-visible package. An owning command that explicitly requires a restricted Material must reject before accepting delivery rather than queue input that the package will silently omit. Other sensitivity or policy exclusions use the same fail-closed trace boundary.
+
+The trace is accepted only when the existing Turn, worker-request Item, scheduler admission, Agent Session, AEP snapshot, and package files match the trace and verify by digest. Each Material selection additionally requires its named Workspace Input Snapshot, ready Workspace Materialization Record, and source revision to match the same identity and digest. This predicate, not a trace status field, proves availability to the worker. It does not prove model cognition.
+
+The owning mode service writes and verifies the immutable trace after the exact scheduler admission, Agent Session, AEP snapshot, input snapshot, and ready materialization are durable but before the worker receives the request or begins execution. Exact replay consults the trace before reselecting Items, Material revisions, Knowledge, or files. An identical request with no worker-launch effect may reuse that exact trace for the one already-authorized first launch; a different request, different immutable input, second trace, or changed bytes returns `recovery_required`. An accepted Turn or scheduler admission without its trace, a trace whose owner tuple is missing, a missing package file, any digest disagreement, or a restricted Material in `materialSelections` also returns `recovery_required`. Replay MUST NOT rebuild the missing trace from current projections, replace an unavailable revision, append later input, or create a receipt, recovery phase, settlement record, or second context owner.
 
 ## Exclusion Reason Baseline
 
@@ -326,29 +365,31 @@ Examples:
 
 The context package manifest and trace are workspace-owned records.
 
-Recommended storage:
+Accepted worker-Turn storage:
 
 ```text
 threads/<threadId>/turns/<turnId>/context-package.json
 runtime/agent-sessions/<agentSessionId>/context/<contextPackageId>/
 ```
 
-The turn-level record is the durable explanation. The runtime-level copy is the materialized worker package.
+The Turn-level record is the only durable delivery trace. The runtime-level directory is a derived byte materialization of the package named by that trace and MUST NOT carry an independent status, receipt, or mutable delivery history. Its `workspace/materials/` subtree contains only the exact non-restricted revisions selected by the trace.
 
 File-system-first records should remain the durable explanation. SQLite or read-model indexing may accelerate lookup, attachment, search, and debugging, but it must not become the only source of truth for context package meaning.
 
 ## Replay Reconstruction
 
-A context package is the replay unit for after-the-fact evaluation: `docs/specs/20260710-self_improvement_evaluation_loop.md` freezes the worker context package, not the workspace, as the faithful reproduction of what the Coordinator assembled. This section makes reconstruction a contract.
+A context package is the replay unit for after-the-fact evaluation: `docs/specs/20260710-self_improvement_evaluation_loop.md` freezes the worker context package, not the workspace, as the faithful reproduction of what the Coordinator semantically composed and the owning mode service materialized. This section makes reconstruction a contract.
 
 Requirements:
 
 - Given a context package id, NanoCore MUST be able to rebuild the worker-visible materialized package and verify it byte-identically against the recorded package digest and per-file manifest digests.
-- Reconstruction resolves in priority order: first the stored materialized snapshot (the existing digest-checked readback path); then, when the snapshot is absent or incomplete, per-entry reconstruction from the manifest's source references — source id, revision or capture record, and content digest — for registered sources, knowledge entries, artifacts, and workspace file refs.
+- Evaluation reconstruction resolves in priority order: first the stored materialized snapshot (the existing digest-checked readback path); then, when the snapshot is absent or incomplete, per-entry reconstruction from the manifest's source references — source id, revision or capture record, and content digest — for registered sources, knowledge entries, artifacts, Workspace Material revisions, and workspace file refs.
 - Reconstruction MUST be frozen: an entry is rebuilt only from the recorded revision with a matching content digest. Substituting current or newer content for a recorded entry is prohibited, even when the current content is available and the recorded revision is not.
 - Failures are typed per entry (`source_unavailable`, `digest_mismatch`, `revision_unavailable`), and a reconstruction result MUST report entry-level outcomes so consumers can distinguish a fully reproducible package from a drifted one. Partial reconstruction is a reported state, not a silent fallback.
 - Redaction decisions recorded at assembly time (`sensitive_content`, raw-secret-shaped redaction) apply identically at reconstruction; replay MUST NOT expose material the original materialization redacted.
 - Consumers that need long-lived replay (for example harvested `EvalTask` records) SHOULD retain the materialized snapshot rather than rely on live source records; entry-level digest mismatch on reconstruction is the intended drift-detection signal such consumers use to retire stale replay material.
+
+Evaluation reconstruction is diagnostic only. It may explain a complete, partial, or drifted historical package, but it MUST NOT establish the accepted-delivery predicate, authorize first admission, or repair an accepted worker Turn. Launch and exact command replay require the original immutable Turn trace and all bytes that its inventory names; any missing or conflicting authority remains `recovery_required`.
 
 ## Resolved Decisions
 
@@ -356,9 +397,12 @@ Requirements:
 - `docs/core/knowledge.md` owns canonical Knowledge, Source, Notebook, Knowledge Manager, Agent-Near Context, and Context Package semantics.
 - A context package is a data projection, not a separate internal agent role.
 - Core Knowledge owns the canonical concept of Context Package; this spec owns the worker-facing package projection, manifest, materialized layout, trace, digest, and replay contract.
-- The Knowledge Manager prepares source-traceable knowledge or source material; the Workflow Coordinator assembles the final worker context.
+- The Knowledge Manager prepares source-traceable knowledge or source material; the Workflow Coordinator composes the semantic worker context; the owning mode service persists, materializes, and delivers it.
 - Workers do not silently read all knowledge. NanoCore mediates retrieval, filtering, packaging, and traceability.
 - Artifacts can be included as context or become sources for knowledge, but artifacts are not a mandatory middle step for ingest-to-knowledge updates.
+- One worker Turn owns one immutable trace at `threads/<threadId>/turns/<turnId>/context-package.json`; its identity, worker request, Item order, exact Material revisions, package files, lineage, and digest are deterministic, and it creates no receipt or workflow.
+- Workspace Material selection is restricted to the exact bound or steered revision accepted by S16 and the matching ready workspace handoff records. Restricted Material is recorded only as `sensitive_content` exclusion and never enters worker-visible bytes.
+- Exact launch and command replay fail closed when that trace or any named authority or byte is absent or conflicting. Diagnostic reconstruction may report historical drift but cannot repair or replace accepted delivery.
 - The implemented slices record provider-visible item projections, context package digests, included item ids, excluded item ids, persisted Knowledge Manager context material package traces, a worker-visible Knowledge Manager `/openkit/context` snapshot with captured text source snippets, explicit inline artifact files, explicit workspace-owned text files, explicit materialized workspace-root text files, byte/file/token-estimate budget metadata, package-relative manifest paths, raw-secret-shaped material redaction, unavailable-source materialization decisions, Goal Mode step context assembly summaries, and OpenShell upload support for pre-materialized read-only context roots.
 - Durable context traces should retain stable baseline exclusion reasons. Current item-projection reasons are implementation-specific and should map to the baseline vocabulary before they become durable cross-version trace records.
 - Previously open questions are resolved by accepted V1 defaults: worker and artifact-review citations use `contextPackageDigest`, `entryId`, `sourceRef`, optional span metadata, and entry content digest; item-visible traces expose only the selected source summary, citations, redacted selection reason, and package digest, while ranking scores, omitted entries, raw prompt material, and sensitive assembly details stay audit-only.
@@ -367,7 +411,7 @@ Requirements:
 
 - Extend explicit workspace-root file materialization into automatic root-file selection.
 - Extend captured text source snippets into derived representations and policy-filtered full package assembly.
-- Extend the first persisted Knowledge Manager trace ledger into complete audit-only package traces with selected and excluded candidates, rationale, full sensitivity decisions beyond first raw-secret redaction, freshness decisions, budgets, and digests.
+- Extend the first persisted Knowledge Manager trace ledger into broader audit-only detail for Knowledge candidates, rationale, freshness decisions, and model-specific budgets without changing or duplicating the accepted worker-Turn trace.
 - Define item-visible versus audit-only projections for context package traces.
 - Define citation projection from context package entries into worker outputs and artifact reviews.
 - Extend first byte/file/token-estimate package budget accounting into model-specific tokenizer, time, and cost accounting.
@@ -379,7 +423,10 @@ Requirements:
 - Budget tests proving lower-priority context is excluded.
 - Trace tests proving selected and excluded records are explainable.
 - Materialization tests proving no host paths or secrets appear.
-- Replay tests proving the same package can be reconstructed from ids and digests when source records remain available.
+- Determinism tests proving one accepted worker Turn yields exactly `ctxpkg_${turnId}`, one immutable trace, stable ordering, and the same digest from the same authoritative inputs.
+- Material tests proving the trace and package select the exact bound or steered revision, preserve matching workspace handoff lineage, and never include restricted Material bytes or metadata beyond the allowed exclusion tuple.
+- Replay tests proving same-request/no-effect retry reuses the exact trace and bytes, while a changed request, second trace, missing file, missing revision, digest mismatch, or restricted selection fails `recovery_required` without reconstruction or settlement state.
+- Evaluation tests proving frozen source reconstruction can report complete, partial, or drifted history but cannot satisfy accepted delivery or authorize worker launch.
 
 ## Risks & Mitigations
 
@@ -397,3 +444,4 @@ Requirements:
 - `docs/specs/20260703-worker_agent_capability.md`
 - `docs/specs/20260703-storage_layout_record_ownership.md`
 - `docs/specs/20260710-self_improvement_evaluation_loop.md`
+- `docs/specs/20260713-work_resource_interaction_model.md`

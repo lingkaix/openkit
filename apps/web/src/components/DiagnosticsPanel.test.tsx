@@ -130,7 +130,6 @@ function appDiagnostics(_removedDefaultProvider?: unknown): AppDiagnostics {
     },
     defaults: {
       quickChat: { providerId: null, model: null },
-      internalTasks: { providerId: null, model: null },
       gateway: { providerId: null, model: null },
     },
     oauth: {
@@ -149,7 +148,6 @@ function appDiagnostics(_removedDefaultProvider?: unknown): AppDiagnostics {
     },
     capabilities: meta.capabilities,
     runtimeConfig: runtimeConfigStatus(),
-    internalAgents: { agents: [], recentFailures: [], recentHookFailures: [] },
   };
 }
 
@@ -250,6 +248,7 @@ describe('DiagnosticsPanel', () => {
     expect(screen.getByText(/^core-openrouter$/i)).toBeInTheDocument();
     expect(screen.getByText(/^gateway-openrouter$/i)).toBeInTheDocument();
     expect(screen.getAllByText(/Ready from canonical/i)).toHaveLength(2);
+    expect(screen.queryByRole('heading', { name: /Internal agents/i })).not.toBeInTheDocument();
   });
 
   it('renders role default-provider failure reasons from app diagnostics', () => {

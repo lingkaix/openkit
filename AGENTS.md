@@ -10,9 +10,10 @@ This file is the concise execution rulebook for agents working in this repositor
 - Engineers own architecture, trade-offs, and final approval.
 - Prefer explicit rules over tribal knowledge.
 - Current product development is NanoCore-first and end-user Agent-Skill-first: harden the kernel through public App API contracts, then project the complete supported user/operator surface through the unified `openkit` Skill and its bundled CLI before treating the Web UI as the primary product build surface.
+- The current engineering baseline is the small-deployment profile in `docs/deployment.md`, `docs/specs/20260703-runtime_scheduling_scale.md`, and `docs/specs/20260703-durable_scheduler_design.md`: one NanoCore process per data root, one logical SQLite writer, a small team that is typically under ten people, and one configured local or remote worker target with one active worker slot. This is an optimization target, not a user-count authorization limit.
 - The user-facing `@openkit/mcp` package and the four legacy setup/loop Skills are removal-only. Do not add capabilities, compatibility layers, aliases, or new consumers to those surfaces; new AI-interface work belongs to the transport-neutral operation catalog, bundled CLI, and unified end-user Skill defined by `docs/specs/20260713-openkit_agent_skill_interface.md`.
 - Stabilize core behavior in protocol, schemas, NanoCore, public App API, and transport-neutral Agent Skill Interface contracts first. Reflect that stable behavior in the unified Skill and Web UI after the kernel contract is reliable instead of using either presentation surface as the source of core behavior.
-- Testing follows the accepted L0-L6 model: L0 static repo checks, L1 package and app unit tests, L2 contract and conformance tests, L3 NanoCore black-box e2e, L4 Web browser e2e, L5 smoke and artifact health tests, and L6 story acceptance. Keep L6 agent-first, keep deterministic adapters only where useful, and reduce confirmed L6 defects into L1-L5 regression coverage.
+- Testing follows the accepted L0-L6 taxonomy: L0 static repo checks, L1 package and app unit tests, L2 contract and conformance tests, L3 NanoCore black-box e2e, L4 Web browser e2e, L5 smoke and artifact health tests, and L6 story acceptance. The taxonomy is not a requirement to prove every behavior at every layer. Keep L6 agent-first, keep deterministic adapters only where useful, and reduce confirmed L6 defects into the lowest sufficient L1-L5 regression coverage.
 - Current protocol design is being advanced by keeping `packages/protocol`, `apps/nanocore`, and `apps/web` structurally aligned.
 - Default protocol iteration follows one of two paths:
   1. Research-driven path: when external projects, repositories, docs, papers, articles, or prior-art comparisons are needed, start the `.codex/agents/researcher.toml` sub-agent. Research evidence, cloned repositories, notes, and generated reports stay under `temp/research/<date>-<slug>/` and are not committed. The main agent reviews the researcher output, cross-checks it against primary sources and available tools such as DeepWiki, CodeGraph, Graphify, or local source inspection, then promotes accepted conclusions into `docs/specs/`, `docs/core/`, `docs/changes/`, or other canonical project documents before implementation. Improve the protocol first, implement the update in `apps/nanocore`, then reflect the change in `apps/web`.
@@ -31,6 +32,7 @@ This file is the concise execution rulebook for agents working in this repositor
 - After the test and implementation pass, do a code-quality review for simplicity, cohesion, duplication, unnecessary abstractions, and traceability.
 - Use one or more follow-up commits when the post-TDD review finds maintainability improvements that should be separated from the initial implementation.
 - Do not ship behavior changes without tests.
+- Add the smallest test at the lowest layer that can prove the changed invariant. Add a higher-layer test only when that boundary can expose a failure the lower layer cannot represent; do not repeat the same assertion across L1-L6 for completeness.
 
 ### 2. Document code
 
@@ -59,6 +61,7 @@ Documentation should cover purpose, parameters, return values, and error behavio
 - Keep Core documents short and normative, specifications precise and narrow, and change plans execution-focused; keep curated execution evidence in change plans without treating it as design authority.
 - Do not remove a criterion whose absence could materially change implementation, tests, failure behavior, recovery, ownership, or responsibility. Compression is safe only when two independent implementers reading the remaining authoritative documents would make the same material choices.
 - For every material concept, the owning Core and specification set must preserve five decision classes: exact definition and exclusions; unique durable authority and projection boundary; creation, update, termination, retry, and recovery lifecycle; conflict, missing, stale, restart, and dependency-failure semantics; and externally observable acceptance predicates. State explicitly when a class does not apply.
+- Apply the two-independent-implementers precision bar fully to Durable contract families. Release-coupled surfaces need one clear same-release implementation, typed bounded failure behavior, and risk-sufficient tests, not distributed-systems completeness or cross-release reconstruction guarantees. Private implementation details need only the clarity and checks required to protect a promoted boundary; they do not require standalone documentation or completeness testing.
 
 Filename rules:
 
@@ -117,8 +120,12 @@ Allowed types:
 
 - `docs/core/foundation.md` is the canonical owner of the system-wide scope, fallback, and compromise doctrine; the rules below are its repository execution projection.
 - Nothing is perfect. A bounded fallback or explicit system compromise is allowed when it preserves the owning module's documented scope and does not silently broaden responsibility.
+- Reliability and verification must be proportional to the documented deployment scale, consequence, and trust boundary. Security, authorization, credentials, sandbox escape, data loss, and irreversible external effects remain strict; ordinary availability, projection, cleanup, and reconnect behavior may use a documented bounded fallback.
+- Core storage and an external Agent Runtime are separate effect domains. Do not invent cross-domain atomicity, settlement, or automatic repair when an explicit `interrupted`, `unknown`, inspect, or new-request retry outcome is safe and truthful.
+- Future multi-process Core, shared-database coordination, high availability, dynamic multi-target scheduling, fairness, hot failover, or transparent recovery is roadmap material until an accepted current design promotes it. Future scale MUST NOT authorize current records, states, abstractions, compatibility, runners, harnesses, or test obligations.
 - The whole system and every module, package, service, test harness, and runner must have a clear documented scope. Do not expand one component into a parallel workflow engine, orchestration layer, product surface, or test platform to satisfy one feature or proof requirement.
 - Prefer deletion, direct implementation, and reuse of an existing owner before adding another state machine, abstraction, compatibility path, runner, or framework.
+- A new durable record, lifecycle state, state machine, runner, harness, or cross-module owner requires a present documented need that cannot be handled by an existing owner plus a bounded fallback. Convenience, hypothetical scale, and exhaustive proof are not sufficient justification.
 - Before making an architecture, design, feature, or implementation change, identify the owning document under `docs/core/` or `docs/specs/`. If the proposed behavior or responsibility is not covered there, stop implementation and discuss the design first.
 - After that discussion, update an existing owning document or add and accept a new design or specification before the behavior enters production code, test infrastructure, or public contracts. A change record may track execution, but it does not replace design authority.
 - Do not add undocumented architecture, design, behavior, feature scope, or cross-module responsibility to the system. Implementation and tests must remain inside the accepted documented boundary.
@@ -147,7 +154,7 @@ Before finishing work, verify:
 - change records are updated
 - local guides are updated when an app or package changed
 - relevant cookbook guidance was followed
-- lint, typecheck, tests, and build pass locally
+- applicable focused lint, typecheck, tests, and build checks pass for the changed slice; full L0-L6 or `verify:full` runs only at the owning work-package exit, release candidate gate, or explicit request
 - no new linter errors remain
 
 ## Working Rules

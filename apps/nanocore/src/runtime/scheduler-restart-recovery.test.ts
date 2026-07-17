@@ -41,7 +41,7 @@ import {
 } from './worker-backend-sessions.js';
 import type { WorkerControlLineage } from './worker-control-gateway.js';
 import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
-import { terminalizeGovernedWorkerTurnFailure } from './worker-turn-failure.js';
+import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 import {
   buildWorkspaceInputSnapshots,
   buildWorkspaceMaterializationRecords,
@@ -1202,11 +1202,12 @@ describe('scheduler restart recovery', () => {
       startupTimeoutMs: 120_000,
     });
     const project = async () => {
-      const result = terminalizeGovernedWorkerTurnFailure({
+      const result = terminalizeGovernedWorkerTurn({
         agentSessionId,
         completedAt: '2026-07-05T00:01:00.000Z',
         errorCode: 'worker_governance_restart_recovery',
         message: 'Worker execution stopped during NanoCore restart recovery.',
+        outcome: 'failed',
         requestId: null,
         store: new FsStore({ dataRoot }),
         turnId,

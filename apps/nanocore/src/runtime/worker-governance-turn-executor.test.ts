@@ -787,9 +787,51 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it.each([
-    'completed',
-    'failed',
-  ] as const)('resumes the normal closeout path after restart for %s final status', async (finalStatus) => {
+    {
+      finalStatus: 'completed',
+      stopReason: 'completed',
+      turnStatus: 'completed',
+    },
+    {
+      finalStatus: 'blocked',
+      stopReason: 'length',
+      turnStatus: 'completed',
+    },
+    {
+      finalStatus: 'blocked',
+      stopReason: 'budget_exhausted',
+      turnStatus: 'completed',
+    },
+    {
+      finalStatus: 'cancelled',
+      stopReason: 'aborted',
+      turnStatus: 'cancelled',
+    },
+    {
+      finalStatus: 'interrupted',
+      stopReason: 'aborted',
+      turnStatus: 'cancelled',
+    },
+    {
+      finalStatus: 'failed',
+      stopReason: 'error',
+      turnStatus: 'failed',
+    },
+    {
+      finalStatus: 'degraded',
+      stopReason: 'error',
+      turnStatus: 'failed',
+    },
+    {
+      finalStatus: 'lost',
+      stopReason: 'error',
+      turnStatus: 'failed',
+    },
+  ] as const)('resumes the normal closeout path after restart for $finalStatus/$stopReason', async ({
+    finalStatus,
+    stopReason,
+    turnStatus,
+  }) => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-completion-gate-')));
     applyMigrations(coreDb);
     const store = createDemoStore();
@@ -869,7 +911,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         workspaceId: turn.workspaceId,
       },
       operation: 'final_status',
-      record: { sequence: 1, status: finalStatus, stopReason: finalStatus },
+      record: { sequence: 1, status: finalStatus, stopReason },
       recordKey: '1',
       sequence: 1,
     });
@@ -886,7 +928,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     await expect(
       restartedExecutor.resumeAcceptedFinalStatus(store, awaitedEnvironmentPackage, session)
-    ).resolves.toBe(finalStatus);
+    ).resolves.toBe(turnStatus);
 
     expect(backend.calls).toEqual([
       'materialize',
@@ -897,7 +939,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'collectArtifacts',
       'cleanupSession',
     ]);
-    expect(store.getTurnById(turn.id).status).toBe(finalStatus);
+    expect(store.getTurnById(turn.id).status).toBe(turnStatus);
+    expect(
+      store.getTurnEvents(turn.id).find((event) => event.event === 'turn.completed')
+    ).toMatchObject({ data: { stopReason } });
     expect(getWorkerBackendSession(coreDb, `lease_${turn.id}`)).toMatchObject({ state: 'cleaned' });
     coreDb.sqlite.close();
   });

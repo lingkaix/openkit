@@ -12,6 +12,12 @@ This is a clean replacement. OpenKit is in internal development, so the implemen
 
 This record begins with documentation and lifecycle alignment. Skill and CLI implementation starts only in a later execution turn.
 
+## Inherited Audit Responsibility (2026-07-17)
+
+This plan is work package WP-1 of the [OpenKit Execution Program](./202607172152230001-openkit_execution_program.md) and absorbs audit group G02 from the [alignment audit](./202607111941330001-core_spec_implementation_alignment_audit.md). The G02 document set (C07 Protocol, C08 Communication, S01-S04, and their supporting projections) and the G02 exit criteria in the audit ledger are inherited inputs. The program's convergence rules bind all work here, including the central idempotency default and the scoped precision bar: App API, Core Client, CLI, Skill, and Web contracts need single-implementation clarity plus test sufficiency, not implementer-proof prose.
+
+Before implementation starts, record the G02 audit preamble in this plan per Execution Program rule 11: the authority map for the concepts this plan touches, findings classified with the audit's finding codes (in-scope findings fold into this plan's frozen scope; everything else is ticketed to the program Backlog), and confirmation of the inherited exit criteria. The preamble is review-only, bounded to at most one review day, and authorizes no implementation. The S01 Protocol Contract Consolidation review assigned by the audit's Remaining Execution dispositions happens here; supersede S01 only when a named current owner absorbs every continuing contract.
+
 ## Decision Summary
 
 - The canonical AI-native end-user interface becomes one Skill named `openkit`.

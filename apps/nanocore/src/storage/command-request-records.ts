@@ -71,37 +71,50 @@ export function recordCommandRequestRecord(
   const db = openCommandRequestDb(dataRoot, userId, record.scope.workspaceId);
 
   try {
-    db.sqlite
-      .prepare(
-        `INSERT OR REPLACE INTO idempotency_requests (
-          request_key,
-          command_name,
-          request_id,
-          scope_json,
-          input_hash,
-          response_kind,
-          response_id,
-          response_json,
-          created_at,
-          expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        record.key,
-        record.command,
-        record.requestId,
-        JSON.stringify(record.scope),
-        record.inputHash,
-        record.response.kind,
-        record.response.id,
-        record.response.snapshot === undefined ? null : JSON.stringify(record.response.snapshot),
-        record.createdAt,
-        record.expiresAt
-      );
-    pruneCommandRequestRecords(db, new Date().toISOString());
+    recordCommandRequestRecordInDb(db, record);
   } finally {
     db.sqlite.close();
   }
+}
+
+/**
+ * Stores one command request through an already open scoped database.
+ *
+ * @param db Open database that owns the request scope.
+ * @param record Complete command request record.
+ */
+export function recordCommandRequestRecordInDb(
+  db: CommandRequestDb,
+  record: CommandRequestRecord
+): void {
+  db.sqlite
+    .prepare(
+      `INSERT OR REPLACE INTO idempotency_requests (
+        request_key,
+        command_name,
+        request_id,
+        scope_json,
+        input_hash,
+        response_kind,
+        response_id,
+        response_json,
+        created_at,
+        expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      record.key,
+      record.command,
+      record.requestId,
+      JSON.stringify(record.scope),
+      record.inputHash,
+      record.response.kind,
+      record.response.id,
+      record.response.snapshot === undefined ? null : JSON.stringify(record.response.snapshot),
+      record.createdAt,
+      record.expiresAt
+    );
+  pruneCommandRequestRecords(db, new Date().toISOString());
 }
 
 /**
@@ -142,15 +155,31 @@ export function getCommandRequestRecord(
   const db = openCommandRequestDb(dataRoot, userId, workspaceId);
 
   try {
-    pruneCommandRequestRecords(db, referenceTime);
-    const row = db.sqlite.prepare(`${COMMAND_REQUEST_SELECT} WHERE request_key = ?`).get(key) as
-      | CommandRequestRow
-      | undefined;
-
-    return row ? mapCommandRequestRow(row) : null;
+    return getCommandRequestRecordFromDb(db, key, referenceTime);
   } finally {
     db.sqlite.close();
   }
+}
+
+/**
+ * Reads one active command request through an already open scoped database.
+ *
+ * @param db Open database that owns the request scope.
+ * @param key Stable command request key.
+ * @param referenceTime Current ISO timestamp used for expiry.
+ * @returns Stored active request, or null.
+ */
+export function getCommandRequestRecordFromDb(
+  db: CommandRequestDb,
+  key: string,
+  referenceTime: string
+): CommandRequestRecord | null {
+  pruneCommandRequestRecords(db, referenceTime);
+  const row = db.sqlite.prepare(`${COMMAND_REQUEST_SELECT} WHERE request_key = ?`).get(key) as
+    | CommandRequestRow
+    | undefined;
+
+  return row ? mapCommandRequestRow(row) : null;
 }
 
 /**

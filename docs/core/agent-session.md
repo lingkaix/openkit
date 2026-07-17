@@ -36,6 +36,7 @@ Workspace -> AgentSession -> Turn
 - Session reuse MUST be decided against a stable compatibility envelope, not by merely finding any idle worker process.
 - Resume, snapshot, fork, clone, and rollback are runtime continuity features, not implicit workspace, knowledge, or secret-copy features.
 - Replacement of an agent session should preserve thread history through Core records, not hidden agent-private state.
+- Continuity is an optimization, not an availability promise. When exact resume cannot be proved, Core should preserve the interrupted attempt and require a fresh authorized session rather than infer continuity or silently replace work.
 
 ## Agent Session Is Not Knowledge
 
@@ -179,6 +180,8 @@ Conceptual resume sources:
 
 Resume must preserve enough identity to explain which agent, manifest, setup snapshot, workspace state, and sandbox state were used.
 
+These capability concepts do not authorize a snapshot store, restore workflow, reuse selector, or test matrix before a current backend and workflow require them.
+
 ## Fork, Clone, And Rollback
 
 Fork, clone, and rollback are advanced agent session operations.
@@ -189,7 +192,7 @@ If promoted later, they should be defined in terms of agent session state, works
 
 ## Crash Recovery
 
-If an agent session crashes, Core should decide whether to:
+If an agent session crashes, Core may decide whether to:
 
 - mark the current turn failed
 - retry the turn on a replacement session
@@ -200,6 +203,8 @@ If an agent session crashes, Core should decide whether to:
 Crash recovery policy belongs to Core and runtime adapters.
 
 The item log should remain coherent even if the agent session fails.
+
+The baseline fallback is explicit interruption plus a new authorized attempt. Automatic replacement, snapshot restore, or transparent continuation is optional and requires exact proof from an owning implementation-facing contract.
 
 ## Replacement
 
@@ -219,3 +224,4 @@ The replacement agent session should preserve turn and item history by reading t
 - Snapshot, resume, fork, clone, and rollback MUST NOT copy secrets or knowledge implicitly.
 - Agent session reuse MUST NOT bypass manifest resolution, AEP compatibility, workspace synchronization, vault, permission, sandbox, audit, or required-feature checks.
 - Agent sessions MUST NOT treat unimported sandbox files, backend mounts, provider sessions, or worker-private caches as canonical workspace truth.
+- Failure to prove exact continuity MUST preserve the prior attempt as interrupted or terminal and MUST NOT be converted into an inferred resume, replacement, or successful completion.

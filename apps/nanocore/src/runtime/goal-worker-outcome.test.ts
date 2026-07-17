@@ -39,6 +39,7 @@ function addRunningGoalTask(workspaceDb: WorkspaceDb): void {
     workspaceId: 'ws_demo',
     threadId: 'th_demo',
     goalId: 'goal_demo',
+    planItemId: 'item_plan_demo',
     taskId: 'task_demo',
     title: 'Run worker',
     objective: 'Run the worker.',
@@ -46,6 +47,17 @@ function addRunningGoalTask(workspaceDb: WorkspaceDb): void {
     dependsOnTaskIds: [],
     acceptanceCriteria: ['Worker outcome recorded.'],
     contextBudgetTokens: 12_000,
+    resources: [],
+    expectedArtifacts: [{ kind: 'artifact', description: 'Worker outcome evidence.' }],
+    verificationChecks: [
+      { kind: 'manual', description: 'Confirm the worker outcome is recorded.' },
+    ],
+    reviewPolicy: {
+      required: true,
+      reviewers: ['human'],
+      instructions: 'Review the recorded worker outcome.',
+    },
+    escalationConditions: [],
     status: 'running',
   });
   upsertWorkerCheckpoint(workspaceDb, {
@@ -54,6 +66,8 @@ function addRunningGoalTask(workspaceDb: WorkspaceDb): void {
     turnId: 'tu_demo',
     goalId: 'goal_demo',
     taskId: 'task_demo',
+    requestId: 'req_tu_demo',
+    requestInputHash: 'sha256:tu_demo',
     stage: 'running_worker',
     iteration: 1,
     contextDigest: 'ctxpkg_sha256_demo',

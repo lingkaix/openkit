@@ -1,10 +1,8 @@
 import type { LlmProjectionResult } from '../context/llm-projection.js';
-import {
-  createStructuredWorkerDelegationRequest,
-  type DelegationContextRef,
-  STRUCTURED_WORKER_DELEGATION_MAX_CONTEXT_TOKENS,
-  type StructuredWorkerDelegationRequest,
-  type StructuredWorkerDelegationRequestInput,
+import type {
+  DelegationContextRef,
+  StructuredWorkerDelegationRequest,
+  StructuredWorkerDelegationRequestInput,
 } from '../internal-agents/delegation.js';
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
 import { LOCAL_USER_ID } from '../storage/fs-layout.js';
@@ -13,43 +11,27 @@ import {
   getDefaultWorkspaceRepositoryResource,
   type WorkspaceRepositoryResourceRecord,
 } from '../workspace/repository-store.js';
-import type { QueuedFollowUpInput, SafePointSteeringMessage } from './user-turn-queues.js';
-
-const REVIEW_INSTRUCTIONS_MAX_LENGTH = 2_000;
-const TRUNCATION_SUFFIX = '\n[truncated]';
-
-/**
- * Goal state needed to prepare the next bounded worker turn.
- */
-export interface PrepareNextTurnGoalState {
-  /** Goal id that owns the task. */
-  readonly goalId: string;
-  /** Human-readable goal title. */
-  readonly title: string;
-  /** Goal objective that frames the worker task. */
-  readonly objective: string;
-  /** Goal-level acceptance criteria. */
-  readonly acceptanceCriteria: readonly string[];
-}
 
 /**
  * Task state needed to prepare the next bounded worker turn.
  */
 export interface PrepareNextTurnTaskState {
-  /** Task id selected for the next worker turn. */
-  readonly taskId: string;
-  /** Human-readable task title. */
-  readonly title: string;
   /** Worker-facing task objective. */
   readonly objective: string;
   /** Task-level acceptance criteria. */
   readonly acceptanceCriteria: readonly string[];
+  /** Exact semantic resources selected by the approved Plan. */
+  readonly resources: StructuredWorkerDelegationRequestInput['resources'];
   /** Expected artifacts or file changes from the worker task. */
   readonly expectedArtifacts: StructuredWorkerDelegationRequestInput['expectedArtifacts'];
+  /** Maximum worker context budget approved for the Task. */
+  readonly contextBudgetTokens: number;
   /** Verification commands or checks expected after worker execution. */
   readonly verification: StructuredWorkerDelegationRequestInput['verification'];
-  /** Stop conditions for the worker turn. */
-  readonly stopConditions: readonly string[];
+  /** Human review policy approved for the Task. */
+  readonly reviewPolicy: StructuredWorkerDelegationRequestInput['reviewPolicy'];
+  /** Conditions that require worker escalation. */
+  readonly escalationConditions: StructuredWorkerDelegationRequestInput['escalationConditions'];
 }
 
 /**
@@ -62,16 +44,31 @@ export interface PrepareNextTurnInput {
   readonly workspaceId: string;
   /** Thread that owns the worker turn. */
   readonly threadId: string;
-  /** Goal state that frames the selected task. */
-  readonly goalState: PrepareNextTurnGoalState;
   /** Task state selected for worker execution. */
   readonly taskState: PrepareNextTurnTaskState;
   /** Provider-visible context projection for the worker. */
   readonly contextProjection: LlmProjectionResult;
-  /** Queued safe-point steering messages selected for this turn. */
-  readonly steeringMessages: readonly SafePointSteeringMessage[];
-  /** Queued follow-up inputs selected for this turn. */
-  readonly followUpInputs: readonly QueuedFollowUpInput[];
+  /** Resolved Goal Review context carried into a continuation attempt. */
+  readonly reviewContext?: StructuredWorkerDelegationRequestInput['reviewContext'];
+}
+
+/**
+ * Authorized context and request facts prepared before Coordinator composition.
+ */
+export interface PreparedNextTurnContext {
+  /** Ready repository resource selected for the worker. */
+  readonly repository: WorkspaceRepositoryResourceRecord;
+  /** Worker objective read from the selected durable Task. */
+  readonly objective: string;
+  /** Source refs that Coordinator must place after Workspace and Thread refs. */
+  readonly contextRefs: readonly DelegationContextRef[];
+  /** Authorized request facts that do not include objective or context ownership. */
+  readonly workerRequestDetails: Omit<
+    StructuredWorkerDelegationRequestInput,
+    'objective' | 'contextRefs'
+  >;
+  /** Context package digest from the selected projection. */
+  readonly contextPackageDigest: string;
 }
 
 /**
@@ -84,21 +81,20 @@ export interface PreparedNextTurn {
   readonly delegationRequest: StructuredWorkerDelegationRequest;
   /** Context package digest from the selected projection. */
   readonly contextPackageDigest: string;
-  /** Queued safe-point steering messages included in the prepared turn. */
-  readonly steeringMessages: readonly SafePointSteeringMessage[];
-  /** Queued follow-up inputs included in the prepared turn. */
-  readonly followUpInputs: readonly QueuedFollowUpInput[];
 }
 
 /**
- * Prepares the next bounded worker turn without starting worker execution.
+ * Prepares authorized context and request facts without composing or starting a worker request.
  *
  * @param coreDb Open Core database handles.
  * @param input Next-turn preparation input.
- * @returns Prepared worker-turn inputs.
+ * @returns Prepared context and request facts for Coordinator composition.
  * @throws Error when no ready repository or no included context is available.
  */
-export function prepareNextTurn(coreDb: CoreDb, input: PrepareNextTurnInput): PreparedNextTurn {
+export function prepareNextTurnContext(
+  coreDb: CoreDb,
+  input: PrepareNextTurnInput
+): PreparedNextTurnContext {
   const repository = requireReadyRepository(
     coreDb,
     input.userId ?? LOCAL_USER_ID,
@@ -108,27 +104,22 @@ export function prepareNextTurn(coreDb: CoreDb, input: PrepareNextTurnInput): Pr
 
   return {
     repository,
-    delegationRequest: createStructuredWorkerDelegationRequest({
-      objective: input.taskState.objective,
+    objective: input.taskState.objective,
+    contextRefs,
+    workerRequestDetails: {
       acceptanceCriteria: input.taskState.acceptanceCriteria,
-      contextRefs,
+      resources: input.taskState.resources,
       expectedArtifacts: input.taskState.expectedArtifacts,
       constraints: {
-        maxContextTokens: STRUCTURED_WORKER_DELEGATION_MAX_CONTEXT_TOKENS,
+        maxContextTokens: input.taskState.contextBudgetTokens,
         maxWorkerIterations: 1,
-        requiresUserConfirmation: true,
-        stopConditions: [...input.taskState.stopConditions],
       },
       verification: input.taskState.verification,
-      reviewPolicy: {
-        required: true,
-        reviewers: ['internal'],
-        instructions: createReviewInstructions(input.goalState, input.taskState),
-      },
-    }),
+      reviewPolicy: input.taskState.reviewPolicy,
+      escalationConditions: input.taskState.escalationConditions,
+      reviewContext: input.reviewContext ?? null,
+    },
     contextPackageDigest: input.contextProjection.contextPackageDigest,
-    steeringMessages: [...input.steeringMessages],
-    followUpInputs: [...input.followUpInputs],
   };
 }
 
@@ -170,33 +161,15 @@ function requireReadyRepository(
  */
 function createContextRefs(input: PrepareNextTurnInput): DelegationContextRef[] {
   if (input.contextProjection.includedItemIds.length === 0) {
-    throw new Error('prepareNextTurn requires at least one included context item.');
+    throw new Error('prepareNextTurnContext requires at least one included context item.');
   }
 
   return dedupeContextRefs([
-    { kind: 'workspace', id: input.workspaceId },
-    { kind: 'thread', id: input.threadId },
     ...input.contextProjection.includedItemIds.map((itemId) => ({
       kind: 'item' as const,
       id: itemId,
     })),
-    ...input.steeringMessages.flatMap((message) => itemRefForPendingTurn(message.pendingTurn)),
-    ...input.followUpInputs.flatMap((followUpInput) =>
-      itemRefForPendingTurn(followUpInput.pendingTurn)
-    ),
   ]);
-}
-
-/**
- * Builds an item reference for a queued pending input when an item id exists.
- *
- * @param pendingTurn Pending input row carried by a queue delivery record.
- * @returns Item context reference or an empty list.
- */
-function itemRefForPendingTurn(
-  pendingTurn: SafePointSteeringMessage['pendingTurn']
-): DelegationContextRef[] {
-  return pendingTurn.contentItemId ? [{ kind: 'item', id: pendingTurn.contentItemId }] : [];
 }
 
 /**
@@ -219,39 +192,4 @@ function dedupeContextRefs(refs: readonly DelegationContextRef[]): DelegationCon
   }
 
   return deduped;
-}
-
-/**
- * Creates internal review instructions from goal and task state.
- *
- * @param goalState Goal state that frames the worker task.
- * @param taskState Task state selected for worker execution.
- * @returns Review instruction text.
- */
-function createReviewInstructions(
-  goalState: PrepareNextTurnGoalState,
-  taskState: PrepareNextTurnTaskState
-): string {
-  return truncateReviewInstructions(
-    [
-      `Review worker output for goal "${goalState.title}" (${goalState.goalId}).`,
-      `Goal objective: ${goalState.objective}`,
-      `Task "${taskState.title}" (${taskState.taskId}) must satisfy its task acceptance criteria and remain aligned with the goal criteria.`,
-      `Goal criteria: ${goalState.acceptanceCriteria.join(' | ')}`,
-    ].join('\n')
-  );
-}
-
-/**
- * Truncates review instructions to the structured delegation schema limit.
- *
- * @param instructions Generated review instructions.
- * @returns Schema-safe review instructions.
- */
-function truncateReviewInstructions(instructions: string): string {
-  if (instructions.length <= REVIEW_INSTRUCTIONS_MAX_LENGTH) {
-    return instructions;
-  }
-
-  return `${instructions.slice(0, REVIEW_INSTRUCTIONS_MAX_LENGTH - TRUNCATION_SUFFIX.length)}${TRUNCATION_SUFFIX}`;
 }

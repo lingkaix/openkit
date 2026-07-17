@@ -79,7 +79,7 @@ The current Web implementation is a contract projection surface:
 - Web e2e and story acceptance tests exist for product validation, including deterministic story runs and opt-in real Codex Goal Mode validation.
 - Current Web and protocol surfaces use Knowledge Store terminology for the minimal existing knowledge slice.
 - The current Web app is useful as a validation surface, but it should not be treated as the canonical source for core semantics.
-- Goal plan approval reaches Core, but the current Reject and Revise controls update browser-local state instead of calling the existing Core Client plan-revision mutation. This projection remains Partial until those controls persist the decision through NanoCore and focused Web coverage proves that no local-only terminal state remains.
+- Goal plan approval, rejection, and revision now reach Core. Reject is persisted as an explicit replacement-plan revision request, Request changes submits the user's bounded revision text, Web clears the review only after NanoCore returns the authoritative planning Goal, and a failed mutation leaves the current plan visible. Focused Web coverage proves that neither control creates browser-local workflow truth.
 - Full Web navigation, information architecture, and richer settings/diagnostics UX are deferred product work over the same NanoCore contracts, not blockers for this spec.
 
 ## Resolved Decisions

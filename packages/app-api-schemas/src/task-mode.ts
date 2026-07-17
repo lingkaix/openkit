@@ -5,7 +5,7 @@ import { z } from 'zod';
 export const StartTaskModeRequestSchema = z.object({
   input: z.string().min(1),
   modelId: z.string().min(1).optional(),
-  requestId: z.string().min(1).optional(),
+  requestId: z.string().min(1),
 });
 
 /** Worker runtime family selected by the Workflow Coordinator. */
@@ -22,7 +22,7 @@ export const TaskModeWorkerTargetSchema = z.object({
 export const TaskModeAttemptStateSchema = z.enum([
   'running',
   'completed',
-  'needs-review',
+  'cancelled',
   'awaiting-human',
   'blocked',
   'failed',
@@ -70,7 +70,6 @@ export const TaskModeEvidenceSchema = z.object({
 
 /** Response returned after Task Mode accepts one bounded worker attempt. */
 export const StartTaskModeResponseSchema = z.object({
-  decision: TaskDelegationDecisionSchema.nullable(),
   turn: TurnSchema,
   state: TaskModeAttemptStateSchema,
   completion: TaskModeCompletionSchema.nullable().optional(),

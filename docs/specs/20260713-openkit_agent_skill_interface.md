@@ -234,7 +234,7 @@ The initial operation groups cover:
 - threads, Chat Mode, Task Mode, Goal Mode, plans, steering, and bounded steps
 - Action Center, approvals, questions, reviews, artifacts, evidence, audit, and usage
 - knowledge sources, observations, claims, conflicts, retrieval, context packages, proposals, repair, and health
-- interrupted workers, pending user turns, scheduler admissions, and recovery actions
+- interrupted-worker inspection and checkpoint retry, scheduler admissions, and exact S16 Goal pending input only after its durable owner and delivery proof exist
 - runtime configuration and stale-session handling
 - vault status, unlock, lock, bootstrap, grants, injection records, use records, and rebind
 - automations

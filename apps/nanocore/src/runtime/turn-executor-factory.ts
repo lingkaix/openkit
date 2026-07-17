@@ -72,7 +72,7 @@ export interface ConfiguredWorkerLifecycleRuntime {
   ) => Promise<void>;
   /** Restores and closes one worker whose final status is already durable. */
   readonly reconcileAcceptedFinalStatus: (session: WorkerBackendSessionRecord) => Promise<{
-    readonly status: 'completed' | 'failed';
+    readonly status: 'cancelled' | 'completed' | 'failed';
     readonly turn: ReturnType<FsStore['getTurnById']>;
   }>;
   /** Configured disposable Cell placement. */

@@ -20,7 +20,7 @@ The runtime model keeps those workflows inside the stable `Workspace -> Thread -
 
 ## Principles
 
-- Turns are the agent-bound execution unit; agent sessions are reusable runtime handles.
+- Worker-executed Turns are agent-bound execution units; Agent Sessions are reusable runtime handles. Core-local service Turns may remain sessionless only under the narrow protocol exception.
 - Runtime details may be observed through items, artifacts, audit, and summaries, but private runtime state is not the user-facing work model.
 - Core schedules work at thread and turn boundaries before it reasons over runtime-native task graphs.
 - Runtime placement and backend selection are projections; they must not change the stable `Workspace -> Thread -> Turn -> Item[]` backbone.
@@ -66,7 +66,7 @@ The communication and storage relationship remains:
 Workspace -> Thread -> Turn -> Item[]
 ```
 
-These two relationships meet at `Turn`. A turn is the agent-bound execution unit. An agent session is the reusable communication and scheduling handle that executes one turn at a time unless a specific runtime later declares safe multiplexing semantics.
+These two relationships meet at a worker-executed `Turn`. An Agent Session is the reusable communication and scheduling handle that executes one worker Turn at a time unless a specific runtime later declares safe multiplexing semantics. A Core-local workflow or Assistant service that owns no worker, scheduler, sandbox, or runtime-session effect may produce a sessionless Turn under `protocol.md`; that Turn does not enter the runtime relationship above.
 
 ## Agent
 
@@ -109,7 +109,7 @@ Runtime observes liveness, effective setup identity, placement, capabilities, sa
 
 `Turn` is one execution unit inside a thread.
 
-A turn is assigned to one agent session when it runs. An agent session may execute multiple turns over time.
+A Turn run by a schedulable Agent is assigned to one Agent Session, and an Agent Session may execute multiple Turns over time. A Core-local service Turn uses `agentSessionId=null` only under the protocol exception and MUST NOT be presented as worker execution or runtime continuity.
 
 A turn may be triggered by user input, system input, automation, retry, handoff, approval resolution, or running-work steering. These map to the closed `TurnTriggerSourceSchema` enum (`user-input`, `system-input`, `automation`, `retry`, `handoff`, `approval-resolution`, `running-work-steering`), which is authoritative; cron-style schedules fold into `automation`, and redo or refinement requests are expressed as `retry` or `user-input` turns rather than distinct trigger kinds.
 
@@ -173,11 +173,13 @@ Turn lifecycle is protocol-level and remains separate:
 
 ```text
 pending -> running -> completed
-                |-> awaiting_human -> running
-                 |-> interrupted
-                 |-> cancelled
-                 |-> failed
+          |       |-> interrupted
+          |       |-> cancelled
+          |       |-> failed
+          |-> awaiting_human -> running | completed | cancelled | failed
 ```
+
+A gate response always attaches to the same Turn, but only the owning accepted contract chooses its next status. Chat clarification may continue that Turn as `running`; a Task or Goal worker gate closes the old execution envelope and any later worker execution uses a new Turn.
 
 An agent session can fail while a turn remains recoverable, and a turn can fail while the agent session remains reusable.
 
@@ -206,7 +208,7 @@ Adapter-native launch config, runtime config snapshots, absolute local paths, wo
 ## Invariants
 
 - A turn MUST be represented as the core execution unit instead of introducing `AgentRun` or `TaskRun` as default core objects.
-- A turn MUST be assigned to one agent session when it executes unless a future runtime model explicitly promotes safe multiplexing semantics.
+- A worker-executed Turn MUST be assigned to one Agent Session. A Core-local service Turn may be sessionless only under the exact protocol exception; multiplexing remains a separate future runtime concern.
 - Agent sessions MUST NOT replace thread history, item history, knowledge, or artifacts as the durable product record.
 - Runtime-private task graphs, process handles, provider sessions, launch commands, and backend IDs MUST NOT leak into the core protocol as stable fields.
 - Handoff, review, retry, and refinement MUST map back to thread, turn, item, artifact, approval, agent, and agent session records.

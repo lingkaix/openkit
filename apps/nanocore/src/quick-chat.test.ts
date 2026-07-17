@@ -2,15 +2,11 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StartChatModeResponseSchema } from '@openkit/app-api-schemas';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createApp } from './app.js';
-import { QUICK_CHAT_AGENT_ID } from './internal-agents/registry.js';
-import { InternalAgentRunner } from './internal-agents/runner.js';
-import type { InternalAgentStreamEvent } from './internal-agents/types.js';
 import type { CodexResponsesClient } from './llm/codex-responses-client.js';
 import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
-import { resolveProviderProfileToLLMConfig } from './providers/llm-config.js';
 import { ProviderRegistry } from './providers/registry.js';
 import type { TurnExecutor } from './runtime/types.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
@@ -18,6 +14,9 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { listVaultUseRecords } from './vault/vault-use-records.js';
+
+const EXPECTED_QUICK_CHAT_SYSTEM_PROMPT =
+  'You are QuickChatAgent, a lightweight OpenKit Core coordination agent. Answer concise user questions without running worker agents, shell commands, browser automation, file edits, or knowledge writes.';
 
 class ThrowingTurnExecutor implements TurnExecutor {
   public readonly capabilities = {
@@ -70,22 +69,6 @@ function createQuickChatProviderOptions() {
   };
 }
 
-/**
- * Collects all events from an async iterable.
- *
- * @param iterable Async iterable to drain.
- * @returns Events yielded by the iterable in order.
- */
-async function collectAsync<T>(iterable: AsyncIterable<T>): Promise<T[]> {
-  const items: T[] = [];
-
-  for await (const item of iterable) {
-    items.push(item);
-  }
-
-  return items;
-}
-
 describe('quick chat app API', () => {
   it('keeps Quick Chat, Chat Mode, and Task Mode route ownership outside app composition', () => {
     const appSource = readFileSync('./src/app.ts', 'utf8');
@@ -99,29 +82,39 @@ describe('quick chat app API', () => {
     expect(modeEntrySource).toContain("registerAppApiRoute(app, 'quickChat'");
     expect(modeEntrySource).toContain("registerAppApiRoute(app, 'startChatMode'");
     expect(modeEntrySource).toContain("registerAppApiRoute(app, 'startTaskMode'");
+    expect(appSource).not.toContain('InternalAgentRunner');
+    expect(appSource).not.toContain('getInternalAgentRunner');
+    expect(modeEntrySource).not.toContain('InternalAgentRunner');
+    expect(modeEntrySource).not.toContain('getInternalAgentRunner');
   });
 
   it('records a thread-scoped Chat Mode answer without starting a worker turn', async () => {
-    const calls: Parameters<InternalAgentRunner['run']>[0][] = [];
+    const calls: Array<{
+      providerId: string;
+      request: Parameters<PiAiGatewayClient['createChatCompletion']>[1];
+    }> = [];
     const app = createApp({
       ...createQuickChatProviderOptions(),
       store: createDemoStore(),
       turnExecutor: new ThrowingTurnExecutor(),
-      internalAgentRunner: {
-        run: async (input) => {
-          calls.push(input);
-
+      llmPiAiClient: {
+        createChatCompletion: async (provider, request) => {
+          calls.push({ providerId: provider.id, request });
           return {
             id: 'chatcmpl_chat_answer',
-            agentId: QUICK_CHAT_AGENT_ID,
-            status: 'completed',
-            providerId: 'ollama',
-            model: 'llama3.2',
-            output: { content: 'Thread-scoped answer.' },
-            durationMs: 1,
+            object: 'chat.completion',
+            created: 1,
+            model: request.model,
+            choices: [
+              {
+                index: 0,
+                message: { role: 'assistant', content: 'Thread-scoped answer.' },
+                finish_reason: 'stop',
+              },
+            ],
           };
         },
-      },
+      } as unknown as PiAiGatewayClient,
     });
 
     const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
@@ -145,15 +138,29 @@ describe('quick chat app API', () => {
     });
     expect(parsed.turn.status).toBe('completed');
     expect(calls[0]).toMatchObject({
-      agentId: QUICK_CHAT_AGENT_ID,
-      messages: [{ role: 'user', content: 'What is OpenKit?' }],
-      metadata: {
-        openkit: {
-          sessionId: 'chat-mode:ws_demo:th_demo',
-          workspaceId: 'ws_demo',
+      providerId: 'ollama',
+      request: {
+        messages: [
+          { role: 'system', content: EXPECTED_QUICK_CHAT_SYSTEM_PROMPT },
+          { role: 'user', content: 'What is OpenKit?' },
+        ],
+        metadata: {
+          openkit: {
+            sessionId: 'chat-mode:ws_demo:th_demo',
+            workspaceId: 'ws_demo',
+          },
         },
       },
     });
+    const replayRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
+      method: 'POST',
+      body: JSON.stringify({ input: 'What is OpenKit?', requestId: 'req_chat_answer' }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(replayRes.status).toBe(200);
+    expect(StartChatModeResponseSchema.parse(await replayRes.json())).toEqual(parsed);
+    expect(calls).toHaveLength(1);
   });
 
   it('records Chat Mode provider fallback usage with request, thread, and turn lineage', async () => {
@@ -246,13 +253,14 @@ describe('quick chat app API', () => {
 
   it('answers Chat Mode questions from Knowledge Manager before calling QuickChatAgent', async () => {
     const app = createApp({
+      ...createQuickChatProviderOptions(),
       store: createDemoStore(),
       turnExecutor: new ThrowingTurnExecutor(),
-      internalAgentRunner: {
-        run: async () => {
+      llmPiAiClient: {
+        createChatCompletion: async () => {
           throw new Error('Knowledge-backed Chat Mode must not call QuickChatAgent');
         },
-      },
+      } as unknown as PiAiGatewayClient,
     });
 
     const createRes = await app.request('/api/workspaces/ws_demo/knowledge', {
@@ -292,18 +300,30 @@ describe('quick chat app API', () => {
       'OpenKit ships release candidates only after NanoCore smoke passes on a1.'
     );
     expect(parsed.item.text).toContain('Sources: Launch cadence');
+    const replayRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
+      method: 'POST',
+      body: JSON.stringify({
+        input: 'What is the Launch cadence?',
+        requestId: 'req_chat_knowledge_answer',
+      }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(replayRes.status).toBe(200);
+    expect(StartChatModeResponseSchema.parse(await replayRes.json())).toEqual(parsed);
   });
 
   it('asks a bounded clarification question for vague Chat Mode requests', async () => {
     const store = createDemoStore();
     const app = createApp({
+      ...createQuickChatProviderOptions(),
       store,
       turnExecutor: new ThrowingTurnExecutor(),
-      internalAgentRunner: {
-        run: async () => {
+      llmPiAiClient: {
+        createChatCompletion: async () => {
           throw new Error('Clarification-needed Chat Mode must not call QuickChatAgent');
         },
-      },
+      } as unknown as PiAiGatewayClient,
     });
 
     const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
@@ -334,6 +354,16 @@ describe('quick chat app API', () => {
       'user-message',
       'user-input-request',
     ]);
+    expect(
+      store.getCommandRequest('chat.start', 'req_chat_clarify', {
+        threadId: 'th_demo',
+        workspaceId: 'ws_demo',
+      })?.response.snapshot
+    ).toEqual({
+      downstream: null,
+      resultKind: 'clarification',
+      status: 202,
+    });
 
     const actionCenterRes = await app.request('/api/app/workspaces/ws_demo/action-center');
     const actionCenter = (await actionCenterRes.json()) as { items: Array<{ source: unknown }> };
@@ -348,6 +378,78 @@ describe('quick chat app API', () => {
         }),
       }),
     ]);
+
+    const completedAt = new Date().toISOString();
+    store.updateItem(parsed.item.id, { status: 'completed', completedAt });
+    store.updateTurn(parsed.turn.id, { status: 'completed', humanGate: null, completedAt });
+
+    const replayRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
+      method: 'POST',
+      body: JSON.stringify({ input: 'Help', requestId: 'req_chat_clarify' }),
+      headers: { 'content-type': 'application/json' },
+    });
+    const replay = StartChatModeResponseSchema.parse(await replayRes.json());
+
+    expect(replayRes.status).toBe(202);
+    expect(replay.turn).toEqual(parsed.turn);
+    expect(replay.item).toEqual(parsed.item);
+  });
+
+  it('fails Chat Mode replay closed when durable owners contradict', async () => {
+    const store = createDemoStore();
+    const app = createApp({ store, turnExecutor: new ThrowingTurnExecutor() });
+    const requestId = 'req_chat_missing_owner';
+    const input = 'Search the web for current OpenKit news.';
+    const scope = { threadId: 'th_demo', workspaceId: 'ws_demo' };
+    const first = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
+      method: 'POST',
+      body: JSON.stringify({ input, requestId }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(first.status).toBe(200);
+    const accepted = StartChatModeResponseSchema.parse(await first.json());
+    const successfulReplay = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
+      method: 'POST',
+      body: JSON.stringify({ input, requestId }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(successfulReplay.status).toBe(200);
+    expect(StartChatModeResponseSchema.parse(await successfulReplay.json())).toEqual(accepted);
+    store.updateTurn(accepted.turn.id, { status: 'failed' });
+    const contradictedTurnReplay = await app.request(
+      '/api/app/workspaces/ws_demo/threads/th_demo/chat',
+      {
+        method: 'POST',
+        body: JSON.stringify({ input, requestId }),
+        headers: { 'content-type': 'application/json' },
+      }
+    );
+
+    expect(contradictedTurnReplay.status).toBe(409);
+    await expect(contradictedTurnReplay.json()).resolves.toMatchObject({
+      code: 'recovery_required',
+    });
+    store.updateTurn(accepted.turn.id, { status: 'completed' });
+    const receipt = store.getCommandRequest('chat.start', requestId, scope);
+    expect(receipt).not.toBeNull();
+    store.recordCommandRequest({
+      command: 'chat.start',
+      inputHash: receipt!.inputHash,
+      requestId,
+      response: { id: 'tu_missing_chat_owner', kind: 'turn' },
+      scope,
+    });
+
+    const replay = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
+      method: 'POST',
+      body: JSON.stringify({ input, requestId }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(replay.status).toBe(409);
+    await expect(replay.json()).resolves.toMatchObject({ code: 'recovery_required' });
   });
 
   it('records Chat Mode goal handoffs without starting worker turns', async () => {
@@ -356,54 +458,96 @@ describe('quick chat app API', () => {
     applyMigrations(coreDb);
 
     try {
+      const store = createDemoStore({ dataRoot });
       const app = createApp({
         coreDb,
         dataRoot,
-        store: createDemoStore({ dataRoot }),
+        store,
         turnExecutor: new ThrowingTurnExecutor(),
       });
+      const request = {
+        input: 'Plan a multi-step release goal for NanoCore.',
+        requestId: 'req_chat_goal',
+      };
 
       const goalRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
         method: 'POST',
-        body: JSON.stringify({
-          input: 'Plan a multi-step release goal for NanoCore.',
-          requestId: 'req_chat_goal',
-        }),
+        body: JSON.stringify(request),
         headers: { 'content-type': 'application/json' },
       });
 
       expect(goalRes.status).toBe(202);
-      expect(StartChatModeResponseSchema.parse(await goalRes.json())).toMatchObject({
+      const accepted = StartChatModeResponseSchema.parse(await goalRes.json());
+      expect(accepted).toMatchObject({
         outcome: 'goal-handoff',
         handoff: { targetMode: 'goal' },
         item: { type: 'status', title: 'Goal Mode handoff' },
+      });
+      const replayRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
+        method: 'POST',
+        body: JSON.stringify(request),
+        headers: { 'content-type': 'application/json' },
+      });
+
+      expect(replayRes.status).toBe(202);
+      expect(StartChatModeResponseSchema.parse(await replayRes.json())).toEqual(accepted);
+      expect(store.listCommandRequests().map((record) => record.command)).toEqual(['chat.start']);
+
+      const goalTurn = store
+        .listThreadTurns('ws_demo', 'th_demo')
+        .find((turn) => turn.id !== accepted.turn.id);
+      const creationItem = goalTurn?.items.find((item) => item.type === 'user-message');
+
+      if (!creationItem) {
+        throw new Error('Expected the Goal creation Item.');
+      }
+
+      store.updateItem(creationItem.id, { status: 'in_progress', completedAt: null });
+      const contradictedReplayRes = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/chat',
+        {
+          method: 'POST',
+          body: JSON.stringify(request),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+
+      expect(contradictedReplayRes.status).toBe(409);
+      await expect(contradictedReplayRes.json()).resolves.toMatchObject({
+        code: 'recovery_required',
       });
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('routes requests through QuickChatAgent while preserving the app response shape', async () => {
-    const calls: Parameters<InternalAgentRunner['run']>[0][] = [];
+  it('routes Quick Chat through one direct provider call', async () => {
+    const calls: Array<{
+      providerId: string;
+      request: Parameters<PiAiGatewayClient['createChatCompletion']>[1];
+    }> = [];
 
     const app = createApp({
       ...createQuickChatProviderOptions(),
       turnExecutor: new ThrowingTurnExecutor(),
-      internalAgentRunner: {
-        run: async (input) => {
-          calls.push(input);
-
+      llmPiAiClient: {
+        createChatCompletion: async (provider, request) => {
+          calls.push({ providerId: provider.id, request });
           return {
             id: 'chatcmpl_route_agent',
-            agentId: QUICK_CHAT_AGENT_ID,
-            status: 'completed',
-            providerId: 'ollama',
-            model: 'llama3.2',
-            output: { content: 'Agent-routed answer' },
-            durationMs: 1,
+            object: 'chat.completion',
+            created: 1,
+            model: request.model,
+            choices: [
+              {
+                index: 0,
+                message: { role: 'assistant', content: 'Agent-routed answer' },
+                finish_reason: 'stop',
+              },
+            ],
           };
         },
-      },
+      } as unknown as PiAiGatewayClient,
     });
 
     const res = await app.request('/api/app/quick-chat', {
@@ -421,28 +565,157 @@ describe('quick chat app API', () => {
       model: 'llama3.2',
       content: 'Agent-routed answer',
     });
-    expect(calls).toEqual([
-      {
-        agentId: QUICK_CHAT_AGENT_ID,
-        providerId: 'ollama',
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      providerId: 'ollama',
+      request: {
         model: 'llama3.2',
-        messages: [{ role: 'user', content: 'Route this.' }],
-        signal: expect.any(AbortSignal),
+        messages: [
+          { role: 'system', content: EXPECTED_QUICK_CHAT_SYSTEM_PROMPT },
+          { role: 'user', content: 'Route this.' },
+        ],
         metadata: {
           openkit: {
             sessionId: 'quick-chat:ws_quick',
             workspaceId: 'ws_quick',
           },
         },
-        dispatchContext: {
-          promptCacheScope: {
-            sessionId: 'quick-chat:ws_quick',
-            workspaceId: 'ws_quick',
-          },
-          usageEndpoint: 'quick_chat',
-        },
       },
-    ]);
+    });
+  });
+
+  it.each([
+    ['malformed JSON', '{'],
+    ['a schema-invalid body', JSON.stringify({ input: '' })],
+  ])('rejects %s before provider dispatch', async (_label, body) => {
+    const createChatCompletion = vi.fn();
+    const app = createApp({
+      ...createQuickChatProviderOptions(),
+      turnExecutor: new ThrowingTurnExecutor(),
+      llmPiAiClient: { createChatCompletion } as unknown as PiAiGatewayClient,
+    });
+
+    const res = await app.request('/api/app/quick-chat', {
+      method: 'POST',
+      body,
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({ code: 'invalid_request' });
+    expect(createChatCompletion).not.toHaveBeenCalled();
+  });
+
+  it('rejects missing assistant content at the direct provider boundary', async () => {
+    const app = createApp({
+      ...createQuickChatProviderOptions(),
+      turnExecutor: new ThrowingTurnExecutor(),
+      llmPiAiClient: {
+        createChatCompletion: async (_provider, request) => ({
+          id: 'chatcmpl_invalid_quick_chat',
+          object: 'chat.completion',
+          created: 1,
+          model: request.model,
+          choices: [],
+        }),
+      } as unknown as PiAiGatewayClient,
+    });
+
+    const res = await app.request('/api/app/quick-chat', {
+      method: 'POST',
+      body: JSON.stringify({ input: 'Return no choice.' }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(res.status).toBe(502);
+    await expect(res.json()).resolves.toMatchObject({ code: 'provider_response_invalid' });
+  });
+
+  it('maps the bounded role timeout without exposing the platform abort reason', async () => {
+    const timeoutController = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValueOnce(timeoutController.signal);
+    const app = createApp({
+      ...createQuickChatProviderOptions(),
+      turnExecutor: new ThrowingTurnExecutor(),
+      llmPiAiClient: {
+        createChatCompletion: async () => {
+          queueMicrotask(() => {
+            timeoutController.abort(new DOMException('secret timeout', 'TimeoutError'));
+          });
+          return new Promise<never>(() => undefined);
+        },
+      } as unknown as PiAiGatewayClient,
+    });
+
+    try {
+      const res = await app.request('/api/app/quick-chat', {
+        method: 'POST',
+        body: JSON.stringify({ input: 'Time out.' }),
+        headers: { 'content-type': 'application/json' },
+      });
+
+      expect(res.status).toBe(504);
+      await expect(res.json()).resolves.toMatchObject({
+        code: 'provider_call_timeout',
+        message: 'Quick chat provider call timed out.',
+      });
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
+  it('maps caller cancellation at the direct provider boundary', async () => {
+    const abortController = new AbortController();
+    const app = createApp({
+      ...createQuickChatProviderOptions(),
+      turnExecutor: new ThrowingTurnExecutor(),
+      llmPiAiClient: {
+        createChatCompletion: async (_provider, _request, _onUsage, transport) => {
+          abortController.abort(new DOMException('private caller reason', 'AbortError'));
+          transport.signal?.throwIfAborted();
+          throw new Error('unreachable');
+        },
+      } as unknown as PiAiGatewayClient,
+    });
+
+    const res = await app.request('/api/app/quick-chat', {
+      method: 'POST',
+      body: JSON.stringify({ input: 'Cancel this.' }),
+      headers: { 'content-type': 'application/json' },
+      signal: abortController.signal,
+    });
+
+    expect(res.status).toBe(499);
+    await expect(res.json()).resolves.toMatchObject({
+      code: 'provider_call_aborted',
+      message: 'Quick chat provider call was aborted.',
+    });
+  });
+
+  it('redacts unexpected direct provider failures', async () => {
+    const app = createApp({
+      ...createQuickChatProviderOptions(),
+      turnExecutor: new ThrowingTurnExecutor(),
+      llmPiAiClient: {
+        createChatCompletion: async () => {
+          throw new Error('provider failed token=tok_private_quick_chat');
+        },
+      } as unknown as PiAiGatewayClient,
+    });
+
+    const res = await app.request('/api/app/quick-chat', {
+      method: 'POST',
+      body: JSON.stringify({ input: 'Fail safely.' }),
+      headers: { 'content-type': 'application/json' },
+    });
+    const body = await res.json();
+
+    expect(res.status).toBe(500);
+    expect(body).toMatchObject({
+      code: 'quick_chat_failed',
+      message: 'provider failed token=[redacted]',
+    });
+    expect(JSON.stringify(body)).not.toContain('tok_private_quick_chat');
   });
 
   it('answers with the configured quick-chat provider without starting an agent session', async () => {
@@ -635,7 +908,7 @@ describe('quick chat app API', () => {
           .prepare('SELECT * FROM capability_calls WHERE family = ? AND operation = ?')
           .get('llm', 'quick_chat') as Record<string, unknown> | undefined;
         expect(call).toMatchObject({
-          agent_id: QUICK_CHAT_AGENT_ID,
+          agent_id: 'quick-chat',
           capability_id: 'inference.local.quick_chat',
           family: 'llm',
           operation: 'quick_chat',
@@ -741,94 +1014,5 @@ describe('quick chat app API', () => {
       },
     });
     expect(seenRequests[0]?.prompt_cache_key).toMatch(/^openkit:responses:[a-f0-9]{32}$/);
-  });
-
-  it('streams QuickChatAgent message_update events through the internal event path', async () => {
-    const { openKitConfig, providerRegistry } = createQuickChatProviderOptions();
-    const runner = new InternalAgentRunner({
-      defaultSelectionResolver: () => ({
-        providerId: openKitConfig.defaults.gatewayProviderId,
-        model: openKitConfig.defaults.gatewayModel,
-      }),
-      llmClient: {
-        createChatCompletion: async (_provider, request) => ({
-          id: 'chatcmpl_quick_stream',
-          object: 'chat.completion',
-          created: 1,
-          model: request.model,
-          choices: [
-            {
-              index: 0,
-              message: { role: 'assistant', content: 'Streamed quick chat.' },
-              finish_reason: 'stop',
-            },
-          ],
-        }),
-      },
-      providerResolver: (providerId) =>
-        resolveProviderProfileToLLMConfig(providerRegistry.get(providerId)!),
-    });
-
-    const events = await collectAsync(
-      runner.stream({
-        agentId: QUICK_CHAT_AGENT_ID,
-        messages: [{ role: 'user', content: 'Stream this.' }],
-      })
-    );
-    const messageUpdates = events.filter(
-      (event): event is Extract<InternalAgentStreamEvent, { eventType: 'message_update' }> =>
-        event.eventType === 'message_update'
-    );
-
-    expect(events.map((event) => event.eventType)).toEqual([
-      'agent_start',
-      'turn_start',
-      'message_start',
-      'message_update',
-      'message_end',
-      'turn_end',
-      'agent_end',
-    ]);
-    expect(events.map((event) => event.sequence)).toEqual([0, 1, 2, 3, 4, 5, 6]);
-    expect(messageUpdates.map((event) => event.delta)).toEqual(['Streamed quick chat.']);
-  });
-
-  it('emits terminal stop reasons for QuickChatAgent stream errors after stream start', async () => {
-    const { openKitConfig, providerRegistry } = createQuickChatProviderOptions();
-    const runner = new InternalAgentRunner({
-      defaultSelectionResolver: () => ({
-        providerId: openKitConfig.defaults.gatewayProviderId,
-        model: openKitConfig.defaults.gatewayModel,
-      }),
-      llmClient: {
-        createChatCompletion: async () => {
-          throw new Error('provider failed token=tok_secret');
-        },
-      },
-      providerResolver: (providerId) =>
-        resolveProviderProfileToLLMConfig(providerRegistry.get(providerId)!),
-    });
-
-    const events = await collectAsync(
-      runner.stream({
-        agentId: QUICK_CHAT_AGENT_ID,
-        messages: [{ role: 'user', content: 'Stream error.' }],
-      })
-    );
-
-    expect(events.map((event) => event.eventType)).toEqual([
-      'agent_start',
-      'turn_start',
-      'turn_end',
-      'agent_end',
-    ]);
-    expect(events.map((event) => event.sequence)).toEqual([0, 1, 2, 3]);
-    expect(events.at(-1)).toMatchObject({
-      eventType: 'agent_end',
-      status: 'error',
-      stopReason: 'error',
-      errorMessage: 'provider failed token=[redacted]',
-    });
-    expect(JSON.stringify(events)).not.toContain('tok_secret');
   });
 });

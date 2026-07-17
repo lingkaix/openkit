@@ -1,6 +1,81 @@
 import { z } from 'zod';
 import { WorkspaceApplyResultSchema } from './workspace-sync.js';
 
+/** Goal Review decision values owned by the Goal Review record. */
+export const GoalReviewVerdictSchema = z.enum(['accept', 'refine', 'retry', 'abort']);
+
+/** Closed result values stored in one immutable Goal Review resolution snapshot. */
+export const GoalReviewResolutionOutcomeSchema = z.enum([
+  'complete_next_task',
+  'complete_goal',
+  'refine',
+  'retry',
+  'aborted',
+]);
+
+/** Bounded immutable result stored after one Goal Review decision. */
+export const GoalReviewResolutionSnapshotSchema = z
+  .object({
+    outcome: GoalReviewResolutionOutcomeSchema,
+    task: z
+      .object({
+        taskId: z.string().min(1),
+        status: z.enum(['completed', 'ready', 'failed']),
+      })
+      .strict(),
+    goal: z
+      .object({
+        goalId: z.string().min(1),
+        status: z.enum(['running', 'completed', 'aborted']),
+        currentTaskId: z.null(),
+        terminalStopReason: z.enum(['completed', 'aborted']).nullable(),
+      })
+      .strict(),
+    nextReadyTaskId: z.string().min(1).nullable(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const invalid = (message: string): void =>
+      context.addIssue({ code: 'custom', message, path: ['outcome'] });
+
+    if (
+      value.outcome === 'complete_goal' &&
+      (value.task.status !== 'completed' ||
+        value.goal.status !== 'completed' ||
+        value.goal.terminalStopReason !== 'completed' ||
+        value.nextReadyTaskId !== null)
+    ) {
+      invalid('A complete_goal snapshot requires completed Task and Goal terminal state.');
+    }
+    if (
+      value.outcome === 'complete_next_task' &&
+      (value.task.status !== 'completed' ||
+        value.goal.status !== 'running' ||
+        value.goal.terminalStopReason !== null ||
+        value.nextReadyTaskId === null)
+    ) {
+      invalid('A nonterminal completion snapshot has inconsistent Task, Goal, or next Task state.');
+    }
+    if (
+      (value.outcome === 'refine' || value.outcome === 'retry') &&
+      (value.task.status !== 'ready' ||
+        value.goal.status !== 'running' ||
+        value.goal.terminalStopReason !== null ||
+        value.nextReadyTaskId !== value.task.taskId)
+    ) {
+      invalid('A refine or retry snapshot must return the reviewed Task to ready.');
+    }
+    if (
+      value.outcome === 'aborted' &&
+      (value.task.status !== 'failed' ||
+        value.goal.status !== 'aborted' ||
+        value.goal.terminalStopReason !== 'aborted' ||
+        value.nextReadyTaskId !== null)
+    ) {
+      invalid('An aborted snapshot requires a failed Task and aborted Goal.');
+    }
+  });
+
 /** Human attention row kinds projected by the product Action Center. */
 export const HumanAttentionKindSchema = z.enum([
   'approval',
@@ -28,10 +103,6 @@ export const HumanAttentionActionKindSchema = z.enum([
   'open_thread',
   'open_turn',
   'open_artifact',
-  'edit_pending_input',
-  'convert_pending_input_to_follow_up',
-  'promote_pending_input_to_interrupt',
-  'cancel_pending_input',
   'submit_steering',
   'run_follow_up',
   'review_goal_plan',
@@ -42,7 +113,6 @@ export const HumanAttentionActionKindSchema = z.enum([
   'abort',
   'resume_from_checkpoint',
   'retry_from_checkpoint',
-  'clear_checkpoint',
   'refresh_agent_readiness',
   'switch_agent',
   'accept_knowledge',
@@ -75,18 +145,6 @@ export const ApprovalHumanAttentionSourceSchema = z
     threadId: z.string().min(1),
     turnId: z.string().min(1),
     itemId: z.string().min(1).optional(),
-  })
-  .strict();
-
-/** Stable reference to one queued user turn-backed attention source. */
-export const PendingUserTurnHumanAttentionSourceSchema = z
-  .object({
-    type: z.literal('pending_user_turn'),
-    pendingTurnId: z.string().min(1),
-    requestId: z.string().min(1),
-    queueMode: z.enum(['safe_point_steering', 'follow_up', 'blocked_gate']),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
   })
   .strict();
 
@@ -183,7 +241,6 @@ export const GoalReviewHumanAttentionSourceSchema = z
     taskId: z.string().min(1),
     workspaceId: z.string().min(1),
     threadId: z.string().min(1),
-    verdict: z.string().min(1),
   })
   .strict();
 
@@ -249,7 +306,6 @@ export const KnowledgeHumanAttentionSourceSchema = z
 export const HumanAttentionSourceSchema = z.discriminatedUnion('type', [
   ProtocolItemHumanAttentionSourceSchema,
   ApprovalHumanAttentionSourceSchema,
-  PendingUserTurnHumanAttentionSourceSchema,
   SchedulerAdmissionHumanAttentionSourceSchema,
   WorkerControlRejectionHumanAttentionSourceSchema,
   SchedulerOrphanWorkerHumanAttentionSourceSchema,
@@ -413,9 +469,35 @@ export const SubmitKnowledgeProposalDecisionResponseSchema = z
 /** Request payload for resolving one app-local Goal Review attention row. */
 export const SubmitGoalReviewDecisionRequestSchema = z
   .object({
-    requestId: z.string().min(1).optional(),
+    requestId: z.string().min(1),
+    verdict: GoalReviewVerdictSchema,
+    reason: z.string().min(1).optional(),
+    revisionInstruction: z.string().min(1).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if ((value.verdict === 'retry' || value.verdict === 'abort') && !value.reason) {
+      context.addIssue({
+        code: 'custom',
+        message: `${value.verdict} requires a reason.`,
+        path: ['reason'],
+      });
+    }
+    if (value.verdict === 'refine' && !value.revisionInstruction) {
+      context.addIssue({
+        code: 'custom',
+        message: 'refine requires a revision instruction.',
+        path: ['revisionInstruction'],
+      });
+    }
+    if (value.verdict !== 'refine' && value.revisionInstruction !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        message: 'revisionInstruction is only valid for refine.',
+        path: ['revisionInstruction'],
+      });
+    }
+  });
 
 /** Response payload after resolving one app-local Goal Review attention row. */
 export const SubmitGoalReviewDecisionResponseSchema = z
@@ -427,31 +509,86 @@ export const SubmitGoalReviewDecisionResponseSchema = z
         threadId: z.string().min(1),
         goalId: z.string().min(1),
         taskId: z.string().min(1),
-        turnId: z.string().min(1).nullable(),
+        turnId: z.string().min(1),
         itemIds: z.array(z.string().min(1)),
         artifactIds: z.array(z.string().min(1)),
         verificationEvidence: z.array(z.unknown()),
-        verdict: z.string().min(1),
-        reason: z.string().min(1),
+        prompt: z.string().min(1),
+        createdByRequestId: z.string().min(1),
+        verdict: GoalReviewVerdictSchema,
+        reason: z.string().min(1).nullable(),
+        revisionInstruction: z.string().min(1).nullable(),
         createdAt: z.string().min(1),
         updatedAt: z.string().min(1),
-        resolvedAt: z.string().min(1).nullable(),
-        resolutionRequestId: z.string().min(1).nullable(),
+        resolvedAt: z.string().min(1),
+        resolutionRequestId: z.string().min(1),
+        resolvedByActorId: z.string().min(1),
       })
-      .strict(),
-    advance: z
-      .object({
-        outcome: z.string().min(1),
-        task: z.unknown(),
-        goal: z.unknown().nullable(),
-        nextTask: z.unknown().nullable(),
-      })
-      .strict(),
+      .strict()
+      .superRefine((value, context) => {
+        if ((value.verdict === 'retry' || value.verdict === 'abort') && !value.reason) {
+          context.addIssue({
+            code: 'custom',
+            message: `${value.verdict} requires a reason.`,
+            path: ['reason'],
+          });
+        }
+        if (value.verdict === 'refine' && !value.revisionInstruction) {
+          context.addIssue({
+            code: 'custom',
+            message: 'refine requires a revision instruction.',
+            path: ['revisionInstruction'],
+          });
+        }
+        if (value.verdict !== 'refine' && value.revisionInstruction !== null) {
+          context.addIssue({
+            code: 'custom',
+            message: 'revisionInstruction is only valid for refine.',
+            path: ['revisionInstruction'],
+          });
+        }
+      }),
+    advance: GoalReviewResolutionSnapshotSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const expectedOutcomes: Record<GoalReviewVerdict, readonly GoalReviewResolutionOutcome[]> = {
+      abort: ['aborted'],
+      accept: ['complete_next_task', 'complete_goal'],
+      refine: ['refine'],
+      retry: ['retry'],
+    };
+    if (!expectedOutcomes[value.review.verdict].includes(value.advance.outcome)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'The Goal Review verdict and resolution outcome are inconsistent.',
+        path: ['advance', 'outcome'],
+      });
+    }
+    if (value.advance.task.taskId !== value.review.taskId) {
+      context.addIssue({
+        code: 'custom',
+        message: 'The resolution Task does not match the reviewed Task.',
+        path: ['advance', 'task', 'taskId'],
+      });
+    }
+    if (value.advance.goal.goalId !== value.review.goalId) {
+      context.addIssue({
+        code: 'custom',
+        message: 'The resolution Goal does not match the reviewed Goal.',
+        path: ['advance', 'goal', 'goalId'],
+      });
+    }
+  });
 
 /** Artifact review decision accepted by the app-local Action Center workflow. */
 export type ArtifactReviewDecision = z.infer<typeof ArtifactReviewDecisionSchema>;
+/** Goal Review decision owned by one Goal Review record. */
+export type GoalReviewVerdict = z.infer<typeof GoalReviewVerdictSchema>;
+/** Closed result stored in one Goal Review resolution snapshot. */
+export type GoalReviewResolutionOutcome = z.infer<typeof GoalReviewResolutionOutcomeSchema>;
+/** Immutable result stored after one Goal Review decision. */
+export type GoalReviewResolutionSnapshot = z.infer<typeof GoalReviewResolutionSnapshotSchema>;
 /** Request payload for recording one artifact review decision. */
 export type SubmitArtifactReviewDecisionRequest = z.infer<
   typeof SubmitArtifactReviewDecisionRequestSchema

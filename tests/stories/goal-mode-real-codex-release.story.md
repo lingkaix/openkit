@@ -73,7 +73,7 @@ The only repository change must be `docs/l6-real-goal-proof.md` with this exact 
 
 - Goal planning produces exactly one task with at least one verification check.
 - Plan approval is explicit and returns `startsWorkerTurn: false`.
-- The worker returns a real turn id, worker session id, successful stop reason, terminal checkpoint, and review outcome.
+- The Goal step result names the durable task, turn, completed stop reason, stopped review outcome, and review id, and the Action Center Goal review matches that task and review owner.
 - No approval or question row is produced by the worker turn.
 - The workspace review applies exactly the proof path before the Goal review is accepted.
 - The Goal review advances the one-task graph to `complete_goal`.

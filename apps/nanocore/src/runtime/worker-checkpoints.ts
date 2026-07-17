@@ -27,6 +27,10 @@ export interface WorkerCheckpointRecord {
   readonly goalId: string | null;
   /** Optional goal task id associated with the worker turn. */
   readonly taskId: string | null;
+  /** Command request that owns this worker envelope. */
+  readonly requestId: string;
+  /** Hash of the canonical command input without raw request content. */
+  readonly requestInputHash: string;
   /** Recovery stage recorded for the worker turn. */
   readonly stage: WorkerTurnStage;
   /** Worker iteration count at the checkpoint. */
@@ -54,6 +58,8 @@ interface WorkerCheckpointRow {
   readonly turn_id: string;
   readonly goal_id: string | null;
   readonly task_id: string | null;
+  readonly request_id: string;
+  readonly request_input_hash: string;
   readonly stage: WorkerTurnStage;
   readonly iteration: number;
   readonly worker_session_id: string | null;
@@ -79,6 +85,10 @@ export interface UpsertWorkerCheckpointInput {
   readonly goalId?: string | null;
   /** Optional goal task id associated with the worker turn. */
   readonly taskId?: string | null;
+  /** Command request that owns this worker envelope. */
+  readonly requestId: string;
+  /** Hash of the canonical command input without raw request content. */
+  readonly requestInputHash: string;
   /** Recovery stage recorded for the worker turn. */
   readonly stage: WorkerTurnStage;
   /** Worker iteration count at the checkpoint. */
@@ -141,10 +151,6 @@ export interface WorkerCheckpointContextAssemblySummary {
   readonly contextRefs: readonly { readonly kind: string; readonly id: string }[];
   /** Workspace repository resource selected for the worker turn. */
   readonly repositoryResourceId: string;
-  /** Safe-point steering messages included in the prepared turn. */
-  readonly steeringMessageCount: number;
-  /** Follow-up inputs included in the prepared turn. */
-  readonly followUpInputCount: number;
 }
 
 /**
@@ -210,6 +216,39 @@ export function parseWorkerCheckpointContextAssembly(
 }
 
 /**
+ * Reads terminal evidence ids from checkpoint diagnostics.
+ *
+ * @param diagnosticsSummary Stored checkpoint diagnostics text.
+ * @returns Terminal evidence ids, or null when the summary is not an evidence record.
+ */
+export function parseWorkerCheckpointEvidence(
+  diagnosticsSummary: string | null
+): WorkerCheckpointEvidenceRefs | null {
+  if (!diagnosticsSummary) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(diagnosticsSummary) as {
+      itemIds?: unknown;
+      artifactIds?: unknown;
+    };
+    if (
+      !Array.isArray(parsed.itemIds) ||
+      !parsed.itemIds.every((itemId) => typeof itemId === 'string') ||
+      !Array.isArray(parsed.artifactIds) ||
+      !parsed.artifactIds.every((artifactId) => typeof artifactId === 'string')
+    ) {
+      return null;
+    }
+
+    return { itemIds: parsed.itemIds, artifactIds: parsed.artifactIds };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Creates or replaces one worker checkpoint.
  *
  * @param workspaceDb Open workspace-scope database handle.
@@ -238,6 +277,8 @@ export function upsertWorkerCheckpoint(
         turn_id,
         goal_id,
         task_id,
+        request_id,
+        request_input_hash,
         stage,
         iteration,
         worker_session_id,
@@ -247,7 +288,7 @@ export function upsertWorkerCheckpoint(
         replay_instruction,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(checkpoint_id) DO UPDATE SET
         goal_id = excluded.goal_id,
         task_id = excluded.task_id,
@@ -267,6 +308,8 @@ export function upsertWorkerCheckpoint(
       input.turnId,
       input.goalId ?? null,
       input.taskId ?? null,
+      input.requestId,
+      input.requestInputHash,
       input.stage,
       input.iteration,
       input.workerSessionId ?? null,
@@ -454,6 +497,8 @@ export function importWorkerCheckpoints(
           turn_id,
           goal_id,
           task_id,
+          request_id,
+          request_input_hash,
           stage,
           iteration,
           worker_session_id,
@@ -463,7 +508,7 @@ export function importWorkerCheckpoints(
           replay_instruction,
           created_at,
           updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         checkpoint.checkpointId,
@@ -472,6 +517,8 @@ export function importWorkerCheckpoints(
         checkpoint.turnId,
         checkpoint.goalId,
         checkpoint.taskId,
+        checkpoint.requestId,
+        checkpoint.requestInputHash,
         checkpoint.stage,
         checkpoint.iteration,
         checkpoint.workerSessionId,
@@ -498,6 +545,8 @@ function workerCheckpointSelectSql(): string {
     turn_id,
     goal_id,
     task_id,
+    request_id,
+    request_input_hash,
     stage,
     iteration,
     worker_session_id,
@@ -659,6 +708,8 @@ function mapWorkerCheckpointRow(row: WorkerCheckpointRow): WorkerCheckpointRecor
     turnId: row.turn_id,
     goalId: row.goal_id,
     taskId: row.task_id,
+    requestId: row.request_id,
+    requestInputHash: row.request_input_hash,
     stage: row.stage,
     iteration: row.iteration,
     workerSessionId: row.worker_session_id,

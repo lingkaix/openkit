@@ -1,15 +1,17 @@
 import type { FsStore } from '../lib/store.js';
 
-/** Input for idempotently projecting one governed-worker failure. */
-export interface TerminalizeGovernedWorkerTurnFailureInput {
+/** Input for idempotently projecting one governed-worker terminal outcome. */
+export interface TerminalizeGovernedWorkerTurnInput {
   /** Agent session created for the worker, when its write completed. */
   readonly agentSessionId: string | null;
-  /** Canonical failure completion timestamp. */
+  /** Canonical terminal completion timestamp. */
   readonly completedAt: string;
-  /** Stable product failure code. */
+  /** Stable product diagnostic code. */
   readonly errorCode: string;
-  /** Product-safe failure message. */
+  /** Product-safe terminal message. */
   readonly message: string;
+  /** Product outcome established by governed-worker terminalization. */
+  readonly outcome: 'cancelled' | 'failed' | 'interrupted';
   /** Request id correlated with emitted events. */
   readonly requestId: string | null;
   /** Product store that owns the turn. */
@@ -19,21 +21,21 @@ export interface TerminalizeGovernedWorkerTurnFailureInput {
 }
 
 /** Missing-turn projection result. */
-export interface MissingGovernedWorkerTurnFailureResult {
+export interface MissingGovernedWorkerTurnResult {
   /** Signals that no product turn was durably created. */
   readonly status: 'missing';
 }
 
 /**
- * Idempotently fails a governed-worker turn and repairs partial product-store writes.
+ * Idempotently terminalizes a governed-worker turn and repairs partial product-store writes.
  *
- * @param input Store, lineage, failure, request, and timestamp.
+ * @param input Store, lineage, outcome, diagnostic, request, and timestamp.
  * @returns The authoritative turn, or `missing` when no product turn exists.
  * @throws AggregateError when a durable write reports failure; a later retry can repair it.
  */
-export function terminalizeGovernedWorkerTurnFailure(
-  input: TerminalizeGovernedWorkerTurnFailureInput
-): ReturnType<FsStore['getTurnById']> | MissingGovernedWorkerTurnFailureResult {
+export function terminalizeGovernedWorkerTurn(
+  input: TerminalizeGovernedWorkerTurnInput
+): ReturnType<FsStore['getTurnById']> | MissingGovernedWorkerTurnResult {
   const initialTurn = readTurn(input.store, input.turnId);
   if (!initialTurn) {
     return { status: 'missing' };
@@ -54,82 +56,83 @@ export function terminalizeGovernedWorkerTurnFailure(
     return reconcileCompletedTurn(input, initialTurn, initialTurn);
   }
 
-  const recoveryOwnsFailure = Boolean(
-    initialTurn.status === 'failed' &&
+  const recoveryOwnsOutcome = Boolean(
+    initialTurn.status === input.outcome &&
       initialTurn.error &&
       typeof initialTurn.error.code === 'string' &&
-      isGovernedWorkerFailureCode(initialTurn.error.code)
+      isGovernedWorkerTerminalCode(initialTurn.error.code)
   );
-  if (isTerminalTurnStatus(initialTurn.status) && !recoveryOwnsFailure) {
+  if (isTerminalTurnStatus(initialTurn.status) && !recoveryOwnsOutcome) {
     return initialTurn;
   }
 
-  const errorCode = recoveryOwnsFailure ? initialTurn.error?.code : input.errorCode;
-  const message = recoveryOwnsFailure ? initialTurn.error?.message : input.message;
-  const completedAt = recoveryOwnsFailure
+  const errorCode = recoveryOwnsOutcome ? initialTurn.error?.code : input.errorCode;
+  const message = recoveryOwnsOutcome ? initialTurn.error?.message : input.message;
+  const completedAt = recoveryOwnsOutcome
     ? (initialTurn.completedAt ?? input.completedAt)
     : input.completedAt;
   if (!errorCode || !message) {
-    throw new Error('Governed worker failure is missing its durable error projection.');
+    throw new Error('Governed worker terminalization is missing its durable error projection.');
   }
   const errors: unknown[] = [];
   const turnPatch = {
     completedAt,
     error: { code: errorCode, message },
-    status: 'failed',
+    status: input.outcome,
   } as const;
-  let failedTurn = initialTurn;
+  let terminalTurn = initialTurn;
 
-  if (!turnMatchesFailure(failedTurn, errorCode, message)) {
+  if (!turnMatchesOutcome(terminalTurn, input.outcome, errorCode, message)) {
     try {
-      failedTurn = input.store.updateTurn(input.turnId, turnPatch);
+      terminalTurn = input.store.updateTurn(input.turnId, turnPatch);
     } catch (error) {
       errors.push(error);
-      failedTurn = input.store.getTurnById(input.turnId);
+      terminalTurn = input.store.getTurnById(input.turnId);
     }
   }
 
-  let failedSession = input.agentSessionId
+  const terminalSessionStatus = input.outcome === 'cancelled' ? 'interrupted' : input.outcome;
+  let terminalSession = input.agentSessionId
     ? readAgentSession(input.store, input.agentSessionId)
     : null;
   if (
     input.agentSessionId &&
-    failedSession &&
-    (failedSession.status !== 'failed' || failedSession.message !== message)
+    terminalSession &&
+    (terminalSession.status !== terminalSessionStatus || terminalSession.message !== message)
   ) {
     try {
-      failedSession = input.store.updateAgentSession(input.agentSessionId, {
+      terminalSession = input.store.updateAgentSession(input.agentSessionId, {
         message,
-        status: 'failed',
+        status: terminalSessionStatus,
         updatedAt: completedAt,
       });
     } catch (error) {
       errors.push(error);
-      failedSession = readAgentSession(input.store, input.agentSessionId);
+      terminalSession = readAgentSession(input.store, input.agentSessionId);
     }
   }
 
   const events = input.store.getTurnEvents(input.turnId);
   const sessionEventExists = Boolean(
     input.agentSessionId &&
-      failedSession?.status === 'failed' &&
+      terminalSession?.status === terminalSessionStatus &&
       events.some(
         (event) =>
           event.event === 'agent.session.updated' &&
           event.data.type === 'agent-session-updated' &&
           event.data.agentSession.id === input.agentSessionId &&
-          event.data.agentSession.status === 'failed'
+          event.data.agentSession.status === terminalSessionStatus
       )
   );
-  if (failedSession?.status === 'failed' && !sessionEventExists) {
+  if (terminalSession?.status === terminalSessionStatus && !sessionEventExists) {
     try {
       input.store.emitTurnEvent(input.turnId, {
-        data: { agentSession: failedSession, type: 'agent-session-updated' },
+        data: { agentSession: terminalSession, type: 'agent-session-updated' },
         event: 'agent.session.updated',
         requestId: input.requestId,
-        threadId: failedTurn.threadId,
-        turnId: failedTurn.id,
-        workspaceId: failedTurn.workspaceId,
+        threadId: terminalTurn.threadId,
+        turnId: terminalTurn.id,
+        workspaceId: terminalTurn.workspaceId,
       });
     } catch (error) {
       errors.push(error);
@@ -139,15 +142,19 @@ export function terminalizeGovernedWorkerTurnFailure(
   const terminalEventExists = input.store
     .getTurnEvents(input.turnId)
     .some((event) => event.event === 'turn.completed' && event.data.type === 'turn-completed');
-  if (turnMatchesFailure(failedTurn, errorCode, message) && !terminalEventExists) {
+  if (turnMatchesOutcome(terminalTurn, input.outcome, errorCode, message) && !terminalEventExists) {
     try {
       input.store.emitTurnEvent(input.turnId, {
-        data: { stopReason: 'error', turn: failedTurn, type: 'turn-completed' },
+        data: {
+          stopReason: input.outcome === 'failed' ? 'error' : 'aborted',
+          turn: terminalTurn,
+          type: 'turn-completed',
+        },
         event: 'turn.completed',
         requestId: input.requestId,
-        threadId: failedTurn.threadId,
-        turnId: failedTurn.id,
-        workspaceId: failedTurn.workspaceId,
+        threadId: terminalTurn.threadId,
+        turnId: terminalTurn.id,
+        workspaceId: terminalTurn.workspaceId,
       });
     } catch (error) {
       errors.push(error);
@@ -157,7 +164,7 @@ export function terminalizeGovernedWorkerTurnFailure(
   if (errors.length > 0) {
     throw new AggregateError(
       errors,
-      'Failed turn terminalization encountered partial persistence errors.'
+      'Governed worker turn terminalization encountered partial persistence errors.'
     );
   }
   return input.store.getTurnById(input.turnId);
@@ -173,7 +180,7 @@ export function terminalizeGovernedWorkerTurnFailure(
  * @throws AggregateError when a durable write reports failure.
  */
 function reconcileCompletedTurn(
-  input: TerminalizeGovernedWorkerTurnFailureInput,
+  input: TerminalizeGovernedWorkerTurnInput,
   currentTurn: ReturnType<FsStore['getTurnById']>,
   authoritativeTurn: ReturnType<FsStore['getTurnById']>
 ): ReturnType<FsStore['getTurnById']> {
@@ -296,14 +303,15 @@ function readAgentSession(
   }
 }
 
-/** Returns whether one turn already carries this helper's exact failure projection. */
-function turnMatchesFailure(
+/** Returns whether one turn already carries this helper's exact terminal projection. */
+function turnMatchesOutcome(
   turn: ReturnType<FsStore['getTurnById']>,
+  outcome: TerminalizeGovernedWorkerTurnInput['outcome'],
   errorCode: string,
   message: string
 ): boolean {
   return (
-    turn.status === 'failed' && turn.error?.code === errorCode && turn.error.message === message
+    turn.status === outcome && turn.error?.code === errorCode && turn.error.message === message
   );
 }
 
@@ -312,10 +320,11 @@ function isTerminalTurnStatus(status: ReturnType<FsStore['getTurnById']>['status
   return ['completed', 'failed', 'interrupted', 'cancelled'].includes(status);
 }
 
-/** Returns whether an existing failure belongs to governed-worker lifecycle projection. */
-function isGovernedWorkerFailureCode(errorCode: string): boolean {
+/** Returns whether an existing terminal outcome belongs to governed-worker lifecycle projection. */
+function isGovernedWorkerTerminalCode(errorCode: string): boolean {
   return (
     errorCode === 'worker_governance_turn_failed' ||
-    errorCode === 'worker_governance_restart_recovery'
+    errorCode === 'worker_governance_restart_recovery' ||
+    errorCode === 'worker_governance_turn_cancelled'
   );
 }

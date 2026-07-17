@@ -57,7 +57,7 @@ This hierarchy is the product model, communication model, and storage backbone.
 
 `Thread` is a durable work container inside a workspace.
 
-`Turn` is one agent-bound execution unit inside a thread.
+`Turn` is one execution unit inside a Thread. A schedulable or worker Turn is Agent-bound; an owning accepted contract may define a Core-local service Turn that is sessionless only under the narrow no-worker and no-runtime-effect rule below.
 
 `Item` is the append-only communication and storage atom inside a turn.
 
@@ -213,7 +213,7 @@ Thread is not an agent session and must not be coupled to exactly one runtime ha
 
 A turn is one execution unit inside a thread.
 
-A turn is assigned to one agent session when it executes.
+A Turn executed by a worker or other schedulable Agent is assigned to exactly one Agent Session. A Core-local service Turn may execute with `agentSessionId=null` only when its owning accepted workflow contract forbids worker, scheduler, sandbox, and runtime-session effects and names the app-local service and durable result owners; a provider capability call alone does not create an Agent Session.
 
 A turn can be triggered by user input, system input, automation, retry, handoff, approval resolution, or running-work steering.
 
@@ -236,7 +236,7 @@ Interrupt and cancellation commands are asynchronous commands. Clients MAY show 
 
 New input should use the same core input semantics across web UI, desktop UI, chat channels, and future transports.
 
-If a thread has an active non-terminal turn, follow-up user input belongs to that turn by default unless Core or the agent adapter explicitly closes the turn first.
+If a Thread has an active non-terminal Turn, follow-up user input is accepted only through that Turn's exact human gate or an owning active-work delivery contract. The gate attaches its response to the same Turn. A delivery contract may queue, apply, convert, or reject input only as its accepted specification defines; without either owner, Core returns the typed busy or unavailable error before Item, queue, command, Turn, or scheduler writes.
 
 If a thread has no active turn, new user input starts a new turn.
 
@@ -413,14 +413,14 @@ An approval request is represented by an item-backed `ApprovalRequest` record.
 Approval flow:
 
 ```text
-approval-request item -> turn awaiting_human approval gate -> approval-decision item -> turn resumes or fails
+approval-request item -> turn awaiting_human approval gate -> approval-decision item -> owning contract chooses continuation or terminal closeout
 ```
 
 When a turn waits on approval, `Turn.humanGate` MUST be `{ kind: "approval", approvalRequestId, itemId }`.
 
 Approval decisions should be explicit and auditable.
 
-Rejected approvals should transition the turn to a safe terminal or recoverable state according to the command semantics defined by the implementation.
+Approval decisions transition the Turn only through the owning accepted contract; protocol does not infer resume, cancellation, or failure from the status alone.
 
 Approval status values should include:
 
@@ -438,24 +438,24 @@ Agent questions and elicitations are represented by `user-input-request` items f
 Question flow:
 
 ```text
-user-input-request item -> turn awaiting_human user-input gate -> user-input-response item -> turn resumes or fails
+user-input-request item -> turn awaiting_human user-input gate -> user-input-response item -> owning contract chooses continuation or terminal closeout
 ```
 
 When a turn waits on a question or elicitation, `Turn.humanGate` MUST be `{ kind: "user-input", userInputRequestId, itemId }`.
 
 `awaiting_human` is the only core turn state for human-gated pauses. Clients MUST choose approval UI or user-input UI from `humanGate.kind` and the referenced item type, not from the turn status string alone.
 
-When Core receives user input for a turn that is paused on `user-input-request`, Core MUST attach that input to the active turn instead of creating a new turn.
+When Core receives user input for a Turn that is paused on `user-input-request`, Core MUST attach that input to the same Turn instead of creating a new Turn. The owning accepted contract then decides whether that Turn continues `running` or closes as `completed`, `cancelled`, or `failed`.
 
 Implementations MAY support only a subset of approval statuses, but clients should tolerate the full status family once advertised by protocol version or capability flag.
 
 ## Artifact Semantics
 
-Artifacts are durable user-visible outputs associated with a workspace and optionally a thread or turn.
+Artifacts are durable user-visible outputs associated with a Workspace and, when produced or communicated through work, an exact Thread, Turn, and Item lineage.
 
-Artifact creation, updates, and references should be represented by item-backed artifact events.
+Work-produced Artifact creation, every work-produced mutation, and every Thread communication MUST be represented by the exact Item-backed lineage defined by the owning specification. A governed Workspace-only import or registration MAY initially keep Thread and Turn null only when the Artifact carries the explicit immutable provenance defined by that specification; it MUST NOT masquerade as user or agent work output.
 
-Artifact records may be fetched independently through app or protocol APIs, but artifact identity and lineage must remain anchored in workspace, thread, turn, and item history.
+Artifact records may be fetched independently through app or protocol APIs. Workspace identity and immutable origin remain authoritative before communication, while the first Thread introduction and every later work-produced mutation create exact Item-backed lineage without rewriting the Workspace-only origin.
 
 ## Event Envelope
 
@@ -585,11 +585,15 @@ For turn-scoped commands, Core SHOULD also include `threadId` and `turnId` in th
 
 For workspace creation, where no workspace ID exists before the command is accepted, Core MAY use a server-local global scope.
 
-If a duplicate command is received while the original command is still active, Core MUST return the same accepted command result or current command status rather than creating duplicate turns, approvals, artifacts, or items.
+A completed command receipt is the default replay authority. The receipt stores the original response resource identifiers; replay returns those identifiers and projects current state from the owning records. Exact byte-for-byte response reconstruction is not required, and callers may re-query the returned resources.
 
-If a duplicate command is received after the original command completed and the idempotency record is still retained, Core MUST return the current resource snapshot for the original response resource when that resource still exists.
+If a duplicate command is received while an explicit accepted in-progress owner exists, Core MAY return that owner's current status rather than creating duplicate turns, approvals, artifacts, or items. An in-progress owner does not authorize Core to infer a completed receipt.
 
-The idempotency ledger MUST store only non-secret metadata: command name, request ID, scope IDs, a canonical input hash, response resource kind and ID, creation timestamp, and expiry timestamp.
+If request-owned effects exist without a completed receipt, the central default is `409 recovery_required` with no repeated effect, inferred winner, synthesized receipt, settlement state, or repair workflow. A narrow missing-receipt publication already accepted by an owning specification MAY remain only for its named command and complete request-owned tuple; it is not a general protocol requirement or precedent for another command.
+
+The idempotency ledger MUST store only non-secret metadata: command name, request ID, scope IDs, a canonical input hash, response resource kind and ID, creation timestamp, and expiry timestamp. It MUST NOT store a response-body snapshot, drive a business transition, replace an owning record, or become a command lifecycle.
+
+The sole accepted exception is `chat.start` under `docs/specs/20260704-chat_mode_assistant.md`. Its receipt MAY additionally store only `resultKind`, the original HTTP success status, and the downstream Task Turn or Goal and Goal Turn identifiers required by a handoff. These fields remain non-secret and non-authoritative, MUST NOT drive a business transition, and are not a precedent for another command. No other command may extend receipt metadata without an explicit update to this Core contract and its owning accepted specification.
 
 It MUST NOT store prompts, knowledge content, context package content, provider config, OAuth state, secrets, full request bodies, or full response bodies.
 
@@ -701,6 +705,7 @@ Secret values and provider-native sensitive payloads must not appear in protocol
 - Clients MUST NOT infer routing, storage paths, timestamps, ownership, or provider identity from ID shape.
 - Raw heterogeneous live events without the core event envelope MUST NOT be part of the core protocol.
 - Mutating and asynchronous commands MUST carry a caller-provided `requestId`.
+- Command replay MUST use the central receipt-and-current-owner policy; missing receipts MUST fail as `recovery_required` unless one already accepted command-specific exception proves its complete request-owned tuple.
 - Protocol errors MUST use stable machine-readable codes and MUST NOT leak secret values or provider-native sensitive payloads.
 
 ## Schema Source Of Truth

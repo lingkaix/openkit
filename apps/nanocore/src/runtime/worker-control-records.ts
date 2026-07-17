@@ -1,4 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import { type StopReason, StopReasonSchema, type TurnStatus } from '@openkit/protocol';
 import {
   type WorkerCanonicalEventRecord,
   WorkerCanonicalEventRecordSchema,
@@ -30,7 +31,69 @@ export interface WaitForWorkerControlFinalStatusInput {
 }
 
 /** Durable final-status fields required by online and restart closeout. */
-export type AcceptedWorkerFinalStatus = Pick<WorkerControlFinalStatus, 'acceptedAt' | 'status'>;
+export type AcceptedWorkerFinalStatus = Pick<
+  WorkerControlFinalStatus,
+  'acceptedAt' | 'status' | 'stopReason'
+>;
+
+/**
+ * Validates one accepted worker status against the closed Core stop-reason mapping.
+ *
+ * @param accepted Durable worker-control terminal facts.
+ * @returns Canonical Core stop reason.
+ * @throws Error when the raw stop reason is unknown or incompatible with the worker status.
+ */
+export function canonicalStopReasonForAcceptedWorkerFinalStatus(
+  accepted: AcceptedWorkerFinalStatus
+): StopReason {
+  const parsed = StopReasonSchema.safeParse(accepted.stopReason);
+  if (!parsed.success) {
+    throw new Error('Accepted worker final status has no canonical Core StopReason.');
+  }
+
+  const stopReason = parsed.data;
+  const compatible =
+    (accepted.status === 'completed' && stopReason === 'completed') ||
+    (accepted.status === 'blocked' &&
+      (stopReason === 'length' ||
+        stopReason === 'budget_exhausted' ||
+        stopReason === 'ask_user')) ||
+    ((accepted.status === 'cancelled' || accepted.status === 'interrupted') &&
+      stopReason === 'aborted') ||
+    ((accepted.status === 'failed' ||
+      accepted.status === 'degraded' ||
+      accepted.status === 'lost') &&
+      stopReason === 'error');
+
+  if (!compatible) {
+    throw new Error('Accepted worker final status has no canonical Core StopReason.');
+  }
+  return stopReason;
+}
+
+/**
+ * Maps one canonical worker stop reason to its product Turn status.
+ *
+ * @param stopReason Canonical Core stop reason.
+ * @returns Product Turn status required by that reason.
+ */
+export function turnStatusForCanonicalWorkerStopReason(
+  stopReason: Exclude<StopReason, 'ask_user'>
+): Extract<TurnStatus, 'cancelled' | 'completed' | 'failed'>;
+export function turnStatusForCanonicalWorkerStopReason(
+  stopReason: StopReason
+): Extract<TurnStatus, 'awaiting_human' | 'cancelled' | 'completed' | 'failed'>;
+export function turnStatusForCanonicalWorkerStopReason(
+  stopReason: StopReason
+): Extract<TurnStatus, 'awaiting_human' | 'cancelled' | 'completed' | 'failed'> {
+  if (stopReason === 'completed' || stopReason === 'length' || stopReason === 'budget_exhausted') {
+    return 'completed';
+  }
+  if (stopReason === 'ask_user') {
+    return 'awaiting_human';
+  }
+  return stopReason === 'aborted' ? 'cancelled' : 'failed';
+}
 
 /**
  * Creates a server-scope SQLite recorder for accepted worker-control records.
@@ -168,10 +231,15 @@ export function getWorkerControlAcceptedFinalStatus(
   if (!row) {
     return null;
   }
-  const status = WorkerCanonicalTerminalStatusSchema.parse(
-    (JSON.parse(row.recordJson) as { readonly status?: unknown }).status
-  );
-  return { acceptedAt: row.acceptedAt, status };
+  const record = JSON.parse(row.recordJson) as {
+    readonly status?: unknown;
+    readonly stopReason?: unknown;
+  };
+  const status = WorkerCanonicalTerminalStatusSchema.parse(record.status);
+  if (typeof record.stopReason !== 'string') {
+    throw new Error('Durable worker final status has no stop reason.');
+  }
+  return { acceptedAt: row.acceptedAt, status, stopReason: record.stopReason };
 }
 
 /**

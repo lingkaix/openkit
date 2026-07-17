@@ -42,7 +42,6 @@ describe('goal task selector', () => {
       selectNextReadyGoalTask([
         task({ taskId: 'task_pending', orderIndex: 0, status: 'pending' }),
         task({ taskId: 'task_completed', orderIndex: 1, status: 'completed' }),
-        task({ taskId: 'task_skipped', orderIndex: 2, status: 'skipped' }),
         task({ taskId: 'task_blocked', orderIndex: 3, status: 'blocked' }),
         task({ taskId: 'task_failed', orderIndex: 4, status: 'failed' }),
         task({ taskId: 'task_ready', orderIndex: 5, status: 'ready' }),

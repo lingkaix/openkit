@@ -17,16 +17,14 @@ import {
   BackendWorkspaceHandleSchema,
   CancelSchedulerAdmissionResponseSchema,
   CapabilityUsageResponseSchema,
-  ClearInterruptedWorkerCheckpointRequestSchema,
-  ClearInterruptedWorkerCheckpointResponseSchema,
+  ChatModeOutcomeSchema,
   CodexOAuthAccountsPayloadSchema,
   CodexOAuthStatusPayloadSchema,
   ConsumeOpenKitBootstrapTokenRequestSchema,
   ConsumeOpenKitBootstrapTokenResponseSchema,
-  ConvertRecoveryPendingUserTurnToFollowUpResponseSchema,
-  CreateInterruptedRecoveryStateResponseSchema,
   CreateOpenKitAccessTokenRequestSchema,
   CreateOpenKitAccessTokenResponseSchema,
+  CreateThreadGoalPlanRequestSchema,
   CreateThreadGoalPlanResponseSchema,
   DataRootBackupCreateResponseSchema,
   DataRootBackupVerifyRequestSchema,
@@ -37,6 +35,10 @@ import {
   GetGitPushRecordResponseSchema,
   GetWorkspaceApplyResultResponseSchema,
   GitPushRecordSchema,
+  GoalReadModelStatusSchema,
+  GoalReviewResolutionOutcomeSchema,
+  GoalTaskCountsSchema,
+  GoalTaskReadModelStatusSchema,
   KnowledgeClaimSchema,
   KnowledgeConflictSchema,
   KnowledgeDerivedIndexesResponseSchema,
@@ -64,7 +66,6 @@ import {
   ListKnowledgeObservationsResponseSchema,
   ListKnowledgeSourcesResponseSchema,
   ListOpenKitAccessTokensResponseSchema,
-  ListRecoveryPendingUserTurnsResponseSchema,
   ListSchedulerAdmissionsResponseSchema,
   ListServerAuditEventsResponseSchema,
   ListServerPermissionDecisionsResponseSchema,
@@ -86,10 +87,10 @@ import {
   ListWorkspaceSyncReviewsResponseSchema,
   ListWorkspaceVaultUseRecordsResponseSchema,
   MaterializeKnowledgeContextPackageResponseSchema,
+  PauseThreadGoalRequestSchema,
   PauseThreadGoalResponseSchema,
   PromoteKnowledgeClaimRequestSchema,
   PromoteKnowledgeClaimResponseSchema,
-  PromoteRecoveryPendingUserTurnToInterruptResponseSchema,
   QueueAgentSessionTerminalCommandRequestSchema,
   QueueAgentSessionTerminalCommandResponseSchema,
   QuickChatResponseSchema,
@@ -108,8 +109,10 @@ import {
   ResolveKnowledgeConflictRequestSchema,
   ResolveKnowledgeConflictResponseSchema,
   RestartRuntimeConfigStaleSessionResponseSchema,
+  ResumeThreadGoalRequestSchema,
   ResumeThreadGoalResponseSchema,
   RetrieveKnowledgeRequestSchema,
+  RetryInterruptedWorkerCheckpointRequestSchema,
   RetryInterruptedWorkerCheckpointResponseSchema,
   RetrySchedulerAdmissionResponseSchema,
   ReviseThreadGoalPlanRequestSchema,
@@ -153,6 +156,8 @@ import {
   SubmitWorkspaceRecoveryDecisionResponseSchema,
   SubmitWorkspaceSyncReviewDecisionRequestSchema,
   SubmitWorkspaceSyncReviewDecisionResponseSchema,
+  TaskModeAttemptStateSchema,
+  ThreadGoalPlanSchema,
   ThreadGoalSummaryResponseSchema,
   TurnFeedbackResponseSchema,
   VaultAdminBootstrapCodexAuthJsonRequestSchema,
@@ -299,7 +304,6 @@ function appDiagnosticsPayload(): Record<string, unknown> {
     defaultProviders: defaultProviders(),
     defaults: {
       quickChat: { providerId: null, model: null },
-      internalTasks: { providerId: null, model: null },
       gateway: { providerId: null, model: null },
     },
     oauth: {
@@ -307,7 +311,6 @@ function appDiagnosticsPayload(): Record<string, unknown> {
     },
     capabilities: ['core.stream.replay'],
     runtimeConfig: runtimeConfigStatus(),
-    internalAgents: { agents: [], recentFailures: [], recentHookFailures: [] },
   };
 }
 
@@ -1768,36 +1771,24 @@ describe('app api schemas', () => {
     });
   });
 
-  it('preserves internal-agent failure and hook diagnostics', () => {
-    const internalAgents = {
-      agents: [],
-      recentFailures: [
-        {
-          agentId: 'quick-chat',
-          code: 'internal_agent_budget_exhausted',
-          details: { source: 'loop' },
-          message: 'Internal agent budget was exhausted.',
-          occurredAt: timestamp,
-          status: 'aborted' as const,
-          stopReason: 'budget_exhausted' as const,
-        },
-      ],
-      recentHookFailures: [
-        {
-          eventType: 'message_update' as const,
-          hookId: 'diagnostics-observer',
-          message: 'Diagnostics observer failed.',
-          mode: 'observational' as const,
-        },
-      ],
-    };
-
+  it('keeps generic internal-agent runtime state outside App Diagnostics', () => {
+    const payload = appDiagnosticsPayload();
+    expect(AppDiagnosticsResponseSchema.parse(payload)).toEqual(payload);
     expect(
-      AppDiagnosticsResponseSchema.parse({
-        ...appDiagnosticsPayload(),
-        internalAgents,
-      }).internalAgents
-    ).toEqual(internalAgents);
+      AppDiagnosticsResponseSchema.safeParse({
+        ...payload,
+        internalAgents: { agents: [], recentFailures: [], recentHookFailures: [] },
+      }).success
+    ).toBe(false);
+    expect(
+      AppDiagnosticsResponseSchema.safeParse({
+        ...payload,
+        defaults: {
+          ...payload.defaults,
+          internalTasks: { providerId: null, model: null },
+        },
+      }).success
+    ).toBe(false);
   });
 
   it('accepts capability usage read models', () => {
@@ -1913,6 +1904,36 @@ describe('app api schemas', () => {
     expect(appApiSchemas).not.toHaveProperty('CreateEvidenceBundleResponseSchema');
     expect(appApiSchemas).not.toHaveProperty('WorkspaceSyncEvidenceBundleSchema');
     expect(appApiSchemas).not.toHaveProperty('ListWorkspaceSyncEvidenceBundlesResponseSchema');
+  });
+
+  it('does not authorize generic pending-input recovery', () => {
+    expect(
+      appApiSchemas.HumanAttentionActionKindSchema.safeParse('edit_pending_input').success
+    ).toBe(false);
+    expect(
+      appApiSchemas.HumanAttentionActionKindSchema.safeParse('promote_pending_input_to_interrupt')
+        .success
+    ).toBe(false);
+    expect(
+      appApiSchemas.HumanAttentionActionKindSchema.safeParse('convert_pending_input_to_follow_up')
+        .success
+    ).toBe(false);
+    expect(
+      appApiSchemas.HumanAttentionActionKindSchema.safeParse('cancel_pending_input').success
+    ).toBe(false);
+    expect(appApiSchemas).not.toHaveProperty('EditRecoveryPendingUserTurnRequestSchema');
+    expect(appApiSchemas).not.toHaveProperty('EditRecoveryPendingUserTurnResponseSchema');
+    expect(appApiSchemas).not.toHaveProperty(
+      'PromoteRecoveryPendingUserTurnToInterruptResponseSchema'
+    );
+    expect(appApiSchemas).not.toHaveProperty('RecoveryPendingUserTurnSchema');
+    expect(appApiSchemas).not.toHaveProperty('CreateInterruptedRecoveryStateResponseSchema');
+    expect(appApiSchemas).not.toHaveProperty('ListRecoveryPendingUserTurnsResponseSchema');
+    expect(appApiSchemas).not.toHaveProperty('CancelRecoveryPendingUserTurnResponseSchema');
+    expect(appApiSchemas).not.toHaveProperty(
+      'ConvertRecoveryPendingUserTurnToFollowUpResponseSchema'
+    );
+    expect(appApiSchemas).not.toHaveProperty('PendingUserTurnHumanAttentionSourceSchema');
   });
 
   it('accepts workspace runtime evidence read models without raw backend payloads', () => {
@@ -2833,26 +2854,6 @@ describe('app api schemas', () => {
       expect(
         AppDiagnosticsResponseSchema.safeParse({
           ...appDiagnosticsPayload(),
-          internalAgents: {
-            agents: [],
-            recentFailures: [
-              {
-                agentId: 'quick-chat',
-                code: 'internal_agent_failed',
-                details: {},
-                message: `Upstream failed with ${rawSecret}`,
-                occurredAt: timestamp,
-                status: 'error',
-                stopReason: 'error',
-              },
-            ],
-            recentHookFailures: [],
-          },
-        }).success
-      ).toBe(false);
-      expect(
-        AppDiagnosticsResponseSchema.safeParse({
-          ...appDiagnosticsPayload(),
           runtimeConfig: {
             ...runtimeConfigStatus(),
             lastFailedReload: {
@@ -2954,7 +2955,10 @@ describe('app api schemas', () => {
     ).toBe('data-source');
   });
 
-  it('accepts Task Mode delegation decisions and worker attempt state', () => {
+  it('accepts owner-derived Task Mode state without exposing the launch decision', () => {
+    expect(StartTaskModeRequestSchema.safeParse({ input: 'Missing request id.' }).success).toBe(
+      false
+    );
     expect(
       StartTaskModeRequestSchema.parse({
         input: 'Implement the focused fix.',
@@ -3007,11 +3011,7 @@ describe('app api schemas', () => {
       },
     });
 
-    expect(taskResponse.decision?.contextRefs).toEqual([
-      { kind: 'workspace', id: 'ws_demo' },
-      { kind: 'thread', id: 'th_demo' },
-      { kind: 'knowledge', id: 'mem_project' },
-    ]);
+    expect(taskResponse).not.toHaveProperty('decision');
     expect(taskResponse.completion).toEqual({
       itemId: 'it_assistant_tu_task_1',
       text: 'Completed by worker.',
@@ -3021,9 +3021,10 @@ describe('app api schemas', () => {
       artifactIds: ['ar_task_result'],
       reviewIds: ['swr_task_result'],
     });
+    expect(TaskModeAttemptStateSchema.parse('cancelled')).toBe('cancelled');
+    expect(() => TaskModeAttemptStateSchema.parse('needs-review')).toThrow();
     expect(
       StartTaskModeResponseSchema.parse({
-        decision: null,
         state: 'escalated-to-goal',
         escalation: {
           targetMode: 'goal',
@@ -3053,6 +3054,10 @@ describe('app api schemas', () => {
   });
 
   it('accepts Chat Mode Assistant answers and handoff projections', () => {
+    expect(ChatModeOutcomeSchema.safeParse('failed').success).toBe(false);
+    expect(StartChatModeRequestSchema.safeParse({ input: 'Missing request id.' }).success).toBe(
+      false
+    );
     expect(
       StartChatModeRequestSchema.parse({
         input: 'What is this workspace?',
@@ -3607,21 +3612,6 @@ describe('app api schemas', () => {
           ],
           registry: [],
         },
-        internalAgents: {
-          agents: [],
-          recentFailures: [
-            {
-              agentId: 'quick-chat',
-              code: 'internal_agent_failed',
-              details: {},
-              message: 'Upstream failed with [redacted].',
-              occurredAt: timestamp,
-              status: 'error',
-              stopReason: 'error',
-            },
-          ],
-          recentHookFailures: [],
-        },
       }).providers.diagnostics[0]?.message
     ).toBe('redacted secret-ref env:OPENAI_API_KEY');
   });
@@ -3933,22 +3923,15 @@ describe('app api schemas', () => {
             ready: 0,
             running: 1,
             reviewing: 0,
-            needsRevision: 0,
             completed: 2,
             blocked: 0,
             failed: 0,
-            skipped: 0,
           },
           pendingHumanAttention: {
             required: false,
             reason: null,
           },
           terminalState: null,
-          steering: {
-            pendingSteeringCount: 1,
-            pendingFollowUpCount: 0,
-            appliedSteeringCount: 2,
-          },
           updatedAt: timestamp,
         },
       }).goal?.goalId
@@ -3968,28 +3951,29 @@ describe('app api schemas', () => {
             ready: 1,
             running: 0,
             reviewing: 0,
-            needsRevision: 0,
             completed: 0,
             blocked: 0,
             failed: 0,
-            skipped: 0,
           },
           pendingHumanAttention: {
             required: false,
             reason: null,
           },
           terminalState: null,
-          steering: {
-            pendingSteeringCount: 0,
-            pendingFollowUpCount: 0,
-            appliedSteeringCount: 0,
-          },
           updatedAt: timestamp,
         },
       }).goal?.status
     ).toBe('paused');
+    expect(PauseThreadGoalRequestSchema.parse({ requestId: 'req_goal_pause' })).toEqual({
+      requestId: 'req_goal_pause',
+    });
+    expect(PauseThreadGoalRequestSchema.safeParse({}).success).toBe(false);
+    expect(
+      PauseThreadGoalRequestSchema.safeParse({ requestId: 'req_goal_pause', extra: true }).success
+    ).toBe(false);
     expect(
       PauseThreadGoalResponseSchema.parse({
+        outcome: 'paused',
         goal: {
           goalId: 'goal_demo',
           workspaceId: 'ws_demo',
@@ -4003,28 +3987,29 @@ describe('app api schemas', () => {
             ready: 1,
             running: 0,
             reviewing: 0,
-            needsRevision: 0,
             completed: 0,
             blocked: 0,
             failed: 0,
-            skipped: 0,
           },
           pendingHumanAttention: {
             required: false,
             reason: null,
           },
           terminalState: null,
-          steering: {
-            pendingSteeringCount: 0,
-            pendingFollowUpCount: 0,
-            appliedSteeringCount: 0,
-          },
           updatedAt: timestamp,
         },
-      }).goal.status
-    ).toBe('paused');
+      })
+    ).toMatchObject({ outcome: 'paused', goal: { status: 'paused' } });
+    expect(ResumeThreadGoalRequestSchema.parse({ requestId: 'req_goal_resume' })).toEqual({
+      requestId: 'req_goal_resume',
+    });
+    expect(ResumeThreadGoalRequestSchema.safeParse({}).success).toBe(false);
+    expect(
+      ResumeThreadGoalRequestSchema.safeParse({ requestId: 'req_goal_resume', extra: true }).success
+    ).toBe(false);
     expect(
       ResumeThreadGoalResponseSchema.parse({
+        outcome: 'resumed',
         goal: {
           goalId: 'goal_demo',
           workspaceId: 'ws_demo',
@@ -4038,73 +4023,36 @@ describe('app api schemas', () => {
             ready: 1,
             running: 0,
             reviewing: 0,
-            needsRevision: 0,
             completed: 0,
             blocked: 0,
             failed: 0,
-            skipped: 0,
           },
           pendingHumanAttention: {
             required: false,
             reason: null,
           },
           terminalState: null,
-          steering: {
-            pendingSteeringCount: 0,
-            pendingFollowUpCount: 0,
-            appliedSteeringCount: 0,
-          },
           updatedAt: timestamp,
         },
-      }).goal.status
-    ).toBe('running');
-    expect(
-      ThreadGoalSummaryResponseSchema.parse({
-        goal: {
-          goalId: 'goal_demo',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          status: 'running',
-          title: 'Ship release',
-          objective: 'Make v0.0.6 ready.',
-          currentTask: {
-            taskId: 'task_revision',
-            title: 'Refine work',
-            status: 'needs_revision',
-            orderIndex: 2,
-          },
-          taskCounts: {
-            pending: 0,
-            ready: 0,
-            running: 0,
-            reviewing: 0,
-            needsRevision: 1,
-            completed: 0,
-            blocked: 0,
-            failed: 0,
-            skipped: 0,
-          },
-          pendingHumanAttention: {
-            required: false,
-            reason: null,
-          },
-          terminalState: null,
-          steering: {
-            pendingSteeringCount: 0,
-            pendingFollowUpCount: 0,
-            appliedSteeringCount: 0,
-          },
-          updatedAt: timestamp,
-        },
-      }).goal?.currentTask?.status
-    ).toBe('needs_revision');
+      })
+    ).toMatchObject({ outcome: 'resumed', goal: { status: 'running' } });
     expect(ThreadGoalSummaryResponseSchema.parse({ goal: null }).goal).toBeNull();
     expect(
       StartThreadGoalRequestSchema.parse({
+        requestId: 'req_goal_start',
         objective: 'Make v0.0.6 ready to publish.',
         title: 'Ship v0.0.6',
-      }).title
-    ).toBe('Ship v0.0.6');
+      })
+    ).toEqual({
+      requestId: 'req_goal_start',
+      objective: 'Make v0.0.6 ready to publish.',
+      title: 'Ship v0.0.6',
+    });
+    expect(
+      StartThreadGoalRequestSchema.safeParse({
+        objective: 'Make v0.0.6 ready to publish.',
+      }).success
+    ).toBe(false);
     expect(
       StartThreadGoalResponseSchema.parse({
         goal: {
@@ -4120,22 +4068,15 @@ describe('app api schemas', () => {
             ready: 0,
             running: 0,
             reviewing: 0,
-            needsRevision: 0,
             completed: 0,
             blocked: 0,
             failed: 0,
-            skipped: 0,
           },
           pendingHumanAttention: {
             required: false,
             reason: null,
           },
           terminalState: null,
-          steering: {
-            pendingSteeringCount: 0,
-            pendingFollowUpCount: 0,
-            appliedSteeringCount: 0,
-          },
           updatedAt: timestamp,
         },
         objectiveItemId: 'it_goal_objective',
@@ -4180,22 +4121,15 @@ describe('app api schemas', () => {
             ready: 1,
             running: 0,
             reviewing: 0,
-            needsRevision: 0,
             completed: 0,
             blocked: 0,
             failed: 0,
-            skipped: 0,
           },
           pendingHumanAttention: {
             required: false,
             reason: null,
           },
           terminalState: null,
-          steering: {
-            pendingSteeringCount: 1,
-            pendingFollowUpCount: 0,
-            appliedSteeringCount: 0,
-          },
           updatedAt: timestamp,
         },
       }).success
@@ -4264,22 +4198,15 @@ describe('app api schemas', () => {
             ready: 0,
             running: 0,
             reviewing: 0,
-            needsRevision: 0,
             completed: 0,
             blocked: 0,
             failed: 0,
-            skipped: 0,
           },
           pendingHumanAttention: {
             required: true,
             reason: 'Goal plan needs approval.',
           },
           terminalState: null,
-          steering: {
-            pendingSteeringCount: 0,
-            pendingFollowUpCount: 0,
-            appliedSteeringCount: 0,
-          },
           updatedAt: timestamp,
         },
         planItemId: 'it_goal_plan_goal_demo',
@@ -4293,22 +4220,54 @@ describe('app api schemas', () => {
             { kind: 'thread', id: 'th_demo' },
           ],
           requiredApprovals: ['plan_approval'],
+          plan,
         },
         plan,
-      }).planner.sourceAgentId
-    ).toBe('worker-coordinator');
+      }).planner.plan
+    ).toEqual(plan);
+    expect(
+      CreateThreadGoalPlanRequestSchema.parse({ requestId: 'req_goal_plan_create' }).requestId
+    ).toBe('req_goal_plan_create');
     expect(
       ApproveThreadGoalPlanRequestSchema.parse({
+        requestId: 'req_goal_plan_approve',
         planItemId: 'it_goal_plan_goal_demo',
-        plan,
       }).planItemId
     ).toBe('it_goal_plan_goal_demo');
+    expect(
+      ApproveThreadGoalPlanRequestSchema.safeParse({
+        requestId: 'req_goal_plan_approve',
+        planItemId: 'it_goal_plan_goal_demo',
+        plan,
+      }).success
+    ).toBe(false);
+    expect(
+      ThreadGoalPlanSchema.safeParse({
+        ...plan,
+        tasks: [
+          {
+            ...plan.tasks[0],
+            reviewPolicy: { ...plan.tasks[0].reviewPolicy, reviewers: ['internal'] },
+          },
+        ],
+      }).success
+    ).toBe(false);
     expect(
       ReviseThreadGoalPlanRequestSchema.parse({
         requestId: 'req_goal_plan_revise',
         revision: 'Split the release plan into documentation and verification tasks.',
       }).revision
     ).toBe('Split the release plan into documentation and verification tasks.');
+    expect(
+      ReviseThreadGoalPlanRequestSchema.safeParse({ revision: 'Missing request identity.' }).success
+    ).toBe(false);
+    expect(
+      ReviseThreadGoalPlanRequestSchema.safeParse({
+        requestId: 'req_goal_plan_revise',
+        revision: 'Reject unowned input.',
+        plan: {},
+      }).success
+    ).toBe(false);
     expect(
       ReviseThreadGoalPlanResponseSchema.parse({
         goal: {
@@ -4324,22 +4283,15 @@ describe('app api schemas', () => {
             ready: 0,
             running: 0,
             reviewing: 0,
-            needsRevision: 0,
             completed: 0,
             blocked: 0,
             failed: 0,
-            skipped: 0,
           },
           pendingHumanAttention: {
             required: false,
             reason: null,
           },
           terminalState: null,
-          steering: {
-            pendingSteeringCount: 0,
-            pendingFollowUpCount: 0,
-            appliedSteeringCount: 0,
-          },
           updatedAt: timestamp,
         },
         revisionItemId: 'it_goal_plan_revision_goal_demo',
@@ -4361,35 +4313,51 @@ describe('app api schemas', () => {
             ready: 1,
             running: 0,
             reviewing: 0,
-            needsRevision: 0,
             completed: 0,
             blocked: 0,
             failed: 0,
-            skipped: 0,
           },
           pendingHumanAttention: {
             required: false,
             reason: null,
           },
           terminalState: null,
-          steering: {
-            pendingSteeringCount: 0,
-            pendingFollowUpCount: 0,
-            appliedSteeringCount: 0,
-          },
           updatedAt: timestamp,
         },
         readyTasks: [{ taskId: 'task_1', status: 'ready' }],
         startsWorkerTurn: false,
       }).readyTasks
     ).toEqual([{ taskId: 'task_1', status: 'ready' }]);
+    expect(RunThreadGoalStepRequestSchema.parse({ requestId: 'req_goal_step_1' })).toEqual({
+      requestId: 'req_goal_step_1',
+    });
     expect(
-      RunThreadGoalStepRequestSchema.parse({
+      RunThreadGoalStepRequestSchema.safeParse({
         requestId: 'req_goal_step_1',
         followUpDrainMode: 'all',
+      }).success
+    ).toBe(false);
+    expect(
+      RunThreadGoalStepRequestSchema.safeParse({
+        requestId: 'req_goal_step_1',
         reviewPolicyOverride: 'human',
-      }).followUpDrainMode
-    ).toBe('all');
+      }).success
+    ).toBe(false);
+    expect(GoalReadModelStatusSchema.safeParse('verifying').success).toBe(false);
+    expect(GoalTaskReadModelStatusSchema.safeParse('skipped').success).toBe(false);
+    expect(GoalTaskReadModelStatusSchema.safeParse('needs_revision').success).toBe(false);
+    expect(
+      GoalTaskCountsSchema.parse({
+        pending: 0,
+        ready: 0,
+        running: 0,
+        reviewing: 0,
+        needsRevision: 1,
+        completed: 0,
+        blocked: 0,
+        failed: 0,
+      })
+    ).not.toHaveProperty('needsRevision');
     expect(() =>
       RunThreadGoalStepRequestSchema.parse({
         requestId: 'req_goal_step_1',
@@ -4416,90 +4384,62 @@ describe('app api schemas', () => {
             ready: 0,
             running: 0,
             reviewing: 1,
-            needsRevision: 0,
             completed: 0,
             blocked: 0,
             failed: 0,
-            skipped: 0,
           },
           pendingHumanAttention: {
             required: true,
             reason: 'Worker result needs review.',
           },
           terminalState: null,
-          steering: {
-            pendingSteeringCount: 0,
-            pendingFollowUpCount: 0,
-            appliedSteeringCount: 1,
-          },
           updatedAt: timestamp,
         },
-        worker: {
+        result: {
+          taskId: 'task_1',
           turnId: 'turn_worker',
-          stopReason: 'completed',
-          checkpointStage: 'completed',
-          workerSessionId: null,
-          evidence: {
-            itemIds: ['it_worker_terminal'],
-            artifactIds: ['artifact_release_log'],
-          },
-        },
-        contextAssembly: {
-          contextDigest: 'ctxpkg_sha256_demo',
-          contextRefs: [
-            { kind: 'workspace', id: 'ws_demo' },
-            { kind: 'thread', id: 'th_demo' },
-            { kind: 'item', id: 'it_context' },
-          ],
-          repositoryResourceId: 'repo_default',
-          steeringMessageCount: 1,
-          followUpInputCount: 0,
-        },
-        coordinator: {
-          mode: 'goal',
-          sourceAgentId: 'worker-coordinator',
-          worker: {
-            agentId: 'codex',
-            displayName: 'Codex',
-            runtime: 'codex',
-          },
-          confidence: 0.86,
-          rationale: 'The Goal Mode step needs bounded worker execution and Codex is ready.',
-          requiredApprovals: [],
-          expectedStopCondition: 'one bounded worker turn',
-          escalationRecommended: false,
-          contextRefs: [
-            { kind: 'workspace', id: 'ws_demo' },
-            { kind: 'thread', id: 'th_demo' },
-          ],
-        },
-        decision: {
-          schemaVersion: 1,
-          mode: 'goal',
-          sourceAgentId: 'worker-coordinator',
-          requestId: 'req_goal_step_1',
           outcome: 'review',
           shouldStop: true,
           stopReason: 'completed',
-          rationale: 'Worker turn completed and needs human review before Goal Mode continues.',
-          contextRefs: [
-            { kind: 'workspace', id: 'ws_demo' },
-            { kind: 'thread', id: 'th_demo' },
-          ],
           evidence: {
             itemIds: ['it_worker_terminal'],
             artifactIds: ['artifact_release_log'],
           },
+          reviewId: 'review_goal_demo_task_1',
         },
-        pendingAttention: {
-          kind: 'review',
-          reason: 'Worker result needs review.',
-          itemId: 'it_worker_terminal',
-        },
-      }).contextAssembly.contextDigest
-    ).toBe('ctxpkg_sha256_demo');
+      }).result
+    ).toEqual({
+      taskId: 'task_1',
+      turnId: 'turn_worker',
+      outcome: 'review',
+      shouldStop: true,
+      stopReason: 'completed',
+      evidence: {
+        itemIds: ['it_worker_terminal'],
+        artifactIds: ['artifact_release_log'],
+      },
+      reviewId: 'review_goal_demo_task_1',
+    });
+    expect(RunThreadGoalStepResponseSchema.keyof().options).toEqual(['goal', 'result']);
+    expect(RunThreadGoalStepResponseSchema.shape.result.keyof().options).toEqual([
+      'taskId',
+      'turnId',
+      'outcome',
+      'shouldStop',
+      'stopReason',
+      'evidence',
+      'reviewId',
+    ]);
     expect(RunThreadGoalSuperviseStepRequestSchema.parse({}).verdict).toBe('accept');
     expect(RunThreadGoalTestSuperviseStepRequestSchema.parse({}).verdict).toBe('accept');
+    for (const verdict of ['accept', 'refine', 'retry', 'abort']) {
+      expect(RunThreadGoalTestSuperviseStepRequestSchema.safeParse({ verdict }).success).toBe(true);
+    }
+    for (const verdict of ['ask_user', 'decompose', 'block']) {
+      expect(RunThreadGoalTestSuperviseStepRequestSchema.safeParse({ verdict }).success).toBe(
+        false
+      );
+    }
     expect(
       RunThreadGoalSuperviseStepResponseSchema.parse({
         goal: {
@@ -4520,11 +4460,9 @@ describe('app api schemas', () => {
             ready: 0,
             running: 0,
             reviewing: 0,
-            needsRevision: 0,
             completed: 1,
             blocked: 0,
             failed: 0,
-            skipped: 0,
           },
           pendingHumanAttention: {
             required: false,
@@ -4536,7 +4474,6 @@ describe('app api schemas', () => {
           },
           terminalSummary: {
             completedTaskIds: ['task_1'],
-            skippedTaskIds: [],
             blockedTaskIds: [],
             artifactIds: ['artifact_release_log'],
             verificationEvidence: [
@@ -4550,11 +4487,6 @@ describe('app api schemas', () => {
             ],
             risks: [],
             suggestedNextWork: ['Publish v0.0.6.'],
-          },
-          steering: {
-            pendingSteeringCount: 0,
-            pendingFollowUpCount: 0,
-            appliedSteeringCount: 0,
           },
           updatedAt: timestamp,
         },
@@ -4575,7 +4507,7 @@ describe('app api schemas', () => {
         },
         advance: {
           outcome: 'complete_goal',
-          nextTaskId: null,
+          nextReadyTaskId: null,
         },
       }).advance.outcome
     ).toBe('complete_goal');
@@ -4599,11 +4531,9 @@ describe('app api schemas', () => {
             ready: 0,
             running: 0,
             reviewing: 0,
-            needsRevision: 0,
             completed: 1,
             blocked: 0,
             failed: 0,
-            skipped: 0,
           },
           pendingHumanAttention: {
             required: false,
@@ -4612,11 +4542,6 @@ describe('app api schemas', () => {
           terminalState: {
             status: 'completed',
             stopReason: 'completed',
-          },
-          steering: {
-            pendingSteeringCount: 0,
-            pendingFollowUpCount: 0,
-            appliedSteeringCount: 0,
           },
           updatedAt: timestamp,
         },
@@ -4637,31 +4562,10 @@ describe('app api schemas', () => {
         },
         advance: {
           outcome: 'complete_goal',
-          nextTaskId: null,
+          nextReadyTaskId: null,
         },
       }).advance.outcome
     ).toBe('complete_goal');
-    const pendingUserTurn = {
-      pendingTurnId: 'pending_ws_demo_th_demo_req_demo',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      requestId: 'req_demo',
-      contentItemId: 'it_pending',
-      contentDigest: null,
-      queueMode: 'safe_point_steering',
-      receivedAt: timestamp,
-      createdAt: timestamp,
-    };
-    expect(
-      CreateInterruptedRecoveryStateResponseSchema.parse({
-        checkpoint: {
-          checkpointId: 'ws_demo:th_demo:turn_demo',
-          turnId: 'turn_demo',
-          stage: 'running_worker',
-        },
-        pendingUserTurn,
-      }).checkpoint.stage
-    ).toBe('running_worker');
     expect(
       ListInterruptedWorkerStatesResponseSchema.parse({
         items: [
@@ -4684,8 +4588,6 @@ describe('app api schemas', () => {
                 { kind: 'thread', id: 'th_demo' },
               ],
               repositoryResourceId: 'repo_default',
-              steeringMessageCount: 0,
-              followUpInputCount: 0,
             },
             stopReason: null,
             diagnosticsSummary: 'Interrupted before terminal save.',
@@ -4701,11 +4603,6 @@ describe('app api schemas', () => {
                 label: 'Retry interrupted worker turn',
               },
               {
-                kind: 'record_terminal',
-                label: 'Record terminal worker state',
-                allowedTerminalStages: ['completed', 'failed', 'aborted'],
-              },
-              {
                 kind: 'request_human',
                 label: 'Ask the user how to recover this worker turn',
               },
@@ -4716,36 +4613,26 @@ describe('app api schemas', () => {
         ],
       }).items[0]?.contextAssembly?.repositoryResourceId
     ).toBe('repo_default');
-    expect(WorkerRecoveryStageSchema.parse('reviewing')).toBe('reviewing');
+    for (const unownedStage of ['reviewing', 'verifying', 'saving', 'recovering']) {
+      expect(WorkerRecoveryStageSchema.safeParse(unownedStage).success).toBe(false);
+    }
     expect(WorkerRecoveryStageSchema.parse('failed')).toBe('failed');
     expect(
-      ListRecoveryPendingUserTurnsResponseSchema.parse({ items: [pendingUserTurn] }).items
-    ).toHaveLength(1);
+      RetryInterruptedWorkerCheckpointRequestSchema.parse({ requestId: 'req_worker_retry' })
+    ).toEqual({ requestId: 'req_worker_retry' });
+    expect(RetryInterruptedWorkerCheckpointRequestSchema.safeParse({}).success).toBe(false);
     expect(
-      ConvertRecoveryPendingUserTurnToFollowUpResponseSchema.parse({
-        converted: true,
-        pendingUserTurn: { ...pendingUserTurn, queueMode: 'follow_up' },
-      }).pendingUserTurn?.queueMode
-    ).toBe('follow_up');
-    expect(
-      PromoteRecoveryPendingUserTurnToInterruptResponseSchema.parse({
-        promoted: false,
-        turn: null,
-      }).promoted
+      RetryInterruptedWorkerCheckpointRequestSchema.safeParse({
+        requestId: 'req_worker_retry',
+        retryMode: 'resume',
+      }).success
     ).toBe(false);
     expect(
-      ClearInterruptedWorkerCheckpointRequestSchema.parse({ terminalStage: 'completed' })
-        .terminalStage
-    ).toBe('completed');
-    expect(ClearInterruptedWorkerCheckpointResponseSchema.parse({ cleared: true }).cleared).toBe(
-      true
-    );
-    expect(
       RetryInterruptedWorkerCheckpointResponseSchema.parse({
-        retried: true,
-        turn: null,
-      }).retried
-    ).toBe(true);
+        outcome: 'released_for_retry',
+        turnId: 'turn_demo',
+      })
+    ).toEqual({ outcome: 'released_for_retry', turnId: 'turn_demo' });
     expect(CancelSchedulerAdmissionResponseSchema.parse({ cancelled: true }).cancelled).toBe(true);
     expect(RetrySchedulerAdmissionResponseSchema.parse({ retried: true }).retried).toBe(true);
     expect(
@@ -4966,27 +4853,6 @@ describe('app api schemas', () => {
         ],
       },
       {
-        id: 'pending-input:pending_demo',
-        kind: 'pending_input',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        title: 'Input queued for a safe point',
-        summary: 'The user message is queued until the worker reaches a safe point.',
-        severity: 'info',
-        createdAt: timestamp,
-        source: {
-          type: 'pending_user_turn',
-          pendingTurnId: 'pending_demo',
-          requestId: 'req_demo',
-          queueMode: 'safe_point_steering',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-        },
-        actions: [
-          { kind: 'open_thread', label: 'Open thread', method: 'GET', href: '/threads/th_demo' },
-        ],
-      },
-      {
         id: 'checkpoint:checkpoint_demo',
         kind: 'checkpoint_recovery',
         workspaceId: 'ws_demo',
@@ -5084,7 +4950,6 @@ describe('app api schemas', () => {
           taskId: 'task_demo',
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
-          verdict: 'refine',
         },
         actions: [{ kind: 'request_refinement', label: 'Request refinement', method: 'POST' }],
       },
@@ -5418,7 +5283,7 @@ describe('app api schemas', () => {
     ).toBe(false);
   });
 
-  it('limits goal step review overrides to implemented policies', () => {
+  it('rejects goal step review overrides', () => {
     expect(
       RunThreadGoalStepRequestSchema.safeParse({ requestId: 'goal-step-default' }).success
     ).toBe(true);
@@ -5427,13 +5292,13 @@ describe('app api schemas', () => {
         requestId: 'goal-step-human',
         reviewPolicyOverride: 'human',
       }).success
-    ).toBe(true);
+    ).toBe(false);
     expect(
       RunThreadGoalStepRequestSchema.safeParse({
         requestId: 'goal-step-none',
         reviewPolicyOverride: 'none',
       }).success
-    ).toBe(true);
+    ).toBe(false);
     expect(
       RunThreadGoalStepRequestSchema.safeParse({
         requestId: 'goal-step-auto',
@@ -5449,42 +5314,103 @@ describe('app api schemas', () => {
   });
 
   it('accepts goal review decision requests and responses', () => {
+    expect(GoalReviewResolutionOutcomeSchema.safeParse('continue').success).toBe(false);
     expect(
       SubmitGoalReviewDecisionRequestSchema.parse({
         requestId: 'goal-review-decision-1',
-      }).requestId
-    ).toBe('goal-review-decision-1');
-    expect(
-      SubmitGoalReviewDecisionResponseSchema.parse({
-        review: {
-          reviewId: 'review_demo',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          goalId: 'goal_demo',
-          taskId: 'task_demo',
-          turnId: 'turn_demo',
-          itemIds: ['item_demo'],
-          artifactIds: ['artifact_demo'],
-          verificationEvidence: [{ command: 'pnpm test', status: 'passed' }],
-          verdict: 'retry',
-          reason: 'Retry with stronger verification.',
-          createdAt: timestamp,
-          updatedAt: timestamp,
-          resolvedAt: timestamp,
-          resolutionRequestId: 'goal-review-decision-1',
-        },
-        advance: {
-          outcome: 'retry',
-          task: { taskId: 'task_demo', status: 'ready' },
-          goal: null,
-          nextTask: null,
-        },
-      }).review.resolutionRequestId
-    ).toBe('goal-review-decision-1');
+        verdict: 'accept',
+      }).verdict
+    ).toBe('accept');
     expect(
       SubmitGoalReviewDecisionRequestSchema.safeParse({
-        requestId: '',
+        requestId: 'goal-review-decision-2',
+        verdict: 'refine',
+        revisionInstruction: 'Cover the restart failure case.',
       }).success
-    ).toBe(false);
+    ).toBe(true);
+    for (const verdict of ['retry', 'abort']) {
+      expect(
+        SubmitGoalReviewDecisionRequestSchema.safeParse({
+          requestId: `goal-review-${verdict}`,
+          verdict,
+          reason: 'The evidence does not satisfy the acceptance criteria.',
+        }).success
+      ).toBe(true);
+    }
+    const retryResponse = {
+      review: {
+        reviewId: 'review_demo',
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        goalId: 'goal_demo',
+        taskId: 'task_demo',
+        turnId: 'turn_demo',
+        itemIds: ['item_demo'],
+        artifactIds: ['artifact_demo'],
+        verificationEvidence: [{ command: 'pnpm test', status: 'passed' }],
+        prompt: 'Review the worker evidence against the accepted task.',
+        createdByRequestId: 'goal-step-1',
+        verdict: 'retry',
+        reason: 'Retry with stronger verification.',
+        revisionInstruction: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        resolvedAt: timestamp,
+        resolutionRequestId: 'goal-review-decision-1',
+        resolvedByActorId: 'user_demo',
+      },
+      advance: {
+        outcome: 'retry',
+        task: { taskId: 'task_demo', status: 'ready' },
+        goal: {
+          goalId: 'goal_demo',
+          status: 'running',
+          currentTaskId: null,
+          terminalStopReason: null,
+        },
+        nextReadyTaskId: 'task_demo',
+      },
+    } as const;
+    expect(
+      SubmitGoalReviewDecisionResponseSchema.parse(retryResponse).review.resolutionRequestId
+    ).toBe('goal-review-decision-1');
+    for (const response of [
+      {
+        ...retryResponse,
+        advance: { ...retryResponse.advance, outcome: 'refine' },
+      },
+      {
+        ...retryResponse,
+        advance: {
+          ...retryResponse.advance,
+          task: { ...retryResponse.advance.task, taskId: 'task_other' },
+        },
+      },
+      {
+        ...retryResponse,
+        advance: {
+          ...retryResponse.advance,
+          goal: { ...retryResponse.advance.goal, goalId: 'goal_other' },
+        },
+      },
+    ]) {
+      expect(SubmitGoalReviewDecisionResponseSchema.safeParse(response).success).toBe(false);
+    }
+    for (const request of [
+      { verdict: 'accept' },
+      { requestId: 'goal-review-missing-verdict' },
+      { requestId: '', verdict: 'accept' },
+      { requestId: 'goal-review-refine', verdict: 'refine' },
+      { requestId: 'goal-review-retry', verdict: 'retry' },
+      { requestId: 'goal-review-abort', verdict: 'abort' },
+      { requestId: 'goal-review-ask', verdict: 'ask_user' },
+      {
+        requestId: 'goal-review-accept-instruction',
+        verdict: 'accept',
+        revisionInstruction: 'Unexpected instruction.',
+      },
+    ]) {
+      expect(SubmitGoalReviewDecisionRequestSchema.safeParse(request).success).toBe(false);
+    }
   });
 });

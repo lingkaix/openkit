@@ -118,9 +118,9 @@ Quick Chat MAY use provider-backed inference through the same Core Assistant and
 
 Quick Chat MUST reject workspace repository resource setup.
 
-Quick Chat MUST reject Task Mode start and Chat Mode task handoff execution.
+Quick Chat MUST reject direct Task Mode start. A Chat Mode task intent MUST become the Chat-owned `refused` outcome with reason `project_workspace_required` before any Task effect.
 
-Quick Chat MUST reject Goal Mode start, planning, approval, steering, pause, resume, and step routes.
+Quick Chat MUST reject direct Goal Mode start, planning, approval, steering, pause, resume, and step routes. A Chat Mode goal intent MUST become the same Chat-owned `refused` outcome before any Goal effect.
 
 Quick Chat MUST reject direct Core turn startup when the route would start a worker turn.
 
@@ -128,7 +128,7 @@ Quick Chat MUST reject Git push approval and execution routes.
 
 Quick Chat MUST reject workspace data-source edits that would make repository or host-root material available to workers.
 
-Refusals MUST use a stable App API error code and a user-safe message that tells the caller to create or select a project workspace.
+Direct project-only route refusals MUST use a stable App API error code and a user-safe message that tells the caller to create or select a project workspace. Thread-scoped Chat Mode instead returns its durable `refused` tuple with stable reason `project_workspace_required`; the initiating Chat command owns replay and no downstream Task or Goal records exist.
 
 ### Web Behavior
 
@@ -154,7 +154,7 @@ Add a small NanoCore helper that reads the workspace and rejects project-only op
 
 Use that helper in repository setup, Task Mode startup, Goal Mode startup, Git push write routes, and direct worker-turn startup.
 
-Keep Chat Mode and Knowledge Store routes available in Quick Chat, and skip Chat Mode Task or Goal handoff execution when the workspace is Quick Chat.
+Keep Chat Mode and Knowledge Store routes available in Quick Chat, and convert a selected Chat Mode Task or Goal handoff into the durable `project_workspace_required` refusal tuple before downstream execution.
 
 ## Current Implementation Projection
 
@@ -162,7 +162,7 @@ Keep Chat Mode and Knowledge Store routes available in Quick Chat, and skip Chat
 
 `apps/nanocore/src/lib/store.ts` owns the fresh data-root seed state and the Demo Workspace fixture helper.
 
-The current user-bound `FsStore` naturally gives users independent Quick Chat data, but the accepted top-level Workspace root, explicit per-user owner membership, and stable rejection by future sharing operations are not yet implemented. This gap is why the spec is `Implementation: Partial`.
+Current Workspace creation records the canonical owner in `workspace_registry` and an active owner membership, while user-scoped stores keep each user's Quick Chat data independent. The centralized Quick Chat guard is applied to repository setup, Task Mode, Goal Mode, Git push, and direct worker-Turn entry, with focused route tests. The specification remains Partial because the accepted top-level owner-independent Workspace root and the complete owner-only rejection across invitation, membership, role, transfer, and portable sharing lifecycles are not yet implemented; existing registry, membership, and project-operation guards are current evidence, not future gaps.
 
 `apps/nanocore/src/app.ts` owns repository setup, Task Mode, Goal Mode, Chat Mode, and worker-turn routes.
 
@@ -200,16 +200,6 @@ The workspace kind enum becomes part of the shared protocol contract, so protoco
 
 The implementation adds a domain-specific special case, but it is centralized as a workspace kind rather than scattered as id checks.
 
-## Rollout / Migration Plan
-
-This repository is in internal development, so no backward compatibility layer is required.
-
-Fresh local data roots seed only Quick Chat. In server mode, each newly created user receives one independent Quick Chat and no Demo Workspace.
-
-Existing data roots keep their persisted workspaces until explicitly recreated or migrated by future tooling.
-
-No old `general` Quick Chat records need to be repaired in this slice unless a focused test fixture requires it.
-
 ## Testing Strategy / Acceptance Criteria
 
 - Protocol schema tests accept `kind: "quick-chat"` and reject unknown workspace kinds.
@@ -241,7 +231,6 @@ None.
 - User-level default workspace preferences.
 - Workspace capability matrix if future workspace kinds require more than the Quick Chat versus project distinction.
 - Explicit Web copy or onboarding for creating a project workspace from Quick Chat.
-- Optional migration tooling for existing development data roots.
 
 ## Links
 

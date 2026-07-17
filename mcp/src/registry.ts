@@ -3,7 +3,6 @@ import {
   ConsumeOpenKitBootstrapTokenResponseSchema,
   CreateAutomationRequestSchema,
   CreateOpenKitAccessTokenRequestSchema,
-  GoalStepReviewPolicyOverrideSchema,
   RotateOpenKitAccessTokenRequestSchema,
   UpdateAutomationRequestSchema,
   VaultAdminBootstrapCodexAuthJsonRequestSchema,
@@ -181,16 +180,10 @@ const toolCatalog = [
   { mutating: false, name: 'openkit.suggest_knowledge_repairs' },
   { mutating: false, name: 'openkit.check_knowledge_health' },
   { mutating: false, name: 'openkit.list_interrupted_workers' },
-  { mutating: true, name: 'openkit.clear_interrupted_worker_checkpoint' },
   { mutating: true, name: 'openkit.retry_interrupted_worker_checkpoint' },
   { mutating: true, name: 'openkit.retry_scheduler_admission' },
   { mutating: true, name: 'openkit.cancel_scheduler_admission' },
   { mutating: false, name: 'openkit.read_scheduler_admissions' },
-  { mutating: false, name: 'openkit.list_recovery_pending_user_turns' },
-  { mutating: true, name: 'openkit.cancel_recovery_pending_user_turn' },
-  { mutating: true, name: 'openkit.edit_recovery_pending_user_turn' },
-  { mutating: true, name: 'openkit.convert_recovery_pending_user_turn_to_follow_up' },
-  { mutating: true, name: 'openkit.promote_recovery_pending_user_turn_to_interrupt' },
   { mutating: false, name: 'openkit.list_workspaces' },
   { mutating: true, name: 'openkit.create_workspace' },
   { mutating: true, name: 'openkit.update_workspace' },
@@ -395,12 +388,13 @@ const toolSchemas = {
   }),
   'openkit.approve_goal_plan': threadSchema
     .merge(optionalRequestIdSchema)
-    .extend({ plan: z.unknown(), planItemId: z.string().min(1) }),
+    .extend({ planItemId: z.string().min(1) })
+    .strict(),
   'openkit.create_thread': workspaceSchema
     .merge(optionalRequestIdSchema)
     .extend({ initialMessage: z.string().min(1).optional(), title: z.string().min(1) }),
   'openkit.create_workspace': optionalRequestIdSchema.extend({ name: z.string().min(1) }),
-  'openkit.draft_goal_plan': threadSchema.merge(optionalRequestIdSchema),
+  'openkit.draft_goal_plan': threadSchema.merge(optionalRequestIdSchema).strict(),
   'openkit.execute_git_push': workspaceSchema.merge(optionalRequestIdSchema).extend({
     approvalRequestId: z.string().min(1),
     repositoryResourceId: z.string().min(1),
@@ -441,11 +435,6 @@ const toolSchemas = {
     .merge(optionalRequestIdSchema)
     .extend({ displayName: z.string().min(1), localPath: z.string().min(1) }),
   'openkit.list_interrupted_workers': z.object({}),
-  'openkit.clear_interrupted_worker_checkpoint': workspaceSchema.extend({
-    terminalStage: z.enum(['completed', 'failed', 'aborted']),
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
-  }),
   'openkit.retry_interrupted_worker_checkpoint': workspaceSchema.extend({
     threadId: z.string().min(1),
     turnId: z.string().min(1),
@@ -457,26 +446,6 @@ const toolSchemas = {
     queueEntryId: z.string().min(1),
   }),
   'openkit.read_scheduler_admissions': workspaceSchema,
-  'openkit.list_recovery_pending_user_turns': workspaceSchema.extend({
-    threadId: z.string().min(1),
-  }),
-  'openkit.cancel_recovery_pending_user_turn': workspaceSchema.extend({
-    requestId: z.string().min(1),
-    threadId: z.string().min(1),
-  }),
-  'openkit.edit_recovery_pending_user_turn': workspaceSchema.extend({
-    requestId: z.string().min(1),
-    text: z.string().min(1).max(20_000),
-    threadId: z.string().min(1),
-  }),
-  'openkit.convert_recovery_pending_user_turn_to_follow_up': workspaceSchema.extend({
-    requestId: z.string().min(1),
-    threadId: z.string().min(1),
-  }),
-  'openkit.promote_recovery_pending_user_turn_to_interrupt': workspaceSchema.extend({
-    requestId: z.string().min(1),
-    threadId: z.string().min(1),
-  }),
   'openkit.list_runtime_config_files': z.object({}),
   'openkit.list_workspaces': z.object({}),
   'openkit.read_action_center': workspaceSchema.extend({
@@ -558,10 +527,7 @@ const toolSchemas = {
     port: z.number().int().positive().optional(),
     workspaceRoot: z.string().min(1).optional(),
   }),
-  'openkit.step_goal': threadSchema.merge(optionalRequestIdSchema).extend({
-    followUpDrainMode: z.literal('one_at_a_time').optional(),
-    reviewPolicyOverride: GoalStepReviewPolicyOverrideSchema.optional(),
-  }),
+  'openkit.step_goal': threadSchema.merge(optionalRequestIdSchema).strict(),
   'openkit.submit_steering': threadSchema
     .merge(optionalRequestIdSchema)
     .extend({ message: z.string().min(1) }),
@@ -1468,14 +1434,6 @@ async function callTool(
         parsed
       );
     }
-    case 'openkit.clear_interrupted_worker_checkpoint': {
-      const parsed = toolSchemas['openkit.clear_interrupted_worker_checkpoint'].parse(input);
-      return mutationResponse(
-        await nanoCore.clearInterruptedWorkerCheckpoint(parsed),
-        'Interrupted worker checkpoint cleared.',
-        parsed
-      );
-    }
     case 'openkit.retry_interrupted_worker_checkpoint': {
       const parsed = toolSchemas['openkit.retry_interrupted_worker_checkpoint'].parse(input);
       return mutationResponse(
@@ -1505,48 +1463,6 @@ async function callTool(
       return readResponse(
         await nanoCore.readSchedulerAdmissions(parsed),
         'Scheduler admissions read.',
-        parsed
-      );
-    }
-    case 'openkit.list_recovery_pending_user_turns': {
-      const parsed = toolSchemas['openkit.list_recovery_pending_user_turns'].parse(input);
-      return readResponse(
-        await nanoCore.listRecoveryPendingUserTurns(parsed),
-        'Recovery pending user turns read.',
-        parsed
-      );
-    }
-    case 'openkit.cancel_recovery_pending_user_turn': {
-      const parsed = toolSchemas['openkit.cancel_recovery_pending_user_turn'].parse(input);
-      return mutationResponse(
-        await nanoCore.cancelRecoveryPendingUserTurn(parsed),
-        'Recovery pending user turn cancelled.',
-        parsed
-      );
-    }
-    case 'openkit.edit_recovery_pending_user_turn': {
-      const parsed = toolSchemas['openkit.edit_recovery_pending_user_turn'].parse(input);
-      return mutationResponse(
-        await nanoCore.editRecoveryPendingUserTurn(parsed),
-        'Recovery pending user turn edited.',
-        parsed
-      );
-    }
-    case 'openkit.convert_recovery_pending_user_turn_to_follow_up': {
-      const parsed =
-        toolSchemas['openkit.convert_recovery_pending_user_turn_to_follow_up'].parse(input);
-      return mutationResponse(
-        await nanoCore.convertRecoveryPendingUserTurnToFollowUp(parsed),
-        'Recovery pending user turn converted to follow-up.',
-        parsed
-      );
-    }
-    case 'openkit.promote_recovery_pending_user_turn_to_interrupt': {
-      const parsed =
-        toolSchemas['openkit.promote_recovery_pending_user_turn_to_interrupt'].parse(input);
-      return mutationResponse(
-        await nanoCore.promoteRecoveryPendingUserTurnToInterrupt(parsed),
-        'Recovery pending user turn promoted to interrupt.',
         parsed
       );
     }
@@ -1740,10 +1656,7 @@ async function callTool(
       );
     }
     case 'openkit.step_goal': {
-      const request = {
-        ...withGeneratedRequestId(toolSchemas['openkit.step_goal'].parse(input)),
-        followUpDrainMode: 'one_at_a_time' as const,
-      };
+      const request = withGeneratedRequestId(toolSchemas['openkit.step_goal'].parse(input));
       return mutationResponse(
         await nanoCore.stepGoal(request),
         'One bounded Goal Mode step completed.',

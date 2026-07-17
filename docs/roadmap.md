@@ -34,7 +34,7 @@ The LLM provider plane is active through the NanoCore-native Codex Responses pat
 
 ### Workflow Coordinator dynamic planning
 
-The V1 Workflow Coordinator internal-agent contract is active in `docs/specs/20260704-workflow_coordinator_internal_agent.md` and covers explicit routing, worker selection, context assembly coordination, plan drafting, and stop decisions. The deferred evolution target from the product vision (§6.1) is dynamic planning from accumulated outcomes: selecting agent config packs, workers, context assembly, and handoff patterns from task characteristics and historical performance. Boundary declarations live in `docs/core/agent-workflow.md`, which also gates graph semantics (dependencies, branches, joins) as "earned" only when real workflows require them. Prerequisite: accumulated task history plus the active evaluation and self-improvement design listed under Recently Activated, since dynamic planning without outcome measurement cannot improve.
+The V1 Workflow Coordinator Internal Core Role contract is active in `docs/specs/20260704-workflow_coordinator_internal_agent.md` and covers explicit routing, worker selection, semantic worker-context composition, plan drafting, and stop decisions while mode services retain durable state and effects. The deferred evolution target from the product vision (§6.1) is dynamic planning from accumulated outcomes: selecting agent config packs, workers, context composition, and handoff patterns from task characteristics and historical performance. Boundary declarations live in `docs/core/agent-workflow.md`, which also gates graph semantics (dependencies, branches, joins) as "earned" only when real workflows require them. Prerequisite: accumulated task history plus the active evaluation and self-improvement design listed under Recently Activated, since dynamic planning without outcome measurement cannot improve.
 
 ### Workflow graphs and reusable recipes
 
@@ -42,7 +42,7 @@ The V1 Workflow Coordinator internal-agent contract is active in `docs/specs/202
 
 ### Generic worker Context Package delivery and Goal steering
 
-The target contracts in `docs/specs/20260531-worker_turn_reliability_envelope.md`, `docs/specs/20260703-worker_context_package.md`, `docs/specs/20260704-goal_mode_coordination.md`, and `docs/specs/20260713-work_resource_interaction_model.md` require accepted Goal steering to be bound to the exact Goal and active Turn and to remain pending until the real worker path persists an immutable Context Package trace proving delivery. The current Goal launch passes only its objective and has no generic trace owner, so the App API fails closed with `goal_steering_delivery_unavailable`, creates no business records, and the Web exposes no submission control. Re-enablement must reuse the generic worker-Turn Context Package owner and existing Goal, Turn, lease, and final-status records; it must not add a receipt, settlement, reconciliation, or second recovery workflow.
+The target contracts in `docs/specs/20260531-worker_turn_reliability_envelope.md`, `docs/specs/20260703-worker_context_package.md`, `docs/specs/20260704-goal_mode_coordination.md`, and `docs/specs/20260713-work_resource_interaction_model.md` require accepted Goal steering to be bound to the exact Goal and active Turn and to remain pending until the real worker path persists an immutable Context Package trace proving delivery. The current Goal launch passes only its objective and has no generic trace owner, so the App API fails closed with `goal_steering_delivery_unavailable`, creates no business records, and the Web exposes no submission control. The former Thread-scoped generic pending-input table, queue drain, recovery actions, public seed, and dedicated recovery runner have been deleted rather than retained as dormant authority. Re-enablement must reuse the generic worker-Turn Context Package owner, existing Goal, Turn, command-ledger, lease, and final-status records; it must not add a second delivery receipt, settlement, reconciliation, or recovery workflow.
 
 ### Git provider adapters beyond GitHub
 
@@ -78,6 +78,10 @@ The vision (§5.1–§5.3) commits to a conversation-first interface where users
 
 The vision (§5.2) references LibreChat-style artifact interaction: structured outputs and work products rendered as first-class reviewable objects rather than chat text. Artifact records, storage, and review flows exist at the kernel layer; the presentation contract — which artifact kinds get rich rendering, preview versus export behavior, and how artifact review actions map to the human-attention model — is undesigned. Belongs with Web UI completion but is called out separately because the Agent Skill Interface and future desktop channels also consume artifact presentation metadata.
 
+### Grounded material feedback controls
+
+The strategic direction in `docs/specs/20260713-work_resource_interaction_model.md` includes future annotation, exact text-range patching, locator-aware feedback, and compare-driven interaction against Workspace-native Material, but the current accepted Phase 1 contract deliberately does not authorize their payloads, commands, statuses, UI, or tests. Design may start only after the active Material identity, immutable revision, Thread binding, worker-input provenance, steering delivery, staged review, and conflict-safe apply path is implemented and used. The next specification must begin from one demonstrated control, define exact locator units and stale behavior plus one existing Item or Review owner, and must not create a universal feedback, locator, editor, or workbench framework.
+
 ### Generative UI
 
 The vision (§5.2) plans generative interfaces where model output produces rich visual and interactive results in suitable scenarios, and §6.8 makes Generative UI the end-user consumption surface of the Generative Kernel: users query and manage kernel-held structured data through generated interfaces while agents access the same data through skills and CLIs. This is a major post-v1 design area with two halves that must be designed together but staged separately: the rendering and safety contract for model-generated UI (sandboxing, capability limits, what generated code may touch), and the data-plane binding to the Generative Kernel. Prerequisites: the Generative Kernel data plane entry above, and policy/audit boundaries extended to generated-surface actions so generated UI never becomes an ungoverned side channel.
@@ -111,8 +115,8 @@ OpenKit-authored Skills ship in-repo today (`skills/README.md`), and immutable c
 - Chat Mode and Core Assistant: `docs/specs/20260704-chat_mode_assistant.md`.
 - Task Mode worker delegation: `docs/specs/20260704-task_mode_worker_delegation.md`.
 - Goal Mode coordination: `docs/specs/20260704-goal_mode_coordination.md`.
-- Workflow Coordinator internal agent: `docs/specs/20260704-workflow_coordinator_internal_agent.md`.
-- Knowledge Manager internal agent runtime: `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md`.
+- Workflow Coordinator Internal Core Role: `docs/specs/20260704-workflow_coordinator_internal_agent.md`.
+- Knowledge Manager deterministic service: `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md`.
 - Worker MCP tool-supply design remains accepted, while implementation has returned to the deferred worker-capability entry above: `docs/specs/20260704-worker_mcp_tool_supply.md`.
 - Shared capability usage ledger and durable LLM producers are active; the worker MCP producer remains pending: `docs/specs/20260704-capability_usage_gateway_foundation.md`.
 - NanoCore boot, readiness, and recovery: `docs/specs/20260704-nanocore_bootstrap_readiness.md`.

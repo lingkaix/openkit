@@ -22,6 +22,8 @@ CREATE TABLE `worker_turn_checkpoints` (
 	`turn_id` text NOT NULL,
 	`goal_id` text,
 	`task_id` text,
+	`request_id` text NOT NULL,
+	`request_input_hash` text NOT NULL,
 	`stage` text NOT NULL,
 	`iteration` integer NOT NULL,
 	`worker_session_id` text,
@@ -36,20 +38,6 @@ CREATE TABLE `worker_turn_checkpoints` (
 CREATE INDEX `worker_turn_checkpoints_scope_idx` ON `worker_turn_checkpoints` (`workspace_id`,`thread_id`,`turn_id`);
 --> statement-breakpoint
 CREATE INDEX `worker_turn_checkpoints_updated_idx` ON `worker_turn_checkpoints` (`updated_at`);
---> statement-breakpoint
-CREATE TABLE `pending_user_turns` (
-	`pending_turn_id` text PRIMARY KEY NOT NULL,
-	`workspace_id` text NOT NULL,
-	`thread_id` text NOT NULL,
-	`request_id` text NOT NULL,
-	`content_item_id` text,
-	`content_digest` text,
-	`queue_mode` text NOT NULL,
-	`received_at` text NOT NULL,
-	`created_at` text NOT NULL
-);
---> statement-breakpoint
-CREATE INDEX `pending_user_turns_scope_idx` ON `pending_user_turns` (`workspace_id`,`thread_id`,`received_at`,`pending_turn_id`);
 --> statement-breakpoint
 CREATE TABLE `goal_records` (
 	`goal_id` text NOT NULL,
@@ -69,11 +57,26 @@ CREATE TABLE `goal_records` (
 --> statement-breakpoint
 CREATE INDEX `goal_records_thread_idx` ON `goal_records` (`workspace_id`,`thread_id`,`updated_at`,`goal_id`);
 --> statement-breakpoint
+CREATE TABLE `goal_plan_records` (
+	`workspace_id` text NOT NULL,
+	`thread_id` text NOT NULL,
+	`goal_id` text NOT NULL,
+	`plan_item_id` text NOT NULL,
+	`plan_digest` text NOT NULL,
+	`plan_json` text NOT NULL,
+	`created_by_request_id` text NOT NULL,
+	`created_at` text NOT NULL,
+	PRIMARY KEY(`workspace_id`,`thread_id`,`plan_item_id`)
+);
+--> statement-breakpoint
+CREATE INDEX `goal_plan_records_goal_idx` ON `goal_plan_records` (`workspace_id`,`thread_id`,`goal_id`,`created_at`,`plan_item_id`);
+--> statement-breakpoint
 CREATE TABLE `goal_tasks` (
 	`task_id` text NOT NULL,
 	`workspace_id` text NOT NULL,
 	`thread_id` text NOT NULL,
 	`goal_id` text NOT NULL,
+	`plan_item_id` text NOT NULL,
 	`status` text NOT NULL,
 	`title` text NOT NULL,
 	`objective` text NOT NULL,
@@ -81,6 +84,11 @@ CREATE TABLE `goal_tasks` (
 	`depends_on_task_ids_json` text NOT NULL,
 	`acceptance_criteria_json` text NOT NULL,
 	`context_budget_tokens` integer NOT NULL,
+	`resources_json` text NOT NULL,
+	`expected_artifacts_json` text NOT NULL,
+	`verification_checks_json` text NOT NULL,
+	`review_policy_json` text NOT NULL,
+	`escalation_conditions_json` text NOT NULL,
 	`created_at` text NOT NULL,
 	`updated_at` text NOT NULL,
 	PRIMARY KEY(`workspace_id`,`thread_id`,`goal_id`,`task_id`)
@@ -94,16 +102,20 @@ CREATE TABLE `goal_review_records` (
 	`thread_id` text NOT NULL,
 	`goal_id` text NOT NULL,
 	`task_id` text NOT NULL,
-	`turn_id` text,
+	`turn_id` text NOT NULL,
 	`item_ids_json` text NOT NULL,
 	`artifact_ids_json` text NOT NULL,
 	`verification_evidence_json` text NOT NULL,
-	`verdict` text NOT NULL,
-	`reason` text NOT NULL,
+	`prompt` text NOT NULL,
+	`created_by_request_id` text NOT NULL,
+	`verdict` text,
+	`reason` text,
+	`revision_instruction` text,
 	`created_at` text NOT NULL,
 	`updated_at` text NOT NULL,
 	`resolved_at` text,
 	`resolution_request_id` text,
+	`resolved_by_actor_id` text,
 	PRIMARY KEY(`workspace_id`,`thread_id`,`goal_id`,`review_id`)
 );
 --> statement-breakpoint
@@ -131,8 +143,6 @@ CREATE TABLE `goal_verification_records` (
 CREATE INDEX `goal_verification_records_goal_idx` ON `goal_verification_records` (`workspace_id`,`thread_id`,`goal_id`,`created_at`,`verification_id`);
 --> statement-breakpoint
 CREATE INDEX `goal_verification_records_task_idx` ON `goal_verification_records` (`workspace_id`,`thread_id`,`goal_id`,`task_id`,`created_at`,`verification_id`);
---> statement-breakpoint
-ALTER TABLE `goal_tasks` ADD `verification_checks_json` text NOT NULL DEFAULT '[]';
 --> statement-breakpoint
 CREATE TABLE `workspace_apply_results` (
 	`apply_result_id` text NOT NULL,

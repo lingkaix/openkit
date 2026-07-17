@@ -159,10 +159,6 @@ function completeTaskModeClients() {
           runtimeEvidence: provenance.runtimeEvidence,
         }),
         startTaskMode: async () => ({
-          decision: {
-            mode: 'task',
-            worker: { agentId: 'agent_codex_host', runtime: 'codex' },
-          },
           evidence: { reviewIds: ['swr_1'] },
           state: 'completed',
           turn: { id: 'turn_1' },
@@ -466,7 +462,7 @@ describe('real Task Mode worker L6 runner', () => {
     rmSync(tempRoot, { force: true, recursive: true });
   });
 
-  it('rejects needs-review without a returned review id', async () => {
+  it('rejects needs-review as an unowned Task acceptance state', async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-real-task-missing-review-'));
     const dataRoot = join(tempRoot, 'data');
     const repositoryRoot = join(tempRoot, 'repo');
@@ -474,11 +470,7 @@ describe('real Task Mode worker L6 runner', () => {
     initializeRunnerPaths(dataRoot, repositoryRoot);
     const clients = completeTaskModeClients();
     clients.core.app.startTaskMode = async () => ({
-      decision: {
-        mode: 'task',
-        worker: { agentId: 'agent_codex_host', runtime: 'codex' },
-      },
-      evidence: { reviewIds: [] },
+      evidence: { reviewIds: ['review_1'] },
       state: 'needs-review',
       turn: { id: 'turn_1' },
     });
@@ -491,7 +483,7 @@ describe('real Task Mode worker L6 runner', () => {
           env: enabledRunnerEnv({ dataRoot, evidenceDir, repositoryRoot }),
           stdout: () => {},
         }),
-      /needs-review without a review id/
+      /non-acceptance state: needs-review/
     );
     rmSync(tempRoot, { force: true, recursive: true });
   });

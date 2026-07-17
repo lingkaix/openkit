@@ -47,6 +47,10 @@ export interface StartGoalTaskWorkerTurnInput {
   readonly goalId: string;
   /** Goal task to start. */
   readonly taskId: string;
+  /** Command request that owns this worker envelope. */
+  readonly requestId: string;
+  /** Hash of the canonical command input without raw request content. */
+  readonly requestInputHash: string;
   /** Prepared worker delegation payload. */
   readonly prepared: PreparedNextTurn;
   /** Effect that starts the host worker. */
@@ -85,6 +89,8 @@ export async function startGoalTaskWorkerTurn(
     turnId: turn.id,
     goalId: input.goalId,
     taskId: input.taskId,
+    requestId: input.requestId,
+    requestInputHash: input.requestInputHash,
     stage: 'preparing',
     iteration: 0,
     contextDigest: input.prepared.contextPackageDigest,

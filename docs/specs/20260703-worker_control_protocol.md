@@ -9,6 +9,8 @@ This spec defines `openkit-worker-control-v1`, the minimal control protocol betw
 
 The clean target is narrow: control is for session liveness, canonical event append, final status, safe commands, and small notifications. It is not an agent capability gateway projection, shell gateway, file-transfer channel, product-state API, or replacement for workspace review.
 
+V1 serves the current one-process, one-configured-target, one-active-worker-slot deployment profile. It preserves one bounded same-worker reconnect after NanoCore restart; it does not provide general offline operation, worker replacement, transparent failover, or distributed control availability.
+
 ## Owns
 
 - The worker-visible control-plane protocol between a governed worker shim and NanoCore.
@@ -51,6 +53,7 @@ The clean target is narrow: control is for session liveness, canonical event app
 - Do not let the shim mutate product state directly.
 - Do not duplicate capability calls; the future `capability.local` plane owns privileged services.
 - Do not define runtime-native transcript parsing in this spec.
+- Do not add a general offline command queue, replacement-worker protocol, multi-target failover, settlement workflow, or feature-specific recovery harness.
 
 ## Background
 
@@ -135,6 +138,8 @@ Restart adoption uses the ordinary heartbeat envelope plus request-only `reconne
 
 There is no application-layer challenge, asymmetric signature, recovery listener, or recovery session state machine. The reconnect request relies on the same trusted TLS or operator-managed SSH transport that protects the sandbox bearer token. A party that can observe both credentials on that transport could race the original worker; deployment transport confidentiality is therefore an explicit boundary of this V1 compromise rather than something duplicated with a second cryptographic protocol.
 
+If exact adoption does not complete inside the bounded window, worker control authorizes no compatible replacement and makes no completion claim. Existing scheduler and Cell cleanup terminate the old authority, and the owning Turn remains interrupted or `recovery_required` until a new request is authorized.
+
 ## Worker-To-NanoCore Messages
 
 Control operation names:
@@ -162,7 +167,7 @@ Control operation names:
 
 `terminal_result` reports the bounded result of a NanoCore-issued terminal diagnostic command. It is not an arbitrary shell transcript channel.
 
-`final_status` records the worker's final bounded-step outcome and evidence manifest digests. NanoCore may compute the canonical turn outcome differently after evidence collection.
+`final_status` records the worker's final bounded-step status and evidence manifest digests. Its `status` and product-safe `stopReason` string are worker-control transport facts rather than Core `StopReason` authority. The sole durable owner is the existing immutable server-scope `worker_control_records` row with `operation=final_status`, keyed by Agent Session, package snapshot, operation, and decimal sequence record key and validated against the row's exact Workspace, Thread, Turn, nullable request, lease, Agent Session, package snapshot, sequence, and canonical terminal-event lineage. The row stores the complete accepted wire payload plus `acceptedAt`; exact fingerprint replay reuses it and changed same-sequence input conflicts. It survives restart, is not Workspace-portable product history, and MUST NOT be copied into a checkpoint, evidence row, or recovery lifecycle. NanoCore then applies the one closed canonicalization table owned by the Worker Turn Reliability Envelope before mode closeout. An unknown or incompatible pair remains durable and yields `recovery_required`; NanoCore does not infer a Core reason from the product Turn projection or adapter-private vocabulary.
 
 `supply_refresh_ack` acknowledges one explicit NanoCore-issued source-to-target supply refresh request only when the runtime adapter and shim both declare safe refresh support. It never gates or acknowledges same-snapshot lease renewal.
 
@@ -195,8 +200,8 @@ The shim must send one final status for each bounded worker step.
 
 Final status includes:
 
-- outcome
-- stop reason
+- `status`
+- product-safe `stopReason`
 - final worker sequence
 - transcript manifest digest
 - artifact manifest digest
@@ -205,7 +210,7 @@ Final status includes:
 - audit summary ids when available
 - error summary when failed
 
-Valid outcomes:
+Valid `status` values:
 
 - `completed`
 - `interrupted`
@@ -215,7 +220,7 @@ Valid outcomes:
 - `degraded`
 - `lost`
 
-NanoCore may compute the canonical turn outcome differently after evidence collection.
+NanoCore derives the canonical Core `StopReason` and Turn status through the Worker Turn Reliability Envelope after evidence collection; it does not rename the wire field or treat the transport value as product-state authority.
 
 `final_status` is the worker's last durable-output barrier. Before sending it, the shim MUST seal the terminal transcript and runtime-provenance records and finish workspace-change publication for the bounded step. After NanoCore accepts it, that shim process MUST NOT publish more transcript, provenance, workspace-change, artifact, or terminal-result output for the step.
 
@@ -323,24 +328,15 @@ The product-safe active-session projection resolves live worker-control state th
 - Define the source and target snapshot schema, runtime and shim support negotiation, atomic lease and token rebinding, idempotency, rollback, and audit evidence before issuing any live supply refresh request.
 - Define a workspace-change notice only if workspace synchronization cannot be represented by artifact notices, manifests, and data-plane collection.
 
+Deferred work is non-authorizing and creates no current schema, state, compatibility, implementation, runner, harness, or test requirement.
+
 ## Testing Strategy
 
-- Envelope validation tests.
-- Token and lineage mismatch tests.
-- Monotonic sequence tests with duplicates and gaps.
-- Idempotency tests for retries.
-- Direct live append plus transcript evidence collection tests.
-- Oversized payload rejection tests.
-- Command delivery tests for interrupt and terminal diagnostics.
-- Import tests proving shim-suggested items are not canonical until NanoCore writes them.
-- Process-key shape, hash binding, request-only transport, and non-persistence tests in `@openkit/worker-protocol`, the shim, and NanoCore.
-- Sequence-zero commit-with-lost-response tests using a per-attempt deadline shorter than the fixed readiness budget.
-- Post-launch retry classification, fixed-delay retries, shared outage budget, and terminal-error tests.
-- Reconnect-required, wrong-key, deadline, exact-lineage, exact-next adoption, and same-fingerprint replay tests.
-- Final-status ordering tests proving runtime provenance and workspace publication finish before the last durable-output barrier and no later worker output is emitted.
-- Tests proving local transcript append and terminal sealing survive remote delivery failure.
-- Lost interrupt-ack and terminal-result response tests proving exact replay without command re-execution.
-- Worker Agent and terminal-command child survival during retryable outage, stopping-heartbeat-before-final-status, and no request after budget expiry.
+- L1-L2 cover envelope bounds, token and lineage rejection, monotonic sequence and same-sequence conflict, process-key secrecy, exact-next adoption, final-status ordering, and the rule that shim suggestions are not product truth.
+- Retry coverage proves one logical request is not re-executed within the bounded live-process outage budget; it need not enumerate every network error and instruction boundary.
+- L3 reuses the scheduler's one deterministic kill/restart scenario to prove exact adoption or the interrupted fallback. Worker control does not own another restart runner.
+- Real local or A1 acceptance reuses the existing stock OpenShell path only when transport integration cannot be proved below L5.
+- No tests are required for backend push, general offline command delivery, replacement workers, multi-target failover, or other deferred command families.
 
 ## Risks & Mitigations
 

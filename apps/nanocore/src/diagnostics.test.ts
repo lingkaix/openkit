@@ -8,9 +8,6 @@ import type { BetterAuthServer } from './auth/middleware.js';
 import { parseJsoncObject } from './config/jsonc.js';
 import type { OpenKitConfig } from './config/openkit-config.js';
 import { loadOpenKitConfig, openKitConfigPath } from './config/openkit-config.js';
-import { InternalAgentRunner } from './internal-agents/runner.js';
-import type { InternalAgentLLMClient } from './internal-agents/types.js';
-import { resolveProviderProfileToLLMConfig } from './providers/llm-config.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { ensureLayout } from './storage/fs-layout.js';
 import { createApp } from './test-support/app.js';
@@ -536,109 +533,14 @@ describe('Settings diagnostics app API', () => {
     });
   });
 
-  it('exposes internal agent diagnostics without leaking prompts or provider secrets', async () => {
-    const openKitConfig: OpenKitConfig = {
-      defaults: {
-        coreModel: 'gpt-5.1',
-        coreProviderId: 'openai',
-        gatewayModel: 'gpt-5.1',
-        gatewayProviderId: 'openai',
-      },
-    };
-    const providerCredentialResolver = () => 'sk-internal-provider';
-    const providerRegistry = new ProviderRegistry([
-      {
-        baseUrl: 'https://api.openai.com/v1',
-        defaultModel: 'gpt-5.1',
-        displayName: 'OpenAI',
-        id: 'openai',
-        kind: 'direct',
-        models: ['gpt-5.1'],
-        secretRef: 'env:OPENAI_API_KEY',
-      },
-    ]);
-    const llmClient: InternalAgentLLMClient = {
-      createChatCompletion: async () => {
-        throw new Error(
-          'upstream Authorization: Bearer tok_live_123 account_id=acct_secret secret=sk-quick-secret'
-        );
-      },
-    };
-    const internalAgentRunner = new InternalAgentRunner({
-      defaultSelectionResolver: (defaultUse) => ({
-        providerId:
-          defaultUse === 'quickChat'
-            ? (openKitConfig.defaults?.gatewayProviderId ?? null)
-            : (openKitConfig.defaults?.coreProviderId ?? null),
-        model:
-          defaultUse === 'quickChat'
-            ? (openKitConfig.defaults?.gatewayModel ?? null)
-            : (openKitConfig.defaults?.coreModel ?? null),
-      }),
-      llmClient,
-      providerResolver: (providerId) =>
-        resolveProviderProfileToLLMConfig(
-          providerRegistry.get(providerId)!,
-          providerCredentialResolver
-        ),
-    });
-    const app = createApp({
-      internalAgentRunner,
-      openKitConfig,
-      providerCredentialResolver,
-      providerRegistry,
-    });
-
-    await app.request('/api/app/quick-chat', {
-      body: JSON.stringify({
-        input: 'Summarize private roadmap token tok_live_123.',
-        model: 'gpt-5.1',
-        providerId: 'openai',
-      }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
-
+  it('keeps generic internal-agent runtime state out of App Diagnostics', async () => {
+    const app = createApp();
     const res = await app.request('/api/app/diagnostics');
     const body = await res.json();
-    const serialized = JSON.stringify(body);
 
     expect(res.status).toBe(200);
-    expect(body.internalAgents).toMatchObject({
-      agents: expect.arrayContaining([
-        expect.objectContaining({
-          defaultProviderUse: 'quickChat',
-          displayName: 'QuickChatAgent',
-          provider: {
-            configured: true,
-            model: 'gpt-5.1',
-            providerId: 'openai',
-          },
-          supportedModes: ['chat'],
-        }),
-        expect.objectContaining({
-          defaultProviderUse: 'internalTasks',
-          displayName: 'WorkerCoordinatorAgent',
-          provider: {
-            configured: true,
-            model: 'gpt-5.1',
-            providerId: 'openai',
-          },
-        }),
-      ]),
-      recentFailures: [
-        expect.objectContaining({
-          agentId: 'quick-chat',
-          code: 'internal_agent_failed',
-          message: expect.stringContaining('[redacted]'),
-        }),
-      ],
-    });
-    expect(serialized).not.toContain('Summarize private roadmap');
-    expect(serialized).not.toContain('OPENAI_API_KEY');
-    expect(serialized).not.toContain('tok_live_123');
-    expect(serialized).not.toContain('acct_secret');
-    expect(serialized).not.toContain('sk-quick-secret');
+    expect(body).not.toHaveProperty('internalAgents');
+    expect(body.defaults).not.toHaveProperty('internalTasks');
   });
 
   it('exposes the aggregate diagnostics snapshot in local mode', async () => {

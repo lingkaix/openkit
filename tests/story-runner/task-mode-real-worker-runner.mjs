@@ -462,15 +462,7 @@ async function executeTaskModeRealWorkerStory({ clients, options, prerequisites,
   try {
     assert(task.state !== 'escalated-to-goal', 'Task Mode escalated a bounded real-worker task.');
     assert(typeof task.turn?.id === 'string', 'Task Mode response did not include a turn id.');
-    assert(task.decision?.mode === 'task', 'Task Mode response did not include a task decision.');
-    assert(
-      task.state === 'completed' || task.state === 'needs-review',
-      `Task Mode returned a non-acceptance state: ${task.state}`
-    );
-    assert(
-      task.state !== 'needs-review' || reviewIds.length > 0,
-      'Task Mode returned needs-review without a review id.'
-    );
+    assert(task.state === 'completed', `Task Mode returned a non-acceptance state: ${task.state}`);
     const [threadResponse, aepRead, usage, runtimeEvidence] = await Promise.all([
       clients.core.core.listThreadItems(workspaceId, threadId),
       clients.core.app.listAgentEnvironmentPackageSnapshots(workspaceId),
@@ -528,7 +520,7 @@ async function executeTaskModeRealWorkerStory({ clients, options, prerequisites,
     },
     task: {
       state: task.state,
-      worker: task.decision.worker,
+      turnId: task.turn.id,
     },
     thread: {
       completedAssistantItemCount: 1,

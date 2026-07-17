@@ -602,71 +602,16 @@ describe('app api openapi projection', () => {
     });
     expect(
       document.paths[
-        '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/pending-user-turns'
-      ]?.get
-    ).toMatchObject({
-      operationId: 'listRecoveryPendingUserTurns',
-      tags: ['app-utils'],
-      parameters: [
-        expect.objectContaining({ name: 'workspaceId', in: 'path', required: true }),
-        expect.objectContaining({ name: 'threadId', in: 'path', required: true }),
-      ],
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/ListRecoveryPendingUserTurnsResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(document.components.schemas.ListRecoveryPendingUserTurnsResponse).toMatchObject({
-      type: 'object',
-      required: ['items'],
-    });
-    expect(
-      document.paths[
-        '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/interrupted-worker'
+        '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/interrupted-worker/{turnId}/retry'
       ]?.post
     ).toMatchObject({
-      operationId: 'createInterruptedRecoveryState',
-      tags: ['app-utils'],
-      parameters: [
-        expect.objectContaining({ name: 'workspaceId', in: 'path', required: true }),
-        expect.objectContaining({ name: 'threadId', in: 'path', required: true }),
-      ],
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/CreateInterruptedRecoveryStateResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths[
-        '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/interrupted-worker/{turnId}/terminal'
-      ]?.post
-    ).toMatchObject({
-      operationId: 'clearInterruptedWorkerCheckpoint',
-      tags: ['app-utils'],
-      parameters: [
-        expect.objectContaining({ name: 'workspaceId', in: 'path', required: true }),
-        expect.objectContaining({ name: 'threadId', in: 'path', required: true }),
-        expect.objectContaining({ name: 'turnId', in: 'path', required: true }),
-      ],
+      operationId: 'retryInterruptedWorkerCheckpoint',
       requestBody: {
+        required: true,
         content: {
           'application/json': {
             schema: {
-              $ref: '#/components/schemas/ClearInterruptedWorkerCheckpointRequest',
+              $ref: '#/components/schemas/RetryInterruptedWorkerCheckpointRequest',
             },
           },
         },
@@ -676,7 +621,7 @@ describe('app api openapi projection', () => {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/ClearInterruptedWorkerCheckpointResponse',
+                $ref: '#/components/schemas/RetryInterruptedWorkerCheckpointResponse',
               },
             },
           },
@@ -916,6 +861,16 @@ describe('app api openapi projection', () => {
     ).toMatchObject({
       operationId: 'createThreadGoalPlan',
       tags: ['modes'],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              $ref: '#/components/schemas/CreateThreadGoalPlanRequest',
+            },
+          },
+        },
+      },
       responses: {
         '200': {
           content: {
@@ -985,6 +940,15 @@ describe('app api openapi projection', () => {
     ).toMatchObject({
       operationId: 'pauseThreadGoal',
       tags: ['modes'],
+      requestBody: {
+        content: {
+          'application/json': {
+            schema: {
+              $ref: '#/components/schemas/PauseThreadGoalRequest',
+            },
+          },
+        },
+      },
       responses: {
         '200': {
           content: {
@@ -1002,6 +966,15 @@ describe('app api openapi projection', () => {
     ).toMatchObject({
       operationId: 'resumeThreadGoal',
       tags: ['modes'],
+      requestBody: {
+        content: {
+          'application/json': {
+            schema: {
+              $ref: '#/components/schemas/ResumeThreadGoalRequest',
+            },
+          },
+        },
+      },
       responses: {
         '200': {
           content: {
@@ -2622,6 +2595,57 @@ describe('app api openapi projection', () => {
     expect(registeredOperations).toEqual(liveOperations);
   });
 
+  it('does not document generic pending-input recovery operations', () => {
+    const document = createAppOpenApiDocument();
+    const schemas = document.components.schemas as Readonly<Record<string, unknown>>;
+    const operationIds = Object.values(document.paths).flatMap((pathItem) =>
+      APP_OPENAPI_ROUTE_METHODS.flatMap((method) => {
+        const operation = (pathItem as Readonly<Record<string, unknown>>)[method];
+        const operationId =
+          operation && typeof operation === 'object' && !Array.isArray(operation)
+            ? (operation as Readonly<Record<string, unknown>>).operationId
+            : null;
+        return typeof operationId === 'string' ? [operationId] : [];
+      })
+    );
+
+    expect(document.paths).not.toHaveProperty(
+      '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/pending-user-turns/{requestId}/edit'
+    );
+    expect(document.paths).not.toHaveProperty(
+      '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/pending-user-turns/{requestId}/interrupt'
+    );
+    expect(document.paths).not.toHaveProperty(
+      '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/pending-user-turns'
+    );
+    expect(document.paths).not.toHaveProperty(
+      '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/pending-user-turns/{requestId}/cancel'
+    );
+    expect(document.paths).not.toHaveProperty(
+      '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/pending-user-turns/{requestId}/follow-up'
+    );
+    expect(document.paths).not.toHaveProperty(
+      '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/interrupted-worker'
+    );
+    expect(document.paths).not.toHaveProperty(
+      '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/interrupted-worker/{turnId}/terminal'
+    );
+    expect(operationIds).not.toContain('editRecoveryPendingUserTurn');
+    expect(operationIds).not.toContain('promoteRecoveryPendingUserTurnToInterrupt');
+    expect(operationIds).not.toContain('createInterruptedRecoveryState');
+    expect(operationIds).not.toContain('listRecoveryPendingUserTurns');
+    expect(operationIds).not.toContain('cancelRecoveryPendingUserTurn');
+    expect(operationIds).not.toContain('convertRecoveryPendingUserTurnToFollowUp');
+    expect(schemas).not.toHaveProperty('EditRecoveryPendingUserTurnRequest');
+    expect(schemas).not.toHaveProperty('EditRecoveryPendingUserTurnResponse');
+    expect(schemas).not.toHaveProperty('PromoteRecoveryPendingUserTurnToInterruptResponse');
+    expect(schemas).not.toHaveProperty('RecoveryPendingUserTurn');
+    expect(schemas).not.toHaveProperty('CreateInterruptedRecoveryStateResponse');
+    expect(schemas).not.toHaveProperty('ListRecoveryPendingUserTurnsResponse');
+    expect(schemas).not.toHaveProperty('CancelRecoveryPendingUserTurnResponse');
+    expect(schemas).not.toHaveProperty('ConvertRecoveryPendingUserTurnToFollowUpResponse');
+  });
+
   it('preserves the characterized handler registration order', () => {
     expect(getRegisteredAppApiOperationIds(createApp())).toEqual([
       'consumeOpenKitBootstrapToken',
@@ -2706,15 +2730,8 @@ describe('app api openapi projection', () => {
       'pauseThreadGoal',
       'resumeThreadGoal',
       'runThreadGoalStep',
-      'createInterruptedRecoveryState',
       'listInterruptedWorkers',
-      'listRecoveryPendingUserTurns',
-      'editRecoveryPendingUserTurn',
-      'convertRecoveryPendingUserTurnToFollowUp',
-      'promoteRecoveryPendingUserTurnToInterrupt',
-      'cancelRecoveryPendingUserTurn',
       'retryInterruptedWorkerCheckpoint',
-      'clearInterruptedWorkerCheckpoint',
       'refreshAgentHealth',
       'registerKnowledgeSource',
       'listKnowledgeSources',

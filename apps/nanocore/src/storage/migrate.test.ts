@@ -48,13 +48,13 @@ const WORKSPACE_TABLES = [
   'capability_calls',
   'evidence_bundles',
   'git_push_records',
+  'goal_plan_records',
   'goal_records',
   'goal_review_records',
   'goal_tasks',
   'goal_verification_records',
   'idempotency_requests',
   'mcp_tool_schema_snapshots',
-  'pending_user_turns',
   'permission_decisions',
   'resolved_agent_setups',
   'runtime_evidence',
@@ -278,17 +278,6 @@ describe('storage migrations', () => {
       expect(listColumnNames(workspaceDb, 'idempotency_requests')).toEqual(
         idempotencyRequestColumns
       );
-      expect(listColumnNames(workspaceDb, 'pending_user_turns')).toEqual([
-        'pending_turn_id',
-        'workspace_id',
-        'thread_id',
-        'request_id',
-        'content_item_id',
-        'content_digest',
-        'queue_mode',
-        'received_at',
-        'created_at',
-      ]);
       expect(listColumnNames(workspaceDb, 'capability_calls')).toEqual([
         'call_id',
         'workspace_id',
@@ -324,12 +313,16 @@ describe('storage migrations', () => {
         'item_ids_json',
         'artifact_ids_json',
         'verification_evidence_json',
+        'prompt',
+        'created_by_request_id',
         'verdict',
         'reason',
+        'revision_instruction',
         'created_at',
         'updated_at',
         'resolved_at',
         'resolution_request_id',
+        'resolved_by_actor_id',
         'resolution_snapshot_json',
       ]);
       expect(listColumnNames(workspaceDb, 'workspace_repository_resources')).toEqual([
@@ -357,6 +350,8 @@ describe('storage migrations', () => {
         'turn_id',
         'goal_id',
         'task_id',
+        'request_id',
+        'request_input_hash',
         'stage',
         'iteration',
         'worker_session_id',

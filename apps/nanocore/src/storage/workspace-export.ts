@@ -38,12 +38,12 @@ export const WORKSPACE_EXPORT_PORTABLE_WORKSPACE_SQLITE_TABLES = [
   'capability_calls',
   'evidence_bundles',
   'git_push_records',
+  'goal_plan_records',
   'goal_records',
   'goal_review_records',
   'goal_tasks',
   'goal_verification_records',
   'mcp_tool_schema_snapshots',
-  'pending_user_turns',
   'permission_decisions',
   'resolved_agent_setups',
   'runtime_evidence',
@@ -186,12 +186,12 @@ export interface WriteWorkspaceExportTreeInput {
   workspaceQuarantineRecords?: readonly unknown[];
   /** Workspace-scoped permission decision rows to export as line-oriented records. */
   permissionDecisions?: readonly unknown[];
-  /** Pending user turn rows to export as line-oriented records. */
-  pendingUserTurns?: readonly unknown[];
   /** Worker checkpoint rows to export as line-oriented records. */
   workerCheckpoints?: readonly unknown[];
   /** Goal Mode goal records to export as line-oriented records. */
   goalRecords?: readonly unknown[];
+  /** Immutable Goal Plan records to export as line-oriented records. */
+  goalPlanRecords?: readonly unknown[];
   /** Goal Mode task records to export as line-oriented records. */
   goalTasks?: readonly unknown[];
   /** Goal Mode review records to export as line-oriented records. */
@@ -507,14 +507,14 @@ export function writeWorkspaceExportTree(
     if (input.permissionDecisions?.length) {
       writeJsonl(join(recordsRoot, 'permission-decisions.jsonl'), input.permissionDecisions);
     }
-    if (input.pendingUserTurns?.length) {
-      writeJsonl(join(recordsRoot, 'pending-user-turns.jsonl'), input.pendingUserTurns);
-    }
     if (input.workerCheckpoints?.length) {
       writeJsonl(join(recordsRoot, 'worker-turn-checkpoints.jsonl'), input.workerCheckpoints);
     }
     if (input.goalRecords?.length) {
       writeJsonl(join(recordsRoot, 'goal-records.jsonl'), input.goalRecords);
+    }
+    if (input.goalPlanRecords?.length) {
+      writeJsonl(join(recordsRoot, 'goal-plan-records.jsonl'), input.goalPlanRecords);
     }
     if (input.goalTasks?.length) {
       writeJsonl(join(recordsRoot, 'goal-tasks.jsonl'), input.goalTasks);

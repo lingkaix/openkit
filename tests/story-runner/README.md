@@ -122,7 +122,5 @@ If the local sandbox cannot bind localhost or launch Chromium, rerun the affecte
 - `chat-mode-mcp-smoke-runner.test.mjs`: story validation and environment coverage for the deterministic Chat Mode MCP runner.
 - `workspace-portability-mcp-runner.mjs`: deterministic workspace portability MCP story runner for export, cross-data-root import, repository re-binding, lineage, and redaction checks.
 - `workspace-portability-mcp-runner.test.mjs`: story validation coverage for the deterministic workspace portability MCP runner.
-- `recovery-mcp-smoke-runner.mjs`: deterministic Recovery MCP story runner for interrupted worker reads, pending input edit/follow-up/cancel, and checkpoint retry.
-- `recovery-mcp-smoke-runner.test.mjs`: story validation and build-output coverage for the deterministic Recovery MCP runner.
 - `web-stack.mjs`: isolated local NanoCore and Web stack helper.
 - `openkit-local-self-check.spec.ts`: deterministic adapter for `tests/stories/openkit-local-self-check.story.md`.

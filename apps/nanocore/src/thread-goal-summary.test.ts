@@ -1,27 +1,37 @@
 import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createApp } from './app.js';
 import { ensureLocalUser } from './auth/identity.js';
 import type { BetterAuthServer } from './auth/middleware.js';
+import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
+import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
+import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
 import { listGoalReviewRecordsForTask } from './runtime/goal-review-records.js';
 import {
   createGoalRecord,
   createGoalTask,
+  getGoalRecord,
   listGoalRecordsForThread,
   listGoalTasks,
   updateGoalStatus,
 } from './runtime/goal-store.js';
 import { createGoalVerificationRecord } from './runtime/goal-verification-records.js';
-import { listPendingUserTurns } from './runtime/pending-user-turns.js';
 import type { TurnExecutor, TurnStartRuntimeContext } from './runtime/types.js';
+import {
+  markWorkerBackendWorkspaceHandoffComplete,
+  recordWorkerBackendSessionMaterializing,
+  transitionWorkerBackendSessionState,
+} from './runtime/worker-backend-sessions.js';
 import { getWorkerCheckpoint, upsertWorkerCheckpoint } from './runtime/worker-checkpoints.js';
+import { recordWorkerControlAcceptedRecord } from './runtime/worker-control-records.js';
 import {
   ensureConfiguredSchedulerBaseline,
   listSchedulerAdmissionEntriesForWorkspace,
+  listSchedulerSessionLeasesForTurn,
   requireSchedulerSessionLease,
   upsertSchedulerCapacityRecord,
 } from './scheduler-records.js';
@@ -31,6 +41,32 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { upsertWorkspaceRepositoryResource } from './workspace/repository-store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+
+const GOAL_TASK_EXECUTION_FIELDS = {
+  planItemId: 'it_goal_plan_fixture',
+  resources: [
+    {
+      kind: 'repository' as const,
+      reference: 'linked workspace repository',
+      reason: 'The approved Task uses the linked repository.',
+    },
+  ],
+  expectedArtifacts: [
+    {
+      kind: 'artifact' as const,
+      description: 'Worker result summary and implementation evidence.',
+    },
+  ],
+  verificationChecks: [
+    { kind: 'manual' as const, description: 'Review the worker output and evidence.' },
+  ],
+  reviewPolicy: {
+    required: true,
+    reviewers: ['human'] as ['human'],
+    instructions: 'Review the worker result and verification evidence.',
+  },
+  escalationConditions: ['Escalate if the approved Task cannot be completed as specified.'],
+};
 
 /**
  * Opens a migrated Core database for thread goal summary route tests.
@@ -79,6 +115,50 @@ function createWorkspaceDb(coreDb: CoreDb): WorkspaceDb {
 }
 
 /**
+ * Posts one Goal start command through the public App API.
+ *
+ * @param app NanoCore app under test.
+ * @param threadId Thread receiving the Goal.
+ * @param body Goal start request body.
+ * @param workspaceId Workspace receiving the Goal.
+ * @returns Public App API response.
+ */
+function postGoalStart(
+  app: ReturnType<typeof createApp>,
+  threadId: string,
+  body: Record<string, unknown>,
+  workspaceId = 'ws_demo'
+): Promise<Response> {
+  return app.request(`/api/app/workspaces/${workspaceId}/threads/${threadId}/goal`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Posts one identified Goal pause or resume command through the public App API.
+ *
+ * @param app NanoCore app under test.
+ * @param threadId Thread receiving the lifecycle command.
+ * @param command Goal lifecycle command path.
+ * @param requestId Stable command request id.
+ * @returns Public App API response.
+ */
+function postGoalLifecycle(
+  app: ReturnType<typeof createApp>,
+  threadId: string,
+  command: 'pause' | 'resume',
+  requestId: string
+): Promise<Response> {
+  return app.request(`/api/app/workspaces/ws_demo/threads/${threadId}/goal/${command}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId }),
+  });
+}
+
+/**
  * Seeds the exact non-terminal Turn and checkpoint pair owned by one active Goal.
  *
  * @param store App-local durable store.
@@ -104,6 +184,8 @@ function seedActiveGoalWorkerTurn(
     threadId,
     turnId,
     goalId,
+    requestId: `req_${turnId}`,
+    requestInputHash: `sha256:${turnId}`,
     stage: 'running_worker',
     iteration: 0,
   });
@@ -292,11 +374,9 @@ describe('thread goal summary app API', () => {
             ready: 0,
             running: 0,
             reviewing: 0,
-            needsRevision: 0,
             completed: 0,
             blocked: 0,
             failed: 0,
-            skipped: 0,
           },
           pendingHumanAttention: {
             required: false,
@@ -304,11 +384,6 @@ describe('thread goal summary app API', () => {
           },
           terminalState: null,
           terminalSummary: null,
-          steering: {
-            pendingSteeringCount: 0,
-            pendingFollowUpCount: 0,
-            appliedSteeringCount: 0,
-          },
           updatedAt: '2026-05-31T00:00:00.000Z',
         },
       });
@@ -346,6 +421,7 @@ describe('thread goal summary app API', () => {
         dependsOnTaskIds: [],
         acceptanceCriteria: ['The completed task is recorded.'],
         contextBudgetTokens: 4000,
+        ...GOAL_TASK_EXECUTION_FIELDS,
         status: 'completed',
       });
       createGoalTask(workspaceDb, {
@@ -359,6 +435,7 @@ describe('thread goal summary app API', () => {
         dependsOnTaskIds: ['task_done'],
         acceptanceCriteria: ['The App API route returns the read model.'],
         contextBudgetTokens: 6000,
+        ...GOAL_TASK_EXECUTION_FIELDS,
         status: 'running',
       });
       createGoalTask(workspaceDb, {
@@ -372,6 +449,7 @@ describe('thread goal summary app API', () => {
         dependsOnTaskIds: ['task_current'],
         acceptanceCriteria: ['Release verification passes.'],
         contextBudgetTokens: 8000,
+        ...GOAL_TASK_EXECUTION_FIELDS,
         status: 'pending',
       });
       createGoalVerificationRecord(workspaceDb, {
@@ -414,11 +492,9 @@ describe('thread goal summary app API', () => {
             ready: 0,
             running: 1,
             reviewing: 0,
-            needsRevision: 0,
             completed: 1,
             blocked: 0,
             failed: 0,
-            skipped: 0,
           },
           pendingHumanAttention: {
             required: false,
@@ -430,7 +506,6 @@ describe('thread goal summary app API', () => {
           },
           terminalSummary: {
             completedTaskIds: ['task_done'],
-            skippedTaskIds: [],
             blockedTaskIds: [],
             artifactIds: ['artifact_release_log'],
             verificationEvidence: [
@@ -442,13 +517,8 @@ describe('thread goal summary app API', () => {
                 artifactIds: ['artifact_release_log'],
               },
             ],
-            risks: ['2 required task is not accepted or skipped.'],
+            risks: ['2 required task is not accepted.'],
             suggestedNextWork: [],
-          },
-          steering: {
-            pendingSteeringCount: 0,
-            pendingFollowUpCount: 0,
-            appliedSteeringCount: 0,
           },
           updatedAt: '2026-05-31T00:20:00.000Z',
         },
@@ -459,21 +529,24 @@ describe('thread goal summary app API', () => {
     }
   });
 
-  it('starts a planning goal from a normal thread and records the objective item', async () => {
+  it('starts and replays one request-owned planning goal', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Goal start thread');
+    const request = {
+      requestId: 'goal-start-1',
+      objective: 'Make v0.0.6 ready to publish.',
+      title: 'Ship v0.0.6',
+    };
 
     try {
       const app = createApp({ coreDb, store });
-      const res = await app.request(`/api/app/workspaces/ws_demo/threads/${thread.id}/goal`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          objective: 'Make v0.0.6 ready to publish.',
-          title: 'Ship v0.0.6',
-        }),
+      const missingRequestIdRes = await postGoalStart(app, thread.id, {
+        objective: request.objective,
       });
+      expect(missingRequestIdRes.status).toBe(400);
+      await expect(missingRequestIdRes.json()).resolves.toMatchObject({ code: 'invalid_request' });
+      const res = await postGoalStart(app, thread.id, request);
 
       expect(res.status).toBe(200);
       const payload = (await res.json()) as {
@@ -493,23 +566,27 @@ describe('thread goal summary app API', () => {
             ready: 0,
             running: 0,
             reviewing: 0,
-            needsRevision: 0,
             completed: 0,
             blocked: 0,
             failed: 0,
-            skipped: 0,
           },
           pendingHumanAttention: {
             required: false,
             reason: null,
           },
           terminalState: null,
-          steering: {
-            pendingSteeringCount: 0,
-            pendingFollowUpCount: 0,
-            appliedSteeringCount: 0,
-          },
         },
+      });
+      const replayRes = await postGoalStart(app, thread.id, request);
+      expect(replayRes.status).toBe(200);
+      await expect(replayRes.json()).resolves.toEqual(payload);
+      const conflictRes = await postGoalStart(app, thread.id, {
+        ...request,
+        objective: 'Replace the original objective.',
+      });
+      expect(conflictRes.status).toBe(409);
+      await expect(conflictRes.json()).resolves.toMatchObject({
+        code: 'idempotency_key_conflict',
       });
 
       const items = store.listThreadItems('ws_demo', thread.id);
@@ -518,6 +595,7 @@ describe('thread goal summary app API', () => {
           id: payload.objectiveItemId,
           type: 'user-message',
           status: 'completed',
+          causationId: request.requestId,
           text: 'Make v0.0.6 ready to publish.',
         }),
       ]);
@@ -532,9 +610,47 @@ describe('thread goal summary app API', () => {
             createdByItemId: payload.objectiveItemId,
           }),
         ]);
+        expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(1);
+        const receipt = store
+          .listCommandRequests()
+          .find((record) => record.requestId === request.requestId);
+        expect(receipt).toMatchObject({
+          command: 'goal.start',
+          response: { id: payload.goal.goalId, kind: 'goal' },
+        });
+        expect(receipt?.response).not.toHaveProperty('snapshot');
+        updateGoalStatus(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: payload.goal.goalId,
+          status: 'completed',
+          terminalStopReason: 'completed',
+        });
       } finally {
         workspaceDb.sqlite.close();
       }
+      const nextGoalRes = await postGoalStart(app, thread.id, {
+        requestId: 'goal-start-2',
+        objective: 'Start the next Goal.',
+      });
+      expect(nextGoalRes.status).toBe(200);
+      const clarificationRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/chat`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: 'chat-after-goal-start', input: 'Help.' }),
+        }
+      );
+      expect(clarificationRes.status).toBe(202);
+      const historicalReplayRes = await postGoalStart(app, thread.id, request);
+      expect(historicalReplayRes.status).toBe(200);
+      await expect(historicalReplayRes.json()).resolves.toMatchObject({
+        goal: {
+          goalId: payload.goal.goalId,
+          pendingHumanAttention: { required: false, reason: null },
+        },
+      });
     } finally {
       coreDb.sqlite.close();
     }
@@ -554,7 +670,10 @@ describe('thread goal summary app API', () => {
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ objective: 'Complete the first workspace goal.' }),
+          body: JSON.stringify({
+            requestId: 'goal-start-first-workspace',
+            objective: 'Complete the first workspace goal.',
+          }),
         }
       );
       const secondRes = await app.request(
@@ -562,7 +681,10 @@ describe('thread goal summary app API', () => {
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ objective: 'Complete the second workspace goal.' }),
+          body: JSON.stringify({
+            requestId: 'goal-start-second-workspace',
+            objective: 'Complete the second workspace goal.',
+          }),
         }
       );
 
@@ -576,8 +698,7 @@ describe('thread goal summary app API', () => {
         goal: { goalId: string };
         objectiveItemId: string;
       };
-      expect(first.goal.goalId).toBe('goal_1');
-      expect(second.goal.goalId).toBe('goal_1');
+      expect(first.goal.goalId).not.toBe(second.goal.goalId);
       expect(first.objectiveItemId).not.toBe(second.objectiveItemId);
     } finally {
       coreDb.sqlite.close();
@@ -595,6 +716,7 @@ describe('thread goal summary app API', () => {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
+          requestId: 'goal-start-active-1',
           objective: 'Make v0.0.6 ready to publish.',
           title: 'Ship v0.0.6',
         }),
@@ -605,6 +727,7 @@ describe('thread goal summary app API', () => {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
+          requestId: 'goal-start-active-2',
           objective: 'Start a competing active goal.',
           title: 'Competing goal',
         }),
@@ -624,6 +747,95 @@ describe('thread goal summary app API', () => {
         workspaceDb.sqlite.close();
       }
     } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('fails Goal start closed when its receipt or owner tuple is incomplete', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore();
+    const receiptGapThread = store.createThread('ws_demo', 'Goal start receipt gap');
+    const partialOwnerThread = store.createThread('ws_demo', 'Goal start partial owner');
+    const app = createApp({ coreDb, store });
+    const receiptGapRequest = {
+      requestId: 'goal-start-receipt-gap',
+      objective: 'Recover this Goal start.',
+    };
+
+    try {
+      const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
+        throw new Error('simulated Goal start receipt failure');
+      });
+      const receiptGapRes = await postGoalStart(app, receiptGapThread.id, receiptGapRequest);
+      receiptWrite.mockRestore();
+      expect(receiptGapRes.status).toBe(409);
+      await expect(receiptGapRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
+
+      const receiptGapCounts = {
+        items: store.listThreadItems('ws_demo', receiptGapThread.id).length,
+        turns: store.listThreadTurns('ws_demo', receiptGapThread.id).length,
+      };
+      const sameInputReplayRes = await postGoalStart(app, receiptGapThread.id, receiptGapRequest);
+      expect(sameInputReplayRes.status).toBe(409);
+      await expect(sameInputReplayRes.json()).resolves.toMatchObject({
+        code: 'recovery_required',
+      });
+      const receiptGapReplayRes = await postGoalStart(app, receiptGapThread.id, {
+        ...receiptGapRequest,
+        title: receiptGapRequest.objective,
+      });
+      expect(receiptGapReplayRes.status).toBe(409);
+      await expect(receiptGapReplayRes.json()).resolves.toMatchObject({
+        code: 'recovery_required',
+      });
+      expect({
+        items: store.listThreadItems('ws_demo', receiptGapThread.id).length,
+        turns: store.listThreadTurns('ws_demo', receiptGapThread.id).length,
+      }).toEqual(receiptGapCounts);
+      expect(
+        store
+          .listCommandRequests()
+          .find((record) => record.requestId === receiptGapRequest.requestId)
+      ).toBeUndefined();
+
+      const itemWrite = vi.spyOn(store, 'createItem').mockImplementationOnce(() => {
+        throw new Error('simulated Goal start Item failure');
+      });
+      const partialRequest = {
+        requestId: 'goal-start-partial-owner',
+        objective: 'Do not replace this partial Goal start.',
+      };
+      const partialRes = await postGoalStart(app, partialOwnerThread.id, partialRequest);
+      itemWrite.mockRestore();
+      expect(partialRes.status).toBe(409);
+      await expect(partialRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
+
+      const partialReplayRes = await postGoalStart(app, partialOwnerThread.id, partialRequest);
+      expect(partialReplayRes.status).toBe(409);
+      await expect(partialReplayRes.json()).resolves.toMatchObject({
+        code: 'recovery_required',
+      });
+      expect(store.listThreadTurns('ws_demo', partialOwnerThread.id)).toHaveLength(1);
+      expect(store.listThreadItems('ws_demo', partialOwnerThread.id)).toEqual([]);
+      const workspaceDb = createWorkspaceDb(coreDb);
+      try {
+        expect(
+          listGoalRecordsForThread(workspaceDb, {
+            workspaceId: 'ws_demo',
+            threadId: receiptGapThread.id,
+          })
+        ).toHaveLength(1);
+        expect(
+          listGoalRecordsForThread(workspaceDb, {
+            workspaceId: 'ws_demo',
+            threadId: partialOwnerThread.id,
+          })
+        ).toEqual([]);
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    } finally {
+      vi.restoreAllMocks();
       coreDb.sqlite.close();
     }
   });
@@ -665,9 +877,6 @@ describe('thread goal summary app API', () => {
       });
       expect(store.listThreadItems('ws_demo', thread.id)).toEqual([]);
       expect(store.listCommandRequests()).toEqual([]);
-      expect(
-        listPendingUserTurns(workspaceDb, { workspaceId: 'ws_demo', threadId: thread.id })
-      ).toEqual([]);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -685,6 +894,7 @@ describe('thread goal summary app API', () => {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
+          requestId: 'goal-start-planning-1',
           objective: 'Make v0.0.6 ready to publish.',
           title: 'Ship v0.0.6',
         }),
@@ -692,13 +902,11 @@ describe('thread goal summary app API', () => {
 
       expect(startRes.status).toBe(200);
 
-      const pauseBeforeApprovalRes = await app.request(
-        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/pause`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({}),
-        }
+      const pauseBeforeApprovalRes = await postGoalLifecycle(
+        app,
+        thread.id,
+        'pause',
+        'goal-pause-before-approval'
       );
 
       expect(pauseBeforeApprovalRes.status).toBe(409);
@@ -706,7 +914,7 @@ describe('thread goal summary app API', () => {
         code: 'goal_not_running',
       });
 
-      const planRes = await app.request(
+      const missingRequestPlanRes = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan`,
         {
           method: 'POST',
@@ -714,10 +922,53 @@ describe('thread goal summary app API', () => {
           body: JSON.stringify({}),
         }
       );
+
+      expect(missingRequestPlanRes.status).toBe(400);
+      await expect(missingRequestPlanRes.json()).resolves.toMatchObject({
+        code: 'invalid_request',
+      });
+
+      const planReceiptSpy = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
+        throw new Error('simulated plan receipt write failure');
+      });
+      const failedPlanRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: 'goal-plan-create-1' }),
+        }
+      );
+      planReceiptSpy.mockRestore();
+
+      expect(failedPlanRes.status).toBe(409);
+      await expect(failedPlanRes.json()).resolves.toMatchObject({
+        code: 'recovery_required',
+      });
+      const committedPlanOwners = {
+        items: store.listThreadItems('ws_demo', thread.id).length,
+        turns: store.listThreadTurns('ws_demo', thread.id).length,
+      };
+      expect(
+        store.getCommandRequest('goal.plan', 'goal-plan-create-1', {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+        })
+      ).toBeNull();
+
+      const planRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: 'goal-plan-create-1' }),
+        }
+      );
       const planPayload = (await planRes.json()) as {
         status: string;
         goal: { goalId: string; status: string; taskCounts: { ready: number } };
         planItemId: string;
+        planner: { plan: unknown };
         plan: {
           tasks: readonly [
             { taskId: string; title: string; verificationChecks: readonly unknown[] },
@@ -736,7 +987,6 @@ describe('thread goal summary app API', () => {
             reason: 'Goal plan needs approval.',
           },
         },
-        planItemId: 'it_goal_plan_tu_2',
         planner: {
           mode: 'goal',
           sourceAgentId: 'worker-coordinator',
@@ -755,6 +1005,46 @@ describe('thread goal summary app API', () => {
           ],
         },
       });
+      expect(planPayload.planner.plan).toEqual(planPayload.plan);
+      expect(
+        store.getCommandRequest('goal.plan', 'goal-plan-create-1', {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+        })?.response
+      ).toEqual({ kind: 'goal_plan', id: planPayload.planItemId });
+
+      const replayedPlanRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: 'goal-plan-create-1' }),
+        }
+      );
+      expect(replayedPlanRes.status).toBe(200);
+      await expect(replayedPlanRes.json()).resolves.toEqual(planPayload);
+      expect({
+        items: store.listThreadItems('ws_demo', thread.id).length,
+        turns: store.listThreadTurns('ws_demo', thread.id).length,
+      }).toEqual(committedPlanOwners);
+
+      const retiredPlanApproveRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan/approve`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: 'goal-plan-retired-input-1',
+            planItemId: planPayload.planItemId,
+            plan: planPayload.plan,
+          }),
+        }
+      );
+
+      expect(retiredPlanApproveRes.status).toBe(400);
+      await expect(retiredPlanApproveRes.json()).resolves.toMatchObject({
+        code: 'invalid_request',
+      });
 
       const mismatchedApproveRes = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan/approve`,
@@ -762,15 +1052,15 @@ describe('thread goal summary app API', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
+            requestId: 'goal-plan-mismatch-1',
             planItemId: 'it_goal_plan_other',
-            plan: planPayload.plan,
           }),
         }
       );
 
-      expect(mismatchedApproveRes.status).toBe(400);
+      expect(mismatchedApproveRes.status).toBe(409);
       await expect(mismatchedApproveRes.json()).resolves.toMatchObject({
-        code: 'goal_plan_mismatch',
+        code: 'stale',
       });
 
       const approveRes = await app.request(
@@ -779,14 +1069,15 @@ describe('thread goal summary app API', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
+            requestId: 'goal-plan-approve-1',
             planItemId: planPayload.planItemId,
-            plan: planPayload.plan,
           }),
         }
       );
 
       expect(approveRes.status).toBe(200);
-      await expect(approveRes.json()).resolves.toMatchObject({
+      const approvedPayload = await approveRes.json();
+      expect(approvedPayload).toMatchObject({
         goal: {
           goalId: planPayload.goal.goalId,
           status: 'running',
@@ -801,17 +1092,161 @@ describe('thread goal summary app API', () => {
         readyTasks: [{ taskId: 'task_1', status: 'ready' }],
         startsWorkerTurn: false,
       });
-      const pauseRes = await app.request(
-        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/pause`,
+      expect(
+        store.getCommandRequest('goal.plan.approve', 'goal-plan-approve-1', {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+        })?.response.snapshot
+      ).toBeUndefined();
+      const replayedApproveRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan/approve`,
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({}),
+          body: JSON.stringify({
+            requestId: 'goal-plan-approve-1',
+            planItemId: planPayload.planItemId,
+          }),
         }
       );
 
+      expect(replayedApproveRes.status).toBe(200);
+      await expect(replayedApproveRes.json()).resolves.toEqual(approvedPayload);
+
+      const conflictingApproveRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan/approve`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: 'goal-plan-approve-1',
+            planItemId: 'it_goal_plan_other',
+          }),
+        }
+      );
+
+      expect(conflictingApproveRes.status).toBe(409);
+      await expect(conflictingApproveRes.json()).resolves.toMatchObject({
+        code: 'idempotency_key_conflict',
+      });
+
+      const unownedReplayRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan/approve`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: 'goal-plan-approve-2',
+            planItemId: planPayload.planItemId,
+          }),
+        }
+      );
+
+      expect(unownedReplayRes.status).toBe(409);
+      await expect(unownedReplayRes.json()).resolves.toMatchObject({
+        code: 'recovery_required',
+      });
+
+      const failedPauseReceipt = vi
+        .spyOn(store, 'recordCommandRequest')
+        .mockImplementationOnce(() => {
+          throw new Error('simulated atomic pause receipt failure');
+        });
+      const failedPauseRes = await postGoalLifecycle(
+        app,
+        thread.id,
+        'pause',
+        'goal-pause-rollback'
+      );
+      failedPauseReceipt.mockRestore();
+
+      expect(failedPauseRes.status).toBe(400);
+      await expect(failedPauseRes.json()).resolves.toMatchObject({ code: 'goal_pause_failed' });
+      const boundaryDb = createWorkspaceDb(coreDb);
+      try {
+        expect(
+          store.getCommandRequest(
+            'goal.pause',
+            'goal-pause-rollback',
+            { workspaceId: 'ws_demo', threadId: thread.id },
+            boundaryDb
+          )
+        ).toBeNull();
+        expect(
+          listGoalRecordsForThread(boundaryDb, {
+            workspaceId: 'ws_demo',
+            threadId: thread.id,
+          }).at(-1)?.status
+        ).toBe('running');
+        const pendingTurn = store.createTurn(
+          'ws_demo',
+          thread.id,
+          'Pending Goal worker admission.'
+        );
+        store.updateTurn(pendingTurn.id, { status: 'pending' });
+        const pendingPauseRes = await postGoalLifecycle(
+          app,
+          thread.id,
+          'pause',
+          'goal-pause-pending-turn'
+        );
+        expect(pendingPauseRes.status).toBe(409);
+        await expect(pendingPauseRes.json()).resolves.toMatchObject({
+          code: 'goal_pause_active_turn',
+        });
+
+        updateGoalStatus(boundaryDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: planPayload.goal.goalId,
+          status: 'paused',
+        });
+        const pendingResumeRes = await postGoalLifecycle(
+          app,
+          thread.id,
+          'resume',
+          'goal-resume-pending-turn'
+        );
+        expect(pendingResumeRes.status).toBe(409);
+        await expect(pendingResumeRes.json()).resolves.toMatchObject({
+          code: 'goal_resume_active_turn',
+        });
+        store.updateTurn(pendingTurn.id, { status: 'cancelled' });
+
+        updateGoalStatus(boundaryDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: planPayload.goal.goalId,
+          status: 'running',
+          currentTaskId: 'task_1',
+        });
+        const contradictoryPauseRes = await postGoalLifecycle(
+          app,
+          thread.id,
+          'pause',
+          'goal-pause-contradictory'
+        );
+        expect(contradictoryPauseRes.status).toBe(409);
+        await expect(contradictoryPauseRes.json()).resolves.toMatchObject({
+          code: 'recovery_required',
+        });
+        updateGoalStatus(boundaryDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: planPayload.goal.goalId,
+          status: 'running',
+          currentTaskId: null,
+        });
+      } finally {
+        boundaryDb.sqlite.close();
+      }
+
+      const pauseRes = await postGoalLifecycle(app, thread.id, 'pause', 'goal-pause-1');
+
       expect(pauseRes.status).toBe(200);
-      await expect(pauseRes.json()).resolves.toMatchObject({
+      const pausePayload = await pauseRes.json();
+      expect(pausePayload).toMatchObject({
+        outcome: 'paused',
         goal: {
           goalId: planPayload.goal.goalId,
           status: 'paused',
@@ -821,6 +1256,19 @@ describe('thread goal summary app API', () => {
           },
         },
       });
+      const receiptDb = createWorkspaceDb(coreDb);
+      try {
+        expect(
+          store.getCommandRequest(
+            'goal.pause',
+            'goal-pause-1',
+            { workspaceId: 'ws_demo', threadId: thread.id },
+            receiptDb
+          )?.response
+        ).toEqual({ kind: 'goal', id: planPayload.goal.goalId });
+      } finally {
+        receiptDb.sqlite.close();
+      }
 
       const pausedStepRes = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
@@ -836,17 +1284,11 @@ describe('thread goal summary app API', () => {
         code: 'goal_paused',
       });
 
-      const resumeRes = await app.request(
-        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/resume`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({}),
-        }
-      );
+      const resumeRes = await postGoalLifecycle(app, thread.id, 'resume', 'goal-resume-1');
 
       expect(resumeRes.status).toBe(200);
       await expect(resumeRes.json()).resolves.toMatchObject({
+        outcome: 'resumed',
         goal: {
           goalId: planPayload.goal.goalId,
           status: 'running',
@@ -854,6 +1296,44 @@ describe('thread goal summary app API', () => {
             ready: 1,
           },
         },
+      });
+
+      const historicalPauseReplayRes = await postGoalLifecycle(
+        app,
+        thread.id,
+        'pause',
+        'goal-pause-1'
+      );
+      expect(historicalPauseReplayRes.status).toBe(200);
+      await expect(historicalPauseReplayRes.json()).resolves.toMatchObject({
+        outcome: 'paused',
+        goal: { goalId: planPayload.goal.goalId, status: 'running' },
+      });
+
+      const secondPauseRes = await postGoalLifecycle(app, thread.id, 'pause', 'goal-pause-2');
+      expect(secondPauseRes.status).toBe(200);
+      await expect(secondPauseRes.json()).resolves.toMatchObject({
+        outcome: 'paused',
+        goal: { status: 'paused' },
+      });
+
+      const historicalResumeReplayRes = await postGoalLifecycle(
+        app,
+        thread.id,
+        'resume',
+        'goal-resume-1'
+      );
+      expect(historicalResumeReplayRes.status).toBe(200);
+      await expect(historicalResumeReplayRes.json()).resolves.toMatchObject({
+        outcome: 'resumed',
+        goal: { goalId: planPayload.goal.goalId, status: 'paused' },
+      });
+
+      const secondResumeRes = await postGoalLifecycle(app, thread.id, 'resume', 'goal-resume-2');
+      expect(secondResumeRes.status).toBe(200);
+      await expect(secondResumeRes.json()).resolves.toMatchObject({
+        outcome: 'resumed',
+        goal: { status: 'running' },
       });
       const workspaceDb = createWorkspaceDb(coreDb);
       try {
@@ -912,7 +1392,7 @@ describe('thread goal summary app API', () => {
         },
         advance: {
           outcome: 'complete_goal',
-          nextTaskId: null,
+          nextReadyTaskId: null,
         },
       });
       const permissionDb = createWorkspaceDb(coreDb);
@@ -925,6 +1405,35 @@ describe('thread goal summary app API', () => {
         ).toMatchObject({
           workerSessionId: null,
         });
+        expect(
+          listGoalReviewRecordsForTask(permissionDb, {
+            workspaceId: 'ws_demo',
+            threadId: thread.id,
+            goalId: planPayload.goal.goalId,
+            taskId: 'task_1',
+          })
+        ).toEqual([
+          expect.objectContaining({
+            prompt: 'Review the deterministic worker evidence.',
+            createdByRequestId: `goal-test-supervise:${planPayload.goal.goalId}:task_1`,
+            verdict: 'accept',
+            reason: null,
+            revisionInstruction: null,
+            resolutionRequestId: `goal-test-supervise:${planPayload.goal.goalId}:task_1`,
+            resolvedByActorId: 'user_local',
+            resolutionSnapshot: {
+              outcome: 'complete_goal',
+              task: { taskId: 'task_1', status: 'completed' },
+              goal: {
+                goalId: planPayload.goal.goalId,
+                status: 'completed',
+                currentTaskId: null,
+                terminalStopReason: 'completed',
+              },
+              nextReadyTaskId: null,
+            },
+          }),
+        ]);
         expect(listPermissionDecisionsForAction(permissionDb, 'runtime.launch')).toContainEqual({
           action: 'runtime.launch',
           enforcement_point: 'goal.test.supervise.worker_start',
@@ -934,6 +1443,53 @@ describe('thread goal summary app API', () => {
       } finally {
         permissionDb.sqlite.close();
       }
+
+      const terminalHalfStateRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan/approve`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: 'goal-plan-approve-after-terminal',
+            planItemId: planPayload.planItemId,
+          }),
+        }
+      );
+
+      expect(terminalHalfStateRes.status).toBe(409);
+      await expect(terminalHalfStateRes.json()).resolves.toMatchObject({
+        code: 'recovery_required',
+      });
+
+      const nextGoalRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: 'goal-start-next-release',
+            objective: 'Prepare the next release.',
+          }),
+        }
+      );
+      expect(nextGoalRes.status).toBe(200);
+
+      const supersededHalfStateRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan/approve`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: 'goal-plan-approve-after-superseded',
+            planItemId: planPayload.planItemId,
+          }),
+        }
+      );
+
+      expect(supersededHalfStateRes.status).toBe(409);
+      await expect(supersededHalfStateRes.json()).resolves.toMatchObject({
+        code: 'recovery_required',
+      });
     } finally {
       coreDb.sqlite.close();
     }
@@ -972,7 +1528,7 @@ describe('thread goal summary app API', () => {
     }
   });
 
-  it('returns a drafted Goal Mode plan to planning when revisions are requested', async () => {
+  it('replays Goal Plan revisions and fails closed on incomplete command ownership', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Goal plan revision thread');
@@ -983,6 +1539,7 @@ describe('thread goal summary app API', () => {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
+          requestId: 'goal-start-revision-1',
           objective: 'Make v0.0.7 ready to publish.',
           title: 'Ship v0.0.7',
         }),
@@ -993,42 +1550,123 @@ describe('thread goal summary app API', () => {
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({}),
+          body: JSON.stringify({ requestId: 'goal-plan-revision-create-1' }),
         }
       );
       const planPayload = (await planRes.json()) as {
-        goal: { status: string };
+        goal: { goalId: string; status: string };
         planItemId: string;
-        plan: unknown;
       };
 
       expect(planRes.status).toBe(200);
       expect(planPayload.goal.status).toBe('awaiting_plan_approval');
 
-      const reviseRes = await app.request(
+      const missingRevisionRequestRes = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan/revise`,
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            requestId: '00000000-0000-4000-8000-000000000302',
-            revision: 'Split documentation and verification into separate review gates.',
+            revision: 'This mutation has no request identity.',
           }),
         }
       );
 
+      expect(missingRevisionRequestRes.status).toBe(400);
+      await expect(missingRevisionRequestRes.json()).resolves.toMatchObject({
+        code: 'invalid_request',
+      });
+
+      const revisionRequest = {
+        requestId: '00000000-0000-4000-8000-000000000302',
+        revision: 'Split documentation and verification into separate review gates.',
+      };
+      const reviseRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan/revise`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(revisionRequest),
+        }
+      );
+      const revisePayload = (await reviseRes.json()) as {
+        goal: { goalId: string; status: string };
+        revisionItemId: string;
+        startsWorkerTurn: boolean;
+      };
+
       expect(reviseRes.status).toBe(200);
-      await expect(reviseRes.json()).resolves.toMatchObject({
+      expect(revisePayload).toMatchObject({
         goal: {
+          goalId: planPayload.goal.goalId,
           status: 'planning',
-          pendingHumanAttention: {
-            required: false,
-            reason: null,
-          },
         },
         revisionItemId: expect.stringMatching(/^it_goal_plan_revision_/),
         startsWorkerTurn: false,
       });
+      const revisionItem = store
+        .listThreadItems('ws_demo', thread.id)
+        .find((item) => item.id === revisePayload.revisionItemId);
+      expect(revisionItem).toMatchObject({
+        causationId: revisionRequest.requestId,
+        parentItemId: planPayload.planItemId,
+        status: 'completed',
+        text: revisionRequest.revision,
+        type: 'user-message',
+      });
+      expect(store.getTurn('ws_demo', thread.id, revisionItem?.turnId ?? 'missing')).toMatchObject({
+        status: 'completed',
+      });
+      const revisionCounts = {
+        items: store.listThreadItems('ws_demo', thread.id).length,
+        turns: store.listThreadTurns('ws_demo', thread.id).length,
+      };
+      const revisionReceipt = store
+        .listCommandRequests()
+        .find((record) => record.requestId === revisionRequest.requestId);
+      expect(revisionReceipt).toMatchObject({
+        command: 'goal.plan.revise',
+        response: {
+          id: planPayload.goal.goalId,
+          kind: 'goal',
+        },
+      });
+      expect(revisionReceipt?.response).not.toHaveProperty('snapshot');
+
+      const replayRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan/revise`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(revisionRequest),
+        }
+      );
+      expect(replayRes.status).toBe(200);
+      await expect(replayRes.json()).resolves.toEqual(revisePayload);
+      expect({
+        items: store.listThreadItems('ws_demo', thread.id).length,
+        turns: store.listThreadTurns('ws_demo', thread.id).length,
+      }).toEqual(revisionCounts);
+
+      const conflictRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan/revise`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            ...revisionRequest,
+            revision: 'Reuse the request identity with different input.',
+          }),
+        }
+      );
+      expect(conflictRes.status).toBe(409);
+      await expect(conflictRes.json()).resolves.toMatchObject({
+        code: 'idempotency_key_conflict',
+      });
+      expect({
+        items: store.listThreadItems('ws_demo', thread.id).length,
+        turns: store.listThreadTurns('ws_demo', thread.id).length,
+      }).toEqual(revisionCounts);
 
       const staleApproveRes = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan/approve`,
@@ -1036,15 +1674,15 @@ describe('thread goal summary app API', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
+            requestId: 'goal-plan-revision-stale-1',
             planItemId: planPayload.planItemId,
-            plan: planPayload.plan,
           }),
         }
       );
 
       expect(staleApproveRes.status).toBe(409);
       await expect(staleApproveRes.json()).resolves.toMatchObject({
-        code: 'goal_not_awaiting_plan_approval',
+        code: 'stale',
       });
 
       const revisedPlanRes = await app.request(
@@ -1052,15 +1690,117 @@ describe('thread goal summary app API', () => {
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({}),
+          body: JSON.stringify({ requestId: 'goal-plan-revision-create-2' }),
         }
       );
-
       expect(revisedPlanRes.status).toBe(200);
-      await expect(revisedPlanRes.json()).resolves.toMatchObject({
-        status: 'awaiting_plan_approval',
-        goal: { status: 'awaiting_plan_approval' },
+
+      const receiptGapRequest = {
+        requestId: '00000000-0000-4000-8000-000000000303',
+        revision: 'Recover the original revision owners when receipt publication fails.',
+      };
+      const receiptWriteSpy = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
+        throw new Error('simulated revision receipt write failure');
       });
+      const receiptGapRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan/revise`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(receiptGapRequest),
+        }
+      );
+      receiptWriteSpy.mockRestore();
+      expect(receiptGapRes.status).toBe(409);
+      await expect(receiptGapRes.json()).resolves.toMatchObject({
+        code: 'recovery_required',
+      });
+      const receiptGapCounts = {
+        items: store.listThreadItems('ws_demo', thread.id).length,
+        turns: store.listThreadTurns('ws_demo', thread.id).length,
+      };
+      const receiptGapReplayRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan/revise`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(receiptGapRequest),
+        }
+      );
+      expect(receiptGapReplayRes.status).toBe(409);
+      await expect(receiptGapReplayRes.json()).resolves.toMatchObject({
+        code: 'recovery_required',
+      });
+      expect({
+        items: store.listThreadItems('ws_demo', thread.id).length,
+        turns: store.listThreadTurns('ws_demo', thread.id).length,
+      }).toEqual(receiptGapCounts);
+      expect(
+        store
+          .listCommandRequests()
+          .find((record) => record.requestId === receiptGapRequest.requestId)
+      ).toBeUndefined();
+      const thirdPlanRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: 'goal-plan-revision-create-3' }),
+        }
+      );
+      expect(thirdPlanRes.status).toBe(200);
+      const partialOwnerCounts = {
+        items: store.listThreadItems('ws_demo', thread.id).length,
+        turns: store.listThreadTurns('ws_demo', thread.id).length,
+      };
+      const partialRequest = {
+        requestId: '00000000-0000-4000-8000-000000000304',
+        revision: 'Leave a Turn-only revision owner tuple.',
+      };
+      const createItemSpy = vi.spyOn(store, 'createItem').mockImplementationOnce(() => {
+        throw new Error('simulated revision Item write failure');
+      });
+      const partialRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan/revise`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(partialRequest),
+        }
+      );
+      createItemSpy.mockRestore();
+      expect(partialRes.status).toBe(409);
+      await expect(partialRes.json()).resolves.toMatchObject({
+        code: 'recovery_required',
+      });
+      const failedOwnerCounts = {
+        items: store.listThreadItems('ws_demo', thread.id).length,
+        turns: store.listThreadTurns('ws_demo', thread.id).length,
+      };
+      expect(failedOwnerCounts).toEqual({
+        items: partialOwnerCounts.items,
+        turns: partialOwnerCounts.turns + 1,
+      });
+
+      const partialReplayRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan/revise`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(partialRequest),
+        }
+      );
+      expect(partialReplayRes.status).toBe(409);
+      await expect(partialReplayRes.json()).resolves.toMatchObject({
+        code: 'recovery_required',
+      });
+      expect({
+        items: store.listThreadItems('ws_demo', thread.id).length,
+        turns: store.listThreadTurns('ws_demo', thread.id).length,
+      }).toEqual(failedOwnerCounts);
+      expect(
+        store.listCommandRequests().find((record) => record.requestId === partialRequest.requestId)
+      ).toBeUndefined();
     } finally {
       coreDb.sqlite.close();
     }
@@ -1103,6 +1843,13 @@ describe('thread goal summary app API', () => {
         status: 'running',
         now: () => '2026-05-31T00:00:00.000Z',
       });
+      updateGoalStatus(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_real_step',
+        status: 'running',
+        planItemId: GOAL_TASK_EXECUTION_FIELDS.planItemId,
+      });
       createGoalTask(workspaceDb, {
         workspaceId: 'ws_demo',
         threadId: thread.id,
@@ -1114,6 +1861,7 @@ describe('thread goal summary app API', () => {
         dependsOnTaskIds: [],
         acceptanceCriteria: ['Worker evidence is recorded.'],
         contextBudgetTokens: 12_000,
+        ...GOAL_TASK_EXECUTION_FIELDS,
         verificationChecks: [{ kind: 'manual', description: 'Review worker evidence.' }],
         status: 'ready',
         now: () => '2026-05-31T00:00:00.000Z',
@@ -1122,6 +1870,39 @@ describe('thread goal summary app API', () => {
       const startContexts: TurnStartRuntimeContext[] = [];
       const turnExecutor = createCompletingGoalTurnExecutor(startContexts);
       const app = createApp({ coreDb, store, turnExecutor });
+      workspaceDb.sqlite.exec(`
+        CREATE TRIGGER fail_goal_launch_checkpoint
+        BEFORE INSERT ON worker_turn_checkpoints
+        BEGIN
+          SELECT RAISE(ABORT, 'injected Goal launch checkpoint failure');
+        END;
+      `);
+      const fencedStepRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: 'req_goal_step' }),
+        }
+      );
+      expect(fencedStepRes.status).toBe(400);
+      await expect(fencedStepRes.json()).resolves.toMatchObject({ code: 'goal_step_failed' });
+      expect(startContexts).toEqual([]);
+      expect(getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_real_step')).toMatchObject({
+        currentTaskId: null,
+        status: 'running',
+      });
+      expect(
+        listGoalTasks(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: 'goal_real_step',
+        })
+      ).toEqual([expect.objectContaining({ taskId: 'task_real_step', status: 'ready' })]);
+      expect(
+        workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_turn_checkpoints').get()
+      ).toEqual({ count: 0 });
+      workspaceDb.sqlite.exec('DROP TRIGGER fail_goal_launch_checkpoint');
       const stepRes = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
         {
@@ -1146,48 +1927,15 @@ describe('thread goal summary app API', () => {
             reason: 'Worker result needs review.',
           },
         },
-        worker: {
-          stopReason: 'completed',
-          checkpointStage: 'completed',
-          evidence: {
-            artifactIds: expect.arrayContaining([expect.stringMatching(/^art_/)]),
-          },
-        },
-        coordinator: {
-          mode: 'goal',
-          sourceAgentId: 'worker-coordinator',
-          worker: {
-            agentId: 'agent_codex_host',
-            displayName: 'Codex Host Agent',
-            runtime: 'codex',
-          },
-          expectedStopCondition: 'one bounded worker turn',
-          contextRefs: expect.arrayContaining([
-            { kind: 'workspace', id: 'ws_demo' },
-            { kind: 'thread', id: thread.id },
-          ]),
-        },
-        decision: {
-          schemaVersion: 1,
-          mode: 'goal',
-          sourceAgentId: 'worker-coordinator',
-          requestId: 'req_goal_step',
+        result: {
+          taskId: 'task_real_step',
           outcome: 'review',
           shouldStop: true,
           stopReason: 'completed',
-          rationale: 'Worker turn completed and needs human review before Goal Mode continues.',
-          contextRefs: expect.arrayContaining([
-            { kind: 'workspace', id: 'ws_demo' },
-            { kind: 'thread', id: thread.id },
-          ]),
           evidence: {
-            itemIds: expect.arrayContaining([expect.stringMatching(/^it_artifact_/)]),
             artifactIds: expect.arrayContaining([expect.stringMatching(/^art_/)]),
           },
-        },
-        pendingAttention: {
-          kind: 'review',
-          reason: 'Worker result needs review.',
+          reviewId: expect.any(String),
         },
       });
       expect(startContexts).toEqual([
@@ -1212,12 +1960,12 @@ describe('thread goal summary app API', () => {
         sandboxBindingRef,
         status: 'released',
         releaseReason: 'turn-completed',
-        turnId: stepPayload.worker.turnId,
+        turnId: stepPayload.result.turnId,
       });
       expect(admissions).toEqual([
         expect.objectContaining({
           requestedAgentId: 'agent_codex_host',
-          turnId: stepPayload.worker.turnId,
+          turnId: stepPayload.result.turnId,
         }),
       ]);
       const unresolvedReviews = listGoalReviewRecordsForTask(workspaceDb, {
@@ -1230,11 +1978,41 @@ describe('thread goal summary app API', () => {
       expect(unresolvedReviews).toHaveLength(1);
       const review = unresolvedReviews[0]!;
       expect(review).toMatchObject({
-        verdict: 'accept',
-        turnId: stepPayload.worker.turnId,
-        itemIds: stepPayload.worker.evidence.itemIds,
-        artifactIds: stepPayload.worker.evidence.artifactIds,
+        prompt: 'Review the completed worker output before Goal Mode continues.',
+        createdByRequestId: 'req_goal_step',
+        verdict: null,
+        reason: null,
+        revisionInstruction: null,
+        turnId: stepPayload.result.turnId,
+        itemIds: stepPayload.result.evidence.itemIds,
+        artifactIds: stepPayload.result.evidence.artifactIds,
         resolvedAt: null,
+        resolutionRequestId: null,
+        resolvedByActorId: null,
+        resolutionSnapshot: null,
+      });
+      expect(stepPayload.result.reviewId).toBe(review.reviewId);
+      const firstWorkerRequest = StructuredWorkerDelegationRequestSchema.parse(
+        JSON.parse(store.getArtifact('ws_demo', `art_${stepPayload.result.turnId}`).content.body)
+      );
+      expect(firstWorkerRequest).toEqual({
+        schemaVersion: 1,
+        objective: 'Produce worker evidence for the goal.',
+        acceptanceCriteria: ['Worker evidence is recorded.'],
+        contextRefs: [
+          { kind: 'workspace', id: 'ws_demo' },
+          { kind: 'thread', id: thread.id },
+          { kind: 'item', id: `it_context_${thread.id}` },
+        ],
+        resources: GOAL_TASK_EXECUTION_FIELDS.resources,
+        expectedArtifacts: [
+          { kind: 'artifact', description: 'Worker result summary and implementation evidence.' },
+        ],
+        constraints: { maxContextTokens: 12_000, maxWorkerIterations: 1 },
+        verification: [{ kind: 'manual', description: 'Review worker evidence.' }],
+        reviewPolicy: GOAL_TASK_EXECUTION_FIELDS.reviewPolicy,
+        escalationConditions: GOAL_TASK_EXECUTION_FIELDS.escalationConditions,
+        reviewContext: null,
       });
 
       const attentionRes = await app.request('/api/app/workspaces/ws_demo/action-center');
@@ -1242,13 +2020,51 @@ describe('thread goal summary app API', () => {
       await expect(attentionRes.json()).resolves.toMatchObject({
         items: expect.arrayContaining([
           expect.objectContaining({
-            source: expect.objectContaining({
+            source: {
               type: 'goal_review',
               reviewId: review.reviewId,
-            }),
-            actions: expect.arrayContaining([expect.objectContaining({ kind: 'accept_review' })]),
+              goalId: 'goal_real_step',
+              taskId: 'task_real_step',
+              workspaceId: 'ws_demo',
+              threadId: thread.id,
+            },
+            actions: [
+              expect.objectContaining({ kind: 'accept_review' }),
+              expect.objectContaining({ kind: 'request_refinement' }),
+              expect.objectContaining({ kind: 'retry_work' }),
+              expect.objectContaining({ kind: 'abort' }),
+            ],
           }),
         ]),
+      });
+
+      const replayRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: 'req_goal_step' }),
+        }
+      );
+      expect(replayRes.status).toBe(200);
+      const replayPayload = (await replayRes.json()) as typeof stepPayload;
+      expect(replayPayload.result).toEqual(stepPayload.result);
+      expect(replayPayload.goal).toEqual(stepPayload.goal);
+      expect(startContexts).toHaveLength(1);
+      expect(
+        store.getCommandRequest(
+          'goal.step',
+          'req_goal_step',
+          { workspaceId: 'ws_demo', threadId: thread.id },
+          workspaceDb
+        )
+      ).toMatchObject({
+        command: 'goal.step',
+        response: {
+          kind: 'turn',
+          id: stepPayload.result.turnId,
+          snapshot: { goalId: 'goal_real_step', ...stepPayload.result },
+        },
       });
 
       const repeatedStepRes = await app.request(
@@ -1271,15 +2087,126 @@ describe('thread goal summary app API', () => {
         }).filter((candidate) => candidate.resolvedAt === null)
       ).toHaveLength(1);
       expect(
-        getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, stepPayload.worker.turnId)
+        getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, stepPayload.result.turnId)
       ).toBeNull();
+
+      const refineRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goals/goal_real_step/reviews/${review.reviewId}/decision`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: 'req_goal_review_refine',
+            verdict: 'refine',
+            revisionInstruction: 'Add the missing restart evidence.',
+          }),
+        }
+      );
+      expect(refineRes.status).toBe(200);
+      const resolvedReview = listGoalReviewRecordsForTask(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_real_step',
+        taskId: 'task_real_step',
+      }).find((candidate) => candidate.reviewId === review.reviewId)!;
+      const priorTurn = structuredClone(
+        store.getTurn('ws_demo', thread.id, stepPayload.result.turnId)
+      );
+
+      const refinedStepRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: 'req_goal_refined_step' }),
+        }
+      );
+      expect(refinedStepRes.status).toBe(200);
+      const refinedStep = (await refinedStepRes.json()) as typeof stepPayload;
+      expect(refinedStep.result.turnId).not.toBe(stepPayload.result.turnId);
+      expect(store.getTurn('ws_demo', thread.id, stepPayload.result.turnId)).toEqual(priorTurn);
+      expect(
+        listGoalReviewRecordsForTask(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: 'goal_real_step',
+          taskId: 'task_real_step',
+        }).find((candidate) => candidate.reviewId === review.reviewId)
+      ).toEqual(resolvedReview);
+      const refinedWorkerRequest = StructuredWorkerDelegationRequestSchema.parse(
+        JSON.parse(store.getArtifact('ws_demo', `art_${refinedStep.result.turnId}`).content.body)
+      );
+      expect(refinedWorkerRequest).toMatchObject({
+        objective: 'Produce worker evidence for the goal.',
+        acceptanceCriteria: ['Worker evidence is recorded.'],
+        expectedArtifacts: [
+          { kind: 'artifact', description: 'Worker result summary and implementation evidence.' },
+        ],
+        verification: [{ kind: 'manual', description: 'Review worker evidence.' }],
+        reviewContext: {
+          reviewId: review.reviewId,
+          verdict: 'refine',
+          reason: null,
+          revisionInstruction: 'Add the missing restart evidence.',
+          priorTurnId: stepPayload.result.turnId,
+          evidence: {
+            itemIds: review.itemIds,
+            artifactIds: review.artifactIds,
+          },
+        },
+      });
+      const refinementReview = listGoalReviewRecordsForTask(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_real_step',
+        taskId: 'task_real_step',
+      }).find((candidate) => candidate.resolvedAt === null)!;
+      const retryRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goals/goal_real_step/reviews/${refinementReview.reviewId}/decision`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: 'req_goal_review_retry',
+            verdict: 'retry',
+            reason: 'The refined verification did not complete.',
+          }),
+        }
+      );
+      expect(retryRes.status).toBe(200);
+
+      const retriedStepRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: 'req_goal_retried_step' }),
+        }
+      );
+      expect(retriedStepRes.status).toBe(200);
+      const retriedStep = (await retriedStepRes.json()) as typeof stepPayload;
+      expect(retriedStep.result.turnId).not.toBe(refinedStep.result.turnId);
+      const retriedWorkerRequest = StructuredWorkerDelegationRequestSchema.parse(
+        JSON.parse(store.getArtifact('ws_demo', `art_${retriedStep.result.turnId}`).content.body)
+      );
+      expect(retriedWorkerRequest.reviewContext).toEqual({
+        reviewId: refinementReview.reviewId,
+        verdict: 'retry',
+        reason: 'The refined verification did not complete.',
+        revisionInstruction: null,
+        priorTurnId: refinedStep.result.turnId,
+        evidence: {
+          itemIds: refinementReview.itemIds,
+          artifactIds: refinementReview.artifactIds,
+        },
+      });
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
   });
 
-  it('fails the Goal task and releases scheduler capacity when worker startup fails', async () => {
+  it('preserves the Goal launch tuple and releases scheduler capacity when worker startup fails', async () => {
     const coreDb = createCoreDb();
     const workspaceDb = createWorkspaceDb(coreDb);
     const store = createDemoStore();
@@ -1315,6 +2242,13 @@ describe('thread goal summary app API', () => {
         objective: 'Preserve terminal state when worker startup fails.',
         status: 'running',
       });
+      updateGoalStatus(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_failing_step',
+        status: 'running',
+        planItemId: GOAL_TASK_EXECUTION_FIELDS.planItemId,
+      });
       createGoalTask(workspaceDb, {
         workspaceId: 'ws_demo',
         threadId: thread.id,
@@ -1326,6 +2260,7 @@ describe('thread goal summary app API', () => {
         dependsOnTaskIds: [],
         acceptanceCriteria: ['Failure state is durable.'],
         contextBudgetTokens: 12_000,
+        ...GOAL_TASK_EXECUTION_FIELDS,
         verificationChecks: [{ kind: 'manual', description: 'Review failure state.' }],
         status: 'ready',
       });
@@ -1345,15 +2280,16 @@ describe('thread goal summary app API', () => {
         }
       );
 
-      expect(stepRes.status).toBe(400);
-      await expect(stepRes.json()).resolves.toMatchObject({ code: 'goal_step_failed' });
+      expect(stepRes.status).toBe(409);
+      await expect(stepRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
       expect(
         listGoalRecordsForThread(workspaceDb, { workspaceId: 'ws_demo', threadId: thread.id })
       ).toEqual([
         expect.objectContaining({
           goalId: 'goal_failing_step',
-          status: 'failed',
-          terminalStopReason: 'error',
+          status: 'running',
+          currentTaskId: 'task_failing_step',
+          terminalStopReason: null,
         }),
       ]);
       expect(
@@ -1362,7 +2298,7 @@ describe('thread goal summary app API', () => {
           threadId: thread.id,
           goalId: 'goal_failing_step',
         })
-      ).toEqual([expect.objectContaining({ taskId: 'task_failing_step', status: 'failed' })]);
+      ).toEqual([expect.objectContaining({ taskId: 'task_failing_step', status: 'running' })]);
 
       const admission = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
         userId: LOCAL_USER_ID,
@@ -1384,6 +2320,8 @@ describe('thread goal summary app API', () => {
       expect(
         getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, admission.turnId)
       ).toMatchObject({
+        requestId: 'req_goal_failing_step',
+        requestInputHash: expect.stringMatching(/^sha256:/),
         stage: 'failed',
         stopReason: 'error',
       });
@@ -1396,6 +2334,27 @@ describe('thread goal summary app API', () => {
           )
           .get()
       ).toEqual({ inUseCount: 0 });
+
+      const failedTurnCount = store.listThreadTurns('ws_demo', thread.id).length;
+      const retryRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: 'req_goal_failing_step' }),
+        }
+      );
+      expect(retryRes.status).toBe(409);
+      await expect(retryRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(startContexts).toHaveLength(1);
+      expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(failedTurnCount);
+      expect(
+        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          userId: LOCAL_USER_ID,
+          workspaceId: 'ws_demo',
+          statuses: ['admitted'],
+        })
+      ).toHaveLength(1);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -1438,6 +2397,13 @@ describe('thread goal summary app API', () => {
         objective: 'Cancel a worker admission that cannot dispatch immediately.',
         status: 'running',
       });
+      updateGoalStatus(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_deferred_step',
+        status: 'running',
+        planItemId: GOAL_TASK_EXECUTION_FIELDS.planItemId,
+      });
       createGoalTask(workspaceDb, {
         workspaceId: 'ws_demo',
         threadId: thread.id,
@@ -1449,6 +2415,7 @@ describe('thread goal summary app API', () => {
         dependsOnTaskIds: [],
         acceptanceCriteria: ['No queued worker remains.'],
         contextBudgetTokens: 12_000,
+        ...GOAL_TASK_EXECUTION_FIELDS,
         verificationChecks: [{ kind: 'manual', description: 'Review scheduler state.' }],
         status: 'ready',
       });
@@ -1479,8 +2446,8 @@ describe('thread goal summary app API', () => {
         }
       );
 
-      expect(stepRes.status).toBe(400);
-      await expect(stepRes.json()).resolves.toMatchObject({ code: 'goal_step_failed' });
+      expect(stepRes.status).toBe(409);
+      await expect(stepRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
       expect(startContexts).toEqual([]);
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
@@ -1502,7 +2469,20 @@ describe('thread goal summary app API', () => {
           threadId: thread.id,
           goalId: 'goal_deferred_step',
         })
-      ).toEqual([expect.objectContaining({ taskId: 'task_deferred_step', status: 'failed' })]);
+      ).toEqual([expect.objectContaining({ taskId: 'task_deferred_step', status: 'running' })]);
+      expect(
+        listGoalRecordsForThread(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+        })
+      ).toEqual([
+        expect.objectContaining({
+          goalId: 'goal_deferred_step',
+          status: 'running',
+          currentTaskId: 'task_deferred_step',
+          terminalStopReason: null,
+        }),
+      ]);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -1545,6 +2525,13 @@ describe('thread goal summary app API', () => {
         objective: 'Complete two dependent tasks without review.',
         status: 'running',
       });
+      updateGoalStatus(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_no_review',
+        status: 'running',
+        planItemId: GOAL_TASK_EXECUTION_FIELDS.planItemId,
+      });
       createGoalTask(workspaceDb, {
         workspaceId: 'ws_demo',
         threadId: thread.id,
@@ -1556,7 +2543,12 @@ describe('thread goal summary app API', () => {
         dependsOnTaskIds: [],
         acceptanceCriteria: ['The first task completes.'],
         contextBudgetTokens: 12_000,
+        ...GOAL_TASK_EXECUTION_FIELDS,
         verificationChecks: [{ kind: 'manual', description: 'Review the first task output.' }],
+        reviewPolicy: {
+          ...GOAL_TASK_EXECUTION_FIELDS.reviewPolicy,
+          required: false,
+        },
         status: 'ready',
       });
       createGoalTask(workspaceDb, {
@@ -1570,7 +2562,12 @@ describe('thread goal summary app API', () => {
         dependsOnTaskIds: ['task_no_review_1'],
         acceptanceCriteria: ['The second task completes.'],
         contextBudgetTokens: 12_000,
+        ...GOAL_TASK_EXECUTION_FIELDS,
         verificationChecks: [{ kind: 'manual', description: 'Review the second task output.' }],
+        reviewPolicy: {
+          ...GOAL_TASK_EXECUTION_FIELDS.reviewPolicy,
+          required: false,
+        },
         status: 'pending',
       });
 
@@ -1580,26 +2577,39 @@ describe('thread goal summary app API', () => {
         turnExecutor: createCompletingGoalTurnExecutor(),
       });
       const href = `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`;
-      const firstRes = await app.request(href, {
+      const retiredOverrideRes = await app.request(href, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          requestId: 'req_goal_no_review_1',
+          requestId: 'req_goal_retired_review_override',
           reviewPolicyOverride: 'none',
         }),
       });
+      expect(retiredOverrideRes.status).toBe(400);
+      await expect(retiredOverrideRes.json()).resolves.toMatchObject({ code: 'invalid_request' });
 
-      expect(firstRes.status).toBe(200);
-      const firstPayload = await firstRes.json();
-      expect(firstPayload).toMatchObject({
-        goal: {
-          status: 'running',
-          currentTask: { taskId: 'task_no_review_2', status: 'ready' },
-          taskCounts: { completed: 1, pending: 0, ready: 1 },
-        },
-        decision: { outcome: 'continue', shouldStop: false, stopReason: 'completed' },
-        pendingAttention: null,
+      workspaceDb.sqlite.exec(`
+        CREATE TRIGGER fail_goal_checkpoint_cleanup
+        BEFORE DELETE ON worker_turn_checkpoints
+        BEGIN
+          SELECT RAISE(ABORT, 'injected checkpoint cleanup failure');
+        END;
+      `);
+
+      const firstRes = await app.request(href, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ requestId: 'req_goal_no_review_1' }),
       });
+
+      expect(firstRes.status).toBe(409);
+      await expect(firstRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(
+        listGoalRecordsForThread(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+        }).find((goal) => goal.goalId === 'goal_no_review')
+      ).toMatchObject({ status: 'running', currentTaskId: null, terminalStopReason: null });
       expect(
         listGoalTasks(workspaceDb, {
           workspaceId: 'ws_demo',
@@ -1618,14 +2628,70 @@ describe('thread goal summary app API', () => {
           taskId: 'task_no_review_1',
         })
       ).toEqual([]);
+      const firstWorkerTurnId = store.listThreadTurns('ws_demo', thread.id).at(-1)?.id;
+      expect(firstWorkerTurnId).toBeDefined();
+      expect(
+        getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, firstWorkerTurnId!)
+      ).toMatchObject({ stage: 'completed', stopReason: 'completed' });
+      expect(
+        store.getCommandRequest(
+          'goal.step',
+          'req_goal_no_review_1',
+          { workspaceId: 'ws_demo', threadId: thread.id },
+          workspaceDb
+        )
+      ).toMatchObject({
+        command: 'goal.step',
+        response: {
+          kind: 'turn',
+          id: firstWorkerTurnId,
+          snapshot: {
+            goalId: 'goal_no_review',
+            taskId: 'task_no_review_1',
+            turnId: firstWorkerTurnId,
+            outcome: 'continue',
+            shouldStop: false,
+            stopReason: 'completed',
+            reviewId: null,
+          },
+        },
+      });
+      const unresolvedTurnCount = store.listThreadTurns('ws_demo', thread.id).length;
+      const competingRes = await app.request(href, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ requestId: 'req_goal_no_review_competing' }),
+      });
+      expect(competingRes.status).toBe(409);
+      await expect(competingRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(unresolvedTurnCount);
+      workspaceDb.sqlite.exec('DROP TRIGGER fail_goal_checkpoint_cleanup');
+
+      const firstTurnCount = store.listThreadTurns('ws_demo', thread.id).length;
+      const firstReplayRes = await app.request(href, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ requestId: 'req_goal_no_review_1' }),
+      });
+      expect(firstReplayRes.status).toBe(200);
+      await expect(firstReplayRes.json()).resolves.toMatchObject({
+        goal: { status: 'running', currentTask: null },
+        result: {
+          taskId: 'task_no_review_1',
+          turnId: firstWorkerTurnId,
+          outcome: 'continue',
+          shouldStop: false,
+          stopReason: 'completed',
+          reviewId: null,
+        },
+      });
+      expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(firstTurnCount);
+      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, firstWorkerTurnId!)).toBeNull();
 
       const secondRes = await app.request(href, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          requestId: 'req_goal_no_review_2',
-          reviewPolicyOverride: 'none',
-        }),
+        body: JSON.stringify({ requestId: 'req_goal_no_review_2' }),
       });
 
       expect(secondRes.status).toBe(200);
@@ -1637,8 +2703,13 @@ describe('thread goal summary app API', () => {
           terminalState: { status: 'completed', stopReason: 'completed' },
           terminalSummary: { risks: [] },
         },
-        decision: { outcome: 'complete', shouldStop: true, stopReason: 'completed' },
-        pendingAttention: null,
+        result: {
+          taskId: 'task_no_review_2',
+          outcome: 'complete',
+          shouldStop: true,
+          stopReason: 'completed',
+          reviewId: null,
+        },
       });
       expect(
         listGoalTasks(workspaceDb, {
@@ -1664,12 +2735,13 @@ describe('thread goal summary app API', () => {
     }
   });
 
-  it('rolls back review creation when the reviewing goal transition fails', async () => {
+  it('replays Goal closeout from an accepted final status without another worker', async () => {
     const coreDb = createCoreDb();
     const workspaceDb = createWorkspaceDb(coreDb);
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Atomic goal review thread');
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-atomic-goal-review-repo-'));
+    const requestId = '00000000-0000-4000-8000-000000000271';
     mkdirSync(join(repositoryPath, '.git'));
 
     try {
@@ -1700,6 +2772,13 @@ describe('thread goal summary app API', () => {
         objective: 'Create one review gate atomically.',
         status: 'running',
       });
+      updateGoalStatus(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_atomic_review',
+        status: 'running',
+        planItemId: GOAL_TASK_EXECUTION_FIELDS.planItemId,
+      });
       createGoalTask(workspaceDb, {
         workspaceId: 'ws_demo',
         threadId: thread.id,
@@ -1711,47 +2790,182 @@ describe('thread goal summary app API', () => {
         dependsOnTaskIds: [],
         acceptanceCriteria: ['The review gate is stored atomically.'],
         contextBudgetTokens: 12_000,
+        ...GOAL_TASK_EXECUTION_FIELDS,
         verificationChecks: [{ kind: 'manual', description: 'Review worker evidence.' }],
         status: 'ready',
       });
       workspaceDb.sqlite.exec(`
-        CREATE TRIGGER fail_goal_review_transition
-        BEFORE UPDATE OF status ON goal_records
-        WHEN NEW.goal_id = 'goal_atomic_review' AND NEW.status = 'reviewing'
+        CREATE TRIGGER fail_goal_checkpoint_terminal
+        BEFORE UPDATE OF stage ON worker_turn_checkpoints
+        WHEN OLD.goal_id = 'goal_atomic_review'
+          AND OLD.stage = 'running_worker'
+          AND NEW.stage IN ('completed', 'failed', 'aborted', 'waiting_for_user')
         BEGIN
-          SELECT RAISE(ABORT, 'injected goal review transition failure');
+          SELECT RAISE(ABORT, 'injected checkpoint terminal failure');
         END;
       `);
 
+      const completingExecutor = createCompletingGoalTurnExecutor();
+      const acceptedFinalStatusExecutor: TurnExecutor = {
+        ...completingExecutor,
+        getAgentSession(workerStore, workspaceId, threadId) {
+          const session = workerStore.listThreadAgentSessions(workspaceId, threadId).at(-1);
+          return session
+            ? {
+                backend: null,
+                configVersion: session.configVersion,
+                id: session.id,
+                message: session.message,
+                sandboxSummary: session.sandboxSummary,
+                stale: session.stale,
+                status: session.status,
+                workspaceRoots: session.workspaceRoots,
+              }
+            : null;
+        },
+        async startTurn(workerStore, turnId, input, context) {
+          if (!context?.agentSessionId || !context.sandboxBindingRef || !context.requestId) {
+            throw new Error('Accepted final-status fixture requires scheduler lineage.');
+          }
+          const turn = workerStore.getTurnById(turnId);
+          const environmentPackage = resolveAgentEnvironmentPackage({
+            agent: workerStore.getAgent('ws_demo', 'agent_codex_host'),
+            agentSessionId: context.agentSessionId,
+            backend: {
+              workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+              kind: 'openshell',
+              sandboxImageRef: 'openkit/worker-codex:dev',
+            },
+            requestId: context.requestId,
+            turn,
+            turnInput: input,
+            userId: workerStore.getUserId(),
+            workspaceCwd: '/workspace',
+            workspaceRoots: [],
+          });
+          recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+            createdAt: turn.startedAt ?? '2026-05-31T00:00:00.000Z',
+            environmentPackage,
+          });
+          workerStore.createAgentSession({
+            agentId: 'agent_codex_host',
+            createdAt: turn.startedAt ?? '2026-05-31T00:00:00.000Z',
+            environmentPackageSnapshotId: environmentPackage.snapshotId,
+            id: context.agentSessionId,
+            message: null,
+            status: 'busy',
+            threadId: turn.threadId,
+            updatedAt: turn.startedAt ?? '2026-05-31T00:00:00.000Z',
+            workspaceId: turn.workspaceId,
+          });
+          workerStore.updateTurn(turnId, { agentSessionId: context.agentSessionId });
+          const backendSession = recordWorkerBackendSessionMaterializing(coreDb, {
+            backendVersion: '0.0.80',
+            identity: {
+              agentSessionId: context.agentSessionId,
+              backendKind: 'openshell',
+              backendSessionId: `openkit-${context.agentSessionId}`,
+              backendTarget: {
+                cellTargetId: 'cell-test',
+                gatewayEndpoint: null,
+                gatewayName: 'openshell',
+                placement: 'local',
+              },
+              deploymentId: 'deployment-test',
+              packageSnapshotId: environmentPackage.snapshotId,
+              stagingDirectoryRef: `server/runtime/worker-backend-sessions/${environmentPackage.snapshotId}`,
+              transientProviderInstanceId: null,
+            },
+            lineage: { threadId: turn.threadId, turnId, workspaceId: turn.workspaceId },
+            sandboxBindingRef: context.sandboxBindingRef,
+            workerImage: environmentPackage.runtime.image.ref,
+          });
+          markWorkerBackendWorkspaceHandoffComplete(coreDb, { leaseId: backendSession.leaseId });
+          for (const [fromState, toState] of [
+            ['materializing', 'materialized'],
+            ['materialized', 'launching'],
+            ['launching', 'cleanup-pending'],
+            ['cleanup-pending', 'physical-cleaned'],
+            ['physical-cleaned', 'cleaned'],
+          ] as const) {
+            transitionWorkerBackendSessionState(coreDb, {
+              fromState,
+              leaseId: backendSession.leaseId,
+              toState,
+            });
+          }
+          await completingExecutor.startTurn(workerStore, turnId, input, context);
+          const completedTurn = workerStore.getTurnById(turnId);
+          const idleSession = workerStore.updateAgentSession(context.agentSessionId, {
+            message: null,
+            status: 'idle',
+          });
+          workerStore.emitTurnEvent(turnId, {
+            data: { agentSession: idleSession, type: 'agent-session-updated' },
+            event: 'agent.session.updated',
+            requestId: context.requestId,
+            threadId: turn.threadId,
+            turnId,
+            workspaceId: turn.workspaceId,
+          });
+          workerStore.emitTurnEvent(turnId, {
+            data: { stopReason: 'completed', turn: completedTurn, type: 'turn-completed' },
+            event: 'turn.completed',
+            requestId: context.requestId,
+            threadId: turn.threadId,
+            turnId,
+            workspaceId: turn.workspaceId,
+          });
+          recordWorkerControlAcceptedRecord(coreDb, {
+            acceptedAt: '2026-05-31T00:00:01.000Z',
+            lineage: {
+              agentSessionId: context.agentSessionId,
+              packageSnapshotId: environmentPackage.snapshotId,
+              requestId: context.requestId,
+              threadId: turn.threadId,
+              turnId,
+              workspaceId: turn.workspaceId,
+            },
+            operation: 'final_status',
+            record: { sequence: 1, status: 'completed', stopReason: 'completed' },
+            recordKey: '1',
+            sequence: 1,
+          });
+        },
+      };
       const app = createApp({
         coreDb,
         store,
-        turnExecutor: createCompletingGoalTurnExecutor(),
+        turnExecutor: acceptedFinalStatusExecutor,
       });
       const stepRes = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ requestId: 'req_goal_atomic_review' }),
+          body: JSON.stringify({ requestId }),
         }
       );
 
-      expect(stepRes.status).toBe(400);
-      await expect(stepRes.json()).resolves.toMatchObject({ code: 'goal_step_failed' });
+      expect(stepRes.status).toBe(409);
+      await expect(stepRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
       expect(
         listGoalRecordsForThread(workspaceDb, {
           workspaceId: 'ws_demo',
           threadId: thread.id,
         }).find((goal) => goal.goalId === 'goal_atomic_review')
-      ).toMatchObject({ status: 'failed', terminalStopReason: 'error' });
+      ).toMatchObject({
+        status: 'running',
+        currentTaskId: 'task_atomic_review',
+        terminalStopReason: null,
+      });
       expect(
         listGoalTasks(workspaceDb, {
           workspaceId: 'ws_demo',
           threadId: thread.id,
           goalId: 'goal_atomic_review',
         })
-      ).toEqual([expect.objectContaining({ taskId: 'task_atomic_review', status: 'completed' })]);
+      ).toEqual([expect.objectContaining({ taskId: 'task_atomic_review', status: 'running' })]);
       expect(
         listGoalReviewRecordsForTask(workspaceDb, {
           workspaceId: 'ws_demo',
@@ -1760,6 +2974,69 @@ describe('thread goal summary app API', () => {
           taskId: 'task_atomic_review',
         })
       ).toEqual([]);
+      const workerTurnId = store.listThreadTurns('ws_demo', thread.id).at(-1)?.id;
+      expect(workerTurnId).toBeDefined();
+      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, workerTurnId!)).toMatchObject({
+        stage: 'running_worker',
+        stopReason: null,
+      });
+      const lease = listSchedulerSessionLeasesForTurn(coreDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        turnId: workerTurnId!,
+      })[0];
+      expect(lease).toMatchObject({ status: 'released' });
+
+      workspaceDb.sqlite.exec('DROP TRIGGER fail_goal_checkpoint_terminal');
+      const replayStarts: TurnStartRuntimeContext[] = [];
+      const restartedApp = createApp({
+        coreDb,
+        store,
+        turnExecutor: createCompletingGoalTurnExecutor(replayStarts),
+      });
+      const turnCount = store.listThreadTurns('ws_demo', thread.id).length;
+      const replayRes = await restartedApp.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId }),
+        }
+      );
+
+      expect(replayRes.status).toBe(200);
+      await expect(replayRes.json()).resolves.toMatchObject({
+        goal: {
+          goalId: 'goal_atomic_review',
+          status: 'reviewing',
+          currentTask: { taskId: 'task_atomic_review', status: 'reviewing' },
+        },
+        result: {
+          taskId: 'task_atomic_review',
+          turnId: workerTurnId,
+          outcome: 'review',
+          stopReason: 'completed',
+        },
+      });
+      expect(replayStarts).toEqual([]);
+      expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(turnCount);
+      expect(
+        listGoalReviewRecordsForTask(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: 'goal_atomic_review',
+          taskId: 'task_atomic_review',
+        })
+      ).toHaveLength(1);
+      expect(
+        store.getCommandRequest(
+          'goal.step',
+          requestId,
+          { workspaceId: 'ws_demo', threadId: thread.id },
+          workspaceDb
+        )
+      ).toMatchObject({ response: { kind: 'turn', id: workerTurnId } });
+      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, workerTurnId!)).toBeNull();
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -1803,6 +3080,13 @@ describe('thread goal summary app API', () => {
         status: 'running',
         now: () => '2026-05-31T00:00:00.000Z',
       });
+      updateGoalStatus(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_async_step',
+        status: 'running',
+        planItemId: GOAL_TASK_EXECUTION_FIELDS.planItemId,
+      });
       createGoalTask(workspaceDb, {
         workspaceId: 'ws_demo',
         threadId: thread.id,
@@ -1814,6 +3098,7 @@ describe('thread goal summary app API', () => {
         dependsOnTaskIds: [],
         acceptanceCriteria: ['Worker evidence is recorded after completion.'],
         contextBudgetTokens: 12_000,
+        ...GOAL_TASK_EXECUTION_FIELDS,
         verificationChecks: [{ kind: 'manual', description: 'Review async worker evidence.' }],
         status: 'ready',
         now: () => '2026-05-31T00:00:00.000Z',
@@ -1872,10 +3157,7 @@ describe('thread goal summary app API', () => {
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: 'req_goal_async_step',
-            reviewPolicyOverride: 'human',
-          }),
+          body: JSON.stringify({ requestId: 'req_goal_async_step' }),
         }
       );
 
@@ -1890,12 +3172,15 @@ describe('thread goal summary app API', () => {
             status: 'reviewing',
           },
         },
-        worker: {
+        result: {
+          taskId: 'task_async_step',
+          outcome: 'review',
+          shouldStop: true,
           stopReason: 'completed',
-          checkpointStage: 'completed',
           evidence: {
             artifactIds: expect.arrayContaining([expect.stringMatching(/^art_async_/)]),
           },
+          reviewId: expect.any(String),
         },
       });
       const reviews = listGoalReviewRecordsForTask(workspaceDb, {
@@ -1905,16 +3190,36 @@ describe('thread goal summary app API', () => {
         taskId: 'task_async_step',
       }).filter((review) => review.resolvedAt === null);
 
-      expect(reviews).toEqual([expect.objectContaining({ verdict: 'accept' })]);
+      expect(reviews).toEqual([
+        expect.objectContaining({
+          prompt: 'Review the completed worker output before Goal Mode continues.',
+          createdByRequestId: 'req_goal_async_step',
+          verdict: null,
+          reason: null,
+          revisionInstruction: null,
+          resolutionRequestId: null,
+          resolvedByActorId: null,
+          resolutionSnapshot: null,
+        }),
+      ]);
       const attentionRes = await app.request('/api/app/workspaces/ws_demo/action-center');
       await expect(attentionRes.json()).resolves.toMatchObject({
         items: expect.arrayContaining([
           expect.objectContaining({
-            source: expect.objectContaining({
+            source: {
               type: 'goal_review',
               reviewId: reviews[0]!.reviewId,
-            }),
-            actions: expect.arrayContaining([expect.objectContaining({ kind: 'accept_review' })]),
+              goalId: 'goal_async_step',
+              taskId: 'task_async_step',
+              workspaceId: 'ws_demo',
+              threadId: thread.id,
+            },
+            actions: [
+              expect.objectContaining({ kind: 'accept_review' }),
+              expect.objectContaining({ kind: 'request_refinement' }),
+              expect.objectContaining({ kind: 'retry_work' }),
+              expect.objectContaining({ kind: 'abort' }),
+            ],
           }),
         ]),
       });
@@ -1961,6 +3266,13 @@ describe('thread goal summary app API', () => {
         status: 'running',
         now: () => '2026-05-31T00:00:00.000Z',
       });
+      updateGoalStatus(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_human_step',
+        status: 'running',
+        planItemId: GOAL_TASK_EXECUTION_FIELDS.planItemId,
+      });
       createGoalTask(workspaceDb, {
         workspaceId: 'ws_demo',
         threadId: thread.id,
@@ -1972,6 +3284,7 @@ describe('thread goal summary app API', () => {
         dependsOnTaskIds: [],
         acceptanceCriteria: ['The Action Center exposes the approval.'],
         contextBudgetTokens: 12_000,
+        ...GOAL_TASK_EXECUTION_FIELDS,
         verificationChecks: [{ kind: 'manual', description: 'Review the approval row.' }],
         status: 'ready',
         now: () => '2026-05-31T00:00:00.000Z',
@@ -2002,28 +3315,20 @@ describe('thread goal summary app API', () => {
             reason: 'Goal is awaiting user input.',
           },
         },
-        worker: {
-          stopReason: 'ask_user',
-          checkpointStage: 'waiting_for_user',
-        },
-        contextAssembly: {
-          contextRefs: expect.arrayContaining([
-            { kind: 'workspace', id: 'ws_demo' },
-            { kind: 'thread', id: thread.id },
-            { kind: 'item', id: `it_context_${thread.id}` },
-          ]),
-          repositoryResourceId: 'repo_default',
-          steeringMessageCount: 0,
-          followUpInputCount: 0,
-        },
-        decision: {
+        result: {
+          taskId: 'task_human_step',
           outcome: 'ask_user',
           shouldStop: true,
-        },
-        pendingAttention: {
-          kind: 'user_input',
+          stopReason: 'ask_user',
+          reviewId: null,
         },
       });
+      expect(
+        listGoalRecordsForThread(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+        }).find((goal) => goal.goalId === 'goal_human_step')
+      ).toMatchObject({ terminalStopReason: null });
 
       const attentionRes = await app.request('/api/app/workspaces/ws_demo/action-center');
       expect(attentionRes.status).toBe(200);
@@ -2038,30 +3343,16 @@ describe('thread goal summary app API', () => {
 
       const recoveryRes = await app.request('/api/app/recovery/interrupted-workers');
       expect(recoveryRes.status).toBe(200);
-      await expect(recoveryRes.json()).resolves.toMatchObject({
-        items: expect.arrayContaining([
+      const recoveryPayload = (await recoveryRes.json()) as {
+        readonly items: ReadonlyArray<{ readonly checkpointId: string }>;
+      };
+      expect(recoveryPayload.items).not.toEqual(
+        expect.arrayContaining([
           expect.objectContaining({
-            checkpointId: `ws_demo:${thread.id}:${stepPayload.worker.turnId}`,
-            choices: expect.arrayContaining([
-              expect.objectContaining({ kind: 'inspect', recommended: true }),
-              expect.objectContaining({ kind: 'retry' }),
-              expect.objectContaining({ kind: 'record_terminal' }),
-              expect.objectContaining({ kind: 'request_human' }),
-            ]),
-            contextAssembly: {
-              contextDigest: stepPayload.contextAssembly.contextDigest,
-              contextRefs: expect.arrayContaining([
-                { kind: 'workspace', id: 'ws_demo' },
-                { kind: 'thread', id: thread.id },
-                { kind: 'item', id: `it_context_${thread.id}` },
-              ]),
-              repositoryResourceId: 'repo_default',
-              steeringMessageCount: 0,
-              followUpInputCount: 0,
-            },
+            checkpointId: `ws_demo:${thread.id}:${stepPayload.result.turnId}`,
           }),
-        ]),
-      });
+        ])
+      );
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();

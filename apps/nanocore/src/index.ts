@@ -60,7 +60,7 @@ import {
 } from './runtime/turn-executor-factory.js';
 import { getWorkerBackendSession } from './runtime/worker-backend-sessions.js';
 import type { WorkerControlFinalStatusAcceptedInput } from './runtime/worker-control-gateway.js';
-import { terminalizeGovernedWorkerTurnFailure } from './runtime/worker-turn-failure.js';
+import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js';
 import {
   CONFIGURED_WORKER_INITIAL_LEASE_DURATION_MS,
   CONFIGURED_WORKER_STARTUP_TIMEOUT_MS,
@@ -278,11 +278,15 @@ const bootResult = await runBootPhases({
               recoveryCoreDb,
               subject.leaseId
             );
-            const result = terminalizeGovernedWorkerTurnFailure({
+            const anchored = 'state' in subject;
+            const result = terminalizeGovernedWorkerTurn({
               agentSessionId: subject.agentSessionId,
               completedAt: new Date().toISOString(),
               errorCode: 'worker_governance_restart_recovery',
-              message: 'Worker execution stopped during NanoCore restart recovery.',
+              message: anchored
+                ? 'Worker execution was interrupted during NanoCore restart recovery.'
+                : 'Worker execution stopped during NanoCore restart recovery.',
+              outcome: anchored ? 'interrupted' : 'failed',
               requestId: admission.requestId,
               store: schedulerStoreForUserId(admission.userId),
               turnId: subject.turnId,

@@ -45,23 +45,22 @@ function preparedFixture(): PreparedNextTurn {
       objective: 'Run release verification.',
       acceptanceCriteria: ['Verification passes.'],
       contextRefs: [{ kind: 'item', id: 'item_context' }],
+      resources: [],
       expectedArtifacts: [],
       constraints: {
         maxContextTokens: 240_000,
         maxWorkerIterations: 1,
-        requiresUserConfirmation: true,
-        stopConditions: ['Stop after verification fails.'],
       },
       verification: [{ kind: 'manual', description: 'Manual verification.' }],
       reviewPolicy: {
         required: true,
-        reviewers: ['internal'],
+        reviewers: ['human'],
         instructions: 'Review worker output.',
       },
+      escalationConditions: [],
+      reviewContext: null,
     },
     contextPackageDigest: 'ctxpkg_sha256_worker_start',
-    steeringMessages: [],
-    followUpInputs: [],
   };
 }
 
@@ -83,6 +82,7 @@ function addReadyGoalTask(workspaceDb: WorkspaceDb): void {
     workspaceId: 'ws_demo',
     threadId: 'th_demo',
     goalId: 'goal_demo',
+    planItemId: 'it_goal_plan_demo',
     taskId: 'task_demo',
     title: 'Run worker',
     objective: 'Run the worker turn.',
@@ -90,6 +90,15 @@ function addReadyGoalTask(workspaceDb: WorkspaceDb): void {
     dependsOnTaskIds: [],
     acceptanceCriteria: ['Worker started.'],
     contextBudgetTokens: 12_000,
+    resources: [],
+    expectedArtifacts: [],
+    verificationChecks: [{ kind: 'manual', description: 'Confirm the worker started.' }],
+    reviewPolicy: {
+      required: true,
+      reviewers: ['human'],
+      instructions: 'Review worker output.',
+    },
+    escalationConditions: [],
     status: 'ready',
   });
 }
@@ -109,6 +118,8 @@ describe('goal worker start', () => {
         threadId: 'th_demo',
         goalId: 'goal_demo',
         taskId: 'task_demo',
+        requestId: 'req_goal_worker',
+        requestInputHash: 'sha256:goal_worker',
         prepared: preparedFixture(),
         startWorker: async () => ({ workerSessionId: 'session_worker_1' }),
       });
@@ -153,6 +164,8 @@ describe('goal worker start', () => {
           threadId: 'th_demo',
           goalId: 'goal_demo',
           taskId: 'task_demo',
+          requestId: 'req_goal_worker_failure',
+          requestInputHash: 'sha256:goal_worker_failure',
           prepared: preparedFixture(),
           startWorker: async () => {
             throw new Error('worker unavailable');

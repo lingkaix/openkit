@@ -53,6 +53,15 @@ The testing system should be deterministic by default, evidence-rich at the brow
 
 Tests should sit at the lowest layer that can prove the behavior.
 
+L0-L6 is a taxonomy of available proof boundaries, not a checklist for every feature, bug, command, or state transition. One invariant should normally have one primary regression at the lowest sufficient layer and at most one higher-layer check for a distinct integration risk.
+
+Verification depth is risk-proportional:
+
+- Security, authorization, credential, sandbox, data-loss, durable-authority, and irreversible external-effect boundaries require strict negative and adversarial coverage.
+- Persisted product truth, public command idempotency, migrations, and no-duplicate-effect fences require focused transition and restart coverage at the lowest boundary that can prove them.
+- Availability, cleanup, projection, reconnect, and operator-diagnostic behavior require representative success plus the documented safe fallback, not exhaustive cross-product testing.
+- Deferred scale, multi-process, multi-target, fairness, hot-failover, compatibility, and transparent-recovery ideas require no implementation tests until an accepted current contract activates them.
+
 Unit tests should catch pure logic, parser, reducer, component, schema, and adapter behavior.
 
 Contract tests should catch drift between packages before browser or process tests become the first signal.
@@ -160,7 +169,7 @@ NanoCore route tests must prove emitted payloads match shared schemas instead of
 
 Web tests must prove the UI consumes current shapes without preserving removed fallbacks.
 
-For any behavior crossing package boundaries, the preferred test chain is protocol or App API schema test, NanoCore route or service test, core-client test, Web unit or component test, and browser e2e only when the behavior is user-visible.
+For behavior crossing package boundaries, update every affected producer and consumer, but test each distinct invariant only where it can fail. A schema fixture may prove a shared shape for several consumers; add NanoCore, client, Web, or browser tests only when that layer adds behavior or a distinct failure boundary.
 
 When a contract intentionally breaks during internal development, tests should reject the removed shape instead of preserving compatibility coverage.
 
@@ -170,7 +179,7 @@ NanoCore e2e should boot NanoCore as a process and interact through HTTP, SSE, f
 
 The harness should use fresh temporary data roots by default.
 
-The suite should verify empty boot, local mode boot, server mode boot, authentication, unauthenticated rejection, user scoping, API status codes, idempotent mutating commands, persistence, restart replay, migration idempotency, secret redaction, configuration loading, agent readiness diagnostics, and full local turn execution with fake or internal workers where possible.
+The suite collectively should verify empty boot, local mode boot, server mode boot, authentication, unauthenticated rejection, user scoping, API status codes, representative idempotent mutations, persistence, one bounded restart path, migration idempotency, secret redaction, configuration loading, agent readiness diagnostics, and one local turn execution with fake or internal workers where possible. A single change should add only the process-boundary regression it needs, not another copy of this inventory.
 
 SSE tests must verify cursor behavior, replay semantics, terminal `204 No Content` behavior, malformed cursor handling, and client-visible error events.
 
@@ -224,23 +233,25 @@ If a smoke test needs more than a minimal boot path, that behavior belongs in Na
 
 ## L6 Agentic Story Acceptance Tests
 
-Agentic story tests use an AI agent to operate the product as a human would and judge whether a complete use case meets product intent.
+L6 story tests use a user or AI agent to exercise one important product intent through a supported public Skill, CLI, API, or UI surface.
 
-The detailed L6 execution model, story artifact contract, agentic runner responsibilities, deterministic adapter responsibilities, evidence requirements, and defect reduction policy are defined in `docs/specs/20260529-l6_story_acceptance.md`.
+The detailed L6 selection rule, story artifact contract, bounded execution modes, evidence proportionality, failure semantics, and defect reduction policy are defined in `docs/specs/20260529-l6_story_acceptance.md`.
 
-They are valuable because OpenKit itself is an agent workflow product, and many failures only appear when multiple features, timing, UI affordances, and runtime feedback loops interact.
+They are valuable when a material product failure can appear only across supported public boundaries or during realistic use.
 
 They must not replace deterministic tests.
 
 They should run after deterministic unit, contract, e2e, and smoke tests are already healthy.
 
-They are best suited for nightly runs, release candidate validation, dogfooding sessions, and exploratory acceptance before cutting a release.
+They are best suited for intentional release-candidate validation, dogfooding, and exploratory acceptance.
 
 Each story must be a versioned artifact in the repository once the runner exists.
 
-Each story should define persona, purpose, preconditions, seeded data, allowed tools, forbidden shortcuts, step intent, expected observable outcomes, deterministic oracles, evidence requirements, cleanup, timeout, and flake policy.
+Story acceptance MUST reuse an existing runner or ordinary product client. A feature-specific runner or acceptance harness requires a separate present platform need; proving one feature is not sufficient justification.
 
-The AI agent may use Playwright or Chrome DevTools MCP to drive the browser, but it must interact through the same visible UI that a user would normally use.
+Each story must define one intent, preconditions, allowed setup, public user steps, observable outcomes, deterministic oracles, bounded cleanup, and failure classification. Add evidence or flake policy only when it changes the acceptance decision or materially shortens triage.
+
+The AI agent should use the product's supported public surface and an existing client or browser tool. It must not bypass that surface with private state mutation during the user-flow portion.
 
 The AI agent may inspect logs and network records for evidence, but it must not mutate backend state directly unless the story explicitly marks that step as setup or cleanup.
 
@@ -252,7 +263,7 @@ Subjective AI judgement may annotate product quality issues, but subjective judg
 
 When a story finds a defect, the follow-up work must add or update the lowest-layer deterministic regression test that can catch the defect next time.
 
-Detailed story metadata, body sections, deterministic adapter behavior, agentic executor shape, evidence profiles, and example story skeletons belong to `docs/specs/20260529-l6_story_acceptance.md`.
+Detailed story metadata, body sections, execution boundaries, and evidence rules belong to `docs/specs/20260529-l6_story_acceptance.md`.
 
 ## Test Data And Environment Policy
 
@@ -335,6 +346,8 @@ Coverage should not force meaningless tests around generated files, fixtures, or
 High-risk areas should require scenario coverage even when line coverage is already high.
 
 High-risk areas include protocol parsers, SSE replay, auth/session boundaries, request idempotency, storage migrations, secret redaction, provider credential resolution, worker scheduling, artifact access, and browser flows that gate real user work.
+
+For worker scheduling, high-risk coverage means launch authorization, exact worker identity, no concurrent duplicate launch, secret-safe control, and the documented restart fallback. It does not mean testing hypothetical fairness, multi-target placement, every legal state permutation, or every crash instruction boundary under the current single-target baseline.
 
 ## Current Implementation Projection
 

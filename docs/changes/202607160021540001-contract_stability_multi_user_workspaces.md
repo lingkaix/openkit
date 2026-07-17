@@ -12,6 +12,12 @@ The work preserves durable Core meaning, data, authority, audit, and portability
 
 This record begins with a documentation-only checkpoint. No protocol schema, database migration, storage move, application behavior, test implementation, generated artifact, or user-facing product surface is changed by that checkpoint.
 
+## Inherited Audit Responsibility (2026-07-17)
+
+This plan is work package WP-5 of the [OpenKit Execution Program](./202607172152230001-openkit_execution_program.md) and absorbs audit group G06 from the [alignment audit](./202607111941330001-core_spec_implementation_alignment_audit.md). The G06 document set (C10 Identity, C11 Vault, C15 Permissions, S52-S58, S63, and their supporting projections) and the G06 exit criteria in the audit ledger are inherited inputs. The program's convergence rules bind all work here; when verifying S62 gates, reflect the central idempotency default promoted into C07/S62 during WP-0, and apply the "two independent implementers" bar only to Durable contract families.
+
+Before implementation starts, record the G06 audit preamble in this plan per Execution Program rule 11: the authority map for the concepts this plan touches, findings classified with the audit's finding codes (in-scope findings fold into this plan's frozen scope; everything else is ticketed to the program Backlog), and confirmation of the inherited exit criteria. The preamble is review-only, bounded to at most one review day, and authorizes no implementation.
+
 ## Decision Summary
 
 - Use the four Core stability classes: `Durable`, `Release-coupled`, `Experimental`, and `Private`.

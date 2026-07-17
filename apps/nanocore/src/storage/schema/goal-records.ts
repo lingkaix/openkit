@@ -11,7 +11,6 @@ export type GoalRecordStatus =
   | 'paused'
   | 'awaiting_user'
   | 'reviewing'
-  | 'verifying'
   | 'completed'
   | 'blocked'
   | 'aborted'
@@ -25,11 +24,9 @@ export type GoalTaskStatus =
   | 'ready'
   | 'running'
   | 'reviewing'
-  | 'needs_revision'
   | 'completed'
   | 'blocked'
-  | 'failed'
-  | 'skipped';
+  | 'failed';
 
 /**
  * Durable app-local goal records scoped by workspace and thread.
@@ -74,6 +71,41 @@ export const goalRecords = sqliteTable(
 );
 
 /**
+ * Immutable app-local Goal Plan authorities keyed by their visible plan Item.
+ */
+export const goalPlanRecords = sqliteTable(
+  'goal_plan_records',
+  {
+    /** Workspace that owns the plan. */
+    workspaceId: text('workspace_id').notNull(),
+    /** Thread that owns the plan. */
+    threadId: text('thread_id').notNull(),
+    /** Goal that owns the plan. */
+    goalId: text('goal_id').notNull(),
+    /** Visible plan Item and immutable record id. */
+    planItemId: text('plan_item_id').notNull(),
+    /** Canonical digest of the exact Plan payload. */
+    planDigest: text('plan_digest').notNull(),
+    /** Exact validated Plan payload JSON. */
+    planJson: text('plan_json').notNull(),
+    /** Request that created the plan authority. */
+    createdByRequestId: text('created_by_request_id').notNull(),
+    /** ISO timestamp for plan creation. */
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.workspaceId, table.threadId, table.planItemId] }),
+    index('goal_plan_records_goal_idx').on(
+      table.workspaceId,
+      table.threadId,
+      table.goalId,
+      table.createdAt,
+      table.planItemId
+    ),
+  ]
+);
+
+/**
  * Durable app-local goal task records scoped by goal.
  */
 export const goalTasks = sqliteTable(
@@ -87,6 +119,8 @@ export const goalTasks = sqliteTable(
     threadId: text('thread_id').notNull(),
     /** Goal that owns the task. */
     goalId: text('goal_id').notNull(),
+    /** Immutable Goal Plan that supplied the task. */
+    planItemId: text('plan_item_id').notNull(),
     /** Goal task lifecycle status. */
     status: text('status').$type<GoalTaskStatus>().notNull(),
     /** Human-readable task title. */
@@ -101,8 +135,16 @@ export const goalTasks = sqliteTable(
     acceptanceCriteriaJson: text('acceptance_criteria_json').notNull(),
     /** Estimated context budget in tokens for this task. */
     contextBudgetTokens: integer('context_budget_tokens').notNull(),
+    /** JSON array of exact semantic resource declarations. */
+    resourcesJson: text('resources_json').notNull(),
+    /** JSON array of exact expected artifacts. */
+    expectedArtifactsJson: text('expected_artifacts_json').notNull(),
     /** JSON array of verification checks configured for this task. */
     verificationChecksJson: text('verification_checks_json').notNull(),
+    /** JSON object containing the immutable human review policy. */
+    reviewPolicyJson: text('review_policy_json').notNull(),
+    /** JSON array of exact escalation conditions. */
+    escalationConditionsJson: text('escalation_conditions_json').notNull(),
     /** ISO timestamp for task creation. */
     createdAt: text('created_at').notNull(),
     /** ISO timestamp for latest task update. */

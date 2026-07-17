@@ -288,7 +288,7 @@ Core should mediate retrieval and injection through context packages.
 
 The Knowledge Manager selects, filters, cites, and prepares relevant knowledge or source material for a context package.
 
-The Workflow Coordinator decides how that material combines with task instructions, workflow state, constraints, capabilities, stop conditions, and review policy in the final worker context.
+The Workflow Coordinator decides how authorized material combines with task instructions, workflow state, constraints, capabilities, stop conditions, and review policy in the semantic worker context. The owning workflow boundary persists, materializes, and delivers that decision without becoming a second semantic context owner.
 
 During worker execution, worker agents may request additional knowledge through Core-governed capability and knowledge boundaries. The Knowledge Manager may respond with source-traceable material, ask for clarification when evidence is insufficient, or draft knowledge proposals when the work reveals reusable learning.
 

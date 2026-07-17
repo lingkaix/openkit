@@ -5,11 +5,11 @@ Implementation: Partial
 
 ## Owns
 
-This spec owns the L6 story acceptance layer, including story artifact structure, deterministic story adapters, future agentic story execution, evidence expectations, metadata rules, and the rule that confirmed L6 defects must reduce into L1-L5 regression coverage.
+This specification owns the L6 story-acceptance boundary: when a realistic user-intent workflow deserves L6 proof, the minimum story artifact, execution and failure semantics, evidence proportionality, and reduction of confirmed defects into lower test layers.
 
 ## Does Not Own
 
-This spec does not own the full L0-L6 test strategy, Web UI component design, NanoCore test harness implementation, provider credentials, release gate policy, or concrete story content beyond the L6 contract.
+This specification does not own product behavior, Core or specification authority, the complete L0-L6 test strategy, release policy, a general agent executor, browser automation infrastructure, process supervision, transport clients, credential management, evidence storage, or workflow recovery. Those responsibilities remain with their existing owners.
 
 ## Core References
 
@@ -17,633 +17,204 @@ This spec does not own the full L0-L6 test strategy, Web UI component design, Na
 - `docs/core/agent-workflow.md`
 - `docs/core/communication.md`
 - `docs/core/audit.md`
+- `docs/specs/20260529-test_strategy.md`
 
 ## Summary
 
-L6 story acceptance is the OpenKit testing layer for realistic product intent validation.
+L6 answers one question: can a user or AI agent complete one important product intent through a supported public surface in a realistic environment?
 
-It exists because OpenKit is an agent workflow product, and many important failures only appear when a user moves through a long, stateful, multi-step workflow in the real UI.
+L6 is an opt-in acceptance layer, not a required copy of L1-L5 and not a test platform for every feature, failure branch, provider, runtime, transport, or deployment shape. A behavior already proved deterministically at a lower layer receives L6 coverage only when a distinct end-to-end product risk remains.
 
-L6 should be agent-first for exploratory and long-flow acceptance, deterministic where a story becomes stable enough to automate, and strict about reducing confirmed defects into lower-level regression coverage.
+OpenKit prefers agent-first real use for exploratory and release-candidate acceptance. A deterministic story adapter is justified only for a stable, repeatedly valuable workflow that cannot be protected more cheaply at L1-L5. Both modes must reuse existing product clients and runner support instead of growing parallel authentication, transport, process-control, evidence, Git, cleanup, or recovery systems.
 
-The current repository implementation includes deterministic Web and legacy user-facing MCP slices plus opt-in real Codex acceptance, real-worker acceptance, and real-provider slices: Markdown story artifacts live in `tests/stories/`, executable deterministic adapters and opt-in runners live in `tests/story-runner/`, and `pnpm -w test:stories` runs the metadata parser tests plus the current deterministic story adapters.
+## Current Scope
 
-The deterministic MCP slice now covers Goal Mode, Task Mode escalation, Chat Mode, workspace portability, and recovery controls. `tests/stories/goal-mode-mcp-smoke.story.md` validates the Goal Mode planning, approval, step, evidence, Action Center, and artifact read path through the MCP facade. `tests/stories/task-mode-mcp-smoke.story.md` validates the Task Mode MCP entry point and Task-to-Goal escalation path. `tests/stories/chat-mode-mcp-smoke.story.md` validates Chat Mode knowledge-backed answering, clarification gates, Action Center projection, and Goal Mode handoff through the same facade. `tests/stories/workspace-portability-release.story.md` validates cross-deployment workspace export/import, repository re-binding, lineage evidence, and redaction checks through a deterministic MCP runner, while vault reference re-binding remains part of the full agentic seeded path until a public setup path can seed workspace vault references without private test hooks. `tests/stories/recovery-mcp-smoke.story.md` validates interrupted worker recovery reads, pending input edit/follow-up/cancel actions, and interrupted checkpoint retry through the MCP facade.
+The current engineering baseline is one NanoCore process, one logical SQLite writer, one configured local or remote runtime target, one active worker slot, and a small trusted team that is typically under ten people. L6 should prove that product shape and the most important stock OpenShell integration path; it does not simulate multi-process, multi-writer, fleet, fairness, hot-failover, or high-availability behavior.
 
-The existing deterministic and opt-in real-runner L6 mechanics are implemented, but the accepted end-user channel contract is only partially covered. The user-facing MCP stories and runners are removal-only and must be replaced by unified Skill and bundled CLI stories before the Agent Skill Interface change closes. A future general agentic executor remains deferred product work and does not block that replacement.
+One accepted story should normally prove one complete user intent. It may cross several existing components when the user intent naturally does so, but it MUST NOT accumulate unrelated cache, usage, audit, review, Git, cleanup, Cell-recycle, cancellation, compression, credential-override, and recovery assertions merely because one runner can reach them.
+
+Security, authorization, credential isolation, secret redaction, sandbox containment, data-loss prevention, durable authority, and irreversible external effects remain strict. Availability, optional diagnostics, cleanup projection, reconnect convenience, and external-run interruption may use an explicit environment failure, product interruption, `recovery_required`, inspection, or fresh-run fallback when transparent recovery is not part of the owning product contract.
 
 ## Goals
 
-- Validate complete user-intent workflows that cross UI, NanoCore, protocol events, approvals, questions, artifacts, diagnostics, and runtime feedback loops.
-- Let AI agents execute long or exploratory stories through the visible product UI when fixed Playwright scripts would be brittle or too expensive to maintain.
-- Preserve deterministic story adapters for stable, high-value acceptance flows that should be repeatable.
-- Keep story files as versioned, reviewable repository artifacts instead of one-off prompts.
-- Collect enough browser, server, network, transcript, and assertion evidence to debug failures after the run.
-- Require every confirmed product bug found by L6 to become a deterministic regression test at the lowest practical layer from L1 through L5.
-- Keep L6 out of automatic PR and tag release gates unless a future release policy explicitly promotes selected stories.
+- Validate a small number of high-value user-intent workflows through supported public surfaces.
+- Detect integration and usability failures that lower deterministic layers cannot reveal.
+- Keep stories versioned, readable, and tied to explicit machine-checkable outcomes.
+- Use real providers or workers only when their behavior is the distinct risk being accepted.
+- Reduce every confirmed deterministic defect into the lowest sufficient L1-L5 regression test.
+- Keep execution and evidence mechanisms thin, reusable, and subordinate to the story.
 
 ## Non-goals
 
-- Do not make L6 a replacement for unit, contract, NanoCore e2e, Web e2e, or smoke tests.
-- Do not require every story to have a hand-written Playwright adapter.
-- Do not let subjective AI judgement alone pass a blocking acceptance story.
-- Do not let an agent mutate backend state directly during the user-flow portion of a story.
-- Do not require real OpenAI credentials, real Codex login, ChatGPT subscription auth, browser profile state, or provider quota for the default deterministic story suite.
-- Do not run L6 by default on pull requests, ordinary branch pushes, or version tags.
+- Do not create an L6 story for every feature, state transition, fallback, backend, or deployment combination.
+- Do not require every story to have a deterministic adapter.
+- Do not treat subjective agent judgement as the sole blocking oracle.
+- Do not let an executor mutate private product state during the user-flow portion of a story.
+- Do not build another authentication transport, process supervisor, workflow engine, recovery coordinator, evidence platform, Git harness, or general agent-runner framework for L6.
+- Do not require real credentials, quota, host state, or external network access in the default repository checks.
+- Do not make L6 an automatic pull-request, ordinary push, or tag gate under the current policy.
+- Do not test deferred scale or availability properties that the product does not currently promise.
 
-## Background
+## Authority And Projection
 
-L0 through L5 cover static quality, package behavior, cross-package contracts, NanoCore process behavior, Web browser e2e behavior, and artifact smoke confidence.
+The owning Core and feature specifications remain the authority for product behavior. A story references those contracts and selects a realistic proof path; it does not create or broaden product requirements.
 
-Those layers are deliberately deterministic and should catch known regressions as early and cheaply as possible.
+The Markdown story is the authority for that acceptance run's intent, preconditions, supported entry point, deterministic assertions, allowed setup, and cleanup. Runner code is an execution projection and MUST NOT silently add stronger product requirements or hidden setup.
 
-They are not enough to answer whether a real user can complete a complex OpenKit workflow comfortably and correctly.
+Product records remain authoritative for Workspace, Thread, Turn, Item, Artifact, Goal, Task, Session, lease, approval, usage, and audit state. An L6 evidence summary records observations and identifiers needed for triage but MUST NOT duplicate those records into another lifecycle.
 
-For example, a long workflow may technically pass component tests and browser e2e, while still having unclear wait states, confusing approval copy, broken recovery paths, missing diagnostics, stale artifact previews, or state transitions that are correct at the API layer but hard to understand from the UI.
+Screenshots, traces, transcripts, logs, and reports are supporting evidence, not product authority. Absence of optional evidence does not overturn an otherwise provable product result unless the story declared that evidence as a deterministic assertion.
 
-L6 is the layer that asks an agent to behave like a product evaluator, follow a scenario, interact only through visible user surfaces except for declared setup and cleanup, and report whether the product satisfies the scenario intent.
+## Story Selection
 
-## Core Decision
+Add or retain an L6 story only when all of the following are true:
 
-OpenKit L6 has two execution modes that share the same story artifact format.
+- It represents one material user intent or release-risk path.
+- At least one important failure can occur only across supported public boundaries or during realistic use.
+- The same confidence cannot be obtained more cheaply at L1-L5.
+- The required environment and oracle are available without inventing private product capabilities.
+- The story has an explicit owner and remains cheap enough to run intentionally.
 
-Deterministic stories have explicit executable adapters under `tests/story-runner/`.
+Delete, merge, or demote a story when lower-layer coverage now owns its only distinct risk, the public surface is removal-only, the story depends on private seeding, or its adapter costs more than the product confidence it provides.
 
-Agentic stories may have no dedicated adapter; an AI agent reads the story and executes it dynamically through Playwright or Chrome DevTools MCP.
+## Story Artifact Contract
 
-The default long-term model is agent-first.
-
-A story should only be converted into a deterministic adapter when the workflow is stable, important enough to repeat frequently, and expressible as resilient visible-UI operations.
-
-Confirmed defects found by either mode must be reduced into L1, L2, L3, L4, or L5 regression coverage whenever the defect is deterministic.
-
-Experience findings that are not deterministic bugs should become product issues, specs, or change records with supporting L6 evidence.
-
-## Terminology
-
-Story means a versioned Markdown artifact that describes one realistic user workflow.
-
-Executor means the mechanism that performs the story.
-
-Deterministic adapter means a committed Playwright test that maps one story to fixed visible-UI operations and assertions.
-
-Agentic executor means an AI-operated runner that reads a story, decides how to operate the browser within the story constraints, captures evidence, and reports results.
-
-Evidence bundle means the collection of trace, screenshots, logs, network records, story metadata, transcript, assertion summary, and triage notes produced by a story run.
-
-Oracle means a pass/fail signal that is machine-checkable, such as visible DOM state, URL state, persisted API state, protocol events, artifact existence, terminal turn status, or absence of secret leakage.
-
-Subjective finding means an agent observation about usability, clarity, product intent, or workflow quality that is useful but not sufficient by itself for a blocking pass/fail decision.
-
-## Story Artifact Model
-
-Story artifacts live under `tests/stories/`.
-
-Each committed story must be Markdown with a scalar front matter block followed by human-readable sections.
-
-The front matter is the machine-readable contract.
-
-The body is the human and agent-readable acceptance specification.
-
-The current parser intentionally supports only scalar front matter values and does not depend on YAML.
-
-The required metadata fields are:
+Story artifacts live under `tests/stories/` as Markdown. Each committed story has a scalar front matter block with these fields:
 
 ```yaml
-id: story-web-local-turn
-title: Complete a local worker turn from the Web UI
-persona: Product evaluator using a clean local OpenKit workspace
-entrypoint: web
-default_tool: playwright
-timeout_seconds: 300
+id: story-real-task-worker
+title: Complete one Task with a real worker
+persona: Operator validating a release candidate
+entrypoint: skill
+default_tool: openkit
+timeout_seconds: 600
 requires_real_provider: false
-requires_real_codex: false
+requires_real_codex: true
 ```
 
-`id` must be unique across committed stories.
+`id` is repository-unique. `title` and `persona` describe the user intent. `entrypoint` names a supported public product surface. `default_tool` names the existing product client or browser control used for the run. `timeout_seconds` is one story-level budget. Real provider or Codex requirements require explicit opt-in metadata.
 
-`title` should be a concise human-readable workflow name.
+The body contains only the sections needed to make independent executions materially equivalent:
 
-`persona` defines the role the executor should simulate.
+- `Purpose`: the one user intent and the owning product contracts.
+- `Preconditions`: required implemented capabilities and environment assumptions.
+- `Setup`: allowed non-user preparation using existing public or test-owned support.
+- `User-visible Steps`: actions through the supported public surface.
+- `Expected Outcomes`: observable product results.
+- `Deterministic Assertions`: the minimum machine-checkable pass/fail oracles.
+- `Cleanup`: bounded process and disposable-state cleanup.
+- `Failure Triage Notes`: product, environment, tool, or inconclusive classification and the likely lower regression layer.
 
-`entrypoint` defines the product surface to start from, such as `web`, `staging`, `desktop`, or a future hosted environment.
-
-`default_tool` defines the preferred operation tool, currently `playwright` for deterministic runs and likely `playwright` or `chrome_devtools_mcp` for agentic runs.
-
-`timeout_seconds` defines the story-level execution budget.
-
-`requires_real_provider` must be `true` only when the story consumes real inference provider credentials or quota.
-
-`requires_real_codex` must be `true` only when the story requires a real Codex host, login, subscription, or local installation state.
-
-Future metadata may add fields such as `executor`, `risk`, `tags`, `environment`, `evidence_profile`, or `flake_policy`.
-
-Because OpenKit is in active internal development, metadata changes should choose the clean target, but migrations must update all committed stories and adapters in the same change.
-
-## Required Story Body Sections
-
-Each story body should contain these sections unless there is a documented reason to omit one.
-
-`Purpose` describes the user intent and product behavior being evaluated.
-
-`Preconditions` describes required product capabilities and environmental assumptions.
-
-`Setup` describes allowed non-user setup actions such as starting NanoCore, creating disposable data roots, seeding fixtures, or enabling deterministic executors.
-
-`User-visible Steps` describes the workflow the executor must perform through visible UI surfaces.
-
-`Expected Outcomes` describes what the user should be able to observe after the workflow.
-
-`Deterministic Assertions` lists the machine-checkable oracles required for pass/fail.
-
-`Evidence To Collect` lists required traces, screenshots, logs, transcripts, summaries, and redaction expectations.
-
-`Cleanup` describes process shutdown, data cleanup, fixture cleanup, and credential cleanup.
-
-`Failure Triage Notes` describes how to classify failures and how to reduce confirmed defects into lower-level regression tests.
-
-Long stories should include checkpoints.
-
-Each checkpoint should state the visible milestone, required evidence, and failure interpretation.
-
-Checkpoints prevent a long story from producing only a vague final failure after many minutes of work.
+Evidence requirements appear only when they change the acceptance decision or materially shorten failure triage. Long transcripts, screenshots at every state, database dumps, network archives, repository snapshots, and full audit exports are not default requirements.
 
 ## Execution Modes
 
-### Deterministic Mode
+### Agent-first Execution
 
-Deterministic mode is used when a story has a matching adapter in `tests/story-runner/`.
+Agent-first execution is the default for exploratory, dogfooding, and release-candidate stories. The agent reads the story, uses an existing public Skill, CLI, API client, or browser tool, records the deterministic outcomes, and produces a concise result.
 
-The adapter reads the story file, validates metadata, starts the required isolated stack, operates the declared product entrypoint, records assertions, attaches or writes story evidence, and relies on the entrypoint's native trace or smoke output for failure evidence.
+The agent may adapt to benign presentation differences but may not bypass product authority or replace a failed product path with private writes. Setup, cleanup, and diagnostic inspection may use declared repository tools.
 
-The current browser-backed deterministic story is `tests/stories/openkit-local-self-check.story.md`.
+No general committed agentic executor is required. Repeated manual steps may be automated only after real runs demonstrate a stable shared need, and the resulting support must reuse an existing runner owner rather than create another framework.
 
-Its adapter is `tests/story-runner/openkit-local-self-check.spec.ts`.
+### Deterministic Execution
 
-It starts an isolated NanoCore and Web stack, enables the deterministic internal self-check executor, creates a workspace, creates a thread, submits a turn, grants an approval, answers a question, opens an artifact, and verifies diagnostics redaction.
+A deterministic adapter is appropriate only for a stable, high-value story that is intentionally repeated. It validates the source story, invokes existing stack and product clients, performs only story-specific actions and assertions, and returns ordinary test results.
 
-The current MCP-backed deterministic stories are `tests/stories/goal-mode-mcp-smoke.story.md`, `tests/stories/task-mode-mcp-smoke.story.md`, `tests/stories/chat-mode-mcp-smoke.story.md`, `tests/stories/workspace-portability-release.story.md`, and `tests/stories/recovery-mcp-smoke.story.md`. Their adapters start built NanoCore on disposable local data roots, use the built OpenKit MCP registry against the public App API, avoid real provider and real Codex dependencies, and write optional evidence summaries when the relevant evidence directory environment variable is set.
+A deterministic adapter MUST NOT reimplement authentication transport, command routing, process-group supervision, credential redaction, evidence-directory policy, Git inspection, timeout orchestration, or cleanup already owned elsewhere. If existing support cannot serve the story without such duplication, keep the story agent-first or improve the existing owner as a separately justified change.
 
-Deterministic mode is appropriate for stable acceptance flows, release confidence checks, workflows where fixed accessible selectors are reliable, and Agent-Skill-first dogfooding loops that intentionally validate the AI-native interface rather than the browser UI.
+## Lifecycle
 
-It is not the preferred form for every L6 story.
+1. Author or revise one story against accepted Core and feature specifications.
+2. Confirm its distinct L6 risk and identify the lowest-layer checks already covering the underlying behavior.
+3. Preflight only the environment capabilities named by the story.
+4. Execute through the named public surface under one bounded deadline.
+5. Classify the result as `passed`, `failed`, `skipped`, `environment_failure`, `tool_failure`, or `inconclusive`.
+6. Preserve the story revision, concise assertion summary, redaction result, and only failure evidence required for triage.
+7. Reduce a confirmed deterministic product defect into L1-L5, then retain L6 only if its end-to-end intent remains valuable.
+8. Clean disposable state; a cleanup failure is reported separately and does not rewrite the product result.
 
-If a workflow becomes too long, too exploratory, or too sensitive to UI layout choices, it should stay agentic unless a smaller stable subset can be converted into deterministic L4 or deterministic L6 coverage.
+An interrupted real-provider or real-worker run may preserve available redacted evidence and be retried as a fresh run. L6 does not require transparent executor recovery, resumable evidence settlement, or reconstruction of every partially written report.
 
-### Agentic Mode
+## Pass And Failure Semantics
 
-Agentic mode is used when an AI agent executes the story directly from the Markdown body.
+`passed` means every required deterministic assertion passed and no observed behavior contradicted the explicit story intent.
 
-The agent reads the front matter and story sections, starts or receives the target environment, operates the visible UI through the allowed browser tool, captures evidence at checkpoints, and writes a structured report.
+`failed` means the product violated a required assertion, blocked the supported workflow, lost required state, duplicated a protected effect, or exposed protected data.
 
-Agentic mode is appropriate for long product workflows, exploratory acceptance, dogfooding sessions, release-candidate review, UX validation, and flows where human-like judgement is valuable.
+`skipped` means an opt-in capability required by the story was not enabled or provisioned before execution was attempted; the report names the unmet capability and no setup or product step runs. A skip is not acceptance evidence and MUST NOT be presented or counted as a pass.
 
-The agent may adapt to minor UI differences, recover from benign timing issues, and inspect evidence sources that a fixed Playwright test would not normally inspect.
+`environment_failure` means the story was selected with its required capabilities declared available, but an external service, credential, quota, host, tool environment, or disposable environment failed during preflight, setup, or execution before the product result could be judged.
 
-The agent must not use hidden implementation shortcuts during the user-flow portion.
+`tool_failure` means the executor or browser-control tool failed independently of the product.
 
-Allowed setup and cleanup shortcuts must be listed in the story.
+`inconclusive` means the story lacks a sufficient oracle or the run ended after an effect whose outcome cannot be proved. Tighten the story or inspect existing product authority; do not synthesize a pass, build a recovery workflow, or expand the runner to guess the outcome.
 
-The agent may use APIs, filesystem checks, logs, or database snapshots only for declared setup, cleanup, or evidence collection.
+Subjective usability findings are non-blocking unless they contradict an explicit expected outcome. They may become product issues or design discussion without adding permanent runner behavior.
 
-Agentic mode can produce subjective findings, but a blocking pass/fail result must still include deterministic oracles where practical.
+## Evidence And Security
 
-## Story Discovery And Execution Selection
+Every completed run retains the story identifier and revision, environment kind, elapsed time, final classification, deterministic assertion results, and a redaction check. Failure runs retain the smallest useful log, transcript excerpt, screenshot, trace, or resource identifier that can locate the cause.
 
-A story may be in one of three states.
+Real secrets, tokens, cookies, authorization headers, full credential files, and private account data MUST NOT appear in story files, command output, evidence, reports, CI artifacts, or committed fixtures. Opt-in real runs must reuse the existing credential and redaction owners.
 
-`documented` means the Markdown story exists but has not yet been executed by an automated runner.
+Evidence directories are output locations, not databases or workflow owners. A partial evidence write may be deleted or replaced on a fresh run; it does not require a settlement record, append protocol, or recovery state machine.
 
-`agentic` means the story is intended for an AI executor and may not have a deterministic adapter.
+## Test And Release Policy
 
-`deterministic` means the story has a committed adapter and can be run by `pnpm -w test:stories`.
+The story metadata parser receives focused L1 tests. Shared runner support receives tests only for policies it uniquely owns. Story-specific logic stays in the story or its thin adapter and does not receive a duplicate framework-level test suite.
 
-The repository should not require every story to advance to deterministic state.
+One deterministic story may smoke-test the L6 infrastructure itself. Real-provider and real-worker acceptance should prove only the critical integration path named by their owning specification. Cancellation, compression, malicious override, cache, usage, audit, review, Git, cleanup, and Cell recycle remain lower-layer concerns unless one of them is the story's distinct user-visible risk.
 
-The L6 catalog should make it obvious which stories are deterministic and which are agentic-only.
+L6 remains manually or explicitly invoked. `pnpm -w test:stories` may run the bounded deterministic subset, while quota-consuming or host-dependent stories use explicit opt-in commands. `pnpm -w verify:full` may include deterministic stories only at a work-package exit, release-candidate gate, or explicit request; ordinary slices use their focused lower-layer checks.
 
-Until a catalog file exists, the mapping is implicit: stories with matching adapters under `tests/story-runner/` are deterministic or opt-in real-runner stories, and other story files are agentic candidates. The current MCP runner command `pnpm -w test:stories:mcp` runs all deterministic MCP stories.
-
-A future catalog may be added if the number of stories grows enough to require filtering by tag, environment, risk, or release target.
-
-## Agentic Executor Responsibilities
-
-The agentic executor should load story metadata, validate required fields, and reject stories that require unavailable real provider or real Codex capabilities.
-
-It should prepare the declared environment, preferably using disposable data roots and dynamic ports.
-
-It should run the workflow through the visible UI, not through private API calls.
-
-It should checkpoint progress after every material state transition.
-
-It should preserve a transcript of goals, actions, observations, assertions, and deviations.
-
-It should attach browser evidence such as trace, screenshot, console output, and network summary when available.
-
-It should attach server evidence such as process logs, health responses, selected protocol events, and redacted error output when available.
-
-It should produce a final report with pass/fail status, deterministic assertion results, subjective findings, suspected layer, reproduction notes, and recommended lower-layer regression coverage.
-
-It should stop the environment and clean temporary state even when the story fails.
-
-## Deterministic Adapter Responsibilities
-
-A deterministic adapter should read its source story and validate metadata before running the flow.
-
-It should operate through accessible selectors and user-visible labels whenever practical.
-
-It should avoid direct API calls except for setup, cleanup, or evidence checks explicitly allowed by the story.
-
-It should attach the story artifact to the Playwright report.
-
-It should attach a concise assertion summary to the Playwright report.
-
-It should rely on Playwright trace retention, screenshots, and browser diagnostics for failure evidence.
-
-It should keep implementation detail out of the story body.
-
-If the adapter needs product-specific helpers, those helpers should be generic enough to serve multiple stories or remain narrowly scoped to the story-runner boundary.
-
-Opt-in real-provider and real-worker adapters must reuse existing story-runner support when process-group deadlines, secure evidence-directory preflight, exclusive owner-only evidence writes, or credential leak guards have the same policy. Each adapter may add only the story-specific oracles required by its owning specification; it must not become a parallel transport, process-supervision, evidence, or workflow platform.
-
-## Tooling Boundaries
-
-Playwright is the default deterministic execution tool.
-
-Playwright is also acceptable as the browser-control tool for agentic execution when the agent can drive it interactively or through a structured tool wrapper.
-
-Chrome DevTools MCP is acceptable for agentic execution when the story benefits from an existing browser profile, authenticated local state, live debugging, or direct browser inspection.
-
-The executor should prefer isolated browser contexts for deterministic and release-candidate stories.
-
-The executor may use a real profile only when the story explicitly requires it and the run is manual.
-
-The executor must not rely on browser extensions, previous local storage, or existing cookies unless the story explicitly says so.
-
-The executor must not leak secrets into screenshots, transcripts, logs, reports, committed files, or uploaded artifacts.
-
-## Environment Policy
-
-Default L6 runs should use local deterministic services.
-
-NanoCore should start with a disposable data root.
-
-Web should start against the NanoCore instance on a dynamic localhost port.
-
-The deterministic self-check executor should be used when the story does not require real Codex or real provider behavior.
-
-Stories requiring real provider credentials must be marked with `requires_real_provider: true`.
-
-Stories requiring real Codex, a host installation, ChatGPT subscription auth, or browser profile login must be marked with `requires_real_codex: true`.
-
-Manual runs may target staging or release-candidate environments, but the story must state which environment is valid.
-
-Network access should be disabled or unnecessary by default.
-
-Quota-consuming runs should be explicitly invoked and reported separately from deterministic story runs.
-
-## Evidence Requirements
-
-Every L6 run should preserve the story file version.
-
-Every L6 run should preserve a final assertion summary.
-
-Agentic runs should preserve an agent transcript.
-
-Browser-based runs should preserve screenshots on failure.
-
-Browser-based runs should preserve traces when the tool supports them.
-
-Browser-based runs should preserve console and network summaries when practical.
-
-Server-backed runs should preserve process exit reasons, relevant logs, health responses, and redacted error output.
-
-Runs that produce artifacts should record artifact ids or visible artifact titles.
-
-Runs that involve protocol streaming should preserve enough event evidence to connect UI observations to server behavior.
-
-Evidence must be redacted before upload or publication.
-
-Fake secret markers are acceptable for testing redaction, but real secrets must not appear in story files, reports, committed fixtures, or CI artifacts.
-
-## Pass And Fail Semantics
-
-A story passes when all required deterministic assertions pass and no blocking contradiction to the story intent is observed.
-
-A story fails when a required deterministic assertion fails.
-
-A story fails when the agent cannot complete the workflow because the product blocks, loops, crashes, hides required controls, loses required state, or exposes secrets.
-
-A story may produce non-blocking findings when the workflow completes but the agent observes usability, copy, latency, accessibility, or recoverability issues.
-
-A subjective finding should not fail a blocking story unless it contradicts an explicit expected outcome or deterministic assertion.
-
-If the environment fails before the product workflow begins, the result should be classified as environment failure rather than product failure.
-
-If the browser tool fails independently of the product, the result should be classified as tool failure.
-
-If the product behavior is ambiguous because the story lacks a clear oracle, the result should be classified as inconclusive and the story should be tightened before it is used as a release signal.
-
-## Defect Reduction Policy
-
-L6 is allowed to discover broad product failures, but it should not become the only place where known bugs are checked.
-
-When L6 finds a deterministic bug, the follow-up change must add the lowest-layer regression test that can catch it.
-
-Use L1 for pure logic, reducers, parsers, components, redaction helpers, and small state transitions.
-
-Use L2 for schema, protocol, route payload, client parsing, and cross-package drift.
-
-Use L3 for NanoCore process, HTTP, SSE, auth, storage, worker, and persistence boundaries.
-
-Use L4 for browser-visible UI behavior that must be proven in a real browser.
-
-Use L5 for boot, packaging, staging, health, and shallow artifact availability failures.
-
-Keep the original L6 story when it still provides useful end-to-end product intent coverage, but do not rely on it as the only regression guard for a known deterministic defect.
-
-## CI And Release Policy
-
-L6 does not run automatically on pull requests.
-
-L6 does not run automatically on ordinary branch pushes.
-
-L6 does not run automatically on version tags in the current policy.
-
-Pull requests run the lightweight repository check.
-
-Version tags run the release gate through L0-L3 and L5.
-
-Deterministic L6 runs through manual workflow dispatch with the `deterministic-stories` or `full` selection.
-
-Local deterministic L6 runs use `pnpm -w test:stories` or the explicit `pnpm -w test:stories:deterministic` alias.
-
-Local full validation uses `pnpm -w verify:full`, which includes deterministic story acceptance.
-
-Agentic L6 should remain manually triggered until the executor is reliable enough and the selected story subset is cheap enough to justify scheduled or release-candidate automation.
-
-If future release policy promotes any L6 story to an automatic gate, that story should be deterministic or have a tightly constrained agentic runner with stable evidence and low flake rate.
+Skipped, environment-failed, and unexecuted stories are not acceptance evidence. When an owning release policy or current release record designates an opt-in real-provider or real-worker story as applicable, that L6 gate contribution is satisfied only when the story actually executed and passed in that cycle; a missing capability or skipped run leaves it unmet rather than silently green. This specification defines evidence semantics and does not decide which stories are applicable to a release.
 
 ## Current Implementation
 
-The MCP-backed files and commands listed below describe the current removal-only implementation, not the accepted future channel. Replacement coverage must exercise Skill discovery, `openkit doctor`, progressive operation search and description, operation invocation, the default bounded loop, secret-safe credential handling, and public-capability coverage through the bundled CLI; worker-side MCP stories remain future targets for a separate capability plane and are not currently runnable.
+Story artifacts live under `tests/stories/`, and current execution support lives under `tests/story-runner/`. Existing deterministic Web and removal-only MCP adapters, opt-in real Codex and Task worker runs, and real-provider runs are implementation inventory rather than authorization to expand the platform.
 
-The committed stories are `tests/stories/openkit-local-self-check.story.md`, `tests/stories/goal-mode-mcp-smoke.story.md`, `tests/stories/task-mode-mcp-smoke.story.md`, `tests/stories/chat-mode-mcp-smoke.story.md`, `tests/stories/workspace-portability-release.story.md`, `tests/stories/recovery-mcp-smoke.story.md`, `tests/stories/goal-mode-real-codex-release.story.md`, `tests/stories/task-mode-real-worker-release.story.md`, `tests/stories/pi-ai-gateway-real-provider.story.md`, and `tests/stories/worker-mcp-governed-tool-use.story.md`.
+The user-facing MCP stories and runners are removal-only and must be replaced by the unified Skill and bundled CLI where equivalent acceptance remains valuable. New behavior MUST NOT be added to the legacy MCP acceptance surface.
 
-The metadata parser is `tests/story-runner/story-metadata.mjs`.
+The current real Task worker runner duplicates capabilities already present in Goal runner support. Its feature surface is frozen: complete the minimum real happy-path proof, then reuse or move genuinely shared behavior into the existing owner and delete duplicate Task-specific transport, supervision, evidence, Git, redaction, and timeout code. This does not authorize a third runner framework.
 
-The parser tests are `tests/story-runner/story-metadata.test.mjs`.
+No new cancellation, compression, credential-override, restart, recovery, or backend-specific L6 harness is accepted by this specification. A confirmed real integration failure is fixed in product code and reduced to the lowest sufficient regression layer.
 
-The first deterministic Web adapter is `tests/story-runner/openkit-local-self-check.spec.ts`.
+## Acceptance Predicates
 
-The deterministic Goal Mode MCP runner is `tests/story-runner/goal-mode-mcp-smoke-runner.mjs`.
+- Two independent readers can identify the story's one user intent, supported entry point, required environment, and deterministic pass/fail oracles.
+- A run uses only declared public product surfaces during the user-flow portion.
+- The executor reuses existing transport, process, credential, redaction, timeout, cleanup, and evidence owners.
+- Unavailable optional infrastructure yields a typed non-product result rather than a fabricated product pass or new recovery system.
+- A confirmed deterministic defect has a named L1-L5 regression owner.
+- Removing the L6 adapter would not remove the sole deterministic guard for an already known product defect.
+- Deferred deployment shapes and hypothetical variants add no current runner or test cases.
 
-The Goal Mode MCP runner tests are `tests/story-runner/goal-mode-mcp-smoke-runner.test.mjs`.
+## Alternatives Considered
 
-The deterministic Task Mode MCP runner is `tests/story-runner/task-mode-mcp-smoke-runner.mjs`.
+### One L6 Story Per Feature Or Boundary
 
-The Task Mode MCP runner tests are `tests/story-runner/task-mode-mcp-smoke-runner.test.mjs`.
+Rejected because it duplicates cheaper deterministic coverage and turns the layer taxonomy into a checklist.
 
-The deterministic Chat Mode MCP runner is `tests/story-runner/chat-mode-mcp-smoke-runner.mjs`.
+### General Agentic Runner And Evidence Platform
 
-The Chat Mode MCP runner tests are `tests/story-runner/chat-mode-mcp-smoke-runner.test.mjs`.
+Rejected for the current product scale because it duplicates existing process, transport, credential, evidence, and workflow owners before repeated real use proves a shared requirement.
 
-The deterministic workspace portability MCP runner is `tests/story-runner/workspace-portability-mcp-runner.mjs`.
+### Exhaustive Evidence Collection
 
-The workspace portability MCP runner tests are `tests/story-runner/workspace-portability-mcp-runner.test.mjs`.
+Rejected because evidence should shorten diagnosis or prove an oracle, not become a second durable product history.
 
-The deterministic Recovery MCP runner is `tests/story-runner/recovery-mcp-smoke-runner.mjs`.
+### Transparent Recovery Of Interrupted Acceptance Runs
 
-The Recovery MCP runner tests are `tests/story-runner/recovery-mcp-smoke-runner.test.mjs`.
+Rejected because a fresh opt-in run plus preserved minimal evidence is the smaller honest fallback.
 
-The opt-in real Codex preflight runner is `tests/story-runner/real-codex-goal-mode-runner.mjs`.
+## Deferred, Non-authorizing Questions
 
-The real Codex preflight runner tests are `tests/story-runner/real-codex-goal-mode-runner.test.mjs`.
+- Whether repeated agent-first runs justify one small shared executor entry point.
+- Whether story count eventually justifies catalog or selection metadata.
+- Whether a cheap, stable subset should become a release-candidate gate.
 
-The opt-in real Task Mode worker runner is `tests/story-runner/task-mode-real-worker-runner.mjs`.
-
-The real Task Mode worker runner tests are `tests/story-runner/task-mode-real-worker-runner.test.mjs`.
-
-The opt-in pi-ai real-provider gateway runner is `tests/story-runner/pi-ai-real-provider-runner.mjs`.
-
-The pi-ai real-provider runner tests are `tests/story-runner/pi-ai-real-provider-runner.test.mjs`.
-
-The stack helper is `tests/story-runner/web-stack.mjs`.
-
-The Playwright config is `apps/web/playwright.stories.config.ts`.
-
-The root deterministic story commands are `pnpm -w test:stories` and `pnpm -w test:stories:deterministic`.
-
-The root deterministic MCP story command is `pnpm -w test:stories:mcp`.
-
-The root opt-in real Codex preflight command is `pnpm -w test:stories:real-codex`.
-
-The root opt-in real provider command is `pnpm -w test:stories:real-provider`.
-
-The root opt-in real Task Mode worker command is `pnpm -w test:stories:real-task-mode`.
-
-The Web package story command is `pnpm --filter @openkit/web e2e:stories`.
-
-The current deterministic Web story starts a local stack, creates a workspace, creates a thread, sends a simulated turn, grants an approval, answers a question, opens an artifact, and verifies diagnostics redaction.
-
-The current deterministic Goal Mode MCP story builds the required packages, starts a temporary NanoCore plus MCP stdio server through the existing smoke harness, reads status and diagnostics, links a disposable repository, creates a thread, starts Goal Mode, drafts and approves a plan, runs one bounded step, resolves deterministic approval or question gates, verifies that manual evidence-bundle creation is absent, reads the general evidence-bundle resource without creating a bundle, and reads the produced artifact when present.
-
-The current deterministic Task Mode, Chat Mode, workspace portability, and recovery MCP stories exercise the same public AI Interface path for Task escalation, knowledge-backed Chat answers, Goal handoff, workspace export/import, repository re-binding, lineage evidence, recovery controls, and redaction checks.
-
-The current implementation deliberately does not call an external AI model.
-
-It exists to prove the story artifact, parser, execution entrypoint, isolated environment, report attachment, and CI/manual wiring before the agentic executor is added.
-
-The current real Codex and real Task Mode worker stories are agentic-only and opt-in.
-The real Codex Goal runner executes the full opt-in Goal workflow after secure metadata, quota, repository, and evidence preflight and writes bounded result and redaction evidence.
-The real Task Mode worker runner executes the full opt-in Task workflow after equivalent secure preflight and writes bounded result and redaction evidence.
-Neither runs in default gates or consumes real worker or host-side resources unless the operator explicitly enables it.
-
-The current pi-ai real-provider story is opt-in and quota-gated.
-Its runner validates story metadata, explicit provider opt-in, target NanoCore URL, provider configuration, evidence output, capability usage evidence, and redaction checks.
-It remains separate from default deterministic L6 gates.
-
-## Proposed Agentic Runner Shape
-
-A future agentic runner should treat the story Markdown as the primary instruction contract.
-
-It should have a small CLI entrypoint such as `pnpm -w test:stories:agentic -- --story tests/stories/<id>.story.md`.
-
-It should support a dry-run mode that validates metadata and prints required environment capabilities without opening a browser.
-
-It should support an evidence directory argument for local and CI artifact collection.
-
-It should reject real-provider and real-Codex stories unless the matching explicit opt-in flags are present.
-
-It should write a machine-readable result file with story id, executor, environment, started time, duration, status, assertion results, evidence paths, and triage classification.
-
-It should write a human-readable Markdown report with observations, screenshots or trace links, suspected issue layer, and recommended regression target.
-
-It should use the existing deterministic metadata parser unless the schema evolves enough to justify a package-local parser module.
-
-It should reuse the existing isolated Web/NanoCore stack helper where possible for local stories.
-
-It should avoid generating committed deterministic adapters during normal execution.
-
-If the agent identifies a story that should become deterministic, it should propose or implement that adapter as a normal code change with tests and review, not as a side effect of the story run.
-
-## Story Authoring Guidelines
-
-Write stories from the user's perspective.
-
-Keep implementation details out of the user-visible steps.
-
-Name visible controls, visible states, expected text, and required artifacts when those names are part of the product contract.
-
-Use setup sections for technical environment details.
-
-Use deterministic assertions for anything that should affect pass/fail.
-
-Use subjective findings for workflow quality, confusion, recoverability, and product-intent observations.
-
-Prefer one complete user intent per story.
-
-Split a story when the setup, persona, environment, or failure triage would become unclear.
-
-Keep long stories checkpointed rather than artificially short.
-
-Do not put real credentials, real secrets, or private account data in story files.
-
-Do not encode fragile pixel positions or layout assumptions unless the story is specifically about visual layout.
-
-## Example Agentic Story Skeleton
-
-```markdown
----
-id: story-web-agentic-release-review
-title: Review a release-candidate workflow from the Web UI
-persona: Product evaluator validating a release candidate
-entrypoint: web
-default_tool: playwright
-timeout_seconds: 900
-requires_real_provider: false
-requires_real_codex: false
----
-
-# Review A Release-Candidate Workflow From The Web UI
-
-## Purpose
-
-Verify that a product evaluator can complete the full local OpenKit workflow from workspace creation through artifact inspection and diagnostics review without relying on hidden implementation shortcuts.
-
-## Preconditions
-
-- NanoCore can boot with a disposable data root.
-- Web can boot against the NanoCore instance.
-- The deterministic self-check executor is enabled.
-
-## Setup
-
-- Start NanoCore in local mode with a temporary data root.
-- Start Web against that NanoCore instance.
-- Use a fresh browser context.
-
-## User-visible Steps
-
-1. Open the Web UI root route.
-2. Create a workspace for the release-candidate review.
-3. Create a thread for the review task.
-4. Submit a self-check task that should exercise approvals, questions, output, and artifact creation.
-5. Respond to every user-facing gate through the UI.
-6. Inspect the produced artifact.
-7. Open diagnostics and review visible health and redaction states.
-
-## Checkpoints
-
-- Workspace creation is visible.
-- Thread dashboard is visible.
-- The turn enters a running or streamed state.
-- Approval UI is visible and can be granted.
-- Question UI is visible and can be answered.
-- Artifact view is reachable.
-- Diagnostics view is reachable and redacted.
-
-## Deterministic Assertions
-
-- The workspace name is visible.
-- The thread title is visible.
-- The turn reaches a terminal success state.
-- The artifact view renders the answer supplied by the evaluator.
-- Diagnostics do not contain raw secret markers.
-
-## Evidence To Collect
-
-- Browser trace on failure.
-- Screenshots at each checkpoint.
-- Agent transcript.
-- Assertion summary.
-- Redacted server logs.
-
-## Cleanup
-
-- Stop Web and NanoCore.
-- Remove the temporary data root.
-
-## Failure Triage Notes
-
-Reduce confirmed deterministic failures into L1-L5 regression tests and keep subjective workflow findings as product follow-up items.
-```
-
-## Risks And Mitigations
-
-Risk: Agentic stories become non-reproducible narrative reports.
-
-Mitigation: Require versioned stories, constrained tools, deterministic assertions, checkpoint evidence, and structured result files.
-
-Risk: L6 duplicates L4 Web e2e.
-
-Mitigation: Keep L4 focused on stable browser regression paths and keep L6 focused on realistic product intent, long workflows, exploratory acceptance, and agent judgement.
-
-Risk: Agentic execution hides real bugs by adapting too much.
-
-Mitigation: Require explicit pass/fail oracles, record deviations, and fail when the product blocks a required user-visible path.
-
-Risk: Story files become vague prompts.
-
-Mitigation: Enforce metadata validation, required body sections, checkpoints for long stories, and evidence requirements.
-
-Risk: Real provider or real Codex stories consume quota or leak host state.
-
-Mitigation: Gate them with explicit metadata and opt-in flags, keep them out of default CI, and record their evidence separately.
-
-Risk: Deterministic adapters become expensive to maintain.
-
-Mitigation: Convert only stable, high-value stories; keep most exploratory long flows agentic; move smaller known regressions down to L1-L5.
-
-Risk: L6 failures do not lead to durable fixes.
-
-Mitigation: Require defect reduction into the lowest practical deterministic layer before closing confirmed product bugs.
-
-## Rollout Plan
-
-1. Keep the current deterministic story runner as the smoke test for the L6 infrastructure itself.
-2. Replace every user-facing MCP story and runner with equivalent or stronger unified Skill and bundled CLI coverage, then delete the legacy files and command.
-3. Add a story catalog or metadata report when the number of stories grows beyond what directory naming makes obvious.
-4. Add one agentic executor prototype that can run a single story manually and write structured evidence.
-5. Keep the current real Codex Goal Mode story as the first agentic-only long workflow and add one or two additional agentic-only stories only when they have clear evidence value.
-6. Review the evidence quality and flake rate before scheduling any agentic story automation.
-7. Promote only stable and cheap L6 stories into deterministic adapters or explicit release-candidate manual gates.
-8. Keep updating `docs/specs/20260529-test_strategy.md` only for the high-level layer policy and keep detailed L6 behavior in this spec.
-
-## Resolved Decisions
-
-- The first long agentic-only workflow is the opt-in real Codex Goal Mode release-validation story; additional agentic-only stories should be selected by risk, workflow length, evidence value, and inability to express the flow cheaply as deterministic Playwright.
-- Do not add an explicit `executor` metadata field until the first agentic runner or story catalog needs it; when added, update all committed stories, parser tests, and adapters in the same change.
-- Agentic runs should produce both a machine-readable JSON result and a human-readable Markdown report; Playwright or browser attachments are supporting evidence, not the primary result contract.
-- Manual local runs require the baseline evidence profile: story version, assertion summary, transcript when agentic, redaction notes, and any available browser or server failure artifacts.
-- Release-candidate, staging, real-provider, or real-Codex runs require a stronger evidence profile: checkpoint screenshots or traces when available, server logs, selected protocol or item history, artifact references, environment opt-in record, final state summary, and explicit secret-redaction scan notes.
-- Selected agentic stories remain manual until the executor proves stable, cheap, and low-flake; scheduled or release-candidate automation may be introduced only for a constrained story subset with stable evidence and a stop rule for repeated flakes.
-
-## Deferred Work
-
-- Add the first agentic executor prototype that can run one story manually and write the JSON plus Markdown result files.
-- Add an `executor`, `risk`, `tags`, `environment`, or `evidence_profile` metadata extension only when story selection or execution routing needs it.
-- Add a story catalog or metadata report when directory naming no longer makes story state and execution mode obvious.
+These questions create no current implementation or test obligation. A future proposal must begin with evidence from repeated real runs and identify what existing owner cannot meet the need.
 
 ## Related Docs
 
@@ -651,9 +222,4 @@ Mitigation: Require defect reduction into the lowest practical deterministic lay
 - `docs/specs/20260713-openkit_agent_skill_interface.md`
 - `tests/stories/README.md`
 - `tests/story-runner/README.md`
-- `tests/stories/openkit-local-self-check.story.md`
-- `tests/stories/goal-mode-real-codex-release.story.md`
-- `tests/story-runner/real-codex-goal-mode-runner.mjs`
-- `apps/web/playwright.stories.config.ts`
 - `README.md`
-- `apps/web/README.md`

@@ -1,44 +1,24 @@
-import { randomUUID } from 'node:crypto';
-
 import {
-  CancelRecoveryPendingUserTurnResponseSchema,
-  ClearInterruptedWorkerCheckpointRequestSchema,
-  ClearInterruptedWorkerCheckpointResponseSchema,
-  ConvertRecoveryPendingUserTurnToFollowUpResponseSchema,
-  CreateInterruptedRecoveryStateResponseSchema,
-  EditRecoveryPendingUserTurnRequestSchema,
-  EditRecoveryPendingUserTurnResponseSchema,
   ListInterruptedWorkerStatesResponseSchema,
-  ListRecoveryPendingUserTurnsResponseSchema,
-  PromoteRecoveryPendingUserTurnToInterruptResponseSchema,
+  RetryInterruptedWorkerCheckpointRequestSchema,
+  type RetryInterruptedWorkerCheckpointResponse,
   RetryInterruptedWorkerCheckpointResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
 
-import { asApiError, asInvalidRequestError } from '../api-errors.js';
+import { asApiError, asCommandError, asInvalidRequestError } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import type { FsStore } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
-import { completeSchedulerLeaseForTerminalTurn } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
-import { getGoalRecord, listGoalTasks, updateGoalStatus, updateGoalTask } from './goal-store.js';
-import {
-  cancelPendingUserTurn,
-  convertPendingUserTurnToFollowUp,
-  enqueuePendingUserTurn,
-  listPendingUserTurns,
-  promotePendingUserTurnToInterrupt,
-  recordPendingUserTurnEditedAuditEvent,
-} from './pending-user-turns.js';
-import type { TurnExecutor } from './types.js';
-import {
-  getWorkerCheckpoint,
-  updateWorkerCheckpoint,
-  upsertWorkerCheckpoint,
-} from './worker-checkpoints.js';
+import { updateGoalStatus, updateGoalTask } from './goal-store.js';
+import { commandInputHash, IdempotencyKeyConflictError } from './idempotent-command.js';
+import { TurnStartValidationError } from './orchestrator.js';
+import { updateWorkerCheckpoint } from './worker-checkpoints.js';
 import {
   clearWorkerCheckpointAfterTerminalState,
   materializeInterruptedWorkerStates,
+  resolveInterruptedWorkerRetryDecision,
 } from './worker-recovery.js';
 
 /**
@@ -51,91 +31,17 @@ export function registerWorkerRecoveryRoutes({
   coreDb,
   repositoryWorkspaceDb,
   requestStore,
-  turnExecutor,
   visibleWorkspacesForActor,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
   readonly repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
-  readonly turnExecutor: TurnExecutor;
   readonly visibleWorkspacesForActor: (
     actor: AuthVariables['actor'] | undefined,
     workspaces: ReturnType<FsStore['listWorkspaces']>
   ) => ReturnType<FsStore['listWorkspaces']>;
 }): void {
-  registerAppApiRoute(app, 'createInterruptedRecoveryState', (c) => {
-    try {
-      const workspaceId = c.req.param('workspaceId');
-      const threadId = c.req.param('threadId');
-      const store = requestStore(c);
-
-      store.getWorkspace(workspaceId);
-      store.getThread(workspaceId, threadId);
-
-      if (!coreDb) {
-        return asApiError(
-          'Recovery storage is unavailable for this NanoCore instance.',
-          'recovery_storage_unavailable',
-          503
-        );
-      }
-
-      const turn = store.createTurn(workspaceId, threadId, 'Deterministic interrupted worker');
-      const timestamp = turn.startedAt ?? new Date().toISOString();
-      const pendingItem = store.createItem({
-        id: `it_recovery_pending_${turn.id}`,
-        workspaceId,
-        threadId,
-        turnId: turn.id,
-        type: 'user-message',
-        status: 'completed',
-        text: 'Pending input preserved across restart.',
-        createdAt: timestamp,
-        completedAt: timestamp,
-      });
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-      let checkpoint: ReturnType<typeof upsertWorkerCheckpoint>;
-      let pendingUserTurn: ReturnType<typeof enqueuePendingUserTurn>;
-      try {
-        checkpoint = upsertWorkerCheckpoint(workspaceDb, {
-          workspaceId,
-          threadId,
-          turnId: turn.id,
-          stage: 'running_worker',
-          iteration: 1,
-          workerSessionId: 'deterministic-worker',
-          contextDigest: `deterministic:${turn.id}`,
-          diagnosticsSummary: 'Deterministic worker interrupted before terminal save.',
-          now: () => timestamp,
-        });
-        pendingUserTurn = enqueuePendingUserTurn(workspaceDb, {
-          workspaceId,
-          threadId,
-          requestId: `req_${turn.id}`,
-          contentItemId: pendingItem.id,
-          queueMode: 'safe_point_steering',
-          receivedAt: timestamp,
-        });
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-
-      return c.json(
-        CreateInterruptedRecoveryStateResponseSchema.parse({
-          checkpoint: {
-            checkpointId: checkpoint.checkpointId,
-            turnId: checkpoint.turnId,
-            stage: checkpoint.stage,
-          },
-          pendingUserTurn,
-        })
-      );
-    } catch (error) {
-      return asApiError((error as Error).message, 'recovery_seed_failed', 400);
-    }
-  });
-
   registerAppApiRoute(app, 'listInterruptedWorkers', (c) => {
     try {
       if (!coreDb) {
@@ -154,7 +60,7 @@ export function registerWorkerRecoveryRoutes({
             (workspace) => {
               const workspaceDb = repositoryWorkspaceDb(store, workspace.id);
               try {
-                return materializeInterruptedWorkerStates(workspaceDb);
+                return materializeInterruptedWorkerStates(coreDb, store, workspaceDb);
               } finally {
                 workspaceDb.sqlite.close();
               }
@@ -167,275 +73,14 @@ export function registerWorkerRecoveryRoutes({
     }
   });
 
-  registerAppApiRoute(app, 'listRecoveryPendingUserTurns', (c) => {
-    try {
-      const workspaceId = c.req.param('workspaceId');
-      const threadId = c.req.param('threadId');
-      const store = requestStore(c);
-
-      store.getWorkspace(workspaceId);
-      store.getThread(workspaceId, threadId);
-
-      if (!coreDb) {
-        return asApiError(
-          'Recovery storage is unavailable for this NanoCore instance.',
-          'recovery_storage_unavailable',
-          503
-        );
-      }
-
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-      try {
-        return c.json(
-          ListRecoveryPendingUserTurnsResponseSchema.parse({
-            items: listPendingUserTurns(workspaceDb, { workspaceId, threadId }),
-          })
-        );
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-    } catch (error) {
-      return asApiError((error as Error).message, 'recovery_pending_user_turns_failed', 400);
-    }
-  });
-
-  registerAppApiRoute(app, 'editRecoveryPendingUserTurn', async (c) => {
-    const parsed = EditRecoveryPendingUserTurnRequestSchema.safeParse(
+  registerAppApiRoute(app, 'retryInterruptedWorkerCheckpoint', async (c) => {
+    const parsed = RetryInterruptedWorkerCheckpointRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
-
     if (!parsed.success) {
       return asInvalidRequestError(parsed.error);
     }
 
-    try {
-      const workspaceId = c.req.param('workspaceId');
-      const threadId = c.req.param('threadId');
-      const requestId = c.req.param('requestId');
-      const store = requestStore(c);
-
-      store.getWorkspace(workspaceId);
-      store.getThread(workspaceId, threadId);
-
-      if (!coreDb) {
-        return asApiError(
-          'Recovery storage is unavailable for this NanoCore instance.',
-          'recovery_storage_unavailable',
-          503
-        );
-      }
-
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-      try {
-        const pendingTurn =
-          listPendingUserTurns(workspaceDb, { workspaceId, threadId }).find(
-            (turn) => turn.requestId === requestId
-          ) ?? null;
-
-        if (!pendingTurn) {
-          return c.json(
-            EditRecoveryPendingUserTurnResponseSchema.parse({ edited: false, item: null })
-          );
-        }
-
-        if (!pendingTurn.contentItemId) {
-          return asApiError(
-            'Pending user turn does not reference an editable item.',
-            'recovery_pending_user_turn_edit_unsupported',
-            409
-          );
-        }
-
-        const item = store
-          .listThreadItems(workspaceId, threadId)
-          .find((candidate) => candidate.id === pendingTurn.contentItemId);
-
-        if (!item || item.type !== 'user-message') {
-          return asApiError(
-            'Pending user turn does not reference an editable user message.',
-            'recovery_pending_user_turn_edit_unsupported',
-            409
-          );
-        }
-
-        const updated = store.updateItem(item.id, {
-          text: parsed.data.text,
-        });
-        recordPendingUserTurnEditedAuditEvent(workspaceDb, pendingTurn);
-
-        return c.json(
-          EditRecoveryPendingUserTurnResponseSchema.parse({ edited: true, item: updated })
-        );
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-    } catch (error) {
-      return asApiError((error as Error).message, 'recovery_pending_user_turn_edit_failed', 400);
-    }
-  });
-
-  registerAppApiRoute(app, 'convertRecoveryPendingUserTurnToFollowUp', (c) => {
-    try {
-      const workspaceId = c.req.param('workspaceId');
-      const threadId = c.req.param('threadId');
-      const requestId = c.req.param('requestId');
-      const store = requestStore(c);
-
-      store.getWorkspace(workspaceId);
-      store.getThread(workspaceId, threadId);
-
-      if (!coreDb) {
-        return asApiError(
-          'Recovery storage is unavailable for this NanoCore instance.',
-          'recovery_storage_unavailable',
-          503
-        );
-      }
-
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-      try {
-        const pendingUserTurn = convertPendingUserTurnToFollowUp(workspaceDb, {
-          requestId,
-          threadId,
-          workspaceId,
-        });
-
-        return c.json(
-          ConvertRecoveryPendingUserTurnToFollowUpResponseSchema.parse({
-            converted: Boolean(pendingUserTurn),
-            pendingUserTurn,
-          })
-        );
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-    } catch (error) {
-      return asApiError(
-        (error as Error).message,
-        'recovery_pending_user_turn_follow_up_failed',
-        400
-      );
-    }
-  });
-
-  registerAppApiRoute(app, 'promoteRecoveryPendingUserTurnToInterrupt', async (c) => {
-    try {
-      const workspaceId = c.req.param('workspaceId');
-      const threadId = c.req.param('threadId');
-      const requestId = c.req.param('requestId');
-      const store = requestStore(c);
-
-      store.getWorkspace(workspaceId);
-      store.getThread(workspaceId, threadId);
-
-      if (!coreDb) {
-        return asApiError(
-          'Recovery storage is unavailable for this NanoCore instance.',
-          'recovery_storage_unavailable',
-          503
-        );
-      }
-
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-      try {
-        const pendingTurn =
-          listPendingUserTurns(workspaceDb, { workspaceId, threadId }).find(
-            (turn) => turn.requestId === requestId
-          ) ?? null;
-
-        if (!pendingTurn) {
-          return c.json(
-            PromoteRecoveryPendingUserTurnToInterruptResponseSchema.parse({
-              promoted: false,
-              turn: null,
-            })
-          );
-        }
-
-        const activeTurn =
-          [...store.listThreadTurns(workspaceId, threadId)]
-            .reverse()
-            .find((turn) => turn.status === 'pending' || turn.status === 'running') ?? null;
-
-        if (!activeTurn) {
-          return asApiError(
-            'Thread has no active turn to interrupt.',
-            'recovery_pending_user_turn_interrupt_unavailable',
-            409
-          );
-        }
-
-        if (!turnExecutor.capabilities.interrupts) {
-          return asApiError(
-            'The active turn executor does not support interruption.',
-            'interrupts_not_supported',
-            501
-          );
-        }
-
-        await turnExecutor.interruptTurn(store, activeTurn.id, { requestId: randomUUID() });
-        const interruptedTurn = store.getTurn(workspaceId, threadId, activeTurn.id);
-        completeSchedulerLeaseForTerminalTurn(coreDb, interruptedTurn);
-        const promoted = promotePendingUserTurnToInterrupt(workspaceDb, {
-          requestId,
-          threadId,
-          workspaceId,
-        });
-
-        return c.json(
-          PromoteRecoveryPendingUserTurnToInterruptResponseSchema.parse({
-            promoted: Boolean(promoted),
-            turn: interruptedTurn,
-          })
-        );
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-    } catch (error) {
-      return asApiError(
-        (error as Error).message,
-        'recovery_pending_user_turn_interrupt_failed',
-        400
-      );
-    }
-  });
-
-  registerAppApiRoute(app, 'cancelRecoveryPendingUserTurn', (c) => {
-    try {
-      const workspaceId = c.req.param('workspaceId');
-      const threadId = c.req.param('threadId');
-      const requestId = c.req.param('requestId');
-      const store = requestStore(c);
-
-      store.getWorkspace(workspaceId);
-      store.getThread(workspaceId, threadId);
-
-      if (!coreDb) {
-        return asApiError(
-          'Recovery storage is unavailable for this NanoCore instance.',
-          'recovery_storage_unavailable',
-          503
-        );
-      }
-
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-      try {
-        return c.json(
-          CancelRecoveryPendingUserTurnResponseSchema.parse({
-            cancelled: Boolean(
-              cancelPendingUserTurn(workspaceDb, { requestId, threadId, workspaceId })
-            ),
-          })
-        );
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-    } catch (error) {
-      return asApiError((error as Error).message, 'recovery_pending_user_turn_cancel_failed', 400);
-    }
-  });
-
-  registerAppApiRoute(app, 'retryInterruptedWorkerCheckpoint', async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       const threadId = c.req.param('threadId');
@@ -455,134 +100,182 @@ export function registerWorkerRecoveryRoutes({
 
       const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
       try {
-        const checkpoint = getWorkerCheckpoint(workspaceDb, workspaceId, threadId, turnId);
-
-        if (!checkpoint) {
-          return c.json(
-            RetryInterruptedWorkerCheckpointResponseSchema.parse({
-              retried: false,
-              turn: null,
-            })
-          );
-        }
-
-        if (
-          checkpoint.goalId &&
-          checkpoint.taskId &&
-          (!getGoalRecord(workspaceDb, workspaceId, threadId, checkpoint.goalId) ||
-            !listGoalTasks(workspaceDb, {
-              goalId: checkpoint.goalId,
-              threadId,
-              workspaceId,
-            }).some((task) => task.taskId === checkpoint.taskId))
-        ) {
-          return asApiError(
-            'Interrupted worker checkpoint has missing goal task lineage.',
-            'recovery_retry_lineage_unavailable',
-            409
-          );
-        }
-
-        const now = new Date().toISOString();
-        const turn = store.updateTurn(turnId, {
-          completedAt: now,
-          error: {
-            code: 'worker_checkpoint_retry',
-            message: 'Interrupted worker checkpoint was queued for retry.',
-          },
-          status: 'interrupted',
-        });
-
-        updateWorkerCheckpoint(workspaceDb, {
-          diagnosticsSummary: 'Interrupted worker checkpoint queued for retry.',
-          stage: 'aborted',
-          stopReason: 'aborted',
+        const response = runInterruptedWorkerRetryCommand({
+          coreDb,
+          requestId: parsed.data.requestId,
+          store,
           threadId,
           turnId,
+          workspaceDb,
           workspaceId,
         });
-
-        if (checkpoint.goalId && checkpoint.taskId) {
-          updateGoalTask(workspaceDb, {
-            goalId: checkpoint.goalId,
-            status: 'ready',
-            taskId: checkpoint.taskId,
-            threadId,
-            workspaceId,
-          });
-          updateGoalStatus(workspaceDb, {
-            currentTaskId: checkpoint.taskId,
-            goalId: checkpoint.goalId,
-            status: 'running',
-            threadId,
-            workspaceId,
-          });
-        }
 
         await clearWorkerCheckpointAfterTerminalState(workspaceDb, {
-          terminalStage: 'aborted',
           threadId,
           turnId,
           workspaceId,
         });
 
-        return c.json(
-          RetryInterruptedWorkerCheckpointResponseSchema.parse({
-            retried: true,
-            turn,
-          })
-        );
+        return c.json(response);
       } finally {
         workspaceDb.sqlite.close();
       }
     } catch (error) {
-      return asApiError((error as Error).message, 'recovery_retry_failed', 400);
+      return asCommandError(error, 'recovery_retry_failed', 400);
     }
   });
+}
 
-  registerAppApiRoute(app, 'clearInterruptedWorkerCheckpoint', async (c) => {
-    const parsed = ClearInterruptedWorkerCheckpointRequestSchema.safeParse(
-      await c.req.json().catch(() => ({}))
+/**
+ * Atomically releases one authoritatively interrupted attempt for a later fresh start.
+ *
+ * @param input Existing authority stores, exact lineage, and caller request identity.
+ * @returns Stable release result for fresh execution and exact replay.
+ * @throws IdempotencyKeyConflictError when the request identity conflicts.
+ * @throws TurnStartValidationError when reconnect or recovery authority forbids retry.
+ */
+function runInterruptedWorkerRetryCommand(input: {
+  readonly coreDb: CoreDb;
+  readonly requestId: string;
+  readonly store: FsStore;
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly workspaceDb: WorkspaceDb;
+  readonly workspaceId: string;
+}): RetryInterruptedWorkerCheckpointResponse {
+  const command = 'worker.recovery.retry' as const;
+  const scope = {
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    turnId: input.turnId,
+  };
+  const inputHash = commandInputHash({});
+
+  return input.workspaceDb.sqlite.transaction(() => {
+    const receipt = input.store.getCommandRequest(
+      command,
+      input.requestId,
+      scope,
+      input.workspaceDb
     );
-
-    if (!parsed.success) {
-      return asInvalidRequestError(parsed.error);
+    if (receipt) {
+      if (receipt.inputHash !== inputHash) {
+        throw new IdempotencyKeyConflictError();
+      }
+      if (
+        receipt.command !== command ||
+        receipt.requestId !== input.requestId ||
+        receipt.scope.workspaceId !== input.workspaceId ||
+        receipt.scope.threadId !== input.threadId ||
+        receipt.scope.turnId !== input.turnId ||
+        Object.keys(receipt.scope).length !== 3 ||
+        receipt.response.kind !== 'turn' ||
+        receipt.response.id !== input.turnId ||
+        receipt.response.snapshot !== undefined
+      ) {
+        throw retryRecoveryRequired('Interrupted-worker retry receipt has invalid lineage.');
+      }
+      assertInterruptedTurn(input.store, input.workspaceId, input.threadId, input.turnId);
+      return RetryInterruptedWorkerCheckpointResponseSchema.parse({
+        outcome: 'released_for_retry',
+        turnId: input.turnId,
+      });
     }
 
-    try {
-      const workspaceId = c.req.param('workspaceId');
-      const threadId = c.req.param('threadId');
-      const turnId = c.req.param('turnId');
-      const store = requestStore(c);
-
-      store.getWorkspace(workspaceId);
-      store.getThread(workspaceId, threadId);
-
-      if (!coreDb) {
-        return asApiError(
-          'Recovery storage is unavailable for this NanoCore instance.',
-          'recovery_storage_unavailable',
-          503
-        );
+    const decision = resolveInterruptedWorkerRetryDecision(
+      input.coreDb,
+      input.store,
+      input.workspaceDb,
+      {
+        workspaceId: input.workspaceId,
+        threadId: input.threadId,
+        turnId: input.turnId,
       }
-
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
-      try {
-        return c.json(
-          ClearInterruptedWorkerCheckpointResponseSchema.parse({
-            cleared: await clearWorkerCheckpointAfterTerminalState(workspaceDb, {
-              workspaceId,
-              threadId,
-              turnId,
-              terminalStage: parsed.data.terminalStage,
-            }),
-          })
-        );
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-    } catch (error) {
-      return asApiError((error as Error).message, 'recovery_clear_failed', 400);
+    );
+    if (decision.status === 'reconnect-pending') {
+      throw new TurnStartValidationError(
+        'worker_reconnect_pending',
+        'The original worker still owns an active reconnect window.',
+        409
+      );
     }
-  });
+    if (decision.status === 'stale') {
+      throw new TurnStartValidationError(
+        'worker_recovery_stale',
+        'The original worker attempt is no longer eligible for retry.',
+        409
+      );
+    }
+    if (decision.status !== 'eligible' || !decision.checkpoint) {
+      throw retryRecoveryRequired(
+        'Interrupted-worker cleanup or continuation authority is incomplete.'
+      );
+    }
+
+    const checkpoint = decision.checkpoint;
+    updateWorkerCheckpoint(input.workspaceDb, {
+      diagnosticsSummary: 'Interrupted worker attempt released for a later fresh start.',
+      stage: 'aborted',
+      stopReason: 'aborted',
+      threadId: input.threadId,
+      turnId: input.turnId,
+      workspaceId: input.workspaceId,
+    });
+
+    if (checkpoint.goalId && checkpoint.taskId) {
+      updateGoalTask(input.workspaceDb, {
+        goalId: checkpoint.goalId,
+        status: 'ready',
+        taskId: checkpoint.taskId,
+        threadId: input.threadId,
+        workspaceId: input.workspaceId,
+      });
+      updateGoalStatus(input.workspaceDb, {
+        currentTaskId: null,
+        goalId: checkpoint.goalId,
+        status: 'running',
+        threadId: input.threadId,
+        workspaceId: input.workspaceId,
+      });
+    }
+
+    input.store.recordCommandRequest(
+      {
+        command,
+        inputHash,
+        requestId: input.requestId,
+        response: { id: input.turnId, kind: 'turn' },
+        scope,
+      },
+      input.workspaceDb
+    );
+    return RetryInterruptedWorkerCheckpointResponseSchema.parse({
+      outcome: 'released_for_retry',
+      turnId: input.turnId,
+    });
+  })();
+}
+
+/** Confirms that the command receipt still names the original interrupted Turn. */
+function assertInterruptedTurn(
+  store: FsStore,
+  workspaceId: string,
+  threadId: string,
+  turnId: string
+): void {
+  try {
+    if (store.getTurn(workspaceId, threadId, turnId).status !== 'interrupted') {
+      throw retryRecoveryRequired('Interrupted-worker retry Turn is no longer interrupted.');
+    }
+  } catch (error) {
+    if (error instanceof TurnStartValidationError) {
+      throw error;
+    }
+    throw retryRecoveryRequired('Interrupted-worker retry Turn is unavailable.');
+  }
+}
+
+/** Creates the stable fail-closed error for incomplete retry authority. */
+function retryRecoveryRequired(message: string): TurnStartValidationError {
+  return new TurnStartValidationError('recovery_required', message, 409);
 }

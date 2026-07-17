@@ -12,6 +12,12 @@ The implementation goal is deliberately narrower than the complete taxonomy. The
 
 This record starts with documentation authority and implementation planning. No behavior change is included in the initial documentation checkpoint.
 
+## Absorbed G01 Evictions (2026-07-17)
+
+This plan is work package WP-4 of the [OpenKit Execution Program](./202607172152230001-openkit_execution_program.md). The alignment audit's G01 closeout evicted these items here per the program eviction map: the S16 Material identity, immutable revision, Thread binding, inclusion queue, reads, typed expected-base rejection, restart, and portable-export slice; the S39 Context Package trace, Goal steering delivery, and `lastWorkerSeenRevisionId`; the exact Artifact command surface (introduction, workspace-only import, deterministic refine and redo); Material worker proposal and conflict-safe writeback implementation after the WP-3 G05/C09 owner decision; and the final projections plus minimal acceptance for those items.
+
+The program's convergence rules bind all work here. G01's accepted contract decisions recorded in the audit checkpoints (Material command shapes, steering serialization, fail-closed delivery predicates, Artifact authority tuples) are design inputs to reuse, not targets to reopen.
+
 ## Decision Summary
 
 - The product posture is delegate by default, collaborate on demand, and govern throughout.
@@ -118,10 +124,10 @@ This record starts with documentation authority and implementation planning. No 
 - Core already defines Artifact as a durable user-visible output and keeps Artifact events item-backed.
 - Core communication already separates Control, Workspace, Artifact, and Capability planes.
 - Core requires accepted Steering Input to have one owning delivery path and authoritative outcome without prescribing adapter mechanics.
-- NanoCore already exposes human attention through approval, elicitation, steering, review, and Action Center projections.
+- NanoCore already exposes human attention through approval, elicitation, review, and Action Center projections; the Goal steering route is reserved but accepts nothing until its delivery owner exists.
 - The generic direct-Turn path now returns typed `thread_busy` before recording implicit input when another Turn owns the Thread.
 - Goal steering now fails closed with `goal_steering_delivery_unavailable`, creates no business records, and has no Web submission control because the real worker launch receives only the objective and cannot persist the generic immutable Context Package trace required for delivery proof.
-- Generic queue selection retains pending rows rather than deleting them before proof; Goal-specific pending ownership, replay, terminal conversion, and cancellation remain unimplemented rather than being simulated through the generic recovery path.
+- The former generic queue, pending rows, recovery actions, public seed, and dedicated recovery runner have been deleted; Goal-specific pending ownership, replay, terminal conversion, and cancellation remain unimplemented rather than being simulated through a Thread-scoped recovery path.
 - Turn-bound Artifact creation and revision maintain one exact versioned `artifact-reference` Item, handled write failures restore prior state, and refinement or redo rejects an unrelated active Turn before claiming the review. Workspace-only import or registration provenance and explicit introduction into a Thread remain unimplemented S16 work.
 - Knowledge-specific Context Packages support workspace files, Artifacts, Knowledge, Sources, content digests, selection traces, materialization, and replay, but the generic worker-Turn `context-package.json` owner remains S39 work.
 - Workspace Synchronization already owns input snapshots, worker materialization, change sets, staged review, preflight, conflict detection, apply, evidence, and recovery.
@@ -168,7 +174,7 @@ This record starts with documentation authority and implementation planning. No 
 - Freeze queued revisions during turn acceptance.
 - Materialize the exact content and digest into the Context Package and worker workspace.
 - Include a delta or summary from the last worker-seen revision when useful without replacing the full selected revision.
-- Implement `Send now` through the existing Goal pending-input owner and accepted Context Package proof; return typed busy for a direct Turn with no delivery owner.
+- Implement `Send now` only after the exact Goal pending-input owner and accepted Context Package proof defined by S16 exist; return typed busy for a direct Turn with no delivery owner.
 - Keep later saves queued and never rewrite the running turn's initial Context Package.
 
 ### Stage 4: Worker proposal and conflict-safe apply

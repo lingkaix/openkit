@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { createStructuredWorkerDelegationRequest } from './delegation.js';
+import {
+  createStructuredWorkerDelegationRequest,
+  StructuredWorkerDelegationRequestSchema,
+} from './delegation.js';
 
 describe('structured worker delegation requests', () => {
   it('creates a structured app-local worker delegation request', () => {
@@ -11,6 +14,13 @@ describe('structured worker delegation requests', () => {
         { kind: 'workspace', id: 'ws_demo' },
         { kind: 'thread', id: 'th_demo' },
       ],
+      resources: [
+        {
+          kind: 'repository',
+          reference: 'linked workspace repository',
+          reason: 'The task changes repository code.',
+        },
+      ],
       expectedArtifacts: [
         {
           kind: 'code-change',
@@ -20,8 +30,6 @@ describe('structured worker delegation requests', () => {
       constraints: {
         maxContextTokens: 12_000,
         maxWorkerIterations: 1,
-        requiresUserConfirmation: true,
-        stopConditions: ['Stop if repository setup is invalid.'],
       },
       verification: [
         {
@@ -33,24 +41,53 @@ describe('structured worker delegation requests', () => {
       ],
       reviewPolicy: {
         required: true,
-        reviewers: ['human', 'internal'],
+        reviewers: ['human'],
         instructions: 'Review the diff and test output before continuing.',
       },
+      escalationConditions: ['Escalate if repository setup is invalid.'],
+      reviewContext: null,
     });
 
-    expect(request).toMatchObject({
+    expect(request).toEqual({
       schemaVersion: 1,
       objective: 'Fix the failing projection test.',
       acceptanceCriteria: ['The focused test passes.', 'No unrelated files are changed.'],
+      contextRefs: [
+        { kind: 'workspace', id: 'ws_demo' },
+        { kind: 'thread', id: 'th_demo' },
+      ],
+      resources: [
+        {
+          kind: 'repository',
+          reference: 'linked workspace repository',
+          reason: 'The task changes repository code.',
+        },
+      ],
+      expectedArtifacts: [
+        {
+          kind: 'code-change',
+          description: 'Patch implementing the projection fix.',
+        },
+      ],
       constraints: {
         maxContextTokens: 12_000,
         maxWorkerIterations: 1,
-        requiresUserConfirmation: true,
       },
+      verification: [
+        {
+          kind: 'command',
+          description: 'Run the focused projection test.',
+          command:
+            'pnpm --filter @openkit/nanocore exec vitest run src/context/llm-projection.test.ts',
+        },
+      ],
       reviewPolicy: {
         required: true,
-        reviewers: ['human', 'internal'],
+        reviewers: ['human'],
+        instructions: 'Review the diff and test output before continuing.',
       },
+      escalationConditions: ['Escalate if repository setup is invalid.'],
+      reviewContext: null,
     });
   });
 
@@ -60,12 +97,11 @@ describe('structured worker delegation requests', () => {
         objective: 'x',
         acceptanceCriteria: [],
         contextRefs: [{ kind: 'workspace', id: 'ws_demo' }],
+        resources: [],
         expectedArtifacts: [],
         constraints: {
           maxContextTokens: 240_001,
           maxWorkerIterations: 1,
-          requiresUserConfirmation: true,
-          stopConditions: [],
         },
         verification: [],
         reviewPolicy: {
@@ -73,7 +109,30 @@ describe('structured worker delegation requests', () => {
           reviewers: [],
           instructions: 'Review the work.',
         },
+        escalationConditions: [],
+        reviewContext: null,
       })
     ).toThrow();
+  });
+
+  it('rejects retired execution policy fields', () => {
+    expect(
+      StructuredWorkerDelegationRequestSchema.shape.constraints.safeParse({
+        maxContextTokens: 12_000,
+        maxWorkerIterations: 1,
+        requiresUserConfirmation: true,
+        stopConditions: ['Stop after one turn.'],
+      }).success
+    ).toBe(false);
+  });
+
+  it('rejects non-human review authority', () => {
+    expect(
+      StructuredWorkerDelegationRequestSchema.shape.reviewPolicy.safeParse({
+        required: true,
+        reviewers: ['internal'],
+        instructions: 'Review the work.',
+      }).success
+    ).toBe(false);
   });
 });

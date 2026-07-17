@@ -13,10 +13,6 @@ describe('worker turn stage model', () => {
       'preparing',
       'running_worker',
       'waiting_for_user',
-      'reviewing',
-      'verifying',
-      'saving',
-      'recovering',
       'completed',
       'failed',
       'aborted',
@@ -29,8 +25,8 @@ describe('worker turn stage model', () => {
       ['aborted', 'aborted'],
       ['ask_user', 'waiting_for_user'],
       ['error', 'failed'],
-      ['length', 'failed'],
-      ['budget_exhausted', 'failed'],
+      ['length', 'completed'],
+      ['budget_exhausted', 'completed'],
     ];
 
     for (const [stopReason, stage] of mappings) {

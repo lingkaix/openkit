@@ -3,7 +3,14 @@ import type { StopReason } from '@openkit/protocol';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import type { GoalRecordStatus, GoalTaskStatus } from '../storage/schema/index.js';
-import { type GoalPlanVerificationCheck, GoalPlanVerificationCheckSchema } from './goal-plan.js';
+import {
+  computeGoalPlanDigest,
+  type GoalPlanOutput,
+  GoalPlanOutputSchema,
+  type GoalPlanTask,
+  GoalPlanTaskSchema,
+  selectGoalPlanPayload,
+} from './goal-plan.js';
 
 /**
  * Callback used by goal store helpers to confirm app-local workspace ownership.
@@ -44,6 +51,26 @@ export interface GoalRecord {
 }
 
 /**
+ * Stored immutable app-local Goal Plan authority.
+ */
+export interface GoalPlanRecord extends GoalPlanOutput {
+  /** Workspace that owns the plan. */
+  readonly workspaceId: string;
+  /** Thread that owns the plan. */
+  readonly threadId: string;
+  /** Goal that owns the plan. */
+  readonly goalId: string;
+  /** Visible plan Item and immutable record id. */
+  readonly planItemId: string;
+  /** Canonical digest of the exact Plan payload. */
+  readonly planDigest: string;
+  /** Request that created the plan authority. */
+  readonly createdByRequestId: string;
+  /** ISO timestamp for plan creation. */
+  readonly createdAt: string;
+}
+
+/**
  * Stored app-local goal task record.
  */
 export interface GoalTaskRecord {
@@ -55,6 +82,8 @@ export interface GoalTaskRecord {
   readonly threadId: string;
   /** Goal that owns the task. */
   readonly goalId: string;
+  /** Immutable Goal Plan that supplied the task. */
+  readonly planItemId: string;
   /** Goal task lifecycle status. */
   readonly status: GoalTaskStatus;
   /** Human-readable task title. */
@@ -69,8 +98,16 @@ export interface GoalTaskRecord {
   readonly acceptanceCriteria: readonly string[];
   /** Estimated context budget in tokens for this task. */
   readonly contextBudgetTokens: number;
+  /** Exact semantic resource declarations for this task. */
+  readonly resources: GoalPlanTask['resources'];
+  /** Exact expected artifacts for this task. */
+  readonly expectedArtifacts: GoalPlanTask['expectedArtifacts'];
   /** Verification checks configured for this task. */
-  readonly verificationChecks: readonly GoalPlanVerificationCheck[];
+  readonly verificationChecks: GoalPlanTask['verificationChecks'];
+  /** Immutable human review policy for this task. */
+  readonly reviewPolicy: GoalPlanTask['reviewPolicy'];
+  /** Exact escalation conditions for this task. */
+  readonly escalationConditions: GoalPlanTask['escalationConditions'];
   /** ISO timestamp for task creation. */
   readonly createdAt: string;
   /** ISO timestamp for latest task update. */
@@ -92,11 +129,23 @@ interface GoalRecordRow {
   readonly updated_at: string;
 }
 
+interface GoalPlanRecordRow {
+  readonly workspace_id: string;
+  readonly thread_id: string;
+  readonly goal_id: string;
+  readonly plan_item_id: string;
+  readonly plan_digest: string;
+  readonly plan_json: string;
+  readonly created_by_request_id: string;
+  readonly created_at: string;
+}
+
 interface GoalTaskRow {
   readonly task_id: string;
   readonly workspace_id: string;
   readonly thread_id: string;
   readonly goal_id: string;
+  readonly plan_item_id: string;
   readonly status: GoalTaskStatus;
   readonly title: string;
   readonly objective: string;
@@ -104,7 +153,11 @@ interface GoalTaskRow {
   readonly depends_on_task_ids_json: string;
   readonly acceptance_criteria_json: string;
   readonly context_budget_tokens: number;
+  readonly resources_json: string;
+  readonly expected_artifacts_json: string;
   readonly verification_checks_json: string;
+  readonly review_policy_json: string;
+  readonly escalation_conditions_json: string;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -166,6 +219,26 @@ export interface UpdateGoalStatusInput {
 }
 
 /**
+ * Input used to create one immutable Goal Plan authority.
+ */
+export interface CreateGoalPlanRecordInput {
+  /** Workspace that owns the plan. */
+  readonly workspaceId: string;
+  /** Thread that owns the plan. */
+  readonly threadId: string;
+  /** Goal that owns the plan. */
+  readonly goalId: string;
+  /** Visible plan Item and immutable record id. */
+  readonly planItemId: string;
+  /** Exact validated Plan payload. */
+  readonly plan: GoalPlanOutput;
+  /** Request that created the plan authority. */
+  readonly createdByRequestId: string;
+  /** Optional clock used by deterministic tests. */
+  readonly now?: () => string;
+}
+
+/**
  * Input used to create one goal task.
  */
 export interface CreateGoalTaskInput {
@@ -175,6 +248,8 @@ export interface CreateGoalTaskInput {
   readonly threadId: string;
   /** Goal that owns the task. */
   readonly goalId: string;
+  /** Immutable Goal Plan that supplied the task. */
+  readonly planItemId: string;
   /** Stable goal task id. */
   readonly taskId: string;
   /** Human-readable task title. */
@@ -189,8 +264,16 @@ export interface CreateGoalTaskInput {
   readonly acceptanceCriteria: readonly string[];
   /** Estimated context budget in tokens for this task. */
   readonly contextBudgetTokens: number;
+  /** Exact semantic resource declarations for this task. */
+  readonly resources: GoalPlanTask['resources'];
+  /** Exact expected artifacts for this task. */
+  readonly expectedArtifacts: GoalPlanTask['expectedArtifacts'];
   /** Verification checks configured for this task. */
-  readonly verificationChecks?: readonly GoalPlanVerificationCheck[];
+  readonly verificationChecks: GoalPlanTask['verificationChecks'];
+  /** Immutable human review policy for this task. */
+  readonly reviewPolicy: GoalPlanTask['reviewPolicy'];
+  /** Exact escalation conditions for this task. */
+  readonly escalationConditions: GoalPlanTask['escalationConditions'];
   /** Optional initial task status. */
   readonly status?: GoalTaskStatus;
   /** Optional clock used by deterministic tests. */
@@ -217,8 +300,16 @@ export interface UpdateGoalTaskInput extends GoalTaskListInput {
   readonly taskId: string;
   /** Optional updated task status. */
   readonly status?: GoalTaskStatus;
-  /** Optional updated ordering field within the goal. */
-  readonly orderIndex?: number;
+  /** Optional clock used by deterministic tests. */
+  readonly now?: () => string;
+}
+
+/**
+ * Exact Goal and Task identity required for one worker-turn reservation.
+ */
+export interface ReserveGoalTaskForWorkerTurnInput extends GoalTaskListInput {
+  /** Ready task selected for the worker turn. */
+  readonly taskId: string;
   /** Optional clock used by deterministic tests. */
   readonly now?: () => string;
 }
@@ -390,6 +481,103 @@ export function updateGoalStatus(
 }
 
 /**
+ * Creates one immutable Goal Plan authority after confirming Goal ownership.
+ *
+ * @param workspaceDb Open workspace-scope database handle.
+ * @param input Goal Plan creation input.
+ * @returns Stored immutable Goal Plan record.
+ * @throws Error when the Goal is missing, the Plan needs questions, or the identity already exists.
+ */
+export function createGoalPlanRecord(
+  workspaceDb: WorkspaceDb,
+  input: CreateGoalPlanRecordInput
+): GoalPlanRecord {
+  requireGoalRecord(workspaceDb, input.workspaceId, input.threadId, input.goalId);
+  const plan = GoalPlanOutputSchema.parse(input.plan);
+  if (plan.questions.length > 0) {
+    throw new Error('Goal Plan records require an empty questions array.');
+  }
+  if (input.createdByRequestId.trim().length === 0) {
+    throw new Error('Goal Plan creation requires a non-empty request id.');
+  }
+  const createdAt = input.now?.() ?? new Date().toISOString();
+
+  workspaceDb.sqlite
+    .prepare(
+      `INSERT INTO goal_plan_records (
+        workspace_id,
+        thread_id,
+        goal_id,
+        plan_item_id,
+        plan_digest,
+        plan_json,
+        created_by_request_id,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      input.workspaceId,
+      input.threadId,
+      input.goalId,
+      input.planItemId,
+      computeGoalPlanDigest(plan),
+      JSON.stringify(plan),
+      input.createdByRequestId,
+      createdAt
+    );
+
+  return requireGoalPlanRecord(workspaceDb, input.workspaceId, input.threadId, input.planItemId);
+}
+
+/**
+ * Reads one immutable Goal Plan authority by its visible plan Item id.
+ *
+ * @param workspaceDb Open workspace-scope database handle.
+ * @param workspaceId Workspace that owns the plan.
+ * @param threadId Thread that owns the plan.
+ * @param planItemId Visible plan Item and record id.
+ * @returns Stored Plan authority, or null when absent.
+ * @throws Error when stored payload validation or digest verification fails.
+ */
+export function getGoalPlanRecord(
+  workspaceDb: WorkspaceDb,
+  workspaceId: string,
+  threadId: string,
+  planItemId: string
+): GoalPlanRecord | null {
+  const row = workspaceDb.sqlite
+    .prepare(
+      `${goalPlanRecordSelectSql()}
+      WHERE workspace_id = ? AND thread_id = ? AND plan_item_id = ?`
+    )
+    .get(workspaceId, threadId, planItemId) as GoalPlanRecordRow | undefined;
+
+  return row ? mapGoalPlanRecordRow(row) : null;
+}
+
+/**
+ * Lists all immutable Goal Plan authorities for one Workspace in stable export order.
+ *
+ * @param workspaceDb Open workspace-scope database handle.
+ * @param workspaceId Workspace id.
+ * @returns Stored Plan records in stable order.
+ */
+export function listExportableGoalPlanRecords(
+  workspaceDb: WorkspaceDb,
+  workspaceId: string
+): GoalPlanRecord[] {
+  return (
+    workspaceDb.sqlite
+      .prepare(
+        `${goalPlanRecordSelectSql()}
+        WHERE workspace_id = ?
+        ORDER BY created_at ASC, thread_id ASC, goal_id ASC, plan_item_id ASC`
+      )
+      .all(workspaceId) as GoalPlanRecordRow[]
+  ).map(mapGoalPlanRecordRow);
+}
+
+/**
  * Creates one goal task after confirming goal ownership.
  *
  * @param workspaceDb Open workspace-scope database handle.
@@ -412,6 +600,7 @@ export function createGoalTask(
         workspace_id,
         thread_id,
         goal_id,
+        plan_item_id,
         status,
         title,
         objective,
@@ -419,16 +608,21 @@ export function createGoalTask(
         depends_on_task_ids_json,
         acceptance_criteria_json,
         context_budget_tokens,
+        resources_json,
+        expected_artifacts_json,
         verification_checks_json,
+        review_policy_json,
+        escalation_conditions_json,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.taskId,
       input.workspaceId,
       input.threadId,
       input.goalId,
+      input.planItemId,
       input.status ?? 'pending',
       input.title,
       input.objective,
@@ -436,7 +630,11 @@ export function createGoalTask(
       JSON.stringify(input.dependsOnTaskIds),
       JSON.stringify(input.acceptanceCriteria),
       input.contextBudgetTokens,
-      JSON.stringify(input.verificationChecks ?? []),
+      JSON.stringify(input.resources),
+      JSON.stringify(input.expectedArtifacts),
+      JSON.stringify(input.verificationChecks),
+      JSON.stringify(input.reviewPolicy),
+      JSON.stringify(input.escalationConditions),
       timestamp,
       timestamp
     );
@@ -509,7 +707,7 @@ export function importGoalRecords(workspaceDb: WorkspaceDb, goals: readonly Goal
   for (const goal of goals) {
     workspaceDb.sqlite
       .prepare(
-        `INSERT OR IGNORE INTO goal_records (
+        `INSERT INTO goal_records (
           goal_id,
           workspace_id,
           thread_id,
@@ -542,6 +740,50 @@ export function importGoalRecords(workspaceDb: WorkspaceDb, goals: readonly Goal
 }
 
 /**
+ * Replays imported immutable Goal Plan authorities without adding another lifecycle.
+ *
+ * @param workspaceDb Open target workspace database handle.
+ * @param plans Validated and reminted Goal Plan records.
+ */
+export function importGoalPlanRecords(
+  workspaceDb: WorkspaceDb,
+  plans: readonly GoalPlanRecord[]
+): void {
+  for (const record of plans) {
+    const plan = GoalPlanOutputSchema.parse(selectGoalPlanPayload(record));
+    if (record.planDigest !== computeGoalPlanDigest(plan)) {
+      throw new Error(`Goal Plan digest mismatch: ${record.planItemId}.`);
+    }
+    if (record.createdByRequestId.trim().length === 0) {
+      throw new Error(`Goal Plan request lineage is empty: ${record.planItemId}.`);
+    }
+    workspaceDb.sqlite
+      .prepare(
+        `INSERT INTO goal_plan_records (
+          workspace_id,
+          thread_id,
+          goal_id,
+          plan_item_id,
+          plan_digest,
+          plan_json,
+          created_by_request_id,
+          created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        record.workspaceId,
+        record.threadId,
+        record.goalId,
+        record.planItemId,
+        record.planDigest,
+        JSON.stringify(plan),
+        record.createdByRequestId,
+        record.createdAt
+      );
+  }
+}
+
+/**
  * Replays imported goal task records without emitting goal task audit events.
  *
  * @param workspaceDb Open target workspace database handle.
@@ -551,11 +793,12 @@ export function importGoalTasks(workspaceDb: WorkspaceDb, tasks: readonly GoalTa
   for (const task of tasks) {
     workspaceDb.sqlite
       .prepare(
-        `INSERT OR IGNORE INTO goal_tasks (
+        `INSERT INTO goal_tasks (
           task_id,
           workspace_id,
           thread_id,
           goal_id,
+          plan_item_id,
           status,
           title,
           objective,
@@ -563,16 +806,21 @@ export function importGoalTasks(workspaceDb: WorkspaceDb, tasks: readonly GoalTa
           depends_on_task_ids_json,
           acceptance_criteria_json,
           context_budget_tokens,
+          resources_json,
+          expected_artifacts_json,
           verification_checks_json,
+          review_policy_json,
+          escalation_conditions_json,
           created_at,
           updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         task.taskId,
         task.workspaceId,
         task.threadId,
         task.goalId,
+        task.planItemId,
         task.status,
         task.title,
         task.objective,
@@ -580,7 +828,11 @@ export function importGoalTasks(workspaceDb: WorkspaceDb, tasks: readonly GoalTa
         JSON.stringify(task.dependsOnTaskIds),
         JSON.stringify(task.acceptanceCriteria),
         task.contextBudgetTokens,
+        JSON.stringify(task.resources),
+        JSON.stringify(task.expectedArtifacts),
         JSON.stringify(task.verificationChecks),
+        JSON.stringify(task.reviewPolicy),
+        JSON.stringify(task.escalationConditions),
         task.createdAt,
         task.updatedAt
       );
@@ -614,13 +866,11 @@ export function updateGoalTask(
       `UPDATE goal_tasks
       SET
         status = ?,
-        order_index = ?,
         updated_at = ?
       WHERE workspace_id = ? AND thread_id = ? AND goal_id = ? AND task_id = ?`
     )
     .run(
       input.status ?? existing.status,
-      input.orderIndex ?? existing.orderIndex,
       timestamp,
       existing.workspaceId,
       existing.threadId,
@@ -637,6 +887,62 @@ export function updateGoalTask(
   );
   recordGoalTaskStatusAuditEvent(workspaceDb, existing, task);
   return task;
+}
+
+/**
+ * Reserves one exact ready Goal Task while its Goal remains runnable.
+ *
+ * @param workspaceDb Open workspace-scope database handle.
+ * @param input Exact Goal and Task identity selected before preparation.
+ * @returns True when both owners were reserved, otherwise false.
+ */
+export function reserveGoalTaskForWorkerTurn(
+  workspaceDb: WorkspaceDb,
+  input: ReserveGoalTaskForWorkerTurnInput
+): boolean {
+  return workspaceDb.sqlite.transaction(() => {
+    const goal = getGoalRecord(workspaceDb, input.workspaceId, input.threadId, input.goalId);
+    const tasks = listGoalTasks(workspaceDb, {
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      goalId: input.goalId,
+    });
+    const task = tasks.find((candidate) => candidate.taskId === input.taskId);
+    const firstReadyTask = tasks.find((candidate) => candidate.status === 'ready');
+    const unresolvedCheckpoint = workspaceDb.sqlite
+      .prepare(
+        `SELECT 1
+        FROM worker_turn_checkpoints
+        WHERE workspace_id = ? AND thread_id = ? AND goal_id = ?
+        LIMIT 1`
+      )
+      .get(input.workspaceId, input.threadId, input.goalId);
+
+    if (
+      !goal ||
+      !task ||
+      unresolvedCheckpoint ||
+      goal.status !== 'running' ||
+      goal.currentTaskId !== null ||
+      goal.terminalStopReason !== null ||
+      task.status !== 'ready' ||
+      firstReadyTask?.taskId !== task.taskId
+    ) {
+      return false;
+    }
+
+    updateGoalTask(workspaceDb, {
+      ...input,
+      status: 'running',
+    });
+    updateGoalStatus(workspaceDb, {
+      ...input,
+      status: 'running',
+      currentTaskId: input.taskId,
+    });
+
+    return true;
+  })();
 }
 
 /**
@@ -678,6 +984,29 @@ function requireGoalRecord(
   }
 
   return goal;
+}
+
+/**
+ * Reads one immutable Goal Plan authority or throws a scoped error.
+ *
+ * @param workspaceDb Open workspace-scope database handle.
+ * @param workspaceId Workspace that owns the plan.
+ * @param threadId Thread that owns the plan.
+ * @param planItemId Visible plan Item and record id.
+ * @returns Stored Goal Plan authority.
+ * @throws Error when the Plan record is absent or corrupt.
+ */
+function requireGoalPlanRecord(
+  workspaceDb: WorkspaceDb,
+  workspaceId: string,
+  threadId: string,
+  planItemId: string
+): GoalPlanRecord {
+  const record = getGoalPlanRecord(workspaceDb, workspaceId, threadId, planItemId);
+  if (!record) {
+    throw new Error(`Goal Plan not found: ${workspaceId}/${threadId}/${planItemId}`);
+  }
+  return record;
 }
 
 /**
@@ -818,13 +1147,7 @@ function goalStatusAuditSeverity(status: GoalRecordStatus): 'info' | 'warning' {
 function goalTaskStatusAuditOutcome(
   status: GoalTaskStatus
 ): 'succeeded' | 'failed' | 'denied' | 'cancelled' {
-  if (status === 'skipped') {
-    return 'cancelled';
-  }
-
-  return status === 'needs_revision' || status === 'blocked' || status === 'failed'
-    ? 'failed'
-    : 'succeeded';
+  return status === 'blocked' || status === 'failed' ? 'failed' : 'succeeded';
 }
 
 /**
@@ -834,12 +1157,7 @@ function goalTaskStatusAuditOutcome(
  * @returns Audit severity for the task status transition.
  */
 function goalTaskStatusAuditSeverity(status: GoalTaskStatus): 'info' | 'warning' {
-  return status === 'needs_revision' ||
-    status === 'blocked' ||
-    status === 'failed' ||
-    status === 'skipped'
-    ? 'warning'
-    : 'info';
+  return status === 'blocked' || status === 'failed' ? 'warning' : 'info';
 }
 
 /**
@@ -898,25 +1216,58 @@ function mapGoalRecordRow(row: GoalRecordRow): GoalRecord {
 }
 
 /**
+ * Maps one stored Goal Plan row and verifies its payload digest.
+ *
+ * @param row Stored Goal Plan row.
+ * @returns Validated immutable Goal Plan record.
+ * @throws Error when the payload or digest is invalid.
+ */
+function mapGoalPlanRecordRow(row: GoalPlanRecordRow): GoalPlanRecord {
+  const plan = GoalPlanOutputSchema.parse(JSON.parse(row.plan_json));
+  const digest = computeGoalPlanDigest(plan);
+  if (row.plan_digest !== digest) {
+    throw new Error(`Goal Plan digest mismatch: ${row.plan_item_id}.`);
+  }
+  return {
+    ...plan,
+    workspaceId: row.workspace_id,
+    threadId: row.thread_id,
+    goalId: row.goal_id,
+    planItemId: row.plan_item_id,
+    planDigest: row.plan_digest,
+    createdByRequestId: row.created_by_request_id,
+    createdAt: row.created_at,
+  };
+}
+
+/**
  * Maps a goal task row to a store record.
  *
  * @param row Goal task row.
  * @returns Goal task store record.
  */
 function mapGoalTaskRow(row: GoalTaskRow): GoalTaskRecord {
-  return {
+  const task = GoalPlanTaskSchema.parse({
     taskId: row.task_id,
+    title: row.title,
+    objective: row.objective,
+    dependsOnTaskIds: JSON.parse(row.depends_on_task_ids_json),
+    acceptanceCriteria: JSON.parse(row.acceptance_criteria_json),
+    contextBudgetTokens: row.context_budget_tokens,
+    resources: JSON.parse(row.resources_json),
+    expectedArtifacts: JSON.parse(row.expected_artifacts_json),
+    verificationChecks: JSON.parse(row.verification_checks_json),
+    reviewPolicy: JSON.parse(row.review_policy_json),
+    escalationConditions: JSON.parse(row.escalation_conditions_json),
+  });
+  return {
+    ...task,
     workspaceId: row.workspace_id,
     threadId: row.thread_id,
     goalId: row.goal_id,
+    planItemId: row.plan_item_id,
     status: row.status,
-    title: row.title,
-    objective: row.objective,
     orderIndex: row.order_index,
-    dependsOnTaskIds: parseStringArray(row.depends_on_task_ids_json),
-    acceptanceCriteria: parseStringArray(row.acceptance_criteria_json),
-    contextBudgetTokens: row.context_budget_tokens,
-    verificationChecks: parseVerificationChecks(row.verification_checks_json),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -945,6 +1296,24 @@ function goalRecordSelectSql(): string {
 }
 
 /**
+ * Returns the immutable Goal Plan projection shared by store reads.
+ *
+ * @returns SQL select projection.
+ */
+function goalPlanRecordSelectSql(): string {
+  return `SELECT
+    workspace_id,
+    thread_id,
+    goal_id,
+    plan_item_id,
+    plan_digest,
+    plan_json,
+    created_by_request_id,
+    created_at
+  FROM goal_plan_records`;
+}
+
+/**
  * Returns the goal task projection shared by goal store reads.
  *
  * @returns SQL select projection.
@@ -955,6 +1324,7 @@ function goalTaskSelectSql(): string {
     workspace_id,
     thread_id,
     goal_id,
+    plan_item_id,
     status,
     title,
     objective,
@@ -962,36 +1332,12 @@ function goalTaskSelectSql(): string {
     depends_on_task_ids_json,
     acceptance_criteria_json,
     context_budget_tokens,
+    resources_json,
+    expected_artifacts_json,
     verification_checks_json,
+    review_policy_json,
+    escalation_conditions_json,
     created_at,
     updated_at
   FROM goal_tasks`;
-}
-
-/**
- * Parses a stored JSON string array.
- *
- * @param value JSON string value to parse.
- * @returns Parsed string array.
- * @throws Error when the stored JSON is malformed.
- */
-function parseStringArray(value: string): string[] {
-  const parsed = JSON.parse(value) as unknown;
-
-  if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== 'string')) {
-    throw new Error('Stored goal task JSON field is not a string array.');
-  }
-
-  return parsed;
-}
-
-/**
- * Parses a stored verification check JSON array.
- *
- * @param value JSON string value to parse.
- * @returns Parsed verification checks.
- * @throws Error when the stored JSON is malformed.
- */
-function parseVerificationChecks(value: string): GoalPlanVerificationCheck[] {
-  return GoalPlanVerificationCheckSchema.array().parse(JSON.parse(value));
 }

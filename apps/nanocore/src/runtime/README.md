@@ -19,7 +19,7 @@ This directory owns accepted-turn execution, scheduler dispatch integration, wor
 - `worker-*-executor.ts`, `worker-*-backend.ts`, and `worker-*-gateway.ts` own governed worker execution and transport.
 - `worker-runtime-provenance.ts` owns bounded capture verification, product-safe normalization, package-scoped gateway reconciliation, and portable index ref reminting.
 - `scheduler-*.ts` files coordinate dispatch and lease maintenance without owning scheduler persistence.
-- `goal-*.ts`, `pending-user-turns.ts`, and `worker-recovery*.ts` own long-running work and recovery lifecycles.
+- `goal-*.ts` and `worker-recovery*.ts` own long-running work and recovery lifecycles.
 - `idempotent-command.ts` owns process-local duplicate collapse and delegates durable command records to storage.
 - `agent-session-read-model.ts` owns product-safe live session projection.
 

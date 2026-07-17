@@ -57,7 +57,7 @@ The target agent experience is a unified context reserve: worker agents should b
 - Prevent a knowledge store from drifting into a pile of inconsistent Markdown files.
 - Allow workspace-specific schemas without losing OpenKit-wide interoperability.
 - Keep observations and low-level agent signals out of the primary notebook until they are reviewed or summarized.
-- Define passive, active, and scheduled Knowledge Manager actions.
+- Define governance for the explicit Knowledge Manager operations that exist in V1.
 - Make it practical for users to provide rough notes, files, links, meetings, and integrations without manually curating every page.
 
 ## Non-goals
@@ -488,57 +488,19 @@ Provisional records participate in retrieval, worker knowledge capabilities, and
 
 **Invariant.** The worst-case outcome of auto-promotion is a temporarily useless provisional suggestion that expires; it can never durably corrupt the workspace preference profile, mutate existing knowledge, or bypass conflict detection.
 
-TTL expiry sweeps and citation-count evaluation run as scheduled Knowledge Manager maintenance; the recurring-schedule mechanism in `docs/specs/20260711-scheduler_recurring_event_triggers.md` is the intended substrate.
+TTL expiry and citation-count evaluation remain policy requirements, not authorization for a scheduler or hook. Their execution requires a separately accepted maintenance-trigger design and change plan; the recurring-schedule mechanism in `docs/specs/20260711-scheduler_recurring_event_triggers.md` is only a possible existing substrate.
 
 ## Knowledge Manager Actions
 
-Knowledge Manager actions fall into three groups.
+V1 Knowledge Manager actions are explicit requests to answer a bounded question, prepare source-traceable context material, draft a governed proposal, suggest duplicate-title repairs, or inspect knowledge health.
 
-### Passive Actions
-
-Passive actions happen after worker turns, ingest events, user edits, source updates, or review decisions.
-
-Examples:
-
-- record observations
-- update logs
-- validate schema conformance
-- attach source references
-- draft proposals from completed work
-- detect whether a user correction should become reusable knowledge
-
-### Active Actions
-
-Active actions happen during user requests or when the Knowledge Manager is asked to help.
-
-Examples:
-
-- search and explain notebook content
-- find relevant pages and source references
-- suggest a page split or merge
-- ask a clarifying question
-- repair a broken link
-- create a proposal for user review
-
-### Scheduled Actions
-
-Scheduled actions happen as periodic maintenance.
-
-Examples:
-
-- lint schema conformance
-- find orphan pages
-- find duplicate or near-duplicate topics
-- check broken links and citations
-- find stale claims
-- summarize unreviewed observations
-- surface conflicts between sources
-- refresh indexes and logs
-- produce a health report
+No worker completion, ingest event, user edit, source update, review decision, clock, or scheduler event implicitly invokes Knowledge Manager. A future passive or scheduled trigger requires separately accepted scope and must reuse the deterministic service without introducing hooks, private lifecycle state, or another proposal owner.
 
 ## Health Checks
 
 A health check should produce a prioritized report, not an unbounded rewrite.
+
+The accepted V1 report is limited to whether knowledge exists and whether duplicate normalized titles need attention, as defined by the Knowledge Manager service spec. The broader categories below are a non-authorizing governance checklist for a separately scoped future health operation.
 
 It should identify:
 
@@ -553,11 +515,11 @@ It should identify:
 - conflicting pages or claims
 - schema drift
 
-The health check may perform low-risk repairs allowed by policy. High-impact changes should become proposals.
+The V1 health check is report-only and MUST NOT apply repairs, draft proposals, or mutate knowledge.
 
-Low-risk Knowledge Manager repairs may be applied without review only when they do not change meaning, authority, sensitivity, scope, freshness, or future worker behavior.
+A future explicit governed repair-apply operation may be separately authorized to apply low-risk repairs without review only when they do not change meaning, authority, sensitivity, scope, freshness, retrieval eligibility, or future worker behavior. The following list is an eligibility boundary, not current execution authority.
 
-Allowed low-risk repairs:
+Potential low-risk repair eligibility:
 
 - normalize frontmatter ordering and formatting
 - add missing non-semantic derived metadata that can be computed deterministically
@@ -566,7 +528,7 @@ Allowed low-risk repairs:
 - remove duplicate whitespace or renderer-only formatting noise
 - attach a missing source-reference backlink when both sides already identify each other
 
-Repairs that change claims, conclusions, source interpretation, sensitivity, scope, review state, schema type, freshness, or retrieval eligibility must become proposals or needs-review records.
+Any future repair that changes claims, conclusions, source interpretation, sensitivity, scope, review state, schema type, freshness, retrieval eligibility, or future worker behavior must become a proposal or needs-review record.
 
 ## Context Package Trace
 
@@ -645,7 +607,7 @@ References to `@openkit/mcp` below describe the current removal-only facade. The
 - `apps/nanocore/src/app.ts` exposes `/api/workspaces/:workspaceId/knowledge` create, update, delete, and list routes with idempotent command handling.
 - NanoCore currently exposes no worker Knowledge capability routes because Agent Environment Packages declare the capability plane disabled. The conformance table above remains the accepted requirement for future `knowledge.search` and `knowledge.read` routes.
 - `apps/nanocore/src/action-center.ts` projects pending knowledge proposals into human-attention rows for accept, edit, reject, or defer review actions.
-- `apps/nanocore/src/internal-agents/quick-chat.ts` retains the `searchKnowledge` diagnostic allowlist identifier. No internal Core tool executor or `knowledge-manager` mode runner is currently wired; the implemented Knowledge Manager surface is the App API context-package path below.
+- No generic internal-role tool executor or `knowledge-manager` runner is wired; direct deterministic Knowledge Manager operations are exposed through governed App API routes for answer, context preparation, proposal draft, repair suggestion, and health inspection, including the context-package path below.
 - `apps/nanocore/src/storage/fs-layout.ts` creates workspace `knowledge/` and `sources/` directories.
 - `apps/nanocore/src/knowledge/okf.ts` implements the first-slice OKF parser, OpenKit Knowledge Profile validator, default workspace schema parser, workspace schema validator, conformance computation, and secret-like field rejection.
 - First-slice observations are stored as workspace maintenance records in monthly JSONL ledgers under `knowledge/observations/<YYYYMM>.jsonl`. NanoCore, `@openkit/core-client`, and `@openkit/mcp` expose append/list surfaces for observation records with kind, summary, source references, scope, producer, confidence, freshness, status, observed timestamp, and creation timestamp; the records remain outside the user-facing notebook and default derived indexes.
@@ -688,7 +650,7 @@ Users should be able to inspect and edit the notebook without understanding ever
 - Invalid active edits are blocked. Invalid imported, rough, or drafted material may be saved as invalid drafts excluded from active retrieval.
 - Workspace schema changes use a reviewed dry-run migration flow with validation reports and previous-schema preservation.
 - First-slice observations live in workspace maintenance JSONL ledgers, with digests or proposals used to surface important patterns.
-- Knowledge Manager may auto-apply only non-semantic low-risk repairs. Meaning-changing or retrieval-affecting repairs require proposals or review.
+- V1 Knowledge Manager may only report or suggest repairs. A future separately accepted repair-apply operation may auto-apply an eligible non-semantic low-risk repair; meaning-changing or retrieval-affecting repairs require proposals or review.
 - Default worker knowledge search, read, and context package selection require active `Workspace-schema-valid` records unless explicit policy permits lower-conformance source snippets.
 - Minimal context package trace visibility is split into item-visible package and citation summaries, audit-only selected or excluded detail, and restricted evidence for sensitive trace material.
 - Auto-promotion without review exists only through the Provisional Auto-Promotion path: strictly additive diffs of designated types, no conflict-detection hits, provisional review state with TTL and citation-based confirmation, per-workspace opt-in, visible history, and one-step rollback.
@@ -700,7 +662,7 @@ Users should be able to inspect and edit the notebook without understanding ever
 - Extend the implemented source identity registry with binary byte-copy materialization, richer derived representation records, and source-reference validation beyond local source and knowledge ids.
 - Extend observation, claim, conflict, proposal, review, and health-check records beyond the first implemented slices.
 - Extend context package traces with complete audit-only exclusion, sensitivity, freshness, and replay detail beyond the V1 readable trace and digest-checked materialization.
-- Add scheduled Knowledge Manager maintenance loops after the on-demand V1 health check and repair suggestion paths have real usage evidence.
+- Consider a separately accepted maintenance-trigger design only after the on-demand V1 health-check and repair-suggestion paths have real usage evidence.
 - Add richer migration and repair tools for legacy or imported external notebook bundles that cannot be projected through the current governed page and proposal surfaces.
 
 ## Links

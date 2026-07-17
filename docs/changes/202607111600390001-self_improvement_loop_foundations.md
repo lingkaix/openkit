@@ -9,11 +9,17 @@ Implement the OpenKit self-improvement and evaluation loop defined by `docs/spec
 
 The end state: every workspace has a Reflector that mines its real work history, a frozen Harness that replays proposals against pinned suites in isolated sandboxes, a blind Judge, and human promotion gates — with all triggers, versions, budgets, evidence, and rollbacks running on durable governed records.
 
+## Inherited Audit Responsibility (2026-07-17)
+
+This plan is work package WP-6 of the [OpenKit Execution Program](./202607172152230001-openkit_execution_program.md) and absorbs audit group G07 from the [alignment audit](./202607111941330001-core_spec_implementation_alignment_audit.md). The G07 document set (C12 Knowledge, S17-S19, S60, S61, and their supporting projections) and the G07 exit criteria in the audit ledger are inherited inputs. The program's convergence rules bind all work here. G07 audits Knowledge selection into the accepted G01-owned Context Package interface without reopening workflow delivery, and this package activates only after real dogfooding work history exists to mine (program queue entry gate).
+
+Before implementation starts, record the G07 audit preamble in this plan per Execution Program rule 11: the authority map for the concepts this plan touches, findings classified with the audit's finding codes (in-scope findings fold into this plan's frozen scope; everything else is ticketed to the program Backlog), and confirmation of the inherited exit criteria. The preamble is review-only, bounded to at most one review day, and authorizes no implementation.
+
 ## Scope
 
 Specs to implement (design authority; this record does not restate their contracts):
 
-- `docs/specs/20260710-self_improvement_evaluation_loop.md` — the loop model: Reflector, Harness contract, Judge convention, evaluation assets, `ImprovementProposal` lifecycle, tiers, trigger model, Goodhart guards, rollout Phases 1-4.
+- `docs/specs/20260710-self_improvement_evaluation_loop.md` — the loop model: Reflector, Harness contract, Judge convention, evaluation assets, `ImprovementProposal` lifecycle, tiers, trigger model, and Goodhart guards. This change plan owns implementation stage order.
 - `docs/specs/20260711-scheduler_recurring_event_triggers.md` (new) — durable schedule/fire records, minute tick loop, coalescing catch-up, one-shot event-trigger convention, automation-store replacement.
 - `docs/specs/20260711-skill_catalog_versioning_pinning.md` (new) — content-addressed skill version identity (`skv1` digest), catalog entry/version/pin records, pointer-move promotion and rollback, AEP digest resolution, replacement of the hardcoded `WORKER_SKILL_CATALOG`.
 - `docs/specs/20260711-evaluation_harness_design.md` (new) — evaluation area layout, work/judge two-sandbox profile with a held-back acceptance zone, harness versioning and environment pinning, Judge dispatch with blinding and A/A injection, evidence assembly.
@@ -53,7 +59,7 @@ Impacted surfaces: `packages/protocol` (if new record envelopes are needed), `pa
 - Skills are supplied from the hardcoded `WORKER_SKILL_CATALOG` const in `apps/nanocore/src/runtime/agent-environment.ts`; no versioning, pinning, or persistence.
 - Knowledge governance V1 is implemented (proposals, review, conflict detection, low-risk repairs); provisional auto-promotion is spec-only.
 - Context packages have deterministic digests and digest-checked materialization readback; per-entry replay reconstruction is spec-only.
-- Evidence bundles, audit events, usage records, Action Center projections, internal-agent framework, and workspace export/import with coverage guards are implemented and are the substrate this change composes.
+- Evidence bundles, audit events, usage records, Action Center projections, and workspace export/import with coverage guards are implemented and are the substrate this change may compose. The rejected generic internal-agent runner, registry, event loop, hook system, diagnostics ledger, and private lifecycle have been deleted by the G01 correction; G07 must not recreate or reuse them.
 
 ## Execution Plan
 
@@ -84,10 +90,10 @@ Implements the Provisional Auto-Promotion section of `20260702-knowledge_store_g
 
 ### Stage 3 — Reflector memory loop (self-improvement Phase 1)
 
-- Reflector as a persistent internal Core agent on the existing internal-agent framework: projection-only inputs, rubric/lesson distillation, knowledge proposals as output.
+- This plan does not authorize a persistent Reflector agent or reuse of the generic internal-agent framework. Before implementation, S18 and S19 must be accepted with one bounded Reflector operation: the existing scheduler owner invokes a concrete request-scoped role function over durable projection-only inputs, and the existing Knowledge Proposal owner persists any output. The operation has no private session, event loop, checkpoint, retry queue, hook system, or independently resumable lifecycle.
 - Reflection cadence as `system`-origin recurring schedules; event triggers (redo, review rejection, negative feedback) inserting deduped one-shot trigger rows per the trigger convention.
 - Rubric records feeding Workflow Coordinator context material.
-- Self-improvement usage category on reflection turns (metering visibility; enforcement stays deferred).
+- Self-improvement usage category on bounded reflection invocations (metering visibility; enforcement stays deferred).
 
 Value checkpoint: the loop is live end to end on the knowledge path before any harness work.
 

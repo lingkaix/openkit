@@ -3,6 +3,7 @@ import {
   ApiCallError,
   type CodexOAuthLoginMode,
   type CodexOAuthStatusPayload,
+  type CoreClient,
 } from '@openkit/core-client';
 import { addCollection } from 'iconify-icon';
 import {
@@ -1187,23 +1188,51 @@ export default function App(props: AppProps) {
         return;
       }
 
-      const artifactDecision = artifactDecisionForAction(action.kind);
+      if (row.source.type === 'goal_review') {
+        let input: Parameters<CoreClient['app']['submitGoalReviewDecision']>[4] | null = null;
 
-      if (row.source.type === 'goal_review' && artifactDecision) {
-        await client.app.submitGoalReviewDecision(
-          row.source.workspaceId,
-          row.source.threadId,
-          row.source.goalId,
-          row.source.reviewId
-        );
-        await Promise.all([
-          refreshHumanAttention(),
-          row.threadId === state.selectedThreadId
-            ? refreshSelectedThreadDashboard()
-            : Promise.resolve(),
-        ]);
+        if (action.kind === 'accept_review') {
+          input = { verdict: 'accept' };
+        } else if (action.kind === 'request_refinement') {
+          const revisionInstruction = window.prompt('Describe the required refinement.');
+          if (!revisionInstruction?.trim()) {
+            return;
+          }
+          input = { verdict: 'refine', revisionInstruction: revisionInstruction.trim() };
+        } else if (action.kind === 'retry_work' || action.kind === 'abort') {
+          const reason = window.prompt(
+            action.kind === 'retry_work'
+              ? 'Why should this work be retried?'
+              : 'Why abort this Goal?'
+          );
+          if (!reason?.trim()) {
+            return;
+          }
+          input = {
+            verdict: action.kind === 'retry_work' ? 'retry' : 'abort',
+            reason: reason.trim(),
+          };
+        }
+
+        if (input) {
+          await client.app.submitGoalReviewDecision(
+            row.source.workspaceId,
+            row.source.threadId,
+            row.source.goalId,
+            row.source.reviewId,
+            input
+          );
+          await Promise.all([
+            refreshHumanAttention(),
+            row.threadId === state.selectedThreadId
+              ? refreshSelectedThreadDashboard()
+              : Promise.resolve(),
+          ]);
+        }
         return;
       }
+
+      const artifactDecision = artifactDecisionForAction(action.kind);
 
       if (row.source.type === 'artifact' && artifactDecision && row.artifactId) {
         await client.app.submitArtifactReviewDecision(row.workspaceId, row.artifactId, {
@@ -2934,7 +2963,9 @@ export default function App(props: AppProps) {
     setGoalPlanFeedback(null);
 
     try {
-      const response = await client.app.createThreadGoalPlan(workspace.id, thread.id);
+      const response = await client.app.createThreadGoalPlan(workspace.id, thread.id, {
+        requestId: createRequestId(),
+      });
 
       setState('threadGoalPlan', response);
       setState('threadGoalSummary', { goal: response.goal });
@@ -2964,8 +2995,8 @@ export default function App(props: AppProps) {
 
     try {
       const response = await client.app.approveThreadGoalPlan(workspace.id, thread.id, {
+        requestId: createRequestId(),
         planItemId: planReview.planItemId,
-        plan: planReview.plan,
       });
 
       setState('threadGoalSummary', { goal: response.goal });
@@ -2996,6 +3027,7 @@ export default function App(props: AppProps) {
 
     try {
       const response = await client.app.reviseThreadGoalPlan(workspace.id, thread.id, {
+        requestId: createRequestId(),
         revision,
       });
 
@@ -3037,9 +3069,8 @@ export default function App(props: AppProps) {
 
       setState('threadGoalSummary', { goal: response.goal });
       setGoalExecutionFeedback(
-        response.pendingAttention
-          ? response.pendingAttention.reason
-          : `Worker step ended with ${response.decision.outcome}.`
+        response.goal.pendingHumanAttention.reason ??
+          `Worker step ended with ${response.result.outcome}.`
       );
     } catch (error) {
       setState('errorMessage', formatUserError(error));

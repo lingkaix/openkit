@@ -5,11 +5,11 @@ Implementation: Implemented
 
 ## Owns
 
-This spec owns the decision to make `@earendil-works/pi-ai` the single NanoCore LLM provider backend for every non-Codex-OAuth provider path, the removal target for the hand-written OpenAI-compatible provider client from Gateway dispatch, the native pi-ai OpenAI Responses routing contract, and the provider-agnostic prompt cache scope contract used by NanoCore internal agents, public Gateway callers, and worker agents.
+This spec owns the decision to make `@earendil-works/pi-ai` the single NanoCore LLM provider backend for every non-Codex-OAuth provider path, the removal target for the hand-written OpenAI-compatible provider client from Gateway dispatch, the native pi-ai OpenAI Responses routing contract, and the provider-agnostic prompt cache scope contract used by separately authorized provider-backed Internal Core Role calls, public Gateway callers, and worker agents.
 
 ## Does Not Own
 
-This spec does not own the public Gateway HTTP surface itself, which remains owned by `docs/specs/20260526-llm_gateway_responses_api.md`; the first pi-ai adoption and vendor-boundary rules, which remain owned by `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`; Codex subscription login and account-slot semantics, which remain owned by `docs/specs/20260526-codex_chatgpt_subscription_login.md`; durable usage schema ownership, which remains owned by `docs/specs/20260703-audit_usage_evidence_records.md`; or worker capability semantics, which remain owned by `docs/specs/20260703-worker_agent_capability.md`.
+This spec does not own the public Gateway HTTP surface itself, which remains owned by `docs/specs/20260526-llm_gateway_responses_api.md`; the first pi-ai adoption and vendor-boundary rules, which remain owned by `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`; Codex subscription login and account-slot semantics, which remain owned by `docs/specs/20260526-codex_chatgpt_subscription_login.md`; durable usage schema ownership, which remains owned by `docs/specs/20260703-audit_usage_evidence_records.md`; worker capability semantics, which remain owned by `docs/specs/20260703-worker_agent_capability.md`; or authorization for any Internal Core Role to call a provider, which must come from that role's owning specification.
 
 ## Core References
 
@@ -55,7 +55,7 @@ NanoCore will remove the generic `openai-compatible` backend from provider dispa
 - Keep Codex OAuth separate and explicit.
 - Preserve `/v1/chat/completions` and `/v1/responses` as stable public Gateway entry points.
 - Support native OpenAI Responses behavior through pi-ai instead of bridging every Responses request through Chat Completions.
-- Keep prompt cache routing consistent across NanoCore internal agents, worker agents, and public Gateway callers.
+- Keep prompt cache routing consistent across separately authorized provider-backed Internal Core Role calls, worker agents, and public Gateway callers.
 - Preserve durable usage evidence for input, output, cache read, cache write, cost estimates, provider, model, workspace, thread, turn, item, capability call, agent, and agent session where available.
 - Fail closed when pi-ai cannot represent an unsupported request field without semantic loss.
 
@@ -155,7 +155,7 @@ The digest must never embed raw workspace, thread, session, account, provider cr
 
 ### Required Scope by Caller Type
 
-NanoCore internal agents must pass `workspaceId` and either `threadId`, `agentSessionId`, or `sessionId` on every LLM call.
+When an owning role specification separately authorizes a provider-backed Internal Core Role call, that call must pass `workspaceId` and either `threadId`, `agentSessionId`, or `sessionId` on every LLM call. This cache contract constrains an authorized call; it never authorizes one.
 
 Chat Mode should pass:
 
@@ -177,16 +177,6 @@ Task Mode worker calls should pass:
 }
 ```
 
-Goal Mode coordinator calls should pass:
-
-```ts
-{
-  workspaceId,
-  threadId,
-  sessionId: `goal-mode:${workspaceId}:${threadId}:${goalId}:coordinator`
-}
-```
-
 Goal Mode worker calls should pass:
 
 ```ts
@@ -194,15 +184,6 @@ Goal Mode worker calls should pass:
   workspaceId,
   threadId,
   agentSessionId
-}
-```
-
-Knowledge Manager calls should pass a role-specific session when no user thread is active:
-
-```ts
-{
-  workspaceId,
-  sessionId: `knowledge-manager:${workspaceId}`
 }
 ```
 
@@ -267,7 +248,7 @@ OpenKit should not add cache sharding before evidence shows a hot spot. If usage
 1. Add tests proving runtime custom providers, OpenAI providers, and OpenAI-compatible static providers resolve to pi-ai except Codex OAuth.
 2. Add native pi-ai Responses support for OpenAI models and mark `openai.responses` as `native` through pi-ai.
 3. Move OpenAI, DeepSeek, Moonshot, Groq, DashScope, Zhipu, SiliconFlow, Ollama, vLLM, and custom providers to pi-ai routing.
-4. Ensure every NanoCore internal agent call passes a complete prompt cache scope.
+4. Ensure every separately authorized provider-backed Internal Core Role call passes a complete prompt cache scope.
 5. Remove production Gateway dispatch branches that call the hand-written OpenAI-compatible provider client.
 6. Keep or delete the hand-written client tests according to whether the client remains as a test fixture; it must not remain a production backend.
 7. Update `docs/specs/20260526-llm_gateway_responses_api.md` and `docs/specs/20260703-pi_ai_provider_gateway_adoption.md` after implementation so their current implementation projections no longer describe the old steady state.
@@ -290,7 +271,7 @@ No backward-compatible internal routing alias is required. This repository is pr
 - OpenAI `/v1/responses` traffic can route through pi-ai as native Responses when configured.
 - Chat Completions and Responses public wire shapes remain compatible with existing accepted Gateway tests.
 - Custom OpenAI-compatible endpoints route through pi-ai-synthesized providers.
-- NanoCore internal agents and worker agents provide stable cache scopes.
+- Separately authorized provider-backed Internal Core Role calls and worker agents provide stable cache scopes.
 - Raw thread ids, workspace ids, account slot ids, prompt text, tool arguments, and secret values do not appear in provider-visible cache keys, logs, diagnostics, or usage records.
 - Usage evidence records cache read and cache write quantities when provider data is available.
 - Gateway diagnostics can show cache fidelity class and cache effectiveness without exposing raw cache keys.

@@ -44,7 +44,7 @@ describe('worker checkpoint storage', () => {
     ).toBe('{"itemIds":["it_worker_summary"],"artifactIds":["ar_worker_result"]}');
   });
 
-  it('creates and reads worker checkpoints without replay semantics', () => {
+  it('creates and reads request-bound worker checkpoints without replay instructions', () => {
     const workspaceDb = createWorkspaceDb();
 
     try {
@@ -54,6 +54,8 @@ describe('worker checkpoint storage', () => {
         turnId: 'turn_demo',
         goalId: 'goal_demo',
         taskId: 'task_demo',
+        requestId: 'req_worker_demo',
+        requestInputHash: 'sha256:worker_demo',
         stage: 'running_worker',
         iteration: 2,
         workerSessionId: 'session_demo',
@@ -70,6 +72,8 @@ describe('worker checkpoint storage', () => {
         turnId: 'turn_demo',
         goalId: 'goal_demo',
         taskId: 'task_demo',
+        requestId: 'req_worker_demo',
+        requestInputHash: 'sha256:worker_demo',
         stage: 'running_worker',
         iteration: 2,
         workerSessionId: 'session_demo',
@@ -94,6 +98,8 @@ describe('worker checkpoint storage', () => {
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         turnId: 'turn_demo',
+        requestId: 'req_turn_demo',
+        requestInputHash: 'sha256:turn_demo',
         stage: 'running_worker',
         iteration: 1,
         now: () => '2026-05-31T00:00:00.000Z',
@@ -130,6 +136,8 @@ describe('worker checkpoint storage', () => {
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         turnId: 'turn_direct_terminal',
+        requestId: 'req_turn_direct_terminal',
+        requestInputHash: 'sha256:turn_direct_terminal',
         stage: 'completed',
         iteration: 1,
         stopReason: 'completed',
@@ -141,6 +149,8 @@ describe('worker checkpoint storage', () => {
         turnId: 'turn_terminal',
         goalId: 'goal_demo',
         taskId: 'task_demo',
+        requestId: 'req_turn_terminal',
+        requestInputHash: 'sha256:turn_terminal',
         stage: 'running_worker',
         iteration: 1,
         now: () => '2026-05-31T00:00:00.000Z',
@@ -201,6 +211,8 @@ describe('worker checkpoint storage', () => {
         turnId: 'turn_runtime_evidence',
         goalId: 'goal_demo',
         taskId: 'task_demo',
+        requestId: 'req_turn_runtime_evidence',
+        requestInputHash: 'sha256:turn_runtime_evidence',
         stage: 'running_worker',
         iteration: 1,
         workerSessionId: 'session_demo',
@@ -296,6 +308,8 @@ describe('worker checkpoint storage', () => {
         turnId: 'turn_backend_evidence',
         goalId: 'goal_backend',
         taskId: 'task_backend',
+        requestId: 'req_turn_backend_evidence',
+        requestInputHash: 'sha256:turn_backend_evidence',
         stage: 'running_worker',
         iteration: 1,
         workerSessionId: 'session_backend',
@@ -358,6 +372,8 @@ describe('worker checkpoint storage', () => {
         turnId: 'turn_backend_failure',
         goalId: 'goal_backend',
         taskId: 'task_backend',
+        requestId: 'req_turn_backend_failure',
+        requestInputHash: 'sha256:turn_backend_failure',
         stage: 'running_worker',
         iteration: 1,
         now: () => '2026-05-31T00:00:00.000Z',
@@ -402,7 +418,9 @@ describe('worker checkpoint storage', () => {
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         turnId: 'turn_secret',
-        stage: 'recovering',
+        requestId: 'req_turn_secret',
+        requestInputHash: 'sha256:turn_secret',
+        stage: 'running_worker',
         iteration: 1,
         diagnosticsSummary: 'Authorization: Bearer live_secret token=tok_secret',
         now: () => '2026-05-31T00:00:00.000Z',
