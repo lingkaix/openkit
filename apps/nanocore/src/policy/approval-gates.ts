@@ -1,9 +1,8 @@
-import { randomUUID } from 'node:crypto';
 import type { FsStore } from '../lib/store.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { recordProductPermissionDecision } from './permission-decisions.js';
 
-/** Input for creating one policy-originated approval gate. */
+/** Input for creating one Git push policy approval gate. */
 export interface CreatePolicyApprovalGateInput {
   /** Workspace-scope database that owns the permission decision. */
   workspaceDb: WorkspaceDb;
@@ -14,13 +13,11 @@ export interface CreatePolicyApprovalGateInput {
   /** Turn that should pause on approval. */
   turnId: string;
   /** Stable permission decision id. */
-  decisionId?: string;
+  decisionId: string;
   /** Stable approval request id. */
-  approvalId?: string;
+  approvalId: string;
   /** Stable approval item id. */
-  approvalItemId?: string;
-  /** Product action being gated. */
-  action?: string;
+  approvalItemId: string;
   /** Machine-readable policy reason. */
   reasonCode: string;
   /** Approval title shown to the operator. */
@@ -37,7 +34,7 @@ export interface CreatePolicyApprovalGateInput {
   now?: Date;
 }
 
-/** Result from creating one policy-originated approval gate. */
+/** Result from creating one Git push policy approval gate. */
 export interface CreatePolicyApprovalGateResult {
   /** Created permission decision id. */
   decisionId: string;
@@ -48,19 +45,27 @@ export interface CreatePolicyApprovalGateResult {
 }
 
 /**
- * Creates a policy-originated approval gate using existing approval and Action Center records.
+ * Creates a Git push policy approval gate using existing approval and Action Center records.
  *
  * @param input Approval gate input.
  * @returns Created record ids.
+ * @throws Error when the Turn is not the exact running owner for a new Gate.
  */
 export function createPolicyApprovalGate(
   input: CreatePolicyApprovalGateInput
 ): CreatePolicyApprovalGateResult {
   const turn = input.store.getTurnById(input.turnId);
+  if (
+    turn.workspaceId !== input.workspaceId ||
+    turn.status !== 'running' ||
+    turn.humanGate !== null
+  ) {
+    throw new Error('Git push approval requires one exact running Turn owner.');
+  }
   const createdAt = (input.now ?? new Date()).toISOString();
-  const decisionId = input.decisionId ?? `pd_${randomUUID()}`;
-  const approvalId = input.approvalId ?? `ap_${randomUUID()}`;
-  const approvalItemId = input.approvalItemId ?? `it_${randomUUID()}`;
+  const decisionId = input.decisionId;
+  const approvalId = input.approvalId;
+  const approvalItemId = input.approvalItemId;
 
   recordProductPermissionDecision({
     workspaceDb: input.workspaceDb,
@@ -70,7 +75,7 @@ export function createPolicyApprovalGate(
     policyEngineVersion: 'nanocore-approval-policy:v1',
     policySnapshotId: 'policy_snapshot_runtime',
     subjectSummary: input.subjectSummary,
-    action: input.action ?? 'policy.approval_required',
+    action: 'repo.push',
     resourceSummary: input.resourceSummary,
     contextSummary: input.contextSummary ?? {
       threadId: turn.threadId,
@@ -103,13 +108,13 @@ export function createPolicyApprovalGate(
     threadId: turn.threadId,
     turnId: turn.id,
     type: 'approval-request',
-    status: 'in_progress',
+    status: 'completed',
     approvalRequestId: approvalId,
     title: input.title,
     description: input.description,
     kind: 'permission',
     createdAt,
-    completedAt: null,
+    completedAt: createdAt,
   });
   input.store.updateTurn(turn.id, {
     status: 'awaiting_human',

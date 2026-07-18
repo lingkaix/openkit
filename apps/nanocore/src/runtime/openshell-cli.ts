@@ -256,18 +256,6 @@ export interface OpenShellProviderRefreshStatusInput {
   name: string;
 }
 
-/** Inputs for detaching one provider from one sandbox. */
-export interface OpenShellProviderDetachInput {
-  /** OpenShell gateway name. */
-  gateway?: string;
-  /** Optional direct OpenShell gateway endpoint URL. */
-  gatewayEndpoint?: string;
-  /** Sandbox name. */
-  name: string;
-  /** Provider name to detach from the sandbox. */
-  provider: string;
-}
-
 /**
  * Inputs for `openshell sandbox create`.
  */
@@ -795,34 +783,6 @@ export class OpenShellCli {
     return {
       name: input.name,
       stdout: redactProviderOutput(result.stdout),
-    };
-  }
-
-  /**
-   * Detaches one provider from one OpenShell sandbox.
-   *
-   * @param input Sandbox and provider selection.
-   * @returns Product-safe detach result.
-   */
-  public async detachProvider(
-    input: OpenShellProviderDetachInput
-  ): Promise<OpenShellSandboxFileResult> {
-    const args = ['sandbox', 'provider', 'detach'];
-
-    if (input.gateway) {
-      args.push('--gateway', input.gateway);
-    }
-    appendOpenShellGatewayFlags(args, input);
-    args.push(input.name, input.provider);
-
-    const result = await this.runner.run(args, { timeoutMs: OPEN_SHELL_CONTROL_TIMEOUT_MS });
-
-    if (result.exitCode !== 0) {
-      throw new Error(`OpenShell provider detach failed: ${safeErrorText(result)}`);
-    }
-
-    return {
-      stdout: result.stdout,
     };
   }
 

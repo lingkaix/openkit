@@ -11,7 +11,7 @@ It keeps canonical product permission semantics in `docs/core/permissions.md` an
 
 ## Purpose
 
-OpenKit needs one coherent authorization model for API access, workspace work, agent capabilities, MCP tools, knowledge, audit, vault references, artifacts, runtime placement, network egress, and future workspace services. This document defines a policy model that follows NGAC and Policy Machine definitions for every implemented kernel concept while keeping OpenKit's product language focused on workspace, agent, tool, approval, vault, knowledge, audit, and review concepts.
+OpenKit needs one coherent authorization model for API access, workspace work, agent capabilities, unified Skill operations, worker-side MCP tools, knowledge, audit, vault references, artifacts, runtime placement, network egress, and future workspace services. This document defines a policy model that follows NGAC and Policy Machine definitions for every implemented kernel concept while keeping OpenKit's product language focused on workspace, agent, tool, approval, vault, knowledge, audit, and review concepts.
 
 The goal is not to implement or claim the complete NGAC standard. OpenKit MAY leave NGAC definitions, functions, relations, and functional entities unimplemented. The rule is stricter for implemented concepts: any NGAC concept implemented by `@openkit/policy-kernel` MUST match NGAC definitions, standard terminology, and described semantics instead of becoming an OpenKit-specific redesign.
 
@@ -76,7 +76,8 @@ It must not own:
 - NanoCore routes
 - database storage
 - HTTP handlers
-- MCP tools
+- transport-neutral operation-catalog entries, bundled CLI commands, and unified Skill guidance
+- worker-side MCP tools
 - Web UI concepts
 - OpenShell policy rendering
 - vault secret values
@@ -244,7 +245,7 @@ OpenKit adapters should map product surfaces into these policy domains.
 
 ### API Domain
 
-The API domain governs which users or clients may call App API, MCP, automation, and future channel operations.
+The API domain governs which users or clients may call App API, unified Skill and bundled CLI operations, automation, and future channel operations.
 
 ### Workspace Domain
 
@@ -256,7 +257,7 @@ The agent domain governs which agent processes may act in a workspace, which too
 
 ### Tool Domain
 
-The tool domain governs MCP tools, local tools, shell-like tools, browser tools, filesystem tools, and future external tools.
+The tool domain governs unified Skill operations, worker-side MCP tools, local tools, shell-like tools, browser tools, filesystem tools, and future external tools.
 
 ### Knowledge Domain
 
@@ -327,7 +328,7 @@ Decision traces may be collected by default for package tests and early developm
 
 The policy kernel returns structural traces. These traces are not automatically safe to expose.
 
-NanoCore, MCP, Web, and audit APIs must project traces into redacted product reasons. A product response may say that a subject lacks `tool.use` on a tool in the workspace, but it should not leak hidden policy graph nodes, vault reference metadata, private knowledge labels, or internal runtime topology.
+NanoCore, the transport-neutral operation catalog, bundled CLI, unified Skill, worker-side MCP, Web, and audit APIs must project traces into redacted product reasons. A product response may say that a subject lacks `tool.use` on a tool in the workspace, but it should not leak hidden policy graph nodes, vault reference metadata, private knowledge labels, or internal runtime topology.
 
 ## Package Acceptance Criteria
 
@@ -344,7 +345,7 @@ The package is acceptable when:
 
 ## Follow-Up Integration Plan
 
-After the package is standard-aligned, the next work should add an OpenKit adapter layer in NanoCore or a separate package. The first integration should be low risk and easy to verify, such as MCP tool authorization or network egress policy summary.
+After the package is standard-aligned, the next work should add an OpenKit adapter layer in NanoCore or a separate package. The first integration should be low risk and easy to verify, such as NanoCore App API authorization enforcement or a network egress policy summary.
 
 The integration should not begin by migrating every permission check. It should prove that the policy kernel reduces duplicated authorization logic and produces clearer deny reasons before broader adoption.
 

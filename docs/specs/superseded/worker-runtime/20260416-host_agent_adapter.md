@@ -317,7 +317,7 @@ type AgentResult = {
 
 ### D3. Adapter-owned `FrozenArg` contract
 
-Each runtime adapter declares a static array of arguments it owns: subcommands that must appear, flags that must appear with a required value, and flags users must not set. The current [Agent Setup And Runtime Supply Contract](../../20260628-agent_setup_runtime_supply_contract.md) keeps the same resolver rule: config resolution errors when user `custom_args` conflicts with the frozen set; never silently merges. Frozen list lives in adapter code; the resolved package may mirror it for diagnostics only.
+Each runtime adapter declares a static array of arguments it owns: subcommands that must appear, flags that must appear with a required value, and flags users must not set. The then-current [Agent Setup And Runtime Supply Contract](../20260628-agent_setup_runtime_supply_contract.md) kept the same resolver rule: config resolution errors when user `custom_args` conflicts with the frozen set; never silently merges. Frozen list lives in adapter code; the resolved package may mirror it for diagnostics only.
 
 ```ts
 type FrozenArg =

@@ -97,49 +97,6 @@ export interface WorkerControlInterruptCommand {
 }
 
 /**
- * Terminal command queued for execution inside the active worker session.
- */
-export interface WorkerControlTerminalCommand {
-  /** Gateway-local terminal command id. */
-  commandId: string;
-  /** Command kind. */
-  kind: 'terminal-command';
-  /** Worker command sequence number. */
-  sequence: number;
-  /** Command argv to execute in the sandbox session. */
-  argv: string[];
-  /** Worker-local command working directory. */
-  cwd: string | null;
-  /** Timestamp recorded when NanoCore queued the command. */
-  queuedAt: string;
-  /** Timestamp recorded when a worker poll first delivered the command. */
-  deliveredAt: string | null;
-}
-
-/**
- * Command delivered to the worker through the control gateway.
- */
-export type WorkerControlCommand = WorkerControlInterruptCommand | WorkerControlTerminalCommand;
-
-/**
- * Terminal command result reported by the worker.
- */
-export interface WorkerControlTerminalResult {
-  /** Terminal command id that produced the result. */
-  commandId: string;
-  /** Process exit code. */
-  exitCode: number;
-  /** Captured stdout text. */
-  stdout: string;
-  /** Captured stderr text. */
-  stderr: string;
-  /** Worker-reported command duration. */
-  durationMs: number | null;
-  /** Timestamp recorded by NanoCore when the result arrived. */
-  completedAt: string;
-}
-
-/**
  * Supply refresh acknowledgement reported by a worker runtime adapter.
  */
 export interface WorkerControlSupplyRefreshAck {
@@ -213,9 +170,7 @@ export interface WorkerControlSessionSnapshot {
   /** Live artifact notices announced by the worker. */
   artifacts: WorkerControlArtifactNotice[];
   /** Commands queued or delivered to the worker. */
-  commands: WorkerControlCommand[];
-  /** Terminal command results reported by the worker. */
-  terminalResults: WorkerControlTerminalResult[];
+  commands: WorkerControlInterruptCommand[];
   /** Supply refresh acknowledgements reported by the worker. */
   supplyRefreshAcks: WorkerControlSupplyRefreshAck[];
   /** Product-safe capability summaries reported by the worker. */
@@ -243,9 +198,7 @@ export interface WorkerControlSessionRestoreInput {
   /** Durable artifact notices. */
   readonly artifacts?: readonly WorkerControlArtifactNotice[];
   /** Durable worker commands. */
-  readonly commands?: readonly WorkerControlCommand[];
-  /** Durable terminal command results. */
-  readonly terminalResults?: readonly WorkerControlTerminalResult[];
+  readonly commands?: readonly WorkerControlInterruptCommand[];
   /** Durable supply refresh acknowledgements. */
   readonly supplyRefreshAcks?: readonly WorkerControlSupplyRefreshAck[];
   /** Durable capability summaries. */
@@ -453,7 +406,7 @@ export interface WorkerControlCommandDeliveryRecorderInput {
   /** Worker lineage that owns the command. */
   readonly lineage: WorkerControlLineage;
   /** Command queued for worker delivery. */
-  readonly command: WorkerControlCommand;
+  readonly command: WorkerControlInterruptCommand;
 }
 
 /** Input used to update one worker-control command delivery status. */
@@ -631,7 +584,6 @@ export class WorkerControlGateway {
       packageSnapshotId: environmentPackage.snapshotId,
       registeredAt: this.now(),
       supplyRefreshAcks: [],
-      terminalResults: [],
       threadId: environmentPackage.scope.threadId,
       turnId: environmentPackage.scope.turnId,
       workspaceId: environmentPackage.scope.workspaceId,
@@ -711,7 +663,6 @@ export class WorkerControlGateway {
       packageSnapshotId: input.lineage.packageSnapshotId,
       registeredAt: input.registeredAt,
       supplyRefreshAcks: [...(input.supplyRefreshAcks ?? [])].map((ack) => ({ ...ack })),
-      terminalResults: [...(input.terminalResults ?? [])].map((result) => ({ ...result })),
       threadId: input.lineage.threadId,
       turnId: input.lineage.turnId,
       workspaceId: input.lineage.workspaceId,
@@ -924,43 +875,7 @@ export class WorkerControlGateway {
     state.snapshot.commands.push(command);
     this.recordQueuedCommand(state, command);
 
-    return cloneCommand(command) as WorkerControlInterruptCommand;
-  }
-
-  /**
-   * Queues one terminal command for delivery to the active worker session.
-   *
-   * @param packageSnapshotId Package snapshot that owns the worker.
-   * @param input Terminal command input.
-   * @returns Queued command.
-   */
-  public enqueueTerminalCommand(
-    packageSnapshotId: string,
-    input: {
-      /** Caller-selected terminal command id. */
-      commandId: string;
-      /** Command argv. */
-      argv: string[];
-      /** Worker-local command working directory. */
-      cwd?: string | null;
-    }
-  ): WorkerControlTerminalCommand {
-    const state = this.requirePackageSession(packageSnapshotId);
-    const command: WorkerControlTerminalCommand = {
-      argv: [...input.argv],
-      commandId: input.commandId,
-      cwd: input.cwd ?? null,
-      deliveredAt: null,
-      kind: 'terminal-command',
-      queuedAt: this.now(),
-      sequence: state.nextCommandSequence,
-    };
-
-    state.nextCommandSequence += 1;
-    state.snapshot.commands.push(command);
-    this.recordQueuedCommand(state, command);
-
-    return cloneCommand(command) as WorkerControlTerminalCommand;
+    return cloneCommand(command);
   }
 
   /**
@@ -971,7 +886,7 @@ export class WorkerControlGateway {
    */
   public pollCommands(input: AuthenticatedWorkerControlInput): {
     /** Commands available for delivery. */
-    commands: WorkerControlCommand[];
+    commands: WorkerControlInterruptCommand[];
     /** Timestamp recorded when the worker polled. */
     polledAt: string;
   } {
@@ -995,7 +910,7 @@ export class WorkerControlGateway {
   }
 
   /**
-   * Acknowledges delivery handling for a non-terminal worker command.
+   * Acknowledges delivery handling for an interrupt command.
    *
    * @param input Authenticated command acknowledgement request.
    * @returns Acknowledged command.
@@ -1005,7 +920,7 @@ export class WorkerControlGateway {
       /** Worker-control command id to acknowledge. */
       commandId: string;
     }
-  ): WorkerControlCommand {
+  ): WorkerControlInterruptCommand {
     const state = this.requireSession(input);
     const command = state.snapshot.commands.find(
       (candidate) => candidate.commandId === input.commandId
@@ -1016,14 +931,6 @@ export class WorkerControlGateway {
         'worker_control_command_not_found',
         `Worker command not found: ${input.commandId}`,
         404
-      );
-    }
-
-    if (command.kind === 'terminal-command') {
-      throw new WorkerControlGatewayError(
-        'worker_control_terminal_command_ack_not_supported',
-        'Terminal commands must be acknowledged by posting terminal results.',
-        409
       );
     }
 
@@ -1042,67 +949,6 @@ export class WorkerControlGateway {
     state.snapshot.commands.splice(state.snapshot.commands.indexOf(command), 1);
 
     return cloneCommand(command);
-  }
-
-  /**
-   * Records one terminal command result from the authenticated worker.
-   *
-   * @param input Authenticated terminal result request.
-   * @returns Recorded terminal result.
-   */
-  public recordTerminalResult(
-    input: AuthenticatedWorkerControlInput & {
-      /** Terminal command id that produced this result. */
-      terminalCommandId: string;
-      /** Process exit code. */
-      exitCode: number;
-      /** Captured stdout. */
-      stdout: string;
-      /** Captured stderr. */
-      stderr: string;
-      /** Worker-reported duration in milliseconds. */
-      durationMs?: number | null;
-    }
-  ): WorkerControlTerminalResult {
-    const state = this.requireSession(input);
-    const terminalCommand = state.snapshot.commands.find(
-      (command) =>
-        command.kind === 'terminal-command' && command.commandId === input.terminalCommandId
-    );
-
-    if (!terminalCommand) {
-      throw new WorkerControlGatewayError(
-        'worker_control_terminal_command_not_found',
-        `Terminal command not found: ${input.terminalCommandId}`,
-        404
-      );
-    }
-
-    const result: WorkerControlTerminalResult = {
-      commandId: input.terminalCommandId,
-      completedAt: this.now(),
-      durationMs: input.durationMs ?? null,
-      exitCode: input.exitCode,
-      stderr: input.stderr,
-      stdout: input.stdout,
-    };
-
-    state.snapshot.terminalResults.push(result);
-    this.commandDeliveryRecorder?.markAcknowledged({
-      at: result.completedAt,
-      commandId: input.terminalCommandId,
-    });
-    this.recordAcceptedRecord({
-      acceptedAt: result.completedAt,
-      lineage: input.lineage,
-      operation: 'terminal_result',
-      record: result,
-      recordKey: input.terminalCommandId,
-      sequence: null,
-    });
-    state.snapshot.commands.splice(state.snapshot.commands.indexOf(terminalCommand), 1);
-
-    return { ...result };
   }
 
   /**
@@ -1768,7 +1614,7 @@ export class WorkerControlGateway {
    */
   private recordQueuedCommand(
     state: WorkerControlSessionState,
-    command: WorkerControlCommand
+    command: WorkerControlInterruptCommand
   ): void {
     this.commandDeliveryRecorder?.recordQueued({
       command,
@@ -2128,11 +1974,7 @@ function sortJsonValue(value: unknown): unknown {
  * @param command Command to clone.
  * @returns Cloned command.
  */
-function cloneCommand(command: WorkerControlCommand): WorkerControlCommand {
-  if (command.kind === 'terminal-command') {
-    return { ...command, argv: [...command.argv] };
-  }
-
+function cloneCommand(command: WorkerControlInterruptCommand): WorkerControlInterruptCommand {
   return { ...command };
 }
 
@@ -2181,7 +2023,6 @@ function cloneSnapshot(snapshot: WorkerControlSessionSnapshot): WorkerControlSes
       ...summary,
     })),
     supplyRefreshAcks: snapshot.supplyRefreshAcks.map((ack) => ({ ...ack })),
-    terminalResults: snapshot.terminalResults.map((result) => ({ ...result })),
   };
 }
 

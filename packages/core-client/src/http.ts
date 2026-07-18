@@ -23,6 +23,11 @@ export async function parseJsonResponse<TSchema extends z.ZodType>(
     if (parsedError.success) {
       throw new ApiCallError(response.status, parsedError.data.message, {
         code: parsedError.data.code,
+        details: parsedError.data.details,
+        ...(parsedError.data.path === undefined ? {} : { path: parsedError.data.path }),
+        ...(parsedError.data.requestId === undefined
+          ? {}
+          : { requestId: parsedError.data.requestId }),
       });
     }
 

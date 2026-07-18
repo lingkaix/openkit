@@ -30,7 +30,9 @@ import {
   loadRuntimeConfig,
   type RuntimeConfigSnapshot,
 } from './config/runtime-config.js';
+import { classifyGoalStepCheckpointAfterSchedulerRecovery } from './goal-routes.js';
 import { FsStore } from './lib/store.js';
+import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import { recordBootPolicySelfCheckDecisions } from './policy/permission-decisions.js';
 import {
   type OpenShellRefreshStatusCollector,
@@ -59,6 +61,7 @@ import {
   createConfiguredWorkerLifecycleRuntime,
 } from './runtime/turn-executor-factory.js';
 import { getWorkerBackendSession } from './runtime/worker-backend-sessions.js';
+import { listExportableWorkerCheckpoints } from './runtime/worker-checkpoints.js';
 import type { WorkerControlFinalStatusAcceptedInput } from './runtime/worker-control-gateway.js';
 import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js';
 import {
@@ -69,7 +72,9 @@ import {
 } from './scheduler-records.js';
 import {
   type CoreDb,
+  listExistingWorkspaceDatabaseScopes,
   openCoreDbWithIntegrityRecovery,
+  openWorkspaceDb,
   recoverExistingScopedDatabases,
 } from './storage/db.js';
 import {
@@ -314,6 +319,8 @@ const bootResult = await runBootPhases({
         } satisfies RunSchedulerRestartRecoveryInput;
         schedulerEpoch = (await runSchedulerRestartRecovery(recoveryCoreDb, recoveryInput))
           .schedulerEpoch;
+        const checkpointRecoveryFailures =
+          await classifyWorkerCheckpointsAfterSchedulerRecovery(recoveryCoreDb);
         cleanupExpiredReconnects = () =>
           runExpiredSchedulerReconnectCleanup(recoveryCoreDb, recoveryInput);
         for (const row of recoveryCoreDb.sqlite
@@ -325,7 +332,16 @@ const bootResult = await runBootPhases({
           .all() as Array<{ readonly packageSnapshotId: string }>) {
           restartCloseoutPackageSnapshots.add(row.packageSnapshotId);
         }
-        return { status: 'ok' };
+        return checkpointRecoveryFailures === 0
+          ? { status: 'ok' }
+          : {
+              status: 'degraded',
+              reason: {
+                code: 'scheduler.checkpoint_recovery_required',
+                message: `${checkpointRecoveryFailures} worker checkpoint recovery attempt(s) require inspection.`,
+                blocks: [],
+              },
+            };
       },
     },
   ],
@@ -604,6 +620,61 @@ function schedulerStoreForUserId(userId: string): FsStore {
   const store = new FsStore({ dataRoot, userId });
   schedulerStoresByUserId.set(userId, store);
   return store;
+}
+
+/**
+ * Classifies every persisted worker checkpoint after scheduler fencing has completed.
+ *
+ * @param recoveryCoreDb Fenced Core database containing scheduler authority.
+ * @returns Count of checkpoints or Workspace scans that remain recovery-required.
+ */
+async function classifyWorkerCheckpointsAfterSchedulerRecovery(
+  recoveryCoreDb: CoreDb
+): Promise<number> {
+  let failures = 0;
+
+  for (const { userId, workspaceId } of listExistingWorkspaceDatabaseScopes(dataRoot)) {
+    let workspaceDb: ReturnType<typeof openWorkspaceDb> | null = null;
+    try {
+      workspaceDb = openWorkspaceDb(dataRoot, userId, workspaceId);
+      const store = schedulerStoreForUserId(userId);
+      for (const checkpoint of listExportableWorkerCheckpoints(workspaceDb, workspaceId)) {
+        try {
+          if (checkpoint.goalId === null && checkpoint.taskId === null) {
+            await classifyDirectTaskCheckpointAfterSchedulerRecovery({
+              coreDb: recoveryCoreDb,
+              store,
+              workspaceDb,
+              checkpoint,
+            });
+          } else if (checkpoint.goalId !== null && checkpoint.taskId !== null) {
+            await classifyGoalStepCheckpointAfterSchedulerRecovery({
+              coreDb: recoveryCoreDb,
+              store,
+              workspaceDb,
+              checkpoint,
+            });
+          } else {
+            throw new Error('Worker checkpoint has only one Goal lineage owner.');
+          }
+        } catch (error) {
+          failures += 1;
+          console.warn(
+            `Checkpoint recovery_required for ${workspaceId}/${checkpoint.threadId}/${checkpoint.turnId}: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+    } catch (error) {
+      failures += 1;
+      console.warn(
+        `Workspace checkpoint scan recovery_required for ${userId}/${workspaceId}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    } finally {
+      workspaceDb?.sqlite.close();
+    }
+  }
+
+  return failures;
 }
 
 /** Releases the data-root lock when this process acquired one. */

@@ -85,12 +85,13 @@ describe('action center app API', () => {
   it('returns unified human attention rows for pending approval and question gates', async () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Needs human input');
-    const turn = store.createTurn('ws_demo', thread.id, 'Run guarded work');
+    const approvalTurn = store.createTurn('ws_demo', thread.id, 'Run guarded work');
+    const questionTurn = store.createTurn('ws_demo', thread.id, 'Request a secret');
     const approval = store.createApproval({
       id: 'ap_action_center',
       workspaceId: 'ws_demo',
       threadId: thread.id,
-      turnId: turn.id,
+      turnId: approvalTurn.id,
       kind: 'permission',
       status: 'pending',
       title: 'Approve command',
@@ -102,23 +103,31 @@ describe('action center app API', () => {
       id: 'it_action_center_approval',
       workspaceId: 'ws_demo',
       threadId: thread.id,
-      turnId: turn.id,
+      turnId: approvalTurn.id,
       type: 'approval-request',
-      status: 'in_progress',
+      status: 'completed',
       approvalRequestId: approval.id,
       title: approval.title,
       description: approval.description,
       kind: approval.kind,
       createdAt: timestamp,
-      completedAt: null,
+      completedAt: timestamp,
+    });
+    store.updateTurn(approvalTurn.id, {
+      status: 'awaiting_human',
+      humanGate: {
+        kind: 'approval',
+        approvalRequestId: approval.id,
+        itemId: approvalItem.id,
+      },
     });
     const questionItem = store.createItem({
       id: 'it_action_center_question',
       workspaceId: 'ws_demo',
       threadId: thread.id,
-      turnId: turn.id,
+      turnId: questionTurn.id,
       type: 'user-input-request',
-      status: 'in_progress',
+      status: 'completed',
       userInputRequestId: 'ui_action_center',
       prompt: 'Choose a path.',
       questions: [
@@ -128,11 +137,19 @@ describe('action center app API', () => {
           question: 'Which path should the worker use?',
           options: null,
           isOther: true,
-          isSecret: false,
+          isSecret: true,
         },
       ],
       createdAt: timestamp,
-      completedAt: null,
+      completedAt: timestamp,
+    });
+    store.updateTurn(questionTurn.id, {
+      status: 'awaiting_human',
+      humanGate: {
+        kind: 'user-input',
+        userInputRequestId: questionItem.userInputRequestId,
+        itemId: questionItem.id,
+      },
     });
     const app = createApp({ store });
 
@@ -145,7 +162,7 @@ describe('action center app API', () => {
         kind: 'approval',
         workspaceId: 'ws_demo',
         threadId: thread.id,
-        turnId: turn.id,
+        turnId: approvalTurn.id,
         itemId: approvalItem.id,
         title: 'Approve command',
         severity: 'needs_input',
@@ -156,11 +173,18 @@ describe('action center app API', () => {
         kind: 'question',
         workspaceId: 'ws_demo',
         threadId: thread.id,
-        turnId: turn.id,
+        turnId: questionTurn.id,
         itemId: questionItem.id,
         title: 'Answer required',
         severity: 'needs_input',
         source: expect.objectContaining({ type: 'protocol_item', itemId: questionItem.id }),
+        actions: expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'answer_question',
+            disabled: true,
+            reason: 'Secret answers require a future Vault-backed input contract.',
+          }),
+        ]),
       }),
     ]);
 
@@ -170,6 +194,74 @@ describe('action center app API', () => {
     expect((await app.request('/api/app/workspaces/ws_demo/action-center/questions')).status).toBe(
       404
     );
+  });
+
+  it('omits approval and question requests without an exact completed Gate tuple', async () => {
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Invalid human input gates');
+    const approvalTurn = store.createTurn('ws_demo', thread.id, 'Incomplete approval request');
+    const questionTurn = store.createTurn('ws_demo', thread.id, 'Ungated question request');
+    const approval = store.createApproval({
+      id: 'ap_incomplete_gate',
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      turnId: approvalTurn.id,
+      kind: 'permission',
+      status: 'pending',
+      title: 'Approve command',
+      description: 'Allow the worker to continue.',
+      createdAt: timestamp,
+      resolvedAt: null,
+    });
+    const approvalItem = store.createItem({
+      id: 'it_incomplete_gate_approval',
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      turnId: approvalTurn.id,
+      type: 'approval-request',
+      status: 'in_progress',
+      approvalRequestId: approval.id,
+      title: approval.title,
+      description: approval.description,
+      kind: approval.kind,
+      createdAt: timestamp,
+      completedAt: null,
+    });
+    store.updateTurn(approvalTurn.id, {
+      status: 'awaiting_human',
+      humanGate: {
+        kind: 'approval',
+        approvalRequestId: approval.id,
+        itemId: approvalItem.id,
+      },
+    });
+    store.createItem({
+      id: 'it_ungated_question',
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      turnId: questionTurn.id,
+      type: 'user-input-request',
+      status: 'completed',
+      userInputRequestId: 'ui_ungated_question',
+      prompt: 'Choose a path.',
+      questions: [
+        {
+          id: 'path',
+          header: 'Path',
+          question: 'Which path should the worker use?',
+          options: null,
+          isOther: true,
+          isSecret: false,
+        },
+      ],
+      createdAt: timestamp,
+      completedAt: timestamp,
+    });
+    const app = createApp({ store });
+
+    const res = await app.request('/api/app/workspaces/ws_demo/action-center');
+
+    expect(ListHumanAttentionResponseSchema.parse(await res.json())).toEqual({ items: [] });
   });
 
   it('omits approval and question rows after matching decisions and answers exist', async () => {
@@ -402,16 +494,8 @@ describe('action center app API', () => {
         kind: 'agent_readiness',
         severity: 'blocked',
       });
-      expect(byId.get('artifact:artifact_demo')).toMatchObject({
-        kind: 'artifact_review',
-        severity: 'needs_input',
-        source: { type: 'artifact', reviewStatus: 'pending' },
-      });
-      expect(byId.get('artifact:ar_workspace_changes_turn_1_swr_1')).toMatchObject({
-        kind: 'workspace_review',
-        severity: 'needs_input',
-        source: { type: 'artifact', reviewStatus: 'pending' },
-      });
+      expect(byId.get('artifact:artifact_demo')).toBeUndefined();
+      expect(byId.get('artifact:ar_workspace_changes_turn_1_swr_1')).toBeUndefined();
       expect(byId.has('artifact:artifact_deferred')).toBe(false);
       expect(byId.get('knowledge:knowledge_proposal_demo')).toMatchObject({
         kind: 'knowledge_review',
@@ -688,13 +772,13 @@ describe('action center app API', () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Question route metadata');
     const turn = store.createTurn('ws_demo', thread.id, 'Ask before continuing');
-    store.createItem({
+    const questionItem = store.createItem({
       id: 'it_question_route',
       workspaceId: 'ws_demo',
       threadId: thread.id,
       turnId: turn.id,
       type: 'user-input-request',
-      status: 'in_progress',
+      status: 'completed',
       userInputRequestId: 'ui_question_route',
       prompt: 'Choose the next action.',
       questions: [
@@ -708,7 +792,15 @@ describe('action center app API', () => {
         },
       ],
       createdAt: timestamp,
-      completedAt: null,
+      completedAt: timestamp,
+    });
+    store.updateTurn(turn.id, {
+      status: 'awaiting_human',
+      humanGate: {
+        kind: 'user-input',
+        userInputRequestId: questionItem.userInputRequestId,
+        itemId: questionItem.id,
+      },
     });
     const app = createApp({ store });
 
@@ -1129,23 +1221,15 @@ describe('action center app API', () => {
           status: 'pending',
         },
       });
-      expect(row?.actions).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            kind: 'open_artifact',
-            href: `/api/app/workspaces/${workspace.id}/workspace-sync/reviews/swr_durable_review`,
-          }),
-          expect.objectContaining({
-            kind: 'accept_review',
-            href: `/api/app/workspaces/${workspace.id}/workspace-sync/reviews/swr_durable_review/decision`,
-          }),
-          expect.objectContaining({
-            kind: 'defer',
-            label: 'Block',
-            href: `/api/app/workspaces/${workspace.id}/workspace-sync/reviews/swr_durable_review/decision`,
-          }),
-        ])
-      );
+      const reviewHref = `/api/app/workspaces/${workspace.id}/workspace-sync/reviews/swr_durable_review`;
+      const decisionHref = `${reviewHref}/decision`;
+      expect(row?.actions).toEqual([
+        expect.objectContaining({ kind: 'open_artifact', href: reviewHref }),
+        { kind: 'accepted', label: 'Accept', method: 'POST', href: decisionHref },
+        { kind: 'needs_refinement', label: 'Refine', method: 'POST', href: decisionHref },
+        { kind: 'rejected', label: 'Reject', method: 'POST', href: decisionHref },
+        { kind: 'blocked', label: 'Block', method: 'POST', href: decisionHref },
+      ]);
       expect(row?.actions.some((action) => action.disabled)).toBe(false);
     } finally {
       coreDb.sqlite.close();

@@ -341,7 +341,7 @@ describe('quick chat app API', () => {
       handoff: null,
       item: {
         type: 'user-input-request',
-        status: 'in_progress',
+        status: 'completed',
         prompt: 'Chat Mode needs a more specific request.',
       },
     });
@@ -358,7 +358,7 @@ describe('quick chat app API', () => {
       store.getCommandRequest('chat.start', 'req_chat_clarify', {
         threadId: 'th_demo',
         workspaceId: 'ws_demo',
-      })?.response.snapshot
+      })?.response.chatMetadata
     ).toEqual({
       downstream: null,
       resultKind: 'clarification',
@@ -380,7 +380,6 @@ describe('quick chat app API', () => {
     ]);
 
     const completedAt = new Date().toISOString();
-    store.updateItem(parsed.item.id, { status: 'completed', completedAt });
     store.updateTurn(parsed.turn.id, { status: 'completed', humanGate: null, completedAt });
 
     const replayRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {

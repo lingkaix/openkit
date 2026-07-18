@@ -1,4 +1,0 @@
-interface:
-  display_name: "OpenKit Loop Dev"
-  short_description: "Coordinate OpenKit self-improvement loops"
-  default_prompt: "Use $openkit-loop-dev to coordinate a review-gated self-improvement loop for this OpenKit repository."

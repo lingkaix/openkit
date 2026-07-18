@@ -10,7 +10,7 @@ The implementation covers the durable transcript contract under `/openkit/sessio
 
 After the Codex child starts, the shim tolerates a bounded NanoCore outage. One memory-only 256-bit process key is committed by hash on heartbeat sequence zero; after a NanoCore restart, the same shim presents that key with the exact next heartbeat sequence before replaying the blocked request. Restarting the shim creates a new key and therefore fails closed instead of claiming the old lease.
 
-The image launcher transfers `OPENKIT_CONTROL_TOKEN` to the shim through an anonymous file descriptor and starts the supervisor with a clean allowlisted environment. The Codex child process and NanoCore-issued terminal commands never receive that token or undeclared parent-process values; only Codex receives the OpenShell `OPENKIT_WORKER_INFERENCE_TOKEN` placeholder in addition to the shared non-secret runtime allowlist.
+The image launcher transfers `OPENKIT_CONTROL_TOKEN` to the shim through an anonymous file descriptor and starts the supervisor with a clean allowlisted environment. The Codex child process never receives that token or undeclared parent-process values; it receives only the OpenShell `OPENKIT_WORKER_INFERENCE_TOKEN` placeholder in addition to the shared non-secret runtime allowlist.
 
 For one clean read-write Git workspace input, the Codex shim also captures worker changes through an isolated index and publishes `workspace.patch` followed by `workspace-changes.json` under the session directory. The shim rejects ambiguous inputs, hidden or pre-existing workspace changes, Git filters, unsupported file modes, and incomplete output publication so NanoCore receives one reviewable snapshot with explicit worker lineage.
 

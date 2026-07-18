@@ -225,7 +225,6 @@ describe('OpenShellCli', () => {
           'Gateway Info\n\n  Gateway: openshell\n  Gateway endpoint: https://127.0.0.1:17670\n',
       },
       { exitCode: 0, stdout: 'Download complete\n' },
-      { exitCode: 0, stdout: 'Detached provider_github_read from openkit-as-123\n' },
     ]);
     const cli = new OpenShellCli({ runner });
 
@@ -255,15 +254,6 @@ describe('OpenShellCli', () => {
     ).resolves.toEqual({
       stdout: 'Download complete\n',
     });
-    await expect(
-      cli.detachProvider({
-        gateway: 'openshell',
-        name: 'openkit-as-123',
-        provider: 'provider_github_read',
-      })
-    ).resolves.toEqual({
-      stdout: 'Detached provider_github_read from openkit-as-123\n',
-    });
     expect(runner.calls).toEqual([
       ['--version'],
       ['status', '-g', 'a1-openshell', '--gateway-endpoint', 'https://a1.example.com:17670'],
@@ -277,22 +267,12 @@ describe('OpenShellCli', () => {
         '/sandbox/openkit/session/events.jsonl',
         '/tmp/events.jsonl',
       ],
-      [
-        'sandbox',
-        'provider',
-        'detach',
-        '--gateway',
-        'openshell',
-        'openkit-as-123',
-        'provider_github_read',
-      ],
     ]);
     expect(runner.options).toEqual([
       { timeoutMs: 30_000 },
       { timeoutMs: 30_000 },
       { timeoutMs: 30_000 },
       { timeoutMs: 120_000 },
-      { timeoutMs: 30_000 },
     ]);
   });
 

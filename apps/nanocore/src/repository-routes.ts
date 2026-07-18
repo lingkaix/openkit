@@ -33,6 +33,7 @@ import {
 } from './runtime/git-push-records.js';
 import { inspectGitPushRepository } from './runtime/git-push-repository.js';
 import {
+  commandInputHash,
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
@@ -219,98 +220,151 @@ export function registerRepositoryRoutes({
 
       const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
       try {
-        const response = await runIdempotentCommand({
-          store,
-          inflightCommands,
+        const commandScope = {
+          workspaceId,
+          repositoryResourceId: resourceId,
+          threadId: input.threadId,
+          turnId: input.turnId,
+        };
+        const ownerDigest = commandInputHash({
           command: 'git_push.approval.request',
+          actorId: store.getUserId(),
+          ...commandScope,
           requestId: input.requestId,
-          scope: {
-            workspaceId,
-            repositoryResourceId: resourceId,
-            threadId: input.threadId,
-            turnId: input.turnId,
-          },
-          input,
-          responseKind: 'approval',
-          execute: () => {
-            const repository = getWorkspaceRepositoryResource(workspaceDb, workspaceId, resourceId);
-
-            if (!repository) {
-              throw new Error(`Repository resource not found: ${resourceId}`);
-            }
-
-            const inspection = inspectGitPushRepository(repository.localPath, input.sourceRef);
-
-            if (inspection.sourceCommit !== input.commitIds.at(-1)) {
-              throw new Error('Git push source ref does not match the requested commit tip.');
-            }
-
-            const gate = createPolicyApprovalGate({
-              workspaceDb,
-              store,
-              workspaceId,
-              turnId: input.turnId,
-              action: 'repo.push',
-              reasonCode: 'repo_push_requires_human_approval',
-              title: `Approve Git push to ${input.targetBranch}`,
-              description: `Publish ${input.commitIds.join(', ')} from ${input.sourceRef} to ${input.targetBranch} on ${inspection.remoteSummary}.`,
-              subjectSummary: { kind: 'user', userId: store.getUserId() },
-              resourceSummary: {
-                kind: 'git-push-target',
+        }).slice('sha256:'.length);
+        const owner = {
+          decisionId: `pd_repo_push_${ownerDigest}`,
+          approvalId: `ap_repo_push_${ownerDigest}`,
+          approvalItemId: `it_repo_push_${ownerDigest}`,
+        };
+        let response: z.infer<typeof RequestGitPushApprovalResponseSchema>;
+        try {
+          response = await runIdempotentCommand({
+            store,
+            inflightCommands,
+            command: 'git_push.approval.request',
+            requestId: input.requestId,
+            scope: commandScope,
+            input,
+            responseKind: 'approval',
+            execute: () => {
+              if (
+                readPolicyApprovalDecision(workspaceDb, workspaceId, owner.approvalId, 'repo.push')
+              ) {
+                throw new TurnStartValidationError(
+                  'recovery_required',
+                  'The Git push approval exists without its command receipt.',
+                  409
+                );
+              }
+              const repository = getWorkspaceRepositoryResource(
+                workspaceDb,
                 workspaceId,
-                repositoryResourceId: resourceId,
-                remoteIdentity: inspection.remoteIdentity,
-                remoteName: inspection.remoteName,
-                sourceRef: input.sourceRef,
-                sourceCommit: inspection.sourceCommit,
-                targetBranch: input.targetBranch,
-                commitIds: input.commitIds,
-                remoteSummary: inspection.remoteSummary,
-              },
-              contextSummary: {
-                requestId: input.requestId,
-                workspaceId,
-                threadId: input.threadId,
-                turnId: input.turnId,
-              },
-            });
-            const approval = store.getApproval(gate.approvalId);
-
-            return RequestGitPushApprovalResponseSchema.parse({
-              approval,
-              approvalItemId: gate.approvalItemId,
-              policyDecisionId: gate.decisionId,
-            });
-          },
-          replay: (record) => {
-            const approval = store.getApproval(record.response.id);
-            const decision = readPolicyApprovalDecision(
-              workspaceDb,
-              workspaceId,
-              approval.id,
-              'repo.push'
-            );
-            const approvalItem = store
-              .listAllItems()
-              .find(
-                (item) =>
-                  item.workspaceId === workspaceId &&
-                  item.type === 'approval-request' &&
-                  item.approvalRequestId === approval.id
+                resourceId
               );
 
-            if (!decision || !approvalItem) {
-              throw new Error(`Git push approval request cannot be replayed: ${approval.id}`);
-            }
+              if (!repository) {
+                throw new Error(`Repository resource not found: ${resourceId}`);
+              }
 
-            return RequestGitPushApprovalResponseSchema.parse({
-              approval,
-              approvalItemId: approvalItem.id,
-              policyDecisionId: decision.decisionId,
-            });
-          },
-          responseId: (result) => result.approval.id,
-        });
+              const inspection = inspectGitPushRepository(repository.localPath, input.sourceRef);
+
+              if (inspection.sourceCommit !== input.commitIds.at(-1)) {
+                throw new Error('Git push source ref does not match the requested commit tip.');
+              }
+
+              const gate = createPolicyApprovalGate({
+                workspaceDb,
+                store,
+                workspaceId,
+                turnId: input.turnId,
+                ...owner,
+                reasonCode: 'repo_push_requires_human_approval',
+                title: `Approve Git push to ${input.targetBranch}`,
+                description: `Publish ${input.commitIds.join(', ')} from ${input.sourceRef} to ${input.targetBranch} on ${inspection.remoteSummary}.`,
+                subjectSummary: { kind: 'user', userId: store.getUserId() },
+                resourceSummary: {
+                  kind: 'git-push-target',
+                  workspaceId,
+                  repositoryResourceId: resourceId,
+                  remoteIdentity: inspection.remoteIdentity,
+                  remoteName: inspection.remoteName,
+                  sourceRef: input.sourceRef,
+                  sourceCommit: inspection.sourceCommit,
+                  targetBranch: input.targetBranch,
+                  commitIds: input.commitIds,
+                  remoteSummary: inspection.remoteSummary,
+                },
+                contextSummary: {
+                  requestId: input.requestId,
+                  workspaceId,
+                  threadId: input.threadId,
+                  turnId: input.turnId,
+                },
+              });
+              const approval = store.getApproval(gate.approvalId);
+
+              return RequestGitPushApprovalResponseSchema.parse({
+                approval,
+                approvalItemId: gate.approvalItemId,
+                policyDecisionId: gate.decisionId,
+              });
+            },
+            replay: (record) => {
+              const approval = store.getApproval(record.response.id);
+              const decision = readPolicyApprovalDecision(
+                workspaceDb,
+                workspaceId,
+                owner.approvalId,
+                'repo.push'
+              );
+              const approvalItem = store
+                .listThreadItems(workspaceId, input.threadId)
+                .find((item) => item.id === owner.approvalItemId);
+
+              if (
+                approval.id !== owner.approvalId ||
+                decision?.decisionId !== owner.decisionId ||
+                approvalItem?.type !== 'approval-request' ||
+                approvalItem.approvalRequestId !== owner.approvalId
+              ) {
+                throw new TurnStartValidationError(
+                  'recovery_required',
+                  'The Git push approval receipt has no exact durable owner.',
+                  409
+                );
+              }
+
+              return RequestGitPushApprovalResponseSchema.parse({
+                approval,
+                approvalItemId: approvalItem.id,
+                policyDecisionId: decision.decisionId,
+              });
+            },
+            responseId: (result) => result.approval.id,
+          });
+        } catch (error) {
+          const receipt = store.getCommandRequest(
+            'git_push.approval.request',
+            input.requestId,
+            commandScope
+          );
+          const durableOwner = readPolicyApprovalDecision(
+            workspaceDb,
+            workspaceId,
+            owner.approvalId,
+            'repo.push'
+          );
+
+          if (!receipt && durableOwner) {
+            throw new TurnStartValidationError(
+              'recovery_required',
+              'The Git push approval exists without its command receipt.',
+              409
+            );
+          }
+          throw error;
+        }
 
         return c.json(response);
       } finally {
@@ -343,8 +397,7 @@ export function registerRepositoryRoutes({
           store,
           inflightCommands,
           command: 'git_push.execute',
-          // One approval authorizes one terminal push attempt across client retries.
-          requestId: input.approvalRequestId,
+          requestId: input.requestId,
           scope: {
             workspaceId,
             repositoryResourceId: resourceId,
@@ -378,7 +431,11 @@ export function registerRepositoryRoutes({
             );
 
             if (existingRecord) {
-              return existingRecord;
+              throw new TurnStartValidationError(
+                'recovery_required',
+                'The Git push attempt exists without its command receipt.',
+                409
+              );
             }
 
             const repository = getWorkspaceRepositoryResource(workspaceDb, workspaceId, resourceId);
@@ -557,7 +614,6 @@ export function registerRepositoryRoutes({
   }
 
   registerAppApiRoute(app, 'setDefaultWorkspaceRepository', setDefaultWorkspaceRepository);
-  registerAppApiRoute(app, 'createDefaultWorkspaceRepository', setDefaultWorkspaceRepository);
 }
 
 /**

@@ -591,7 +591,7 @@ function resolveOpenShellAgentEnvironmentPackage(
         heartbeats: true,
         logs: 'summary-only',
       },
-      commands: ['interrupt', 'terminal-command'],
+      commands: ['interrupt'],
       events: [
         'worker.ready',
         'worker.heartbeat',
@@ -1775,7 +1775,6 @@ function openShellRequiredCapabilities(
     'process-policy',
     'transcript-sink',
     'worker-control',
-    'provider-attachments',
     'nanocore-inference-upstream',
     'audit-export',
   ];

@@ -19,14 +19,6 @@ export interface AgentStatusBadgeProps {
   /** Whether the active session is stale compared with the current runtime config snapshot. */
   stale?: boolean;
   status: string;
-  /** Current terminal command draft for active-session command queueing. */
-  terminalCommand?: string;
-  /** Whether a terminal command is being queued. */
-  isQueueingTerminalCommand?: boolean;
-  /** Updates the terminal command draft. */
-  onTerminalCommandChange?: (value: string) => void;
-  /** Queues the current terminal command draft. */
-  onQueueTerminalCommand?: () => void | Promise<void>;
   onRefresh: () => void | Promise<void>;
 }
 
@@ -87,12 +79,6 @@ export function AgentStatusBadge(props: AgentStatusBadgeProps): JSX.Element {
             control{' '}
             {props.backend.control?.heartbeat?.status ?? props.backend.controlMode ?? 'none'}
           </span>
-          {props.backend.control ? (
-            <span class="badge badge-outline">
-              terminal {props.backend.control.terminalResultCount}/
-              {props.backend.control.queuedCommandCount}
-            </span>
-          ) : null}
         </>
       ) : null}
       {props.stale ? (
@@ -119,31 +105,6 @@ export function AgentStatusBadge(props: AgentStatusBadgeProps): JSX.Element {
       >
         Refresh health
       </button>
-      {props.backend?.control && props.onQueueTerminalCommand ? (
-        <form
-          aria-label="Agent session terminal command"
-          class="agent-terminal-command"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void props.onQueueTerminalCommand?.();
-          }}
-        >
-          <input
-            aria-label="Terminal command"
-            class="input input-xs input-bordered agent-terminal-command-input"
-            disabled={props.isQueueingTerminalCommand}
-            onInput={(event) => props.onTerminalCommandChange?.(event.currentTarget.value)}
-            value={props.terminalCommand ?? ''}
-          />
-          <button
-            class="btn btn-outline btn-xs"
-            disabled={props.isQueueingTerminalCommand || !(props.terminalCommand ?? '').trim()}
-            type="submit"
-          >
-            Queue terminal
-          </button>
-        </form>
-      ) : null}
     </section>
   );
 }

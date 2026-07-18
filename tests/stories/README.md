@@ -15,7 +15,7 @@ Each story must start with scalar front matter that the story runner can parse w
 ```yaml
 ---
 id: story-web-local-turn
-title: Complete a local worker turn from the Web UI
+title: Inspect a local workspace from the Web UI
 persona: Product evaluator using a clean local OpenKit workspace
 entrypoint: web
 default_tool: playwright
@@ -38,14 +38,6 @@ A story without a matching adapter is an agentic story candidate. An AI agent ma
 Do not generate or commit a deterministic adapter as a side effect of running an agentic story.
 
 When a story becomes stable, high-value, and cheap enough to repeat, add a deterministic adapter as a normal reviewed code change.
-
-The real Codex Goal Mode story has a manual MCP-first runtime command:
-
-```bash
-pnpm -w test:stories:real-codex
-```
-
-The command skips by default and requires explicit real Codex plus provider quota opt-in, an existing NanoCore URL and local data root, non-interactive `ssh a1`, a clean disposable repository, and a writable evidence directory before it streams server-owned OAuth and runs the bounded Goal flow.
 
 The real OpenShell/Codex Task Mode story has a manual runner:
 
@@ -73,12 +65,6 @@ The command skips by default and requires explicit real provider plus provider q
 
 For agentic-only story edits, run `pnpm -w check:repo` at minimum and make sure the story metadata still matches the required shape.
 
-The deterministic MCP stories have a direct command:
-
-```bash
-pnpm -w test:stories:mcp
-```
-
 ## Authoring Rules
 
 - Write stories in English Markdown.
@@ -92,13 +78,9 @@ pnpm -w test:stories:mcp
 
 ## Current Stories
 
-- `chat-mode-mcp-smoke.story.md`: deterministic MCP-backed Chat Mode acceptance flow covering knowledge-backed answers, bounded clarification, read-only repository file-list and file-read answers, Action Center projection, Task Mode handoff, and Goal Mode handoff.
-- `goal-mode-real-codex-release.story.md`: opt-in MCP-backed real Codex Goal kernel validation covering server-owned OAuth, strict provider binding, one bounded OpenShell worker task, workspace and Goal reviews, AEP boundaries, capability usage, audit and runtime evidence, exact repository output, and redaction.
-- `goal-mode-mcp-smoke.story.md`: deterministic MCP-backed Goal Mode acceptance flow covering status, diagnostics, repository linking, plan approval, one bounded step, Action Center, evidence, and artifact reads.
 - `nanocore-restart-reconnection.story.md`: opt-in Core Client acceptance story for one real remote OpenShell/Codex Task that reconnects, completes, and cleans its original public backend handle after a local NanoCore restart.
-- `openkit-local-self-check.story.md`: deterministic local Web/NanoCore self-check flow backed by `tests/story-runner/openkit-local-self-check.spec.ts`.
+- `openkit-agent-skill-progressive-discovery.story.md`: agentic-only real Codex acceptance flow proving progressive Skill loading, CLI operation discovery and description, one workspace mutation, and durable public readback without MCP or a dedicated runner.
+- `openkit-local-self-check.story.md`: deterministic local Web/NanoCore Workspace, Thread, and diagnostics self-check backed by `tests/story-runner/openkit-local-self-check.spec.ts`.
 - `pi-ai-gateway-real-provider.story.md`: opt-in real-provider validation for NanoCore public gateway routing through pi-ai, backed by `tests/story-runner/pi-ai-real-provider-runner.mjs`.
-- `task-mode-real-worker-release.story.md`: opt-in MCP-backed real OpenShell/Codex Task Mode validation against an existing NanoCore deployment and disposable repository.
-- `task-mode-mcp-smoke.story.md`: deterministic MCP-backed Task Mode acceptance flow covering `openkit.start_task`, bounded self-check work, Action Center gates, artifact completion, and Task-to-Goal escalation.
+- `task-mode-real-worker-release.story.md`: opt-in App API and Core Client real OpenShell/Codex Task Mode validation against an existing NanoCore deployment and disposable repository.
 - `worker-mcp-governed-tool-use.story.md`: agentic-only Worker MCP acceptance story covering governed tool calls, approval-required tools, audit evidence, usage rows, and credential redaction.
-- `workspace-portability-release.story.md`: deterministic MCP-backed release acceptance story covering workspace export, cross-deployment import, repository re-binding, lineage evidence, and redaction checks, with vault reference re-binding retained for the full agentic seeded path.

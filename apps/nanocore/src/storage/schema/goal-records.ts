@@ -123,6 +123,8 @@ export const goalTasks = sqliteTable(
     planItemId: text('plan_item_id').notNull(),
     /** Goal task lifecycle status. */
     status: text('status').$type<GoalTaskStatus>().notNull(),
+    /** Latest closed Human Gate response carried into the next Task attempt. */
+    latestGateContextItemId: text('latest_gate_context_item_id'),
     /** Human-readable task title. */
     title: text('title').notNull(),
     /** Worker-facing task objective. */

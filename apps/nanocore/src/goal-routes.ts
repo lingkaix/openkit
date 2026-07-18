@@ -26,7 +26,7 @@ import {
   type ThreadGoalSummary,
   ThreadGoalSummaryResponseSchema,
 } from '@openkit/app-api-schemas';
-import type { TurnSchema } from '@openkit/protocol';
+import type { StopReason, TurnSchema } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import type { z } from 'zod';
 
@@ -104,9 +104,9 @@ import {
 } from './runtime/worker-checkpoints.js';
 import {
   clearWorkerCheckpointAfterTerminalState,
-  recoverAcceptedWorkerCheckpointStopReason,
+  recoverWorkerCheckpointStopReason,
+  resolveInterruptedWorkerRetryDecision,
 } from './runtime/worker-recovery.js';
-import { workerTurnStageForStopReason } from './runtime/worker-stage.js';
 import { runWorkerTurnLoop } from './runtime/worker-turn-loop.js';
 import { completeSchedulerLeaseForTerminalTurn } from './scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
@@ -358,12 +358,6 @@ function buildThreadGoalSummary(
 /** Public response returned by one Goal step command. */
 type GoalStepResponse = z.output<typeof RunThreadGoalStepResponseSchema>;
 
-/** Immutable result portion retained for exact Goal step replay. */
-type GoalStepResult = GoalStepResponse['result'];
-
-/** Bounded command snapshot that names the original Goal. */
-type GoalStepSnapshot = GoalStepResult & { readonly goalId: string };
-
 /**
  * Derives the reserved worker Turn from one authenticated Goal step command.
  *
@@ -402,97 +396,33 @@ function goalStepRecoveryError(message: string): TurnStartValidationError {
 }
 
 /**
- * Parses the bounded snapshot from one completed Goal step receipt.
+ * Projects one completed Goal step receipt through its exact Goal owner.
  *
- * @param record Completed command receipt.
- * @returns Validated Goal step snapshot.
- * @throws TurnStartValidationError when receipt identity or shape is contradictory.
- */
-function parseGoalStepSnapshot(record: CommandRequestRecord): GoalStepSnapshot {
-  const raw = record.response.snapshot;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    throw goalStepRecoveryError('Goal step receipt has no bounded result snapshot.');
-  }
-  const goalId = Reflect.get(raw, 'goalId');
-  const result = RunThreadGoalStepResponseSchema.shape.result.safeParse(raw);
-  if (
-    typeof goalId !== 'string' ||
-    goalId.length === 0 ||
-    !result.success ||
-    record.response.kind !== 'turn' ||
-    record.response.id !== result.data.turnId
-  ) {
-    throw goalStepRecoveryError('Goal step receipt contradicts its result identity.');
-  }
-
-  return { goalId, ...result.data };
-}
-
-/**
- * Projects one bounded Goal step result through its durable Goal, Task, Turn, and Review owners.
- *
- * @param input Snapshot and exact command scope.
- * @returns Schema-valid result plus the original Goal's current projection.
- * @throws TurnStartValidationError when a named owner is missing or contradictory.
+ * @param input Receipt and exact command scope.
+ * @returns Current projection of the receipt-named Goal.
+ * @throws TurnStartValidationError when the receipt or Goal owner is contradictory.
  */
 function projectGoalStepResponse(input: {
-  readonly store: FsStore;
   readonly workspaceDb: WorkspaceDb;
   readonly workspaceId: string;
   readonly threadId: string;
-  readonly snapshot: GoalStepSnapshot;
+  readonly record: CommandRequestRecord;
 }): GoalStepResponse {
+  if (input.record.response.kind !== 'goal') {
+    throw goalStepRecoveryError('Goal step receipt contradicts the metadata-only Goal contract.');
+  }
   const goal = buildThreadGoalSummary(
     input.workspaceDb,
     input.workspaceId,
     input.threadId,
-    input.snapshot.goalId
+    input.record.response.id
   );
-  const task = listGoalTasks(input.workspaceDb, {
-    workspaceId: input.workspaceId,
-    threadId: input.threadId,
-    goalId: input.snapshot.goalId,
-  }).find((candidate) => candidate.taskId === input.snapshot.taskId);
-  let turnExists = false;
-  try {
-    input.store.getTurn(input.workspaceId, input.threadId, input.snapshot.turnId);
-    turnExists = true;
-  } catch {
-    turnExists = false;
-  }
-  const review = input.snapshot.reviewId
-    ? listGoalReviewRecordsForTask(input.workspaceDb, {
-        workspaceId: input.workspaceId,
-        threadId: input.threadId,
-        goalId: input.snapshot.goalId,
-        taskId: input.snapshot.taskId,
-      }).find((candidate) => candidate.reviewId === input.snapshot.reviewId)
-    : null;
 
-  if (
-    !goal ||
-    !task ||
-    !turnExists ||
-    (input.snapshot.reviewId !== null &&
-      (!review ||
-        review.turnId !== input.snapshot.turnId ||
-        review.taskId !== input.snapshot.taskId))
-  ) {
-    throw goalStepRecoveryError('Goal step result cannot prove its original owner tuple.');
+  if (!goal) {
+    throw goalStepRecoveryError('Goal step receipt is missing its Goal owner.');
   }
 
-  return RunThreadGoalStepResponseSchema.parse({
-    goal,
-    result: {
-      taskId: input.snapshot.taskId,
-      turnId: input.snapshot.turnId,
-      outcome: input.snapshot.outcome,
-      shouldStop: input.snapshot.shouldStop,
-      stopReason: input.snapshot.stopReason,
-      evidence: input.snapshot.evidence,
-      reviewId: input.snapshot.reviewId,
-    },
-  });
+  return RunThreadGoalStepResponseSchema.parse({ goal });
 }
 
 /**
@@ -503,7 +433,6 @@ function projectGoalStepResponse(input: {
  * @throws Error when the durable Task graph contradicts the stop decision or persistence fails.
  */
 function commitGoalStepOwnerOutcome(input: {
-  readonly store: FsStore;
   readonly workspaceDb: WorkspaceDb;
   readonly workspaceId: string;
   readonly threadId: string;
@@ -634,6 +563,21 @@ function commitGoalStepOwnerOutcome(input: {
           break;
         }
       }
+      if (
+        !hasCommittedGoalStepOwnerOutcome({
+          workspaceDb: input.workspaceDb,
+          workspaceId: input.workspaceId,
+          threadId: input.threadId,
+          requestId: input.requestId,
+          goalId: input.goal.goalId,
+          taskId: input.task.taskId,
+          turnId: input.turnId,
+          stopDecision: input.stopDecision,
+          evidence: input.evidence,
+        })
+      ) {
+        throw new Error('Goal owner transaction produced a contradictory state.');
+      }
     })();
   } catch {
     throw new Error('Goal owner commit failed after the worker completed.');
@@ -649,215 +593,345 @@ function commitGoalStepOwnerOutcome(input: {
     throw new Error('Goal summary is unavailable after the worker owner commit.');
   }
 
-  return RunThreadGoalStepResponseSchema.parse({
-    goal: summary,
-    result: {
-      taskId: input.task.taskId,
-      turnId: input.turnId,
-      outcome: decision.outcome,
-      shouldStop: decision.shouldStop,
-      stopReason: decision.stopReason,
-      evidence: input.evidence,
-      reviewId: decision.outcome === 'review' ? `review_${input.turnId}` : null,
-    },
-  });
+  return RunThreadGoalStepResponseSchema.parse({ goal: summary });
 }
 
 /**
- * Reconstructs a missing Goal step receipt only from a complete checkpoint owner tuple.
+ * Checks whether an already-committed Goal step matches its worker stop decision.
  *
- * @param input Request-bound checkpoint and exact command scope.
- * @returns Schema-valid response reconstructed without another worker launch.
- * @throws TurnStartValidationError when the checkpoint or business owners are incomplete.
+ * @param input Goal and Task identity, Review, and worker evidence owners.
+ * @returns True only for the exact post-commit state produced by the existing Goal owner transaction.
  */
-function recoverGoalStepFromCheckpoint(input: {
-  readonly coreDb: CoreDb;
-  readonly store: FsStore;
+function hasCommittedGoalStepOwnerOutcome(input: {
   readonly workspaceDb: WorkspaceDb;
   readonly workspaceId: string;
   readonly threadId: string;
   readonly requestId: string;
-  readonly requestInputHash: string;
+  readonly goalId: string;
+  readonly taskId: string;
   readonly turnId: string;
-  readonly checkpoint: WorkerCheckpointRecord;
-}): GoalStepResponse {
-  const { checkpoint } = input;
-  if (
-    checkpoint.requestId !== input.requestId ||
-    checkpoint.requestInputHash !== input.requestInputHash ||
-    checkpoint.turnId !== input.turnId ||
-    !checkpoint.goalId ||
-    !checkpoint.taskId
-  ) {
-    throw goalStepRecoveryError('Goal step checkpoint contradicts its command identity.');
-  }
-  const goal = getGoalRecord(
-    input.workspaceDb,
-    input.workspaceId,
-    input.threadId,
-    checkpoint.goalId
-  );
+  readonly stopDecision: StopAfterTurnDecision;
+  readonly evidence: {
+    readonly itemIds: readonly string[];
+    readonly artifactIds: readonly string[];
+  };
+}): boolean {
+  const goal = getGoalRecord(input.workspaceDb, input.workspaceId, input.threadId, input.goalId);
   const tasks = listGoalTasks(input.workspaceDb, {
     workspaceId: input.workspaceId,
     threadId: input.threadId,
+    goalId: input.goalId,
+  });
+  const task = tasks.find((candidate) => candidate.taskId === input.taskId);
+  if (!goal || !task) {
+    return false;
+  }
+  const decision = createWorkerCoordinatorGoalStopDecision({
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    requestId: input.requestId,
+    goalId: input.goalId,
+    taskId: input.taskId,
+    turnId: input.turnId,
+    stopDecision: input.stopDecision,
+    hasOtherIncompleteTasksAfterAddressedTaskCompletion: tasks.some(
+      (candidate) => candidate.taskId !== input.taskId && candidate.status !== 'completed'
+    ),
+    evidence: input.evidence,
+  });
+  const reviews = listGoalReviewRecordsForTask(input.workspaceDb, {
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    goalId: input.goalId,
+    taskId: input.taskId,
+  }).filter((review) => review.turnId === input.turnId);
+
+  switch (decision.outcome) {
+    case 'review': {
+      const review = reviews[0];
+      return (
+        reviews.length === 1 &&
+        review?.reviewId === `review_${input.turnId}` &&
+        review.createdByRequestId === input.requestId &&
+        review.resolvedAt === null &&
+        JSON.stringify(review.itemIds) === JSON.stringify(input.evidence.itemIds) &&
+        JSON.stringify(review.artifactIds) === JSON.stringify(input.evidence.artifactIds) &&
+        goal.status === 'reviewing' &&
+        goal.currentTaskId === input.taskId &&
+        goal.terminalStopReason === null &&
+        task.status === 'reviewing'
+      );
+    }
+    case 'ask_user':
+      return (
+        reviews.length === 0 &&
+        goal.status === 'awaiting_user' &&
+        goal.currentTaskId === input.taskId &&
+        goal.terminalStopReason === null &&
+        task.status === 'running'
+      );
+    case 'block':
+      return (
+        reviews.length === 0 &&
+        goal.status === (decision.stopReason === 'error' ? 'failed' : 'blocked') &&
+        goal.currentTaskId === null &&
+        goal.terminalStopReason === decision.stopReason &&
+        task.status === (decision.stopReason === 'error' ? 'failed' : 'blocked')
+      );
+    case 'abort':
+      return (
+        reviews.length === 0 &&
+        goal.status === 'aborted' &&
+        goal.currentTaskId === null &&
+        goal.terminalStopReason === 'aborted' &&
+        task.status === 'failed'
+      );
+    case 'continue':
+      return (
+        reviews.length === 0 &&
+        goal.status === 'running' &&
+        goal.currentTaskId === null &&
+        goal.terminalStopReason === null &&
+        task.status === 'completed' &&
+        tasks.some((candidate) => candidate.status === 'ready')
+      );
+    case 'complete':
+      return (
+        reviews.length === 0 &&
+        goal.status === 'completed' &&
+        goal.currentTaskId === null &&
+        goal.terminalStopReason === 'completed' &&
+        tasks.every((candidate) => candidate.status === 'completed')
+      );
+  }
+}
+
+/**
+ * Classifies one Goal step checkpoint after scheduler restart fencing.
+ *
+ * @param input Exact Core, product, Workspace, and checkpoint owners.
+ * @returns `live` for a reconnectable or human-gated Turn, otherwise `complete` after receipt-first cleanup.
+ * @throws TurnStartValidationError when the durable owner tuple cannot prove one safe outcome.
+ */
+export async function classifyGoalStepCheckpointAfterSchedulerRecovery(input: {
+  readonly coreDb: CoreDb;
+  readonly store: FsStore;
+  readonly workspaceDb: WorkspaceDb;
+  readonly checkpoint: WorkerCheckpointRecord;
+}): Promise<'complete' | 'live'> {
+  const { checkpoint } = input;
+  if (
+    !checkpoint.goalId ||
+    !checkpoint.taskId ||
+    checkpoint.iteration !== 0 ||
+    checkpoint.requestInputHash !== commandInputHash({}) ||
+    checkpoint.turnId !==
+      goalStepTurnId({
+        store: input.store,
+        workspaceId: checkpoint.workspaceId,
+        threadId: checkpoint.threadId,
+        requestId: checkpoint.requestId,
+      })
+  ) {
+    throw goalStepRecoveryError('The boot Goal checkpoint contradicts its command identity.');
+  }
+
+  const scope = { workspaceId: checkpoint.workspaceId, threadId: checkpoint.threadId };
+  const receipt = input.store.getCommandRequest(
+    'goal.step',
+    checkpoint.requestId,
+    scope,
+    input.workspaceDb
+  );
+  const retryDecision = resolveInterruptedWorkerRetryDecision(
+    input.coreDb,
+    input.store,
+    input.workspaceDb,
+    checkpoint
+  );
+  if (retryDecision.status === 'reconnect-pending') {
+    if (receipt) {
+      throw goalStepRecoveryError(
+        'The reconnectable Goal checkpoint already has a terminal command receipt.'
+      );
+    }
+    return 'live';
+  }
+  if (
+    receipt &&
+    (receipt.inputHash !== checkpoint.requestInputHash ||
+      receipt.response.kind !== 'goal' ||
+      receipt.response.id !== checkpoint.goalId)
+  ) {
+    throw goalStepRecoveryError('The boot Goal receipt contradicts its checkpoint owner.');
+  }
+
+  let stopReason: StopReason;
+  try {
+    stopReason = recoverWorkerCheckpointStopReason(
+      input.coreDb,
+      input.store,
+      input.workspaceDb,
+      checkpoint
+    );
+  } catch (error) {
+    throw goalStepRecoveryError(
+      `The boot Goal checkpoint has no complete worker owner tuple: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  const contextAssembly = parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary);
+  const currentEvidence = collectWorkerTurnEvidence(
+    input.store.listThreadItems(checkpoint.workspaceId, checkpoint.threadId),
+    checkpoint.turnId
+  );
+  const evidence =
+    checkpoint.stage === 'running_worker'
+      ? currentEvidence
+      : parseWorkerCheckpointEvidence(checkpoint.diagnosticsSummary);
+  if (
+    !contextAssembly ||
+    !evidence ||
+    evidence.itemIds.some((itemId) => !currentEvidence.itemIds.includes(itemId)) ||
+    evidence.artifactIds.some((artifactId) => !currentEvidence.artifactIds.includes(artifactId))
+  ) {
+    throw goalStepRecoveryError('The boot Goal checkpoint evidence is incomplete.');
+  }
+
+  const goal = getGoalRecord(
+    input.workspaceDb,
+    checkpoint.workspaceId,
+    checkpoint.threadId,
+    checkpoint.goalId
+  );
+  const tasks = listGoalTasks(input.workspaceDb, {
+    workspaceId: checkpoint.workspaceId,
+    threadId: checkpoint.threadId,
     goalId: checkpoint.goalId,
   });
   const task = tasks.find((candidate) => candidate.taskId === checkpoint.taskId);
-  const reviews = task
-    ? listGoalReviewRecordsForTask(input.workspaceDb, {
-        workspaceId: input.workspaceId,
-        threadId: input.threadId,
-        goalId: checkpoint.goalId,
-        taskId: task.taskId,
-      })
-    : [];
-  const review = reviews.find(
-    (candidate) =>
-      candidate.turnId === checkpoint.turnId &&
-      candidate.createdByRequestId === checkpoint.requestId
-  );
-  let outcome: GoalStepResult['outcome'] | null = null;
-
   if (!goal || !task) {
-    throw goalStepRecoveryError('Goal step checkpoint is missing its business owner tuple.');
+    throw goalStepRecoveryError('The boot Goal checkpoint is missing its Goal or Task owner.');
   }
-  let turn: TurnReadModel;
-  try {
-    turn = input.store.getTurn(input.workspaceId, input.threadId, checkpoint.turnId);
-  } catch {
-    throw goalStepRecoveryError('Goal step checkpoint is missing its worker Turn.');
+  const stopDecision = shouldStopAfterTurn({
+    stopReason,
+    reviewRequired: task.reviewPolicy.required,
+    remainingWorkerIterations: 0,
+  });
+  if (stopDecision.outcome === 'continue') {
+    throw goalStepRecoveryError('The boot Goal checkpoint exceeds its bounded worker iteration.');
   }
-  const recoveringAcceptedFinalStatus =
-    checkpoint.stage === 'running_worker' && checkpoint.stopReason === null;
-  let stopReason = checkpoint.stopReason;
-  if (recoveringAcceptedFinalStatus) {
-    try {
-      stopReason = recoverAcceptedWorkerCheckpointStopReason(
-        input.coreDb,
-        input.store,
-        input.workspaceDb,
-        checkpoint
-      );
-    } catch {
-      throw goalStepRecoveryError('Goal step checkpoint has no complete accepted worker closeout.');
-    }
-  }
-  if (
-    !stopReason ||
-    (!recoveringAcceptedFinalStatus &&
-      checkpoint.stage !== workerTurnStageForStopReason(stopReason))
-  ) {
-    throw goalStepRecoveryError('Goal step checkpoint contradicts its terminal outcome.');
-  }
-  const evidence =
-    parseWorkerCheckpointEvidence(checkpoint.diagnosticsSummary) ??
-    (recoveringAcceptedFinalStatus
-      ? collectWorkerTurnEvidence(
-          input.store.listThreadItems(input.workspaceId, input.threadId),
-          checkpoint.turnId
-        )
-      : null);
-  if (!evidence) {
-    throw goalStepRecoveryError('Goal step checkpoint is missing its terminal evidence.');
-  }
-  const turnMatchesStopReason =
-    ((stopReason === 'completed' || stopReason === 'length' || stopReason === 'budget_exhausted') &&
-      turn.status === 'completed') ||
-    (stopReason === 'error' && turn.status === 'failed') ||
-    (stopReason === 'aborted' && turn.status === 'cancelled') ||
-    (stopReason === 'ask_user' && turn.status === 'awaiting_human');
-  if (!turnMatchesStopReason) {
-    throw goalStepRecoveryError('Goal step Turn contradicts its canonical StopReason.');
-  }
-  if (
+  const reviews = listGoalReviewRecordsForTask(input.workspaceDb, {
+    workspaceId: checkpoint.workspaceId,
+    threadId: checkpoint.threadId,
+    goalId: checkpoint.goalId,
+    taskId: checkpoint.taskId,
+  }).filter((review) => review.turnId === checkpoint.turnId);
+  const uncommitted =
     goal.status === 'running' &&
-    goal.currentTaskId === task.taskId &&
+    goal.currentTaskId === checkpoint.taskId &&
+    goal.terminalStopReason === null &&
     task.status === 'running' &&
-    reviews.length === 0
-  ) {
-    const contextAssembly = parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary);
-    if (!contextAssembly) {
-      throw goalStepRecoveryError('Goal step checkpoint is missing its context assembly proof.');
+    reviews.length === 0;
+
+  if (stopReason === 'ask_user') {
+    if (
+      !receipt ||
+      !hasCommittedGoalStepOwnerOutcome({
+        workspaceDb: input.workspaceDb,
+        workspaceId: checkpoint.workspaceId,
+        threadId: checkpoint.threadId,
+        requestId: checkpoint.requestId,
+        goalId: checkpoint.goalId,
+        taskId: checkpoint.taskId,
+        turnId: checkpoint.turnId,
+        stopDecision,
+        evidence,
+      })
+    ) {
+      throw goalStepRecoveryError('The active Goal Gate has no complete command owner tuple.');
     }
-    return commitGoalStepOwnerOutcome({
-      store: input.store,
+    projectGoalStepResponse({
       workspaceDb: input.workspaceDb,
-      workspaceId: input.workspaceId,
-      threadId: input.threadId,
-      requestId: input.requestId,
-      goal,
-      task,
-      tasks,
-      turnId: checkpoint.turnId,
-      stopDecision: shouldStopAfterTurn({
-        stopReason,
-        reviewRequired: task.reviewPolicy.required,
-        remainingWorkerIterations: 0,
-      }),
-      evidence,
-      contextAssembly,
+      workspaceId: checkpoint.workspaceId,
+      threadId: checkpoint.threadId,
+      record: receipt,
     });
-  }
-  if (
-    checkpoint.stage === 'completed' &&
-    checkpoint.stopReason === 'completed' &&
-    goal.status === 'reviewing' &&
-    goal.currentTaskId === task.taskId &&
-    task.status === 'reviewing' &&
-    review
-  ) {
-    outcome = 'review';
-  } else if (
-    checkpoint.stage === 'waiting_for_user' &&
-    checkpoint.stopReason === 'ask_user' &&
-    goal.status === 'awaiting_user' &&
-    goal.currentTaskId === task.taskId &&
-    task.status === 'running'
-  ) {
-    outcome = 'ask_user';
-  } else if (
-    checkpoint.stage === 'completed' &&
-    checkpoint.stopReason === 'completed' &&
-    task.status === 'completed' &&
-    goal.currentTaskId === null &&
-    (goal.status === 'running' || goal.status === 'completed')
-  ) {
-    outcome = goal.status === 'completed' ? 'complete' : 'continue';
-  } else if (
-    (stopReason === 'error' || stopReason === 'length' || stopReason === 'budget_exhausted') &&
-    goal.status === (stopReason === 'error' ? 'failed' : 'blocked') &&
-    goal.currentTaskId === null &&
-    task.status === (stopReason === 'error' ? 'failed' : 'blocked')
-  ) {
-    outcome = 'block';
-  } else if (
-    checkpoint.stage === 'aborted' &&
-    checkpoint.stopReason === 'aborted' &&
-    goal.status === 'aborted' &&
-    goal.currentTaskId === null
-  ) {
-    outcome = 'abort';
+    return 'live';
   }
 
-  if (!outcome) {
-    throw goalStepRecoveryError('Goal step checkpoint has no complete accepted closeout.');
+  if (!receipt && uncommitted) {
+    input.workspaceDb.sqlite.transaction(() => {
+      commitGoalStepOwnerOutcome({
+        workspaceDb: input.workspaceDb,
+        workspaceId: checkpoint.workspaceId,
+        threadId: checkpoint.threadId,
+        requestId: checkpoint.requestId,
+        goal,
+        task,
+        tasks,
+        turnId: checkpoint.turnId,
+        stopDecision,
+        evidence,
+        contextAssembly,
+      });
+      input.store.recordCommandRequest(
+        {
+          command: 'goal.step',
+          requestId: checkpoint.requestId,
+          scope,
+          inputHash: checkpoint.requestInputHash,
+          response: { kind: 'goal', id: checkpoint.goalId! },
+        },
+        input.workspaceDb
+      );
+    })();
+  } else {
+    if (
+      !hasCommittedGoalStepOwnerOutcome({
+        workspaceDb: input.workspaceDb,
+        workspaceId: checkpoint.workspaceId,
+        threadId: checkpoint.threadId,
+        requestId: checkpoint.requestId,
+        goalId: checkpoint.goalId,
+        taskId: checkpoint.taskId,
+        turnId: checkpoint.turnId,
+        stopDecision,
+        evidence,
+      })
+    ) {
+      throw goalStepRecoveryError('The boot Goal checkpoint contradicts its mode owner tuple.');
+    }
+    if (!receipt) {
+      input.store.recordCommandRequest(
+        {
+          command: 'goal.step',
+          requestId: checkpoint.requestId,
+          scope,
+          inputHash: checkpoint.requestInputHash,
+          response: { kind: 'goal', id: checkpoint.goalId },
+        },
+        input.workspaceDb
+      );
+    } else {
+      projectGoalStepResponse({
+        workspaceDb: input.workspaceDb,
+        workspaceId: checkpoint.workspaceId,
+        threadId: checkpoint.threadId,
+        record: receipt,
+      });
+    }
   }
-  return projectGoalStepResponse({
-    store: input.store,
-    workspaceDb: input.workspaceDb,
-    workspaceId: input.workspaceId,
-    threadId: input.threadId,
-    snapshot: {
-      goalId: checkpoint.goalId,
-      taskId: task.taskId,
+
+  if (
+    !(await clearWorkerCheckpointAfterTerminalState(input.workspaceDb, {
+      workspaceId: checkpoint.workspaceId,
+      threadId: checkpoint.threadId,
       turnId: checkpoint.turnId,
-      outcome,
-      shouldStop: outcome !== 'continue',
-      stopReason,
-      evidence: { itemIds: [...evidence.itemIds], artifactIds: [...evidence.artifactIds] },
-      reviewId: outcome === 'review' ? (review?.reviewId ?? null) : null,
-    },
-  });
+    }))
+  ) {
+    throw goalStepRecoveryError('The boot Goal checkpoint is not ready for cleanup.');
+  }
+  return 'complete';
 }
 
 /**
@@ -1057,8 +1131,7 @@ function runGoalLifecycleCommand(input: {
         receipt.scope.workspaceId !== input.workspaceId ||
         receipt.scope.threadId !== input.threadId ||
         Object.keys(receipt.scope).length !== 2 ||
-        receipt.response.kind !== 'goal' ||
-        receipt.response.snapshot !== undefined
+        receipt.response.kind !== 'goal'
       ) {
         throw new TurnStartValidationError(
           'recovery_required',
@@ -1655,7 +1728,7 @@ export function registerGoalRoutes({
             repositoryWorkspaceDb,
           }).response,
         replay: (record) => {
-          if (record.response.kind !== 'goal' || record.response.snapshot !== undefined) {
+          if (record.response.kind !== 'goal') {
             throw new TurnStartValidationError(
               'recovery_required',
               'Goal start receipt has invalid response lineage.',
@@ -1809,7 +1882,7 @@ export function registerGoalRoutes({
             });
           },
           replay: (record) => {
-            if (record.response.kind !== 'goal_plan' || record.response.snapshot !== undefined) {
+            if (record.response.kind !== 'goal_plan') {
               throw new GoalPlanApprovalError(
                 'recovery_required',
                 'Goal Plan receipt has invalid response lineage.'
@@ -1935,8 +2008,7 @@ export function registerGoalRoutes({
           replay: (record) => {
             if (
               record.response.kind !== 'goal_plan' ||
-              record.response.id !== parsed.data.planItemId ||
-              record.response.snapshot !== undefined
+              record.response.id !== parsed.data.planItemId
             ) {
               throw new GoalPlanApprovalError(
                 'recovery_required',
@@ -2082,7 +2154,7 @@ export function registerGoalRoutes({
             return buildGoalPlanRevisionResponse(workspaceDb, workspaceId, threadId, revised);
           },
           replay: (record) => {
-            if (record.response.kind !== 'goal' || record.response.snapshot !== undefined) {
+            if (record.response.kind !== 'goal') {
               throw new GoalPlanApprovalError(
                 'recovery_required',
                 'Goal Plan revision receipt has invalid response lineage.'
@@ -2270,16 +2342,14 @@ export function registerGoalRoutes({
           requestId: parsed.data.requestId,
           scope: { workspaceId, threadId },
           input: {},
-          responseKind: 'turn',
-          responseId: (result) => result.result.turnId,
-          responseSnapshot: (result) => ({ goalId: result.goal.goalId, ...result.result }),
+          responseKind: 'goal',
+          responseId: (result) => result.goal.goalId,
           replay: (record) =>
             projectGoalStepResponse({
-              store,
               workspaceDb,
               workspaceId,
               threadId,
-              snapshot: parseGoalStepSnapshot(record),
+              record,
             }),
           execute: async () => {
             const checkpoint = getWorkerCheckpoint(
@@ -2289,17 +2359,21 @@ export function registerGoalRoutes({
               reservedTurnId
             );
             if (checkpoint) {
-              return recoverGoalStepFromCheckpoint({
-                coreDb,
-                store,
-                workspaceDb,
-                workspaceId,
-                threadId,
-                requestId: parsed.data.requestId,
-                requestInputHash,
-                turnId: reservedTurnId,
-                checkpoint,
-              });
+              throw goalStepRecoveryError(
+                'Goal step effects exist without a completed command receipt.'
+              );
+            }
+            let reservedTurnExists = false;
+            try {
+              store.getTurn(workspaceId, threadId, reservedTurnId);
+              reservedTurnExists = true;
+            } catch {
+              reservedTurnExists = false;
+            }
+            if (reservedTurnExists) {
+              throw goalStepRecoveryError(
+                'Goal step Turn exists without a completed command receipt.'
+              );
             }
             const activeTurn = store.listThreadTurns(workspaceId, threadId).find(isNonTerminalTurn);
             if (activeTurn) {
@@ -2349,6 +2423,7 @@ export function registerGoalRoutes({
               remainingWorkerIterations: 0,
               prepare: () => {
                 const preparedContext = prepareGoalTaskDelegation(coreDb!, workspaceDb, {
+                  store,
                   workspaceId,
                   userId: store.getUserId(),
                   threadId,
@@ -2461,7 +2536,6 @@ export function registerGoalRoutes({
               );
             }
             return commitGoalStepOwnerOutcome({
-              store,
               workspaceDb,
               workspaceId,
               threadId,
@@ -2476,24 +2550,18 @@ export function registerGoalRoutes({
             });
           },
         });
-        if (response.result.outcome !== 'ask_user') {
+        const checkpoint = getWorkerCheckpoint(workspaceDb, workspaceId, threadId, reservedTurnId);
+        if (checkpoint && checkpoint.stage !== 'waiting_for_user') {
           workerTurnTerminalized = true;
-          const checkpoint = getWorkerCheckpoint(
-            workspaceDb,
-            workspaceId,
-            threadId,
-            response.result.turnId
-          );
-          if (!checkpoint) {
-            return c.json(response);
-          }
           const checkpointCleared = await clearWorkerCheckpointAfterTerminalState(workspaceDb, {
             workspaceId,
             threadId,
-            turnId: response.result.turnId,
+            turnId: reservedTurnId,
           });
           if (!checkpointCleared) {
-            throw new Error('Goal worker checkpoint is not ready for terminal cleanup.');
+            throw goalStepRecoveryError(
+              'Goal worker checkpoint is not ready for terminal cleanup.'
+            );
           }
         }
 

@@ -159,6 +159,23 @@ export function recoverExistingScopedDatabases(dataRoot: string): DatabaseIntegr
 }
 
 /**
+ * Lists existing workspace database scopes in stable boot order.
+ *
+ * @param dataRoot Data root whose existing workspace directories should be scanned.
+ * @returns User and Workspace ids for every existing workspace scope.
+ */
+export function listExistingWorkspaceDatabaseScopes(
+  dataRoot: string
+): Array<{ readonly userId: string; readonly workspaceId: string }> {
+  return listChildDirectories(join(dataRoot, 'users')).flatMap((userId) =>
+    listChildDirectories(join(dataRoot, 'users', userId, 'workspaces')).map((workspaceId) => ({
+      userId,
+      workspaceId,
+    }))
+  );
+}
+
+/**
  * Opens one user-scope database under the provided data root.
  *
  * @param dataRoot Data root that contains the user tree.

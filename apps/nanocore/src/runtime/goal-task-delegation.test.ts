@@ -7,8 +7,14 @@ import type { z } from 'zod';
 
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { createDemoStore } from '../test-support/demo-store.js';
 import { upsertWorkspaceRepositoryResource } from '../workspace/repository-store.js';
-import { createGoalRecord, createGoalTask, updateGoalStatus } from './goal-store.js';
+import {
+  createGoalRecord,
+  createGoalTask,
+  updateGoalStatus,
+  updateGoalTask,
+} from './goal-store.js';
 import { prepareGoalTaskDelegation } from './goal-task-delegation.js';
 
 type Item = z.infer<typeof ItemSchema>;
@@ -160,6 +166,7 @@ describe('goal task delegation preparation', () => {
       addReadyGoalTask(workspaceDb);
 
       const prepared = prepareGoalTaskDelegation(coreDb, workspaceDb, {
+        store: createDemoStore(),
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         goalId: 'goal_demo',
@@ -208,6 +215,7 @@ describe('goal task delegation preparation', () => {
       addReadyGoalTask(workspaceDb);
 
       const prepared = prepareGoalTaskDelegation(coreDb, workspaceDb, {
+        store: createDemoStore(),
         workspaceId: 'ws_demo',
         userId: 'user_owner',
         threadId: 'th_demo',
@@ -233,6 +241,7 @@ describe('goal task delegation preparation', () => {
 
       expect(() =>
         prepareGoalTaskDelegation(coreDb, workspaceDb, {
+          store: createDemoStore(),
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
           goalId: 'goal_demo',
@@ -256,6 +265,7 @@ describe('goal task delegation preparation', () => {
 
       expect(() =>
         prepareGoalTaskDelegation(coreDb, workspaceDb, {
+          store: createDemoStore(),
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
           goalId: 'goal_demo',
@@ -263,6 +273,76 @@ describe('goal task delegation preparation', () => {
           threadItems: threadItems(),
         })
       ).toThrow('Goal task Plan lineage does not match the Goal.');
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects ambiguous matching Human Gate request Items', () => {
+    const coreDb = createCoreDb();
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'user_local', 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      addReadyRepository(coreDb, 'ws_demo');
+      addReadyGoalTask(workspaceDb);
+      updateGoalTask(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        goalId: 'goal_demo',
+        taskId: 'task_demo',
+        latestGateContextItemId: 'it_gate_response',
+      });
+      const gateRequest = {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: 'tu_gate',
+        type: 'user-input-request' as const,
+        status: 'completed' as const,
+        userInputRequestId: 'ui_gate',
+        prompt: 'Choose a path.',
+        questions: [
+          {
+            id: 'path',
+            header: 'Path',
+            question: 'Which path should the worker use?',
+            options: null,
+            isOther: true,
+            isSecret: false,
+          },
+        ],
+        createdAt: '2026-05-31T00:00:02.000Z',
+        completedAt: '2026-05-31T00:00:02.000Z',
+      };
+      const items: Item[] = [
+        ...threadItems(),
+        { id: 'it_gate_request_one', ...gateRequest },
+        { id: 'it_gate_request_two', ...gateRequest },
+        {
+          id: 'it_gate_response',
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          turnId: 'tu_gate',
+          type: 'user-input-response',
+          status: 'completed',
+          userInputRequestId: 'ui_gate',
+          answers: { path: ['Use path A'] },
+          createdAt: '2026-05-31T00:00:03.000Z',
+          completedAt: '2026-05-31T00:00:03.000Z',
+        },
+      ];
+
+      expect(() =>
+        prepareGoalTaskDelegation(coreDb, workspaceDb, {
+          store: createDemoStore(),
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          goalId: 'goal_demo',
+          taskId: 'task_demo',
+          threadItems: items,
+        })
+      ).toThrow('Latest Goal Task Human Gate context is incomplete or contradictory.');
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();

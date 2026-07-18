@@ -21,7 +21,6 @@ export const OPENKIT_WORKER_CONTROL_POST_PATHS = [
   '/api/worker-control/artifacts',
   '/api/worker-control/commands/poll',
   '/api/worker-control/commands/ack',
-  '/api/worker-control/terminal-results',
   '/api/worker-control/events/append',
   '/api/worker-control/final-status',
   '/api/worker-control/supply-refresh-ack',
@@ -566,7 +565,7 @@ export const AgentEnvironmentControlSchema = z
     endpoint: AgentEnvironmentControlEndpointSchema,
     auth: AgentEnvironmentControlAuthSchema,
     channels: AgentEnvironmentControlChannelsSchema,
-    commands: z.array(z.string().min(1)).default([]),
+    commands: z.tuple([z.literal('interrupt')]),
     events: z.array(z.string().min(1)).default([]),
     adapter: AgentEnvironmentControlAdapterSchema,
   })
@@ -587,17 +586,6 @@ export const AgentEnvironmentControlSchema = z
         code: 'custom',
         message: 'Direct NanoCore control requires one canonical HTTP(S) endpoint.',
         path: ['endpoint'],
-      });
-    }
-    if (
-      value.commands.length !== 2 ||
-      !value.commands.includes('interrupt') ||
-      !value.commands.includes('terminal-command')
-    ) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Direct NanoCore control supports only interrupt and terminal-command.',
-        path: ['commands'],
       });
     }
     if (value.adapter.targetTransport !== targetTransport) {

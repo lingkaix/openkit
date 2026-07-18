@@ -40,6 +40,7 @@ The target rule is: process execution is broadly available inside the sandbox, f
 - The sandbox exists to give the worker agent a useful environment with real tools, not to reduce it to a narrow remote procedure executor.
 - Process execution is not the primary security boundary for ordinary developer tools; filesystem, network, credentials, resource limits, and review gates carry the main containment responsibility.
 - Network egress remains deny-by-default and must be allowlisted by host, port, protocol, access level, and where the backend supports it, binary path.
+- The resolved AEP is the complete effective network authority for one worker launch; backend defaults, deployment environment values, image metadata, adapter configuration, runtime discovery, and provider defaults MUST NOT add an endpoint, widen a rule, or authorize another binary.
 - Filesystem access remains bounded by declared read-only and read-write roots, with the worker's own sandbox workspace and temporary directories available by default.
 - User-provided secrets may be injected into worker sessions, but secret values must not be persisted into AEP snapshots, prompts, item payloads, context packages, audit rows, normal workspace files, or sandbox snapshots.
 - Capability presets should make common grants easy and reviewable, but they should not be the only long-term mechanism for expressing sandbox access.
@@ -53,7 +54,7 @@ For process execution, the worker should be able to use the normal tools install
 
 For filesystem access, the worker may read the image-provided runtime directories that are safe to expose, may write to sandbox workspace and temporary directories, and may access user-declared workspace roots according to explicit read-only or read-write grants.
 
-For network access, the worker may only connect to declared allowlisted endpoints and Core-projected local endpoints such as worker control, capability, and inference routes.
+For network access, the worker may only connect to endpoints declared in the immutable AEP, including its exact worker-control and selected inference routes. The disabled capability plane contributes no endpoint.
 
 For credentials, users may provide arbitrary secrets for a worker session through explicit injection declarations, but the injection must carry a target path or environment key, visibility class, intended consumer, scope, lifetime, and redaction policy.
 
@@ -96,6 +97,8 @@ Writable grants to Core-managed config, server data roots, vault storage, or bac
 ## Network Model
 
 Network policy is default-deny.
+
+The effective allowlist is exactly the normalized network rules recorded in the immutable AEP, including any Core-projected worker-control or inference endpoint. The governed backend may reject an AEP rule it cannot enforce, but it MUST NOT merge undeclared endpoints from backend defaults, process environment, deployment configuration, selected image, runtime adapter, or provider configuration.
 
 Users may add network allowlist entries at worker creation time.
 
@@ -141,22 +144,31 @@ The UI or API may also offer presets, but those presets should expand into the s
 
 ## Relationship To AEP
 
-AEP should carry the resolved effective sandbox policy intent, not raw user input.
+AEP MUST carry the resolved effective sandbox policy intent, not raw user input.
 
-NanoCore should validate user input, normalize it, redact sensitive details, resolve workspace-relative paths, attach vault references, and then write the effective policy intent into the package snapshot.
+NanoCore MUST validate user input, normalize it, redact sensitive details, resolve workspace-relative paths, attach vault references, and then write the effective policy intent into the package snapshot.
 
-OpenShell YAML remains backend materialization output derived from the AEP and deployment backend capabilities.
+OpenShell YAML remains backend materialization output derived solely from the AEP and the selected backend's enforcement mechanics. Stock OpenShell policy baselines may supply filesystem and process mechanics required to run the sandbox, but they do not authorize network egress beyond the AEP.
 
-If a backend cannot enforce a declared filesystem, network, or secret-injection requirement, launch should fail before worker execution.
+If a backend cannot enforce a declared filesystem, network, or secret-injection requirement, launch MUST fail before worker execution.
 
 ## Invariants
 
 - Worker process execution SHOULD be broad inside the sandbox, subject to image composition and explicit dangerous-class restrictions.
 - Worker network access MUST remain default-deny and allowlist-based.
+- Materialized network policy MUST equal the AEP allowlist and MUST NOT contain a backend-added or environment-added endpoint.
 - Worker filesystem access MUST remain bounded by declared read-only and read-write grants.
 - User-provided secrets MUST use explicit injection declarations and MUST NOT appear in AEP snapshots, prompts, item payloads, context packages, audit records, usage records, normal workspace files, or sandbox snapshots.
 - Capability presets MUST expand to explicit sandbox, provider, gateway, approval, and instruction effects rather than bypassing them.
 - Backend-native OpenShell policy files MUST remain derived materialization output, not canonical product state.
+
+## Current Implementation Projection
+
+The current OpenShell backend compiles base network policy only from the immutable AEP. It has no built-in Codex or DeepWiki endpoints, backend network option, or deployment environment variable that can append a rule. It also rejects non-transient backend provider credentials before provider or sandbox effects because the current AEP does not carry the exact Providers v2 endpoint and binary policy; the internally generated trusted-inference profile is limited to the AEP's exact inference authority.
+
+The correction preserves the unmodified stock OpenShell `0.0.80` boundary. It does not enable the disabled `capability.local` plane or executable worker MCP supply, and neither future plane authorizes direct undeclared egress.
+
+Acceptance materializes one AEP through the governance backend and compares the normalized network rules exactly; regressions prove that a backend-shaped extra endpoint is ignored rather than merged and that a non-transient provider credential fails before provider upsert or sandbox creation.
 
 ## Deferred Work
 

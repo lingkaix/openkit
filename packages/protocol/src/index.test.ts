@@ -34,7 +34,6 @@ import {
   TurnHumanGateSchema,
   TurnSchema,
   TurnStatusSchema,
-  UpdateArtifactMetadataRequestSchema,
   UpdateThreadRequestSchema,
   UpdateWorkspaceRequestSchema,
   WorkspaceRecordSchema,
@@ -343,6 +342,64 @@ describe('protocol schemas', () => {
         modelId: '',
       })
     ).toThrow();
+  });
+
+  it('accepts an exact structured response to a user-input Gate', () => {
+    const parsed = SubmitTurnInputRequestSchema.parse({
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: 'tu_demo',
+      requestId: '0190f4c8-0000-7000-8000-000000000129',
+      answers: {
+        branch: ['main'],
+      },
+    });
+
+    expect(parsed).toEqual({
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: 'tu_demo',
+      requestId: '0190f4c8-0000-7000-8000-000000000129',
+      answers: {
+        branch: ['main'],
+      },
+    });
+  });
+
+  it.each([
+    {
+      name: 'mixed ordinary and Gate fields',
+      request: {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: 'tu_demo',
+        requestId: '0190f4c8-0000-7000-8000-000000000130',
+        input: 'main',
+        answers: { branch: ['main'] },
+      },
+    },
+    {
+      name: 'empty answer selection',
+      request: {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: 'tu_demo',
+        requestId: '0190f4c8-0000-7000-8000-000000000131',
+        answers: { branch: [] },
+      },
+    },
+    {
+      name: 'multiple answer selection',
+      request: {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: 'tu_demo',
+        requestId: '0190f4c8-0000-7000-8000-000000000132',
+        answers: { branch: ['main', 'release'] },
+      },
+    },
+  ])('rejects $name on turn requests', ({ request }) => {
+    expect(() => SubmitTurnInputRequestSchema.parse(request)).toThrow();
   });
 
   it('accepts request correlation ids on interrupt requests', () => {
@@ -864,6 +921,12 @@ describe('protocol schemas', () => {
 
     expect(userInputRequest.type).toBe('user-input-request');
     expect(userInputResponse.type).toBe('user-input-response');
+    expect(() =>
+      ItemSchema.parse({
+        ...userInputResponse,
+        answers: { branch: ['main', 'release'] },
+      })
+    ).toThrow();
   });
 
   it('parses a tool-call item aligned with codex McpToolCall', () => {
@@ -1038,7 +1101,7 @@ describe('protocol schemas', () => {
     expect(parsed.data.type).toBe('thread-updated');
   });
 
-  it('requires request ids on thin mutating thread, turn, and artifact commands', () => {
+  it('requires request ids on thin mutating thread and turn commands', () => {
     expect(() =>
       UpdateThreadRequestSchema.parse({
         workspaceId: 'ws_demo',
@@ -1059,14 +1122,6 @@ describe('protocol schemas', () => {
         turnId: 'tu_demo',
       })
     ).toThrow();
-    expect(() =>
-      UpdateArtifactMetadataRequestSchema.parse({
-        workspaceId: 'ws_demo',
-        artifactId: 'ar_demo',
-        title: 'Updated artifact',
-      })
-    ).toThrow();
-
     const parsed = UpdateThreadRequestSchema.parse({
       requestId: '0190f4c8-0000-7000-8000-000000000205',
       workspaceId: 'ws_demo',

@@ -44,6 +44,7 @@ import {
   getCommandRequestRecord,
   getCommandRequestRecordFromDb,
   listCommandRequestRecords,
+  normalizeCommandRequestResponse,
   recordCommandRequestRecord,
   recordCommandRequestRecordInDb,
 } from '../storage/command-request-records.js';
@@ -189,8 +190,6 @@ export type CommandRequestName =
   | 'git_push.approval.request'
   | 'git_push.execute'
   | 'approval.respond'
-  | 'artifact.metadata.update'
-  | 'artifact.review.decide'
   | 'workspace_sync.review.decide'
   | 'workspace_sync.recovery.decide'
   | 'knowledge.proposal.draft'
@@ -220,7 +219,6 @@ export type CommandRequestResponseKind =
   | 'approval'
   | 'git_push_record'
   | 'artifact'
-  | 'artifact_review'
   | 'workspace_sync_review'
   | 'knowledge_proposal'
   | 'knowledge_proposal_review'
@@ -233,6 +231,26 @@ export type CommandRequestResponseKind =
  */
 export type CommandRequestScope = Readonly<Record<string, string>>;
 
+/** Bounded, non-authoritative metadata retained only by a `chat.start` receipt. */
+export interface ChatCommandReceiptMetadata {
+  /** Optional downstream business owner created by a handoff. */
+  readonly downstream:
+    | { readonly kind: 'task'; readonly turnId: string }
+    | { readonly kind: 'goal'; readonly goalId: string; readonly turnId: string }
+    | null;
+  /** Closed Chat outcome needed to locate its fixed durable owners. */
+  readonly resultKind:
+    | 'knowledge-answer'
+    | 'repository-answer'
+    | 'provider-answer'
+    | 'clarification'
+    | 'task-handoff'
+    | 'goal-handoff'
+    | 'refused';
+  /** Original successful HTTP status for the closed outcome. */
+  readonly status: 200 | 202;
+}
+
 /**
  * Resource pointer stored for replaying an idempotent command response.
  */
@@ -241,8 +259,8 @@ export interface CommandRequestResponse {
   kind: CommandRequestResponseKind;
   /** Resource id produced by the original command. */
   id: string;
-  /** Optional immutable public response required for exact command replay. */
-  snapshot?: unknown;
+  /** Sole bounded extra receipt metadata allowed for `chat.start`; rejected for every other command. */
+  chatMetadata?: ChatCommandReceiptMetadata;
 }
 
 /**
@@ -1018,7 +1036,7 @@ export class FsStore {
       requestId: input.requestId,
       scope: input.scope,
       inputHash: input.inputHash,
-      response: input.response,
+      response: normalizeCommandRequestResponse(input.command, input.response),
       createdAt,
       expiresAt: input.expiresAt ?? commandRequestExpiresAt(createdAt),
     };

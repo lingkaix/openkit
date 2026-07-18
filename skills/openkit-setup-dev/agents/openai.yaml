@@ -1,4 +1,0 @@
-interface:
-  display_name: "OpenKit Setup Dev"
-  short_description: "Set up OpenKit repo dogfood MCP"
-  default_prompt: "Use $openkit-setup-dev to set up this OpenKit checkout for NanoCore MCP dogfooding."

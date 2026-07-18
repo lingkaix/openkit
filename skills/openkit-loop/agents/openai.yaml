@@ -1,4 +1,0 @@
-interface:
-  display_name: "OpenKit Loop"
-  short_description: "Coordinate bounded workspace loops"
-  default_prompt: "Use $openkit-loop to coordinate a bounded OpenKit loop for my workspace through NanoCore MCP."

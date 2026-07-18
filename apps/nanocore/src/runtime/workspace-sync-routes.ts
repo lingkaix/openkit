@@ -40,7 +40,6 @@ import {
 } from './workspace-reconciliation-records.js';
 import {
   decideWorkspaceSyncReview,
-  listWorkspaceSyncReviewArtifacts,
   listWorkspaceSyncReviewsForRead,
 } from './workspace-review-application.js';
 import {
@@ -153,10 +152,6 @@ export function registerWorkspaceSyncRoutes({
             return await decideWorkspaceSyncReview({
               decidedAt,
               decision: input.decision,
-              fallbackReview:
-                listWorkspaceSyncReviewArtifacts(store.listArtifacts(workspaceId)).find(
-                  (item) => item.review.id === reviewId
-                ) ?? null,
               requestId,
               reviewId,
               store,

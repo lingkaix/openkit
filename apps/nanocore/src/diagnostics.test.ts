@@ -586,7 +586,7 @@ describe('Settings diagnostics app API', () => {
   });
 
   it('exposes redacted setup diagnostics for server config, providers, and agent setup', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-setup-diagnostics-'));
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-diagnostics-'));
     const rawSecrets = ['sk-openkit-secret', 'ghp_openkit_secret'];
     const providerRegistry = new ProviderRegistry([
       {

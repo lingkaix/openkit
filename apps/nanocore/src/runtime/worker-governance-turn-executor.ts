@@ -26,6 +26,7 @@ import {
   type ResolvedAgentEnvironmentRuntimeFileCredential,
   resolveAgentEnvironmentPackage,
 } from './agent-environment.js';
+import { TurnStartValidationError } from './orchestrator.js';
 import { generateUuidV7 } from './session-id.js';
 import type {
   AgentSessionReadModel,
@@ -72,6 +73,9 @@ import {
   recordWorkspaceBackendHandoff,
   recordWorkspaceSyncReview,
 } from './workspace-sync-records.js';
+
+const WORKER_HUMAN_GATE_UNAVAILABLE_MESSAGE =
+  'Worker requested human input without an exact product Gate.';
 
 /** Mutable exact-backend lifecycle retained while one turn executes and cleans up. */
 interface WorkerTurnBackendLifecycle {
@@ -404,9 +408,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         closeoutAt
       );
       backendCleanupRequired = false;
-      if (workerFinalStatus && workerFinalStatus.status !== 'completed') {
-        throw new Error(`Worker reported terminal status: ${workerFinalStatus.status}.`);
-      }
     } catch (error) {
       primaryFailed = true;
       primaryError = error;
@@ -436,24 +437,31 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       errors.push(error);
     }
 
-    let completedTerminalObserved = false;
+    let terminalObserved = false;
     if (errors.length === 0) {
       if (!agentSessionId) {
         errors.push(new Error('The governed worker turn is missing its agent session id.'));
       } else {
         try {
-          this.completeTurn(store, turn, agentSessionId, requestId);
+          if (workerFinalStatus) {
+            this.recordAcceptedWorkerOutcome(
+              store,
+              turn,
+              agentSessionId,
+              requestId,
+              workerFinalStatus
+            );
+          } else {
+            this.completeTurn(store, turn, agentSessionId, requestId);
+          }
         } catch (error) {
           errors.push(error);
-          completedTerminalObserved = store
+          terminalObserved = store
             .getTurnEvents(turn.id)
             .some(
-              (event) =>
-                event.event === 'turn.completed' &&
-                event.data.type === 'turn-completed' &&
-                event.data.stopReason === 'completed'
+              (event) => event.event === 'turn.completed' && event.data.type === 'turn-completed'
             );
-          if (completedTerminalObserved) {
+          if (terminalObserved) {
             try {
               store.updateTurn(turn.id, {});
             } catch (persistError) {
@@ -474,7 +482,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
                 primaryError instanceof Error ? `: ${primaryError.message}` : '.'
               }`
             );
-      if (!completedTerminalObserved) {
+      if (!terminalObserved) {
         try {
           this.failTurn(store, turn, agentSessionId, requestId, error);
         } catch (failureError) {
@@ -485,6 +493,17 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         }
       }
       throw error;
+    }
+
+    if (
+      workerFinalStatus &&
+      canonicalStopReasonForAcceptedWorkerFinalStatus(workerFinalStatus) === 'ask_user'
+    ) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        WORKER_HUMAN_GATE_UNAVAILABLE_MESSAGE,
+        409
+      );
     }
   }
 
@@ -500,7 +519,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     store: FsStore,
     environmentPackage: AgentEnvironmentPackage,
     session: WorkerBackendSessionRecord
-  ): Promise<'cancelled' | 'completed' | 'failed'> {
+  ): Promise<'cancelled' | 'completed' | 'failed' | 'interrupted'> {
     if (!this.coreDb || store.getUserId() !== environmentPackage.scope.userId) {
       throw new Error('Restart closeout requires the exact durable Core and store owner.');
     }
@@ -522,10 +541,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       throw new Error('Restart closeout requires the exact durable final status.');
     }
     const stopReason = canonicalStopReasonForAcceptedWorkerFinalStatus(accepted);
-    if (stopReason === 'ask_user') {
-      throw new Error('Restart closeout cannot project ask_user without an exact human Gate.');
-    }
-    const recoveredStatus = turnStatusForCanonicalWorkerStopReason(stopReason);
+    const recoveredStatus =
+      stopReason === 'ask_user'
+        ? 'interrupted'
+        : turnStatusForCanonicalWorkerStopReason(stopReason);
     const workspaceDb = this.openWorkspaceDb(
       store.getUserId(),
       environmentPackage.scope.workspaceId
@@ -566,41 +585,36 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         );
       }
 
-      if (turn.status === recoveredStatus) {
+      if (stopReason !== 'ask_user' && turn.status === recoveredStatus) {
         return recoveredStatus;
       }
 
-      if (
-        stopReason === 'completed' ||
-        stopReason === 'length' ||
-        stopReason === 'budget_exhausted'
-      ) {
-        this.completeTurn(
-          store,
-          turn,
-          environmentPackage.scope.agentSessionId,
-          environmentPackage.scope.requestId ?? null,
-          stopReason
-        );
-      } else if (recoveredStatus === 'cancelled') {
-        terminalizeGovernedWorkerTurn({
-          agentSessionId: environmentPackage.scope.agentSessionId,
-          completedAt: this.now(),
-          errorCode: 'worker_governance_turn_cancelled',
-          message: 'Worker reported an aborted terminal status.',
-          outcome: 'cancelled',
-          requestId: environmentPackage.scope.requestId ?? null,
-          store,
-          turnId: turn.id,
-        });
-      } else {
-        this.failTurn(
-          store,
-          turn,
-          environmentPackage.scope.agentSessionId,
-          environmentPackage.scope.requestId ?? null,
-          new Error(`Worker reported terminal status: ${accepted.status}.`)
-        );
+      this.recordAcceptedWorkerOutcome(
+        store,
+        turn,
+        environmentPackage.scope.agentSessionId,
+        environmentPackage.scope.requestId ?? null,
+        accepted
+      );
+      if (stopReason === 'ask_user') {
+        const recoveredTurn = store.getTurnById(environmentPackage.scope.turnId);
+        const recoveredSession = store.getAgentSession(environmentPackage.scope.agentSessionId);
+        if (
+          recoveredTurn.workspaceId !== environmentPackage.scope.workspaceId ||
+          recoveredTurn.threadId !== environmentPackage.scope.threadId ||
+          recoveredTurn.agentSessionId !== environmentPackage.scope.agentSessionId ||
+          recoveredTurn.status !== 'interrupted' ||
+          recoveredTurn.error?.code !== 'worker_human_gate_unavailable' ||
+          recoveredTurn.error.message !== WORKER_HUMAN_GATE_UNAVAILABLE_MESSAGE ||
+          recoveredSession.workspaceId !== environmentPackage.scope.workspaceId ||
+          recoveredSession.threadId !== environmentPackage.scope.threadId ||
+          recoveredSession.status !== 'interrupted' ||
+          recoveredSession.message !== WORKER_HUMAN_GATE_UNAVAILABLE_MESSAGE
+        ) {
+          throw new Error(
+            'Restart closeout did not establish the unavailable human-gate fallback.'
+          );
+        }
       }
       return recoveredStatus;
     } finally {
@@ -1212,6 +1226,67 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         workspaceId: environmentPackage.scope.workspaceId,
       });
     }
+  }
+
+  /**
+   * Projects one accepted worker-control final status through the canonical Turn owners.
+   *
+   * @param store Store that owns the Turn and Agent Session.
+   * @param turnScope Turn whose ids scope the terminal records.
+   * @param agentSessionId Exact worker Agent Session.
+   * @param requestId Worker command request id.
+   * @param accepted Durable worker-control final status.
+   * @throws Error when the accepted status has no supported canonical StopReason.
+   */
+  private recordAcceptedWorkerOutcome(
+    store: FsStore,
+    turnScope: ReturnType<FsStore['getTurnById']>,
+    agentSessionId: string,
+    requestId: string | null,
+    accepted: AcceptedWorkerFinalStatus
+  ): void {
+    const stopReason = canonicalStopReasonForAcceptedWorkerFinalStatus(accepted);
+    if (stopReason === 'ask_user') {
+      terminalizeGovernedWorkerTurn({
+        agentSessionId,
+        completedAt: this.now(),
+        errorCode: 'worker_human_gate_unavailable',
+        message: WORKER_HUMAN_GATE_UNAVAILABLE_MESSAGE,
+        outcome: 'interrupted',
+        requestId,
+        store,
+        turnId: turnScope.id,
+      });
+      return;
+    }
+    if (
+      stopReason === 'completed' ||
+      stopReason === 'length' ||
+      stopReason === 'budget_exhausted'
+    ) {
+      this.completeTurn(store, turnScope, agentSessionId, requestId, stopReason);
+      return;
+    }
+    if (stopReason === 'aborted') {
+      terminalizeGovernedWorkerTurn({
+        agentSessionId,
+        completedAt: this.now(),
+        errorCode: 'worker_governance_turn_cancelled',
+        message: 'Worker reported an aborted terminal status.',
+        outcome: 'cancelled',
+        requestId,
+        store,
+        turnId: turnScope.id,
+      });
+      return;
+    }
+    this.failTurn(
+      store,
+      turnScope,
+      agentSessionId,
+      requestId,
+      new Error(`Worker reported terminal status: ${accepted.status}.`)
+    );
   }
 
   /**

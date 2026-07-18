@@ -1,6 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -152,18 +152,6 @@ export async function readTurnEventsUntil(
 }
 
 /**
- * Starts one internal self-check turn through the public HTTP API.
- */
-export async function startSimulatorTurn(
-  baseUrl: string,
-  workspaceId: string,
-  threadId: string,
-  input: string
-): Promise<Record<string, unknown>> {
-  return startTurn(baseUrl, workspaceId, threadId, input);
-}
-
-/**
  * Starts one turn through the public HTTP API.
  */
 export async function startTurn(
@@ -175,68 +163,6 @@ export async function startTurn(
   return postJson(`${baseUrl}/api/turns`, {
     workspaceId,
     threadId,
-    input,
-    requestId: randomUUID(),
-  });
-}
-
-/**
- * Creates and links a disposable git repository resource for one workspace.
- *
- * @param baseUrl NanoCore HTTP base URL.
- * @param dataRoot Harness data root that owns disposable test files.
- * @param workspaceId Workspace id that should own the repository resource.
- * @returns Local repository path linked to the workspace.
- */
-export async function linkWorkspaceRepository(
-  baseUrl: string,
-  dataRoot: string,
-  workspaceId: string
-): Promise<string> {
-  const repositoryPath = join(dataRoot, 'e2e-repositories', workspaceId);
-
-  await mkdir(join(repositoryPath, '.git'), { recursive: true });
-  await postJson(`${baseUrl}/api/app/workspaces/${workspaceId}/repositories/default`, {
-    displayName: 'E2E repository',
-    localPath: repositoryPath,
-  });
-
-  return repositoryPath;
-}
-
-/**
- * Grants the internal self-check approval request through the public HTTP API.
- */
-export async function grantApproval(
-  baseUrl: string,
-  workspaceId: string,
-  threadId: string,
-  turnId: string,
-  approvalRequestId: string
-): Promise<Record<string, unknown>> {
-  return postJson(`${baseUrl}/api/approvals/${approvalRequestId}/respond`, {
-    workspaceId,
-    threadId,
-    turnId,
-    decision: 'granted',
-    requestId: randomUUID(),
-  });
-}
-
-/**
- * Answers the internal self-check user-input request through the public HTTP API.
- */
-export async function answerUserInput(
-  baseUrl: string,
-  workspaceId: string,
-  threadId: string,
-  turnId: string,
-  input: string
-): Promise<Record<string, unknown>> {
-  return postJson(`${baseUrl}/api/turns`, {
-    workspaceId,
-    threadId,
-    turnId,
     input,
     requestId: randomUUID(),
   });

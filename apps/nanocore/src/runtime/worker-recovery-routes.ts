@@ -170,8 +170,7 @@ function runInterruptedWorkerRetryCommand(input: {
         receipt.scope.turnId !== input.turnId ||
         Object.keys(receipt.scope).length !== 3 ||
         receipt.response.kind !== 'turn' ||
-        receipt.response.id !== input.turnId ||
-        receipt.response.snapshot !== undefined
+        receipt.response.id !== input.turnId
       ) {
         throw retryRecoveryRequired('Interrupted-worker retry receipt has invalid lineage.');
       }

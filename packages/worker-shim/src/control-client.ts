@@ -108,22 +108,6 @@ export interface WorkerControlCommandPoll {
 }
 
 /**
- * Terminal result request accepted by the worker control client.
- */
-export interface WorkerControlTerminalResultInput {
-  /** Terminal command id. */
-  terminalCommandId: string;
-  /** Process exit code. */
-  exitCode: number;
-  /** Captured stdout text. */
-  stdout: string;
-  /** Captured stderr text. */
-  stderr: string;
-  /** Optional command duration. */
-  durationMs?: number | null | undefined;
-}
-
-/**
  * Final bounded-step status reported by the worker control client.
  */
 export interface WorkerControlFinalStatusInput extends WorkerCanonicalTerminalEventDataInput {
@@ -246,19 +230,6 @@ export class WorkerControlClient {
    */
   public async acknowledgeCommand(commandId: string, signal?: AbortSignal): Promise<unknown> {
     return this.request(() => this.postJson('/commands/ack', { commandId }, signal), signal);
-  }
-
-  /**
-   * Sends a terminal command result to NanoCore.
-   *
-   * @param input Terminal result payload.
-   * @returns Parsed NanoCore response.
-   */
-  public async recordTerminalResult(
-    input: WorkerControlTerminalResultInput,
-    signal?: AbortSignal
-  ): Promise<unknown> {
-    return this.request(() => this.postJson('/terminal-results', input, signal), signal);
   }
 
   /**

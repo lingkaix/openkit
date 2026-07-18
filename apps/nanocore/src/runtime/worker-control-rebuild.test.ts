@@ -165,6 +165,92 @@ describe('worker control gateway restart hydration', () => {
     }
   });
 
+  it('restores only unacknowledged interrupt commands', () => {
+    const fixture = createRestorableWorkerControlFixture();
+    const gateway = new WorkerControlGateway({
+      resolveTokenBinding: () => ({ status: 'accepted' }),
+    });
+    const lineage = {
+      agentSessionId: fixture.environmentPackage.scope.agentSessionId,
+      packageSnapshotId: fixture.environmentPackage.snapshotId,
+      requestId: fixture.environmentPackage.scope.requestId,
+      threadId: fixture.environmentPackage.scope.threadId,
+      turnId: fixture.environmentPackage.scope.turnId,
+      workspaceId: fixture.environmentPackage.scope.workspaceId,
+    };
+    const insert = fixture.coreDb.sqlite.prepare(
+      `INSERT INTO worker_control_commands (
+        workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id,
+        request_id, command_id, command_kind, sequence, payload_json, status,
+        queued_at, delivered_at, acknowledged_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, NULL, NULL)`
+    );
+    const interrupt = {
+      commandId: 'worker-command-1',
+      deliveredAt: null,
+      kind: 'interrupt',
+      queuedAt: '2026-07-13T00:00:05.000Z',
+      reason: 'restart test',
+      sequence: 1,
+    };
+    const legacyTerminal = {
+      argv: ['sh', '-c', 'echo legacy'],
+      commandId: 'legacy-terminal-command',
+      cwd: null,
+      deliveredAt: null,
+      kind: 'terminal-command',
+      queuedAt: '2026-07-13T00:00:06.000Z',
+      sequence: 2,
+    };
+    const acknowledgedInterrupt = {
+      commandId: 'worker-command-acknowledged',
+      deliveredAt: '2026-07-13T00:00:07.000Z',
+      kind: 'interrupt',
+      queuedAt: '2026-07-13T00:00:06.000Z',
+      reason: 'already handled',
+      sequence: 3,
+    };
+
+    try {
+      for (const command of [interrupt, legacyTerminal, acknowledgedInterrupt]) {
+        insert.run(
+          lineage.workspaceId,
+          lineage.threadId,
+          lineage.turnId,
+          lineage.agentSessionId,
+          lineage.packageSnapshotId,
+          lineage.requestId,
+          command.commandId,
+          command.kind,
+          command.sequence,
+          JSON.stringify(command),
+          command.queuedAt
+        );
+      }
+      fixture.coreDb.sqlite
+        .prepare(
+          `UPDATE worker_control_commands
+           SET status = 'acknowledged', delivered_at = ?, acknowledged_at = ?
+           WHERE command_id = ?`
+        )
+        .run(
+          acknowledgedInterrupt.deliveredAt,
+          '2026-07-13T00:00:08.000Z',
+          acknowledgedInterrupt.commandId
+        );
+      rebuildWorkerControlGatewaySessions(fixture.coreDb, gateway);
+
+      expect(
+        gateway.pollCommands({
+          authorization: `Bearer ${fixture.token}`,
+          lineage,
+        }).commands
+      ).toEqual([{ ...interrupt, deliveredAt: expect.any(String) }]);
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
   it('fails closed when the durable AEP snapshot is missing or mismatched', () => {
     for (const options of [
       { recordSnapshot: false },

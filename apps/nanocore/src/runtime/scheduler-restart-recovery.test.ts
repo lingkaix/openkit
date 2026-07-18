@@ -1961,4 +1961,57 @@ describe('minimal scheduler reconnect contract', () => {
       coreDb.sqlite.close();
     }
   });
+
+  it('retains recovery evidence after accepted ask-user closeout returns interrupted', async () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      const suffix = 'accepted_ask_user';
+      const fixture = prepareReconnectLease(coreDb, suffix);
+      markSchedulerSessionLeaseReleasing(coreDb, {
+        leaseId: `lease_${suffix}`,
+        now: () => '2026-07-05T00:00:06.000Z',
+        releaseReason: 'worker-final-status',
+      });
+      recordWorkerControlAcceptedRecord(coreDb, {
+        acceptedAt: '2026-07-05T00:00:07.000Z',
+        lineage: fixture.lineage,
+        operation: 'final_status',
+        record: { sequence: 1, status: 'blocked', stopReason: 'ask_user' },
+        recordKey: '1',
+        sandboxBindingRef: `lease-binding:lease_${suffix}`,
+        sequence: 1,
+      });
+
+      await runSchedulerRestartRecovery(coreDb, {
+        now: () => '2026-07-05T00:01:00.000Z',
+        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+        reconcileAcceptedFinalStatus: async (session) => {
+          transitionWorkerBackendSessionState(coreDb, {
+            fromState: 'launching',
+            leaseId: session.leaseId,
+            toState: 'cleanup-pending',
+          });
+          transitionWorkerBackendSessionState(coreDb, {
+            fromState: 'cleanup-pending',
+            leaseId: session.leaseId,
+            toState: 'physical-cleaned',
+          });
+          transitionWorkerBackendSessionState(coreDb, {
+            fromState: 'physical-cleaned',
+            leaseId: session.leaseId,
+            toState: 'cleaned',
+          });
+          return { status: 'interrupted' as const };
+        },
+      });
+
+      expect(requireSchedulerSessionLease(coreDb, `lease_${suffix}`)).toMatchObject({
+        recoveryState: 'needs-evidence',
+        status: 'released',
+      });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
 });

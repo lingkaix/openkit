@@ -202,7 +202,7 @@ describe('WorkerControlGateway', () => {
     ).toMatchObject({ sequence: 1, status: 'running' });
   });
 
-  it('delivers interrupt and terminal commands to the matching worker session', () => {
+  it('delivers interrupt commands to the matching worker session', () => {
     const { environmentPackage, lineage } = createWorkerControlFixture();
     const gateway = new WorkerControlGateway({
       createToken: () => 'token_control_1',
@@ -210,24 +210,10 @@ describe('WorkerControlGateway', () => {
     });
     const registration = gateway.registerSession(environmentPackage);
     const interruptCommand = gateway.enqueueInterrupt(environmentPackage.snapshotId, 'Stop now');
-    const terminalCommand = gateway.enqueueTerminalCommand(environmentPackage.snapshotId, {
-      argv: ['pwd'],
-      commandId: 'term_1',
-      cwd: '/workspace/repo',
-    });
 
     const polled = gateway.pollCommands({
       authorization: `Bearer ${registration.token}`,
       lineage,
-    });
-    const terminalResult = gateway.recordTerminalResult({
-      authorization: `Bearer ${registration.token}`,
-      durationMs: 42,
-      exitCode: 0,
-      lineage,
-      stderr: '',
-      stdout: '/workspace/repo\n',
-      terminalCommandId: terminalCommand.commandId,
     });
     gateway.acknowledgeCommand({
       authorization: `Bearer ${registration.token}`,
@@ -241,19 +227,6 @@ describe('WorkerControlGateway', () => {
         kind: 'interrupt',
         reason: 'Stop now',
       }),
-      expect.objectContaining({
-        argv: ['pwd'],
-        commandId: 'term_1',
-        kind: 'terminal-command',
-      }),
-    ]);
-    expect(terminalResult).toMatchObject({
-      commandId: 'term_1',
-      exitCode: 0,
-      stdout: '/workspace/repo\n',
-    });
-    expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.terminalResults).toEqual([
-      expect.objectContaining({ commandId: 'term_1', exitCode: 0 }),
     ]);
     expect(
       gateway.pollCommands({

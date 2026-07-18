@@ -173,7 +173,7 @@ export const UserInputRequestItemSchema = BaseItemSchema.extend({
 export const UserInputResponseItemSchema = BaseItemSchema.extend({
   type: z.literal('user-input-response'),
   userInputRequestId: UserInputRequestIdSchema,
-  answers: z.record(z.string(), z.array(z.string().min(1)).min(1)),
+  answers: z.record(z.string().min(1), z.tuple([z.string().min(1)])),
 });
 
 /**

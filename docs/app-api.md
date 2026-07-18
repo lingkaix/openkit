@@ -2,7 +2,7 @@
 
 Status: Accepted
 Date: 2026-05-31
-Updated: 2026-07-17
+Updated: 2026-07-18
 
 ## Purpose
 
@@ -114,10 +114,8 @@ Current Core projection route families include the following.
 | Threads | `GET /api/workspaces/:workspaceId/threads`, `POST /api/workspaces/:workspaceId/threads`, `GET /api/workspaces/:workspaceId/threads/:threadId`, `PATCH /api/workspaces/:workspaceId/threads/:threadId`, `POST /api/workspaces/:workspaceId/threads/:threadId/archive` |
 | Turns | `POST /api/turns`, `GET /api/workspaces/:workspaceId/threads/:threadId/turns/:turnId`, `POST /api/workspaces/:workspaceId/threads/:threadId/turns/:turnId/interrupt` |
 | Approvals | `POST /api/approvals/:approvalRequestId/respond` |
-| Artifacts | `GET /api/workspaces/:workspaceId/artifacts`, `GET /api/workspaces/:workspaceId/artifacts/:artifactId`, `PATCH /api/workspaces/:workspaceId/artifacts/:artifactId`, `GET /api/workspaces/:workspaceId/artifacts/:artifactId/content` |
+| Artifacts | `GET /api/workspaces/:workspaceId/artifacts`, `GET /api/workspaces/:workspaceId/artifacts/:artifactId`, `GET /api/workspaces/:workspaceId/artifacts/:artifactId/content` |
 | Turn stream | `GET /api/workspaces/:workspaceId/threads/:threadId/events?turnId=:turnId&since=:sequence` |
-
-The current generic Artifact `PATCH` route accepts title, status, and summary changes without an expected Artifact version or the exact `artifact-reference` Item lineage required by the target contract. It remains current-state documentation only, is excluded from the target command ledger, and is removal-only until an accepted owner-specific mutation contract replaces it. New consumers MUST use the producing Turn or accepted Artifact Review owner instead of extending this route or inventing `artifact.metadata.update`.
 
 All mutating Core projection routes require `requestId`.
 
@@ -125,17 +123,19 @@ All mutating Core projection routes require `requestId`.
 
 NanoCore persists command idempotency in the SQLite database that owns the command scope: workspace-scoped commands use that workspace's `workspace.sqlite`, while commands without a workspace scope such as `workspace.create` use the actor's `user.sqlite`.
 
-The target ledger covers `workspace.create`, `workspace.update`, `knowledge.create`, `knowledge.update`, `knowledge.delete`, `thread.create`, `thread.update`, `thread.archive`, `turn.start`, `turn.input.submit`, `turn.interrupt`, `chat.start`, `task.start`, `goal.start`, `goal.plan`, `goal.plan.approve`, `goal.plan.revise`, `goal.pause`, `goal.resume`, `goal.step`, `goal.steering.send`, `goal.steering.follow_up`, `goal.steering.cancel`, `goal.review.decide`, `worker.recovery.retry`, `git_push.approval.request`, `approval.respond`, `artifact.import`, `artifact.introduce`, `artifact.review.decide`, `material.create`, `material.save`, `material.bind`, `material.unbind`, `material.exclude`, and `material.restore`.
+The target ledger covers `workspace.create`, `workspace.update`, `knowledge.create`, `knowledge.update`, `knowledge.delete`, `thread.create`, `thread.update`, `thread.archive`, `turn.start`, `turn.input.submit`, `turn.interrupt`, `chat.start`, `task.start`, `goal.start`, `goal.plan`, `goal.plan.approve`, `goal.plan.revise`, `goal.pause`, `goal.resume`, `goal.step`, `goal.steering.send`, `goal.steering.follow_up`, `goal.steering.cancel`, `goal.review.decide`, `worker.recovery.retry`, `git_push.approval.request`, `git_push.execute`, `approval.respond`, `artifact.import`, `artifact.introduce`, `artifact.review.decide`, `material.create`, `material.save`, `material.bind`, `material.unbind`, `material.exclude`, and `material.restore`.
 
-By default, duplicate requests with the same command, resource scope, `requestId`, and canonical input hash return the current resource snapshot for the original response resource. An owning accepted specification MAY instead require one bounded immutable non-secret result snapshot when a command spans multiple owners or reports a completed transition that no single current resource can replay; that snapshot is evidence only and cannot own lifecycle state. `goal.steering.send` always replays its original immutable `queued` acceptance response even after delivery reaches a terminal state.
+Every mode command uses the same central receipt lookup before mutable owner selection or side effects. A matching receipt validates the command, scope, request identity, and canonical input hash, then projects the named current business owner or the owning specification's fixed replay view; it does not replay a stored response body.
 
 Concurrent duplicates in one server process await the same command result instead of racing a second mutation.
 
-Reusing the same command, resource scope, and `requestId` with different input returns `409 idempotency_key_conflict`.
+Reusing the same command, resource scope, and `requestId` with different input returns `409 idempotency_key_conflict`. If request-owned effects exist without a receipt, the default is `409 recovery_required` with no repeated effect, inferred winner, synthesized receipt, settlement state, or repair workflow.
 
-Idempotency records retain only command name, request ID, non-secret scope IDs, input hash, response resource kind and ID, creation timestamp, and expiry timestamp. A multi-owner command that cannot replay from one current resource MAY retain one bounded schema-specific non-secret result snapshot; `goal.step` is limited to Goal, task, Turn, outcome, stop reason, evidence, and review identifiers. Such a snapshot is replay evidence only and MUST NOT drive business transitions or become a second workflow owner.
+Idempotency records retain only command name, request ID, non-secret scope IDs, input hash, response resource kind and ID, creation timestamp, and expiry timestamp. They retain no arbitrary result or HTTP response-body snapshot and never drive a business transition or become a second workflow owner.
 
-Within the active workflow contract group, `task.start` stores no payload snapshot and replays from its response Turn plus existing Item, Artifact, Review, and Goal owners. `chat.start` is the narrower mutable-clarification exception: its accepted specification permits only a closed result kind, the HTTP success status, and required downstream Task Turn or Goal and Goal Turn identifiers. The normal receipt resource identifier names the original Chat Turn; NanoCore derives the initiating and result Item identifiers from that Turn and the closed result-kind mapping. Neither command may retain a Turn, Item, Coordinator decision, completion text, explanation, prompt, or response body in the ledger.
+The only receipt-shape exception is `chat.start`: its owning specification permits one closed outcome enum, the original HTTP success status, and required downstream Task Turn or Goal and Goal Turn identifiers. Those fields are non-authoritative replay metadata, not a response snapshot or precedent. The normal receipt resource identifier names the original Chat Turn, and NanoCore derives the initiating and result Item identifiers from that Turn and the closed outcome mapping.
+
+Already-landed missing-receipt publication exceptions remain limited to their named complete tuples: an approvable `goal.plan`, a direct `task.start` outcome, and the existing Task or Goal boot classifier when it can validate or apply the already-defined mode transaction. They do not authorize arbitrary reconstruction. A live `goal.step` with any request-owned effect but no receipt returns `recovery_required`; its receipt stores only the original Goal id. Goal Review replays from its durable resolution snapshot because that Review is the business owner, not because the command ledger copied a response.
 
 They are retained for seven days and must not contain prompts, knowledge content, context package content, provider config, OAuth state, secrets, full request bodies, or full response bodies.
 
@@ -173,7 +173,7 @@ Routing explanations and product work status are App API read models, not Core p
 
 Workspace repository resources bind a workspace to a local git repository that governed worker flows may use through declared workspace materialization, review, and apply contracts.
 
-Current route families are `GET /api/app/workspaces/:workspaceId/repositories`, `GET /api/app/workspaces/:workspaceId/repositories/diagnostics`, `POST /api/app/workspaces/:workspaceId/repositories/default`, `PUT /api/app/workspaces/:workspaceId/repositories/default`, `POST /api/app/workspaces/:workspaceId/repositories/:resourceId/git-push/approval`, `POST /api/app/workspaces/:workspaceId/repositories/:resourceId/git-push`, `GET /api/app/workspaces/:workspaceId/repositories/git-push-records`, and `GET /api/app/workspaces/:workspaceId/repositories/git-push-records/:pushRecordId`.
+Current route families are `GET /api/app/workspaces/:workspaceId/repositories`, `GET /api/app/workspaces/:workspaceId/repositories/diagnostics`, `PUT /api/app/workspaces/:workspaceId/repositories/default`, `POST /api/app/workspaces/:workspaceId/repositories/:resourceId/git-push/approval`, `POST /api/app/workspaces/:workspaceId/repositories/:resourceId/git-push`, `GET /api/app/workspaces/:workspaceId/repositories/git-push-records`, and `GET /api/app/workspaces/:workspaceId/repositories/git-push-records/:pushRecordId`.
 
 The set-default routes validate that the submitted local path exists and looks like a git repository, but response payloads are redacted and do not expose raw host paths.
 
@@ -209,7 +209,7 @@ Approval exact replay and changed-input conflict use the existing app-local comm
 
 Workspace export reads Goal, historical and active Plan, and Goal Task records from one SQLite snapshot. Import validates source digests and Plan/Task coherence before reminting, applies all imported rows in one transaction, remints identity-bearing references through the canonical maps, recomputes each Plan digest only after reminting, and rejects malformed, duplicate, incomplete, or incoherent records instead of dropping or repairing them.
 
-The step route accepts exactly `{ requestId }` and starts one bounded worker envelope iteration. It reads the complete immutable approved Goal Task, verifies its active Plan lineage, and gives Workflow Coordinator the exact objective, acceptance criteria, ordered resources, expected Artifacts, context budget, verification checks, review policy, escalation conditions, and eligible Review context; incomplete or mismatched request facts return `recovery_required` before step effects. The parsed Coordinator request becomes the existing Turn, scheduler, AEP, worker, and Turn-owned Item input as compact JSON. `reviewPolicyOverride`, `followUpDrainMode`, and generic queue fields are rejected rather than treated as compatibility input. The response is exactly `{ goal, result }`, where `goal` is the current projection of the original Goal and `result` contains only `taskId`, `turnId`, `outcome`, `shouldStop`, `stopReason`, Item and Artifact evidence ids, and nullable `reviewId`. Coordinator, Context Assembly, worker Session, checkpoint-stage, and duplicate pending-attention projections remain with their owning diagnostics, recovery, Goal, and Action Center records rather than the replay receipt. NanoCore now derives the Turn from request identity, commits the runnable Goal, first ready Task, allowed launch decision, and request-bound `preparing` checkpoint together, performs receipt-first replay, blocks competing steps behind any uncleared Goal checkpoint, and publishes the bounded receipt before terminal cleanup.
+The step route accepts exactly `{ requestId }` and starts one bounded worker envelope iteration. It reads the complete immutable approved Goal Task, verifies its active Plan lineage, and gives Workflow Coordinator the exact objective, acceptance criteria, ordered resources, expected Artifacts, context budget, verification checks, review policy, escalation conditions, and eligible Review context; incomplete or mismatched request facts return `recovery_required` before step effects. The parsed Coordinator request becomes the existing Turn, scheduler, AEP, worker, and Turn-owned Item input as compact JSON. `reviewPolicyOverride`, `followUpDrainMode`, and generic queue fields are rejected rather than treated as compatibility input. The response is exactly `{ goal }`, the current projection of the original Goal. Callers read the owning Thread, Turn, Action Center, and Review surfaces for the worker Turn, evidence, Gate, or Review details. NanoCore derives the Turn from request identity, commits the runnable Goal, first ready Task, allowed launch decision, and request-bound `preparing` checkpoint together, performs receipt-first replay from a metadata-only Goal id, blocks competing steps behind any uncleared Goal checkpoint, and publishes the receipt before terminal cleanup. Request-owned effects without that receipt fail closed as `recovery_required`; the route does not rebuild historical HTTP results.
 
 A Goal worker user-input or approval gate is an acknowledged nonterminal step result. The response or decision command attaches its Item to the same Turn, closes that old Turn and checkpoint, returns the Task to `ready`, leaves the Goal `running` with `currentTaskId=null`, and requires a new `goal.step`; approval denial preserves its durable denial evidence for the next Coordinator input. The command receipt is published only after the exact Item, Turn, checkpoint, Goal Task, and Goal tuple is durable, and no path resumes the prior worker Session.
 
@@ -241,11 +241,11 @@ The current global routes still de-duplicate the union of visible workspace cata
 
 The Action Center slice returns unified Human Attention rows for pending human actions and product-visible review states.
 
-Current route families are `GET /api/app/workspaces/:workspaceId/action-center`, `POST /api/app/workspaces/:workspaceId/artifacts/:artifactId/review`, and `POST /api/app/workspaces/:workspaceId/threads/:threadId/goals/:goalId/reviews/:reviewId/decision`.
+Current route families are `GET /api/app/workspaces/:workspaceId/action-center`, `POST /api/app/workspaces/:workspaceId/workspace-sync/reviews/:reviewId/decision`, and `POST /api/app/workspaces/:workspaceId/threads/:threadId/goals/:goalId/reviews/:reviewId/decision`.
 
 The Goal Review projection exposes one unresolved evidence row with `accept_review`, `request_refinement`, `retry_work`, and `abort` actions and no verdict in its source. First-party clients map those action kinds to the four canonical decisions; refinement, retry, and abort collect their required instruction or reason before calling the decision route, and cancellation leaves the row unresolved.
 
-The current unversioned Artifact review route cannot identify the reviewed Artifact version, does not implement S16's version-owned decision and follow-up contract, and is removal-only. It MUST NOT remain as a fallback or alias after the versioned target route below is implemented.
+The generic unversioned Artifact Review route is absent. The Workspace Sync Review route is the sole decision owner for its exact durable review and passes only `accepted`, `needs_refinement`, `rejected`, or `blocked` without translation. A backing Artifact may still supply a read-only legacy review projection when the durable review is absent, but that projection performs no write and cannot be decided or applied. S16's version-owned Artifact Review target must land without restoring a decision fallback or alias.
 
 Approval response mutation stays on the Core command path at `POST /api/approvals/:approvalRequestId/respond`.
 
@@ -257,7 +257,7 @@ Client methods live under `client.agents` and `client.actionCenter`.
 
 ### Artifact And Material Interaction Target
 
-The accepted S16 target adds the following App API operations. These method, path, and `operationId` identities are closed; implementation MUST replace the removal-only Artifact mutation and review shapes instead of adding aliases.
+The accepted S16 target adds the following App API operations. These method, path, and `operationId` identities are closed; implementation MUST add only these exact owner-specific mutations and MUST NOT restore the deleted generic Artifact mutation or review aliases.
 
 | Method and path | `operationId` | Success identity |
 | --- | --- | --- |
@@ -281,7 +281,7 @@ Mutation request bodies are exactly the canonical inputs in S16 plus the require
 
 The Artifact Review list exposes only S16's closed `ArtifactReviewView`, never the full owner row or its `decisionRequestId`. Material list, detail, revision-summary, exact-revision-content, and Thread material responses use only the other closed public view shapes in S16; owner-only request proof is not added to a response. The Thread material read does not retain expected-base conflict state. Workspace Sync Review remains a different owner and route family under S49; its exact `artifactId` relationship excludes that presentation Artifact from generic Artifact Review projection, and neither route may translate or fall back to the other.
 
-These operations are target contracts until their schemas, NanoCore routes, generated OpenAPI entries, Core Client methods, and first-party consumers land together. The user-facing removal-only MCP package gains no corresponding methods; Agent-facing use is projected through the transport-neutral operation catalog, bundled CLI, and unified Skill only after the App API contract is executable.
+These operations are target contracts until their schemas, NanoCore routes, generated OpenAPI entries, Core Client methods, and first-party consumers land together. The removed user-facing MCP facade must not be restored; Agent-facing use is projected through the transport-neutral operation catalog, bundled CLI, and unified Skill only after the App API contract is executable.
 
 ### Diagnostics And Setup
 
@@ -515,7 +515,6 @@ Do not add route-local read-model schemas inside NanoCore handlers when they sho
 - `docs/core/agent-capability.md`
 - `docs/core/identity.md`
 - `docs/core/knowledge.md`
-- `docs/specs/20260628-protocol_contract_consolidation.md`
 - `docs/specs/20260628-nanocore_config_identity_contract.md`
 - `docs/specs/20260526-llm_gateway_responses_api.md`
 - `docs/specs/20260526-codex_chatgpt_subscription_login.md`

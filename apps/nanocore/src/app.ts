@@ -1368,6 +1368,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     coreDb: options.coreDb,
     inflightCommands,
     requestStore,
+    repositoryWorkspaceDb,
     runtimeConfig,
     schedulerEpoch,
     turnExecutor,
@@ -1383,7 +1384,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     turnExecutor,
   });
 
-  registerArtifactRoutes({ app, inflightCommands, requestStore });
+  registerArtifactRoutes({ app, requestStore });
 
   registerWorkspaceSyncRoutes({ app, inflightCommands, repositoryWorkspaceDb, requestStore });
 
@@ -1395,7 +1396,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     inflightCommands,
     repositoryWorkspaceDb,
     requestStore,
-    startModeWorkerTurn,
   });
 
   registerTurnEventRoutes({ app, requestStore });

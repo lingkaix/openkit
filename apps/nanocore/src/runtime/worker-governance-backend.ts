@@ -38,7 +38,6 @@ import type { OpenShellCellLifecycle } from './openshell-cell.js';
 import type {
   OpenShellGatewayInfo,
   OpenShellGatewayTargetInput,
-  OpenShellProviderDetachInput,
   OpenShellProviderGetInput,
   OpenShellProviderInfo,
   OpenShellProviderProfileEnsureInput,
@@ -85,25 +84,6 @@ type OpenShellWorkerControlGateway = Pick<
 const CODEX_NETWORK_BINARIES = ['/usr/local/bin/codex', '/usr/local/lib/codex/bin/codex'] as const;
 const OPEN_SHELL_WORKER_INFERENCE_CREDENTIAL_KEY = 'OPENKIT_WORKER_INFERENCE_TOKEN';
 const MAX_RUNTIME_PROVENANCE_MANIFEST_BYTES = 1024 * 1024;
-
-const DEFAULT_CODEX_NETWORK_ENDPOINTS: OpenShellNetworkEndpoint[] = [
-  {
-    access: 'read-write',
-    binaries: [...CODEX_NETWORK_BINARIES],
-    host: 'chatgpt.com',
-    name: 'chatgpt_backend_rest',
-    port: 443,
-    protocol: 'rest',
-  },
-  {
-    access: 'read-write',
-    binaries: [...CODEX_NETWORK_BINARIES],
-    host: 'mcp.deepwiki.com',
-    name: 'mcp_deepwiki',
-    port: 443,
-    protocol: 'rest',
-  },
-];
 
 /**
  * Files and sandbox identity retained for one materialized OpenShell session.
@@ -506,14 +486,6 @@ export interface OpenShellWorkerGovernanceClient {
   ): Promise<OpenShellProviderInfo>;
 
   /**
-   * Detaches one provider from one OpenShell sandbox.
-   *
-   * @param input Sandbox and provider selection.
-   * @returns Product-safe detach summary.
-   */
-  detachProvider(input: OpenShellProviderDetachInput): Promise<OpenShellSandboxFileResult>;
-
-  /**
    * Downloads one file from an OpenShell sandbox.
    *
    * @param input Download request.
@@ -530,14 +502,10 @@ export interface OpenShellWorkerGovernanceBackendOptions {
   cellLifecycle: OpenShellCellLifecycle;
   /** Optional host Codex config file uploaded into the sandbox when explicitly configured. */
   codexConfigTomlPath?: string | undefined;
-  /** Delay between transient provider detach retries. */
-  detachRetryDelayMs?: number | undefined;
   /** NanoCore data root containing deterministic private session staging. */
   dataRoot: string;
   /** Stable data-root deployment id used to namespace every gateway artifact. */
   deploymentId: string;
-  /** Extra OpenShell network endpoints authorized for selected worker binaries. */
-  extraNetworkEndpoints?: OpenShellNetworkEndpoint[] | undefined;
   /** Real OpenShell CLI adapter or deterministic test client. */
   cli: OpenShellWorkerGovernanceClient;
   /** OpenShell gateway name selected by NanoCore. */
@@ -557,10 +525,8 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
   private readonly cellLifecycle: OpenShellCellLifecycle;
   private readonly cli: OpenShellWorkerGovernanceClient;
   private readonly codexConfigTomlPath: string | null;
-  private readonly detachRetryDelayMs: number;
   private readonly dataRoot: string;
   private readonly deploymentId: string;
-  private readonly extraNetworkEndpoints: OpenShellNetworkEndpoint[];
   private readonly gatewayName: string;
   private readonly gatewayUrl: string | null;
   private readonly placement: 'local' | 'remote';
@@ -579,11 +545,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
     this.cli = options.cli;
     this.dataRoot = options.dataRoot;
     this.deploymentId = options.deploymentId;
-    this.detachRetryDelayMs = options.detachRetryDelayMs ?? 500;
-    this.extraNetworkEndpoints = [
-      ...DEFAULT_CODEX_NETWORK_ENDPOINTS,
-      ...(options.extraNetworkEndpoints ?? []),
-    ];
     this.gatewayName = options.gatewayName;
     this.gatewayUrl = canonicalOpenShellGatewayOrigin(options.gatewayUrl);
     this.placement = options.placement ?? 'local';
@@ -709,6 +670,21 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
       'trusted-worker-inference-relay'
     );
 
+    if (
+      (context.providerCredentials?.length ?? 0) > 0 ||
+      environmentPackage.providers.attachments.some(
+        (attachment) =>
+          attachment.vaultGrantIds.length > 0 || attachment.policyContributionIds.length > 0
+      ) ||
+      environmentPackage.credentials.declarations.some(
+        (declaration) => declaration.visibility === 'sandbox-provider'
+      )
+    ) {
+      throw new Error(
+        'OpenShell materialization does not allow non-transient provider attachments.'
+      );
+    }
+
     if (trustedRelay && environmentPackage.control.auth?.kind !== 'sandbox-session-token') {
       throw new Error('Trusted worker inference requires a worker control registration token.');
     }
@@ -721,8 +697,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
 
     if (
       trustedRelay &&
-      ((context.providerCredentials?.length ?? 0) > 0 ||
-        (context.runtimeEnvCredentials?.length ?? 0) > 0 ||
+      ((context.runtimeEnvCredentials?.length ?? 0) > 0 ||
         (context.runtimeFileCredentials?.length ?? 0) > 0)
     ) {
       throw new Error(
@@ -761,11 +736,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
       const transientProviderInstanceIds = transientProviderInstanceId
         ? [transientProviderInstanceId]
         : [];
-      const sessionFiles = await writeOpenShellSessionFiles(
-        environmentPackage,
-        trustedRelay ? [] : this.extraNetworkEndpoints,
-        sessionDirectory
-      );
+      const sessionFiles = await writeOpenShellSessionFiles(environmentPackage, sessionDirectory);
       const workspaceBundles = await createOpenShellWorkspaceBundles(
         environmentPackage,
         context,
@@ -778,10 +749,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
       const runtimeFileUploadTargets = new Set(
         runtimeFileUploads.flatMap((upload) => (upload.targetPath ? [upload.targetPath] : []))
       );
-      const providerInstanceIds = (context.providerCredentials ?? []).map(
-        (credential) => credential.providerInstanceId
-      );
-      providerInstanceIds.push(...transientProviderInstanceIds);
+      const providerInstanceIds = transientProviderInstanceIds;
       const relayProfileFile = trustedRelay
         ? await writeOpenShellWorkerInferenceProfile(
             environmentPackage,
@@ -822,10 +790,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
             ]
           : [];
 
-      await this.upsertProviders([
-        ...(context.providerCredentials ?? []),
-        ...relayProviderCredentials,
-      ]);
+      await this.upsertProviders(relayProviderCredentials);
       await this.cli.createSandbox({
         command: ['openkit-codex-shim', '--package', '/openkit/config/package.json', '--dry-run'],
         env: openShellSandboxEnvironment(
@@ -949,6 +914,19 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
     if (!isDeepStrictEqual(identity, plannedIdentity)) {
       throw new Error('OpenShell restored identity does not match its deployment-owned lineage.');
     }
+    if (
+      environmentPackage.providers.attachments.some(
+        (attachment) =>
+          attachment.vaultGrantIds.length > 0 || attachment.policyContributionIds.length > 0
+      ) ||
+      environmentPackage.credentials.declarations.some(
+        (declaration) => declaration.visibility === 'sandbox-provider'
+      )
+    ) {
+      throw new Error(
+        'OpenShell cannot restore a session with non-transient provider attachments.'
+      );
+    }
 
     const existing = this.materializedSessions.get(environmentPackage.snapshotId);
     if (existing) {
@@ -963,14 +941,9 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
       environmentPackage,
       identity,
       launchCommand: null,
-      providerInstanceIds: [
-        ...new Set([
-          ...environmentPackage.providers.attachments.map(
-            (attachment) => attachment.providerInstanceId
-          ),
-          ...(identity.transientProviderInstanceId ? [identity.transientProviderInstanceId] : []),
-        ]),
-      ],
+      providerInstanceIds: identity.transientProviderInstanceId
+        ? [identity.transientProviderInstanceId]
+        : [],
       sandboxName: identity.backendSessionId,
       sessionDirectory,
     });
@@ -1202,33 +1175,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
   }
 
   /**
-   * Detaches active providers authorized by revoked vault grants.
-   *
-   * @param grantIds Revoked vault grant ids.
-   */
-  public async detachProvidersForRevokedGrants(grantIds: readonly string[]): Promise<void> {
-    const revokedGrantIds = new Set(grantIds);
-
-    for (const session of this.materializedSessions.values()) {
-      if (!session.launchCommand) {
-        continue;
-      }
-      const providerIds = session.environmentPackage.providers.attachments
-        .filter((attachment) =>
-          attachment.vaultGrantIds.some((grantId) => revokedGrantIds.has(grantId))
-        )
-        .map((attachment) => attachment.providerInstanceId);
-
-      for (const provider of new Set(providerIds)) {
-        if (!session.providerInstanceIds.includes(provider)) {
-          continue;
-        }
-        await this.detachProvider(session, provider);
-      }
-    }
-  }
-
-  /**
    * Builds the OpenShell capability declaration.
    *
    * @param version Installed OpenShell version.
@@ -1255,7 +1201,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
         'process-policy',
         'transcript-sink',
         'worker-control',
-        'provider-attachments',
         'credential-placeholder',
         'nanocore-inference-upstream',
         'trusted-worker-inference-relay',
@@ -1469,47 +1414,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
       };
     } catch {
       return null;
-    }
-  }
-
-  /**
-   * Detaches one provider and removes it from local materialized-session state.
-   *
-   * @param session Materialized session state.
-   * @param provider Provider instance id to detach.
-   */
-  private async detachProvider(session: OpenShellSessionState, provider: string): Promise<void> {
-    await this.detachProviderFromSandbox(session.sandboxName, provider);
-    session.providerInstanceIds = session.providerInstanceIds.filter((id) => id !== provider);
-  }
-
-  /**
-   * Detaches one provider from a sandbox with bounded conflict retries.
-   *
-   * @param sandboxName OpenShell sandbox name.
-   * @param provider Provider instance id to detach.
-   */
-  private async detachProviderFromSandbox(sandboxName: string, provider: string): Promise<void> {
-    const input = {
-      gateway: this.gatewayName,
-      ...(this.gatewayUrl ? { gatewayEndpoint: this.gatewayUrl } : {}),
-      name: sandboxName,
-      provider,
-    };
-
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      try {
-        await this.cli.detachProvider(input);
-        break;
-      } catch (error) {
-        if (isOpenShellDetachNotFound(error)) {
-          break;
-        }
-        if (attempt === 3 || !isTransientOpenShellDetachConflict(error)) {
-          throw error;
-        }
-        await delay(this.detachRetryDelayMs);
-      }
     }
   }
 
@@ -1812,8 +1716,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
  * Builds environment variables injected into the OpenShell worker sandbox.
  *
  * @param environmentPackage Package that owns the sandbox.
- * @param extraNetworkEndpoints Additional backend-configured egress rules.
- * @param sessionDirectory Deterministic validated package staging directory.
  * @param controlRegistration Optional worker control registration.
  * @param runtimeEnvCredentials Backend-private runtime environment credentials.
  * @returns Sandbox environment variables.
@@ -2123,11 +2025,11 @@ function sanitizeOpenShellPathComponent(value: string): string {
  * Writes generated OpenShell package and policy files for one materialized session.
  *
  * @param environmentPackage Package that owns the sandbox.
+ * @param sessionDirectory Deterministic validated package staging directory.
  * @returns Host-local generated file paths.
  */
 async function writeOpenShellSessionFiles(
   environmentPackage: AgentEnvironmentPackage,
-  extraNetworkEndpoints: OpenShellNetworkEndpoint[],
   sessionDirectory: string
 ): Promise<{
   packagePath: string;
@@ -2148,10 +2050,7 @@ async function writeOpenShellSessionFiles(
       policyPath,
       renderOpenShellWorkerPolicy({
         additionalFilesystemGrants: openShellFilesystemGrantsFromPackagePolicy(environmentPackage),
-        additionalNetworkEndpoints: [
-          ...extraNetworkEndpoints,
-          ...openShellNetworkEndpointsFromPackagePolicy(environmentPackage),
-        ],
+        additionalNetworkEndpoints: openShellNetworkEndpointsFromPackagePolicy(environmentPackage),
         controlBaseUrl: requireControlBaseUrl(environmentPackage),
       }),
       { encoding: 'utf8', mode: 0o600 }
@@ -2527,19 +2426,6 @@ function redactLocalHostPaths(value: unknown): unknown {
 }
 
 /**
- * Checks whether OpenShell reports that a detach target is already absent.
- *
- * @param error Detach failure.
- * @returns True when treating the detach as idempotently complete is safe.
- */
-function isOpenShellDetachNotFound(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    /\b(sandbox|provider)\b.*\b(not found|does not exist)\b/i.test(error.message)
-  );
-}
-
-/**
  * Checks whether OpenShell reports that one exact sandbox source path is absent.
  *
  * @param error Download failure.
@@ -2612,32 +2498,6 @@ function resolveWorkerBackendStagingDirectory(
     throw new Error('OpenShell staging directory reference must be a canonical session child.');
   }
   return stagingDirectory;
-}
-
-/**
- * Checks whether OpenShell reported an optimistic-concurrency detach conflict.
- *
- * @param error Detach failure.
- * @returns True when retrying the same detach is appropriate.
- */
-function isTransientOpenShellDetachConflict(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    /sandbox was modified by another operation/i.test(error.message) &&
-    /retry the command/i.test(error.message)
-  );
-}
-
-/**
- * Waits for a short retry delay.
- *
- * @param milliseconds Delay duration.
- * @returns Promise that resolves after the delay.
- */
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, milliseconds);
-  });
 }
 
 /**

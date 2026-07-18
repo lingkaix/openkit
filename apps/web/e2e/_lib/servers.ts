@@ -1,5 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -51,8 +51,23 @@ export async function startIsolatedWebStack(
   const coreUrl = `http://127.0.0.1:${corePort}`;
   const webUrl = `http://127.0.0.1:${webPort}`;
   const mode = options.mode ?? 'local';
+
+  if (mode === 'server' && !options.dataRoot) {
+    await mkdir(join(dataRoot, 'config'), { recursive: true });
+    await writeFile(
+      join(dataRoot, 'config', 'server.jsonc'),
+      JSON.stringify({
+        schemaVersion: 1,
+        server: { cors: { origins: [webUrl] }, publicBaseUrl: coreUrl },
+      })
+    );
+  }
+
   const coreEnv: NodeJS.ProcessEnv = {
     ...process.env,
+    ...(mode === 'server'
+      ? { BETTER_AUTH_SECRET: 'openkit-web-e2e-server-secret-at-least-32-characters' }
+      : {}),
     BETTER_AUTH_TRUSTED_ORIGINS: webUrl,
     BETTER_AUTH_URL: coreUrl,
     OPENKIT_CORE_MODE: mode,

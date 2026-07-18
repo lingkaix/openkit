@@ -3,7 +3,7 @@
 Status: Superseded
 Implementation: N/A
 Status Changed: 2026-06-28
-Current Guidance: `docs/specs/20260628-protocol_contract_consolidation.md`
+Current Guidance: `docs/core/protocol.md`, `docs/core/contract-evolution.md`, `packages/protocol/README.md`
 Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
 ## Lifecycle Reason

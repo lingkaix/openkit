@@ -41,11 +41,7 @@ export function isTerminalWorkerTurnStage(
  * @returns Worker checkpoint stage that should be persisted for the terminal outcome.
  */
 export function workerTurnStageForStopReason(stopReason: StopReason): WorkerTurnStage {
-  if (
-    stopReason === 'completed' ||
-    stopReason === 'length' ||
-    stopReason === 'budget_exhausted'
-  ) {
+  if (stopReason === 'completed' || stopReason === 'length' || stopReason === 'budget_exhausted') {
     return 'completed';
   }
 

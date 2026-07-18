@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AgentEnvironmentCredentialDeclarationSchema,
   AgentEnvironmentPackageSchema,
+  OPENKIT_WORKER_CONTROL_POST_PATHS,
   redactAgentEnvironmentPackageSnapshot,
   validateAgentEnvironmentPackageForBackend,
   WORKER_RUNTIME_PROVENANCE_FEATURE,
@@ -190,7 +191,7 @@ function openshellPackageFixture(): unknown {
         heartbeats: true,
         logs: 'summary-only',
       },
-      commands: ['interrupt', 'terminal-command'],
+      commands: ['interrupt'],
       events: ['worker.ready', 'turn.started', 'item.created', 'turn.completed'],
       adapter: {
         kind: 'openkit-codex-shim',
@@ -370,7 +371,6 @@ function trustedWorkerInferenceRelayPackageFixture(): Record<string, unknown> {
               { method: 'POST', path: '/api/worker-control/artifacts' },
               { method: 'POST', path: '/api/worker-control/commands/poll' },
               { method: 'POST', path: '/api/worker-control/commands/ack' },
-              { method: 'POST', path: '/api/worker-control/terminal-results' },
               { method: 'POST', path: '/api/worker-control/events/append' },
               { method: 'POST', path: '/api/worker-control/final-status' },
               { method: 'POST', path: '/api/worker-control/supply-refresh-ack' },
@@ -753,7 +753,7 @@ describe('agent environment package schema', () => {
         artifacts: 'batch',
         events: 'batch',
       },
-      commands: ['interrupt', 'terminal-command'],
+      commands: ['interrupt'],
     });
     expect(parsed.control.relay).toBeUndefined();
     expect(parsed.control.transcript?.itemsPath).toBe('/openkit/session/items.jsonl');
@@ -904,6 +904,25 @@ describe('agent environment package schema', () => {
     }
   });
 
+  it('accepts interrupt as the only direct NanoCore control command', () => {
+    const fixture = openshellPackageFixture() as Record<string, unknown>;
+    const control = fixture.control as Record<string, unknown>;
+
+    expect(() =>
+      AgentEnvironmentPackageSchema.parse({
+        ...fixture,
+        control: { ...control, commands: ['interrupt'] },
+      })
+    ).not.toThrow();
+    expect(() =>
+      AgentEnvironmentPackageSchema.parse({
+        ...fixture,
+        control: { ...control, commands: ['interrupt', 'terminal-command'] },
+      })
+    ).toThrow();
+    expect(OPENKIT_WORKER_CONTROL_POST_PATHS).not.toContain('/api/worker-control/terminal-results');
+  });
+
   it('rejects false direct NanoCore control declarations', () => {
     const fixture = openshellPackageFixture() as Record<string, unknown>;
     const control = fixture.control as Record<string, unknown>;
@@ -934,7 +953,6 @@ describe('agent environment package schema', () => {
       { ...control, channels: { ...channels, commands: false } },
       { ...control, channels: { ...channels, heartbeats: false } },
       { ...control, commands: ['interrupt', 'terminal-command', 'approval-result'] },
-      { ...control, commands: ['interrupt'] },
       { ...control, channels: { ...channels, events: 'live' } },
       { ...control, channels: { ...channels, artifacts: 'live' } },
       { ...control, adapter: undefined },
@@ -1013,7 +1031,6 @@ describe('agent environment package schema', () => {
         { method: 'POST', path: '/api/worker-control/artifacts' },
         { method: 'POST', path: '/api/worker-control/commands/poll' },
         { method: 'POST', path: '/api/worker-control/commands/ack' },
-        { method: 'POST', path: '/api/worker-control/terminal-results' },
         { method: 'POST', path: '/api/worker-control/events/append' },
         { method: 'POST', path: '/api/worker-control/final-status' },
         { method: 'POST', path: '/api/worker-control/supply-refresh-ack' },

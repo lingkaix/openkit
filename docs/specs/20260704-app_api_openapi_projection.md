@@ -14,7 +14,7 @@ Implementation: Implemented
 
 ## Does Not Own
 
-- Schema contents and their package boundaries. `packages/protocol` and `packages/app-api-schemas` own their schemas; `docs/specs/20260628-protocol_contract_consolidation.md` and `docs/specs/20260528-core_client_boundary.md` own the layering.
+- Schema contents and their package boundaries. `packages/protocol` and `packages/app-api-schemas` own their schemas; `docs/core/protocol.md`, `docs/core/contract-evolution.md`, and `docs/specs/20260528-core_client_boundary.md` own the layering.
 - The `@openkit/core-client` SDK design and sub-client composition (`docs/specs/20260528-core_client_boundary.md`).
 - The Core HTTP/SSE projection under `/api/workspaces`, `/api/turns`, `/api/approvals`, and related Core routes. `@openkit/protocol`, `@openkit/core-client`, `docs/core/protocol.md`, and `docs/core/communication.md` own that transport projection.
 - Protocol event envelope, SSE semantics, stream cursors, and replay (`docs/core/protocol.md`, `docs/core/communication.md`).
@@ -56,7 +56,7 @@ This spec adds an OpenAPI document as a generated projection with the direction 
 
 ## Background
 
-The current stack is Hono in `apps/nanocore/src/app.ts`, Zod schemas in `packages/app-api-schemas` and `packages/protocol`, and `@openkit/core-client` as the typed HTTP and SSE client consumed by both `apps/web` and `mcp/`. This is the correct shape per the repository's own governance: one canonical definition, projections elsewhere. `packages/protocol` already generates JSON Schema outputs under the same discipline.
+The current stack is Hono in `apps/nanocore/src/app.ts`, Zod schemas in `packages/app-api-schemas` and `packages/protocol`, and `@openkit/core-client` as the typed HTTP and SSE client consumed by `apps/web` and the bundled CLI. This is the correct shape per the repository's own governance: one canonical definition, projections elsewhere. `packages/protocol` already generates JSON Schema outputs under the same discipline.
 
 Two alternatives were considered and rejected for the projection question this spec answers. OpenAPI-first (define the API in OpenAPI, generate Zod and types) inverts the source-of-truth direction, loses Zod expressiveness (discriminated unions, refinements, brands), and produces worse generated types than hand-owned schemas. Hono RPC (`hc` type inference) couples clients to server internals across the core/client boundary that `docs/specs/20260528-core_client_boundary.md` explicitly forbids crossing and provides no reviewable language-neutral artifact.
 
@@ -68,7 +68,7 @@ What remains valuable from the OpenAPI ecosystem is the document itself — as a
 - Every public App API route is registered by a catalog operation id. The catalog owns the documented method, path, request and response schema references, error envelope, security posture, and tags; handler runtime validation continues to import the owning shared schemas directly.
 - An OpenAPI 3.1 document is reproducibly generated from the catalog by build and CI commands, committed for review, drift-checked, and also instantiated once at server module load for diagnostic serving.
 - The document is a projection: read-only, never hand-edited, never a codegen source for first-party TypeScript packages.
-- `@openkit/core-client` remains the only first-party SDK; the Web SPA and bundled CLI consume it, and the unified Skill invokes the bundled CLI. The legacy MCP projection is removal-only and is not a future consumer.
+- `@openkit/core-client` remains the only first-party SDK; the Web SPA and bundled CLI consume it, and the unified Skill invokes the bundled CLI. No additional user-facing transport catalog or SDK is retained.
 
 ## Contract / Expected Behavior
 
@@ -176,7 +176,6 @@ Previously open questions are resolved by accepted V1 defaults: the generated Op
 ## Links
 
 - `docs/specs/20260528-core_client_boundary.md`
-- `docs/specs/20260628-protocol_contract_consolidation.md`
 - `docs/specs/20260704-remote_auth_credential_bootstrap.md`
 - `docs/specs/20260526-llm_gateway_responses_api.md`
 - `docs/specs/20260703-schema_evolution_record_envelope.md`

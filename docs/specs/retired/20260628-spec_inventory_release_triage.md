@@ -71,7 +71,7 @@ These groups look like historical slices of the same contract. The next pass sho
 - `20260522-agent_profile_model.md`
 - `20260616-agent_environment_package.md`
 
-Result: consolidated into `20260628-agent_setup_runtime_supply_contract.md`.
+Result: the intermediate consolidation was later superseded into `docs/core/agent-supply.md`, S20, S22, S23, and S25.
 
 Historical files were moved to `docs/specs/superseded/agent-setup-runtime-supply/` and marked `Status: Superseded`.
 
@@ -84,7 +84,7 @@ Historical files were moved to `docs/specs/superseded/agent-setup-runtime-supply
 - `20260517-protocol_output_delta_target.md`
 - `20260527-core_protocol_hardening.md`
 
-Result: consolidated into `20260628-protocol_contract_consolidation.md`.
+Result: consolidated into `superseded/20260628-protocol_contract_consolidation.md`, which is retained as historical lifecycle evidence.
 
 Historical files were moved to `docs/specs/superseded/protocol-hardening/` and marked `Status: Superseded`.
 
@@ -128,11 +128,11 @@ These specs already look historical or replaced. The next pass should verify lin
 | --- | --- | --- |
 | Spec | Result | Why |
 | --- | --- | --- |
-| `superseded/20260513-core_protocol_model_notes.md` | Superseded. | Stable conclusions have moved into `docs/core/` and `20260628-protocol_contract_consolidation.md`. |
+| `superseded/20260513-core_protocol_model_notes.md` | Superseded. | Stable conclusions moved into `docs/core/` through the now-superseded `superseded/20260628-protocol_contract_consolidation.md` consolidation record. |
 | `superseded/20260526-codex_oauth_account_ux.md` | Superseded. | Replaced by current subscription-login/account-slot flow. |
 | `superseded/20260516-release_readiness_fixes.md` | Superseded. | Describes an old Web-first release-readiness slice rather than current 0.0.1 kernel preview. |
 | `superseded/20260518-staging_docker_distribution.md` | Superseded. | Historical release numbering and staging packaging details should not drive current public release posture. |
-| `retired/protocol-hardening/20260513-protocol_package_organization.md` | Moved to protocol retired group. | Superseded by `20260628-protocol_contract_consolidation.md`. |
+| `retired/protocol-hardening/20260513-protocol_package_organization.md` | Moved to protocol retired group. | Superseded by the historical `superseded/20260628-protocol_contract_consolidation.md` consolidation record. |
 
 ## Keep And Audit
 

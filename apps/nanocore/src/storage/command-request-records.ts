@@ -1,8 +1,11 @@
 import { existsSync, readdirSync } from 'node:fs';
+import { z } from 'zod';
 
 import type {
+  ChatCommandReceiptMetadata,
   CommandRequestName,
   CommandRequestRecord,
+  CommandRequestResponse,
   CommandRequestResponseKind,
   CommandRequestScope,
 } from '../lib/store.js';
@@ -27,6 +30,34 @@ type CommandRequestRow = {
 /** Scoped database that can own command idempotency requests. */
 type CommandRequestDb = UserDb | WorkspaceDb;
 
+/** Closed schema for the sole extra metadata allowed on a command receipt. */
+const ChatCommandReceiptMetadataSchema: z.ZodType<ChatCommandReceiptMetadata> = z
+  .object({
+    downstream: z
+      .discriminatedUnion('kind', [
+        z.object({ kind: z.literal('task'), turnId: z.string().min(1) }).strict(),
+        z
+          .object({
+            kind: z.literal('goal'),
+            goalId: z.string().min(1),
+            turnId: z.string().min(1),
+          })
+          .strict(),
+      ])
+      .nullable(),
+    resultKind: z.enum([
+      'knowledge-answer',
+      'repository-answer',
+      'provider-answer',
+      'clarification',
+      'task-handoff',
+      'goal-handoff',
+      'refused',
+    ]),
+    status: z.union([z.literal(200), z.literal(202)]),
+  })
+  .strict();
+
 const COMMAND_REQUEST_SELECT = `SELECT
   request_key AS key,
   command_name AS command,
@@ -39,6 +70,34 @@ const COMMAND_REQUEST_SELECT = `SELECT
   created_at AS createdAt,
   expires_at AS expiresAt
 FROM idempotency_requests`;
+
+/**
+ * Rejects unsupported receipt fields and validates the sole bounded Chat metadata exception.
+ *
+ * @param command Command that owns the receipt.
+ * @param response Candidate response pointer.
+ * @returns Exact normalized response pointer safe for memory and SQLite persistence.
+ * @throws Error when fields or Chat metadata exceed the accepted receipt contract.
+ */
+export function normalizeCommandRequestResponse(
+  command: CommandRequestName,
+  response: CommandRequestResponse
+): CommandRequestResponse {
+  if (Object.keys(response).some((key) => !['kind', 'id', 'chatMetadata'].includes(key))) {
+    throw new Error('Command receipt response contains unsupported fields.');
+  }
+  if (response.chatMetadata === undefined) {
+    return { kind: response.kind, id: response.id };
+  }
+  if (command !== 'chat.start') {
+    throw new Error('Only chat.start may store extra command receipt metadata.');
+  }
+  const parsed = ChatCommandReceiptMetadataSchema.safeParse(response.chatMetadata);
+  if (!parsed.success) {
+    throw new Error('chat.start command receipt metadata is invalid.');
+  }
+  return { kind: response.kind, id: response.id, chatMetadata: parsed.data };
+}
 
 /**
  * Stores one command idempotency request in its owning scoped database.
@@ -87,6 +146,7 @@ export function recordCommandRequestRecordInDb(
   db: CommandRequestDb,
   record: CommandRequestRecord
 ): void {
+  const response = normalizeCommandRequestResponse(record.command, record.response);
   db.sqlite
     .prepare(
       `INSERT OR REPLACE INTO idempotency_requests (
@@ -108,9 +168,9 @@ export function recordCommandRequestRecordInDb(
       record.requestId,
       JSON.stringify(record.scope),
       record.inputHash,
-      record.response.kind,
-      record.response.id,
-      record.response.snapshot === undefined ? null : JSON.stringify(record.response.snapshot),
+      response.kind,
+      response.id,
+      response.chatMetadata === undefined ? null : JSON.stringify(response.chatMetadata),
       record.createdAt,
       record.expiresAt
     );
@@ -280,11 +340,11 @@ function mapCommandRequestRow(row: CommandRequestRow): CommandRequestRecord {
     requestId: row.requestId,
     scope: JSON.parse(row.scopeJson) as CommandRequestScope,
     inputHash: row.inputHash,
-    response: {
+    response: normalizeCommandRequestResponse(row.command, {
       kind: row.responseKind,
       id: row.responseId,
-      ...(row.responseJson === null ? {} : { snapshot: JSON.parse(row.responseJson) }),
-    },
+      ...(row.responseJson === null ? {} : { chatMetadata: JSON.parse(row.responseJson) }),
+    }),
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,
   };

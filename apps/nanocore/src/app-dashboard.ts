@@ -1,7 +1,5 @@
 import {
   type DashboardArtifactSummary,
-  QueueAgentSessionTerminalCommandRequestSchema,
-  QueueAgentSessionTerminalCommandResponseSchema,
   ThreadDashboardResponseSchema,
   type ThreadWorkStatus,
   type WorkRouting,
@@ -16,10 +14,7 @@ import type { AuthVariables } from './auth/middleware.js';
 import type { RuntimeConfigManager } from './config/runtime-config.js';
 import type { FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
-import {
-  getThreadAgentSession,
-  resolveWorkerControlSnapshot,
-} from './runtime/agent-session-read-model.js';
+import { getThreadAgentSession } from './runtime/agent-session-read-model.js';
 import type { TurnExecutor } from './runtime/types.js';
 import type { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 
@@ -368,7 +363,7 @@ function buildWorkspaceWorkSections(
 }
 
 /**
- * Registers workspace and thread dashboard routes, including active-session terminal commands.
+ * Registers workspace and thread dashboard routes.
  *
  * @param dependencies Hono app and current dashboard data owners.
  */
@@ -481,58 +476,6 @@ export function registerDashboardRoutes({
       );
     } catch (error) {
       return asApiError((error as Error).message);
-    }
-  });
-
-  registerAppApiRoute(app, 'queueAgentSessionTerminalCommand', async (c) => {
-    try {
-      const workspaceId = c.req.param('workspaceId');
-      const threadId = c.req.param('threadId');
-      const agentSessionId = c.req.param('agentSessionId');
-      const request = QueueAgentSessionTerminalCommandRequestSchema.parse(await c.req.json());
-      const store = requestStore(c);
-      const activeSession = turnExecutor.getAgentSession?.(store, workspaceId, threadId) ?? null;
-
-      if (!activeSession || activeSession.id !== agentSessionId) {
-        return asApiError(
-          `Active agent session not found: ${agentSessionId}`,
-          'agent_session_not_found',
-          404
-        );
-      }
-
-      const storedSession = store
-        .listThreadAgentSessions(workspaceId, threadId)
-        .find((candidate) => candidate.id === agentSessionId);
-      const snapshot = resolveWorkerControlSnapshot(
-        workerControlGateway,
-        storedSession?.environmentPackageSnapshotId ?? null,
-        agentSessionId,
-        workspaceId,
-        threadId
-      );
-
-      if (!snapshot) {
-        return asApiError(
-          `Worker control session not found: ${agentSessionId}`,
-          'worker_control_session_not_found',
-          404
-        );
-      }
-
-      const command = workerControlGateway.enqueueTerminalCommand(snapshot.packageSnapshotId, {
-        argv: request.argv,
-        commandId: request.requestId,
-        cwd: request.cwd,
-      });
-
-      return c.json(
-        QueueAgentSessionTerminalCommandResponseSchema.parse({
-          command,
-        })
-      );
-    } catch (error) {
-      return asApiError((error as Error).message, 'terminal_command_queue_failed', 400);
     }
   });
 }

@@ -55,7 +55,7 @@ It also forced the Web UI to consume a flat API surface where stable Core semant
 The public client is grouped by boundary:
 
 - `client.core`: meta, workspaces, knowledge, threads, turns, items, approvals, artifacts, and turn SSE.
-- `client.app`: dashboards, Goal Mode, workspace synchronization read models, agent-session terminal commands, search, quick chat, automations, diagnostics, setup diagnostics, artifact review, Goal Review, and feedback.
+- `client.app`: dashboards, Goal Mode, workspace synchronization read models, search, quick chat, automations, diagnostics, setup diagnostics, Goal Review, and feedback.
 - `client.runtimeConfig`: runtime config file list, read, create, update, validate, reload, and schema catalog routes.
 - `client.oauth.openaiCodex`: Codex ChatGPT account slot status, list, create, update, delete, start, cancel, and logout routes.
 - `client.auth.email`: Better Auth email sign-up, sign-in, and sign-out routes.
@@ -104,8 +104,6 @@ Approval mutations stay on the Core command path at `POST /api/approvals/:approv
 
 Question response mutations stay on the Core turn-input path at `POST /api/turns`.
 
-Artifact review decisions stay on the App API command path at `POST /api/app/workspaces/:workspaceId/artifacts/:artifactId/review`.
-
 The client exposes `client.actionCenter.listHumanAttention(workspaceId)`.
 
 ## Workspace Repository Slice
@@ -114,7 +112,6 @@ NanoCore exposes:
 
 - `GET /api/app/workspaces/:workspaceId/repositories`
 - `GET /api/app/workspaces/:workspaceId/repositories/diagnostics`
-- `POST /api/app/workspaces/:workspaceId/repositories/default`
 - `PUT /api/app/workspaces/:workspaceId/repositories/default`
 
 This slice is a redacted App API projection for workspace repository resources.
@@ -130,7 +127,7 @@ The client exposes these routes through `client.app` because they are workflow/p
 
 Workspace synchronization client methods include review listing, review retrieval, input snapshots, materialization records, change sets, staged reviews, apply-result listing, and apply-result retrieval.
 
-Goal Mode client methods include summary retrieval, start, plan creation, plan approval, bounded step execution, steering, artifact review decision submission, and Goal Review decision submission.
+Goal Mode client methods include summary retrieval, start, plan creation, plan approval, bounded step execution, steering, and Goal Review decision submission.
 
 The deterministic test supervise-step route remains outside the public product client surface.
 
@@ -158,7 +155,7 @@ Turn feedback submissions use the strict shared `SubmitTurnFeedbackRequestSchema
 
 ## Current Implementation Projection
 
-The composed `@openkit/core-client` surface, shared `@openkit/app-api-schemas` package, NanoCore App API validation path, and Web consumption path follow this boundary. The accepted bundled CLI must follow the same boundary when implemented; the current MCP facade is temporary legacy evidence only.
+The composed `@openkit/core-client` surface, shared `@openkit/app-api-schemas` package, NanoCore App API validation path, Web consumption path, and bundled CLI consumption path follow this boundary. The unified `openkit` Skill invokes the bundled CLI and adds no second SDK or route contract.
 
 The boundary is guarded by package tests that keep App API schemas runtime-neutral and OpenAPI tests that prevent first-party clients from reversing direction and consuming the generated OpenAPI artifact as the source contract.
 

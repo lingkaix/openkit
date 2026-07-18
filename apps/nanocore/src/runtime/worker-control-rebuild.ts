@@ -14,13 +14,12 @@ import { applyScopedMigrations } from '../storage/migrate.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import type {
   WorkerControlArtifactNotice,
-  WorkerControlCommand,
   WorkerControlGateway,
   WorkerControlHeartbeat,
+  WorkerControlInterruptCommand,
   WorkerControlKnowledgeProposalSummary,
   WorkerControlLineage,
   WorkerControlSupplyRefreshAck,
-  WorkerControlTerminalResult,
 } from './worker-control-gateway.js';
 
 interface WorkerControlRecordRow {
@@ -174,7 +173,6 @@ function readAcceptedRecords(
   heartbeat: WorkerControlHeartbeat | null;
   knowledgeProposalSummaries: WorkerControlKnowledgeProposalSummary[];
   supplyRefreshAcks: WorkerControlSupplyRefreshAck[];
-  terminalResults: WorkerControlTerminalResult[];
 } {
   const rows = coreDb.sqlite
     .prepare(
@@ -194,7 +192,6 @@ function readAcceptedRecords(
     heartbeat: null as WorkerControlHeartbeat | null,
     knowledgeProposalSummaries: [] as WorkerControlKnowledgeProposalSummary[],
     supplyRefreshAcks: [] as WorkerControlSupplyRefreshAck[],
-    terminalResults: [] as WorkerControlTerminalResult[],
   };
 
   for (const row of rows) {
@@ -204,8 +201,6 @@ function readAcceptedRecords(
       result.heartbeat = record as WorkerControlHeartbeat;
     } else if (row.operation === 'artifact_notice') {
       result.artifacts.push(record as WorkerControlArtifactNotice);
-    } else if (row.operation === 'terminal_result') {
-      result.terminalResults.push(record as WorkerControlTerminalResult);
     } else if (row.operation === 'supply_refresh_ack') {
       result.supplyRefreshAcks.push(record as WorkerControlSupplyRefreshAck);
     } else if (row.operation === 'capability_summary') {
@@ -227,7 +222,10 @@ function readAcceptedRecords(
  * @param lineage Worker-control lineage selector.
  * @returns Restored command records.
  */
-function readCommands(coreDb: CoreDb, lineage: WorkerControlLineage): WorkerControlCommand[] {
+function readCommands(
+  coreDb: CoreDb,
+  lineage: WorkerControlLineage
+): WorkerControlInterruptCommand[] {
   return (
     coreDb.sqlite
       .prepare(
@@ -236,13 +234,14 @@ function readCommands(coreDb: CoreDb, lineage: WorkerControlLineage): WorkerCont
         FROM worker_control_commands
         WHERE agent_session_id = ?
           AND package_snapshot_id = ?
+          AND command_kind = 'interrupt'
           AND acknowledged_at IS NULL
         ORDER BY sequence ASC
         `
       )
       .all(lineage.agentSessionId, lineage.packageSnapshotId) as WorkerControlCommandRow[]
   ).map((row) => ({
-    ...(JSON.parse(row.payloadJson) as WorkerControlCommand),
+    ...(JSON.parse(row.payloadJson) as WorkerControlInterruptCommand),
     deliveredAt: row.deliveredAt,
   }));
 }

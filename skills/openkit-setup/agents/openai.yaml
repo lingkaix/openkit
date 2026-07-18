@@ -1,4 +1,0 @@
-interface:
-  display_name: "OpenKit Setup"
-  short_description: "Connect OpenKit MCP for end-user work"
-  default_prompt: "Use $openkit-setup to connect my desktop agent app to a local or remote NanoCore backend."

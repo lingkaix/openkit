@@ -207,7 +207,7 @@ Browser tests should use accessible selectors and user-visible text where practi
 
 Browser tests should avoid direct API calls except for controlled setup, cleanup, or assertions that are impossible or wasteful through the UI.
 
-The suite should cover workspace selection, thread creation, turn submission, live streaming, approvals, user questions, interruption, artifacts, settings diagnostics, provider configuration visibility, account-slot login controls, server-mode sign-up and sign-in, logout, unauthenticated rejection, diagnostics redaction, and staging packaged routes.
+The suite should cover Workspace and Thread setup, one representative user-visible work entry, settings diagnostics and redaction, server-mode sign-up and sign-in, logout, unauthenticated rejection, and staging packaged routes. Add browser coverage for streaming, Gates, interruption, Artifacts, provider visibility, or account controls only when the browser boundary can expose a failure that the owning lower-layer test cannot represent; do not replay every mode invariant at L4 or preserve an unsupported adapter sequence merely to satisfy an old inventory.
 
 Every browser failure should preserve enough evidence to debug the problem without rerunning locally: trace, screenshot, video when enabled, console logs, network logs, and server process logs.
 
@@ -353,10 +353,10 @@ For worker scheduling, high-risk coverage means launch authorization, exact work
 
 The testing-layer contract owned by this spec is implemented:
 
-- Root scripts expose the accepted gates: `verify`, `verify:l0-l2`, `verify:release`, `verify:full`, `test:e2e:nano`, `test:e2e:web`, `test:smoke`, `test:stories`, `test:stories:mcp`, and `test:stories:real-codex`.
+- Root scripts expose the accepted gates: `verify`, `verify:l0-l2`, `verify:release`, `verify:full`, `test:e2e:nano`, `test:e2e:web`, `test:smoke`, `test:stories`, and the explicitly gated real-provider or real-worker story commands.
 - `.github/workflows/ci.yml` implements the accepted trigger posture: lightweight PR checks, tag-triggered release gate jobs for L0-L2, NanoCore e2e, and smoke, plus manual workflow dispatch for `pr-check`, `l0-l2`, `nanocore-e2e`, `web-e2e`, `smoke`, `deterministic-stories`, `release-gate`, and `full`.
 - Unit, contract, NanoCore e2e, Web e2e, staging e2e, smoke, and deterministic story entrypoints exist in the repository-owned locations named by this spec.
-- Story artifacts live under `tests/stories/`, deterministic story adapters live under `tests/story-runner/`, and the root deterministic story command runs metadata validation, MCP story runners, and the Web local self-check story.
+- Story artifacts live under `tests/stories/`, bounded story support lives under `tests/story-runner/`, and the root deterministic story command runs the shared story-support checks plus one Web Workspace, Thread, and diagnostics self-check. The unified Skill and bundled CLI keep their deterministic contract coverage at L1-L3 rather than restoring transport-specific L6 runners. The retired simulator sequence that continued one scheduler-backed Turn through approval, user input, and Artifact production is not acceptance evidence because it has no Task or Goal checkpoint owner.
 - Real Codex and provider-dependent story paths remain opt-in and outside the default deterministic gate.
 
 The remaining agentic story executor and story-catalog growth work are owned by `docs/specs/20260529-l6_story_acceptance.md` and remain deferred there rather than keeping this layer-model spec partial.
@@ -408,7 +408,6 @@ Mitigation: Keep PR gates to the lightweight repository check, run L0-L3 plus L5
 - `docs/core/protocol.md`
 - `docs/specs/20260529-l6_story_acceptance.md`
 - `docs/specs/superseded/agent-workflow/20260526-nano_core_lightweight_agents.md`
-- `docs/specs/20260628-protocol_contract_consolidation.md`
 - `docs/specs/20260528-core_client_boundary.md`
 - `docs/specs/superseded/20260529-remove_legacy_compatibility.md`
 - `apps/nanocore/README.md`

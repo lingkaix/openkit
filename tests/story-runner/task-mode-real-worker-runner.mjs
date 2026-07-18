@@ -12,7 +12,7 @@ import {
   streamCodexAuthFromSsh,
   waitForChildOrDeadline,
   writeExclusiveEvidenceFile,
-} from './real-codex-goal-mode-runner.mjs';
+} from './real-codex-support.mjs';
 import { parseStoryDocument, validateStoryMetadata } from './story-metadata.mjs';
 
 const storyRunnerRoot = dirname(fileURLToPath(import.meta.url));

@@ -55,6 +55,7 @@ import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 import { listVaultUseRecords } from '../vault/vault-use-records.js';
 import { upsertWorkspaceRepositoryResource } from '../workspace/repository-store.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import { TurnStartValidationError } from './orchestrator.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
 import { getWorkerBackendSession } from './worker-backend-sessions.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
@@ -733,7 +734,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     coreDb.sqlite.close();
   });
 
-  it('collects durable outputs before failing a non-completed worker status', async () => {
+  it('collects durable outputs and preserves a failed worker status', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-failed-status-')));
     applyMigrations(coreDb);
     const store = createDemoStore();
@@ -753,6 +754,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       awaitWorkerCompletion: async () => ({
         acceptedAt: '2026-07-15T00:00:03.000Z',
         status: 'failed' as const,
+        stopReason: 'error',
       }),
       backend,
       coreDb,
@@ -772,7 +774,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         sandboxBindingRef,
         workspaceRoots: [],
       })
-    ).rejects.toThrow('failed');
+    ).resolves.toBeUndefined();
     expect(backend.calls).toEqual([
       'materialize',
       'launch',
@@ -783,6 +785,71 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'cleanupSession',
     ]);
     expect(store.getTurnById(turn.id).status).toBe('failed');
+    expect(store.getTurnEvents(turn.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          data: expect.objectContaining({ stopReason: 'error', type: 'turn-completed' }),
+          event: 'turn.completed',
+        }),
+      ])
+    );
+    coreDb.sqlite.close();
+  });
+
+  it('cleans an ask-user worker before interrupting the product owners and requiring recovery', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-ask-user-')));
+    applyMigrations(coreDb);
+    const store = createDemoStore();
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Ask for unavailable input');
+    const agentSessionId = 'as_ask_user_1';
+    const packageSnapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
+    const sandboxBindingRef = 'lease-binding:ask-user';
+    dispatchExecutorLease(coreDb, {
+      agentSessionId,
+      packageSnapshotId,
+      sandboxBindingRef,
+      threadId: turn.threadId,
+      turnId: turn.id,
+    });
+    const backend = new FakeWorkerGovernanceBackend();
+    const executor = new WorkerGovernanceTurnExecutor({
+      awaitWorkerCompletion: async () => ({
+        acceptedAt: '2026-07-15T00:00:03.000Z',
+        status: 'blocked' as const,
+        stopReason: 'ask_user',
+      }),
+      backend,
+      coreDb,
+      createAgentSessionId: () => agentSessionId,
+      environmentBackend: {
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+        kind: 'openshell',
+        sandboxImageRef: 'openkit/worker-codex:dev',
+      },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+
+    const error = await executor
+      .startTurn(store, turn.id, 'Ask for unavailable input', {
+        agentSessionId,
+        requestId: '00000000-0000-4000-8000-000000000255',
+        sandboxBindingRef,
+        workspaceRoots: [],
+      })
+      .then(
+        () => null,
+        (cause: unknown) => cause
+      );
+
+    expect(error).toBeInstanceOf(TurnStartValidationError);
+    expect(error).toMatchObject({ code: 'recovery_required', status: 409 });
+    expect(backend.calls.at(-1)).toBe('cleanupSession');
+    expect(store.getTurnById(turn.id)).toMatchObject({
+      error: { code: 'worker_human_gate_unavailable' },
+      status: 'interrupted',
+    });
+    expect(store.getAgentSession(agentSessionId)).toMatchObject({ status: 'interrupted' });
+    expect(getWorkerBackendSession(coreDb, `lease_${turn.id}`)).toMatchObject({ state: 'cleaned' });
     coreDb.sqlite.close();
   });
 
@@ -813,6 +880,17 @@ describe('WorkerGovernanceTurnExecutor', () => {
       turnStatus: 'cancelled',
     },
     {
+      finalStatus: 'blocked',
+      stopReason: 'ask_user',
+      turnStatus: 'interrupted',
+    },
+    {
+      finalStatus: 'blocked',
+      preexistingErrorCode: 'unrelated_interruption',
+      stopReason: 'ask_user',
+      turnStatus: 'interrupted',
+    },
+    {
       finalStatus: 'failed',
       stopReason: 'error',
       turnStatus: 'failed',
@@ -827,11 +905,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       stopReason: 'error',
       turnStatus: 'failed',
     },
-  ] as const)('resumes the normal closeout path after restart for $finalStatus/$stopReason', async ({
-    finalStatus,
-    stopReason,
-    turnStatus,
-  }) => {
+  ] as const)('resumes the normal closeout path after restart for $finalStatus/$stopReason', async (testCase) => {
+    const { finalStatus, stopReason, turnStatus } = testCase;
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-completion-gate-')));
     applyMigrations(coreDb);
     const store = createDemoStore();
@@ -915,6 +990,17 @@ describe('WorkerGovernanceTurnExecutor', () => {
       recordKey: '1',
       sequence: 1,
     });
+    if ('preexistingErrorCode' in testCase) {
+      store.updateTurn(turn.id, {
+        agentSessionId,
+        completedAt: '2026-07-15T00:00:04.000Z',
+        error: {
+          code: testCase.preexistingErrorCode,
+          message: 'Existing unrelated interruption.',
+        },
+        status: 'interrupted',
+      });
+    }
     const restartedExecutor = new WorkerGovernanceTurnExecutor({
       backend,
       coreDb,
@@ -925,6 +1011,22 @@ describe('WorkerGovernanceTurnExecutor', () => {
       },
       now: () => '2026-07-15T00:00:04.000Z',
     });
+
+    if ('preexistingErrorCode' in testCase) {
+      await expect(
+        restartedExecutor.resumeAcceptedFinalStatus(store, awaitedEnvironmentPackage, session)
+      ).rejects.toThrow('Restart closeout did not establish the unavailable human-gate fallback.');
+      expect(store.getTurnById(turn.id)).toMatchObject({
+        error: { code: testCase.preexistingErrorCode },
+        status: 'interrupted',
+      });
+      expect(store.getAgentSession(agentSessionId)).toMatchObject({ status: 'busy' });
+      expect(getWorkerBackendSession(coreDb, `lease_${turn.id}`)).toMatchObject({
+        state: 'cleaned',
+      });
+      coreDb.sqlite.close();
+      return;
+    }
 
     await expect(
       restartedExecutor.resumeAcceptedFinalStatus(store, awaitedEnvironmentPackage, session)
@@ -939,10 +1041,14 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'collectArtifacts',
       'cleanupSession',
     ]);
-    expect(store.getTurnById(turn.id).status).toBe(turnStatus);
+    expect(store.getTurnById(turn.id)).toMatchObject({
+      ...(stopReason === 'ask_user' ? { error: { code: 'worker_human_gate_unavailable' } } : {}),
+      agentSessionId,
+      status: turnStatus,
+    });
     expect(
       store.getTurnEvents(turn.id).find((event) => event.event === 'turn.completed')
-    ).toMatchObject({ data: { stopReason } });
+    ).toMatchObject({ data: { stopReason: stopReason === 'ask_user' ? 'aborted' : stopReason } });
     expect(getWorkerBackendSession(coreDb, `lease_${turn.id}`)).toMatchObject({ state: 'cleaned' });
     coreDb.sqlite.close();
   });

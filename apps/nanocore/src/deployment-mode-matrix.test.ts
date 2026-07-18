@@ -107,7 +107,7 @@ describe('NanoCore deployment mode matrix', () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', `Loop matrix ${coreMode} ${runtimePlacement}`);
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-loop-matrix-repo-'));
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-goal-matrix-repo-'));
     execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
     execFileSync('git', ['config', 'user.email', 'openkit@example.invalid'], {
       cwd: repositoryPath,
@@ -152,12 +152,6 @@ describe('NanoCore deployment mode matrix', () => {
 
       expect(response.status).toBe(200);
       expect(payload).toMatchObject({
-        result: {
-          outcome: 'review',
-          shouldStop: true,
-          stopReason: 'completed',
-          reviewId: expect.any(String),
-        },
         goal: {
           status: 'reviewing',
           currentTask: {
@@ -168,6 +162,7 @@ describe('NanoCore deployment mode matrix', () => {
           },
         },
       });
+      expect(payload).not.toHaveProperty('result');
 
       const actionCenter = await app.request('/api/app/workspaces/ws_demo/action-center');
       const actionCenterPayload = await actionCenter.json();

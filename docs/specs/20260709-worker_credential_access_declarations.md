@@ -1,7 +1,7 @@
 # Worker Credential Access Declarations
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
 
 ## Owns
 
@@ -35,7 +35,7 @@ Implementation: Implemented
 
 OpenKit already has the correct security model for worker credentials: workers should consume tools, providers, local files, or endpoints, while NanoCore owns vault resolution, grants, injection records, receipts, and audit.
 
-The current implementation proves the path through narrow cases: sandbox-provider attachment, Codex auth JSON runtime-file upload, and host-side Git push. Worker MCP gateway credentials are not current because the worker capability plane is disabled.
+The current implementation proves runtime-file upload and host-side Git push. It resolves sandbox-provider declarations and their durable grant lineage, but stock OpenShell provider attachment is fail-closed because Providers v2 would otherwise add profile-owned endpoints that are absent from the immutable AEP network policy. Worker MCP gateway credentials are not current because the worker capability plane is disabled.
 
 This spec generalizes the worker launch-time credential path without adding a new secret system.
 
@@ -321,7 +321,7 @@ Because OpenKit is still internal, no compatibility reader for the old hard-code
 
 ## Current Implementation Projection
 
-The current implementation is aligned with this spec.
+The current implementation is partial.
 
 `packages/config-schema/src/agent-environment.ts` accepts `sandbox-provider`, `runtime-file`, and `runtime-env` declarations.
 
@@ -329,13 +329,13 @@ The current implementation is aligned with this spec.
 
 The durable GitHub MCP and Codex auth JSON materialization paths have already moved to the shared declaration resolver.
 
-`apps/nanocore/src/runtime/worker-governance-backend.ts` already supports backend-private provider credentials, backend-private runtime-file uploads, and runtime-env materialization.
+`apps/nanocore/src/runtime/worker-governance-backend.ts` supports backend-private runtime-file uploads and runtime-env materialization. It rejects backend-private provider credentials before any OpenShell provider or sandbox effect and does not advertise `provider-attachments`; only the exact internally generated trusted-inference provider remains.
 
 `apps/nanocore/src/vault/vault-use-audited-backend.ts` already records vault resolve success and typed failure without storing secret material.
 
 `packages/config-schema/src/agent-environment.ts` already has AEP vault references, grants, provider attachments, raw-secret guards, backend capabilities, and redaction helpers.
 
-The public declaration visibility is `sandbox-provider`; it maps to the durable vault injection visibility `backend-provider`.
+The public declaration visibility is `sandbox-provider`; it maps to the durable vault injection visibility `backend-provider`. The declaration and durable records do not authorize current OpenShell materialization until an accepted AEP design carries the exact provider endpoint and binary policy needed to prove policy equality.
 
 ## Alternatives Considered
 

@@ -1,8 +1,10 @@
-import { createMemo, createSignal } from 'solid-js';
+import { createMemo, createSignal, For } from 'solid-js';
 
 import type { Item } from '../lib/app-types';
 
 type UserInputRequestItem = Extract<Item, { type: 'user-input-request' }>;
+/** Exact protocol answer map returned for one user-input request. */
+type UserInputResponseAnswers = Extract<Item, { type: 'user-input-response' }>['answers'];
 
 /**
  * Props for one inline agent question card.
@@ -10,47 +12,63 @@ type UserInputRequestItem = Extract<Item, { type: 'user-input-request' }>;
 export interface QuestionCardProps {
   disabled: boolean;
   item: UserInputRequestItem;
-  onSubmit(item: UserInputRequestItem, answer: string): void;
+  onSubmit(item: UserInputRequestItem, answers: UserInputResponseAnswers): void;
 }
 
 /**
  * Renders an inline agent question and answer form.
  */
 export function QuestionCard(props: QuestionCardProps) {
-  const [answer, setAnswer] = createSignal('');
-  const primaryQuestion = createMemo(() => props.item.questions[0] ?? null);
-  const canSubmit = createMemo(() => answer().trim().length > 0 && !props.disabled);
+  const [answers, setAnswers] = createSignal<Record<string, string>>({});
+  const canSubmit = createMemo(
+    () =>
+      props.item.questions.length > 0 &&
+      props.item.questions.every((question) => answers()[question.id]?.trim()) &&
+      !props.disabled
+  );
 
   /**
-   * Submits the current answer value.
+   * Submits one exact answer for every question.
    */
   function submitAnswer(event: SubmitEvent): void {
     event.preventDefault();
-    const value = answer().trim();
-
-    if (!value) {
+    if (!canSubmit()) {
       return;
     }
-
-    props.onSubmit(props.item, value);
+    const values: UserInputResponseAnswers = {};
+    for (const question of props.item.questions) {
+      values[question.id] = [answers()[question.id]?.trim() ?? ''];
+    }
+    props.onSubmit(props.item, values);
   }
 
   return (
     <form class="approval-placeholder" onSubmit={submitAnswer}>
       <div>
         <span class="badge badge-outline badge-sm">question</span>
-        <h3 class="mt-2 font-semibold">{primaryQuestion()?.header ?? 'Question'}</h3>
         <p class="mt-1 text-sm opacity-70">{props.item.prompt}</p>
       </div>
-      <label class="form-control mt-4">
-        <span class="label-text">Answer</span>
-        <input
-          class="input input-bordered"
-          disabled={props.disabled}
-          onInput={(event) => setAnswer(event.currentTarget.value)}
-          value={answer()}
-        />
-      </label>
+      <For each={props.item.questions}>
+        {(question) => (
+          <label class="form-control mt-4">
+            <h3 class="font-semibold">{question.header}</h3>
+            <span class="label-text mt-1">{question.question}</span>
+            <input
+              aria-label={`${question.header} answer`}
+              class="input input-bordered"
+              disabled={props.disabled}
+              onInput={(event) =>
+                setAnswers((current) => ({
+                  ...current,
+                  [question.id]: event.currentTarget.value,
+                }))
+              }
+              type={question.isSecret ? 'password' : 'text'}
+              value={answers()[question.id] ?? ''}
+            />
+          </label>
+        )}
+      </For>
       <button class="btn btn-neutral btn-sm mt-3" disabled={!canSubmit()} type="submit">
         Submit
       </button>

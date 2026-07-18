@@ -496,6 +496,7 @@ function createLineageExportInput(
         goalId: source.goalId,
         planItemId: source.planItemId,
         status: 'reviewing',
+        latestGateContextItemId: null,
         orderIndex: 0,
         createdAt: timestamp,
         updatedAt: timestamp,

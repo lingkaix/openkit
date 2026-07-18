@@ -1841,81 +1841,6 @@
         }
       }
     },
-    "/api/app/workspaces/{workspaceId}/threads/{threadId}/agent-sessions/{agentSessionId}/terminal-commands": {
-      "post": {
-        "operationId": "queueAgentSessionTerminalCommand",
-        "tags": [
-          "app-utils"
-        ],
-        "summary": "Queue one terminal command for an active agent session.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          },
-          {
-            "name": "threadId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/ThreadId"
-            }
-          },
-          {
-            "name": "agentSessionId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/AgentSessionId"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/QueueAgentSessionTerminalCommandRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Queued terminal command.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/QueueAgentSessionTerminalCommandResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/app/workspaces/{workspaceId}/threads/{threadId}/chat": {
       "post": {
         "operationId": "startChatMode",
@@ -4390,73 +4315,6 @@
         }
       }
     },
-    "/api/app/workspaces/{workspaceId}/artifacts/{artifactId}/review": {
-      "post": {
-        "operationId": "submitArtifactReviewDecision",
-        "tags": [
-          "reviews"
-        ],
-        "summary": "Record one artifact review decision.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          },
-          {
-            "name": "artifactId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/ArtifactId"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SubmitArtifactReviewDecisionRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Recorded artifact review decision.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SubmitArtifactReviewDecisionResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/app/workspaces/{workspaceId}/knowledge/proposals/{proposalId}/decision": {
       "post": {
         "operationId": "submitKnowledgeProposalDecision",
@@ -6416,63 +6274,6 @@
             }
           }
         }
-      },
-      "post": {
-        "operationId": "createDefaultWorkspaceRepository",
-        "tags": [
-          "repositories"
-        ],
-        "summary": "Create or update the default repository resource for one workspace.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SetWorkspaceRepositoryRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Redacted repository resource read model.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SetWorkspaceRepositoryResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
       }
     },
     "/api/app/workspaces/{workspaceId}/repositories/git-push-records": {
@@ -7066,44 +6867,13 @@
                                   "type": "integer",
                                   "minimum": 0,
                                   "maximum": 9007199254740991
-                                },
-                                "terminalResultCount": {
-                                  "type": "integer",
-                                  "minimum": 0,
-                                  "maximum": 9007199254740991
-                                },
-                                "lastTerminalExitCode": {
-                                  "anyOf": [
-                                    {
-                                      "type": "integer",
-                                      "minimum": -9007199254740991,
-                                      "maximum": 9007199254740991
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
-                                "lastTerminalCompletedAt": {
-                                  "anyOf": [
-                                    {
-                                      "type": "string",
-                                      "minLength": 1
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
                                 }
                               },
                               "required": [
                                 "heartbeat",
                                 "artifactNoticeCount",
                                 "queuedCommandCount",
-                                "deliveredCommandCount",
-                                "terminalResultCount",
-                                "lastTerminalExitCode",
-                                "lastTerminalCompletedAt"
+                                "deliveredCommandCount"
                               ],
                               "additionalProperties": false
                             },
@@ -17239,7 +17009,11 @@
                           "accept_knowledge",
                           "edit_knowledge",
                           "reject_knowledge",
-                          "defer"
+                          "defer",
+                          "accepted",
+                          "needs_refinement",
+                          "rejected",
+                          "blocked"
                         ]
                       },
                       "label": {
@@ -20935,15 +20709,17 @@
                     "answers": {
                       "type": "object",
                       "propertyNames": {
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1
                       },
                       "additionalProperties": {
-                        "minItems": 1,
                         "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        }
+                        "prefixItems": [
+                          {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        ]
                       }
                     }
                   },
@@ -25562,114 +25338,6 @@
         "required": [
           "claim",
           "draft"
-        ],
-        "additionalProperties": false
-      },
-      "QueueAgentSessionTerminalCommandRequest": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "requestId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "argv": {
-            "minItems": 1,
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          "cwd": {
-            "default": null,
-            "anyOf": [
-              {
-                "type": "string",
-                "minLength": 1
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "requestId",
-          "argv",
-          "cwd"
-        ],
-        "additionalProperties": false
-      },
-      "QueueAgentSessionTerminalCommandResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "command": {
-            "type": "object",
-            "properties": {
-              "commandId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "kind": {
-                "type": "string",
-                "const": "terminal-command"
-              },
-              "sequence": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
-              },
-              "queuedAt": {
-                "type": "string",
-                "minLength": 1
-              },
-              "deliveredAt": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "argv": {
-                "minItems": 1,
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "cwd": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            },
-            "required": [
-              "commandId",
-              "kind",
-              "sequence",
-              "queuedAt",
-              "deliveredAt",
-              "argv",
-              "cwd"
-            ],
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "command"
         ],
         "additionalProperties": false
       },
@@ -30674,96 +30342,10 @@
               "updatedAt"
             ],
             "additionalProperties": false
-          },
-          "result": {
-            "type": "object",
-            "properties": {
-              "taskId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "turnId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "outcome": {
-                "type": "string",
-                "enum": [
-                  "continue",
-                  "review",
-                  "ask_user",
-                  "block",
-                  "abort",
-                  "complete"
-                ]
-              },
-              "shouldStop": {
-                "type": "boolean"
-              },
-              "stopReason": {
-                "type": "string",
-                "enum": [
-                  "completed",
-                  "error",
-                  "aborted",
-                  "length",
-                  "ask_user",
-                  "budget_exhausted"
-                ]
-              },
-              "evidence": {
-                "type": "object",
-                "properties": {
-                  "itemIds": {
-                    "maxItems": 100,
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "minLength": 1
-                    }
-                  },
-                  "artifactIds": {
-                    "maxItems": 100,
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "minLength": 1
-                    }
-                  }
-                },
-                "required": [
-                  "itemIds",
-                  "artifactIds"
-                ],
-                "additionalProperties": false
-              },
-              "reviewId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            },
-            "required": [
-              "taskId",
-              "turnId",
-              "outcome",
-              "shouldStop",
-              "stopReason",
-              "evidence",
-              "reviewId"
-            ],
-            "additionalProperties": false
           }
         },
         "required": [
-          "goal",
-          "result"
+          "goal"
         ],
         "additionalProperties": false
       },
@@ -32726,15 +32308,17 @@
                             "answers": {
                               "type": "object",
                               "propertyNames": {
-                                "type": "string"
+                                "type": "string",
+                                "minLength": 1
                               },
                               "additionalProperties": {
-                                "minItems": 1,
                                 "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
+                                "prefixItems": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                ]
                               }
                             }
                           },
@@ -34575,15 +34159,17 @@
                             "answers": {
                               "type": "object",
                               "propertyNames": {
-                                "type": "string"
+                                "type": "string",
+                                "minLength": 1
                               },
                               "additionalProperties": {
-                                "minItems": 1,
                                 "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
+                                "prefixItems": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                ]
                               }
                             }
                           },
@@ -36424,15 +36010,17 @@
                             "answers": {
                               "type": "object",
                               "propertyNames": {
-                                "type": "string"
+                                "type": "string",
+                                "minLength": 1
                               },
                               "additionalProperties": {
-                                "minItems": 1,
                                 "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
+                                "prefixItems": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                ]
                               }
                             }
                           },
@@ -38320,15 +37908,17 @@
                             "answers": {
                               "type": "object",
                               "propertyNames": {
-                                "type": "string"
+                                "type": "string",
+                                "minLength": 1
                               },
                               "additionalProperties": {
-                                "minItems": 1,
                                 "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
+                                "prefixItems": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                ]
                               }
                             }
                           },
@@ -40169,15 +39759,17 @@
                             "answers": {
                               "type": "object",
                               "propertyNames": {
-                                "type": "string"
+                                "type": "string",
+                                "minLength": 1
                               },
                               "additionalProperties": {
-                                "minItems": 1,
                                 "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
+                                "prefixItems": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                ]
                               }
                             }
                           },
@@ -42018,15 +41610,17 @@
                             "answers": {
                               "type": "object",
                               "propertyNames": {
-                                "type": "string"
+                                "type": "string",
+                                "minLength": 1
                               },
                               "additionalProperties": {
-                                "minItems": 1,
                                 "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
+                                "prefixItems": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                ]
                               }
                             }
                           },
@@ -43867,15 +43461,17 @@
                             "answers": {
                               "type": "object",
                               "propertyNames": {
-                                "type": "string"
+                                "type": "string",
+                                "minLength": 1
                               },
                               "additionalProperties": {
-                                "minItems": 1,
                                 "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
+                                "prefixItems": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                ]
                               }
                             }
                           },
@@ -45701,15 +45297,17 @@
                   "answers": {
                     "type": "object",
                     "propertyNames": {
-                      "type": "string"
+                      "type": "string",
+                      "minLength": 1
                     },
                     "additionalProperties": {
-                      "minItems": 1,
                       "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      }
+                      "prefixItems": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      ]
                     }
                   }
                 },
@@ -47461,15 +47059,17 @@
                             "answers": {
                               "type": "object",
                               "propertyNames": {
-                                "type": "string"
+                                "type": "string",
+                                "minLength": 1
                               },
                               "additionalProperties": {
-                                "minItems": 1,
                                 "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
+                                "prefixItems": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                ]
                               }
                             }
                           },
@@ -49310,15 +48910,17 @@
                             "answers": {
                               "type": "object",
                               "propertyNames": {
-                                "type": "string"
+                                "type": "string",
+                                "minLength": 1
                               },
                               "additionalProperties": {
-                                "minItems": 1,
                                 "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
+                                "prefixItems": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                ]
                               }
                             }
                           },
@@ -51159,15 +50761,17 @@
                             "answers": {
                               "type": "object",
                               "propertyNames": {
-                                "type": "string"
+                                "type": "string",
+                                "minLength": 1
                               },
                               "additionalProperties": {
-                                "minItems": 1,
                                 "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
+                                "prefixItems": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                ]
                               }
                             }
                           },
@@ -53055,15 +52659,17 @@
                             "answers": {
                               "type": "object",
                               "propertyNames": {
-                                "type": "string"
+                                "type": "string",
+                                "minLength": 1
                               },
                               "additionalProperties": {
-                                "minItems": 1,
                                 "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
+                                "prefixItems": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                ]
                               }
                             }
                           },
@@ -54904,15 +54510,17 @@
                             "answers": {
                               "type": "object",
                               "propertyNames": {
-                                "type": "string"
+                                "type": "string",
+                                "minLength": 1
                               },
                               "additionalProperties": {
-                                "minItems": 1,
                                 "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
+                                "prefixItems": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                ]
                               }
                             }
                           },
@@ -56753,15 +56361,17 @@
                             "answers": {
                               "type": "object",
                               "propertyNames": {
-                                "type": "string"
+                                "type": "string",
+                                "minLength": 1
                               },
                               "additionalProperties": {
-                                "minItems": 1,
                                 "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
+                                "prefixItems": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                ]
                               }
                             }
                           },
@@ -58602,15 +58212,17 @@
                             "answers": {
                               "type": "object",
                               "propertyNames": {
-                                "type": "string"
+                                "type": "string",
+                                "minLength": 1
                               },
                               "additionalProperties": {
-                                "minItems": 1,
                                 "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
+                                "prefixItems": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                ]
                               }
                             }
                           },
@@ -60176,245 +59788,6 @@
         ],
         "additionalProperties": false
       },
-      "SubmitArtifactReviewDecisionRequest": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "decision": {
-            "type": "string",
-            "enum": [
-              "accepted",
-              "needs_refinement",
-              "redo",
-              "rejected",
-              "deferred"
-            ]
-          },
-          "requestId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "message": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
-          "decision"
-        ],
-        "additionalProperties": false
-      },
-      "SubmitArtifactReviewDecisionResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "review": {
-            "type": "object",
-            "properties": {
-              "artifactId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "workspaceId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "threadId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "turnId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "status": {
-                "type": "string",
-                "enum": [
-                  "accepted",
-                  "needs_refinement",
-                  "redo",
-                  "rejected",
-                  "deferred"
-                ]
-              },
-              "message": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "decidedAt": {
-                "type": "string",
-                "minLength": 1
-              },
-              "followUpTurnId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            },
-            "required": [
-              "artifactId",
-              "workspaceId",
-              "threadId",
-              "turnId",
-              "status",
-              "message",
-              "decidedAt",
-              "followUpTurnId"
-            ],
-            "additionalProperties": false
-          },
-          "workspaceApplyResult": {
-            "anyOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "workspaceId": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "reviewId": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "changeSetId": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "status": {
-                    "type": "string",
-                    "enum": [
-                      "applied",
-                      "conflicted",
-                      "blocked"
-                    ]
-                  },
-                  "appliedPaths": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "minLength": 1
-                    }
-                  },
-                  "skippedPaths": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "minLength": 1
-                    }
-                  },
-                  "conflictRecords": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "minLength": 1
-                    }
-                  },
-                  "verification": {
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "command": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "status": {
-                          "type": "string",
-                          "enum": [
-                            "passed",
-                            "failed",
-                            "skipped"
-                          ]
-                        },
-                        "ref": {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "command",
-                        "status",
-                        "ref"
-                      ],
-                      "additionalProperties": false
-                    }
-                  },
-                  "commitIds": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "minLength": 1
-                    }
-                  },
-                  "appliedAt": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "required": [
-                  "id",
-                  "workspaceId",
-                  "reviewId",
-                  "changeSetId",
-                  "status",
-                  "appliedPaths",
-                  "skippedPaths",
-                  "conflictRecords",
-                  "verification",
-                  "commitIds",
-                  "appliedAt"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "review"
-        ],
-        "additionalProperties": false
-      },
       "SubmitGoalReviewDecisionRequest": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -61175,44 +60548,13 @@
                                     "type": "integer",
                                     "minimum": 0,
                                     "maximum": 9007199254740991
-                                  },
-                                  "terminalResultCount": {
-                                    "type": "integer",
-                                    "minimum": 0,
-                                    "maximum": 9007199254740991
-                                  },
-                                  "lastTerminalExitCode": {
-                                    "anyOf": [
-                                      {
-                                        "type": "integer",
-                                        "minimum": -9007199254740991,
-                                        "maximum": 9007199254740991
-                                      },
-                                      {
-                                        "type": "null"
-                                      }
-                                    ]
-                                  },
-                                  "lastTerminalCompletedAt": {
-                                    "anyOf": [
-                                      {
-                                        "type": "string",
-                                        "minLength": 1
-                                      },
-                                      {
-                                        "type": "null"
-                                      }
-                                    ]
                                   }
                                 },
                                 "required": [
                                   "heartbeat",
                                   "artifactNoticeCount",
                                   "queuedCommandCount",
-                                  "deliveredCommandCount",
-                                  "terminalResultCount",
-                                  "lastTerminalExitCode",
-                                  "lastTerminalCompletedAt"
+                                  "deliveredCommandCount"
                                 ],
                                 "additionalProperties": false
                               },
@@ -62257,15 +61599,17 @@
                               "answers": {
                                 "type": "object",
                                 "propertyNames": {
-                                  "type": "string"
+                                  "type": "string",
+                                  "minLength": 1
                                 },
                                 "additionalProperties": {
-                                  "minItems": 1,
                                   "type": "array",
-                                  "items": {
-                                    "type": "string",
-                                    "minLength": 1
-                                  }
+                                  "prefixItems": [
+                                    {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  ]
                                 }
                               }
                             },
@@ -64106,15 +63450,17 @@
                               "answers": {
                                 "type": "object",
                                 "propertyNames": {
-                                  "type": "string"
+                                  "type": "string",
+                                  "minLength": 1
                                 },
                                 "additionalProperties": {
-                                  "minItems": 1,
                                   "type": "array",
-                                  "items": {
-                                    "type": "string",
-                                    "minLength": 1
-                                  }
+                                  "prefixItems": [
+                                    {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  ]
                                 }
                               }
                             },
@@ -65955,15 +65301,17 @@
                               "answers": {
                                 "type": "object",
                                 "propertyNames": {
-                                  "type": "string"
+                                  "type": "string",
+                                  "minLength": 1
                                 },
                                 "additionalProperties": {
-                                  "minItems": 1,
                                   "type": "array",
-                                  "items": {
-                                    "type": "string",
-                                    "minLength": 1
-                                  }
+                                  "prefixItems": [
+                                    {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  ]
                                 }
                               }
                             },
@@ -67851,15 +67199,17 @@
                               "answers": {
                                 "type": "object",
                                 "propertyNames": {
-                                  "type": "string"
+                                  "type": "string",
+                                  "minLength": 1
                                 },
                                 "additionalProperties": {
-                                  "minItems": 1,
                                   "type": "array",
-                                  "items": {
-                                    "type": "string",
-                                    "minLength": 1
-                                  }
+                                  "prefixItems": [
+                                    {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  ]
                                 }
                               }
                             },
@@ -69700,15 +69050,17 @@
                               "answers": {
                                 "type": "object",
                                 "propertyNames": {
-                                  "type": "string"
+                                  "type": "string",
+                                  "minLength": 1
                                 },
                                 "additionalProperties": {
-                                  "minItems": 1,
                                   "type": "array",
-                                  "items": {
-                                    "type": "string",
-                                    "minLength": 1
-                                  }
+                                  "prefixItems": [
+                                    {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  ]
                                 }
                               }
                             },
@@ -71549,15 +70901,17 @@
                               "answers": {
                                 "type": "object",
                                 "propertyNames": {
-                                  "type": "string"
+                                  "type": "string",
+                                  "minLength": 1
                                 },
                                 "additionalProperties": {
-                                  "minItems": 1,
                                   "type": "array",
-                                  "items": {
-                                    "type": "string",
-                                    "minLength": 1
-                                  }
+                                  "prefixItems": [
+                                    {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  ]
                                 }
                               }
                             },
@@ -73398,15 +72752,17 @@
                               "answers": {
                                 "type": "object",
                                 "propertyNames": {
-                                  "type": "string"
+                                  "type": "string",
+                                  "minLength": 1
                                 },
                                 "additionalProperties": {
-                                  "minItems": 1,
                                   "type": "array",
-                                  "items": {
-                                    "type": "string",
-                                    "minLength": 1
-                                  }
+                                  "prefixItems": [
+                                    {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  ]
                                 }
                               }
                             },
@@ -76914,5 +76270,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:4525c397d7c9ce8735462bea328fe40435a3fc4abb84aa435eb40e280f475d5b"
+  "x-openkit-source-digest": "sha256:ea2a9a63635e44122d46fafa652d9cea71a0da725835d48d8c2727ae5e988bda"
 }

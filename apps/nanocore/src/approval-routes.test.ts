@@ -14,27 +14,25 @@ import { createDemoStore } from './test-support/demo-store.js';
 /**
  * Creates one policy-gated approval route fixture.
  *
- * @param action Policy action that owns the approval.
  * @returns Open database, app, store, turn, and stable gate ids.
  */
-function createPolicyApprovalFixture(action: 'mcp.call' | 'repo.push') {
+function createPolicyApprovalFixture() {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-approval-route-')));
   applyMigrations(coreDb);
   const store = createDemoStore();
-  const turn = store.createTurn('ws_demo', 'th_demo', `Approve ${action}`);
+  const turn = store.createTurn('ws_demo', 'th_demo', 'Approve repo.push');
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, store.getUserId(), 'ws_demo');
   applyScopedMigrations(workspaceDb);
   const gate = createPolicyApprovalGate({
-    action,
-    approvalId: `ap_${action.replace('.', '_')}`,
-    approvalItemId: `it_${action.replace('.', '_')}`,
-    decisionId: `pd_${action.replace('.', '_')}_required`,
-    description: `Approve ${action}.`,
-    reasonCode: `${action.replace('.', '_')}_approval_required`,
-    resourceSummary: { action },
+    approvalId: 'ap_repo_push',
+    approvalItemId: 'it_repo_push',
+    decisionId: 'pd_repo_push_required',
+    description: 'Approve repo.push.',
+    reasonCode: 'repo_push_approval_required',
+    resourceSummary: { action: 'repo.push' },
     store,
     subjectSummary: { kind: 'test' },
-    title: `Approve ${action}`,
+    title: 'Approve repo.push',
     turnId: turn.id,
     workspaceDb,
     workspaceId: 'ws_demo',
@@ -81,42 +79,22 @@ afterEach(() => {
 });
 
 describe('approval response routes', () => {
-  it.each([
-    'updateApproval',
-    'createItem',
-    'updateTurn',
-  ] as const)('converges policy approval retries after %s persistence fails', async (failureStep) => {
-    const fixture = createPolicyApprovalFixture('repo.push');
-    const requestId = {
-      updateApproval: '00000000-0000-4000-8000-000000000101',
-      createItem: '00000000-0000-4000-8000-000000000102',
-      updateTurn: '00000000-0000-4000-8000-000000000103',
-    }[failureStep];
+  it('keeps a policy approval in recovery_required when its response receipt is missing', async () => {
+    const fixture = createPolicyApprovalFixture();
+    const requestId = '00000000-0000-4000-8000-000000000101';
 
     try {
-      if (failureStep === 'updateApproval') {
-        vi.spyOn(fixture.store, 'updateApproval').mockImplementationOnce(() => {
-          throw new Error('Injected approval persistence failure.');
-        });
-      } else if (failureStep === 'createItem') {
-        vi.spyOn(fixture.store, 'createItem').mockImplementationOnce(() => {
-          throw new Error('Injected approval item persistence failure.');
-        });
-      } else {
-        vi.spyOn(fixture.store, 'updateTurn').mockImplementationOnce(() => {
-          throw new Error('Injected approval turn persistence failure.');
-        });
-      }
+      vi.spyOn(fixture.store, 'recordCommandRequest').mockImplementationOnce(() => {
+        throw new Error('Injected approval response receipt failure.');
+      });
 
       const failed = await respondToPolicyApproval(fixture, requestId);
-      expect(failed.status).toBe(404);
+      expect(failed.status).toBe(409);
+      await expect(failed.json()).resolves.toMatchObject({ code: 'recovery_required' });
 
       const retried = await respondToPolicyApproval(fixture, requestId);
-      expect(retried.status).toBe(200);
-      await expect(retried.json()).resolves.toMatchObject({ status: 'granted' });
-
-      const replayed = await respondToPolicyApproval(fixture, requestId);
-      expect(replayed.status).toBe(200);
+      expect(retried.status).toBe(409);
+      await expect(retried.json()).resolves.toMatchObject({ code: 'recovery_required' });
       expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('granted');
       expect(
         fixture.store
@@ -125,12 +103,17 @@ describe('approval response routes', () => {
       ).toHaveLength(1);
       expect(
         fixture.store.getTurn(fixture.turn.workspaceId, fixture.turn.threadId, fixture.turn.id)
-      ).toMatchObject({ status: 'running', humanGate: null });
+      ).toMatchObject({ status: 'completed', humanGate: null, completedAt: expect.any(String) });
       expect(
         fixture.store
-          .listCommandRequests()
-          .filter((record) => record.command === 'approval.respond')
-      ).toHaveLength(1);
+          .getTurnEvents(fixture.turn.id)
+          .filter((event) => event.event === 'turn.completed')
+      ).toEqual([
+        expect.objectContaining({
+          data: expect.objectContaining({ stopReason: 'completed' }),
+        }),
+      ]);
+      expect(fixture.store.listCommandRequests()).toEqual([]);
 
       const workspaceDb = openWorkspaceDb(
         fixture.coreDb.dataRoot,
@@ -160,24 +143,31 @@ describe('approval response routes', () => {
     }
   });
 
-  it('uses the policy action in outcome ids and rejects an opposite second decision', async () => {
-    const fixture = createPolicyApprovalFixture('mcp.call');
+  it.each([
+    ['granted', 'completed', 'completed', 'allow', '00000000-0000-4000-8000-000000000104'],
+    ['denied', 'cancelled', 'aborted', 'deny', '00000000-0000-4000-8000-000000000107'],
+  ] as const)('closes and replays one receipt-backed %s policy approval response', async (decision, turnStatus, stopReason, policyResult, requestId) => {
+    const fixture = createPolicyApprovalFixture();
 
     try {
-      const granted = await respondToPolicyApproval(
-        fixture,
-        '00000000-0000-4000-8000-000000000104'
-      );
-      expect(granted.status).toBe(200);
+      const resolved = await respondToPolicyApproval(fixture, requestId, decision);
+      expect(resolved.status).toBe(200);
 
-      const denied = await respondToPolicyApproval(
-        fixture,
-        '00000000-0000-4000-8000-000000000105',
-        'denied'
-      );
-      expect(denied.status).toBe(409);
-      await expect(denied.json()).resolves.toMatchObject({ code: 'idempotency_key_conflict' });
-      expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('granted');
+      const replayed = await respondToPolicyApproval(fixture, requestId, decision);
+      expect(replayed.status).toBe(200);
+      await expect(replayed.json()).resolves.toMatchObject({ status: decision });
+      expect(
+        fixture.store.getTurn(fixture.turn.workspaceId, fixture.turn.threadId, fixture.turn.id)
+      ).toMatchObject({ status: turnStatus, humanGate: null, completedAt: expect.any(String) });
+      expect(
+        fixture.store
+          .getTurnEvents(fixture.turn.id)
+          .filter((event) => event.event === 'turn.completed')
+      ).toEqual([
+        expect.objectContaining({
+          data: expect.objectContaining({ stopReason }),
+        }),
+      ]);
 
       const workspaceDb = openWorkspaceDb(
         fixture.coreDb.dataRoot,
@@ -195,8 +185,8 @@ describe('approval response routes', () => {
             .all(fixture.gate.approvalId)
         ).toEqual([
           {
-            decisionId: `pd_mcp_call_granted_${fixture.gate.approvalId}`,
-            result: 'allow',
+            decisionId: `pd_repo_push_${decision}_${fixture.gate.approvalId}`,
+            result: policyResult,
           },
         ]);
       } finally {
@@ -207,30 +197,25 @@ describe('approval response routes', () => {
     }
   });
 
-  it('does not regress a terminal turn on a same-decision policy replay', async () => {
-    const fixture = createPolicyApprovalFixture('repo.push');
+  it('joins concurrent duplicate policy approval responses before receipt publication', async () => {
+    const fixture = createPolicyApprovalFixture();
+    const requestId = '00000000-0000-4000-8000-000000000105';
 
     try {
-      const granted = await respondToPolicyApproval(
-        fixture,
-        '00000000-0000-4000-8000-000000000107'
-      );
-      expect(granted.status).toBe(200);
-      fixture.store.updateTurn(fixture.turn.id, {
-        status: 'completed',
-        completedAt: new Date().toISOString(),
-        humanGate: null,
-      });
+      const responses = await Promise.all([
+        respondToPolicyApproval(fixture, requestId),
+        respondToPolicyApproval(fixture, requestId),
+      ]);
 
-      const replayed = await respondToPolicyApproval(
-        fixture,
-        '00000000-0000-4000-8000-000000000108'
-      );
-      expect(replayed.status).toBe(200);
+      expect(responses.map((response) => response.status)).toEqual([200, 200]);
+      await expect(responses[0]?.json()).resolves.toMatchObject({ status: 'granted' });
+      await expect(responses[1]?.json()).resolves.toMatchObject({ status: 'granted' });
       expect(
-        fixture.store.getTurn(fixture.turn.workspaceId, fixture.turn.threadId, fixture.turn.id)
-          .status
-      ).toBe('completed');
+        fixture.store
+          .listThreadItems(fixture.turn.workspaceId, fixture.turn.threadId)
+          .filter((item) => item.id === `it_approval_decision_${fixture.gate.approvalId}`)
+      ).toHaveLength(1);
+      expect(fixture.store.listCommandRequests()).toHaveLength(1);
     } finally {
       fixture.coreDb.sqlite.close();
     }

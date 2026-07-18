@@ -458,7 +458,6 @@ export const WorkerControlOperationSchema = z.enum([
   'artifact_notice',
   'command_poll',
   'command_ack',
-  'terminal_result',
   'event_append',
   'final_status',
   'supply_refresh_ack',

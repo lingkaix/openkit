@@ -33,6 +33,23 @@ test('release preflight rejects package versions that do not match the tag', () 
   );
 });
 
+test('release preflight ignores packages outside the release workspace roots', () => {
+  const repoRoot = makeReleaseFixture();
+  mkdirSync(join(repoRoot, 'ignored'), { recursive: true });
+  writeJson(join(repoRoot, 'ignored', 'package.json'), {
+    name: '@openkit/ignored-fixture',
+    version: '9.9.9',
+  });
+
+  assert.doesNotThrow(() =>
+    validateReleasePreflight({
+      repoRoot,
+      requireReleaseWorkerDigests: true,
+      tag: 'v0.0.1',
+    })
+  );
+});
+
 test('release preflight rejects unpinned release worker base images', () => {
   const repoRoot = makeReleaseFixture({ workerBaseImage: 'node:24-bookworm-slim' });
 
@@ -66,20 +83,12 @@ function makeReleaseFixture(options = {}) {
     private: true,
     version,
   });
-  writeFileSync(
-    join(root, 'pnpm-workspace.yaml'),
-    "packages:\n  - 'apps/*'\n  - 'mcp'\n  - 'packages/*'\n"
-  );
+  writeFileSync(join(root, 'pnpm-workspace.yaml'), "packages:\n  - 'apps/*'\n  - 'packages/*'\n");
 
   mkdirSync(join(root, 'apps', 'web'), { recursive: true });
   writeJson(join(root, 'apps', 'web', 'package.json'), {
     name: '@openkit/web',
     version: packageVersion,
-  });
-  mkdirSync(join(root, 'mcp'), { recursive: true });
-  writeJson(join(root, 'mcp', 'package.json'), {
-    name: '@openkit/mcp',
-    version,
   });
   mkdirSync(join(root, 'packages', 'protocol'), { recursive: true });
   writeJson(join(root, 'packages', 'protocol', 'package.json'), {

@@ -19,7 +19,6 @@ import {
   type SubmitTurnInputRequestSchema,
   ThreadSchema,
   TurnSchema,
-  type UpdateArtifactMetadataRequestSchema,
   type UpdateKnowledgeEntryRequestSchema,
   type UpdateThreadRequestSchema,
   type UpdateWorkspaceRequestSchema,
@@ -91,10 +90,6 @@ export type ListArtifactsResponse = z.infer<typeof ListArtifactsResponseSchema>;
 export type Artifact = z.infer<typeof ArtifactSchema>;
 /** Artifact detail response. */
 export type GetArtifactResponse = z.infer<typeof GetArtifactResponseSchema>;
-/** Artifact metadata update input. */
-export type UpdateArtifactMetadataInput = OptionalRequestId<
-  z.infer<typeof UpdateArtifactMetadataRequestSchema>
->;
 /** Thread item replay response. */
 export type ListThreadItemsResponse = z.infer<typeof ListThreadItemsResponseSchema>;
 
@@ -161,8 +156,6 @@ export interface CoreProjectionClient {
   listArtifacts(workspaceId: string): Promise<ListArtifactsResponse>;
   /** Reads one artifact. */
   getArtifact(workspaceId: string, artifactId: string): Promise<GetArtifactResponse>;
-  /** Updates one artifact metadata record. */
-  updateArtifactMetadata(input: UpdateArtifactMetadataInput): Promise<GetArtifactResponse>;
   /** Lists durable items for one thread. */
   listThreadItems(
     workspaceId: string,
@@ -298,14 +291,6 @@ export function createCoreProjectionClient(
         `/api/workspaces/${workspaceId}/artifacts/${artifactId}`,
         GetArtifactResponseSchema
       ),
-    updateArtifactMetadata: (input) => {
-      const request = withRequestId(input);
-      return transport.patchJson(
-        `/api/workspaces/${request.workspaceId}/artifacts/${request.artifactId}`,
-        request,
-        GetArtifactResponseSchema
-      );
-    },
     listThreadItems: (workspaceId, threadId, options) =>
       transport.getJson(
         listThreadItemsPath(workspaceId, threadId, options),

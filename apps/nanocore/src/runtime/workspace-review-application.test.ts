@@ -29,7 +29,6 @@ import { listWorkspaceApplyPlans } from './workspace-apply-plans.js';
 import { recordWorkspaceApplyResult } from './workspace-apply-results.js';
 import { recordFilesystemWorkspaceStagingRoot } from './workspace-filesystem-staging.js';
 import { decideWorkspaceSyncReview } from './workspace-review-application.js';
-import { stageGitWorkspaceReview } from './workspace-review-git.js';
 import {
   getWorkspaceSyncReview,
   recordWorkspaceSyncReview,
@@ -561,115 +560,35 @@ describe('workspace review application', () => {
     }
   });
 
-  it('retries fallback review-branch cleanup after decision persistence fails', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-git-fallback-discard-data-'));
-    const repositoryRoot = mkdtempSync(join(tmpdir(), 'openkit-git-fallback-discard-repository-'));
-    temporaryRoots.push(dataRoot, repositoryRoot);
+  it('does not create a durable review from an artifact fallback', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-review-fallback-data-'));
+    temporaryRoots.push(dataRoot);
     const fallbackReview = gitRenameWorkspaceReviewItem();
-    const { review, changeSet } = fallbackReview;
-    const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Own the fallback review branch');
-    const workspaceId = turn.workspaceId;
-    const reviewBranch = review.staging.branch;
-    if (!reviewBranch) {
-      throw new Error('Fallback review fixture requires a review branch.');
-    }
-
-    execFileSync('git', ['init'], { cwd: repositoryRoot, stdio: 'ignore' });
-    execFileSync('git', ['config', 'user.email', 'repository@example.invalid'], {
-      cwd: repositoryRoot,
-    });
-    execFileSync('git', ['config', 'user.name', 'Repository User'], { cwd: repositoryRoot });
-    writeFileSync(join(repositoryRoot, 'old.txt'), 'reviewed\n', 'utf8');
-    execFileSync('git', ['add', 'old.txt'], { cwd: repositoryRoot });
-    execFileSync('git', ['commit', '-m', 'initial'], { cwd: repositoryRoot });
-    const baseCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: repositoryRoot,
-      encoding: 'utf8',
-    }).trim();
-    const unstagedItem: ReturnType<typeof gitRenameWorkspaceReviewItem> = {
-      ...fallbackReview,
-      changeSet: {
-        ...changeSet,
-        base: { ...changeSet.base, commit: baseCommit },
-        evidenceRefs: [{ kind: 'worker', ref: turn.id }],
-        workspaceId,
-      },
-      review: { ...review, workspaceId },
-    };
+    const workspaceId = fallbackReview.review.workspaceId;
     const workspaceDb = openWorkspaceDb(dataRoot, LOCAL_USER_ID, workspaceId);
     applyScopedMigrations(workspaceDb);
 
     try {
-      const repository = upsertWorkspaceRepositoryResource(workspaceDb, {
-        displayName: 'Fallback review repository',
-        git: {
-          authorEmail: 'approver@example.invalid',
-          authorName: 'Approving Human',
-          stagingStrategy: 'review-branch',
-        },
-        localPath: repositoryRoot,
-        resourceId: changeSet.resourceId,
-        workspaceExists: (candidateWorkspaceId) => candidateWorkspaceId === workspaceId,
-        workspaceId,
-      });
-      const stagedCommit = await stageGitWorkspaceReview({
-        persistHead: () => {},
-        repository,
-        review: unstagedItem,
-        store,
-      });
-      const item: ReturnType<typeof gitRenameWorkspaceReviewItem> = {
-        ...unstagedItem,
-        changeSet: {
-          ...unstagedItem.changeSet,
-          head: { ...unstagedItem.changeSet.head, commit: stagedCommit },
-        },
-      };
-      recordTestWorkspaceReviewMaterialization(workspaceDb, item);
-      expect(getWorkspaceSyncReview(workspaceDb, workspaceId, review.id)).toBeNull();
-      workspaceDb.sqlite.exec(`
-        CREATE TRIGGER fail_workspace_review_decision
-        BEFORE UPDATE OF status ON staged_workspace_reviews
-        BEGIN
-          SELECT RAISE(ABORT, 'injected workspace review decision failure');
-        END
-      `);
-      const input = {
-        decidedAt: '2026-07-11T00:13:00.000Z',
-        decision: 'rejected' as const,
-        fallbackReview: item,
-        requestId: 'request-git-fallback-discard-retry',
-        reviewId: review.id,
-        store,
-        workspaceDb,
-        workspaceId,
-      };
-
-      await expect(decideWorkspaceSyncReview(input)).rejects.toThrow(
-        /injected workspace review decision failure/i
-      );
-      expect(
-        execFileSync('git', ['rev-parse', reviewBranch], {
-          cwd: repositoryRoot,
-          encoding: 'utf8',
-        }).trim()
-      ).toBe(stagedCommit);
-
-      workspaceDb.sqlite.exec('DROP TRIGGER fail_workspace_review_decision');
-      await expect(decideWorkspaceSyncReview(input)).resolves.toMatchObject({
-        review: { id: review.id, status: 'rejected' },
-      });
-
-      expect(() =>
-        execFileSync('git', ['rev-parse', '--verify', reviewBranch], {
-          cwd: repositoryRoot,
-          stdio: 'ignore',
+      recordTestWorkspaceReviewMaterialization(workspaceDb, fallbackReview);
+      await expect(
+        decideWorkspaceSyncReview({
+          decidedAt: '2026-07-11T00:13:00.000Z',
+          decision: 'rejected',
+          fallbackReview: {
+            ...fallbackReview,
+            review: {
+              ...fallbackReview.review,
+              staging: { ...fallbackReview.review.staging, branch: null },
+            },
+          },
+          requestId: 'request-git-fallback-discard',
+          reviewId: fallbackReview.review.id,
+          store: createDemoStore(),
+          workspaceDb,
+          workspaceId,
         })
-      ).toThrow();
-      expect(getWorkspaceSyncReview(workspaceDb, workspaceId, review.id)?.review.status).toBe(
-        'rejected'
-      );
+      ).rejects.toThrow(`Workspace synchronization review not found: ${fallbackReview.review.id}`);
+      expect(getWorkspaceSyncReview(workspaceDb, workspaceId, fallbackReview.review.id)).toBeNull();
     } finally {
       workspaceDb.sqlite.close();
     }

@@ -76,7 +76,7 @@ The current Web implementation is a contract projection surface:
 
 - `apps/web` is a Solid SPA used to validate workspace protocol and product UI.
 - The app already covers workspace selection and configuration, thread and turn workflow, live streaming items, approvals, unified Human Attention Action Center, artifacts, agent session visibility, Goal Mode surfaces, Codex ChatGPT subscription login controls, LLM Gateway diagnostics, runtime config editing, and protocol inspection mode.
-- Web e2e and story acceptance tests exist for product validation, including deterministic story runs and opt-in real Codex Goal Mode validation.
+- Web e2e and deterministic story acceptance tests exist for product validation. Opt-in real worker and restart stories validate their runtime boundaries separately and do not claim Web coverage.
 - Current Web and protocol surfaces use Knowledge Store terminology for the minimal existing knowledge slice.
 - The current Web app is useful as a validation surface, but it should not be treated as the canonical source for core semantics.
 - Goal plan approval, rejection, and revision now reach Core. Reject is persisted as an explicit replacement-plan revision request, Request changes submits the user's bounded revision text, Web clears the review only after NanoCore returns the authoritative planning Goal, and a failed mutation leaves the current plan visible. Focused Web coverage proves that neither control creates browser-local workflow truth.

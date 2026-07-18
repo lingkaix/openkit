@@ -41,7 +41,6 @@ import type {
   AppSearchResult,
   AppState,
   Artifact,
-  ArtifactReviewDecision,
   HumanAttentionRow,
   Item,
   RuntimeConfigFileDiagnostic,
@@ -536,16 +535,6 @@ function chooseThread(threads: Thread[], preferredThreadId: string | null): stri
 }
 
 /**
- * Parses a compact terminal command draft into argv tokens.
- *
- * @param value Terminal command draft from the active-session command input.
- * @returns Command argv tokens split on whitespace.
- */
-function parseTerminalCommandDraft(value: string): string[] {
-  return value.trim().split(/\s+/).filter(Boolean);
-}
-
-/**
  * Returns a badge class for an agent session or turn status.
  */
 function statusBadgeClass(status: string): string {
@@ -594,45 +583,17 @@ function humanAttentionSeverityClass(severity: HumanAttentionRow['severity']): s
 }
 
 /**
- * Converts one artifact review Action Center action into an app-local decision.
+ * Checks whether one Action Center action is an exact durable Workspace Review decision.
+ *
+ * @param kind Action kind to narrow.
+ * @returns True when the action kind is already the canonical review decision.
  */
-function artifactDecisionForAction(
+function isWorkspaceSyncReviewDecision(
   kind: HumanAttentionRow['actions'][number]['kind']
-): ArtifactReviewDecision | null {
-  switch (kind) {
-    case 'accept_review':
-      return 'accepted';
-    case 'request_refinement':
-      return 'needs_refinement';
-    case 'retry_work':
-      return 'redo';
-    case 'mark_blocked':
-      return 'rejected';
-    case 'defer':
-      return 'deferred';
-    default:
-      return null;
-  }
-}
-
-/**
- * Converts one durable workspace review Action Center action into an app-local decision.
- */
-function workspaceSyncReviewDecisionForAction(
-  kind: HumanAttentionRow['actions'][number]['kind']
-): WorkspaceSyncReviewDecision | null {
-  switch (kind) {
-    case 'accept_review':
-      return 'accepted';
-    case 'request_refinement':
-      return 'needs_refinement';
-    case 'mark_blocked':
-      return 'rejected';
-    case 'defer':
-      return 'blocked';
-    default:
-      return null;
-  }
+): kind is WorkspaceSyncReviewDecision {
+  return (
+    kind === 'accepted' || kind === 'needs_refinement' || kind === 'rejected' || kind === 'blocked'
+  );
 }
 
 /**
@@ -826,8 +787,6 @@ export default function App(props: AppProps) {
   const [isRunningGoalStep, setIsRunningGoalStep] = createSignal(false);
   const [goalExecutionFeedback, setGoalExecutionFeedback] = createSignal<string | null>(null);
   const [isRefreshingAgentHealth, setIsRefreshingAgentHealth] = createSignal(false);
-  const [terminalCommandDraft, setTerminalCommandDraft] = createSignal('pwd');
-  const [isQueueingTerminalCommand, setIsQueueingTerminalCommand] = createSignal(false);
   const [activeHumanAttentionActionId, setActiveHumanAttentionActionId] = createSignal<
     string | null
   >(null);
@@ -1232,21 +1191,9 @@ export default function App(props: AppProps) {
         return;
       }
 
-      const artifactDecision = artifactDecisionForAction(action.kind);
-
-      if (row.source.type === 'artifact' && artifactDecision && row.artifactId) {
-        await client.app.submitArtifactReviewDecision(row.workspaceId, row.artifactId, {
-          decision: artifactDecision,
-        });
-        await Promise.all([refreshHumanAttention(), refreshWorkspaceArtifacts(row.workspaceId)]);
-        return;
-      }
-
-      const workspaceSyncReviewDecision = workspaceSyncReviewDecisionForAction(action.kind);
-
-      if (row.source.type === 'workspace_review' && workspaceSyncReviewDecision) {
+      if (row.source.type === 'workspace_review' && isWorkspaceSyncReviewDecision(action.kind)) {
         await client.app.submitWorkspaceSyncReviewDecision(row.workspaceId, row.source.reviewId, {
-          decision: workspaceSyncReviewDecision,
+          decision: action.kind,
         });
         await refreshHumanAttention();
         return;
@@ -1540,15 +1487,6 @@ export default function App(props: AppProps) {
     } catch (error) {
       setState('errorMessage', (error as Error).message);
     }
-  }
-
-  /**
-   * Reloads artifact inventory for one workspace.
-   */
-  async function refreshWorkspaceArtifacts(workspaceId: string): Promise<void> {
-    const response = await client.core.listArtifacts(workspaceId);
-
-    setState('artifacts', response.items);
   }
 
   /**
@@ -1869,38 +1807,6 @@ export default function App(props: AppProps) {
       setState('errorMessage', (error as Error).message);
     } finally {
       setIsRefreshingAgentHealth(false);
-    }
-  }
-
-  /**
-   * Queues one terminal command for the active thread-bound agent session.
-   *
-   * @returns Promise that resolves after the command is queued and the dashboard is refreshed.
-   */
-  async function queueActiveSessionTerminalCommand(): Promise<void> {
-    const workspaceId = state.selectedWorkspaceId;
-    const threadId = state.selectedThreadId;
-    const activeSession = state.threadDashboard?.activeSession;
-    const argv = parseTerminalCommandDraft(terminalCommandDraft());
-
-    if (!workspaceId || !threadId || !activeSession?.backend?.control || argv.length === 0) {
-      return;
-    }
-
-    setIsQueueingTerminalCommand(true);
-    setState('errorMessage', null);
-
-    try {
-      await client.app.queueAgentSessionTerminalCommand(workspaceId, threadId, activeSession.id, {
-        requestId: `terminal-${Date.now()}`,
-        argv,
-        cwd: null,
-      });
-      await openThreadDashboard(threadId);
-    } catch (error) {
-      setState('errorMessage', (error as Error).message);
-    } finally {
-      setIsQueueingTerminalCommand(false);
     }
   }
 
@@ -3069,8 +2975,7 @@ export default function App(props: AppProps) {
 
       setState('threadGoalSummary', { goal: response.goal });
       setGoalExecutionFeedback(
-        response.goal.pendingHumanAttention.reason ??
-          `Worker step ended with ${response.result.outcome}.`
+        response.goal.pendingHumanAttention.reason ?? `Goal is now ${response.goal.status}.`
       );
     } catch (error) {
       setState('errorMessage', formatUserError(error));
@@ -3134,11 +3039,11 @@ export default function App(props: AppProps) {
   }
 
   /**
-   * Sends one inline agent-question answer to the active turn.
+   * Sends exact inline agent-question answers to the active turn.
    */
   async function submitUserInputAnswer(
     item: UserInputResponseTarget,
-    answer: string
+    answers: Extract<Item, { type: 'user-input-response' }>['answers']
   ): Promise<void> {
     setIsAnsweringUserInput(true);
     setState('errorMessage', null);
@@ -3148,7 +3053,7 @@ export default function App(props: AppProps) {
         workspaceId: item.workspaceId,
         threadId: item.threadId,
         turnId: item.turnId,
-        input: answer,
+        answers,
         requestId: createRequestId(),
       });
       await refreshHumanAttention();
@@ -3933,15 +3838,7 @@ export default function App(props: AppProps) {
                         backend={state.threadDashboard?.activeSession?.backend ?? null}
                         configVersion={state.threadDashboard?.activeSession?.configVersion ?? null}
                         currentConfigVersion={currentRuntimeConfigVersion()}
-                        terminalCommand={terminalCommandDraft()}
-                        isQueueingTerminalCommand={isQueueingTerminalCommand()}
                         onRefresh={refreshAgentHealth}
-                        onQueueTerminalCommand={
-                          state.threadDashboard?.activeSession?.backend?.control
-                            ? queueActiveSessionTerminalCommand
-                            : undefined
-                        }
-                        onTerminalCommandChange={setTerminalCommandDraft}
                       />
                       <span class={`badge ${statusBadgeClass(activeTurn()?.status ?? 'pending')}`}>
                         {formatTurnStatus(activeTurn()?.status)}

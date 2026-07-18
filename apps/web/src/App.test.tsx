@@ -232,11 +232,6 @@ interface FakeClientOptions {
   ): void;
   onRunThreadGoalStep?(workspaceId: string, threadId: string): void;
   onGetThreadGoalSummary?(workspaceId: string, threadId: string): void;
-  onSubmitArtifactReviewDecision?(
-    workspaceId: string,
-    artifactId: string,
-    input: Parameters<CoreClient['app']['submitArtifactReviewDecision']>[2]
-  ): void;
   onSubmitWorkspaceSyncReviewDecision?(
     workspaceId: string,
     reviewId: string,
@@ -248,12 +243,6 @@ interface FakeClientOptions {
     goalId: string,
     reviewId: string,
     input: NonNullable<Parameters<CoreClient['app']['submitGoalReviewDecision']>[4]>
-  ): void;
-  onQueueAgentSessionTerminalCommand?(
-    workspaceId: string,
-    threadId: string,
-    agentSessionId: string,
-    input: Parameters<CoreClient['app']['queueAgentSessionTerminalCommand']>[3]
   ): void;
   onStartThreadGoal?(
     workspaceId: string,
@@ -295,10 +284,8 @@ type FakeClientImplementations = CoreClient['core'] & {
   reviseThreadGoalPlan: CoreClient['app']['reviseThreadGoalPlan'];
   runThreadGoalStep: CoreClient['app']['runThreadGoalStep'];
   submitThreadGoalSteering: CoreClient['app']['submitThreadGoalSteering'];
-  submitArtifactReviewDecision: CoreClient['app']['submitArtifactReviewDecision'];
   submitWorkspaceSyncReviewDecision: CoreClient['app']['submitWorkspaceSyncReviewDecision'];
   submitGoalReviewDecision: CoreClient['app']['submitGoalReviewDecision'];
-  queueAgentSessionTerminalCommand: CoreClient['app']['queueAgentSessionTerminalCommand'];
   refreshAgentHealth: CoreClient['agents']['refreshHealth'];
   appDiagnostics: CoreClient['app']['getDiagnostics'];
   setupDiagnostics: CoreClient['app']['getSetupDiagnostics'];
@@ -1117,11 +1104,9 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
   /**
    * Publishes the deterministic answer branch after an agent question response.
    */
-  function publishUserInputResponse(input: Parameters<CoreClient['core']['startTurn']>[0]): Turn {
-    if (!input.turnId) {
-      throw new Error('turnId is required for fake user-input responses');
-    }
-
+  function publishUserInputResponse(
+    input: Extract<Parameters<CoreClient['core']['startTurn']>[0], { turnId: string }>
+  ): Turn {
     const existingTurn = turns.get(input.turnId);
 
     if (!existingTurn) {
@@ -1136,7 +1121,7 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
       type: 'user-input-response',
       status: 'completed',
       userInputRequestId: `question_${input.turnId}`,
-      answers: { tone: [input.input] },
+      answers: input.answers,
       createdAt: '2026-04-15T09:00:04.000Z',
       completedAt: '2026-04-15T09:00:04.000Z',
     };
@@ -1148,11 +1133,11 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
       kind: 'summary',
       title: 'Protocol review summary',
       status: 'ready',
-      summary: `Workspace protocol review completed with ${input.input}.`,
+      summary: `Workspace protocol review completed with ${Object.values(input.answers)[0]?.[0]}.`,
       version: 1,
       content: {
         format: 'text',
-        body: `Workspace protocol review completed with ${input.input}.`,
+        body: `Workspace protocol review completed with ${Object.values(input.answers)[0]?.[0]}.`,
       },
       createdAt: '2026-04-15T09:00:05.000Z',
       updatedAt: '2026-04-15T09:00:05.000Z',
@@ -1415,7 +1400,7 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
     },
     startTurn: async (input) => {
       options.onTurnInput?.(input);
-      if (input.turnId) {
+      if ('turnId' in input) {
         return publishUserInputResponse(input);
       }
 
@@ -1490,23 +1475,6 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
       }
 
       return artifact;
-    },
-    updateArtifactMetadata: async (input) => {
-      const artifact = artifacts.get(input.artifactId);
-
-      if (!artifact) {
-        throw new Error(`Artifact not found: ${input.artifactId}`);
-      }
-
-      const updatedArtifact: Artifact = {
-        ...artifact,
-        title: input.title ?? artifact.title,
-        status: input.status ?? artifact.status,
-        summary: input.summary === undefined ? artifact.summary : input.summary,
-        updatedAt: '2026-04-15T09:41:00.000Z',
-      };
-      artifacts.set(updatedArtifact.id, updatedArtifact);
-      return updatedArtifact;
     },
     workspaceDashboard: async (workspaceId) => ({
       workspace: workspaceId === quickChatWorkspace.id ? quickChatWorkspace : currentWorkspace,
@@ -1587,9 +1555,6 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
               artifactNoticeCount: 1,
               queuedCommandCount: 2,
               deliveredCommandCount: 1,
-              terminalResultCount: 1,
-              lastTerminalExitCode: 0,
-              lastTerminalCompletedAt: timestamp,
             },
             gatewayName: 'openshell',
             gatewayEndpoint: 'https://127.0.0.1:17670',
@@ -1860,25 +1825,6 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
     submitThreadGoalSteering: async () => {
       throw new Error('Goal steering delivery is unavailable.');
     },
-    submitArtifactReviewDecision: async (workspaceId, artifactId, input) => {
-      options.onSubmitArtifactReviewDecision?.(workspaceId, artifactId, input);
-
-      return {
-        review: {
-          artifactId,
-          workspaceId,
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
-          status: input.decision,
-          message: input.message ?? null,
-          decidedAt: timestamp,
-          followUpTurnId:
-            input.decision === 'needs_refinement' || input.decision === 'redo'
-              ? 'turn_follow_up'
-              : null,
-        },
-      };
-    },
     submitWorkspaceSyncReviewDecision: async (workspaceId, reviewId, input) => {
       options.onSubmitWorkspaceSyncReviewDecision?.(workspaceId, reviewId, input);
 
@@ -1938,21 +1884,6 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
             terminalStopReason: 'completed',
           },
           nextReadyTaskId: null,
-        },
-      };
-    },
-    queueAgentSessionTerminalCommand: async (workspaceId, threadId, agentSessionId, input) => {
-      options.onQueueAgentSessionTerminalCommand?.(workspaceId, threadId, agentSessionId, input);
-
-      return {
-        command: {
-          commandId: input.requestId,
-          kind: 'terminal-command',
-          sequence: 3,
-          queuedAt: timestamp,
-          deliveredAt: null,
-          argv: input.argv,
-          cwd: input.cwd,
         },
       };
     },
@@ -2427,7 +2358,6 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
       respondApproval: implementations.respondApproval,
       listArtifacts: implementations.listArtifacts,
       getArtifact: implementations.getArtifact,
-      updateArtifactMetadata: implementations.updateArtifactMetadata,
       listThreadItems: implementations.listThreadItems,
       subscribeTurnEvents: implementations.subscribeTurnEvents,
     },
@@ -2516,7 +2446,6 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
         throw new Error('Knowledge health fixture not configured.');
       },
       submitThreadGoalSteering: implementations.submitThreadGoalSteering,
-      submitArtifactReviewDecision: implementations.submitArtifactReviewDecision,
       submitWorkspaceSyncReviewDecision: implementations.submitWorkspaceSyncReviewDecision,
       submitWorkspaceRecoveryDecision: async () => {
         throw new Error('Workspace recovery decision fixture not configured.');
@@ -2546,8 +2475,6 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
       getAgentEnvironmentPackageSnapshot: async () => {
         throw new Error('Agent Environment Package snapshot fixture not found.');
       },
-      queueAgentSessionTerminalCommand: implementations.queueAgentSessionTerminalCommand,
-      refreshAgentHealth: implementations.refreshAgentHealth,
       getDiagnostics: implementations.appDiagnostics,
       getSetupDiagnostics: implementations.setupDiagnostics,
       getStorageLayoutReport: async () => {
@@ -2800,65 +2727,7 @@ describe('App', () => {
     expect(screen.getAllByRole('option', { name: /opencode/i }).length).toBeGreaterThan(0);
   });
 
-  it('renders unified Action Center rows and dispatches artifact review actions', async () => {
-    let artifactReviewInput:
-      | Parameters<CoreClient['app']['submitArtifactReviewDecision']>[2]
-      | null = null;
-    const humanAttention: HumanAttentionRow[] = [
-      {
-        id: 'artifact:artifact_demo',
-        kind: 'artifact_review',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
-        artifactId: 'artifact_demo',
-        title: 'Review Worker report',
-        summary: 'The artifact is ready for acceptance.',
-        severity: 'needs_input',
-        createdAt: '2026-04-15T09:00:00.000Z',
-        source: {
-          type: 'artifact',
-          artifactId: 'artifact_demo',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
-          reviewStatus: 'pending',
-        },
-        actions: [
-          {
-            kind: 'request_refinement',
-            label: 'Refine',
-            method: 'POST',
-            href: '/api/app/workspaces/ws_demo/artifacts/artifact_demo/review',
-          },
-        ],
-      },
-    ];
-
-    render(() => (
-      <App
-        client={createFakeClient({
-          humanAttention,
-          onSubmitArtifactReviewDecision: (_workspaceId, _artifactId, input) => {
-            artifactReviewInput = input;
-          },
-        })}
-      />
-    ));
-
-    await screen.findByRole('button', { name: /demo workspace/i });
-    fireEvent.click(await screen.findByRole('button', { name: /action center/i }));
-
-    expect(await screen.findByRole('heading', { name: /human attention/i })).toBeInTheDocument();
-    expect(screen.getByText(/review worker report/i)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /refine/i }));
-
-    await waitFor(() => expect(artifactReviewInput).not.toBeNull());
-    expect(artifactReviewInput).toMatchObject({ decision: 'needs_refinement' });
-  });
-
   it('dispatches durable workspace review Action Center actions through the workspace sync route', async () => {
-    let artifactReviewCalls = 0;
     let workspaceReviewCall: {
       workspaceId: string;
       reviewId: string;
@@ -2884,7 +2753,7 @@ describe('App', () => {
         },
         actions: [
           {
-            kind: 'request_refinement',
+            kind: 'needs_refinement',
             label: 'Refine',
             method: 'POST',
             href: '/api/app/workspaces/ws_demo/workspace-sync/reviews/swr_demo/decision',
@@ -2897,9 +2766,6 @@ describe('App', () => {
       <App
         client={createFakeClient({
           humanAttention,
-          onSubmitArtifactReviewDecision: () => {
-            artifactReviewCalls += 1;
-          },
           onSubmitWorkspaceSyncReviewDecision: (workspaceId, reviewId, input) => {
             workspaceReviewCall = { workspaceId, reviewId, input };
           },
@@ -2917,7 +2783,6 @@ describe('App', () => {
       reviewId: 'swr_demo',
       input: { decision: 'needs_refinement' },
     });
-    expect(artifactReviewCalls).toBe(0);
   });
 
   it.each([
@@ -2959,13 +2824,12 @@ describe('App', () => {
       expectsPrompt: true,
       expectedInput: null,
     },
-  ] as const)('dispatches the canonical Goal Review $name action without using artifact review', async ({
+  ] as const)('dispatches the canonical Goal Review $name action through its owner', async ({
     actionLabel,
     expectedInput,
     expectsPrompt,
     promptValue,
   }) => {
-    let artifactReviewCalls = 0;
     const goalReviewCalls: Array<{
       workspaceId: string;
       threadId: string;
@@ -3016,9 +2880,6 @@ describe('App', () => {
       <App
         client={createFakeClient({
           humanAttention,
-          onSubmitArtifactReviewDecision: () => {
-            artifactReviewCalls += 1;
-          },
           onSubmitGoalReviewDecision: (workspaceId, threadId, goalId, reviewId, input) => {
             goalReviewCalls.push({ workspaceId, threadId, goalId, reviewId, input });
           },
@@ -3049,7 +2910,6 @@ describe('App', () => {
       });
       expect(prompt).toHaveBeenCalledTimes(expectsPrompt ? 1 : 0);
     }
-    expect(artifactReviewCalls).toBe(0);
   });
 
   it('shows server-mode auth and resumes after sign in', async () => {
@@ -3428,12 +3288,15 @@ describe('App', () => {
   });
 
   it('sends the selected model override when starting agent chat from Chat', async () => {
-    let turnInput: Parameters<CoreClient['core']['startTurn']>[0] | null = null;
+    let turnInput: Extract<
+      Parameters<CoreClient['core']['startTurn']>[0],
+      { input: string }
+    > | null = null;
     render(() => (
       <App
         client={createFakeClient({
           onTurnInput: (input) => {
-            if (!input.turnId) {
+            if (!('turnId' in input)) {
               turnInput = input;
             }
           },
@@ -3455,7 +3318,10 @@ describe('App', () => {
     await waitFor(() => {
       expect(turnInput).not.toBeNull();
     });
-    const request = turnInput as Parameters<CoreClient['core']['startTurn']>[0] | null;
+    const request = turnInput as Extract<
+      Parameters<CoreClient['core']['startTurn']>[0],
+      { input: string }
+    > | null;
     expect(request?.modelId).toBe('model_opencode');
   });
 
@@ -4437,12 +4303,15 @@ describe('App', () => {
   });
 
   it('locks the thread composer workspace and sends the selected model override', async () => {
-    let turnInput: Parameters<CoreClient['core']['startTurn']>[0] | null = null;
+    let turnInput: Extract<
+      Parameters<CoreClient['core']['startTurn']>[0],
+      { input: string }
+    > | null = null;
     render(() => (
       <App
         client={createFakeClient({
           onTurnInput: (input) => {
-            if (!input.turnId) {
+            if (!('turnId' in input)) {
               turnInput = input;
             }
           },
@@ -4516,7 +4385,7 @@ describe('App', () => {
       <App
         client={createFakeClient({
           onTurnInput: (input) => {
-            if (input.turnId) {
+            if ('turnId' in input) {
               turnInput = input;
             }
           },
@@ -4545,7 +4414,11 @@ describe('App', () => {
     await waitFor(() => {
       expect(turnInput).not.toBeNull();
     });
-    const request = turnInput as { requestId?: string; turnId?: string; input?: string } | null;
+    const request = turnInput as {
+      requestId?: string;
+      turnId?: string;
+      answers?: Record<string, [string]>;
+    } | null;
     expect(request?.requestId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
     );
@@ -4553,32 +4426,18 @@ describe('App', () => {
       workspaceId: 'ws_demo',
       threadId: 'th_demo',
       turnId: 'tu_1',
-      input: 'Concise',
+      answers: { tone: ['Concise'] },
     });
     expect(await screen.findByText(/concise/i)).toBeInTheDocument();
   });
 
   it('shows the thread agent session badge and refreshes agent health', async () => {
     let refreshedWorkspaceId: string | null = null;
-    let queuedTerminalCommand: {
-      workspaceId: string;
-      threadId: string;
-      agentSessionId: string;
-      argv: string[];
-    } | null = null;
     render(() => (
       <App
         client={createFakeClient({
           onRefreshAgentHealth: (workspaceId) => {
             refreshedWorkspaceId = workspaceId;
-          },
-          onQueueAgentSessionTerminalCommand: (workspaceId, threadId, agentSessionId, input) => {
-            queuedTerminalCommand = {
-              workspaceId,
-              threadId,
-              agentSessionId,
-              argv: input.argv,
-            };
           },
         })}
       />
@@ -4594,21 +4453,6 @@ describe('App', () => {
     expect(agentSession).toHaveTextContent('health ready');
     expect(agentSession).toHaveTextContent('openshell ready');
     expect(agentSession).toHaveTextContent('control running');
-    expect(agentSession).toHaveTextContent('terminal 1/2');
-
-    fireEvent.input(screen.getByRole('textbox', { name: /terminal command/i }), {
-      target: { value: 'git status' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: /queue terminal/i }));
-
-    await waitFor(() => {
-      expect(queuedTerminalCommand).toMatchObject({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        agentSessionId: 'session_sim_th_demo',
-        argv: ['git', 'status'],
-      });
-    });
 
     fireEvent.click(screen.getByRole('button', { name: /refresh agent health/i }));
 

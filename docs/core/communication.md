@@ -6,7 +6,7 @@ This document defines OpenKit core communication semantics.
 
 This document owns how clients, channels, Core, agent adapters, agent runtimes, and capability services exchange commands, events, files, artifacts, and capability traffic.
 
-This document owns communication layers, transport projections, input routing and safe-point delivery, communication planes, mediation boundaries, deployment-specific communication mapping, and transport independence.
+This document owns communication layers, transport projections, communication planes, mediation boundaries, deployment-specific communication mapping, and transport independence.
 
 This document does not own stable protocol records, event envelope shape, event families, command semantics, lifecycle states, stream replay semantics, command idempotency semantics, error shape, complete HTTP endpoint lists, app read models, database tables, provider-native payloads, or agent runtime private schemas.
 
@@ -118,42 +118,11 @@ Communication projections MUST preserve the protocol distinction between command
 
 Interrupt and cancellation commands may be accepted before the turn is terminal. Clients should treat the turn as terminal only after a terminal turn event or equivalent read-model state appears.
 
-## Active-Turn Input
+## Active-Turn Input Projection
 
-Follow-up user input during a running turn is ordinary input.
+Communication does not define a generic active-turn input route or safe-point policy. A transport may carry input to an active Turn only through that Turn's exact human gate or an active-work delivery contract defined by an accepted owning specification.
 
-There is no separate core concept for steer messages.
-
-Default routing rules:
-
-- If the current thread has an active non-terminal turn, new input belongs to that turn by default.
-- If the current thread has no active turn, new input starts a new turn.
-- If the current turn is awaiting a human response, new input still belongs to that turn when `humanGate.kind` is `user-input`, but approval decisions must use the approval response command.
-- If the agent adapter explicitly completes the turn before new input is applied, Core may route later input into a new turn.
-
-Core owns input routing. Clients and channel adapters submit user input; they do not implement steer, queue, retry, promotion, or safe-point logic.
-
-If two clients submit different inputs to the same active turn with different request IDs, Core MUST accept or reject each command independently.
-
-Accepted inputs are ordered by Core receive order, recorded as items in that order, and applied at safe points according to Core and agent-adapter policy.
-
-Request ID idempotency only deduplicates retries of the same semantic command. It does not merge distinct inputs.
-
-## Safe-Point Processing
-
-Core may accept input immediately without applying it immediately.
-
-A safe point is the nearest moment where new input can affect subsequent behavior without breaking state consistency, interrupting an indivisible side effect, or making visible history incoherent.
-
-Typical safe points include:
-
-- streaming output boundary
-- agent step boundary
-- tool result boundary
-- agent result boundary
-- approval resolution boundary
-
-Safe-point calculation belongs to Core and agent adapters. It is not exposed as a required protocol object.
+The transport MUST preserve the contract's target identifiers, request correlation, result, and typed failure. Clients, channel adapters, and transport bridges MUST NOT infer queueing, application, follow-up creation, or safe points.
 
 ## Item Streaming Projection
 
@@ -166,10 +135,6 @@ Transport projections MUST preserve item event order within the relevant stream 
 Transport projections SHOULD carry high-frequency item deltas without forcing large workspace files, media, or artifacts through the control stream.
 
 Clients should reconcile optimistic streaming state with the authoritative completed item payload defined by the protocol.
-
-A turn may contain multiple user-message items and multiple assistant-message items. Follow-up input does not require a new turn.
-
-When follow-up input is applied at a safe point, Core should complete the current assistant-message item before starting a new assistant-message item so streamed history remains readable.
 
 ## Event Envelope Projection
 
@@ -428,7 +393,7 @@ Audit is a cross-cutting communication requirement, not a separate transport.
 
 - Communication transports MUST preserve stable command semantics, event ordering, IDs, lifecycle states, error shape, and redaction requirements.
 - Raw heterogeneous streaming payloads MUST NOT replace the core event envelope for live product events.
-- Client and channel adapters MUST NOT implement their own steer, queue, retry, promotion, or safe-point rules as product truth.
+- Client and channel adapters MUST NOT infer active-turn delivery outcomes beyond the exact human-gate or accepted active-work delivery result returned by Core.
 - Workspace bytes and artifact bytes SHOULD NOT travel through the control stream except for intentionally small inline previews.
 - Capability mediation components MUST NOT carry worker-control traffic, choose models, decide provider fallback, own rate limits, decide tool visibility, persist sensitive responses, or implement business logic.
 

@@ -172,9 +172,9 @@ Skipped, environment-failed, and unexecuted stories are not acceptance evidence.
 
 ## Current Implementation
 
-Story artifacts live under `tests/stories/`, and current execution support lives under `tests/story-runner/`. Existing deterministic Web and removal-only MCP adapters, opt-in real Codex and Task worker runs, and real-provider runs are implementation inventory rather than authorization to expand the platform.
+Story artifacts live under `tests/stories/`, and current execution support lives under `tests/story-runner/`. The deterministic Web adapter, unified Skill progressive-discovery story, opt-in real Codex and Task worker runs, and real-provider runs are implementation inventory rather than authorization to expand the platform.
 
-The user-facing MCP stories and runners are removal-only and must be replaced by the unified Skill and bundled CLI where equivalent acceptance remains valuable. New behavior MUST NOT be added to the legacy MCP acceptance surface.
+The former user-facing MCP stories and runners are deleted. Equivalent acceptance is owned by the unified Skill and bundled CLI at the lowest sufficient layer plus one representative real progressive-discovery story; no transport-parity story matrix is required.
 
 The current real Task worker runner duplicates capabilities already present in Goal runner support. Its feature surface is frozen: complete the minimum real happy-path proof, then reuse or move genuinely shared behavior into the existing owner and delete duplicate Task-specific transport, supervision, evidence, Git, redaction, and timeout code. This does not authorize a third runner framework.
 

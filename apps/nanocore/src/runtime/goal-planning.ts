@@ -167,7 +167,7 @@ export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPl
       threadId: input.threadId,
       turnId: turn.id,
       type: 'user-input-request',
-      status: 'in_progress',
+      status: 'completed',
       causationId: input.requestId,
       userInputRequestId: ids.userInputRequestId,
       prompt: 'Goal planning needs more information.',
@@ -180,7 +180,7 @@ export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPl
         isSecret: false,
       })),
       createdAt: timestamp,
-      completedAt: null,
+      completedAt: timestamp,
     });
 
     input.store.updateTurn(turn.id, {

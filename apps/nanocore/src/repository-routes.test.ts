@@ -129,13 +129,24 @@ describe('workspace repository app API', () => {
     }
   });
 
-  it('sets and lists a valid repository link without exposing the raw local path', async () => {
+  it('uses PUT as the only default repository write method', async () => {
     const coreDb = createCoreDb();
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-ready-route-repository-'));
     mkdirSync(join(repositoryPath, '.git'));
 
     try {
       const app = createApp({ coreDb });
+      const postRes = await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          displayName: 'OpenKit',
+          localPath: repositoryPath,
+        }),
+      });
+
+      expect(postRes.status).toBe(404);
+
       const setRes = await app.request('/api/app/workspaces/ws_demo/repositories/default', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },

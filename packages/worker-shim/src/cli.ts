@@ -170,8 +170,6 @@ export interface CodexShimRunOptions {
   runner?: CodexProcessRunner | undefined;
   /** Optional fetch implementation for the supervised control. */
   fetch?: WorkerControlFetch | undefined;
-  /** Optional command runner for control-plane terminal commands. */
-  commandRunner?: WorkerControlCommandRunner | undefined;
   /** Optional parent cancellation signal. */
   signal?: AbortSignal | undefined;
 }
@@ -188,67 +186,15 @@ export interface CodexShimRunResult {
   status: 'completed' | 'failed' | 'interrupted';
 }
 
-/**
- * Input passed to sandbox-local commands requested by NanoCore.
- */
-export interface WorkerControlCommandRunInput {
-  /** Command and arguments to execute. */
-  argv: string[];
-  /** Worker-local command cwd, or null to use the shim cwd. */
-  cwd: string | null;
-  /** Environment variables visible to the command process. */
-  env: Record<string, string>;
-  /** Supervisor cancellation signal for the command process. */
-  signal: AbortSignal;
-}
-
-/**
- * Result returned after running one sandbox-local command.
- */
-export interface WorkerControlCommandRunResult {
-  /** Process exit code normalized for Worker Control Gateway reporting. */
-  exitCode: number;
-  /** Captured stdout text. */
-  stdout: string;
-  /** Captured stderr text. */
-  stderr: string;
-  /** Command duration in milliseconds. */
-  durationMs: number | null;
-}
-
-/**
- * Command runner used by the worker supervisor for secondary terminal commands.
- */
-export interface WorkerControlCommandRunner {
-  /**
-   * Runs one sandbox-local command.
-   *
-   * @param input Command, cwd, and environment.
-   * @returns Completed command result.
-   */
-  run(input: WorkerControlCommandRunInput): Promise<WorkerControlCommandRunResult>;
-}
-
 /** Direct worker-control command accepted by the Codex supervisor. */
-type DirectWorkerControlCommand =
-  | {
-      /** NanoCore-issued command id. */
-      commandId: string;
-      /** Interrupt command discriminator. */
-      kind: 'interrupt';
-      /** Optional product-safe interrupt reason. */
-      reason?: string | null;
-    }
-  | {
-      /** Terminal command and arguments. */
-      argv: string[];
-      /** NanoCore-issued command id. */
-      commandId: string;
-      /** Optional worker-local working directory. */
-      cwd?: string | null;
-      /** Terminal command discriminator. */
-      kind: 'terminal-command';
-    };
+type DirectWorkerControlCommand = {
+  /** NanoCore-issued command id. */
+  commandId: string;
+  /** Interrupt command discriminator. */
+  kind: 'interrupt';
+  /** Optional product-safe interrupt reason. */
+  reason?: string | null;
+};
 
 interface CodexShimPackageManifest {
   control?: {
@@ -501,7 +447,6 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
       baseUrl: controlBaseUrl,
     });
     controlSession = session;
-    const commandRunner = options.commandRunner ?? new ChildProcessWorkerControlCommandRunner();
     const seenCommandIds = new Set<string>();
     /** Records a delivered interrupt and cancels both supervised child paths. */
     const interruptWorker = () => {
@@ -529,9 +474,7 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
         await handleWorkerControlCommands(
           session,
           writer,
-          commandRunner,
           initialCommandPoll.commands,
-          environment,
           controlAbortController.signal,
           seenCommandIds,
           interruptWorker
@@ -616,8 +559,6 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
       controlPromise = runWorkerControlLoop(
         session,
         writer,
-        commandRunner,
-        environment,
         controlAbortController.signal,
         seenCommandIds,
         interruptWorker
@@ -1162,41 +1103,6 @@ async function settleChildProcessDrains(
 }
 
 /**
- * Child-process-backed runner for sandbox-local control terminal commands.
- */
-class ChildProcessWorkerControlCommandRunner implements WorkerControlCommandRunner {
-  /**
-   * Runs one sandbox-local command and captures stdout and stderr.
-   *
-   * @param input Command, cwd, and environment.
-   * @returns Completed terminal command result.
-   */
-  public async run(input: WorkerControlCommandRunInput): Promise<WorkerControlCommandRunResult> {
-    const [command, ...args] = input.argv;
-
-    if (!command) {
-      throw new Error('Worker control terminal command requires a non-empty argv.');
-    }
-
-    const startedAt = Date.now();
-    const result = await runChildProcessGroup({
-      args,
-      command,
-      ...(input.cwd ? { cwd: input.cwd } : {}),
-      env: input.env,
-      signal: input.signal,
-    });
-
-    return {
-      durationMs: Date.now() - startedAt,
-      exitCode: result.exitCode ?? 1,
-      stderr: result.stderr,
-      stdout: result.stdout,
-    };
-  }
-}
-
-/**
  * Reads and parses the worker-visible Agent Environment Package file.
  *
  * @param packagePath Worker-visible package manifest path.
@@ -1623,23 +1529,16 @@ function isStringArray(value: unknown): value is string[] {
 }
 
 /**
- * Builds the explicit environment visible to one worker child process.
+ * Builds the environment visible only to the supervised Codex process.
  *
  * @param environment Supervisor environment candidate.
- * @param includeInferenceToken Whether the trusted inference placeholder is required.
- * @returns Allowlisted non-control environment variables.
+ * @returns Safe runtime environment including the trusted inference placeholder.
  */
-function workerChildEnvironment(
-  environment: CodexShimEnvironment,
-  includeInferenceToken: boolean
-): Record<string, string> {
+function codexChildEnvironment(environment: CodexShimEnvironment): Record<string, string> {
   const source = environment as Record<string, unknown>;
-  const keys: readonly string[] = includeInferenceToken
-    ? [...SAFE_WORKER_CHILD_ENVIRONMENT_KEYS, 'OPENKIT_WORKER_INFERENCE_TOKEN']
-    : SAFE_WORKER_CHILD_ENVIRONMENT_KEYS;
   const selected: Record<string, string> = {};
 
-  for (const key of keys) {
+  for (const key of [...SAFE_WORKER_CHILD_ENVIRONMENT_KEYS, 'OPENKIT_WORKER_INFERENCE_TOKEN']) {
     const value = source[key];
 
     if (typeof value === 'string' && value.length > 0) {
@@ -1648,16 +1547,6 @@ function workerChildEnvironment(
   }
 
   return selected;
-}
-
-/**
- * Builds the environment visible only to the supervised Codex process.
- *
- * @param environment Supervisor environment candidate.
- * @returns Safe runtime environment including the trusted inference placeholder.
- */
-function codexChildEnvironment(environment: CodexShimEnvironment): Record<string, string> {
-  return workerChildEnvironment(environment, true);
 }
 
 /**
@@ -1739,8 +1628,6 @@ async function pollWorkerControl(
  *
  * @param client Session-level worker-control coordinator.
  * @param transcript Shared transcript writer owned by the worker supervisor.
- * @param commandRunner Runner for NanoCore-issued terminal commands.
- * @param environment Sandbox worker lineage environment.
  * @param signal Supervisor cancellation signal.
  * @param seenCommandIds Command ids already queued or handled.
  * @param onInterrupt Optional worker interrupt callback.
@@ -1748,8 +1635,6 @@ async function pollWorkerControl(
 async function runWorkerControlLoop(
   client: WorkerControlClient,
   transcript: WorkerTranscriptWriter,
-  commandRunner: WorkerControlCommandRunner,
-  environment: CodexShimEnvironment,
   signal: AbortSignal,
   seenCommandIds: Set<string>,
   onInterrupt?: () => void
@@ -1767,9 +1652,7 @@ async function runWorkerControlLoop(
       await handleWorkerControlCommands(
         client,
         transcript,
-        commandRunner,
         commandPoll.commands,
-        environment,
         signal,
         seenCommandIds,
         onInterrupt
@@ -1788,9 +1671,7 @@ async function runWorkerControlLoop(
  *
  * @param client Session-level worker-control coordinator.
  * @param transcript Durable transcript writer.
- * @param commandRunner Terminal command runner.
  * @param commands Polled commands.
- * @param environment Control process environment.
  * @param signal Supervisor cancellation signal.
  * @param seenCommandIds Command ids already queued or handled.
  * @param onInterrupt Optional worker interrupt callback.
@@ -1798,68 +1679,16 @@ async function runWorkerControlLoop(
 async function handleWorkerControlCommands(
   client: WorkerControlClient,
   transcript: WorkerTranscriptWriter,
-  commandRunner: WorkerControlCommandRunner,
   commands: Array<Record<string, unknown>>,
-  environment: CodexShimEnvironment,
   signal: AbortSignal,
   seenCommandIds: Set<string>,
   onInterrupt?: () => void
 ): Promise<void> {
-  const pending = takeNewWorkerCommands(commands, seenCommandIds);
-  const interrupt = pending.find(isInterruptCommand);
+  const [interrupt] = takeNewWorkerCommands(commands, seenCommandIds);
 
   if (interrupt) {
     onInterrupt?.();
     await recordWorkerInterrupt(client, transcript, interrupt, signal);
-    return;
-  }
-
-  while (pending.length > 0 && !signal.aborted) {
-    const command = pending.shift();
-
-    if (!command) {
-      return;
-    }
-    if (!isTerminalCommand(command)) {
-      throw new Error(`Unsupported worker control command: ${command.commandId}`);
-    }
-    const outcome = await runTerminalCommandWithControl(
-      client,
-      transcript,
-      commandRunner,
-      {
-        argv: command.argv,
-        cwd: command.cwd ?? null,
-        env: workerCommandEnvironment(environment),
-        signal,
-      },
-      signal,
-      seenCommandIds,
-      onInterrupt
-    );
-    if (!outcome) {
-      return;
-    }
-    const { result } = outcome;
-    await client.recordTerminalResult(
-      {
-        durationMs: result.durationMs,
-        exitCode: result.exitCode,
-        stderr: result.stderr,
-        stdout: result.stdout,
-        terminalCommandId: command.commandId,
-      },
-      signal
-    );
-    await transcript.writeAndAppendEvent({
-      data: {
-        commandId: command.commandId,
-        exitCode: result.exitCode,
-        status: 'command.terminal_result',
-      },
-      type: 'worker.heartbeat',
-    });
-    pending.push(...outcome.commands);
   }
 }
 
@@ -1885,7 +1714,7 @@ function takeNewWorkerCommands(
     if (seenCommandIds.has(commandId)) {
       continue;
     }
-    if (!isInterruptCommand(command) && !isTerminalCommand(command)) {
+    if (!isInterruptCommand(command)) {
       throw new Error(`Unsupported worker control command: ${commandId}`);
     }
     seenCommandIds.add(commandId);
@@ -1950,117 +1779,6 @@ async function recordWorkerHeartbeat(
 }
 
 /**
- * Keeps worker control live while one terminal command is running.
- *
- * @param client Session-level worker-control coordinator.
- * @param transcript Shared worker transcript writer.
- * @param commandRunner Sandbox terminal command runner.
- * @param input Terminal command input.
- * @param signal Parent worker-control cancellation signal.
- * @param seenCommandIds Command ids already queued or handled.
- * @param onInterrupt Optional worker interrupt callback.
- * @returns Completed result plus newly queued commands, or null after interrupt.
- */
-async function runTerminalCommandWithControl(
-  client: WorkerControlClient,
-  transcript: WorkerTranscriptWriter,
-  commandRunner: WorkerControlCommandRunner,
-  input: WorkerControlCommandRunInput,
-  signal: AbortSignal,
-  seenCommandIds: Set<string>,
-  onInterrupt?: () => void
-): Promise<{
-  /** Commands accepted while the terminal process was running. */
-  commands: DirectWorkerControlCommand[];
-  /** Completed terminal process result. */
-  result: WorkerControlCommandRunResult;
-} | null> {
-  const commandController = new AbortController();
-  const pendingCommands: DirectWorkerControlCommand[] = [];
-  /** Cancels the terminal child with the parent supervisor reason. */
-  const abortCommand = () => commandController.abort(abortSignalReason(signal));
-
-  if (signal.aborted) {
-    abortCommand();
-  } else {
-    signal.addEventListener('abort', abortCommand, { once: true });
-  }
-
-  const commandOutcome = commandRunner.run({ ...input, signal: commandController.signal }).then(
-    (result) => ({ kind: 'completed' as const, result }),
-    (error: unknown) => ({ error, kind: 'failed' as const })
-  );
-
-  try {
-    while (true) {
-      let heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
-      let abortHeartbeatWait: (() => void) | null = null;
-      const heartbeatWait = new Promise<{ kind: 'heartbeat' }>((resolve) => {
-        heartbeatTimer = setTimeout(() => resolve({ kind: 'heartbeat' }), 1000);
-      });
-      const parentAbortWait = new Promise<{ kind: 'aborted' }>((resolve) => {
-        /** Resolves this iteration when the parent supervisor cancels control work. */
-        const abort = () => resolve({ kind: 'aborted' });
-        abortHeartbeatWait = abort;
-
-        if (signal.aborted) {
-          abort();
-          return;
-        }
-        signal.addEventListener('abort', abort, { once: true });
-      });
-      const outcome = await Promise.race([commandOutcome, heartbeatWait, parentAbortWait]);
-
-      if (heartbeatTimer) {
-        clearTimeout(heartbeatTimer);
-      }
-      if (abortHeartbeatWait) {
-        signal.removeEventListener('abort', abortHeartbeatWait);
-      }
-
-      if (outcome.kind === 'completed') {
-        return { commands: pendingCommands, result: outcome.result };
-      }
-      if (outcome.kind === 'failed') {
-        throw outcome.error;
-      }
-      if (outcome.kind === 'aborted') {
-        commandController.abort(abortSignalReason(signal));
-        await commandOutcome;
-        throw abortSignalReason(signal);
-      }
-
-      try {
-        const commandPoll = await pollWorkerControl(client, transcript, 'running', signal);
-        const commands = takeNewWorkerCommands(commandPoll.commands, seenCommandIds);
-        const interrupt = commands.find(isInterruptCommand);
-
-        if (interrupt) {
-          onInterrupt?.();
-          commandController.abort(abortSignalReason(signal));
-          await recordWorkerInterrupt(client, transcript, interrupt, signal);
-          await commandOutcome;
-          return null;
-        }
-        pendingCommands.push(...commands);
-      } catch (error) {
-        commandController.abort(error);
-        await commandOutcome;
-        throw error;
-      }
-    }
-  } catch (error) {
-    if (signal.aborted) {
-      commandController.abort(abortSignalReason(signal));
-      await commandOutcome;
-    }
-    throw error;
-  } finally {
-    signal.removeEventListener('abort', abortCommand);
-  }
-}
-
-/**
  * Returns whether a rejected operation was caused by the supervisor signal.
  *
  * @param error Rejected operation reason.
@@ -2072,26 +1790,6 @@ function isSupervisorAbort(error: unknown, signal: AbortSignal): boolean {
     signal.aborted &&
     (error === signal.reason || (error instanceof Error && error.name === 'AbortError'))
   );
-}
-
-/**
- * Returns a stable error reason for an aborted supervisor signal.
- *
- * @param signal Aborted supervisor signal.
- * @returns Existing signal reason or a standard abort error.
- */
-function abortSignalReason(signal: AbortSignal): unknown {
-  return signal.reason ?? new DOMException('The operation was aborted.', 'AbortError');
-}
-
-/**
- * Builds the environment visible to a NanoCore-issued terminal command.
- *
- * @param environment Control process environment.
- * @returns String environment without the worker-control bearer token.
- */
-function workerCommandEnvironment(environment: CodexShimEnvironment): Record<string, string> {
-  return workerChildEnvironment(environment, false);
 }
 
 /**
@@ -2107,24 +1805,6 @@ function isInterruptCommand(
     command.kind === 'interrupt' &&
     typeof command.commandId === 'string' &&
     (typeof command.reason === 'string' || command.reason === null || command.reason === undefined)
-  );
-}
-
-/**
- * Checks whether a command is a terminal command.
- *
- * @param command Candidate command.
- * @returns True when the command can be executed as a terminal command.
- */
-function isTerminalCommand(
-  command: Record<string, unknown>
-): command is Extract<DirectWorkerControlCommand, { kind: 'terminal-command' }> {
-  return (
-    command.kind === 'terminal-command' &&
-    typeof command.commandId === 'string' &&
-    Array.isArray(command.argv) &&
-    command.argv.every((item) => typeof item === 'string') &&
-    (typeof command.cwd === 'string' || command.cwd === null || command.cwd === undefined)
   );
 }
 

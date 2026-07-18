@@ -6,10 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import {
-  configureRealCodexRuntime,
-  streamCodexAuthFromSsh,
-} from './real-codex-goal-mode-runner.mjs';
+import { configureRealCodexRuntime, streamCodexAuthFromSsh } from './real-codex-support.mjs';
 
 const root = resolve(fileURLToPath(new URL('.', import.meta.url)), '../..');
 const coreClientDist = join(root, 'packages/core-client/dist/index.js');

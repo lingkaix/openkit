@@ -2,16 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import {
-  answerUserInput,
-  grantApproval,
-  linkWorkspaceRepository,
-  type NanoCoreHarness,
-  readTurnEventsUntil,
-  removeDataRoot,
-  startNanoCoreHarness,
-  startSimulatorTurn,
-} from './_lib/harness.js';
+import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
 import { postJson } from './_lib/http.js';
 
 const rawUserInfo = 'user:pass';
@@ -30,7 +21,7 @@ afterEach(async () => {
 });
 
 describe('nanocore e2e secret redaction', () => {
-  it('keeps provider secrets out of diagnostics, items, artifacts, and knowledge payloads', async () => {
+  it('keeps provider secrets out of diagnostics, workspace, and knowledge payloads', async () => {
     harness = await startNanoCoreHarness();
     const providerRoot = join(harness.dataRoot, 'config', 'providers');
 
@@ -57,46 +48,10 @@ describe('nanocore e2e secret redaction', () => {
       requestId: randomUUID(),
     });
 
-    const workspaceId = 'ws_demo';
-    const threadId = 'th_demo';
-    await linkWorkspaceRepository(harness.baseUrl, harness.dataRoot, workspaceId);
-    const turn = await startSimulatorTurn(
-      harness.baseUrl,
-      workspaceId,
-      threadId,
-      'Run secret redaction verification.'
-    );
-    const turnId = String(turn.id);
-
-    await readTurnEventsUntil(
-      harness.baseUrl,
-      workspaceId,
-      threadId,
-      turnId,
-      (event) => event.event === 'approval.requested'
-    );
-    await grantApproval(harness.baseUrl, workspaceId, threadId, turnId, `ap_${turnId}`);
-    await answerUserInput(harness.baseUrl, workspaceId, threadId, turnId, 'concise');
-    await readTurnEventsUntil(
-      harness.baseUrl,
-      workspaceId,
-      threadId,
-      turnId,
-      (event) => event.event === 'turn.completed'
-    );
-
     const diagnostics = await fetchJson(`${harness.baseUrl}/api/diagnostics`);
-    const items = await fetchJson(
-      `${harness.baseUrl}/api/app/workspaces/${workspaceId}/threads/${threadId}/items`
-    );
-    const knowledge = await fetchJson(`${harness.baseUrl}/api/workspaces/${workspaceId}/knowledge`);
-    const dashboard = (await fetchJson(
-      `${harness.baseUrl}/api/app/workspaces/${workspaceId}/threads/${threadId}/dashboard`
-    )) as { artifacts: Array<{ id: string }> };
-    const artifact = await fetchJson(
-      `${harness.baseUrl}/api/workspaces/${workspaceId}/artifacts/${dashboard.artifacts[0]?.id}`
-    );
-    const payload = JSON.stringify({ artifact, diagnostics, items, knowledge });
+    const workspace = await fetchJson(`${harness.baseUrl}/api/app/workspaces/ws_demo/dashboard`);
+    const knowledge = await fetchJson(`${harness.baseUrl}/api/workspaces/ws_demo/knowledge`);
+    const payload = JSON.stringify({ diagnostics, knowledge, workspace });
 
     expect(payload).not.toContain(rawUserInfo);
     expect(payload).not.toContain(rawSecret);

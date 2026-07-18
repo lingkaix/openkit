@@ -62,7 +62,7 @@ export function createCoreClient(options: CreateCoreClientOptions): CoreClient {
   const openaiCodex = createOpenAICodexOAuthClient(transport);
   const email = createEmailAuthClient(transport);
   const capabilities = createCapabilitiesClient(core.meta);
-  const agents = createAgentCatalogClient(transport, app);
+  const agents = createAgentCatalogClient(transport);
   const actionCenter = createActionCenterClient(transport);
   const repositories = createWorkspaceRepositoryClient(transport);
 

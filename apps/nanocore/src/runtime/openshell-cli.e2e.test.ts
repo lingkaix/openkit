@@ -231,11 +231,10 @@ describeOpenShell('real local disposable OpenShell Cell', () => {
           await withPreparedOpenShellCell(`aepsnap_e2e_direct_control_${Date.now()}`, async () => {
             const registration = gateway.registerSession(environmentPackage);
             try {
-              gateway.enqueueTerminalCommand(environmentPackage.snapshotId, {
-                argv: ['pwd'],
-                commandId: 'term_e2e_direct_control_1',
-                cwd: '/workspace',
-              });
+              gateway.enqueueInterrupt(
+                environmentPackage.snapshotId,
+                'Stop direct worker control.'
+              );
               await writeFile(packagePath, JSON.stringify(environmentPackage), 'utf8');
               await writeFile(
                 policyPath,
@@ -254,7 +253,7 @@ describeOpenShell('real local disposable OpenShell Cell', () => {
                 ],
                 env: {
                   OPENKIT_AGENT_SESSION_ID: environmentPackage.scope.agentSessionId,
-                  OPENKIT_CODEX_COMMAND: '["true"]',
+                  OPENKIT_CODEX_COMMAND: '["sh","-c","sleep 30"]',
                   OPENKIT_CONTROL_BASE_URL: `${server.workerFacingBaseUrl}/api/worker-control`,
                   OPENKIT_CONTROL_TOKEN: registration.token,
                   OPENKIT_PACKAGE_SNAPSHOT_ID: environmentPackage.snapshotId,
@@ -281,23 +280,19 @@ describeOpenShell('real local disposable OpenShell Cell', () => {
               });
 
               expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)).toMatchObject({
-                commands: [
+                commands: [],
+                events: expect.arrayContaining([
                   expect.objectContaining({
-                    commandId: 'term_e2e_direct_control_1',
-                    deliveredAt: expect.any(String),
-                    kind: 'terminal-command',
+                    event: expect.objectContaining({
+                      data: expect.objectContaining({ status: 'interrupted' }),
+                      type: 'turn.failed',
+                    }),
                   }),
-                ],
+                ]),
                 heartbeat: {
                   sequence: 0,
                   status: 'starting',
                 },
-                terminalResults: [
-                  expect.objectContaining({
-                    commandId: 'term_e2e_direct_control_1',
-                    exitCode: 0,
-                  }),
-                ],
               });
             } finally {
               gateway.unregisterSession(environmentPackage.snapshotId);

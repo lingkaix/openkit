@@ -1,6 +1,5 @@
 packages:
   - 'apps/*'
-  - 'mcp'
   - 'packages/*'
 allowBuilds:
   '@google/genai': false

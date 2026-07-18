@@ -551,11 +551,11 @@ Required command families include:
 - list or read workspace resources
 - create, list, read, or archive threads
 - start a turn
-- submit follow-up input to an active thread or turn
+- submit input through an exact user-input human gate or an active-work delivery command defined by an accepted owning specification
 - interrupt or cancel a turn
 - respond to an approval request
 - list or read artifacts
-- update artifact metadata
+- invoke an Artifact mutation command only where an accepted owning specification defines it
 - list or read item history
 
 HTTP endpoints, SDK method names, and app-specific convenience commands belong in `docs/app-api.md`, `docs/core/communication.md`, or generated client packages.
@@ -569,11 +569,11 @@ Required `requestId` command families include:
 - create or update workspace
 - create, update, or archive thread
 - start turn
-- submit follow-up input
+- submit input through an exact user-input human gate or an accepted active-work delivery command
 - interrupt or cancel turn
 - respond to approval request
 - create, update, or delete knowledge
-- create or update artifact metadata
+- invoke an Artifact mutation command only where an accepted owning specification defines it
 
 Core MUST deduplicate commands by request ID within a documented deduplication scope and retention window.
 

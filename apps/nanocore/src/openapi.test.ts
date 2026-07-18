@@ -83,8 +83,8 @@ const DEPLOYMENT_ADMIN_ROUTES = new Set([
 ]);
 const FIRST_PARTY_CONSUMER_ROOTS = [
   '../../../apps/web/src/',
-  '../../../mcp/src/',
   '../../../packages/core-client/src/',
+  '../../../skills/',
 ];
 
 function normalizeHonoRoutePath(path: string): string {
@@ -106,6 +106,25 @@ function isProjectedAppApiRoute(method: string, path: string): boolean {
 }
 
 describe('app api openapi projection', () => {
+  it('does not expose arbitrary worker terminal commands', () => {
+    const document = createAppOpenApiDocument();
+    const serialized = JSON.stringify(document);
+
+    expect(
+      document.paths[
+        '/api/app/workspaces/{workspaceId}/threads/{threadId}/agent-sessions/{agentSessionId}/terminal-commands'
+      ]
+    ).toBeUndefined();
+    expect(document.components.schemas).not.toHaveProperty(
+      'QueueAgentSessionTerminalCommandRequest'
+    );
+    expect(document.components.schemas).not.toHaveProperty(
+      'QueueAgentSessionTerminalCommandResponse'
+    );
+    expect(serialized).not.toContain('queueAgentSessionTerminalCommand');
+    expect(serialized).not.toContain('terminalResultCount');
+  });
+
   it('projects the storage layout report route from shared schemas', () => {
     const document = createAppOpenApiDocument();
 
@@ -1703,30 +1722,9 @@ describe('app api openapi projection', () => {
     });
     expect(
       document.paths['/api/app/workspaces/{workspaceId}/artifacts/{artifactId}/review']?.post
-    ).toMatchObject({
-      operationId: 'submitArtifactReviewDecision',
-      tags: ['reviews'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/SubmitArtifactReviewDecisionRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/SubmitArtifactReviewDecisionResponse',
-              },
-            },
-          },
-        },
-      },
-    });
+    ).toBeUndefined();
+    expect(document.components.schemas.SubmitArtifactReviewDecisionRequest).toBeUndefined();
+    expect(document.components.schemas.SubmitArtifactReviewDecisionResponse).toBeUndefined();
     expect(
       document.paths['/api/app/workspaces/{workspaceId}/knowledge/proposals/{proposalId}/decision']
         ?.post
@@ -1945,34 +1943,6 @@ describe('app api openapi projection', () => {
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/SubmitWorkspaceRecoveryDecisionResponse' },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths[
-        '/api/app/workspaces/{workspaceId}/threads/{threadId}/agent-sessions/{agentSessionId}/terminal-commands'
-      ]?.post
-    ).toMatchObject({
-      operationId: 'queueAgentSessionTerminalCommand',
-      tags: ['app-utils'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/QueueAgentSessionTerminalCommandRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/QueueAgentSessionTerminalCommandResponse',
-              },
             },
           },
         },
@@ -2275,19 +2245,7 @@ describe('app api openapi projection', () => {
     });
     expect(
       document.paths['/api/app/workspaces/{workspaceId}/repositories/default']?.post
-    ).toMatchObject({
-      operationId: 'createDefaultWorkspaceRepository',
-      tags: ['repositories'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/SetWorkspaceRepositoryRequest',
-            },
-          },
-        },
-      },
-    });
+    ).toBeUndefined();
     expect(
       document.paths['/api/app/workspaces/{workspaceId}/repositories/git-push-records']?.get
     ).toMatchObject({
@@ -2702,7 +2660,6 @@ describe('app api openapi projection', () => {
       'executeGitPush',
       'getGitPushRecord',
       'setDefaultWorkspaceRepository',
-      'createDefaultWorkspaceRepository',
       'listHumanAttention',
       'listSchedulerAdmissions',
       'retrySchedulerAdmission',
@@ -2719,7 +2676,6 @@ describe('app api openapi projection', () => {
       'listServerPermissionDecisions',
       'getWorkspaceDashboard',
       'getThreadDashboard',
-      'queueAgentSessionTerminalCommand',
       'startTaskMode',
       'getThreadGoalSummary',
       'startThreadGoal',
@@ -2772,7 +2728,6 @@ describe('app api openapi projection', () => {
       'getWorkspaceApplyResult',
       'listAgentEnvironmentPackageSnapshots',
       'getAgentEnvironmentPackageSnapshot',
-      'submitArtifactReviewDecision',
       'submitKnowledgeProposalDecision',
       'submitGoalReviewDecision',
     ]);

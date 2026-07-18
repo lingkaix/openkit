@@ -1,7 +1,7 @@
 # OpenKit Agent Skill Interface
 
 Type: change-plan
-Status: planned
+Status: verified
 Canonical Spec: `docs/specs/20260713-openkit_agent_skill_interface.md`
 
 ## Intent
@@ -10,7 +10,7 @@ Replace the user-facing `@openkit/mcp` channel and the four current OpenKit setu
 
 This is a clean replacement. OpenKit is in internal development, so the implementation will delete the MCP package, MCP transport, MCP resources and prompts, the four existing Skill folders, and their compatibility surface rather than preserving adapters or aliases.
 
-This record begins with documentation and lifecycle alignment. Skill and CLI implementation starts only in a later execution turn.
+The G02 audit preamble freezes the implementation boundary before Stages 1-6 proceed.
 
 ## Inherited Audit Responsibility (2026-07-17)
 
@@ -18,15 +18,41 @@ This plan is work package WP-1 of the [OpenKit Execution Program](./202607172152
 
 Before implementation starts, record the G02 audit preamble in this plan per Execution Program rule 11: the authority map for the concepts this plan touches, findings classified with the audit's finding codes (in-scope findings fold into this plan's frozen scope; everything else is ticketed to the program Backlog), and confirmation of the inherited exit criteria. The preamble is review-only, bounded to at most one review day, and authorizes no implementation. The S01 Protocol Contract Consolidation review assigned by the audit's Remaining Execution dispositions happens here; supersede S01 only when a named current owner absorbs every continuing contract.
 
+## G02 Audit Preamble (2026-07-18)
+
+The bounded review covered C07, C08, S01-S04, the App API and generated OpenAPI, Core Client, the removal-only MCP and Skill surfaces, credentials, release wiring, and current stories. It found no `SECURITY-GAP` and authorized no implementation.
+
+| Concept | Authority and executable projection | Forbidden duplicate |
+| --- | --- | --- |
+| Core semantics | C07, owning specs, and `@openkit/protocol`; NanoCore Core routes and `client.core` project them | CLI business rules or App API copies of Core routes |
+| Transport and cancellation | C08 and Core Client transport/SSE; owning commands and durable reads prove outcomes | CLI routing, retry, safe-point, or process-exit product truth |
+| App API | Owning specs and `@openkit/app-api-schemas`; S03, NanoCore catalog, OpenAPI, and the public Core Client sub-clients project them | CLI copies of paths, methods, or payload schemas |
+| Agent interface | S04 owns operation identity, Skill guidance, progressive disclosure, CLI envelopes, and local redaction | MCP registry, raw HTTP catalog, second SDK, or workflow engine |
+| Authentication and secrets | Remote Auth, Permissions, and Vault specs plus NanoCore authorization; the CLI reuses the existing credential helper | Secret argv/output, CLI authorization, or another credential store |
+| Acceptance and removal | S08 and S04; lower-layer coverage plus bounded interface stories prove the replacement | A new runner platform, compatibility surface, or deletion of worker-side MCP |
+
+| Finding | Classification | Frozen disposition |
+| --- | --- | --- |
+| G02-F01 | `DESIGN-DEFECT` | Catalog sources are exactly `app-api`, `core-projection`, or `local-only`; inputs are strict flat objects; Core routes do not move into App OpenAPI. |
+| G02-F02 | `DESIGN-DEFECT` | Full capability coverage stays L0/L2, CLI logic stays L1, and exit uses one representative local L3, existing auth-owned server proof, and one real progressive-discovery L6; legacy stories survive only for distinct risk. |
+| G02-F03 | `DESIGN-DEFECT` | Removal checks reachability through files, packages, imports, binaries, scripts, release wiring, Skill metadata, and active guides; canonical prohibitions, history, and worker MCP may retain the names. |
+| G02-F04 | `DESIGN-DEFECT` | Generic create/rotate token operations are excluded until a safe named destination exists; bootstrap consumption may store the current credential directly or fail closed. |
+| G02-F05 | `OWNERSHIP-CONFLICT` | Remove C08's generic active-input semantics, the duplicate repository-create operation, and the duplicate Agent health client entry point. |
+| G02-F06 | `IMPLEMENTATION-DEFECT` | Preserve typed `path`, `details`, and server `requestId` in Core Client errors before the CLI projects them. |
+| G02-F07 | `DOC-DRIFT` | Correct C07/C08 command wording, supersede S01 into named owners, remove stale S02/current-surface claims and tool counts, and state worker MCP as accepted but not implemented. |
+| G02-F08 | `DEFERRED-ALIGNMENT`, `TEST-GAP`, `REAL-USE-GAP` | Implement the already-planned catalog, CLI, Skill, reachability guard, packaged smoke, and smallest replacement stories; do not absorb S16, S39, Material, or steering delivery. |
+
+These findings and the existing Stages 1-6 are the frozen WP-1 scope. The inherited G02 exit criteria remain unchanged: one schema and command authority, transport-neutral operations, authentication, idempotency, errors, replay, cancellation, generated-contract parity, and complete removal of the reachable user-facing MCP and split-Skill surfaces.
+
 ## Decision Summary
 
 - The canonical AI-native end-user interface becomes one Skill named `openkit`.
 - The Skill targets end users only. It does not contain a repository-developer setup mode or an OpenKit self-improvement mode.
 - A bundled, versioned `openkit` CLI performs deterministic discovery and invocation over public NanoCore contracts.
 - Progressive disclosure occurs through Skill metadata, a concise `SKILL.md`, on-demand reference files, and CLI operation search/description.
-- NanoCore App API remains the machine contract and the source of truth for state, policy, approval, idempotency, audit, recovery, and execution.
+- NanoCore public App API and typed Core projections remain the machine contracts, while NanoCore remains the source of truth for state, policy, approval, idempotency, audit, recovery, and execution.
 - The user-facing MCP channel is deleted without a compatibility adapter.
-- Worker-side MCP capability supply remains a separate supported plane and is not changed by this work.
+- Worker-side MCP capability supply remains a separate accepted future plane, is not implemented in current AEPs, and is not changed by this work.
 
 ## Scope
 
@@ -49,9 +75,10 @@ Before implementation starts, record the G02 audit preamble in this plan per Exe
 ### CLI and operation catalog
 
 - Reuse `@openkit/core-client`, `@openkit/app-api-schemas`, current credential handling, redaction rules, and public NanoCore behavior.
-- Replace the MCP-specific tool registry with one transport-neutral end-user operation catalog projected from existing App API operation ids, Core Client methods, and shared schemas rather than creating a second route or payload inventory.
+- Replace the MCP-specific tool registry with one transport-neutral end-user operation catalog whose sources are exactly `app-api`, `core-projection`, or `local-only`; networked entries reference existing Core Client methods and shared schemas rather than creating a second route or payload inventory.
 - Expose operation discovery, description, and invocation without loading the complete catalog into the agent context.
 - Cover all supported public end-user and operator capabilities, including setup, authentication, workspaces, repositories, threads, Chat Mode, Task Mode, Goal Mode, Action Center, artifacts, evidence, knowledge, recovery, scheduler controls, runtime configuration, vault administration, audit, usage, automations, Git operations, and workspace portability.
+- Accept one strict flat input object per call; steering without its accepted durable owner remains an explicit typed fail-closed exclusion, and generic token create/rotate remains excluded until a safe named credential destination exists.
 - Exclude private NanoCore internals, raw storage, raw runtime handles, arbitrary HTTP, arbitrary shell, and any operation without a public governed contract.
 - Preserve server-side validation and authorization as the final authority for every invocation.
 
@@ -93,12 +120,12 @@ Before implementation starts, record the G02 audit preamble in this plan per Exe
 
 ## Current Baseline
 
-- `@openkit/mcp` currently exposes 99 flat tools plus MCP resources and prompts through a custom stdio JSON-RPC process.
-- `mcp/src/registry.ts` owns MCP-specific schemas, descriptions, dispatch, resources, and prompts, while `mcp/src/nanocore-client.ts` already delegates public behavior to `@openkit/core-client`.
-- Four repository Skills split setup versus loop and end-user versus developer use.
-- Current deterministic Goal, Task, Chat, recovery, and workspace-portability stories run through MCP.
-- NanoCore already owns public validation, state transitions, authorization, approvals, audit, recovery, artifacts, evidence, and execution; these contracts do not need to move into the new Skill.
-- Worker-side MCP is implemented through a separate capability plane and shares no user-facing product contract with `@openkit/mcp`.
+- `skills/openkit/` is the one end-user Skill package, with one bundled CLI, one-level progressive references, and generated host metadata.
+- `skills/openkit-operations.mjs` is the checked agent-facing catalog over existing App API and typed Core Client owners; `skills/openkit-cli.mjs` and `skills/openkit-secrets.mjs` provide bounded JSON invocation, credential mediation, typed errors, and redaction without owning product behavior.
+- The user-facing `@openkit/mcp` package, binary, resources, prompts, dedicated acceptance stories, release wiring, and all four former Skill directories are deleted without compatibility aliases.
+- Replacement coverage is proportional: complete catalog and schema coverage at L0-L2, one representative local L3, existing server-auth evidence, clean-copy L5, and one real progressive-discovery L6.
+- NanoCore remains authoritative for public validation, state transitions, authorization, approvals, audit, recovery, artifacts, evidence, and execution.
+- Worker-side MCP remains a separate accepted capability plane; current AEPs expose no capability routes, and WP-1 did not alter that boundary.
 
 ## Impacted Surfaces
 
@@ -124,10 +151,10 @@ Before implementation starts, record the G02 audit preamble in this plan per Exe
 
 ### Stage 1 — Freeze CLI behavior with tests
 
-- Add tests first for the CLI process contract, operation search, operation description, stdin JSON invocation, stable JSON success/error envelopes, exit codes, redaction, secret-safe credential handling, and server capability/version checks.
+- Add focused tests first for the CLI process contract, operation search, operation description, strict flat stdin JSON invocation, stable JSON success/error envelopes, exit codes, redaction, secret-safe credential handling, local abort behavior, and server capability/version checks.
 - Add a focused contract test proving that the CLI calls only public Core Client surfaces.
-- Add a coverage test that reads the checked App API OpenAPI catalog, requires a CLI mapping or explicit exclusion for every public end-user/operator operation, and rejects copied route or schema ownership.
-- Define the smallest transport-neutral operation metadata needed by both discovery and invocation; do not add a generic framework beyond the demonstrated catalog.
+- Add L0/L2 coverage that reads the checked App API OpenAPI catalog, resolves every `core-projection` reference, requires a mapping or explicit exclusion for every public end-user/operator operation, and rejects copied route or schema ownership.
+- Define the smallest transport-neutral operation metadata needed by discovery and invocation as one cohesive literal inventory with native lookup; do not add a catalog framework.
 
 ### Stage 2 — Implement the operation catalog and CLI
 
@@ -136,6 +163,7 @@ Before implementation starts, record the G02 audit preamble in this plan per Exe
 - Ship the CLI as one Node.js 24 single-file executable with no runtime package installation, `node_modules`, package-manager command, or OpenKit source checkout.
 - Reuse the existing Core Client and credential-store behavior instead of reimplementing HTTP or auth.
 - Send stable `openkit-cli` channel and `agent-skill` source metadata through every networked Core Client request.
+- Let SIGINT or transport abort stop only the local wait; product cancellation requires an explicit operation followed by a durable read, and bootstrap consumption may direct-store the current credential or fail closed.
 - Keep every invocation bounded and request/response-oriented; do not add an interactive shell, daemon, background process, subscription transport, streaming mode, or CLI-owned multi-step workflow composition.
 
 ### Stage 3 — Create the unified end-user Skill
@@ -148,16 +176,15 @@ Before implementation starts, record the G02 audit preamble in this plan per Exe
 
 ### Stage 4 — Replace interface acceptance stories
 
-- Port deterministic MCP stories to invoke the bundled CLI through the unified Skill path.
-- Preserve Goal, Task, Chat, workspace portability, recovery, redaction, approval, artifact, and evidence coverage.
-- Add at least one clean setup story and one real agent story in which only the Skill metadata is initially visible and detailed references are loaded on demand.
-- Verify that the agent can discover a capability without receiving the complete operation catalog in its initial context.
+- Keep full capability mapping at L0/L2 and focused CLI behavior at L1; replace broad MCP story parity with one representative local L3, existing auth-owned server/bootstrap proof, and one real progressive-discovery L6.
+- Retain a legacy story only when it proves a distinct risk not covered below L6, and reduce any confirmed defect to the lowest sufficient deterministic regression.
+- Start the real story with Skill metadata only, load `SKILL.md` and one relevant reference, and discover, describe, and call an operation absent from `SKILL.md` without adding a runner framework.
 
 ### Stage 5 — Delete MCP and legacy Skills
 
 - Delete the MCP package and every MCP-only test, resource, prompt, command, dependency, script, and release step.
 - Delete the four legacy Skill folders.
-- Remove MCP and legacy Skill names from active documentation and checked artifacts.
+- Remove reachable MCP and legacy Skill surfaces from package directories, workspace dependencies, imports, binaries, scripts, release wiring, Skill metadata, and active guides while allowing canonical prohibitions, history, and worker-side MCP design to retain the names.
 - Remove current implementation projections that no longer exist instead of retaining compatibility notes.
 
 ### Stage 6 — Final documentation and release alignment
@@ -181,16 +208,16 @@ Before implementation starts, record the G02 audit preamble in this plan per Exe
 
 - Focused CLI unit and process tests.
 - App API OpenAPI-to-CLI coverage and duplicate-ownership tests.
-- Contract tests against a temporary NanoCore using local and server-mode auth.
+- One representative contract story against a temporary local NanoCore, reusing existing auth-owned server and bootstrap proof.
 - Secret-redaction tests proving credentials and one-time token material do not appear in argv, logs, Skill context, or normal CLI envelopes.
 - Existing L0-L5 package, API, NanoCore, smoke, and release gates after MCP removal.
-- Replaced L6 stories for setup, Chat, Task, Goal, Action Center, artifacts, evidence, recovery, knowledge, and workspace portability.
+- One real progressive-discovery L6 plus only legacy stories that prove a distinct uncovered risk.
 - Skill-creator metadata validation and representative forward tests.
-- Final repository searches showing no reachable `@openkit/mcp`, `openkit-mcp`, `openkit-setup`, `openkit-setup-dev`, `openkit-loop`, or `openkit-loop-dev` product surface.
+- Final reachability searches showing no user-facing MCP or legacy Skill package, dependency, import, binary, script, release wiring, Skill metadata, or active-guide surface.
 
 ## Expected Handoff Points
 
-- Stage 0 ends this documentation-only turn and is the handoff into implementation planning.
+- Stage 0 and the G02 preamble freeze authority and scope before implementation.
 - Stage 1 must complete before CLI production code.
 - Stage 3 begins only after the CLI invocation contract is usable enough for the Skill to call.
 - Stage 4 must pass before any MCP or legacy Skill deletion.
@@ -199,7 +226,7 @@ Before implementation starts, record the G02 audit preamble in this plan per Exe
 
 ## Known Risks
 
-- **Skill bloat:** exposing the complete public system can recreate the 99-tool context problem inside one Markdown file. Mitigation: keep `SKILL.md` as a router and move details into one-level references plus CLI search/description.
+- **Skill bloat:** exposing the complete public system can recreate the former flat-registry context problem inside one Markdown file. Mitigation: keep `SKILL.md` as a router and move details into one-level references plus CLI search/description.
 - **Transport portability:** some AI applications may support MCP but cannot execute Skill scripts. This is accepted by the clean target; those applications are not supported by this interface unless they gain the required Skill and command-execution capability.
 - **Secret exposure:** generic operation invocation can surface one-time credentials. Mitigation: sensitivity metadata, direct credential-store writes, stdin-only secret input, redacted envelopes, and NanoCore-side authorization remain mandatory.
 - **Duplicated contracts:** a new CLI catalog could drift from App API schemas. Mitigation: reuse Core Client and shared schemas and delete the MCP registry rather than copying it.
@@ -211,3 +238,25 @@ Before implementation starts, record the G02 audit preamble in this plan per Exe
 
 - 2026-07-13 — Clean replacement direction approved: one end-user `openkit` Skill plus bundled CLI, no user-facing MCP, no developer Skill variants, and no compatibility layer.
 - 2026-07-13 — Documentation authority and lifecycle alignment completed; spec lifecycle, relative-link, and whitespace checks passed; Skill and CLI implementation not started.
+- 2026-07-18 — G02 audit and owning-document corrections completed; S01 was superseded into named owners, the frozen fallback and proportional-test contracts are explicit, and Stage 1 test-first implementation is next.
+- 2026-07-18 — Stages 1-4 completed through `d41b1dd`: the checked catalog, standalone CLI, unified Skill, secret-safe credential path, clean-copy L5, and one local NanoCore L3 passed; official Codex 0.144.5 on A1 then selected the Skill from metadata, loaded only `SKILL.md` and `loop.md`, discovered and described `workspace.create`, failed closed on one empty-stdin attempt, performed exactly one successful mutation, confirmed it through `workspace.list`, passed the secret-marker scan and independent readback, and left no runner or retained evidence platform. Stage 5 deletion is now authorized; Stage 6 alignment and exit gates remain.
+- 2026-07-18 — Stages 5-6 completed: the user-facing MCP package and four legacy Skills were deleted, redundant interface stories and simulator projections were narrowed or removed, all active projections were aligned, and both release and full package-exit verification passed.
+
+## Final Implementation Summary
+
+WP-1/G02 is complete. `skills/openkit/` now ships the single end-user Skill, one bundled JSON-only CLI, progressive one-level references, and generated host metadata. `skills/openkit-operations.mjs` checks complete public operation coverage while referencing existing App API schemas and typed Core Client methods instead of owning routes or business rules.
+
+Credential resolution remains endpoint-scoped and fail-closed, secret material stays out of arguments and normal output, local abort does not claim product cancellation, and NanoCore remains the authority for validation, authorization, idempotency, workflow state, recovery, audit, and execution.
+
+The user-facing `@openkit/mcp` package, binary, resources, prompts, workspace and release wiring, four former Skill directories, and dedicated MCP acceptance paths are deleted without an alias, adapter, or compatibility period. Worker-side MCP remains a separate accepted capability plane, and current AEPs still expose no capability routes.
+
+Implementation lineage is Stages 1-4 through `d41b1dd`, deletion tests `42da171`, `8e7e9ba`, and `7c0cc67`, clean removal `7e12e74`, and bounded cleanup `93f4363` through `d50451e`. The cleanup deleted unsupported or duplicate tests and fixed only two stale test completion/input contracts; it did not add a runner, harness, workflow engine, recovery state, or second SDK.
+
+## Final Verification Evidence
+
+- `CI=true pnpm -w verify:release` and `CI=true pnpm -w verify:full` passed after deletion and cleanup, including repository checks, lifecycle and reachability validation, lint, typecheck, unit tests, coverage, builds, NanoCore L3, Web L4, smoke, and deterministic stories.
+- NanoCore unit and coverage runs passed 1,973 tests with 7 explicit skips; NanoCore L3 passed 20 tests with 1 explicit skip; Web L4 passed 4 tests; deterministic story verification passed 40 runner checks and 1 Web story.
+- The repository-owned Skill suite passed 8/8, the clean-copy bundled executable passed, and the stock skill-creator validator reported `Skill is valid!` using only a temporary PyYAML installation outside the repository.
+- The real A1 progressive-discovery L6 passed with official Codex 0.144.5, metadata-first loading, one reference, one durable mutation, independent readback, secret-marker scanning, and complete temporary-resource cleanup.
+- The reachability guard found no tracked user-facing MCP or legacy-Skill path, import, binary, script, release entry, metadata entry, or active-guide projection; the ignored generated residue under the former `mcp/` directory was also removed locally.
+- Remaining: none in WP-1/G02. WP-2 may begin only after its bounded G03 audit preamble is recorded.

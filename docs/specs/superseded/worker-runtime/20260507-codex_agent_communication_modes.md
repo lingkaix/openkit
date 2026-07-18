@@ -32,7 +32,7 @@ The central design principle is a **four-plane separation** of communication con
 - Keep the agent process unaware of its own deployment mode wherever possible.
 - Separate four kinds of traffic with very different shapes (control, workspace, artifact, capability) so that no single transport carries them all.
 - Specify the role and boundary of a sidecar `openkit-bridge` process used in container deployments.
-- Stay aligned with existing specs and core docs: [Agent Setup And Runtime Supply Contract](../../20260628-agent_setup_runtime_supply_contract.md), `docs/core/architecture.md`, `docs/core/protocol.md`, and `docs/core/communication.md`.
+- Historical alignment referenced the [Agent Setup And Runtime Supply Contract](../20260628-agent_setup_runtime_supply_contract.md), `docs/core/architecture.md`, `docs/core/protocol.md`, and `docs/core/communication.md`.
 - Codex-specific decisions (transport choice, schema source, auth) should be reusable lessons for future agents, not Codex-only quirks.
 
 ## Non-goals
@@ -270,7 +270,7 @@ The bridge wire protocol is intentionally not defined here in detail; it is the 
 
 ### 7. Agent Manifest Extensions For Deployment
 
-The [Agent Setup And Runtime Supply Contract](../../20260628-agent_setup_runtime_supply_contract.md) defines the current runtime supply entry point. This spec adds historical deployment and data-plane sections for Codex communication modes. They are runtime-time concerns and do not appear in the `UI <-> Core` protocol.
+The then-current [Agent Setup And Runtime Supply Contract](../20260628-agent_setup_runtime_supply_contract.md) defined the runtime supply entry point. This spec adds historical deployment and data-plane sections for Codex communication modes. They are runtime-time concerns and do not appear in the `UI <-> Core` protocol.
 
 ```toml
 [deployment]
@@ -419,7 +419,7 @@ For local container mode, bind mounts are not a network filesystem and do not ha
 2. Implement the in-process bridge surface in Core (LLM-compat endpoint, MCP-compat endpoint, forward proxy, KB endpoint, vault injection). Wire the Codex agent in `host` mode to consume them via env vars even though the bridge is not a separate process.
 3. Define the bridge wire protocol in a follow-up spec (`YYYYMMDD-openkit_bridge_protocol.md`). Implement the `openkit-bridge` binary against that spec.
 4. Build the first `local` mode agent container image bundling `codex` and `openkit-bridge`. Validate end-to-end with bind mounts and `docker exec` stdio.
-5. Add the manifest deployment sections defined in §7. Extend the resolver and materialiser described by the [Agent Setup And Runtime Supply Contract](../../20260628-agent_setup_runtime_supply_contract.md) to handle the new fields per mode.
+5. Add the manifest deployment sections defined in §7. Extend the resolver and materialiser described by the then-current [Agent Setup And Runtime Supply Contract](../20260628-agent_setup_runtime_supply_contract.md) to handle the new fields per mode.
 6. Add `remote` mode by introducing the SSH stdio transport variant and the rsync-over-SSH and object-store workspace/artifact strategies. Re-validate end-to-end.
 7. Ship a WebSocket transport variant as a tested-but-not-default option for environments that block `docker exec` and SSH.
 
@@ -512,7 +512,7 @@ Each transformer is a typed unit (`onRequest`, `onResponseChunk`, `onResponseCom
 
 ### D2. Three MCP modes; bridge gateway is one service exposing two shapes
 
-The MCP plane supports three historical modes, now governed by the [Agent Setup And Runtime Supply Contract](../../20260628-agent_setup_runtime_supply_contract.md):
+The MCP plane supported three historical modes under the then-current [Agent Setup And Runtime Supply Contract](../20260628-agent_setup_runtime_supply_contract.md):
 
 - `bridge.spawned` — bridge spawns the MCP server process (or uses a workspace-shared one); multiplexed across agent sessions; vault credentials available.
 - `bridge.remote` — bridge proxies to an external MCP HTTP/WS endpoint; vault credentials available.

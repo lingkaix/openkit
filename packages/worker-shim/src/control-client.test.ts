@@ -100,7 +100,7 @@ describe('WorkerControlClient', () => {
     ]);
   });
 
-  it('polls commands and reports terminal results', async () => {
+  it('returns polled commands as untrusted records', async () => {
     const { fetch, requests } = createFetchFixture([
       {
         body: {
@@ -113,7 +113,6 @@ describe('WorkerControlClient', () => {
           ],
         },
       },
-      { body: { terminalResult: { commandId: 'term_1', exitCode: 0 } } },
     ]);
     const client = new WorkerControlClient({
       fetch,
@@ -123,26 +122,12 @@ describe('WorkerControlClient', () => {
     });
 
     const poll = await client.pollCommands();
-    await client.recordTerminalResult({
-      durationMs: 5,
-      exitCode: 0,
-      stderr: '',
-      stdout: '/workspace/repo\n',
-      terminalCommandId: 'term_1',
-    });
 
     expect(poll.commands).toEqual([
       expect.objectContaining({ commandId: 'term_1', kind: 'terminal-command' }),
     ]);
-    expect(requests.at(0)?.url).toBe('https://nanocore.local/api/worker-control/commands/poll');
-    expect(requests.at(1)).toMatchObject({
-      body: expect.objectContaining({
-        exitCode: 0,
-        lineage,
-        terminalCommandId: 'term_1',
-      }),
-      url: 'https://nanocore.local/api/worker-control/terminal-results',
-    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.url).toBe('https://nanocore.local/api/worker-control/commands/poll');
   });
 
   it('posts interrupt acknowledgements with bearer lineage', async () => {

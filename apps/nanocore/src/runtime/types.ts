@@ -9,6 +9,7 @@ import type {
   AgentSessionStatus,
   ApprovalRequestSchema,
   AgentSession as ProtocolAgentSession,
+  UserInputResponseItemSchema,
 } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { FsStore } from '../lib/store.js';
@@ -168,7 +169,7 @@ export interface TurnExecutor {
   respondUserInput?(
     store: FsStore,
     turnId: string,
-    input: string,
+    answers: z.infer<typeof UserInputResponseItemSchema>['answers'],
     context?: TurnCommandRuntimeContext
   ): Promise<unknown>;
 
@@ -243,12 +244,6 @@ export interface AgentSessionBackendControlSummary {
   queuedCommandCount: number;
   /** Count of commands delivered by a worker poll. */
   deliveredCommandCount: number;
-  /** Count of terminal command results reported by the worker. */
-  terminalResultCount: number;
-  /** Last terminal command exit code, if any result has arrived. */
-  lastTerminalExitCode: number | null;
-  /** Timestamp for the latest terminal command result, if any. */
-  lastTerminalCompletedAt: string | null;
 }
 
 /**

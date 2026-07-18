@@ -26,13 +26,12 @@ describe('renderOpenShellWorkerPolicy', () => {
     expect(policy).toContain('protocol: rest');
     expect(policy).toContain('enforcement: enforce');
     expect(policy).not.toContain('access: read-write');
-    expect(policy.match(/method: POST/g)).toHaveLength(10);
+    expect(policy.match(/method: POST/g)).toHaveLength(9);
     for (const path of [
       '/api/worker-control/heartbeat',
       '/api/worker-control/artifacts',
       '/api/worker-control/commands/poll',
       '/api/worker-control/commands/ack',
-      '/api/worker-control/terminal-results',
       '/api/worker-control/events/append',
       '/api/worker-control/final-status',
       '/api/worker-control/supply-refresh-ack',

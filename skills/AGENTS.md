@@ -5,7 +5,7 @@ Read `README.md` first. This file contains only local agent execution rules for 
 ## Local Agent Rules
 
 - Implement one end-user-only Skill at `skills/openkit/`; do not create developer, self-improvement, setup-only, or loop-only variants.
-- Treat `openkit-setup`, `openkit-setup-dev`, `openkit-loop`, and `openkit-loop-dev` as removal-only legacy folders until they are deleted.
+- Do not reintroduce user-facing MCP, setup-only, loop-only, developer, or self-improvement Skill variants.
 - Keep the Skill folder minimal: `SKILL.md` is required, `agents/openai.yaml` is generated, the CLI entrypoint belongs under `scripts/`, and detailed guidance belongs in directly linked one-level `references/`; do not add a README or nested reference chain inside the Skill folder.
 - Keep `SKILL.md` as a concise router and default loop rather than copying the complete capability catalog into context.
 - Keep the bundled CLI thin, deterministic, JSON-only, and limited to the transport-neutral operation catalog over public NanoCore contracts.

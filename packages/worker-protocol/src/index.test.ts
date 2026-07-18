@@ -5,6 +5,7 @@ import {
   WorkerCanonicalTerminalEventDataSchema,
   WorkerCapabilityCallSummarySchema,
   WorkerControlHeartbeatRequestSchema,
+  WorkerControlOperationSchema,
   WorkerControlRequestEnvelopeSchema,
   WorkerControlResponseEnvelopeSchema,
   WorkerErrorEnvelopeSchema,
@@ -348,6 +349,12 @@ describe('worker protocol schemas', () => {
         diagnostics: [],
       }).accepted
     ).toBe(true);
+  });
+
+  it('rejects the retired terminal-result control operation', () => {
+    expect(WorkerControlOperationSchema.parse('command_ack')).toBe('command_ack');
+    expect(WorkerControlOperationSchema.parse('final_status')).toBe('final_status');
+    expect(() => WorkerControlOperationSchema.parse('terminal_result')).toThrow();
   });
 
   it('requires the sequence-zero heartbeat to commit one process key hash', () => {

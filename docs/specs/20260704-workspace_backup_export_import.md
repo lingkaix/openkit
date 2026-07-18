@@ -110,7 +110,7 @@ V2 MUST also include the exact portable workspace file state:
 - native OKF knowledge pages
 - context materializations, including their package manifests and policy snapshots
 
-Portable workspace-scope database rows MUST be emitted as strict line-oriented records rather than as a database file. This includes the accepted Material and Artifact Review families plus the implemented audit, capability and usage, repository and Git, Goal Mode, permission and checkpoint, resolved setup and redacted Agent Environment Package, workspace synchronization and apply, MCP schema, vault-reference and grant, injection, and vault-use families. The workspace SQLite coverage guard MUST classify every table in `workspace.sqlite` as portable or explicitly non-portable. Core-owned vault and injection families remain explicit exporter, importer, and focused-test responsibilities; the workspace SQLite guard does not claim to inventory Core tables.
+Portable workspace-scope database rows MUST be emitted as strict line-oriented records rather than as a database file. This includes the accepted Material and Artifact Review families plus the implemented audit, capability and usage, repository and Git, Goal Mode, permission and checkpoint, resolved setup and redacted Agent Environment Package, workspace synchronization and apply, worker-side MCP schema, vault-reference and grant, injection, and vault-use families. The workspace SQLite coverage guard MUST classify every table in `workspace.sqlite` as portable or explicitly non-portable. Core-owned vault and injection families remain explicit exporter, importer, and focused-test responsibilities; the workspace SQLite guard does not claim to inventory Core tables.
 
 The workspace evaluation area and workspace-scope Skill Catalog state join export scope when their owning specs create those records. Their implementation change MUST add exporter, importer, and coverage-guard support; server-scope catalog entries remain deployment configuration.
 
@@ -151,7 +151,7 @@ The workspace evaluation area and workspace-scope Skill Catalog state join expor
 
 ### Public Portability Surfaces
 
-- NanoCore exposes server-managed export, dry-run import, and mutating import handles through the App API; `@openkit/core-client`, the bundled CLI, and the unified Skill project the corresponding operations without revealing server filesystem paths.
+- NanoCore exposes server-managed export, dry-run import, and mutating import handles through the App API; `@openkit/core-client`, the transport-neutral operation catalog, the bundled CLI, and the unified Skill project `backup.create`, `backup.verify`, `workspace.export`, `workspace.import-dry-run`, and `workspace.import` without revealing server filesystem paths.
 - Workspace vault-reference discovery and re-binding accept secret material only as input, store it in the active target vault backend, and return only redacted reference metadata.
 - The Web portability surface supports repository and vault-reference re-binding after import or migration without retaining secret material in rendered state.
 
@@ -161,7 +161,7 @@ The workspace evaluation area and workspace-scope Skill Catalog state join expor
 - A full data-root backup includes the Core database and therefore preserves canonical users, Workspace owners, memberships, invitations, and token metadata for restoration as the same deployment. This is intentionally different from a portable Workspace export.
 - Hot backup MUST copy the file tree first and then snapshot every SQLite database through the SQLite backup API. The manifest marks the result crash-consistent at the copied-file and individual-database level; it does not claim one transaction or automatic reconciliation across a newer database snapshot and older copied files.
 - A backup MUST carry a manifest with capture timestamps, source deployment id, mode, consistency, exact file inventory, and per-file digests. The implemented offline verifier rejects links, extra or absent files, unsafe paths, digest mismatches, and unsupported required features. Its implemented integrity boundary is the parsed manifest plus the verified per-file inventory; unlike workspace V2 verification, it does not separately recompute the manifest `contentDigest` from that inventory or independently authenticate the manifest.
-- Restore MUST verify before mutation, replace the target data root through same-filesystem staging and rename, then reuse boot-time SQLite integrity recovery, migrations, derived-index rebuild, and runtime restart recovery. Restore remains a stopped-server operator operation rather than a live App API or MCP mutation.
+- Restore MUST verify before mutation, replace the target data root through same-filesystem staging and rename, then reuse boot-time SQLite integrity recovery, migrations, derived-index rebuild, and runtime restart recovery. Restore remains a stopped-server operator operation rather than a live App API or operation-catalog mutation.
 
 ### Data-Root Migration
 
@@ -191,7 +191,7 @@ V2 is the implemented and only accepted workspace export format. NanoCore export
 
 The accepted Material row families do not exist in the implementation, so their three required JSONL files, graph validation, collision reminting, binding and Context Package rewrites, and inline-content round trip are not implemented. The current `artifact-reviews.jsonl` exports the existing app-local Artifact-id-keyed file record with mutable lifecycle state; it is not the accepted version-keyed Workspace SQLite row shape, and its target `reviewId`, version, digest, source-lineage, and follow-up rewrites remain pending.
 
-The public App API, Core Client, removal-only MCP parity surface, vault re-binding, data-root backup and verification, stopped-server restore, deployment lineage, and data-root migration validation surfaces described above are implemented. The accepted bundled CLI and unified Skill projection, owner-independent Workspace publication, explicit exclusion of multi-user access records, new-owner-only import reconstruction, cross-resource crash recovery, concurrent-write hot-backup restore validation, browser-level portability acceptance, and true cross-machine continuation remain incomplete. The workspace SQLite table coverage guard and app-local portable-state tests protect the implemented V2 boundary when storage ownership changes.
+The public App API, Core Client, transport-neutral operation catalog, bundled CLI, and unified Skill surfaces for `backup.create`, `backup.verify`, `workspace.export`, `workspace.import-dry-run`, and `workspace.import`, plus vault re-binding, data-root backup and verification, stopped-server restore, deployment lineage, and data-root migration validation, are implemented. Owner-independent Workspace publication, explicit exclusion of multi-user access records, new-owner-only import reconstruction, cross-resource crash recovery, concurrent-write hot-backup restore validation, browser-level portability acceptance, and true cross-machine continuation remain incomplete. The workspace SQLite table coverage guard and app-local portable-state tests protect the implemented V2 boundary when storage ownership changes.
 
 ## Alternatives Considered
 
@@ -235,7 +235,7 @@ The required acceptance path maps to the L0-L6 model in `docs/specs/20260529-tes
 
 Current implemented evidence is narrower than that full acceptance path:
 
-- L1 and L2 tests cover the V2 format, exact verified bytes, the currently implemented canonical and portable families, target-reference reconstruction, synchronous rollback, and package/client/MCP contracts. They do not cover the accepted G01 Material or version-keyed Artifact Review target.
+- L1 and L2 tests cover the V2 format, exact verified bytes, the currently implemented canonical and portable families, target-reference reconstruction, synchronous rollback, and package, client, and operation-catalog contracts. They do not cover the accepted G01 Material or version-keyed Artifact Review target.
 - L3 black-box tests currently cover collision reminting, unsupported-feature rejection, and tamper rejection without partial workspace creation. They do not yet cover every fault stage, concurrent-write hot-backup restore, or deployment moves.
 - Web component tests cover repository and Vault re-binding, but browser-level L4 acceptance remains open.
 - The L5 built-artifact smoke covers export, verification, and import into a fresh target data root.

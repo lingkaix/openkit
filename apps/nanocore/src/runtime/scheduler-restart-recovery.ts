@@ -331,7 +331,7 @@ async function recoverAnchoredLease(
       row,
       acceptedFinalStatus.status,
       schedulerEpoch,
-      'backend-cleanup'
+      acceptedFinalStatus.status === 'interrupted' ? 'accepted-final-status' : 'backend-cleanup'
     );
     return;
   }
@@ -650,7 +650,7 @@ function terminalizeRecoveredLease(
   row: LeaseRecoveryRow,
   status: RecoveredTurnStatus,
   schedulerEpoch: number,
-  reason: 'pre-anchor' | 'backend-cleanup'
+  reason: 'pre-anchor' | 'backend-cleanup' | 'accepted-final-status'
 ): void {
   const completed = status === 'completed';
   const released = completed || status === 'interrupted' || status === 'cancelled';
@@ -658,7 +658,8 @@ function terminalizeRecoveredLease(
     ...(reason === 'pre-anchor' && !completed ? { admissionStatus: 'cancelled' as const } : {}),
     leaseId: row.leaseId,
     planStatus: reason === 'pre-anchor' ? 'abandoned' : 'completed',
-    recoveryState: null,
+    recoveryState:
+      reason === 'accepted-final-status' && status === 'interrupted' ? 'needs-evidence' : null,
     releaseReason: completed ? 'scheduler-restart-turn-completed' : `scheduler-restart-${reason}`,
     schedulerEpoch,
     terminalStatus: released ? 'released' : 'failed',

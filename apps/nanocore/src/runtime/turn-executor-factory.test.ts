@@ -104,16 +104,6 @@ describe('createConfiguredTurnExecutor', () => {
         OPENKIT_CONTAINER_PLACEMENT: 'local',
         OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL:
           'http://host.openshell.internal:54001/api/worker-control',
-        OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS: JSON.stringify([
-          {
-            access: 'read-only',
-            binaries: ['/usr/bin/git'],
-            host: 'github.com',
-            name: 'github_source',
-            port: 443,
-            protocol: 'rest',
-          },
-        ]),
         OPENKIT_OPENSHELL_CODEX_CONFIG_TOML: '/home/ubuntu/.codex/config.toml',
         OPENKIT_OPENSHELL_CODEX_MODEL: 'gpt-5-codex',
         OPENKIT_OPENSHELL_WORKER_IMAGE: 'openkit/worker-codex:dev',
@@ -311,63 +301,6 @@ describe('createConfiguredTurnExecutor', () => {
         workerControlGateway: new WorkerControlGateway(),
       })
     ).toThrow('Unsupported OPENKIT_CONTAINER_BACKEND: docker.');
-  });
-
-  it('rejects malformed OpenShell extra network endpoint configuration', () => {
-    expect(() =>
-      createConfiguredTurnExecutor({
-        coreDb: factoryCoreDb,
-        env: {
-          OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS: '{',
-          OPENKIT_WORKER_RUNTIME: 'container',
-        },
-        workerControlGateway: new WorkerControlGateway(),
-      })
-    ).toThrow('OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS must be valid JSON.');
-  });
-
-  it('rejects OpenShell extra network endpoint protocols unsupported by the policy engine', () => {
-    expect(() =>
-      createConfiguredTurnExecutor({
-        coreDb: factoryCoreDb,
-        env: {
-          OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS: JSON.stringify([
-            {
-              host: 'github.com',
-              name: 'github_source',
-              port: 443,
-              protocol: 'tcp',
-            },
-          ]),
-          OPENKIT_WORKER_RUNTIME: 'container',
-        },
-        workerControlGateway: new WorkerControlGateway(),
-      })
-    ).toThrow(
-      'OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS[0].protocol must be "rest", "websocket", "graphql", or "sql".'
-    );
-  });
-
-  it('rejects OpenShell extra endpoints that collide with reserved policy names', () => {
-    for (const name of ['openkit_worker_control', 'openkit_worker_inference']) {
-      expect(() =>
-        createConfiguredTurnExecutor({
-          coreDb: factoryCoreDb,
-          env: {
-            OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS: JSON.stringify([
-              {
-                host: 'nanocore.local',
-                name,
-                port: 443,
-                protocol: 'rest',
-              },
-            ]),
-            OPENKIT_WORKER_RUNTIME: 'container',
-          },
-          workerControlGateway: new WorkerControlGateway(),
-        })
-      ).toThrow(`OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS[0].name is reserved: ${name}.`);
-    }
   });
 
   it('rejects non-container worker runtime selection', () => {

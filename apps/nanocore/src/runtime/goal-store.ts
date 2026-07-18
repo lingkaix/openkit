@@ -86,6 +86,8 @@ export interface GoalTaskRecord {
   readonly planItemId: string;
   /** Goal task lifecycle status. */
   readonly status: GoalTaskStatus;
+  /** Latest closed Human Gate response carried into the next Task attempt. */
+  readonly latestGateContextItemId: string | null;
   /** Human-readable task title. */
   readonly title: string;
   /** Worker-facing task objective. */
@@ -147,6 +149,7 @@ interface GoalTaskRow {
   readonly goal_id: string;
   readonly plan_item_id: string;
   readonly status: GoalTaskStatus;
+  readonly latest_gate_context_item_id: string | null;
   readonly title: string;
   readonly objective: string;
   readonly order_index: number;
@@ -300,6 +303,8 @@ export interface UpdateGoalTaskInput extends GoalTaskListInput {
   readonly taskId: string;
   /** Optional updated task status. */
   readonly status?: GoalTaskStatus;
+  /** Optional latest closed Human Gate response, with null clearing the pointer. */
+  readonly latestGateContextItemId?: string | null;
   /** Optional clock used by deterministic tests. */
   readonly now?: () => string;
 }
@@ -800,6 +805,7 @@ export function importGoalTasks(workspaceDb: WorkspaceDb, tasks: readonly GoalTa
           goal_id,
           plan_item_id,
           status,
+          latest_gate_context_item_id,
           title,
           objective,
           order_index,
@@ -813,7 +819,7 @@ export function importGoalTasks(workspaceDb: WorkspaceDb, tasks: readonly GoalTa
           escalation_conditions_json,
           created_at,
           updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         task.taskId,
@@ -822,6 +828,7 @@ export function importGoalTasks(workspaceDb: WorkspaceDb, tasks: readonly GoalTa
         task.goalId,
         task.planItemId,
         task.status,
+        task.latestGateContextItemId,
         task.title,
         task.objective,
         task.orderIndex,
@@ -860,17 +867,25 @@ export function updateGoalTask(
     input.taskId
   );
   const timestamp = input.now?.() ?? new Date().toISOString();
+  const status = input.status ?? existing.status;
+  const latestGateContextItemId = ['completed', 'blocked', 'failed'].includes(status)
+    ? null
+    : input.latestGateContextItemId === undefined
+      ? existing.latestGateContextItemId
+      : input.latestGateContextItemId;
 
   workspaceDb.sqlite
     .prepare(
       `UPDATE goal_tasks
       SET
         status = ?,
+        latest_gate_context_item_id = ?,
         updated_at = ?
       WHERE workspace_id = ? AND thread_id = ? AND goal_id = ? AND task_id = ?`
     )
     .run(
-      input.status ?? existing.status,
+      status,
+      latestGateContextItemId,
       timestamp,
       existing.workspaceId,
       existing.threadId,
@@ -1267,6 +1282,7 @@ function mapGoalTaskRow(row: GoalTaskRow): GoalTaskRecord {
     goalId: row.goal_id,
     planItemId: row.plan_item_id,
     status: row.status,
+    latestGateContextItemId: row.latest_gate_context_item_id,
     orderIndex: row.order_index,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -1326,6 +1342,7 @@ function goalTaskSelectSql(): string {
     goal_id,
     plan_item_id,
     status,
+    latest_gate_context_item_id,
     title,
     objective,
     order_index,

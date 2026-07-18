@@ -6,8 +6,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { createApp } from './app.js';
 import { ensureLocalUser } from './auth/identity.js';
 import type { BetterAuthServer } from './auth/middleware.js';
+import { classifyGoalStepCheckpointAfterSchedulerRecovery } from './goal-routes.js';
 import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
+import { recordProductPermissionDecision } from './policy/permission-decisions.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
 import { listGoalReviewRecordsForTask } from './runtime/goal-review-records.js';
@@ -26,7 +28,11 @@ import {
   recordWorkerBackendSessionMaterializing,
   transitionWorkerBackendSessionState,
 } from './runtime/worker-backend-sessions.js';
-import { getWorkerCheckpoint, upsertWorkerCheckpoint } from './runtime/worker-checkpoints.js';
+import {
+  getWorkerCheckpoint,
+  updateWorkerCheckpoint,
+  upsertWorkerCheckpoint,
+} from './runtime/worker-checkpoints.js';
 import { recordWorkerControlAcceptedRecord } from './runtime/worker-control-records.js';
 import {
   ensureConfiguredSchedulerBaseline,
@@ -67,6 +73,31 @@ const GOAL_TASK_EXECUTION_FIELDS = {
   },
   escalationConditions: ['Escalate if the approved Task cannot be completed as specified.'],
 };
+
+/** Simulator variant that reaches its user-input Gate during the original worker attempt. */
+class UserInputGateTurnExecutor extends SimulatedTurnExecutor {
+  /**
+   * Advances the deterministic simulator from its approval Gate to its user-input Gate.
+   *
+   * @param store Product store containing the worker Turn.
+   * @param turnId Worker Turn id.
+   * @param input Structured worker request bytes.
+   * @param context Runtime command lineage.
+   */
+  public override async startTurn(
+    store: Parameters<SimulatedTurnExecutor['startTurn']>[0],
+    turnId: string,
+    input: string,
+    context?: TurnStartRuntimeContext
+  ): Promise<void> {
+    await super.startTurn(store, turnId, input, context);
+    const turn = store.getTurnById(turnId);
+    if (turn.humanGate?.kind !== 'approval') {
+      throw new Error('Simulator did not produce its approval Gate.');
+    }
+    await super.respondApproval(store, turn.humanGate.approvalRequestId, 'granted', context);
+  }
+}
 
 /**
  * Opens a migrated Core database for thread goal summary route tests.
@@ -216,6 +247,17 @@ function createCompletingGoalTurnExecutor(
       startContexts.push(context);
       const turn = workerStore.getTurnById(turnId);
       const timestamp = turn.startedAt ?? '2026-05-31T00:00:00.000Z';
+      const agentSession = workerStore.createAgentSession({
+        id: context.agentSessionId ?? `session_${turnId}`,
+        agentId: turn.agentId!,
+        workspaceId: turn.workspaceId,
+        threadId: turn.threadId,
+        status: 'busy',
+        message: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+      workerStore.updateTurn(turnId, { agentSessionId: agentSession.id });
       workerStore.createArtifact({
         id: `art_${turnId}`,
         workspaceId: turn.workspaceId,
@@ -230,10 +272,19 @@ function createCompletingGoalTurnExecutor(
         createdAt: timestamp,
         updatedAt: timestamp,
       });
-      workerStore.updateTurn(turnId, {
+      const completedTurn = workerStore.updateTurn(turnId, {
         status: 'completed',
         completedAt: timestamp,
         durationMs: 0,
+      });
+      workerStore.updateAgentSession(agentSession.id, { status: 'idle', updatedAt: timestamp });
+      workerStore.emitTurnEvent(turnId, {
+        event: 'turn.completed',
+        requestId: null,
+        workspaceId: turn.workspaceId,
+        threadId: turn.threadId,
+        turnId,
+        data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
       });
     },
   };
@@ -1092,12 +1143,6 @@ describe('thread goal summary app API', () => {
         readyTasks: [{ taskId: 'task_1', status: 'ready' }],
         startsWorkerTurn: false,
       });
-      expect(
-        store.getCommandRequest('goal.plan.approve', 'goal-plan-approve-1', {
-          workspaceId: 'ws_demo',
-          threadId: thread.id,
-        })?.response.snapshot
-      ).toBeUndefined();
       const replayedApproveRes = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan/approve`,
         {
@@ -1903,6 +1948,42 @@ describe('thread goal summary app API', () => {
         workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_turn_checkpoints').get()
       ).toEqual({ count: 0 });
       workspaceDb.sqlite.exec('DROP TRIGGER fail_goal_launch_checkpoint');
+      const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
+        throw new Error('simulated Goal receipt write failure');
+      });
+      const interruptedStepRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: 'req_goal_step' }),
+        }
+      );
+      receiptWrite.mockRestore();
+
+      expect(interruptedStepRes.status).toBe(409);
+      await expect(interruptedStepRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      const workerTurnId = store.listThreadTurns('ws_demo', thread.id).at(-1)?.id;
+      expect(workerTurnId).toBeDefined();
+      const workerTurn = store.getTurn('ws_demo', thread.id, workerTurnId!);
+      expect(workerTurn.agentSessionId).not.toBeNull();
+      updateWorkerCheckpoint(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        turnId: workerTurnId!,
+        workerSessionId: workerTurn.agentSessionId,
+      });
+      const checkpoint = getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, workerTurnId!);
+      expect(checkpoint).not.toBeNull();
+      await expect(
+        classifyGoalStepCheckpointAfterSchedulerRecovery({
+          coreDb,
+          store,
+          workspaceDb,
+          checkpoint: checkpoint!,
+        })
+      ).resolves.toBe('complete');
+
       const stepRes = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
         {
@@ -1927,17 +2008,8 @@ describe('thread goal summary app API', () => {
             reason: 'Worker result needs review.',
           },
         },
-        result: {
-          taskId: 'task_real_step',
-          outcome: 'review',
-          shouldStop: true,
-          stopReason: 'completed',
-          evidence: {
-            artifactIds: expect.arrayContaining([expect.stringMatching(/^art_/)]),
-          },
-          reviewId: expect.any(String),
-        },
       });
+      expect(stepPayload).not.toHaveProperty('result');
       expect(startContexts).toEqual([
         expect.objectContaining({
           agentSessionId: expect.any(String),
@@ -1955,17 +2027,16 @@ describe('thread goal summary app API', () => {
         workspaceId: 'ws_demo',
         statuses: ['admitted'],
       });
-
       expect(lease).toMatchObject({
         sandboxBindingRef,
         status: 'released',
         releaseReason: 'turn-completed',
-        turnId: stepPayload.result.turnId,
+        turnId: workerTurnId,
       });
       expect(admissions).toEqual([
         expect.objectContaining({
           requestedAgentId: 'agent_codex_host',
-          turnId: stepPayload.result.turnId,
+          turnId: workerTurnId,
         }),
       ]);
       const unresolvedReviews = listGoalReviewRecordsForTask(workspaceDb, {
@@ -1983,17 +2054,15 @@ describe('thread goal summary app API', () => {
         verdict: null,
         reason: null,
         revisionInstruction: null,
-        turnId: stepPayload.result.turnId,
-        itemIds: stepPayload.result.evidence.itemIds,
-        artifactIds: stepPayload.result.evidence.artifactIds,
+        turnId: workerTurnId,
+        artifactIds: expect.arrayContaining([expect.stringMatching(/^art_/)]),
         resolvedAt: null,
         resolutionRequestId: null,
         resolvedByActorId: null,
         resolutionSnapshot: null,
       });
-      expect(stepPayload.result.reviewId).toBe(review.reviewId);
       const firstWorkerRequest = StructuredWorkerDelegationRequestSchema.parse(
-        JSON.parse(store.getArtifact('ws_demo', `art_${stepPayload.result.turnId}`).content.body)
+        JSON.parse(store.getArtifact('ws_demo', `art_${workerTurnId}`).content.body)
       );
       expect(firstWorkerRequest).toEqual({
         schemaVersion: 1,
@@ -2048,22 +2117,20 @@ describe('thread goal summary app API', () => {
       );
       expect(replayRes.status).toBe(200);
       const replayPayload = (await replayRes.json()) as typeof stepPayload;
-      expect(replayPayload.result).toEqual(stepPayload.result);
       expect(replayPayload.goal).toEqual(stepPayload.goal);
+      expect(replayPayload).not.toHaveProperty('result');
       expect(startContexts).toHaveLength(1);
-      expect(
-        store.getCommandRequest(
-          'goal.step',
-          'req_goal_step',
-          { workspaceId: 'ws_demo', threadId: thread.id },
-          workspaceDb
-        )
-      ).toMatchObject({
+      const stepReceipt = store.getCommandRequest(
+        'goal.step',
+        'req_goal_step',
+        { workspaceId: 'ws_demo', threadId: thread.id },
+        workspaceDb
+      );
+      expect(stepReceipt).toMatchObject({
         command: 'goal.step',
         response: {
-          kind: 'turn',
-          id: stepPayload.result.turnId,
-          snapshot: { goalId: 'goal_real_step', ...stepPayload.result },
+          kind: 'goal',
+          id: 'goal_real_step',
         },
       });
 
@@ -2086,9 +2153,7 @@ describe('thread goal summary app API', () => {
           taskId: 'task_real_step',
         }).filter((candidate) => candidate.resolvedAt === null)
       ).toHaveLength(1);
-      expect(
-        getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, stepPayload.result.turnId)
-      ).toBeNull();
+      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, workerTurnId!)).toBeNull();
 
       const refineRes = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goals/goal_real_step/reviews/${review.reviewId}/decision`,
@@ -2109,9 +2174,7 @@ describe('thread goal summary app API', () => {
         goalId: 'goal_real_step',
         taskId: 'task_real_step',
       }).find((candidate) => candidate.reviewId === review.reviewId)!;
-      const priorTurn = structuredClone(
-        store.getTurn('ws_demo', thread.id, stepPayload.result.turnId)
-      );
+      const priorTurn = structuredClone(store.getTurn('ws_demo', thread.id, workerTurnId!));
 
       const refinedStepRes = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
@@ -2123,8 +2186,11 @@ describe('thread goal summary app API', () => {
       );
       expect(refinedStepRes.status).toBe(200);
       const refinedStep = (await refinedStepRes.json()) as typeof stepPayload;
-      expect(refinedStep.result.turnId).not.toBe(stepPayload.result.turnId);
-      expect(store.getTurn('ws_demo', thread.id, stepPayload.result.turnId)).toEqual(priorTurn);
+      expect(refinedStep).not.toHaveProperty('result');
+      const refinedWorkerTurnId = store.listThreadTurns('ws_demo', thread.id).at(-1)?.id;
+      expect(refinedWorkerTurnId).toBeDefined();
+      expect(refinedWorkerTurnId).not.toBe(workerTurnId);
+      expect(store.getTurn('ws_demo', thread.id, workerTurnId!)).toEqual(priorTurn);
       expect(
         listGoalReviewRecordsForTask(workspaceDb, {
           workspaceId: 'ws_demo',
@@ -2134,7 +2200,7 @@ describe('thread goal summary app API', () => {
         }).find((candidate) => candidate.reviewId === review.reviewId)
       ).toEqual(resolvedReview);
       const refinedWorkerRequest = StructuredWorkerDelegationRequestSchema.parse(
-        JSON.parse(store.getArtifact('ws_demo', `art_${refinedStep.result.turnId}`).content.body)
+        JSON.parse(store.getArtifact('ws_demo', `art_${refinedWorkerTurnId}`).content.body)
       );
       expect(refinedWorkerRequest).toMatchObject({
         objective: 'Produce worker evidence for the goal.',
@@ -2148,7 +2214,7 @@ describe('thread goal summary app API', () => {
           verdict: 'refine',
           reason: null,
           revisionInstruction: 'Add the missing restart evidence.',
-          priorTurnId: stepPayload.result.turnId,
+          priorTurnId: workerTurnId,
           evidence: {
             itemIds: review.itemIds,
             artifactIds: review.artifactIds,
@@ -2185,16 +2251,19 @@ describe('thread goal summary app API', () => {
       );
       expect(retriedStepRes.status).toBe(200);
       const retriedStep = (await retriedStepRes.json()) as typeof stepPayload;
-      expect(retriedStep.result.turnId).not.toBe(refinedStep.result.turnId);
+      expect(retriedStep).not.toHaveProperty('result');
+      const retriedWorkerTurnId = store.listThreadTurns('ws_demo', thread.id).at(-1)?.id;
+      expect(retriedWorkerTurnId).toBeDefined();
+      expect(retriedWorkerTurnId).not.toBe(refinedWorkerTurnId);
       const retriedWorkerRequest = StructuredWorkerDelegationRequestSchema.parse(
-        JSON.parse(store.getArtifact('ws_demo', `art_${retriedStep.result.turnId}`).content.body)
+        JSON.parse(store.getArtifact('ws_demo', `art_${retriedWorkerTurnId}`).content.body)
       );
       expect(retriedWorkerRequest.reviewContext).toEqual({
         reviewId: refinementReview.reviewId,
         verdict: 'retry',
         reason: 'The refined verification did not complete.',
         revisionInstruction: null,
-        priorTurnId: refinedStep.result.turnId,
+        priorTurnId: refinedWorkerTurnId,
         evidence: {
           itemIds: refinementReview.itemIds,
           artifactIds: refinementReview.artifactIds,
@@ -2633,27 +2702,17 @@ describe('thread goal summary app API', () => {
       expect(
         getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, firstWorkerTurnId!)
       ).toMatchObject({ stage: 'completed', stopReason: 'completed' });
-      expect(
-        store.getCommandRequest(
-          'goal.step',
-          'req_goal_no_review_1',
-          { workspaceId: 'ws_demo', threadId: thread.id },
-          workspaceDb
-        )
-      ).toMatchObject({
+      const firstReceipt = store.getCommandRequest(
+        'goal.step',
+        'req_goal_no_review_1',
+        { workspaceId: 'ws_demo', threadId: thread.id },
+        workspaceDb
+      );
+      expect(firstReceipt).toMatchObject({
         command: 'goal.step',
         response: {
-          kind: 'turn',
-          id: firstWorkerTurnId,
-          snapshot: {
-            goalId: 'goal_no_review',
-            taskId: 'task_no_review_1',
-            turnId: firstWorkerTurnId,
-            outcome: 'continue',
-            shouldStop: false,
-            stopReason: 'completed',
-            reviewId: null,
-          },
+          kind: 'goal',
+          id: 'goal_no_review',
         },
       });
       const unresolvedTurnCount = store.listThreadTurns('ws_demo', thread.id).length;
@@ -2676,14 +2735,6 @@ describe('thread goal summary app API', () => {
       expect(firstReplayRes.status).toBe(200);
       await expect(firstReplayRes.json()).resolves.toMatchObject({
         goal: { status: 'running', currentTask: null },
-        result: {
-          taskId: 'task_no_review_1',
-          turnId: firstWorkerTurnId,
-          outcome: 'continue',
-          shouldStop: false,
-          stopReason: 'completed',
-          reviewId: null,
-        },
       });
       expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(firstTurnCount);
       expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, firstWorkerTurnId!)).toBeNull();
@@ -2702,13 +2753,6 @@ describe('thread goal summary app API', () => {
           taskCounts: { completed: 2, ready: 0 },
           terminalState: { status: 'completed', stopReason: 'completed' },
           terminalSummary: { risks: [] },
-        },
-        result: {
-          taskId: 'task_no_review_2',
-          outcome: 'complete',
-          shouldStop: true,
-          stopReason: 'completed',
-          reviewId: null,
         },
       });
       expect(
@@ -2735,7 +2779,7 @@ describe('thread goal summary app API', () => {
     }
   });
 
-  it('replays Goal closeout from an accepted final status without another worker', async () => {
+  it('fails closed on an accepted Goal final status without a command receipt', async () => {
     const coreDb = createCoreDb();
     const workspaceDb = createWorkspaceDb(coreDb);
     const store = createDemoStore();
@@ -3004,20 +3048,8 @@ describe('thread goal summary app API', () => {
         }
       );
 
-      expect(replayRes.status).toBe(200);
-      await expect(replayRes.json()).resolves.toMatchObject({
-        goal: {
-          goalId: 'goal_atomic_review',
-          status: 'reviewing',
-          currentTask: { taskId: 'task_atomic_review', status: 'reviewing' },
-        },
-        result: {
-          taskId: 'task_atomic_review',
-          turnId: workerTurnId,
-          outcome: 'review',
-          stopReason: 'completed',
-        },
-      });
+      expect(replayRes.status).toBe(409);
+      await expect(replayRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
       expect(replayStarts).toEqual([]);
       expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(turnCount);
       expect(
@@ -3027,7 +3059,7 @@ describe('thread goal summary app API', () => {
           goalId: 'goal_atomic_review',
           taskId: 'task_atomic_review',
         })
-      ).toHaveLength(1);
+      ).toEqual([]);
       expect(
         store.getCommandRequest(
           'goal.step',
@@ -3035,8 +3067,11 @@ describe('thread goal summary app API', () => {
           { workspaceId: 'ws_demo', threadId: thread.id },
           workspaceDb
         )
-      ).toMatchObject({ response: { kind: 'turn', id: workerTurnId } });
-      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, workerTurnId!)).toBeNull();
+      ).toBeNull();
+      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, workerTurnId!)).toMatchObject({
+        stage: 'running_worker',
+        stopReason: null,
+      });
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -3172,17 +3207,8 @@ describe('thread goal summary app API', () => {
             status: 'reviewing',
           },
         },
-        result: {
-          taskId: 'task_async_step',
-          outcome: 'review',
-          shouldStop: true,
-          stopReason: 'completed',
-          evidence: {
-            artifactIds: expect.arrayContaining([expect.stringMatching(/^art_async_/)]),
-          },
-          reviewId: expect.any(String),
-        },
       });
+      expect(stepPayload).not.toHaveProperty('result');
       const reviews = listGoalReviewRecordsForTask(workspaceDb, {
         workspaceId: 'ws_demo',
         threadId: thread.id,
@@ -3229,7 +3255,13 @@ describe('thread goal summary app API', () => {
     }
   });
 
-  it('keeps a Goal Mode step active when the worker pauses for human approval', async () => {
+  it.each([
+    { gateKind: 'approval' as const, executor: () => new SimulatedTurnExecutor() },
+    { gateKind: 'user-input' as const, executor: () => new UserInputGateTurnExecutor() },
+  ])('closes a Goal Mode worker $gateKind Gate without resuming it', async ({
+    gateKind,
+    executor,
+  }) => {
     const coreDb = createCoreDb();
     const workspaceDb = createWorkspaceDb(coreDb);
     const store = createDemoStore();
@@ -3290,7 +3322,7 @@ describe('thread goal summary app API', () => {
         now: () => '2026-05-31T00:00:00.000Z',
       });
 
-      const app = createApp({ coreDb, store, turnExecutor: new SimulatedTurnExecutor() });
+      const app = createApp({ coreDb, store, turnExecutor: executor() });
       const stepRes = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
         {
@@ -3315,14 +3347,8 @@ describe('thread goal summary app API', () => {
             reason: 'Goal is awaiting user input.',
           },
         },
-        result: {
-          taskId: 'task_human_step',
-          outcome: 'ask_user',
-          shouldStop: true,
-          stopReason: 'ask_user',
-          reviewId: null,
-        },
       });
+      expect(stepPayload).not.toHaveProperty('result');
       expect(
         listGoalRecordsForThread(workspaceDb, {
           workspaceId: 'ws_demo',
@@ -3335,8 +3361,7 @@ describe('thread goal summary app API', () => {
       await expect(attentionRes.json()).resolves.toMatchObject({
         items: expect.arrayContaining([
           expect.objectContaining({
-            kind: 'approval',
-            source: expect.objectContaining({ type: 'approval' }),
+            kind: gateKind === 'approval' ? 'approval' : 'question',
           }),
         ]),
       });
@@ -3346,13 +3371,248 @@ describe('thread goal summary app API', () => {
       const recoveryPayload = (await recoveryRes.json()) as {
         readonly items: ReadonlyArray<{ readonly checkpointId: string }>;
       };
+      const workerTurnId = store.listThreadTurns('ws_demo', thread.id).at(-1)?.id;
+      expect(workerTurnId).toBeDefined();
       expect(recoveryPayload.items).not.toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            checkpointId: `ws_demo:${thread.id}:${stepPayload.result.turnId}`,
+            checkpointId: `ws_demo:${thread.id}:${workerTurnId}`,
           }),
         ])
       );
+
+      if (!workerTurnId) {
+        throw new Error('Goal worker Turn was not created.');
+      }
+      const waitingCheckpoint = getWorkerCheckpoint(
+        workspaceDb,
+        'ws_demo',
+        thread.id,
+        workerTurnId
+      );
+      expect(waitingCheckpoint).not.toBeNull();
+      await expect(
+        classifyGoalStepCheckpointAfterSchedulerRecovery({
+          coreDb,
+          store,
+          workspaceDb,
+          checkpoint: waitingCheckpoint!,
+        })
+      ).resolves.toBe('live');
+      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, workerTurnId)).not.toBeNull();
+      const waitingTurn = store.getTurn('ws_demo', thread.id, workerTurnId);
+      const gate = waitingTurn.humanGate;
+      expect(gate?.kind).toBe(gateKind);
+      if (!gate || gate.kind !== gateKind) {
+        throw new Error(`Expected ${gateKind} Gate.`);
+      }
+      if (gate.kind === 'user-input') {
+        const requestItem = waitingTurn.items.find((item) => item.id === gate.itemId);
+        if (requestItem?.type !== 'user-input-request') {
+          throw new Error('Expected the worker user-input request Item.');
+        }
+        const invalidRequestId = '00000000-0000-4000-8000-000000000306';
+        const invalidResponse = await app.request('/api/turns', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: invalidRequestId,
+            workspaceId: 'ws_demo',
+            threadId: thread.id,
+            turnId: workerTurnId,
+            answers: { tone: ['concise'], extra: ['unsupported'] },
+          }),
+        });
+
+        expect(invalidResponse.status).toBe(400);
+        await expect(invalidResponse.json()).resolves.toMatchObject({ code: 'invalid_request' });
+        expect(
+          store.getCommandRequest('turn.input.submit', invalidRequestId, {
+            workspaceId: 'ws_demo',
+            threadId: thread.id,
+            turnId: workerTurnId,
+          })
+        ).toBeNull();
+        const secretRequestId = '00000000-0000-4000-8000-000000000307';
+        store.updateItem(requestItem.id, {
+          questions: requestItem.questions.map((question) => ({ ...question, isSecret: true })),
+        });
+
+        const secretResponse = await app.request('/api/turns', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: secretRequestId,
+            workspaceId: 'ws_demo',
+            threadId: thread.id,
+            turnId: workerTurnId,
+            answers: { tone: ['concise'] },
+          }),
+        });
+
+        expect(secretResponse.status).toBe(400);
+        await expect(secretResponse.json()).resolves.toMatchObject({
+          code: 'secret_input_not_supported',
+        });
+        expect(
+          store.getCommandRequest('turn.input.submit', secretRequestId, {
+            workspaceId: 'ws_demo',
+            threadId: thread.id,
+            turnId: workerTurnId,
+          })
+        ).toBeNull();
+        const rejectedTurn = store.getTurn('ws_demo', thread.id, workerTurnId);
+        expect(rejectedTurn).toMatchObject({
+          status: 'awaiting_human',
+          humanGate: gate,
+        });
+        expect(rejectedTurn.items.find((item) => item.id === gate.itemId)).toMatchObject({
+          questions: [expect.objectContaining({ isSecret: true })],
+        });
+        expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, workerTurnId)).toEqual(
+          waitingCheckpoint
+        );
+        expect(
+          store
+            .listThreadItems('ws_demo', thread.id)
+            .filter((item) => item.id === `it_user_input_response_${workerTurnId}`)
+        ).toHaveLength(0);
+
+        store.updateItem(requestItem.id, { questions: requestItem.questions });
+      }
+      const responseRequestId =
+        gateKind === 'approval'
+          ? '00000000-0000-4000-8000-000000000304'
+          : '00000000-0000-4000-8000-000000000305';
+      if (gate.kind === 'approval') {
+        recordProductPermissionDecision({
+          workspaceDb,
+          decisionId: 'pd_goal_gate_requires_approval',
+          ownerScope: 'workspace',
+          workspaceId: 'ws_demo',
+          policyEngineVersion: 'test:v1',
+          policySnapshotId: 'test_goal_gate_policy',
+          subjectSummary: { kind: 'test' },
+          action: 'repo.push',
+          resourceSummary: { turnId: workerTurnId },
+          contextSummary: { threadId: thread.id, turnId: workerTurnId },
+          result: 'require_approval',
+          reasonCode: 'test_approval_required',
+          enforcementPoint: 'test.goal_gate',
+          requiredApprovalKind: 'permission',
+          approvalId: gate.approvalRequestId,
+        });
+      }
+      const response =
+        gate.kind === 'approval'
+          ? await app.request(`/api/approvals/${gate.approvalRequestId}/respond`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                requestId: responseRequestId,
+                workspaceId: 'ws_demo',
+                threadId: thread.id,
+                turnId: workerTurnId,
+                decision: 'granted',
+              }),
+            })
+          : await app.request('/api/turns', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                requestId: responseRequestId,
+                workspaceId: 'ws_demo',
+                threadId: thread.id,
+                turnId: workerTurnId,
+                answers: { tone: ['concise'] },
+              }),
+            });
+
+      expect(response.status).toBe(gate.kind === 'approval' ? 200 : 202);
+      const responseItemId =
+        gate.kind === 'approval'
+          ? `it_approval_decision_${workerTurnId}`
+          : `it_user_input_response_${workerTurnId}`;
+      expect(
+        listGoalTasks(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: 'goal_human_step',
+        })
+      ).toEqual([
+        expect.objectContaining({
+          taskId: 'task_human_step',
+          status: 'ready',
+          latestGateContextItemId: responseItemId,
+        }),
+      ]);
+      expect(getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_human_step')).toMatchObject({
+        status: 'running',
+        currentTaskId: null,
+        terminalStopReason: null,
+      });
+      expect(store.getTurn('ws_demo', thread.id, workerTurnId)).toMatchObject({
+        status: 'completed',
+        humanGate: null,
+      });
+      expect(
+        store.listThreadItems('ws_demo', thread.id).filter((item) => item.id === responseItemId)
+      ).toHaveLength(1);
+      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, workerTurnId)).toBeNull();
+
+      const replay =
+        gate.kind === 'approval'
+          ? await app.request(`/api/approvals/${gate.approvalRequestId}/respond`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                requestId: responseRequestId,
+                workspaceId: 'ws_demo',
+                threadId: thread.id,
+                turnId: workerTurnId,
+                decision: 'granted',
+              }),
+            })
+          : await app.request('/api/turns', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                requestId: responseRequestId,
+                workspaceId: 'ws_demo',
+                threadId: thread.id,
+                turnId: workerTurnId,
+                answers: { tone: ['concise'] },
+              }),
+            });
+      expect(replay.status).toBe(response.status);
+      expect(
+        store.listThreadItems('ws_demo', thread.id).filter((item) => item.id === responseItemId)
+      ).toHaveLength(1);
+
+      const nextStepRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: '00000000-0000-4000-8000-000000000306' }),
+        }
+      );
+      expect(nextStepRes.status).toBe(200);
+      const nextTurn = store.listThreadTurns('ws_demo', thread.id).at(-1);
+      const nextInput = nextTurn
+        ? store
+            .listThreadItems('ws_demo', thread.id)
+            .find((item) => item.id === `it_user_${nextTurn.id}`)
+        : null;
+      expect(nextInput?.type).toBe('user-message');
+      if (nextInput?.type !== 'user-message') {
+        throw new Error('Next Goal worker input was not persisted.');
+      }
+      const nextRequest = StructuredWorkerDelegationRequestSchema.parse(JSON.parse(nextInput.text));
+      expect(nextRequest.contextRefs.slice(2, 4)).toEqual([
+        { kind: 'item', id: gate.itemId },
+        { kind: 'item', id: responseItemId },
+      ]);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();

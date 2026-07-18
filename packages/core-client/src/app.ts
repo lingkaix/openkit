@@ -1,6 +1,4 @@
 import {
-  type AgentHealthRefreshResponse,
-  AgentHealthRefreshResponseSchema,
   type AppDiagnosticsResponse,
   AppDiagnosticsResponseSchema,
   type ApproveThreadGoalPlanRequest,
@@ -135,10 +133,6 @@ import {
   PromoteKnowledgeClaimRequestSchema,
   type PromoteKnowledgeClaimResponse,
   PromoteKnowledgeClaimResponseSchema,
-  type QueueAgentSessionTerminalCommandRequest,
-  QueueAgentSessionTerminalCommandRequestSchema,
-  type QueueAgentSessionTerminalCommandResponse,
-  QueueAgentSessionTerminalCommandResponseSchema,
   type QuickChatRequest,
   QuickChatRequestSchema,
   type QuickChatResponse,
@@ -209,10 +203,6 @@ import {
   StartThreadGoalResponseSchema,
   type StorageLayoutReportResponse,
   StorageLayoutReportResponseSchema,
-  type SubmitArtifactReviewDecisionRequest,
-  SubmitArtifactReviewDecisionRequestSchema,
-  type SubmitArtifactReviewDecisionResponse,
-  SubmitArtifactReviewDecisionResponseSchema,
   type SubmitGoalReviewDecisionRequest,
   SubmitGoalReviewDecisionRequestSchema,
   type SubmitGoalReviewDecisionResponse,
@@ -319,8 +309,6 @@ export type RecordKnowledgeConflictInput = RecordKnowledgeConflictRequest;
 export type ResolveKnowledgeConflictInput = ResolveKnowledgeConflictRequest;
 /** Deterministic Knowledge Store retrieval request input. */
 export type RetrieveKnowledgeInput = RetrieveKnowledgeRequest;
-/** Artifact review decision input with optional caller-provided request id. */
-export type SubmitArtifactReviewDecisionInput = SubmitArtifactReviewDecisionRequest;
 /** Goal Review decision input with optional caller-provided request id. */
 export type SubmitGoalReviewDecisionInput = Omit<SubmitGoalReviewDecisionRequest, 'requestId'> & {
   /** Optional caller-provided request id; the client generates one when omitted. */
@@ -502,12 +490,6 @@ export interface AppApiClient {
     threadId: string,
     input: SubmitThreadGoalSteeringInput
   ): Promise<SubmitThreadGoalSteeringResponse>;
-  /** Records one app-local artifact review decision. */
-  submitArtifactReviewDecision(
-    workspaceId: string,
-    artifactId: string,
-    input: SubmitArtifactReviewDecisionInput
-  ): Promise<SubmitArtifactReviewDecisionResponse>;
   /** Resolves one app-local Goal Review attention row. */
   submitGoalReviewDecision(
     workspaceId: string,
@@ -581,23 +563,6 @@ export interface AppApiClient {
     workspaceId: string,
     snapshotId: string
   ): Promise<GetAgentEnvironmentPackageSnapshotResponse>;
-  /**
-   * Queues one terminal command for the active worker session.
-   *
-   * @param workspaceId Workspace id that owns the active thread.
-   * @param threadId Thread id that owns the active agent session.
-   * @param agentSessionId Active agent session id.
-   * @param input Terminal command request payload.
-   * @returns Queued terminal command summary.
-   */
-  queueAgentSessionTerminalCommand(
-    workspaceId: string,
-    threadId: string,
-    agentSessionId: string,
-    input: QueueAgentSessionTerminalCommandRequest
-  ): Promise<QueueAgentSessionTerminalCommandResponse>;
-  /** Refreshes agent health for one workspace. */
-  refreshAgentHealth(workspaceId: string): Promise<AgentHealthRefreshResponse>;
   /** Reads Settings diagnostics. */
   getDiagnostics(): Promise<AppDiagnosticsResponse>;
   /** Reads setup diagnostics. */
@@ -938,15 +903,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         SubmitThreadGoalSteeringResponseSchema
       );
     },
-    submitArtifactReviewDecision: (workspaceId, artifactId, input) => {
-      const request = { ...input, requestId: input.requestId ?? createRequestId() };
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/artifacts/${artifactId}/review`,
-        SubmitArtifactReviewDecisionRequestSchema.parse(request),
-        SubmitArtifactReviewDecisionResponseSchema
-      );
-    },
     submitGoalReviewDecision: (workspaceId, threadId, goalId, reviewId, input) => {
       const request = { ...input, requestId: input.requestId ?? createRequestId() };
 
@@ -1057,18 +1013,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
       transport.getJson(
         `/api/app/workspaces/${workspaceId}/agent-environment/snapshots/${snapshotId}`,
         GetAgentEnvironmentPackageSnapshotResponseSchema
-      ),
-    queueAgentSessionTerminalCommand: (workspaceId, threadId, agentSessionId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/agent-sessions/${agentSessionId}/terminal-commands`,
-        QueueAgentSessionTerminalCommandRequestSchema.parse(input),
-        QueueAgentSessionTerminalCommandResponseSchema
-      ),
-    refreshAgentHealth: (workspaceId) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/agents/health/refresh`,
-        {},
-        AgentHealthRefreshResponseSchema
       ),
     getDiagnostics: () => transport.getJson('/api/app/diagnostics', AppDiagnosticsResponseSchema),
     getSetupDiagnostics: () =>

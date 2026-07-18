@@ -91,8 +91,6 @@ import {
   PauseThreadGoalResponseSchema,
   PromoteKnowledgeClaimRequestSchema,
   PromoteKnowledgeClaimResponseSchema,
-  QueueAgentSessionTerminalCommandRequestSchema,
-  QueueAgentSessionTerminalCommandResponseSchema,
   QuickChatResponseSchema,
   ReadKnowledgeManagerContextPackageTraceResponseSchema,
   ReadKnowledgeSourceResponseSchema,
@@ -143,8 +141,6 @@ import {
   StartThreadGoalRequestSchema,
   StartThreadGoalResponseSchema,
   StorageLayoutReportResponseSchema,
-  SubmitArtifactReviewDecisionRequestSchema,
-  SubmitArtifactReviewDecisionResponseSchema,
   SubmitGoalReviewDecisionRequestSchema,
   SubmitGoalReviewDecisionResponseSchema,
   SubmitKnowledgeProposalDecisionRequestSchema,
@@ -1906,6 +1902,11 @@ describe('app api schemas', () => {
     expect(appApiSchemas).not.toHaveProperty('ListWorkspaceSyncEvidenceBundlesResponseSchema');
   });
 
+  it('does not authorize the unversioned Artifact Review command', () => {
+    expect(appApiSchemas).not.toHaveProperty('SubmitArtifactReviewDecisionRequestSchema');
+    expect(appApiSchemas).not.toHaveProperty('SubmitArtifactReviewDecisionResponseSchema');
+  });
+
   it('does not authorize generic pending-input recovery', () => {
     expect(
       appApiSchemas.HumanAttentionActionKindSchema.safeParse('edit_pending_input').success
@@ -2102,9 +2103,6 @@ describe('app api schemas', () => {
             artifactNoticeCount: 1,
             queuedCommandCount: 2,
             deliveredCommandCount: 1,
-            terminalResultCount: 1,
-            lastTerminalExitCode: 0,
-            lastTerminalCompletedAt: '2026-06-16T00:00:04.000Z',
           },
           gatewayName: 'openshell',
           gatewayEndpoint: 'https://127.0.0.1:17670',
@@ -2125,9 +2123,6 @@ describe('app api schemas', () => {
         artifactNoticeCount: 1,
         queuedCommandCount: 2,
         deliveredCommandCount: 1,
-        terminalResultCount: 1,
-        lastTerminalExitCode: 0,
-        lastTerminalCompletedAt: '2026-06-16T00:00:04.000Z',
       },
       gatewayName: 'openshell',
       gatewayEndpoint: 'https://127.0.0.1:17670',
@@ -2779,37 +2774,6 @@ describe('app api schemas', () => {
         snapshot: { ...snapshot, secret: 'sk-demo' },
       })
     ).toThrow();
-  });
-
-  it('accepts agent session terminal command queue payloads', () => {
-    expect(
-      QueueAgentSessionTerminalCommandRequestSchema.parse({
-        requestId: 'terminal-request-1',
-        argv: ['pwd'],
-        cwd: '/workspace',
-      })
-    ).toEqual({
-      requestId: 'terminal-request-1',
-      argv: ['pwd'],
-      cwd: '/workspace',
-    });
-    expect(
-      QueueAgentSessionTerminalCommandResponseSchema.parse({
-        command: {
-          commandId: 'terminal-request-1',
-          kind: 'terminal-command',
-          sequence: 1,
-          queuedAt: '2026-06-16T00:00:03.000Z',
-          deliveredAt: null,
-          argv: ['pwd'],
-          cwd: '/workspace',
-        },
-      }).command
-    ).toMatchObject({
-      commandId: 'terminal-request-1',
-      kind: 'terminal-command',
-      deliveredAt: null,
-    });
   });
 
   it('rejects removed app diagnostics compatibility fields', () => {
@@ -4395,41 +4359,16 @@ describe('app api schemas', () => {
           terminalState: null,
           updatedAt: timestamp,
         },
-        result: {
-          taskId: 'task_1',
-          turnId: 'turn_worker',
-          outcome: 'review',
-          shouldStop: true,
-          stopReason: 'completed',
-          evidence: {
-            itemIds: ['it_worker_terminal'],
-            artifactIds: ['artifact_release_log'],
-          },
-          reviewId: 'review_goal_demo_task_1',
-        },
-      }).result
-    ).toEqual({
-      taskId: 'task_1',
-      turnId: 'turn_worker',
-      outcome: 'review',
-      shouldStop: true,
-      stopReason: 'completed',
-      evidence: {
-        itemIds: ['it_worker_terminal'],
-        artifactIds: ['artifact_release_log'],
+      }).goal
+    ).toMatchObject({
+      goalId: 'goal_demo',
+      status: 'reviewing',
+      currentTask: {
+        taskId: 'task_1',
+        status: 'reviewing',
       },
-      reviewId: 'review_goal_demo_task_1',
     });
-    expect(RunThreadGoalStepResponseSchema.keyof().options).toEqual(['goal', 'result']);
-    expect(RunThreadGoalStepResponseSchema.shape.result.keyof().options).toEqual([
-      'taskId',
-      'turnId',
-      'outcome',
-      'shouldStop',
-      'stopReason',
-      'evidence',
-      'reviewId',
-    ]);
+    expect(RunThreadGoalStepResponseSchema.keyof().options).toEqual(['goal']);
     expect(RunThreadGoalSuperviseStepRequestSchema.parse({}).verdict).toBe('accept');
     expect(RunThreadGoalTestSuperviseStepRequestSchema.parse({}).verdict).toBe('accept');
     for (const verdict of ['accept', 'refine', 'retry', 'abort']) {
@@ -5018,7 +4957,12 @@ describe('app api schemas', () => {
           workspaceId: 'ws_demo',
           status: 'pending',
         },
-        actions: [{ kind: 'open_artifact', label: 'Open review', method: 'GET' }],
+        actions: [
+          { kind: 'accepted', label: 'Accept', method: 'POST' },
+          { kind: 'needs_refinement', label: 'Refine', method: 'POST' },
+          { kind: 'rejected', label: 'Reject', method: 'POST' },
+          { kind: 'blocked', label: 'Block', method: 'POST' },
+        ],
       },
       {
         id: 'knowledge:knowledge_proposal_demo',
@@ -5193,63 +5137,6 @@ describe('app api schemas', () => {
             actions: [{ kind: 'archive_everything', label: 'Archive' }],
           },
         ],
-      }).success
-    ).toBe(false);
-  });
-
-  it('accepts artifact review decision requests and responses', () => {
-    expect(
-      SubmitArtifactReviewDecisionRequestSchema.parse({
-        decision: 'needs_refinement',
-        requestId: 'review-request-1',
-        message: 'Tighten the implementation notes.',
-      }).decision
-    ).toBe('needs_refinement');
-    expect(
-      SubmitArtifactReviewDecisionResponseSchema.parse({
-        review: {
-          artifactId: 'artifact_demo',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
-          status: 'redo',
-          message: 'Start over with the corrected scope.',
-          decidedAt: timestamp,
-          followUpTurnId: 'turn_follow_up',
-        },
-        workspaceApplyResult: null,
-      }).review.followUpTurnId
-    ).toBe('turn_follow_up');
-    expect(
-      SubmitArtifactReviewDecisionResponseSchema.parse({
-        review: {
-          artifactId: 'artifact_demo',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
-          status: 'accepted',
-          message: null,
-          decidedAt: timestamp,
-          followUpTurnId: null,
-        },
-        workspaceApplyResult: {
-          id: 'war_swr_1',
-          workspaceId: 'ws_demo',
-          reviewId: 'swr_1',
-          changeSetId: 'wcs_1',
-          status: 'applied',
-          appliedPaths: ['docs/spec.md'],
-          skippedPaths: [],
-          conflictRecords: [],
-          verification: [{ command: 'git apply --check', status: 'passed', ref: null }],
-          commitIds: [],
-          appliedAt: timestamp,
-        },
-      }).workspaceApplyResult?.status
-    ).toBe('applied');
-    expect(
-      SubmitArtifactReviewDecisionRequestSchema.safeParse({
-        decision: 'maybe',
       }).success
     ).toBe(false);
   });

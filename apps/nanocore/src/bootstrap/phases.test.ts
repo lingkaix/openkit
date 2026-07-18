@@ -111,44 +111,44 @@ describe('boot phase runner', () => {
     );
   });
 
-  it('continues after a non-critical degraded phase', async () => {
+  it('continues after a critical phase reports bounded degradation', async () => {
     const order: string[] = [];
     const result = await runBootPhases({
       bootId: 'boot_test',
       phases: [
+        {
+          name: 'scheduler',
+          subsystem: 'scheduler',
+          critical: true,
+          run: () => {
+            order.push('scheduler');
+            return {
+              status: 'degraded',
+              reason: {
+                code: 'scheduler.checkpoint_recovery_required',
+                message: 'One worker checkpoint requires inspection.',
+                blocks: [],
+              },
+            };
+          },
+        },
         {
           name: 'vault',
           subsystem: 'vault',
           critical: false,
           run: () => {
             order.push('vault');
-            return {
-              status: 'degraded',
-              reason: {
-                code: 'vault.locked',
-                message: 'Vault is locked.',
-                blocks: ['vault.read'],
-              },
-            };
-          },
-        },
-        {
-          name: 'scheduler',
-          subsystem: 'scheduler',
-          critical: false,
-          run: () => {
-            order.push('scheduler');
             return { status: 'ok' };
           },
         },
       ],
     });
 
-    expect(order).toEqual(['vault', 'scheduler']);
+    expect(order).toEqual(['scheduler', 'vault']);
     expect(result.readiness).toMatchObject({
       acceptingProductWork: true,
       overall: 'degraded',
-      subsystems: { vault: { state: 'degraded' }, scheduler: { state: 'ready' } },
+      subsystems: { scheduler: { state: 'degraded' }, vault: { state: 'ready' } },
     });
   });
 });

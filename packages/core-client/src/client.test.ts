@@ -540,9 +540,6 @@ function threadDashboard() {
           artifactNoticeCount: 1,
           queuedCommandCount: 2,
           deliveredCommandCount: 1,
-          terminalResultCount: 1,
-          lastTerminalExitCode: 0,
-          lastTerminalCompletedAt: timestamp,
         },
         gatewayName: 'openshell',
         gatewayEndpoint: 'https://127.0.0.1:17670',
@@ -1408,6 +1405,9 @@ describe('createCoreClient', () => {
     expect(client.agents).toBeDefined();
     expect(client.actionCenter).toBeDefined();
     expect(client.repositories).toBeDefined();
+    expect('updateArtifactMetadata' in client.core).toBe(false);
+    expect('submitArtifactReviewDecision' in client.app).toBe(false);
+    expect('refreshAgentHealth' in client.app).toBe(false);
 
     for (const alias of [
       'getMeta',
@@ -1450,6 +1450,12 @@ describe('createCoreClient', () => {
     await client.core.getWorkspaceResources('ws_demo');
     await client.core.createThread({ workspaceId: 'ws_demo', name: 'Demo thread' });
     await client.core.startTurn({ workspaceId: 'ws_demo', threadId: 'th_demo', input: 'Run' });
+    await client.core.startTurn({
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: 'tu_demo',
+      answers: { branch: ['main'] },
+    });
     await expect(client.core.getArtifact('ws_demo', 'artifact_demo')).resolves.toEqual(artifact());
 
     expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
@@ -1458,11 +1464,17 @@ describe('createCoreClient', () => {
       'GET /api/workspaces/ws_demo/resources',
       'POST /api/workspaces/ws_demo/threads',
       'POST /api/turns',
+      'POST /api/turns',
       'GET /api/workspaces/ws_demo/artifacts/artifact_demo',
     ]);
     expect(requests[1]?.body).toMatchObject({ name: 'Demo', requestId: expect.any(String) });
     expect(requests[3]?.body).toMatchObject({ name: 'Demo thread', requestId: expect.any(String) });
     expect(requests[4]?.body).toMatchObject({ input: 'Run', requestId: expect.any(String) });
+    expect(requests[5]?.body).toMatchObject({
+      turnId: 'tu_demo',
+      answers: { branch: ['main'] },
+      requestId: expect.any(String),
+    });
   });
 
   it('routes remaining core methods through validated protocol paths', async () => {
@@ -1491,7 +1503,6 @@ describe('createCoreClient', () => {
         body: turn(),
       },
       'GET /api/workspaces/ws_demo/artifacts': { body: { items: [artifact()] } },
-      'PATCH /api/workspaces/ws_demo/artifacts/artifact_demo': { body: artifact() },
       'GET /api/app/workspaces/ws_demo/workspace-sync/reviews': {
         body: { items: [workspaceSyncReview()] },
       },
@@ -1763,13 +1774,6 @@ describe('createCoreClient', () => {
       })
     ).resolves.toEqual(turn());
     await expect(client.core.listArtifacts('ws_demo')).resolves.toEqual({ items: [artifact()] });
-    await expect(
-      client.core.updateArtifactMetadata({
-        workspaceId: 'ws_demo',
-        artifactId: 'artifact_demo',
-        title: 'Updated',
-      })
-    ).resolves.toEqual(artifact());
     await expect(client.app.listWorkspaceSyncReviews('ws_demo')).resolves.toEqual({
       items: [workspaceSyncReview()],
     });
@@ -1854,7 +1858,6 @@ describe('createCoreClient', () => {
       'GET /api/workspaces/ws_demo/threads/th_demo/turns/turn_demo',
       'POST /api/workspaces/ws_demo/threads/th_demo/turns/turn_demo/interrupt',
       'GET /api/workspaces/ws_demo/artifacts',
-      'PATCH /api/workspaces/ws_demo/artifacts/artifact_demo',
       'GET /api/app/workspaces/ws_demo/workspace-sync/reviews',
       'GET /api/app/workspaces/ws_demo/workspace-sync/reviews/swr_1',
       'POST /api/app/workspaces/ws_demo/workspace-sync/reviews/swr_1/decision',
@@ -3523,18 +3526,6 @@ describe('createCoreClient', () => {
               reason: 'Worker result needs review.',
             },
           },
-          result: {
-            taskId: 'task_1',
-            turnId: 'turn_worker',
-            outcome: 'review',
-            shouldStop: true,
-            stopReason: 'completed',
-            evidence: {
-              itemIds: ['it_worker_terminal'],
-              artifactIds: ['artifact_release_log'],
-            },
-            reviewId: 'review_goal_demo_task_1',
-          },
         },
       },
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/steering': {
@@ -3545,20 +3536,6 @@ describe('createCoreClient', () => {
           contentItemId: 'it_goal_steering',
           goalId: 'goal_demo',
           activeTurnId: 'turn_worker',
-        },
-      },
-      'POST /api/app/workspaces/ws_demo/artifacts/artifact_demo/review': {
-        body: {
-          review: {
-            artifactId: 'artifact_demo',
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: 'turn_demo',
-            status: 'needs_refinement',
-            message: 'Tighten the artifact.',
-            decidedAt: timestamp,
-            followUpTurnId: 'turn_follow_up',
-          },
         },
       },
       'POST /api/app/workspaces/ws_demo/knowledge/proposals/kp_demo/decision': {
@@ -3607,20 +3584,6 @@ describe('createCoreClient', () => {
                 terminalStopReason: null,
               },
               nextReadyTaskId: 'task_demo',
-            },
-          },
-        },
-      'POST /api/app/workspaces/ws_demo/threads/th_demo/agent-sessions/as_openshell_1/terminal-commands':
-        {
-          body: {
-            command: {
-              commandId: 'terminal-request-1',
-              kind: 'terminal-command',
-              sequence: 1,
-              queuedAt: timestamp,
-              deliveredAt: null,
-              argv: ['pwd'],
-              cwd: '/workspace',
             },
           },
         },
@@ -3709,15 +3672,13 @@ describe('createCoreClient', () => {
         requestId: 'req_goal_step_1',
       })
     ).resolves.toMatchObject({
-      result: {
-        taskId: 'task_1',
-        outcome: 'review',
-        shouldStop: true,
-        stopReason: 'completed',
-        evidence: {
-          artifactIds: ['artifact_release_log'],
+      goal: {
+        goalId: 'goal_demo',
+        status: 'reviewing',
+        currentTask: {
+          taskId: 'task_1',
+          status: 'reviewing',
         },
-        reviewId: 'review_goal_demo_task_1',
       },
     });
     expect('runThreadGoalTestSuperviseStep' in client.app).toBe(false);
@@ -3732,17 +3693,6 @@ describe('createCoreClient', () => {
       contentItemId: 'it_goal_steering',
       goalId: 'goal_demo',
       activeTurnId: 'turn_worker',
-    });
-    await expect(
-      client.app.submitArtifactReviewDecision('ws_demo', 'artifact_demo', {
-        decision: 'needs_refinement',
-        message: 'Tighten the artifact.',
-      })
-    ).resolves.toMatchObject({
-      review: {
-        status: 'needs_refinement',
-        followUpTurnId: 'turn_follow_up',
-      },
     });
     await expect(
       client.app.submitGoalReviewDecision('ws_demo', 'th_demo', 'goal_demo', 'review_demo', {
@@ -3779,18 +3729,6 @@ describe('createCoreClient', () => {
       review: {
         proposalId: 'kp_demo',
         status: 'edited',
-      },
-    });
-    await expect(
-      client.app.queueAgentSessionTerminalCommand('ws_demo', 'th_demo', 'as_openshell_1', {
-        requestId: 'terminal-request-1',
-        argv: ['pwd'],
-        cwd: '/workspace',
-      })
-    ).resolves.toMatchObject({
-      command: {
-        commandId: 'terminal-request-1',
-        kind: 'terminal-command',
       },
     });
     await expect(client.app.getSetupDiagnostics()).resolves.toEqual(setupDiagnostics());
@@ -3852,10 +3790,8 @@ describe('createCoreClient', () => {
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/resume',
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/step',
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/steering',
-      'POST /api/app/workspaces/ws_demo/artifacts/artifact_demo/review',
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goals/goal_demo/reviews/review_demo/decision',
       'POST /api/app/workspaces/ws_demo/knowledge/proposals/kp_demo/decision',
-      'POST /api/app/workspaces/ws_demo/threads/th_demo/agent-sessions/as_openshell_1/terminal-commands',
       'GET /api/setup/diagnostics',
       'GET /api/app/automations',
       'POST /api/app/automations',
@@ -3905,13 +3841,6 @@ describe('createCoreClient', () => {
       requestId: expect.any(String),
     });
     expect(
-      requests.find((request) => request.path.endsWith('/artifacts/artifact_demo/review'))?.body
-    ).toMatchObject({
-      decision: 'needs_refinement',
-      message: 'Tighten the artifact.',
-      requestId: expect.any(String),
-    });
-    expect(
       requests.find((request) => request.path.endsWith('/reviews/review_demo/decision'))?.body
     ).toEqual({
       requestId: expect.any(String),
@@ -3927,13 +3856,6 @@ describe('createCoreClient', () => {
       title: 'Edited knowledge title',
       summary: 'Edited knowledge summary.',
       requestId: 'knowledge-review-request-1',
-    });
-    expect(
-      requests.find((request) => request.path.endsWith('/terminal-commands'))?.body
-    ).toMatchObject({
-      requestId: 'terminal-request-1',
-      argv: ['pwd'],
-      cwd: '/workspace',
     });
   });
 
@@ -4136,17 +4058,25 @@ describe('createCoreClient', () => {
     await expect(client.app.deleteAutomation('auto_demo')).resolves.toBeUndefined();
   });
 
-  it('parses API errors for empty delete failures', async () => {
+  it('preserves typed API errors for delete failures', async () => {
     const { client } = createFakeClient({
       'DELETE /api/app/automations/auto_demo': {
-        body: apiError('automation_not_found', 'Automation not found.'),
+        body: {
+          ...apiError('automation_not_found', 'Automation not found.'),
+          details: { automationId: 'auto_demo' },
+          path: ['automationId'],
+          requestId,
+        },
         status: 404,
       },
     });
 
     await expect(client.app.deleteAutomation('auto_demo')).rejects.toMatchObject({
       code: 'automation_not_found',
+      details: { automationId: 'auto_demo' },
       message: 'Automation not found.',
+      path: ['automationId'],
+      requestId,
       status: 404,
     } satisfies Partial<ApiCallError>);
   });

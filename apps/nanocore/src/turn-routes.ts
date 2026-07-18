@@ -9,9 +9,17 @@ import type { z } from 'zod';
 import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
+import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
 import type { FsStore } from './lib/store.js';
 import { registerFeedbackRoutes } from './runtime/feedback-routes.js';
 import {
+  getGoalRecord,
+  listGoalTasks,
+  updateGoalStatus,
+  updateGoalTask,
+} from './runtime/goal-store.js';
+import {
+  commandInputHash,
   IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
   runIdempotentCommand,
@@ -19,8 +27,23 @@ import {
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { startProductTurn } from './runtime/product-turn-start.js';
 import type { TurnExecutor } from './runtime/types.js';
-import { completeSchedulerLeaseForTerminalTurn } from './scheduler-records.js';
-import type { CoreDb } from './storage/db.js';
+import {
+  createWorkerCheckpointEvidenceDiagnostics,
+  getWorkerCheckpoint,
+  parseWorkerCheckpointContextAssembly,
+  parseWorkerCheckpointEvidence,
+  updateWorkerCheckpoint,
+} from './runtime/worker-checkpoints.js';
+import {
+  classifyClosedWorkerUserInputGate,
+  clearWorkerCheckpointAfterTerminalState,
+  recoverWorkerCheckpointStopReason,
+} from './runtime/worker-recovery.js';
+import {
+  completeSchedulerLeaseForTerminalTurn,
+  listSchedulerSessionLeasesForTurn,
+} from './scheduler-records.js';
+import type { CoreDb, WorkspaceDb } from './storage/db.js';
 
 /** Parsed turn read model shape used by route-level guards. */
 type TurnReadModel = z.infer<typeof TurnSchema>;
@@ -36,6 +59,37 @@ function isAwaitingUserInputGate(turn: TurnReadModel): boolean {
 }
 
 /**
+ * Rejects ordinary input for an exact Gate that contains a secret question.
+ *
+ * @param store Product store containing the paused Turn and request Item.
+ * @param input Structured response command scoped to that Turn.
+ * @throws TurnStartValidationError before any receipt or response Item write.
+ */
+function rejectSecretUserInput(
+  store: FsStore,
+  input: Extract<z.infer<typeof SubmitTurnInputRequestSchema>, { turnId: string }>
+): void {
+  const turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
+  if (turn.status !== 'awaiting_human' || turn.humanGate.kind !== 'user-input') {
+    return;
+  }
+  const request = turn.items.find((item) => item.id === turn.humanGate.itemId);
+  if (
+    request?.type === 'user-input-request' &&
+    request.status === 'completed' &&
+    request.userInputRequestId === turn.humanGate.userInputRequestId &&
+    new Set(request.questions.map((question) => question.id)).size === request.questions.length &&
+    request.questions.some((question) => question.isSecret)
+  ) {
+    throw new TurnStartValidationError(
+      'secret_input_not_supported',
+      'Secret answers require a future Vault-backed input contract.',
+      400
+    );
+  }
+}
+
+/**
  * Registers the Core turn start, feedback, read, and interrupt routes.
  *
  * @param dependencies Hono app and concrete turn persistence, scheduler, and runtime dependencies.
@@ -45,6 +99,7 @@ export function registerTurnRoutes({
   coreDb,
   inflightCommands,
   requestStore,
+  repositoryWorkspaceDb,
   runtimeConfig,
   schedulerEpoch,
   turnExecutor,
@@ -54,6 +109,7 @@ export function registerTurnRoutes({
   readonly coreDb: CoreDb | undefined;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
+  readonly repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   readonly schedulerEpoch: number;
   readonly turnExecutor: TurnExecutor;
@@ -69,18 +125,83 @@ export function registerTurnRoutes({
     try {
       const input = parsed.data;
       const store = requestStore(c);
-      if (input.turnId) {
+      if ('turnId' in input) {
         const turnId = input.turnId;
+        rejectSecretUserInput(store, input);
+        const commandScope = {
+          workspaceId: input.workspaceId,
+          threadId: input.threadId,
+          turnId,
+        };
+        const inputReceipt = store.getCommandRequest(
+          'turn.input.submit',
+          input.requestId,
+          commandScope
+        );
+        if (coreDb) {
+          const workspaceDb = repositoryWorkspaceDb(store, input.workspaceId);
+          try {
+            const checkpoint = getWorkerCheckpoint(
+              workspaceDb,
+              input.workspaceId,
+              input.threadId,
+              turnId
+            );
+            if (checkpoint) {
+              let turn: TurnReadModel;
+              try {
+                turn = await runIdempotentCommand({
+                  store,
+                  inflightCommands,
+                  command: 'turn.input.submit',
+                  requestId: input.requestId,
+                  scope: commandScope,
+                  input,
+                  responseKind: 'turn',
+                  execute: () => closeWorkerUserInputGate(coreDb, store, workspaceDb, input),
+                  replay: (record) =>
+                    TurnSchema.parse(
+                      store.getTurn(input.workspaceId, input.threadId, record.response.id)
+                    ),
+                  responseId: (result) => result.id,
+                });
+              } catch (error) {
+                const currentCheckpoint = getWorkerCheckpoint(
+                  workspaceDb,
+                  input.workspaceId,
+                  input.threadId,
+                  turnId
+                );
+                if (!(error instanceof TurnStartValidationError) && currentCheckpoint) {
+                  throw workerGateRecoveryError('The worker user-input receipt was not published.');
+                }
+                throw error;
+              }
+              await clearWorkerUserInputGateCheckpoint(coreDb, store, workspaceDb, input);
+              return c.json(turn, 202);
+            }
+            if (
+              !inputReceipt &&
+              listSchedulerSessionLeasesForTurn(coreDb, {
+                workspaceId: input.workspaceId,
+                threadId: input.threadId,
+                turnId,
+              }).length > 0
+            ) {
+              throw workerGateRecoveryError(
+                'The worker user-input Gate has no supported exact checkpoint.'
+              );
+            }
+          } finally {
+            workspaceDb.sqlite.close();
+          }
+        }
         const turn = await runIdempotentCommand({
           store,
           inflightCommands,
           command: 'turn.input.submit',
           requestId: input.requestId,
-          scope: {
-            workspaceId: input.workspaceId,
-            threadId: input.threadId,
-            turnId,
-          },
+          scope: commandScope,
           input,
           responseKind: 'turn',
           execute: async () => {
@@ -93,9 +214,12 @@ export function registerTurnRoutes({
               );
             }
 
-            const updatedTurn = await turnExecutor.respondUserInput?.(store, turnId, input.input, {
-              requestId: input.requestId,
-            });
+            const updatedTurn = await turnExecutor.respondUserInput?.(
+              store,
+              turnId,
+              input.answers,
+              { requestId: input.requestId }
+            );
 
             if (!updatedTurn) {
               throw new Error('The active agent runtime cannot respond to user input.');
@@ -266,4 +390,316 @@ export function registerTurnRoutes({
       return asCommandError(error, 'turn_interrupt_failed');
     }
   });
+}
+
+/** Structured user-input command that closes one existing Human Gate. */
+type WorkerUserInputCommand = Extract<
+  z.infer<typeof SubmitTurnInputRequestSchema>,
+  { turnId: string }
+>;
+
+/**
+ * Closes one worker user-input Gate without resuming its worker executor.
+ *
+ * @param coreDb Core database containing scheduler and worker lineage.
+ * @param store Product store containing the Turn, Session, Items, and receipts.
+ * @param workspaceDb Workspace database containing the worker checkpoint.
+ * @param input Exact structured user-input command.
+ * @returns Terminal Turn for the closed worker envelope.
+ * @throws TurnStartValidationError when the Gate owner tuple is absent or contradictory.
+ */
+function closeWorkerUserInputGate(
+  coreDb: CoreDb,
+  store: FsStore,
+  workspaceDb: WorkspaceDb,
+  input: WorkerUserInputCommand
+): TurnReadModel {
+  const checkpoint = getWorkerCheckpoint(
+    workspaceDb,
+    input.workspaceId,
+    input.threadId,
+    input.turnId
+  );
+  const goalId = checkpoint?.goalId ?? null;
+  const taskId = checkpoint?.taskId ?? null;
+  const goalTaskCheckpoint = goalId !== null && taskId !== null;
+  if (
+    !checkpoint?.workerSessionId ||
+    ((goalId === null || taskId === null) && (goalId !== null || taskId !== null))
+  ) {
+    throw workerGateRecoveryError('The worker user-input Gate has no exact checkpoint.');
+  }
+  if (checkpoint.stage !== 'waiting_for_user' || checkpoint.stopReason !== 'ask_user') {
+    throw workerGateRecoveryError('The worker user-input checkpoint is not waiting.');
+  }
+  try {
+    if (recoverWorkerCheckpointStopReason(coreDb, store, workspaceDb, checkpoint) !== 'ask_user') {
+      throw new Error('Unexpected worker Gate outcome.');
+    }
+  } catch {
+    throw workerGateRecoveryError('The worker user-input Gate has no exact active owner tuple.');
+  }
+  const turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
+  const gate = turn.humanGate;
+  const requestItem = turn.items.find((item) => item.id === gate?.itemId);
+  if (
+    turn.status !== 'awaiting_human' ||
+    gate?.kind !== 'user-input' ||
+    requestItem?.type !== 'user-input-request' ||
+    requestItem.status !== 'completed' ||
+    requestItem.userInputRequestId !== gate.userInputRequestId
+  ) {
+    throw workerGateRecoveryError('The worker user-input command does not match the active Gate.');
+  }
+  const questionIds = requestItem.questions.map((question) => question.id);
+  if (new Set(questionIds).size !== questionIds.length) {
+    throw workerGateRecoveryError('The worker user-input Gate contains duplicate question ids.');
+  }
+  if (JSON.stringify(Object.keys(input.answers).sort()) !== JSON.stringify(questionIds.sort())) {
+    throw new TurnStartValidationError(
+      'invalid_request',
+      'The answer keys must exactly match the active Gate questions.',
+      400
+    );
+  }
+  const initiatingItem = turn.items.find((item) => item.id === `it_user_${turn.id}`);
+  const contextAssembly = parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary);
+  try {
+    if (
+      initiatingItem?.type !== 'user-message' ||
+      initiatingItem.status !== 'completed' ||
+      initiatingItem.workspaceId !== input.workspaceId ||
+      initiatingItem.threadId !== input.threadId ||
+      initiatingItem.turnId !== input.turnId ||
+      !checkpoint.contextDigest
+    ) {
+      throw new Error('Worker input mismatch.');
+    }
+    const workerRequest = StructuredWorkerDelegationRequestSchema.parse(
+      JSON.parse(initiatingItem.text)
+    );
+    if (!goalTaskCheckpoint && commandInputHash(workerRequest) !== checkpoint.contextDigest) {
+      throw new Error('Worker input mismatch.');
+    }
+    if (
+      goalTaskCheckpoint &&
+      (!contextAssembly ||
+        contextAssembly.contextDigest !== checkpoint.contextDigest ||
+        JSON.stringify(contextAssembly.contextRefs) !== JSON.stringify(workerRequest.contextRefs))
+    ) {
+      throw new Error('Worker context mismatch.');
+    }
+  } catch {
+    throw workerGateRecoveryError('The worker user-input Gate has no authoritative worker input.');
+  }
+  const evidence = parseWorkerCheckpointEvidence(checkpoint.diagnosticsSummary);
+  const ownerReceipt = store.getCommandRequest(
+    goalTaskCheckpoint ? 'goal.step' : 'task.start',
+    checkpoint.requestId,
+    { workspaceId: input.workspaceId, threadId: input.threadId },
+    goalTaskCheckpoint ? workspaceDb : undefined
+  );
+  if (
+    !evidence ||
+    !ownerReceipt ||
+    ownerReceipt.inputHash !== checkpoint.requestInputHash ||
+    (goalTaskCheckpoint
+      ? ownerReceipt.response.kind !== 'goal' || ownerReceipt.response.id !== goalId
+      : ownerReceipt.response.kind !== 'turn' || ownerReceipt.response.id !== input.turnId)
+  ) {
+    throw workerGateRecoveryError('The worker user-input Gate has no exact mode-command receipt.');
+  }
+  if (goalTaskCheckpoint) {
+    const goal = getGoalRecord(workspaceDb, input.workspaceId, input.threadId, goalId);
+    const task = listGoalTasks(workspaceDb, {
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      goalId,
+    }).find((candidate) => candidate.taskId === taskId);
+    if (
+      goal?.status !== 'awaiting_user' ||
+      goal.currentTaskId !== taskId ||
+      goal.terminalStopReason !== null ||
+      task?.status !== 'running'
+    ) {
+      throw workerGateRecoveryError('The worker user-input Gate contradicts its Goal Task owner.');
+    }
+  }
+  const timestamp = new Date().toISOString();
+  const responseItemId = `it_user_input_response_${input.turnId}`;
+  store.createItem({
+    id: responseItemId,
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    turnId: input.turnId,
+    type: 'user-input-response',
+    status: 'completed',
+    userInputRequestId: gate.userInputRequestId,
+    answers: input.answers,
+    createdAt: timestamp,
+    completedAt: timestamp,
+  });
+  store.updateAgentSession(checkpoint.workerSessionId, {
+    status: 'idle',
+    updatedAt: timestamp,
+  });
+  const closedTurn = store.updateTurn(input.turnId, {
+    status: 'completed',
+    humanGate: null,
+    completedAt: timestamp,
+  });
+  store.emitTurnEvent(input.turnId, {
+    event: 'turn.completed',
+    requestId: input.requestId,
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    turnId: input.turnId,
+    data: { type: 'turn-completed', stopReason: 'completed', turn: closedTurn },
+  });
+  const terminalCheckpoint = updateWorkerCheckpoint(workspaceDb, {
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    turnId: input.turnId,
+    stage: 'completed',
+    stopReason: 'completed',
+    diagnosticsSummary: createWorkerCheckpointEvidenceDiagnostics(
+      {
+        itemIds: [...new Set([...evidence.itemIds, responseItemId])],
+        artifactIds: evidence.artifactIds,
+      },
+      contextAssembly
+    ),
+  });
+  if (goalTaskCheckpoint) {
+    workspaceDb.sqlite.transaction(() => {
+      updateGoalTask(workspaceDb, {
+        workspaceId: input.workspaceId,
+        threadId: input.threadId,
+        goalId,
+        taskId,
+        status: 'ready',
+        latestGateContextItemId: responseItemId,
+      });
+      updateGoalStatus(workspaceDb, {
+        workspaceId: input.workspaceId,
+        threadId: input.threadId,
+        goalId,
+        status: 'running',
+        currentTaskId: null,
+        terminalStopReason: null,
+      });
+    })();
+  }
+  completeSchedulerLeaseForTerminalTurn(coreDb, TurnSchema.parse(closedTurn));
+  try {
+    if (
+      recoverWorkerCheckpointStopReason(coreDb, store, workspaceDb, terminalCheckpoint) !==
+      'completed'
+    ) {
+      throw new Error('Unexpected terminal outcome.');
+    }
+  } catch {
+    throw workerGateRecoveryError(
+      'The worker user-input Gate did not release scheduler ownership.'
+    );
+  }
+  return TurnSchema.parse(closedTurn);
+}
+
+/**
+ * Validates both user-input receipts and removes the completed worker checkpoint.
+ *
+ * @param coreDb Core database containing the released scheduler lease.
+ * @param store Product store containing the Gate and Turn owners.
+ * @param workspaceDb Workspace database containing the terminal checkpoint.
+ * @param input Exact structured user-input command.
+ * @throws TurnStartValidationError when any closeout owner is absent or contradictory.
+ */
+async function clearWorkerUserInputGateCheckpoint(
+  coreDb: CoreDb,
+  store: FsStore,
+  workspaceDb: WorkspaceDb,
+  input: WorkerUserInputCommand
+): Promise<void> {
+  const checkpoint = getWorkerCheckpoint(
+    workspaceDb,
+    input.workspaceId,
+    input.threadId,
+    input.turnId
+  );
+  const turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
+  const closure = classifyClosedWorkerUserInputGate(store, turn);
+  const evidence = checkpoint ? parseWorkerCheckpointEvidence(checkpoint.diagnosticsSummary) : null;
+  const ownerReceipt = checkpoint
+    ? store.getCommandRequest(
+        checkpoint.goalId && checkpoint.taskId ? 'goal.step' : 'task.start',
+        checkpoint.requestId,
+        { workspaceId: input.workspaceId, threadId: input.threadId },
+        checkpoint.goalId && checkpoint.taskId ? workspaceDb : undefined
+      )
+    : null;
+  const gateReceipt = store.getCommandRequest('turn.input.submit', input.requestId, {
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    turnId: input.turnId,
+  });
+  let goalOwnerComplete = true;
+  try {
+    if (checkpoint?.goalId && checkpoint.taskId && closure) {
+      const goal = getGoalRecord(workspaceDb, input.workspaceId, input.threadId, checkpoint.goalId);
+      const task = listGoalTasks(workspaceDb, {
+        workspaceId: input.workspaceId,
+        threadId: input.threadId,
+        goalId: checkpoint.goalId,
+      }).find((candidate) => candidate.taskId === checkpoint.taskId);
+      goalOwnerComplete =
+        goal?.status === 'running' &&
+        goal.currentTaskId === null &&
+        goal.terminalStopReason === null &&
+        task?.status === 'ready' &&
+        task.latestGateContextItemId === closure.responseItemId;
+    }
+  } catch {
+    goalOwnerComplete = false;
+  }
+  try {
+    if (
+      !checkpoint ||
+      recoverWorkerCheckpointStopReason(coreDb, store, workspaceDb, checkpoint) !== 'completed' ||
+      !closure ||
+      !evidence?.itemIds.includes(closure.requestItemId) ||
+      !evidence.itemIds.includes(closure.responseItemId) ||
+      !ownerReceipt ||
+      ownerReceipt.inputHash !== checkpoint.requestInputHash ||
+      (checkpoint.goalId && checkpoint.taskId
+        ? ownerReceipt.response.kind !== 'goal' || ownerReceipt.response.id !== checkpoint.goalId
+        : ownerReceipt.response.kind !== 'turn' || ownerReceipt.response.id !== input.turnId) ||
+      gateReceipt?.response.kind !== 'turn' ||
+      gateReceipt.response.id !== input.turnId ||
+      !goalOwnerComplete
+    ) {
+      throw new Error('Incomplete Gate closeout.');
+    }
+  } catch {
+    throw workerGateRecoveryError('The worker user-input closeout is incomplete.');
+  }
+  if (
+    !(await clearWorkerCheckpointAfterTerminalState(workspaceDb, {
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      turnId: input.turnId,
+    }))
+  ) {
+    throw workerGateRecoveryError('The worker user-input checkpoint could not be cleared.');
+  }
+}
+
+/**
+ * Creates the typed fail-closed error for worker Gate contradictions.
+ *
+ * @param message Product-safe contradiction summary.
+ * @returns Recovery-required route error.
+ */
+function workerGateRecoveryError(message: string): TurnStartValidationError {
+  return new TurnStartValidationError('recovery_required', message, 409);
 }

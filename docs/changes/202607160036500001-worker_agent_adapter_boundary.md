@@ -1,295 +1,158 @@
 # Worker Agent Adapter Boundary Change Plan
 
 Type: change-plan
-Status: planned
+Status: in-progress
 Date: 2026-07-16
 
 ## Intent
 
-OpenKit will use Codex, OpenCode, and Pi as three concrete challenges against one clean Worker Agent integration boundary.
+OpenKit will use Codex, OpenCode, and Pi to prove one small Worker Agent integration boundary.
 
-> The real outcome is not three adapters. The fourth Worker Agent must require only one profile, one adapter, and one image; NanoCore's product and governance core must not change.
+> The real outcome is not three adapters. A fourth bounded runtime must add one authored AgentManifest, one worker-side adapter module plus its static registry entry, and one governed image definition plus its existing catalog entry without adding runtime-specific behavior to NanoCore, canonical protocols, governance, or the shared worker harness.
 
-This change removes Codex- and OpenCode-specific assumptions from NanoCore product and governance code, establishes a small worker-side adapter contract, implements the three runtime adapters, and gives each runtime an independently reviewable integration specification.
+This change removes native-runtime assumptions from the generic launch path, reuses the existing worker supervisor, and keeps stock OpenShell as the only current governance backend.
 
-## Inherited Audit Responsibility (2026-07-17)
+## Inherited Audit Responsibility
 
-This plan is work package WP-2 of the [OpenKit Execution Program](./202607172152230001-openkit_execution_program.md) and absorbs audit group G03 from the [alignment audit](./202607111941330001-core_spec_implementation_alignment_audit.md). The G03 document set (C04 Runtime Model, C05 Agent Session, C13 Agent Supply, C16 Sandbox, S20-S38, S64-S66, and their supporting projections) and the G03 exit criteria in the audit ledger are inherited inputs. The program's convergence rules bind all work here.
+This plan is WP-2 of the [OpenKit Execution Program](./202607172152230001-openkit_execution_program.md) and absorbs G03 from the [alignment audit](./202607111941330001-core_spec_implementation_alignment_audit.md). The Execution Program convergence rules bind this package.
 
-Before implementation starts, record the G03 audit preamble in this plan per Execution Program rule 11: the authority map for the concepts this plan touches, findings classified with the audit's finding codes (in-scope findings fold into this plan's frozen scope; everything else is ticketed to the program Backlog), and confirmation of the inherited exit criteria. The preamble is review-only, bounded to at most one review day, and authorizes no implementation. The S21, S25, and S29 consolidation reviews assigned by the audit's Remaining Execution dispositions happen here; supersede a candidate only when a named current owner absorbs every continuing contract.
+## G03 Audit Preamble — 2026-07-18
+
+- Scope: C04, C05, C13, C16, S20-S38, S64-S66, their current NanoCore, schema, worker-shim, OpenShell, image, and test projections, and only the adapter/AEP/image/security work frozen below; this checkpoint is review-only and authorizes no implementation.
+- Authored authority: C13 and S22 own one top-level `AgentManifest` with nested behavior profiles; NanoCore resolves it through the existing `ResolvedAgentSetup` into the immutable S20 AEP, so a second runtime-oriented `AgentProfile`, hard-coded `RuntimeAgent`, global image selector, or inferred runtime is forbidden.
+- Execution authority: S25 and `packages/worker-shim` own the shared supervisor and static adapter registry; S64-S66 own native command and result translation; S37 owns the only worker-control plane; the backend owns outer sandbox lifecycle; NanoCore alone validates candidate worker records and commits product truth.
+- Containment authority: C16, S26-S32, and the AEP own explicit sandbox, network, credential, image, binary, lease, and cleanup facts; stock OpenShell `0.0.80` remains unmodified; S36/S38 capability and executable MCP routes remain disabled.
+- Security findings: `SECURITY-GAP` hidden Codex/DeepWiki network defaults and the arbitrary public terminal-command `argv`/`cwd` issuer are frozen for deletion-first correction before adapter work; no policy framework or replacement command service is authorized.
+- In-scope findings: `OWNERSHIP-CONFLICT` (C13/S20/S22/S25) covers duplicate manifest, runtime, and capability authority; `DESIGN-DEFECT` (S20/S25/S28/S64-S66) covers generic-shim handoff, the two-operation adapter, candidate records, and output bounds; `IMPLEMENTATION-DEFECT` (S20/S22/S27/S28) covers Codex-specific NanoCore command, provider, policy, credential and global-image ownership plus the mixed shim and missing images/adapters; `DOC-DRIFT` (S20/S25/S28/S64-S66) covers profile terminology, runtime-specific shims, session metadata, canonical-output wording, and false capability/MCP claims; `TEST-GAP` (S20/S25/S28/S64-S66) covers shared conformance, image, and fourth-runtime proof; `REAL-USE-GAP` (S28/S65/S66) covers unproved OpenCode and Pi images.
+- Provenance disposition: S33 retains independent Codex-native verification as an explicitly separate optional security extension; the base fourth-runtime criterion does not require provenance, and WP-2 must not weaken verification or make native provenance part of the shared adapter contract.
+- Out-of-scope findings: broad session snapshot/reuse deletion, the S29/S30 consolidation, and a bespoke GitHub credential helper enter the Execution Program Backlog for later review; WP-2 does not absorb them. The terminal-result replay finding was extinguished when the security blocker deleted that complete command/result surface.
+- Consolidation: S21 is superseded because C13/S20/S22/S23/S25 now own every continuing setup and supply contract; S25 and S29 remain active because their shared harness and current deployment/timing contracts have no complete replacement; S30 remains unchanged in WP-2.
+- Exit: declared-to-resolved-to-materialized execution, one control plane, unchanged exact lease/recovery behavior, bounded scheduler ownership, stock OpenShell enforcement, adapter isolation, truthful disabled capabilities, three landed adapters, and the fourth-runtime criterion must all hold without a replacement runtime, recovery workflow, plugin system, or test platform.
 
 ## Primary Acceptance Criterion
 
-A hypothetical fourth runtime passes architectural review only when its production implementation diff is limited to exactly:
+A hypothetical fourth bounded runtime passes architectural review when its production diff contains only:
 
-- one declarative Worker Agent profile
-- one worker-side runtime adapter
-- one governed worker image
+- one authored `AgentManifest`
+- one worker-side adapter module and one entry in the existing static registry
+- one governed worker image definition and one entry in `containers/images.json`
 
-The diff must not add a runtime branch, runtime enum member, provider special case, command builder, output parser, image selector, or native event type to NanoCore product, scheduling, policy, governance, workspace review, evidence import, or public API implementation.
+The diff may include adapter-local tests, image smoke evidence, and a runtime-specific specification. It must not add a runtime enum member, native command builder, event parser, provider special case, image selector, product-state branch, governance branch, or shared-harness behavior to NanoCore or canonical protocols.
 
-Adapter-local tests, image smoke evidence, and one runtime-specific specification verify those three production artifacts; they do not constitute additional runtime architecture surfaces.
+Static registry and image-catalog entries are explicit accepted bookkeeping. Dynamic loading would violate the no-plugin-framework rule and is not required to satisfy the criterion.
 
-## Related Authority
-
-- `docs/core/architecture.md`
-- `docs/core/work-model.md`
-- `docs/product-vision.md`
-- `docs/core/runtime-model.md`
-- `docs/core/communication.md`
-- `docs/core/agent-session.md`
-- `docs/specs/20260616-agent_environment_package.md`
-- `docs/specs/20260629-worker_runtime_communication_model.md`
-- `docs/specs/20260703-worker_control_protocol.md`
-- `docs/specs/20260703-workspace_synchronization.md`
-- `docs/specs/20260711-worker_runtime_subagent_provenance.md`
-- `docs/specs/20260716-codex_worker_adapter.md`
-- `docs/specs/20260716-opencode_worker_adapter.md`
-- `docs/specs/20260716-pi_worker_adapter.md`
-
-## System Architecture Decision
+## Authority And Handoff
 
 ```text
-NanoCore product and governance core
-  -> resolves one declarative Worker Agent profile into an AEP
-  -> launches one image through a WorkerGovernanceBackend
-  -> communicates only through openkit-worker-control-v1
-  -> verifies and imports only canonical OpenKit records
-
-Governed worker image
-  -> openkit-worker-shim shared harness
-     -> selects the AEP-declared adapter id
-     -> supervises process, control, transcript, and workspace change capture
-     -> invokes one small runtime adapter
-        -> Codex
-        -> OpenCode
-        -> Pi
+AgentManifest plus selected nested profile
+  -> NanoCore ResolvedAgentSetup
+  -> immutable Agent Environment Package
+  -> WorkerGovernanceBackend launches the governed image and generic shim
+  -> shared worker supervisor selects one opaque adapter id
+  -> adapter prepares one native process and collects one bounded result
+  -> shared supervisor emits schema-conformant candidate records
+  -> NanoCore validates and commits canonical product state
 ```
 
-NanoCore treats the runtime adapter id as an opaque, non-empty identifier. NanoCore does not maintain a closed runtime enum and does not infer a runtime from an agent id or display name.
+The AEP is the only NanoCore-to-worker launch contract. `runtime.command.argv` launches `openkit-worker-shim`; it never contains Codex, OpenCode, or Pi argv. `control.adapter.kind` identifies the generic shim and `control.adapter.targetRuntime` is the sole opaque adapter selector. `agent.runtimeKind` is descriptive and must not select code.
 
-The Agent Environment Package is the only profile-to-worker handoff. It declares the adapter id, image, runtime binary supply, provider and credential attachments, network policy, workspace, task input, and control contract without embedding runtime-native command syntax.
+The shared supervisor retains AEP loading, direct worker-control readiness, heartbeat and polling, child process supervision and process-group termination, transcript sequencing, redaction, workspace capture, and terminal reporting. It must not understand native event types or own product state.
 
-The WorkerGovernanceBackend materializes, launches, collects, and recycles a worker. It executes `runtime.command.argv` from the AEP and does not know Codex, OpenCode, Pi, their configuration files, or their provider endpoints.
+## Exact Declarative Inputs
 
-The shared worker harness owns exactly:
+S22 owns these authored `runtime` fields: opaque `kind`, opaque `adapter`, optional pinned `version`, governed `image.ref` with pull policy, and a non-empty list of runtime binary ids and absolute worker-local paths used for supply and policy. Nested `profiles` remain behavior selections and are not runtime records.
 
-- AEP loading and validation needed inside the container
-- approved Skill and MCP supply materialization
-- child process lifecycle and process-group termination
-- direct worker-control readiness, heartbeat, polling, and command acknowledgement
-- canonical transcript writing, sequencing, lineage, redaction, and terminal outcome emission
-- workspace input snapshots and workspace change publication
-- bounded native output capture made available to one adapter
+The authored sandbox section may declare exact network grants, credential declarations, and backend requirements. Every network binary path must match a declared runtime binary. NanoCore resolves those declarations into the AEP; a backend environment variable or built-in endpoint must not expand the effective allowlist.
 
-Each runtime adapter owns exactly:
+The AEP carries the selected image, generic shim command, opaque adapter id, declared runtime binaries, provider/model selection, exact network and credential policy, and the existing private `extensions.openkit.turnInput`. No runtime-native argv, native event schema, or hidden endpoint belongs in NanoCore.
 
-- translating the AEP task and runtime settings into one native launch command
-- translating native event or output records into the adapter result consumed by the shared transcript writer
-- mapping interrupt, steer, follow-up, or approval operations only when both the OpenKit control contract and the native runtime support them
-- capturing runtime-native session or provenance evidence when the runtime-specific specification requires it
-- declaring adapter-local capabilities and unsupported operations truthfully
+Launch-time capabilities come from the authored manifest intersected with adapter/image proof. Missing required support blocks launch; optional unproven support remains unadvertised. The adapter does not publish a second capability authority.
 
-An adapter must not own Workspace, Thread, Turn, Item, Goal Mode, Action Center, policy, authorization, scheduling, backend lifecycle, workspace review or apply, canonical id allocation, durable product state, provider selection, vault grants, or public API behavior.
+## Minimal Adapter Contract
 
-## Adapter Contract Decision
-
-The adapter contract remains a worker-side internal interface with four conceptual operations:
+The worker-side internal adapter has only two operations:
 
 ```text
-prepare(AEP adapter inputs) -> native launch plan
+prepare(resolved adapter input) -> native launch plan
 collect(native exit and bounded output) -> normalized adapter result
-interrupt(active native run) -> adapter-local graceful abort or shared process termination
-captureProvenance(native stream) -> optional adapter-owned evidence
 ```
 
-`prepare` receives only already resolved AEP data and returns argv, safe environment additions, output capture requirements, and adapter-local capability declarations.
+`prepare` returns argv, safe child environment additions, and output-capture requirements. `collect` returns the final assistant content and a bounded product-safe failure classification. Shared process-group termination owns interrupt behavior for all three current runtimes.
 
-`collect` returns final assistant content, optional native session metadata, and product-safe failure classification. The shared harness, not the adapter, writes canonical transcript records and terminal outcomes.
+Native stdout capture is bounded to 16 MiB and ordinary stdout/stderr diagnostic prefixes remain bounded to 16 KiB each. Overflow fails closed. OpenCode and Pi session identifiers are not retained because native continuation is outside the accepted bounded-turn contract.
 
-`interrupt` defaults to shared process-group termination. A native graceful-abort hook is permitted only when it implements an already accepted OpenKit control operation and passes the shared conformance suite.
+Codex provenance remains adapter-local capture plus the separately owned S33 NanoCore verifier. It is not a generic adapter operation and creates no obligation for OpenCode, Pi, or a fourth runtime.
 
-`captureProvenance` is optional. Its output is evidence for NanoCore verification; it never changes canonical product state directly.
+## Runtime Decisions
 
-The contract must not expose NanoCore stores, routes, scheduler objects, backend handles, public Item types, or runtime-specific event unions.
+| Runtime | Native bounded surface | Result source | Current control |
+| --- | --- | --- | --- |
+| Codex | `codex exec --json --output-last-message ...` | bounded final-message file; JSONL only for optional S33 provenance | shared process-group termination |
+| OpenCode | `opencode run --format json ...` | bounded JSONL final assistant extraction | shared process-group termination |
+| Pi | `pi --mode json` with explicit provider/model, no session, no ambient project trust, resources, updates, or telemetry | bounded JSONL final assistant extraction | shared process-group termination |
 
-## Declarative Worker Agent Profile
+Native server, RPC, live steering, follow-up, approvals, questions, live token projection, and session continuation are not implemented or advertised.
 
-One profile is a repository-owned authored agent configuration that contains only data needed to resolve an AEP. The minimum profile fields are:
+## Frozen Scope
 
-- stable agent id and display name
-- opaque runtime kind and adapter id
-- governed worker image reference
-- runtime binary id and worker-local executable paths used by policy
-- provider, model, credential, and trusted-inference requirements
-- capabilities that the concrete adapter and image actually implement
-- Skills and MCP compatibility declarations
-- workspace and backend requirements
+In scope:
 
-Adding a profile is configuration work. Profile loading, validation, AEP projection, routing candidates, and image selection must remain generic.
+- delete hidden network expansion and the complete arbitrary terminal-command production surface before adapter work
+- make authored setup and `ResolvedAgentSetup` the only adapter, image, binary, and sandbox declaration source
+- replace the closed runtime type, hard-coded NanoCore agent defaults, global image selector, Codex command/provider/policy defaults, and runtime-name inference on the affected launch path
+- rename the existing shim in place, preserve its shared supervisor, and extract only Codex, OpenCode, and Pi native `prepare`/`collect` logic
+- add three authored manifests, three governed images, one static adapter registry, focused conformance and image tests, and one fourth-runtime fixture proof
+- keep executable MCP/capability routes disabled and preserve S33 independent provenance verification
 
-## Target Artifact Layout
+Out of scope:
 
-```text
-apps/nanocore/data-templates/config/agents/
-  codex.agent.jsonc
-  opencode.agent.jsonc
-  pi.agent.jsonc
+- interactive or reusable native sessions, server/RPC modes, steering, follow-up, native approval UI, and live token Items
+- dynamic adapter discovery, an adapter SDK, class hierarchy, dependency-injection framework, new base image, or universal runtime configuration model
+- scheduler redesign, session snapshot/reuse cleanup, settlement or recovery workflows, capability/MCP execution, provider onboarding, or broad Agent catalog/Web work
+- any OpenShell fork, patch, custom binary, or compatibility alias
 
-packages/worker-shim/src/
-  harness/
-  adapters/codex.ts
-  adapters/opencode.ts
-  adapters/pi.ts
+## Execution
 
-containers/
-  worker-codex/
-  worker-opencode/
-  worker-pi/
-```
+1. Correct the owning documents and record this preamble without production changes.
+2. Add the smallest failing tests for hidden network defaults and every arbitrary terminal-command production surface, then delete the public request schema and route, gateway command shape, persistence and rebuild path, and shim executor.
+3. Add focused failing contracts for opaque runtime ids, manifest-driven AEP image/binaries, the generic shim command, the two-operation adapters, bounded output, and the fourth-runtime fixture.
+4. Reuse the existing supervisor, implement the static registry and three adapters, and delete Codex-specific duplicate ownership from NanoCore and the shared path.
+5. Add the three manifests and three image definitions, build and smoke on A1 when local image execution is unavailable, and use no new runner.
+6. Run affected-package gates during slices and the existing full repository gate only at WP-2 exit; close this plan, G03, and the Execution Program checkpoint with exact evidence.
 
-The exact shared-harness file split may remain smaller when that improves cohesion. The ownership test is more important than directory count: shared lifecycle code must not contain native runtime branches, and adapter files must not contain product or governance logic.
+## Verification
 
-A fourth runtime adds one peer profile, one peer adapter, and one peer image directory. Existing NanoCore, shared harness, and canonical protocol files remain unchanged.
+- Config-schema and NanoCore tests prove one manifest resolves adapter, image, binaries, network policy, and provider/model inputs into one AEP without a supported-runtime switch.
+- Worker-shim tests run shared supervisor invariants once and native command/result fixtures only in each adapter.
+- Security tests prove no backend-added endpoint remains and no App API schema or route, gateway method, durable command shape, rebuild path, or worker shim accepts or executes arbitrary worker commands.
+- Image catalog and smoke tests prove one native runtime, the generic shim, non-root execution, pinned versions, and bounded machine-readable mode for each image.
+- The fourth-runtime fixture changes no NanoCore, canonical protocol, governance, or shared-supervisor behavior.
+- Existing worker-control, exact reconnect, whole-Cell recycle, workspace capture, and Codex provenance suites remain green without expanded matrices.
 
-## End-To-End Communication Sequence
+## Stop Rules
 
-```text
-1. NanoCore resolves the selected declarative profile into one immutable AEP.
-2. WorkerGovernanceBackend launches the profile-selected image with the generic shim command.
-3. The shared harness validates direct worker control and selects the AEP adapter id.
-4. The adapter prepares and starts one native bounded run.
-5. The shared harness owns heartbeat, interrupt delivery, process supervision, and workspace capture.
-6. The adapter converts native terminal output into one normalized result.
-7. The shared harness writes canonical transcript and terminal records.
-8. NanoCore verifies lineage, sequence, schema, policy, and workspace boundaries before importing product state.
-9. WorkerGovernanceBackend collects evidence and recycles the governed worker.
-```
+Stop if implementation requires a new durable record, runtime state machine, recovery owner, control plane, runner, harness package, plugin loader, adapter SDK, runtime-native schema in NanoCore/protocol, or product-state mutation from an adapter.
 
-No native runtime protocol crosses step 6. No canonical product mutation occurs before step 8.
-
-## Interaction Decision For The Three Runtimes
-
-| Runtime | Native execution surface | Native output surface | OpenKit control mapping | Session and provenance |
-| --- | --- | --- | --- | --- |
-| Codex | `codex exec` in one governed worker process | JSONL stdout plus `--output-last-message` | Process-group termination for interrupt; no fabricated interactive approval support | Optional Codex rollout capture under the accepted runtime-provenance contract |
-| OpenCode | `opencode run --format json` in one governed worker process | JSON event stream with final assistant text extracted by the adapter | Process-group termination for interrupt; session continuation only after a concrete bounded-turn requirement | Adapter records native session identifiers when present; no NanoCore-native event leakage |
-| Pi | `pi --mode json` for the bounded one-turn path; RPC is reserved for a future accepted interactive requirement | JSON event stream with final assistant content extracted by the adapter | Process-group termination for the current bounded path; RPC `abort`, `steer`, and `follow_up` are not advertised until OpenKit exposes and tests those controls | Adapter records native session metadata when present; raw runtime events remain worker-side evidence |
-
-The current product execution envelope is one bounded worker turn. The implementation therefore uses the smallest native non-interactive surface that produces deterministic machine-readable output. Native server or RPC modes are documented but are not introduced merely because a runtime provides them.
-
-## Decisions
-
-- Use one `@openkit/worker-shim` package with one shared harness and three concrete adapter modules.
-- Use one generic `openkit-worker-shim` entrypoint. The AEP selects the adapter; NanoCore does not select a runtime-specific binary.
-- Keep the adapter registry worker-side. Registering a fourth adapter is part of adding that adapter, not a NanoCore change.
-- Keep runtime identifiers open strings in NanoCore and public delegation records.
-- Select the worker image from the declarative agent profile, not from a global Codex image environment variable.
-- Keep one governed image artifact per runtime because native binary installation, trust surface, smoke checks, and release provenance differ.
-- Keep canonical worker protocol schemas runtime-neutral. Runtime-native events never enter `packages/worker-protocol` or NanoCore.
-- Preserve Codex provenance as an optional Codex adapter feature rather than making it a shared harness responsibility.
-- Do not add a plugin framework, dynamic package loading, adapter SDK package, inheritance hierarchy, compatibility alias, or generic bidirectional session engine in this change.
-
-## Scope
-
-### In Scope
-
-- common Worker Agent adapter architecture and acceptance contract
-- individual Codex, OpenCode, and Pi adapter specifications
-- worker-shim adapter contract and conformance tests
-- concrete command and final-output adapters for all three runtimes
-- one generic worker-shim entrypoint and generic AEP projection
-- opaque runtime identifiers through routing and delegation schemas
-- declarative image selection and three worker image definitions
-- removal of runtime-native branches from NanoCore AEP and WorkerGovernanceBackend code touched by this path
-- focused unit, contract, image-manifest, Dockerfile, and smoke tests
-
-### Out Of Scope
-
-- multi-turn interactive worker sessions
-- live token streaming into product Items
-- native approval or question UI projection
-- implementation of the future worker capability plane
-- arbitrary adapter package discovery or third-party dynamic loading
-- provider onboarding or credential migration beyond removing runtime-specific ownership from generic code
-- broad redesign of the agent catalog or Web UI
-
-## Execution Plan
-
-### Phase 1: Specification And Failing Contracts
-
-- update the common communication model with the adapter boundary and fourth-runtime acceptance test
-- add the three runtime-specific adapter specifications
-- add failing worker-shim conformance tests for command construction, final assistant extraction, interrupt semantics, invalid native records, and capability truthfulness
-- add failing NanoCore tests proving runtime ids are opaque, AEP launch is generic, image selection is profile-driven, and governance code contains no supported-runtime switch
-- add failing image-manifest and Dockerfile contract tests for three runtime images
-
-### Phase 2: Shared Harness And Adapters
-
-- extract the minimum adapter contract from the current Codex-specific shim path
-- retain process supervision, control, transcript, workspace, redaction, and supply logic in the shared harness
-- implement Codex, OpenCode, and Pi command and final-output adapters
-- move Codex provenance capture behind the Codex adapter hook
-- expose one generic shim binary and remove Codex naming from shared entities and diagnostics
-
-### Phase 3: NanoCore Boundary Cleanup
-
-- make runtime and adapter identifiers opaque strings in runtime, delegation, and Task Mode records
-- project the generic shim command and AEP-declared adapter id
-- resolve worker image and executable policy from the declarative profile
-- remove Codex command construction, Codex provider defaults, runtime-name inference, and runtime-specific image selection from the generic AEP and governance path
-- execute AEP commands in backend dry runs instead of a hard-coded shim command
-
-### Phase 4: Images And Profiles
-
-- add or clean the Codex, OpenCode, and Pi authored profiles
-- build one least-privilege runtime image per adapter
-- install only the generic harness and the selected native runtime in each image
-- add adapter-specific smoke checks that verify the harness, native binary, native machine-readable mode, non-root user, and expected entrypoint
-
-### Phase 5: Verification And Closure
-
-- run package and NanoCore unit, typecheck, lint, and build checks
-- run image-manifest and Dockerfile contract tests
-- build and smoke all three images when the local Docker backend is available
-- perform a fourth-runtime diff simulation using a fixture adapter and profile; fail the change if NanoCore source edits are required
-- review for adapter leakage, duplicate ownership, speculative abstractions, and stale Codex/OpenCode host paths
-- update this record with implementation evidence and exact deferred runtime proof, if any
-
-## Verification Matrix
-
-| Boundary | Required proof |
-| --- | --- |
-| Canonical protocol | The same worker protocol schemas validate records from all three adapter fixtures. |
-| Shared harness | One conformance suite runs against Codex, OpenCode, and Pi without runtime-specific branches in the suite driver. |
-| NanoCore | Static and behavioral tests prove opaque adapter ids, generic AEP launch, profile image selection, and runtime-neutral backend execution. |
-| Adapter scope | Runtime-native command and output knowledge appears only in the relevant adapter module, specification, profile, image, and tests. |
-| Images | Three manifest entries and three smoke paths install exactly one native runtime each and invoke the generic shim. |
-| Fourth runtime | A fixture profile, fixture adapter, and fixture image metadata can be added without modifying NanoCore product or governance source. |
-
-## Minimum Viable First Proof
-
-The first proof point is one shared conformance test that accepts all three adapters and one NanoCore test that resolves an unknown fixture adapter id without a code change or runtime switch.
-
-The proposal is falsified if implementing Pi requires a Pi branch in NanoCore, if OpenCode requires a second control protocol, if image choice remains a global runtime-specific environment variable, or if the shared harness must understand a native event type.
-
-## Cut List And Stop Rule
-
-Cut server/RPC sessions, interactive steering, native approval projection, hot adapter loading, cross-runtime config unification, and live token deltas before weakening the boundary.
-
-Stop and redesign if any adapter needs to mutate NanoCore product state directly, if a runtime-native schema appears in NanoCore or the canonical worker protocol, or if the fourth-runtime simulation requires a NanoCore product or governance edit.
+When a native runtime cannot satisfy the bounded contract, report it unsupported or defer it. Do not broaden the system to accommodate it.
 
 ## Progress
 
-- 2026-07-16: Change plan opened after auditing the current Codex-specific shim, AEP, backend, image selection, and closed runtime enums.
-- 2026-07-16: Codex, OpenCode, and Pi selected as the three concrete boundary challenges; the fourth-runtime zero-core-change rule is the primary acceptance criterion.
-- 2026-07-16: Common architecture and three runtime-specific adapter specifications completed. Implementation intentionally remains unstarted under the docs-only scope decision.
-- 2026-07-16: Documentation passed spec lifecycle validation, repository formatting and lint checks, and the models catalog validation. No implementation file changes remain.
+- 2026-07-16: The change plan and three adapter specifications were accepted under a docs-only decision.
+- 2026-07-18: The bounded G03 preamble completed. S21 was superseded into C13/S20/S22/S23/S25; two security gaps and the frozen adapter/AEP/image defects are in scope; unrelated scheduler, continuity, and credential-helper findings were dispatched rather than absorbed.
+- 2026-07-18: The focused adapter contract was narrowed before implementation: current adapters return no generated files, exactly one NanoCore-resolved LLM route reaches each launch, and the pinned Pi result is accepted only after its final settled lifecycle correlation. No config-artifact envelope, route selector, or fallback enters the shared harness.
+
+### 2026-07-18: Security Blocker Closeout
+
+- Scope: the two frozen pre-adapter security blockers only; commits `5e3e234` through `bc678d1`.
+- Result: OpenShell base network policy is exactly AEP-derived; backend defaults and environment expansion are deleted; non-transient provider effects fail closed before provider, sandbox, or restore effects until the AEP can prove exact Providers v2 policy.
+- Control: the public arbitrary command/result surface is deleted from schemas, routes, persistence, rebuild, Core Client, Skill, Web, gateway, and shim; `interrupt` is the sole command, and retired durable rows plus acknowledged interrupts remain inert.
+- Verification: focused App API, Core Client, Skill, worker-shim, NanoCore, OpenAPI, rebuild, network, provider, typecheck, lint, build, and remnant scans passed; the final provider slice passed 131 focused tests.
+- Remaining: focused manifest/AEP, generic shim, adapter, fourth-runtime, image, stock OpenShell, and A1 work in Steps 3-6.
 
 ## Implementation Summary
 
-Not started. This record is an approved implementation plan, not implementation evidence.
+In progress. The G03 preamble, both deletion-first security blockers, and focused adapter-contract precision are complete; test-first manifest/AEP and generic-shim implementation is next. Adapter, image, fourth-runtime, stock OpenShell, and A1 exit evidence remain open.
 
 ## Final Verification
 
-Documentation-only verification passed with `CI=true pnpm run check:repo`, targeted `git diff --check`, internal related-document existence checks, pinned upstream source review for OpenCode and Pi, and a clean diff across `packages/`, `apps/`, `containers/`, `scripts/`, and `.github/` for this change.
+Pending.

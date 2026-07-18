@@ -186,8 +186,6 @@ function summarizeWorkerControlSession(
     return null;
   }
 
-  const lastTerminalResult = snapshot.terminalResults.at(-1) ?? null;
-
   return {
     artifactNoticeCount: snapshot.artifacts.length,
     deliveredCommandCount: snapshot.commands.filter((command) => command.deliveredAt !== null)
@@ -199,9 +197,6 @@ function summarizeWorkerControlSession(
           status: snapshot.heartbeat.status,
         }
       : null,
-    lastTerminalCompletedAt: lastTerminalResult?.completedAt ?? null,
-    lastTerminalExitCode: lastTerminalResult?.exitCode ?? null,
     queuedCommandCount: snapshot.commands.length,
-    terminalResultCount: snapshot.terminalResults.length,
   };
 }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenKit"
+  short_description: "Operate OpenKit through its public agent interface"
+  default_prompt: "Use $openkit to connect to OpenKit and complete this workspace task."

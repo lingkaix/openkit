@@ -358,6 +358,7 @@ const ExportedGoalTaskSchema = GoalPlanTaskSchema.extend({
   goalId: z.string().min(1),
   planItemId: z.string().min(1),
   status: z.enum(['pending', 'ready', 'running', 'reviewing', 'completed', 'blocked', 'failed']),
+  latestGateContextItemId: z.string().min(1).nullable(),
   orderIndex: z.number().int().nonnegative(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -675,8 +676,8 @@ interface ImportRemintContext {
   turnIds: Map<string, string>;
   /** Imported item ids keyed by source id. */
   itemIds: Map<string, string>;
-  /** Source Item ownership and type keyed by source id. */
-  itemLineage: Map<string, Pick<Item, 'workspaceId' | 'threadId' | 'type'>>;
+  /** Latest source Item revision keyed by source id. */
+  itemLineage: Map<string, Item>;
   /** Imported artifact ids keyed by source id. */
   artifactIds: Map<string, string>;
   /** Imported agent-session ids keyed by source id. */
@@ -895,18 +896,14 @@ function readCanonicalImportState(context: ImportRemintContext) {
     (record) => ItemSchema.parse(record)
   );
   const itemIds = new Map<string, string>();
-  const itemLineage = new Map<string, Pick<Item, 'workspaceId' | 'threadId' | 'type'>>();
+  const itemLineage = new Map<string, Item>();
   const approvalRequestIds = new Map<string, string>();
   const userInputRequestIds = new Map<string, string>();
   for (const revision of exportedItemRevisions) {
     if (!itemIds.has(revision.id)) {
       itemIds.set(revision.id, `it_imported_${context.targetWorkspaceId}_${itemIds.size + 1}`);
-      itemLineage.set(revision.id, {
-        workspaceId: revision.workspaceId,
-        threadId: revision.threadId,
-        type: revision.type,
-      });
     }
+    itemLineage.set(revision.id, revision);
     if (
       (revision.type === 'approval-request' || revision.type === 'approval-decision') &&
       !approvalRequestIds.has(revision.approvalRequestId)
@@ -2973,7 +2970,7 @@ function assertGoalAuthorityConsistency(input: {
   readonly goals: readonly ExportedGoalRecord[];
   readonly plans: readonly ExportedGoalPlanRecord[];
   readonly tasks: readonly ExportedGoalTask[];
-  readonly itemLineage: ReadonlyMap<string, Pick<Item, 'workspaceId' | 'threadId' | 'type'>>;
+  readonly itemLineage: ReadonlyMap<string, Item>;
 }): Set<string> {
   const goalsById = new Map(input.goals.map((goal) => [goal.goalId, goal]));
   const plansByKey = new Map<string, ExportedGoalPlanRecord>();
@@ -3029,6 +3026,43 @@ function assertGoalAuthorityConsistency(input: {
       JSON.stringify(selectGoalPlanTaskPayload(task)) !== JSON.stringify(plannedTask)
     ) {
       throw new Error(`Goal Task does not match its immutable Plan: ${task.goalId}/${task.taskId}`);
+    }
+    const response = task.latestGateContextItemId
+      ? input.itemLineage.get(task.latestGateContextItemId)
+      : null;
+    const requestMatches =
+      response?.type === 'approval-decision'
+        ? [...input.itemLineage.values()].filter(
+            (item) =>
+              item.type === 'approval-request' &&
+              item.status === 'completed' &&
+              item.workspaceId === response.workspaceId &&
+              item.threadId === response.threadId &&
+              item.turnId === response.turnId &&
+              item.approvalRequestId === response.approvalRequestId
+          )
+        : response?.type === 'user-input-response'
+          ? [...input.itemLineage.values()].filter(
+              (item) =>
+                item.type === 'user-input-request' &&
+                item.status === 'completed' &&
+                item.workspaceId === response.workspaceId &&
+                item.threadId === response.threadId &&
+                item.turnId === response.turnId &&
+                item.userInputRequestId === response.userInputRequestId
+            )
+          : [];
+    if (
+      (['completed', 'blocked', 'failed'].includes(task.status) &&
+        task.latestGateContextItemId !== null) ||
+      (task.latestGateContextItemId !== null &&
+        (!response ||
+          response.status !== 'completed' ||
+          response.workspaceId !== task.workspaceId ||
+          response.threadId !== task.threadId ||
+          requestMatches.length !== 1))
+    ) {
+      throw new Error(`Goal Task has invalid Gate context: ${task.goalId}/${task.taskId}`);
     }
     taskRecordKeys.add(taskKey);
   }
@@ -3235,6 +3269,9 @@ function rewriteImportedGoalTask(
     threadId: requiredMapValue(threadIds, record.threadId, 'thread'),
     goalId: requiredMapValue(goalIds, record.goalId, 'goal'),
     planItemId: requiredMapValue(itemIds, record.planItemId, 'item'),
+    latestGateContextItemId: record.latestGateContextItemId
+      ? requiredMapValue(itemIds, record.latestGateContextItemId, 'item')
+      : null,
   });
 }
 

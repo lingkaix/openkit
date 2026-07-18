@@ -383,18 +383,6 @@ export const RunThreadGoalStepRequestSchema = z
 /** Response payload returned after running one real bounded Goal Mode worker step. */
 export const RunThreadGoalStepResponseSchema = z.object({
   goal: ThreadGoalSummarySchema,
-  result: z.object({
-    taskId: z.string().min(1),
-    turnId: z.string().min(1),
-    outcome: z.enum(['continue', 'review', 'ask_user', 'block', 'abort', 'complete']),
-    shouldStop: z.boolean(),
-    stopReason: StopReasonSchema,
-    evidence: z.object({
-      itemIds: z.array(z.string().min(1)).max(100),
-      artifactIds: z.array(z.string().min(1)).max(100),
-    }),
-    reviewId: z.string().min(1).nullable(),
-  }),
 });
 
 /** Request body for running one deterministic Goal Mode supervise step. */
@@ -568,9 +556,6 @@ export const AgentSessionBackendControlSummarySchema = z.object({
   artifactNoticeCount: z.number().int().nonnegative(),
   queuedCommandCount: z.number().int().nonnegative(),
   deliveredCommandCount: z.number().int().nonnegative(),
-  terminalResultCount: z.number().int().nonnegative(),
-  lastTerminalExitCode: z.number().int().nullable(),
-  lastTerminalCompletedAt: z.string().min(1).nullable(),
 });
 
 /** Agent session read model enriched with NanoCore app-local runtime state. */
@@ -604,26 +589,6 @@ export const AgentSessionReadModelSchema = z.object({
   stale: z.boolean(),
   sandboxSummary: AgentSandboxSummarySchema.nullable().default(null),
   backend: AgentSessionBackendSummarySchema.nullable().default(null),
-});
-
-/** Request payload for queueing a terminal command in one active agent session. */
-export const QueueAgentSessionTerminalCommandRequestSchema = z.object({
-  requestId: z.string().min(1),
-  argv: z.array(z.string().min(1)).min(1),
-  cwd: z.string().min(1).nullable().default(null),
-});
-
-/** Response payload returned after queueing a terminal command. */
-export const QueueAgentSessionTerminalCommandResponseSchema = z.object({
-  command: z.object({
-    commandId: z.string().min(1),
-    kind: z.literal('terminal-command'),
-    sequence: z.number().int().nonnegative(),
-    queuedAt: z.string().min(1),
-    deliveredAt: z.string().min(1).nullable(),
-    argv: z.array(z.string().min(1)).min(1),
-    cwd: z.string().min(1).nullable(),
-  }),
 });
 
 /** Workspace dashboard response payload. */
@@ -815,14 +780,6 @@ export type ListSchedulerAdmissionsResponse = z.infer<typeof ListSchedulerAdmiss
 /** Product-safe live worker control summary for one backend session. */
 export type AgentSessionBackendControlSummary = z.infer<
   typeof AgentSessionBackendControlSummarySchema
->;
-/** Request payload for queueing a terminal command in one active agent session. */
-export type QueueAgentSessionTerminalCommandRequest = z.infer<
-  typeof QueueAgentSessionTerminalCommandRequestSchema
->;
-/** Response payload returned after queueing a terminal command. */
-export type QueueAgentSessionTerminalCommandResponse = z.infer<
-  typeof QueueAgentSessionTerminalCommandResponseSchema
 >;
 /** Workspace dashboard response payload. */
 export type WorkspaceDashboardResponse = z.infer<typeof WorkspaceDashboardResponseSchema>;

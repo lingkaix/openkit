@@ -9,7 +9,6 @@ import type { VaultBackend } from '../vault/vault-backend.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { OpenShellCellController } from './openshell-cell.js';
 import { OpenShellCli } from './openshell-cli.js';
-import type { OpenShellNetworkEndpoint } from './openshell-policy.js';
 import type { TurnExecutor } from './types.js';
 import type { WorkerBackendSessionRecord } from './worker-backend-sessions.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
@@ -44,8 +43,6 @@ export interface TurnExecutorFactoryEnv {
   OPENKIT_OPENSHELL_CODEX_CONFIG_TOML?: string | undefined;
   /** Optional Codex model used by one-shot OpenShell worker commands. */
   OPENKIT_OPENSHELL_CODEX_MODEL?: string | undefined;
-  /** JSON array of additional OpenShell network endpoints authorized for selected worker binaries. */
-  OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS?: string | undefined;
   /** HTTP port used when deriving the default worker-control upstream. */
   PORT?: string | undefined;
 }
@@ -72,7 +69,7 @@ export interface ConfiguredWorkerLifecycleRuntime {
   ) => Promise<void>;
   /** Restores and closes one worker whose final status is already durable. */
   readonly reconcileAcceptedFinalStatus: (session: WorkerBackendSessionRecord) => Promise<{
-    readonly status: 'cancelled' | 'completed' | 'failed';
+    readonly status: 'cancelled' | 'completed' | 'failed' | 'interrupted';
     readonly turn: ReturnType<FsStore['getTurnById']>;
   }>;
   /** Configured disposable Cell placement. */
@@ -201,9 +198,6 @@ function createOpenShellWorkerLifecycleRuntime(
     cli: new OpenShellCli(),
     dataRoot: coreDb.dataRoot,
     deploymentId: layoutMarker.deploymentId,
-    extraNetworkEndpoints: parseExtraNetworkEndpoints(
-      env.OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS
-    ),
     gatewayName,
     gatewayUrl,
     placement,
@@ -428,191 +422,6 @@ function parseRemoteGatewayUrl(value: string): string {
     throw new Error('OPENKIT_OPENSHELL_GATEWAY_URL must be a loopback HTTP origin.');
   }
   return url.origin;
-}
-
-/**
- * Parses optional extra OpenShell network endpoint declarations from JSON.
- *
- * @param value Raw JSON environment value.
- * @returns Parsed endpoint declarations.
- * @throws Error when the value is not valid endpoint JSON.
- */
-function parseExtraNetworkEndpoints(value: string | undefined): OpenShellNetworkEndpoint[] {
-  const normalized = normalizeEnvValue(value);
-
-  if (!normalized) {
-    return [];
-  }
-
-  let parsed: unknown;
-
-  try {
-    parsed = JSON.parse(normalized);
-  } catch (error) {
-    throw new Error('OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS must be valid JSON.', {
-      cause: error,
-    });
-  }
-
-  if (!Array.isArray(parsed)) {
-    throw new Error('OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS must be a JSON array.');
-  }
-
-  return parsed.map((entry, index) => parseExtraNetworkEndpoint(entry, index));
-}
-
-/**
- * Parses one extra OpenShell network endpoint declaration.
- *
- * @param value Raw endpoint value.
- * @param index Endpoint index for diagnostics.
- * @returns Parsed endpoint declaration.
- * @throws Error when the endpoint is malformed.
- */
-function parseExtraNetworkEndpoint(value: unknown, index: number): OpenShellNetworkEndpoint {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS[${index}] must be an object.`);
-  }
-
-  const record = value as Record<string, unknown>;
-  const name = parseRequiredString(
-    record.name,
-    `OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS[${index}].name`
-  );
-
-  if (name === 'openkit_worker_control' || name === 'openkit_worker_inference') {
-    throw new Error(
-      `OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS[${index}].name is reserved: ${name}.`
-    );
-  }
-  const host = parseRequiredString(
-    record.host,
-    `OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS[${index}].host`
-  );
-  const port = parseRequiredPort(
-    record.port,
-    `OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS[${index}].port`
-  );
-  const protocol = parseOptionalProtocol(
-    record.protocol,
-    `OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS[${index}].protocol`
-  );
-  const access = parseOptionalAccess(
-    record.access,
-    `OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS[${index}].access`
-  );
-  const binaries = parseOptionalStringArray(
-    record.binaries,
-    `OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS[${index}].binaries`
-  );
-
-  return {
-    ...(access ? { access } : {}),
-    ...(binaries ? { binaries } : {}),
-    host,
-    name,
-    port,
-    ...(protocol ? { protocol } : {}),
-  };
-}
-
-/**
- * Parses a required string field.
- *
- * @param value Raw field value.
- * @param field Field name used in diagnostics.
- * @returns Trimmed string.
- * @throws Error when the field is absent or not a string.
- */
-function parseRequiredString(value: unknown, field: string): string {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new Error(`${field} must be a non-empty string.`);
-  }
-
-  return value.trim();
-}
-
-/**
- * Parses an optional OpenShell L7 network protocol.
- *
- * @param value Raw field value.
- * @param field Field name used in diagnostics.
- * @returns Protocol or undefined.
- * @throws Error when the field is not a supported OpenShell L7 protocol.
- */
-function parseOptionalProtocol(
-  value: unknown,
-  field: string
-): OpenShellNetworkEndpoint['protocol'] {
-  if (value === undefined) {
-    return undefined;
-  }
-
-  if (value === 'rest' || value === 'websocket' || value === 'graphql' || value === 'sql') {
-    return value;
-  }
-
-  throw new Error(`${field} must be "rest", "websocket", "graphql", or "sql".`);
-}
-
-/**
- * Parses a required TCP port.
- *
- * @param value Raw field value.
- * @param field Field name used in diagnostics.
- * @returns Port number.
- * @throws Error when the field is not a valid TCP port.
- */
-function parseRequiredPort(value: unknown, field: string): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 65535) {
-    throw new Error(`${field} must be an integer between 1 and 65535.`);
-  }
-
-  return value;
-}
-
-/**
- * Parses an optional OpenShell network access mode.
- *
- * @param value Raw field value.
- * @param field Field name used in diagnostics.
- * @returns Access mode or undefined.
- * @throws Error when the field is not a supported access mode.
- */
-function parseOptionalAccess(value: unknown, field: string): OpenShellNetworkEndpoint['access'] {
-  if (value === undefined) {
-    return undefined;
-  }
-
-  if (value === 'read-only' || value === 'read-write') {
-    return value;
-  }
-
-  throw new Error(`${field} must be "read-only" or "read-write".`);
-}
-
-/**
- * Parses an optional string array field.
- *
- * @param value Raw field value.
- * @param field Field name used in diagnostics.
- * @returns String array or undefined.
- * @throws Error when the field is not a non-empty string array.
- */
-function parseOptionalStringArray(value: unknown, field: string): string[] | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-
-  if (
-    !Array.isArray(value) ||
-    value.length === 0 ||
-    value.some((entry) => typeof entry !== 'string' || !entry.trim())
-  ) {
-    throw new Error(`${field} must be a non-empty string array.`);
-  }
-
-  return value.map((entry) => entry.trim());
 }
 
 /**

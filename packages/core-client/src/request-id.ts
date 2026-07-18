@@ -17,6 +17,6 @@ export function withRequestId<T extends { requestId?: string }>(
 }
 
 /** Mutating command input with optional caller-provided request id. */
-export type OptionalRequestId<T extends { requestId: string }> = Omit<T, 'requestId'> & {
-  requestId?: string;
-};
+export type OptionalRequestId<T extends { requestId: string }> = T extends unknown
+  ? Omit<T, 'requestId'> & { requestId?: string }
+  : never;

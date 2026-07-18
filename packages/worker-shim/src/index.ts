@@ -9,9 +9,6 @@ export {
   parseCodexShimArgs,
   runCodexShim,
   runCodexShimCli,
-  type WorkerControlCommandRunInput,
-  type WorkerControlCommandRunner,
-  type WorkerControlCommandRunResult,
 } from './cli.js';
 export {
   type WorkerControlArtifactInput,
@@ -23,7 +20,6 @@ export {
   type WorkerControlFetchResponse,
   type WorkerControlFinalStatusInput,
   type WorkerControlHeartbeatInput,
-  type WorkerControlTerminalResultInput,
 } from './control-client.js';
 export {
   type WorkerArtifactInput,

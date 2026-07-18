@@ -75,6 +75,7 @@ describe('protocol hardening boundary', () => {
       /^StartTurnResponseSchema$/,
       /^GetTurnResponseSchema$/,
       /^ValidatedItemDeltaEventSchema$/,
+      /^UpdateArtifactMetadataRequestSchema$/,
     ];
     const leakedExports = Object.keys(protocol).filter((key) =>
       deniedExports.some((pattern) => pattern.test(key))
@@ -130,14 +131,6 @@ describe('protocol hardening boundary', () => {
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         turnId: 'tu_demo',
-      })
-    ).toThrow();
-
-    expect(() =>
-      protocol.UpdateArtifactMetadataRequestSchema.parse({
-        workspaceId: 'ws_demo',
-        artifactId: 'ar_demo',
-        title: 'Updated artifact',
       })
     ).toThrow();
 

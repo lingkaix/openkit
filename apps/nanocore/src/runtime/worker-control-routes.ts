@@ -42,14 +42,6 @@ const WorkerControlCommandAckRequestSchema = z.object({
   lineage: WorkerControlLineageRequestSchema,
   commandId: z.string().min(1),
 });
-const WorkerControlTerminalResultRequestSchema = z.object({
-  lineage: WorkerControlLineageRequestSchema,
-  terminalCommandId: z.string().min(1),
-  exitCode: z.number().int(),
-  stdout: z.string(),
-  stderr: z.string(),
-  durationMs: z.number().nonnegative().nullable().optional(),
-});
 const WorkerControlEventAppendRequestSchema = z.object({
   lineage: WorkerControlLineageRequestSchema,
   record: WorkerCanonicalEventRecordSchema,
@@ -71,7 +63,6 @@ const WorkerControlKnowledgeProposalSummaryBodySchema = z
 
 const WORKER_CONTROL_REQUEST_MAX_BYTES = 64 * 1024;
 const WORKER_CONTROL_EVENT_APPEND_MAX_BYTES = 256 * 1024;
-const WORKER_CONTROL_TERMINAL_RESULT_MAX_BYTES = 1024 * 1024;
 
 /**
  * Registers the sandbox-authenticated direct worker-control routes.
@@ -194,37 +185,6 @@ export function registerWorkerControlRoutes({
         lineage: parsed.data.lineage,
         operation: 'command_ack',
         route: '/api/worker-control/commands/ack',
-      });
-      return asWorkerControlApiError(error);
-    }
-  });
-
-  app.post('/api/worker-control/terminal-results', async (c) => {
-    const parsed = await parseWorkerControlTerminalResultRequest(c);
-
-    if (!parsed.success) {
-      return parsed.response;
-    }
-
-    try {
-      return c.json({
-        terminalResult: workerControlGateway.recordTerminalResult({
-          authorization: c.req.header('authorization') ?? null,
-          durationMs: parsed.data.durationMs ?? null,
-          exitCode: parsed.data.exitCode,
-          lineage: parsed.data.lineage,
-          stderr: parsed.data.stderr,
-          stdout: parsed.data.stdout,
-          terminalCommandId: parsed.data.terminalCommandId,
-        }),
-      });
-    } catch (error) {
-      quarantineWorkerControlRejection({
-        coreDb,
-        error,
-        lineage: parsed.data.lineage,
-        operation: 'terminal_result',
-        route: '/api/worker-control/terminal-results',
       });
       return asWorkerControlApiError(error);
     }
@@ -552,22 +512,5 @@ async function parseWorkerControlEventAppendRequest(
     WorkerControlEventAppendRequestSchema,
     WORKER_CONTROL_EVENT_APPEND_MAX_BYTES,
     'Worker control event append payload'
-  );
-}
-
-/**
- * Parses one bounded worker-control terminal result request.
- *
- * @param c Hono request context.
- * @returns Parsed terminal result request data, or an error response.
- */
-async function parseWorkerControlTerminalResultRequest(
-  c: Context
-): Promise<ParsedJsonRequest<z.infer<typeof WorkerControlTerminalResultRequestSchema>>> {
-  return parseBoundedJsonRequest(
-    c,
-    WorkerControlTerminalResultRequestSchema,
-    WORKER_CONTROL_TERMINAL_RESULT_MAX_BYTES,
-    'Worker control terminal result payload'
   );
 }

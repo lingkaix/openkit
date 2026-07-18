@@ -112,7 +112,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
     const selectedAgent = store.getAgent(turn.workspaceId, turn.agentId);
     const timestamp = turn.startedAt ?? new Date().toISOString();
     const agentSession = store.createAgentSession({
-      id: `session_sim_turn_${turn.id}`,
+      id: context.agentSessionId ?? `session_sim_turn_${turn.id}`,
       agentId: selectedAgent.id,
       workspaceId: turn.workspaceId,
       threadId: turn.threadId,
@@ -302,16 +302,16 @@ export class SimulatedTurnExecutor implements TurnExecutor {
     threadId: string
   ): AgentSessionReadModel {
     const sessions = store.listThreadAgentSessions(workspaceId, threadId);
-    const activeSessionId = store
-      .listThreadTurns(workspaceId, threadId)
-      .findLast(
-        (turn) =>
-          !['completed', 'failed', 'interrupted', 'cancelled'].includes(turn.status) &&
-          turn.agentSessionId?.startsWith('session_sim_turn_')
-      )?.agentSessionId;
+    const turns = store.listThreadTurns(workspaceId, threadId);
+    const activeSessionId = turns.findLast(
+      (turn) =>
+        !['completed', 'failed', 'interrupted', 'cancelled'].includes(turn.status) &&
+        turn.agentSessionId
+    )?.agentSessionId;
+    const latestSessionId = turns.findLast((turn) => turn.agentSessionId)?.agentSessionId;
     const storedSession =
       sessions.find((session) => session.id === activeSessionId) ??
-      sessions.findLast((session) => session.id.startsWith('session_sim_turn_'));
+      sessions.find((session) => session.id === latestSessionId);
 
     return {
       id: storedSession?.id ?? `session_sim_${threadId}`,
@@ -349,7 +349,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
   public async respondUserInput(
     store: FsStore,
     turnId: string,
-    input: string,
+    answers: Record<string, [string]>,
     context: TurnCommandRuntimeContext = { requestId: null }
   ) {
     const state = this.pendingByTurnId.get(turnId);
@@ -359,6 +359,10 @@ export class SimulatedTurnExecutor implements TurnExecutor {
     }
 
     state.requestId = context.requestId;
+    const input = Object.values(answers)[0]?.[0];
+    if (!input) {
+      throw new Error('Simulator user-input response has no answer.');
+    }
     const timestamp = new Date().toISOString();
     const responseItem = store.createItem({
       id: `it_user_input_response_${turnId}`,
@@ -368,7 +372,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       type: 'user-input-response',
       status: 'completed',
       userInputRequestId: state.userInputRequestId,
-      answers: { tone: [input] },
+      answers,
       createdAt: timestamp,
       completedAt: timestamp,
     });

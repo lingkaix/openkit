@@ -4,7 +4,7 @@ Read `README.md` first. This file contains only local agent execution rules for 
 
 ## Local Agent Rules
 
-- Keep NanoCore focused as the kernel server for Core protocol, public App API, MCP dogfooding, Goal Mode, worker governance, runtime config, auth, and durable local state.
+- Keep NanoCore focused as the kernel server for Core protocol, public App API, Goal Mode, worker governance, runtime config, auth, and durable local state.
 - Keep local and server modes explicit: local mode may use implicit local identity, while server mode must protect app and Core APIs through the configured auth boundary.
 - Keep Core routes aligned with `packages/protocol`; do not invent Core payload shapes locally.
 - Keep App API routes aligned with `@openkit/app-api-schemas`; do not define app read-model schemas inside route handlers.

@@ -1,5 +1,4 @@
 import {
-  type ArtifactReviewDecision,
   GetWorkspaceSyncReviewResponseSchema,
   type SubmitWorkspaceSyncReviewDecisionResponse,
   WorkspaceApplyPlanSchema,
@@ -20,16 +19,10 @@ import {
   requireWorkspaceApplyResult,
 } from './workspace-apply-results.js';
 import { getFilesystemWorkspaceStagingRoot } from './workspace-filesystem-staging.js';
-import {
-  applyGitWorkspaceReview,
-  discardGitWorkspaceReview,
-  stageGitWorkspaceReview,
-} from './workspace-review-git.js';
+import { applyGitWorkspaceReview, discardGitWorkspaceReview } from './workspace-review-git.js';
 import {
   getWorkspaceSyncReview,
   listWorkspaceSyncReviews,
-  parseWorkspaceSyncReviewItem,
-  recordWorkspaceSyncReview,
   updateWorkspaceSyncReviewDecision,
 } from './workspace-sync-records.js';
 
@@ -106,38 +99,18 @@ export function listWorkspaceSyncReviewsForRead(
 }
 
 /**
- * Maps the generic artifact decision vocabulary to the durable workspace-review vocabulary.
- *
- * @param decision Artifact review decision selected by the user.
- * @returns Equivalent durable workspace review decision.
- */
-export function workspaceSyncDecisionFromArtifact(
-  decision: ArtifactReviewDecision
-): WorkspaceSyncReviewDecision {
-  if (decision === 'redo') {
-    return 'needs_refinement';
-  }
-  if (decision === 'deferred') {
-    return 'blocked';
-  }
-
-  return decision;
-}
-
-/**
  * Resolves one durable workspace review decision and its optional apply result.
  *
  * The command owns review lifecycle transitions while strategy-specific modules own external
  * effects and compensation. Replaying an already-recorded matching terminal decision is read-only.
  *
- * @param input Workspace database, review identity, decision, and optional artifact fallback.
+ * @param input Workspace database, review identity, and decision.
  * @returns Durable review response shared by both App API decision routes.
  * @throws Error when the review is missing, already resolved differently, or application fails.
  */
 export async function decideWorkspaceSyncReview(input: {
   readonly decidedAt: string;
   readonly decision: WorkspaceSyncReviewDecision;
-  readonly fallbackReview: WorkspaceSyncReviewItem | null;
   readonly requestId: string;
   readonly reviewId: string;
   readonly store: FsStore;
@@ -174,73 +147,7 @@ async function executeWorkspaceSyncReviewDecision(
   input: Parameters<typeof decideWorkspaceSyncReview>[0]
 ): Promise<SubmitWorkspaceSyncReviewDecisionResponse> {
   const { workspaceDb, workspaceId, reviewId } = input;
-  let review = getWorkspaceSyncReview(workspaceDb, workspaceId, reviewId);
-
-  if (!review) {
-    if (!input.fallbackReview) {
-      throw new Error(`Workspace synchronization review not found: ${reviewId}`);
-    }
-
-    const fallbackReview = parseWorkspaceSyncReviewItem(input.fallbackReview, true);
-    if (
-      fallbackReview.review.id !== reviewId ||
-      fallbackReview.review.workspaceId !== workspaceId
-    ) {
-      throw new Error(`Workspace synchronization review not found: ${reviewId}`);
-    }
-    const repository =
-      fallbackReview.changeSet.strategy === 'git'
-        ? getWorkspaceRepositoryResource(
-            workspaceDb,
-            workspaceId,
-            fallbackReview.changeSet.resourceId
-          )
-        : null;
-    if (
-      input.decision === 'accepted' &&
-      fallbackReview.changeSet.strategy === 'git' &&
-      !repository
-    ) {
-      throw new Error('Workspace repository is not configured.');
-    }
-    if (
-      input.decision === 'accepted' &&
-      fallbackReview.changeSet.strategy === 'git' &&
-      !fallbackReview.review.staging.branch &&
-      repository?.git.stagingStrategy === 'review-branch'
-    ) {
-      throw new Error(`Workspace review branch is required: ${fallbackReview.review.id}`);
-    }
-
-    if (fallbackReview.changeSet.strategy === 'git' && fallbackReview.review.staging.branch) {
-      if (!repository) {
-        throw new Error('Workspace repository is not configured.');
-      }
-      await stageGitWorkspaceReview({
-        persistHead: (commitId) => {
-          workspaceDb.sqlite.transaction(() => {
-            recordWorkspaceSyncReview(workspaceDb, {
-              item: {
-                ...fallbackReview,
-                changeSet: {
-                  ...fallbackReview.changeSet,
-                  head: { ...fallbackReview.changeSet.head, commit: commitId },
-                },
-              },
-            });
-          })();
-        },
-        repository,
-        review: fallbackReview,
-        store: input.store,
-      });
-    } else {
-      workspaceDb.sqlite.transaction(() => {
-        recordWorkspaceSyncReview(workspaceDb, { item: fallbackReview });
-      })();
-    }
-    review = getWorkspaceSyncReview(workspaceDb, workspaceId, reviewId);
-  }
+  const review = getWorkspaceSyncReview(workspaceDb, workspaceId, reviewId);
 
   if (!review) {
     throw new Error(`Workspace synchronization review not found: ${reviewId}`);

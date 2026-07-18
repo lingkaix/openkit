@@ -27,7 +27,7 @@ interface StartProductTurnInput {
   /** Required Core database for durable scheduler admission and placement. */
   readonly coreDb?: CoreDb;
   /** Parsed protocol turn-start request. */
-  readonly input: z.infer<typeof SubmitTurnInputRequestSchema>;
+  readonly input: Extract<z.infer<typeof SubmitTurnInputRequestSchema>, { input: string }>;
   /** Runtime config snapshot captured for this turn. */
   readonly snapshot: RuntimeConfigSnapshot;
   /** Scheduler epoch owned by this process. */
@@ -91,7 +91,8 @@ export async function startProductTurn(input: StartProductTurnInput) {
     input.store.getUserId(),
     input.input.workspaceId,
     input.input.threadId,
-    input.input.requestId
+    input.input.requestId,
+    input.reservedTurnId
   );
   const queueEntryId = `queue_${input.input.requestId}_${suffix}`;
   const turnId = input.reservedTurnId ?? `turn_${input.input.requestId}_${suffix}`;
@@ -171,16 +172,22 @@ export async function startProductTurn(input: StartProductTurnInput) {
  * @param workspaceId Workspace id.
  * @param threadId Thread id.
  * @param requestId Request id.
+ * @param reservedTurnId Optional upper-level Turn owner included in scheduler lineage.
  * @returns Stable short id suffix.
  */
 function schedulerAdmissionIdSuffix(
   userId: string,
   workspaceId: string,
   threadId: string,
-  requestId: string
+  requestId: string,
+  reservedTurnId?: string
 ): string {
   return createHash('sha256')
-    .update(`${userId}:${workspaceId}:${threadId}:${requestId}`)
+    .update(
+      `${userId}:${workspaceId}:${threadId}:${requestId}${
+        reservedTurnId ? `:${reservedTurnId}` : ''
+      }`
+    )
     .digest('hex')
     .slice(0, 16);
 }

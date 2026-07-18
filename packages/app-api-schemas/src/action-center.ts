@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { WorkspaceApplyResultSchema } from './workspace-sync.js';
+import { WorkspaceSyncReviewDecisionSchema } from './workspace-sync.js';
 
 /** Goal Review decision values owned by the Goal Review record. */
 export const GoalReviewVerdictSchema = z.enum(['accept', 'refine', 'retry', 'abort']);
@@ -119,6 +119,7 @@ export const HumanAttentionActionKindSchema = z.enum([
   'edit_knowledge',
   'reject_knowledge',
   'defer',
+  ...WorkspaceSyncReviewDecisionSchema.options,
 ]);
 
 /** HTTP methods used by executable Action Center actions. */
@@ -386,34 +387,6 @@ export const ArtifactReviewDecisionSchema = z.enum([
   'deferred',
 ]);
 
-/** Request payload for recording one artifact review decision. */
-export const SubmitArtifactReviewDecisionRequestSchema = z
-  .object({
-    decision: ArtifactReviewDecisionSchema,
-    requestId: z.string().min(1).optional(),
-    message: z.string().min(1).optional(),
-  })
-  .strict();
-
-/** Response payload after recording one artifact review decision. */
-export const SubmitArtifactReviewDecisionResponseSchema = z
-  .object({
-    review: z
-      .object({
-        artifactId: z.string().min(1),
-        workspaceId: z.string().min(1),
-        threadId: z.string().min(1).nullable(),
-        turnId: z.string().min(1).nullable(),
-        status: ArtifactReviewDecisionSchema,
-        message: z.string().min(1).nullable(),
-        decidedAt: z.string().min(1),
-        followUpTurnId: z.string().min(1).nullable(),
-      })
-      .strict(),
-    workspaceApplyResult: WorkspaceApplyResultSchema.nullable().optional(),
-  })
-  .strict();
-
 /** Knowledge proposal decisions accepted by the app-local Action Center workflow. */
 export const KnowledgeProposalDecisionSchema = z.enum([
   'accepted',
@@ -589,14 +562,6 @@ export type GoalReviewVerdict = z.infer<typeof GoalReviewVerdictSchema>;
 export type GoalReviewResolutionOutcome = z.infer<typeof GoalReviewResolutionOutcomeSchema>;
 /** Immutable result stored after one Goal Review decision. */
 export type GoalReviewResolutionSnapshot = z.infer<typeof GoalReviewResolutionSnapshotSchema>;
-/** Request payload for recording one artifact review decision. */
-export type SubmitArtifactReviewDecisionRequest = z.infer<
-  typeof SubmitArtifactReviewDecisionRequestSchema
->;
-/** Response payload after recording one artifact review decision. */
-export type SubmitArtifactReviewDecisionResponse = z.infer<
-  typeof SubmitArtifactReviewDecisionResponseSchema
->;
 /** Knowledge proposal decision accepted by the app-local Action Center workflow. */
 export type KnowledgeProposalDecision = z.infer<typeof KnowledgeProposalDecisionSchema>;
 /** Request payload for recording one knowledge proposal decision. */

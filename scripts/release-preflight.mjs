@@ -84,11 +84,6 @@ function listPackageJsonPaths(repoRoot) {
     }
   }
 
-  const mcpPackage = join(repoRoot, 'mcp', 'package.json');
-  if (existsSync(mcpPackage)) {
-    paths.push(mcpPackage);
-  }
-
   return paths.filter((path) => existsSync(path));
 }
 

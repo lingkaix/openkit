@@ -297,7 +297,6 @@ describe('worker control routes', () => {
       'POST /api/worker-control/artifacts',
       'POST /api/worker-control/commands/poll',
       'POST /api/worker-control/commands/ack',
-      'POST /api/worker-control/terminal-results',
       'POST /api/worker-control/events/append',
       'POST /api/worker-control/final-status',
       'POST /api/worker-control/supply-refresh-ack',
@@ -2546,11 +2545,7 @@ describe('worker control routes', () => {
   it('returns queued commands to the authenticated worker poll', async () => {
     const { app, environmentPackage, gateway, lineage, token } = createWorkerControlRouteFixture();
 
-    gateway.enqueueTerminalCommand(environmentPackage.snapshotId, {
-      argv: ['pwd'],
-      commandId: 'term_route_1',
-      cwd: '/workspace/repo',
-    });
+    const interrupt = gateway.enqueueInterrupt(environmentPackage.snapshotId, 'Stop now');
 
     const res = await app.request('/api/worker-control/commands/poll', {
       body: JSON.stringify({ lineage }),
@@ -2561,15 +2556,14 @@ describe('worker control routes', () => {
       method: 'POST',
     });
     const body = (await res.json()) as {
-      commands: Array<{ argv: string[]; commandId: string; kind: string }>;
+      commands: Array<{ commandId: string; kind: string }>;
     };
 
     expect(res.status).toBe(200);
     expect(body.commands).toEqual([
       expect.objectContaining({
-        argv: ['pwd'],
-        commandId: 'term_route_1',
-        kind: 'terminal-command',
+        commandId: interrupt.commandId,
+        kind: 'interrupt',
       }),
     ]);
   });
@@ -2605,128 +2599,7 @@ describe('worker control routes', () => {
     }
   });
 
-  it('persists worker-control command delivery state through the default gateway', async () => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-commands-')));
-    const store = createDemoStore();
-    const thread = store.createThread('ws_demo', 'Durable command thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Control worker');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
-    const environmentPackage = AgentEnvironmentPackageSchema.parse(
-      resolveAgentEnvironmentPackage({
-        agent,
-        agentSessionId: 'session_durable_command',
-        userId: 'user_local',
-        backend: {
-          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
-          kind: 'openshell',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
-        },
-        createdAt: '2026-06-16T00:00:00.000Z',
-        requestId: 'req_durable_command',
-        turn,
-        workspaceCwd: '/workspace/repo',
-        workspaceRoots: [],
-      })
-    );
-    const lineage: WorkerControlLineage = {
-      agentSessionId: environmentPackage.scope.agentSessionId,
-      packageSnapshotId: environmentPackage.snapshotId,
-      requestId: environmentPackage.scope.requestId,
-      threadId: environmentPackage.scope.threadId,
-      turnId: environmentPackage.scope.turnId,
-      workspaceId: environmentPackage.scope.workspaceId,
-    };
-
-    try {
-      applyMigrations(coreDb);
-
-      const binding = createDurableWorkerControlLease(
-        coreDb,
-        environmentPackage,
-        lineage,
-        'durable_command'
-      );
-      const gateway = createDefaultWorkerControlGateway(coreDb);
-      const registration = gateway.registerSession(environmentPackage, {
-        sandboxBindingRef: binding,
-      });
-      gateway.enqueueTerminalCommand(environmentPackage.snapshotId, {
-        argv: ['pwd'],
-        commandId: 'term_durable_1',
-        cwd: '/workspace/repo',
-      });
-      const queued = coreDb.sqlite
-        .prepare(
-          'SELECT status, delivered_at AS deliveredAt, acknowledged_at AS acknowledgedAt FROM worker_control_commands WHERE command_id = ?'
-        )
-        .get('term_durable_1') as {
-        acknowledgedAt: string | null;
-        deliveredAt: string | null;
-        status: string;
-      };
-      const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
-
-      const poll = await app.request('/api/worker-control/commands/poll', {
-        body: JSON.stringify({ lineage }),
-        headers: {
-          authorization: `Bearer ${registration.token}`,
-          'content-type': 'application/json',
-        },
-        method: 'POST',
-      });
-      const delivered = coreDb.sqlite
-        .prepare(
-          'SELECT status, delivered_at AS deliveredAt, acknowledged_at AS acknowledgedAt FROM worker_control_commands WHERE command_id = ?'
-        )
-        .get('term_durable_1') as {
-        acknowledgedAt: string | null;
-        deliveredAt: string | null;
-        status: string;
-      };
-      const result = await app.request('/api/worker-control/terminal-results', {
-        body: JSON.stringify({
-          durationMs: 10,
-          exitCode: 0,
-          lineage,
-          stderr: '',
-          stdout: '/workspace/repo\n',
-          terminalCommandId: 'term_durable_1',
-        }),
-        headers: {
-          authorization: `Bearer ${registration.token}`,
-          'content-type': 'application/json',
-        },
-        method: 'POST',
-      });
-      const acknowledged = coreDb.sqlite
-        .prepare(
-          'SELECT status, delivered_at AS deliveredAt, acknowledged_at AS acknowledgedAt FROM worker_control_commands WHERE command_id = ?'
-        )
-        .get('term_durable_1') as {
-        acknowledgedAt: string | null;
-        deliveredAt: string | null;
-        status: string;
-      };
-
-      expect(queued).toEqual({
-        acknowledgedAt: null,
-        deliveredAt: null,
-        status: 'queued',
-      });
-      expect(poll.status).toBe(200);
-      expect(delivered.status).toBe('delivered');
-      expect(delivered.deliveredAt).toEqual(expect.any(String));
-      expect(delivered.acknowledgedAt).toBe(null);
-      expect(result.status).toBe(200);
-      expect(acknowledged.status).toBe('acknowledged');
-      expect(acknowledged.deliveredAt).toEqual(expect.any(String));
-      expect(acknowledged.acknowledgedAt).toEqual(expect.any(String));
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('persists non-terminal command acknowledgements through the default gateway', async () => {
+  it('persists interrupt command acknowledgements through the default gateway', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-command-ack-')));
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Durable command ack thread');
@@ -2905,11 +2778,6 @@ describe('worker control routes', () => {
       const firstRegistration = firstGateway.registerSession(environmentPackage, {
         sandboxBindingRef: 'lease-binding:lease_rebuild',
       });
-      firstGateway.enqueueTerminalCommand(environmentPackage.snapshotId, {
-        argv: ['pwd'],
-        commandId: 'term_rebuild_1',
-        cwd: '/workspace/repo',
-      });
       const firstApp = createApp({
         coreDb,
         mode: 'server',
@@ -2960,12 +2828,6 @@ describe('worker control routes', () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date(Date.parse(firstHeartbeatBody.heartbeat.lastHeartbeatAt) + 1_000));
       const rebuiltGateway = createDefaultWorkerControlGateway(coreDb);
-      const rebuiltApp = createApp({
-        coreDb,
-        mode: 'server',
-        store,
-        workerControlGateway: rebuiltGateway,
-      });
       const authorization = 'Bearer lease-binding:lease_rebuild';
       const retryHeartbeat = rebuiltGateway.recordHeartbeat({
         authorization,
@@ -2973,16 +2835,6 @@ describe('worker control routes', () => {
       });
       const snapshot = rebuiltGateway.getSessionSnapshot(lineage.packageSnapshotId);
       const leaseAfterRetry = requireSchedulerSessionLease(coreDb, 'lease_rebuild');
-      const poll = await rebuiltApp.request('/api/worker-control/commands/poll', {
-        body: JSON.stringify({ lineage }),
-        headers: {
-          authorization: 'Bearer lease-binding:lease_rebuild',
-          'content-type': 'application/json',
-        },
-        method: 'POST',
-      });
-      const body = (await poll.json()) as { commands: Array<{ commandId: string }> };
-
       expect.soft(retryHeartbeat).toEqual(firstHeartbeatBody.heartbeat);
       expect.soft(snapshot?.heartbeat).toEqual(firstHeartbeatBody.heartbeat);
       expect
@@ -2990,78 +2842,14 @@ describe('worker control routes', () => {
         .toBe(firstHeartbeatBody.heartbeat.lastHeartbeatAt);
       expect(snapshot).toMatchObject({
         agentSessionId: 'session_rebuild',
-        commands: [expect.objectContaining({ commandId: 'term_rebuild_1' })],
         events: [expect.objectContaining({ sequence: 3 })],
         heartbeat: expect.objectContaining({ status: 'running' }),
         packageSnapshotId: lineage.packageSnapshotId,
       });
-      expect(poll.status).toBe(200);
-      expect(body.commands).toEqual([expect.objectContaining({ commandId: 'term_rebuild_1' })]);
-      const terminalResult = rebuiltGateway.recordTerminalResult({
-        authorization,
-        durationMs: 10,
-        exitCode: 0,
-        lineage,
-        stderr: '',
-        stdout: '/workspace/repo\n',
-        terminalCommandId: 'term_rebuild_1',
-      });
-      const afterTerminalResult = rebuiltGateway.pollCommands({ authorization, lineage });
-
-      expect(terminalResult).toMatchObject({ commandId: 'term_rebuild_1', exitCode: 0 });
-      expect.soft(afterTerminalResult.commands).toEqual([]);
-
-      const interrupt = rebuiltGateway.enqueueInterrupt(
-        environmentPackage.snapshotId,
-        'Stop after current command.'
-      );
-      rebuiltGateway.pollCommands({ authorization, lineage });
-      const interruptAck = rebuiltGateway.acknowledgeCommand({
-        authorization,
-        commandId: interrupt.commandId,
-        lineage,
-      });
-      const afterInterruptAck = rebuiltGateway.pollCommands({ authorization, lineage });
-      const finalGateway = createDefaultWorkerControlGateway(coreDb);
-      const afterSecondRebuild = finalGateway.pollCommands({ authorization, lineage });
-
-      expect(interruptAck).toMatchObject({ commandId: interrupt.commandId, kind: 'interrupt' });
-      expect.soft(afterInterruptAck.commands).toEqual([]);
-      expect.soft(afterSecondRebuild.commands).toEqual([]);
     } finally {
       vi.useRealTimers();
       coreDb.sqlite.close();
     }
-  });
-
-  it('rejects oversized terminal result requests before schema handling', async () => {
-    const { app, environmentPackage, gateway, lineage, token } = createWorkerControlRouteFixture();
-
-    gateway.enqueueTerminalCommand(environmentPackage.snapshotId, {
-      argv: ['diagnose'],
-      commandId: 'term_route_oversized',
-      cwd: '/workspace/repo',
-    });
-
-    const res = await app.request('/api/worker-control/terminal-results', {
-      body: JSON.stringify({
-        durationMs: 100,
-        exitCode: 0,
-        lineage,
-        stderr: '',
-        stdout: 'x'.repeat(1025 * 1024),
-        terminalCommandId: 'term_route_oversized',
-      }),
-      headers: {
-        authorization: `Bearer ${token}`,
-        'content-type': 'application/json',
-      },
-      method: 'POST',
-    });
-    const body = (await res.json()) as { code: string };
-
-    expect(res.status).toBe(413);
-    expect(body.code).toBe('worker_control_payload_too_large');
   });
 
   it('accepts canonical event append requests without a browser session cookie', async () => {

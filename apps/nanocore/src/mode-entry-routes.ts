@@ -14,9 +14,9 @@ import {
   type TaskDelegationDecision,
   type TaskModeEvidence,
 } from '@openkit/app-api-schemas';
-import type { TurnSchema } from '@openkit/protocol';
+import type { StopReason, TurnSchema } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
-import { z } from 'zod';
+import type { z } from 'zod';
 
 import {
   apiErrorPayload,
@@ -36,6 +36,7 @@ import { goalStartOwnerIds, startGoalModeObjective } from './goal-routes.js';
 import {
   type DelegationContextRef,
   type StructuredWorkerDelegationRequest,
+  StructuredWorkerDelegationRequestSchema,
   serializeStructuredWorkerDelegationRequest,
 } from './internal-agents/delegation.js';
 import { redactInternalAgentText } from './internal-agents/redaction.js';
@@ -45,7 +46,7 @@ import {
   type WorkerCoordinatorDecision,
 } from './internal-agents/worker-coordinator.js';
 import { answerKnowledgeManager, prepareKnowledgeContext } from './knowledge-manager.js';
-import type { CommandRequestRecord, FsStore } from './lib/store.js';
+import type { ChatCommandReceiptMetadata, CommandRequestRecord, FsStore } from './lib/store.js';
 import { parseUsage } from './llm/gateway-usage.js';
 import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
 import type { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
@@ -53,11 +54,30 @@ import { registerAppApiRoute } from './openapi.js';
 import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
 import { getGoalRecord } from './runtime/goal-store.js';
 import {
+  commandInputHash,
   IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
+import {
+  createWorkerCheckpointEvidenceDiagnostics,
+  getWorkerCheckpoint,
+  parseWorkerCheckpointContextAssembly,
+  parseWorkerCheckpointEvidence,
+  updateWorkerCheckpoint,
+  type WorkerCheckpointRecord,
+} from './runtime/worker-checkpoints.js';
+import { turnStatusForCanonicalWorkerStopReason } from './runtime/worker-control-records.js';
+import {
+  classifyClosedWorkerApprovalGate,
+  classifyClosedWorkerUserInputGate,
+  clearWorkerCheckpointAfterTerminalState,
+  recoverWorkerCheckpointStopReason,
+  resolveInterruptedWorkerRetryDecision,
+} from './runtime/worker-recovery.js';
+import { workerTurnStageForStopReason } from './runtime/worker-stage.js';
+import { runWorkerTurnLoop } from './runtime/worker-turn-loop.js';
 import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { applyScopedMigrations } from './storage/migrate.js';
@@ -76,19 +96,8 @@ const QUICK_CHAT_SYSTEM_PROMPT =
 /** Maximum duration of one direct Quick Chat provider call. */
 const QUICK_CHAT_TIMEOUT_MS = 30_000;
 
-/** Closed Chat result kinds needed to reconstruct one accepted response from durable owners. */
-const ChatModeCommandResultKindSchema = z.enum([
-  'knowledge-answer',
-  'repository-answer',
-  'provider-answer',
-  'clarification',
-  'task-handoff',
-  'goal-handoff',
-  'refused',
-]);
-
 /** Closed Chat result kind retained by the bounded receipt. */
-type ChatModeCommandResultKind = z.infer<typeof ChatModeCommandResultKindSchema>;
+type ChatModeCommandResultKind = ChatCommandReceiptMetadata['resultKind'];
 
 /** Deterministic durable Item prefix for each accepted Chat result kind. */
 const CHAT_MODE_RESULT_ITEM_PREFIX = {
@@ -101,27 +110,8 @@ const CHAT_MODE_RESULT_ITEM_PREFIX = {
   refused: 'it_chat_refused_',
 } satisfies Record<ChatModeCommandResultKind, string>;
 
-/** Stable downstream business-owner identifiers for one Chat handoff. */
-const ChatModeCommandDownstreamSchema = z
-  .discriminatedUnion('kind', [
-    z.object({ kind: z.literal('task'), turnId: z.string().min(1) }),
-    z.object({
-      kind: z.literal('goal'),
-      goalId: z.string().min(1),
-      turnId: z.string().min(1),
-    }),
-  ])
-  .nullable();
-
-/** Outcome-only receipt needed to locate durable owners of one accepted Chat response. */
-const ChatModeCommandSnapshotSchema = z.object({
-  downstream: ChatModeCommandDownstreamSchema,
-  resultKind: ChatModeCommandResultKindSchema,
-  status: z.union([z.literal(200), z.literal(202)]),
-});
-
 /** Stable downstream business-owner identifiers retained by the bounded receipt. */
-type ChatModeCommandDownstream = z.infer<typeof ChatModeCommandDownstreamSchema>;
+type ChatModeCommandDownstream = ChatCommandReceiptMetadata['downstream'];
 
 /** Accepted Chat Mode result plus its HTTP status. */
 type ChatModeCommandResult = {
@@ -154,11 +144,14 @@ function replayChatModeCommand(
   record: CommandRequestRecord
 ): ChatModeCommandResult {
   try {
-    const snapshot = ChatModeCommandSnapshotSchema.parse(record.response.snapshot);
+    const metadata = record.response.chatMetadata;
+    if (!metadata) {
+      throw new Error('Chat command receipt metadata is missing.');
+    }
     const currentTurn = store.getTurnById(record.response.id);
     const itemRevisions = store.listWorkspaceItemRevisions(workspaceId);
     const userItemId = `it_chat_user_${currentTurn.id}`;
-    const resultItemId = `${CHAT_MODE_RESULT_ITEM_PREFIX[snapshot.resultKind]}${currentTurn.id}`;
+    const resultItemId = `${CHAT_MODE_RESULT_ITEM_PREFIX[metadata.resultKind]}${currentTurn.id}`;
     const userItem = itemRevisions.find((item) => item.id === userItemId);
     const resultItem = itemRevisions.find((item) => item.id === resultItemId);
     const currentUserItem = currentTurn.items.find((item) => item.id === userItemId);
@@ -189,13 +182,13 @@ function replayChatModeCommand(
       throw new Error('Chat command owner contradiction.');
     }
 
-    if (snapshot.resultKind === 'clarification') {
+    if (metadata.resultKind === 'clarification') {
       if (
-        snapshot.status !== 202 ||
-        snapshot.downstream !== null ||
+        metadata.status !== 202 ||
+        metadata.downstream !== null ||
         resultItem.type !== 'user-input-request' ||
-        resultItem.status !== 'in_progress' ||
-        resultItem.completedAt !== null
+        resultItem.status !== 'completed' ||
+        resultItem.completedAt !== resultItem.createdAt
       ) {
         throw new Error('Chat clarification owner contradiction.');
       }
@@ -225,8 +218,8 @@ function replayChatModeCommand(
           handoff: null,
         }),
         downstream: null,
-        resultKind: snapshot.resultKind,
-        status: snapshot.status,
+        resultKind: metadata.resultKind,
+        status: metadata.status,
       };
     }
 
@@ -243,40 +236,40 @@ function replayChatModeCommand(
     let handoff: StartChatModeResponse['handoff'] = null;
 
     if (
-      snapshot.resultKind === 'knowledge-answer' ||
-      snapshot.resultKind === 'repository-answer' ||
-      snapshot.resultKind === 'provider-answer'
+      metadata.resultKind === 'knowledge-answer' ||
+      metadata.resultKind === 'repository-answer' ||
+      metadata.resultKind === 'provider-answer'
     ) {
       if (
         resultItem.type !== 'assistant-message' ||
         resultItem.status !== 'completed' ||
-        snapshot.downstream !== null ||
-        (snapshot.resultKind === 'repository-answer'
-          ? snapshot.status !== 202
-          : snapshot.status !== 200)
+        metadata.downstream !== null ||
+        (metadata.resultKind === 'repository-answer'
+          ? metadata.status !== 202
+          : metadata.status !== 200)
       ) {
         throw new Error('Chat answer owner contradiction.');
       }
 
       outcome = 'answered';
       explanation =
-        snapshot.resultKind === 'knowledge-answer'
+        metadata.resultKind === 'knowledge-answer'
           ? 'The Assistant answered from workspace knowledge.'
-          : snapshot.resultKind === 'repository-answer'
+          : metadata.resultKind === 'repository-answer'
             ? 'The Assistant answered from a read-only repository inspection.'
             : 'The Assistant answered directly.';
-    } else if (snapshot.resultKind === 'task-handoff') {
+    } else if (metadata.resultKind === 'task-handoff') {
       if (
         resultItem.type !== 'status' ||
         resultItem.status !== 'completed' ||
         !resultItem.summary ||
-        snapshot.status !== 202 ||
-        snapshot.downstream?.kind !== 'task'
+        metadata.status !== 202 ||
+        metadata.downstream?.kind !== 'task'
       ) {
         throw new Error('Chat Task handoff owner contradiction.');
       }
 
-      const downstreamTurn = store.getTurnById(snapshot.downstream.turnId);
+      const downstreamTurn = store.getTurnById(metadata.downstream.turnId);
 
       if (
         downstreamTurn.id === currentTurn.id ||
@@ -296,18 +289,18 @@ function replayChatModeCommand(
       outcome = 'task-handoff';
       explanation = resultItem.summary;
       handoff = { targetMode: 'task', reason: resultItem.summary, statusItemId: resultItem.id };
-    } else if (snapshot.resultKind === 'goal-handoff') {
+    } else if (metadata.resultKind === 'goal-handoff') {
       if (
         resultItem.type !== 'status' ||
         resultItem.status !== 'completed' ||
         !resultItem.summary ||
-        snapshot.status !== 202 ||
-        snapshot.downstream?.kind !== 'goal'
+        metadata.status !== 202 ||
+        metadata.downstream?.kind !== 'goal'
       ) {
         throw new Error('Chat Goal handoff owner contradiction.');
       }
 
-      const goalTurn = store.getTurnById(snapshot.downstream.turnId);
+      const goalTurn = store.getTurnById(metadata.downstream.turnId);
       const ids = goalStartOwnerIds({
         owningCommand: 'chat.start',
         requestId: record.requestId,
@@ -318,7 +311,7 @@ function replayChatModeCommand(
       const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
 
       try {
-        const goal = getGoalRecord(workspaceDb, workspaceId, threadId, snapshot.downstream.goalId);
+        const goal = getGoalRecord(workspaceDb, workspaceId, threadId, metadata.downstream.goalId);
         const creationItem = goal?.createdByItemId
           ? goalTurn.items.find((item) => item.id === goal.createdByItemId)
           : null;
@@ -352,7 +345,7 @@ function replayChatModeCommand(
         resultItem.type !== 'status' ||
         resultItem.status !== 'completed' ||
         !resultItem.summary ||
-        snapshot.downstream !== null
+        metadata.downstream !== null
       ) {
         throw new Error('Chat refusal owner contradiction.');
       }
@@ -384,9 +377,9 @@ function replayChatModeCommand(
         item: resultItem,
         handoff,
       }),
-      downstream: snapshot.downstream,
-      resultKind: snapshot.resultKind,
-      status: snapshot.status,
+      downstream: metadata.downstream,
+      resultKind: metadata.resultKind,
+      status: metadata.status,
     };
   } catch {
     throw new TurnStartValidationError(
@@ -428,12 +421,33 @@ function replayTaskModeCommand(
       throw new Error('Task command owner contradiction.');
     }
 
-    if (currentTurn.id.startsWith(`turn_${record.requestId}`)) {
+    if (
+      currentTurn.id ===
+      directTaskModeTurnId(store.getUserId(), workspaceId, threadId, record.requestId)
+    ) {
       const initiatingItem = currentTurn.items.find(
         (item) => item.id === `it_user_${currentTurn.id}`
       );
+      const closedGate =
+        classifyClosedWorkerApprovalGate(store, currentTurn) ??
+        classifyClosedWorkerUserInputGate(store, currentTurn);
+      if (
+        !closedGate &&
+        currentTurn.items.some(
+          (item) => item.type === 'approval-decision' || item.type === 'user-input-response'
+        )
+      ) {
+        throw new Error('Task worker Gate owner contradiction.');
+      }
+      const stopReason =
+        closedGate?.stopReason ?? taskModeTerminalStopReason(store, currentTurn.id);
 
-      if (initiatingItem?.type !== 'user-message' || initiatingItem.status !== 'completed') {
+      if (
+        initiatingItem?.type !== 'user-message' ||
+        initiatingItem.status !== 'completed' ||
+        !stopReason ||
+        currentTurn.status !== turnStatusForCanonicalWorkerStopReason(stopReason)
+      ) {
         throw new Error('Task worker Turn owner contradiction.');
       }
 
@@ -441,9 +455,15 @@ function replayTaskModeCommand(
 
       try {
         return StartTaskModeResponseSchema.parse({
-          state: taskModeStateForTurn(currentTurn.status),
+          state: closedGate
+            ? closedGate.stopReason === 'aborted'
+              ? 'cancelled'
+              : 'blocked'
+            : taskModeStateForStopReason(stopReason),
           turn: currentTurn,
-          completion: taskModeCompletionForTurn(store, workspaceId, threadId, currentTurn),
+          completion: closedGate
+            ? null
+            : taskModeCompletionForTurn(store, workspaceId, threadId, currentTurn),
           evidence: taskModeEvidenceForTurn(store, workspaceDb, workspaceId, threadId, currentTurn),
         });
       } finally {
@@ -520,6 +540,334 @@ function replayTaskModeCommand(
       409
     );
   }
+}
+
+/**
+ * Rebuilds one direct Task result from its exact request-bound worker checkpoint.
+ *
+ * @param input Direct Task command identity and durable owners.
+ * @returns Current Task projection without rerunning Coordinator or the worker.
+ * @throws TurnStartValidationError when the checkpoint owner tuple is incomplete.
+ */
+function recoverDirectTaskModeCheckpoint(input: {
+  readonly coreDb: CoreDb;
+  readonly store: FsStore;
+  readonly workspaceDb: WorkspaceDb;
+  readonly workspaceId: string;
+  readonly threadId: string;
+  readonly requestId: string;
+  readonly requestInputHash: string;
+  readonly turnId: string;
+  readonly checkpoint: WorkerCheckpointRecord;
+}): StartTaskModeResponse {
+  const { checkpoint } = input;
+  if (
+    checkpoint.requestId === input.requestId &&
+    checkpoint.requestInputHash !== input.requestInputHash
+  ) {
+    throw new IdempotencyKeyConflictError();
+  }
+  if (
+    checkpoint.workspaceId !== input.workspaceId ||
+    checkpoint.threadId !== input.threadId ||
+    checkpoint.turnId !== input.turnId ||
+    checkpoint.requestId !== input.requestId ||
+    checkpoint.requestInputHash !== input.requestInputHash ||
+    checkpoint.goalId !== null ||
+    checkpoint.taskId !== null ||
+    checkpoint.iteration !== 0
+  ) {
+    throw directTaskModeRecoveryError('The Task checkpoint contradicts its command identity.');
+  }
+
+  let turn: z.infer<typeof TurnSchema>;
+  try {
+    turn = input.store.getTurn(input.workspaceId, input.threadId, input.turnId);
+  } catch {
+    throw directTaskModeRecoveryError('The Task checkpoint is missing its worker Turn.');
+  }
+  const initiatingItem = turn.items.find((item) => item.id === `it_user_${turn.id}`);
+  if (
+    initiatingItem?.type !== 'user-message' ||
+    initiatingItem.status !== 'completed' ||
+    initiatingItem.workspaceId !== input.workspaceId ||
+    initiatingItem.threadId !== input.threadId ||
+    initiatingItem.turnId !== input.turnId ||
+    !checkpoint.contextDigest
+  ) {
+    throw directTaskModeRecoveryError('The Task checkpoint is missing its worker input Item.');
+  }
+  try {
+    const workerRequest = StructuredWorkerDelegationRequestSchema.parse(
+      JSON.parse(initiatingItem.text)
+    );
+    if (commandInputHash(workerRequest) !== checkpoint.contextDigest) {
+      throw new Error('Worker request digest mismatch.');
+    }
+  } catch {
+    throw directTaskModeRecoveryError('The Task checkpoint worker input is not authoritative.');
+  }
+
+  let stopReason: StopReason;
+  let stage = checkpoint.stage;
+  let evidence = parseWorkerCheckpointEvidence(checkpoint.diagnosticsSummary);
+  const currentEvidence = taskModeEvidenceForTurn(
+    input.store,
+    input.workspaceDb,
+    input.workspaceId,
+    input.threadId,
+    turn
+  );
+  const recoveringAcceptedFinalStatus =
+    stage === 'running_worker' && checkpoint.stopReason === null;
+
+  try {
+    stopReason = recoverWorkerCheckpointStopReason(
+      input.coreDb,
+      input.store,
+      input.workspaceDb,
+      checkpoint
+    );
+  } catch {
+    throw directTaskModeRecoveryError('The Task checkpoint has no complete worker closeout.');
+  }
+  if (recoveringAcceptedFinalStatus) {
+    const contextAssembly = parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary);
+    evidence = {
+      itemIds: currentEvidence.itemIds,
+      artifactIds: currentEvidence.artifactIds,
+    };
+    stage = workerTurnStageForStopReason(stopReason);
+    updateWorkerCheckpoint(input.workspaceDb, {
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      turnId: input.turnId,
+      stage,
+      stopReason,
+      diagnosticsSummary: createWorkerCheckpointEvidenceDiagnostics(evidence, contextAssembly),
+    });
+  }
+
+  if (stage !== workerTurnStageForStopReason(stopReason) || !evidence) {
+    throw directTaskModeRecoveryError('The Task checkpoint contradicts its terminal outcome.');
+  }
+
+  const closedGate =
+    classifyClosedWorkerApprovalGate(input.store, turn) ??
+    classifyClosedWorkerUserInputGate(input.store, turn);
+  if (
+    (!closedGate &&
+      turn.items.some(
+        (item) => item.type === 'approval-decision' || item.type === 'user-input-response'
+      )) ||
+    (closedGate !== null &&
+      (closedGate.stopReason !== stopReason ||
+        !evidence.itemIds.includes(closedGate.requestItemId) ||
+        !evidence.itemIds.includes(closedGate.responseItemId))) ||
+    evidence.itemIds.some((itemId) => !currentEvidence.itemIds.includes(itemId)) ||
+    evidence.artifactIds.some((artifactId) => !currentEvidence.artifactIds.includes(artifactId))
+  ) {
+    throw directTaskModeRecoveryError('The Task checkpoint evidence has no matching owner.');
+  }
+
+  return StartTaskModeResponseSchema.parse({
+    state: closedGate
+      ? closedGate.stopReason === 'aborted'
+        ? 'cancelled'
+        : 'blocked'
+      : taskModeStateForStopReason(stopReason),
+    turn,
+    completion: closedGate
+      ? null
+      : taskModeCompletionForTurn(input.store, input.workspaceId, input.threadId, turn),
+    evidence: currentEvidence,
+  });
+}
+
+/**
+ * Classifies one direct Task checkpoint after scheduler restart fencing.
+ *
+ * @param input Exact Core, product, Workspace, and checkpoint owners.
+ * @returns `live` for a reconnectable or human-gated Turn, otherwise `complete` after receipt-first cleanup.
+ * @throws TurnStartValidationError when the durable owner tuple cannot prove one safe outcome.
+ */
+export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: {
+  readonly coreDb: CoreDb;
+  readonly store: FsStore;
+  readonly workspaceDb: WorkspaceDb;
+  readonly checkpoint: WorkerCheckpointRecord;
+}): Promise<'complete' | 'live'> {
+  const { checkpoint } = input;
+  const expectedTurnId = directTaskModeTurnId(
+    input.store.getUserId(),
+    checkpoint.workspaceId,
+    checkpoint.threadId,
+    checkpoint.requestId
+  );
+  if (
+    checkpoint.goalId !== null ||
+    checkpoint.taskId !== null ||
+    checkpoint.iteration !== 0 ||
+    checkpoint.turnId !== expectedTurnId
+  ) {
+    throw directTaskModeRecoveryError('The boot Task checkpoint contradicts its command identity.');
+  }
+
+  const scope = { workspaceId: checkpoint.workspaceId, threadId: checkpoint.threadId };
+  const receipt = input.store.getCommandRequest(
+    'task.start',
+    checkpoint.requestId,
+    scope,
+    input.workspaceDb
+  );
+  if (
+    receipt &&
+    (receipt.inputHash !== checkpoint.requestInputHash ||
+      receipt.response.kind !== 'turn' ||
+      receipt.response.id !== checkpoint.turnId)
+  ) {
+    throw directTaskModeRecoveryError('The boot Task receipt contradicts its checkpoint owner.');
+  }
+  const retryDecision = resolveInterruptedWorkerRetryDecision(
+    input.coreDb,
+    input.store,
+    input.workspaceDb,
+    checkpoint
+  );
+  if (retryDecision.status === 'reconnect-pending') {
+    if (receipt) {
+      throw directTaskModeRecoveryError(
+        'The reconnectable Task checkpoint already has a terminal command receipt.'
+      );
+    }
+    return 'live';
+  }
+
+  const response = recoverDirectTaskModeCheckpoint({
+    coreDb: input.coreDb,
+    store: input.store,
+    workspaceDb: input.workspaceDb,
+    workspaceId: checkpoint.workspaceId,
+    threadId: checkpoint.threadId,
+    requestId: checkpoint.requestId,
+    requestInputHash: checkpoint.requestInputHash,
+    turnId: checkpoint.turnId,
+    checkpoint,
+  });
+  const recoveredCheckpoint = getWorkerCheckpoint(
+    input.workspaceDb,
+    checkpoint.workspaceId,
+    checkpoint.threadId,
+    checkpoint.turnId
+  );
+  if (!recoveredCheckpoint) {
+    throw directTaskModeRecoveryError(
+      'The boot Task checkpoint disappeared during classification.'
+    );
+  }
+  if (recoveredCheckpoint.stage === 'waiting_for_user' && response.state !== 'awaiting-human') {
+    throw directTaskModeRecoveryError('The active Task Gate contradicts its Task projection.');
+  }
+  if (!hasClosedDirectTaskGateReceipt(input.store, response.turn)) {
+    throw directTaskModeRecoveryError('The closed Task Gate has no response command receipt.');
+  }
+  if (!receipt) {
+    input.store.recordCommandRequest(
+      {
+        command: 'task.start',
+        requestId: checkpoint.requestId,
+        scope,
+        inputHash: checkpoint.requestInputHash,
+        response: { kind: 'turn', id: checkpoint.turnId },
+      },
+      input.workspaceDb
+    );
+  }
+  if (recoveredCheckpoint.stage === 'waiting_for_user') {
+    return 'live';
+  }
+  if (
+    !(await clearWorkerCheckpointAfterTerminalState(input.workspaceDb, {
+      workspaceId: checkpoint.workspaceId,
+      threadId: checkpoint.threadId,
+      turnId: checkpoint.turnId,
+    }))
+  ) {
+    throw directTaskModeRecoveryError('The boot Task checkpoint is not ready for cleanup.');
+  }
+  return 'complete';
+}
+
+/**
+ * Checks whether a closed direct Task Gate retained its exact response command receipt.
+ *
+ * @param store Product store containing Gate receipts.
+ * @param turn Direct Task Turn returned by owner recovery.
+ * @returns True for a non-Gate outcome or one exact receipt-backed Gate closure.
+ */
+function hasClosedDirectTaskGateReceipt(store: FsStore, turn: z.infer<typeof TurnSchema>): boolean {
+  const approval = classifyClosedWorkerApprovalGate(store, turn);
+  if (approval) {
+    const request = turn.items.find((item) => item.id === approval.requestItemId);
+    if (request?.type !== 'approval-request') {
+      return false;
+    }
+    const receipt = store.getCommandRequest('approval.respond', approval.responseRequestId, {
+      workspaceId: turn.workspaceId,
+      threadId: turn.threadId,
+      turnId: turn.id,
+      approvalRequestId: request.approvalRequestId,
+    });
+    return (
+      receipt?.response.kind === 'approval' && receipt.response.id === request.approvalRequestId
+    );
+  }
+
+  const userInput = classifyClosedWorkerUserInputGate(store, turn);
+  if (!userInput) {
+    return true;
+  }
+  const receipt = store.getCommandRequest('turn.input.submit', userInput.responseRequestId, {
+    workspaceId: turn.workspaceId,
+    threadId: turn.threadId,
+    turnId: turn.id,
+  });
+  return receipt?.response.kind === 'turn' && receipt.response.id === turn.id;
+}
+
+/**
+ * Creates the strict recovery error shared by direct Task replay and closeout.
+ *
+ * @param message Product-safe owner contradiction.
+ * @returns Typed recovery-required error.
+ */
+function directTaskModeRecoveryError(message: string): TurnStartValidationError {
+  return new TurnStartValidationError('recovery_required', message, 409);
+}
+
+/**
+ * Derives one direct Task Turn id from the complete command identity.
+ *
+ * @param userId Authenticated actor id.
+ * @param workspaceId Workspace command scope.
+ * @param threadId Thread command scope.
+ * @param requestId Caller-supplied command request id.
+ * @returns Stable direct Task worker Turn id.
+ */
+function directTaskModeTurnId(
+  userId: string,
+  workspaceId: string,
+  threadId: string,
+  requestId: string
+): string {
+  const suffix = commandInputHash({
+    command: 'task.start',
+    userId,
+    workspaceId,
+    threadId,
+    requestId,
+  }).slice(-16);
+  return `turn_${requestId}_${suffix}`;
 }
 
 /**
@@ -1099,6 +1447,44 @@ function taskModeStateForTurn(status: z.infer<typeof TurnSchema>['status']) {
 }
 
 /**
+ * Maps a canonical worker stop reason to the Task Mode state vocabulary.
+ *
+ * @param stopReason Canonical terminal worker outcome.
+ * @returns Task Mode state owned by that outcome.
+ */
+function taskModeStateForStopReason(stopReason: StopReason) {
+  return stopReason === 'length' || stopReason === 'budget_exhausted'
+    ? 'blocked'
+    : taskModeStateForTurn(turnStatusForCanonicalWorkerStopReason(stopReason));
+}
+
+/**
+ * Reads the unique durable worker outcome or exact active human Gate for one Task Turn.
+ *
+ * @param store Store that owns the Turn event stream.
+ * @param turnId Worker Turn id.
+ * @returns Canonical stop reason, or null when durable outcome evidence is absent or ambiguous.
+ */
+function taskModeTerminalStopReason(store: FsStore, turnId: string): StopReason | null {
+  const terminalEvents = store
+    .getTurnEvents(turnId)
+    .filter((event) => event.event === 'turn.completed' && event.data.type === 'turn-completed');
+
+  if (terminalEvents.length > 1) {
+    return null;
+  }
+  const terminalEvent = terminalEvents[0];
+  const eventStopReason =
+    terminalEvent?.data.type === 'turn-completed' ? terminalEvent.data.stopReason : null;
+  if (eventStopReason && eventStopReason !== 'ask_user') {
+    return eventStopReason;
+  }
+
+  const turn = store.getTurnById(turnId);
+  return turn.status === 'awaiting_human' && turn.humanGate ? 'ask_user' : null;
+}
+
+/**
  * Projects the final assistant item for a completed Task Mode worker attempt.
  *
  * @param store Store that owns the thread items.
@@ -1569,7 +1955,7 @@ export function registerQuickAndChatModeRoutes({
           threadId,
           turnId: turn.id,
           type: 'user-input-request',
-          status: 'in_progress',
+          status: 'completed',
           userInputRequestId: requestId,
           prompt: 'Chat Mode needs a more specific request.',
           questions: [
@@ -1583,7 +1969,7 @@ export function registerQuickAndChatModeRoutes({
             },
           ],
           createdAt: turn.startedAt ?? completedAt,
-          completedAt: null,
+          completedAt: turn.startedAt ?? completedAt,
         });
         const waitingTurn = store.updateTurn(turn.id, {
           status: 'awaiting_human',
@@ -1966,7 +2352,7 @@ export function registerQuickAndChatModeRoutes({
         requestId: chatInput.requestId,
         responseId: ({ body }) => body.turn.id,
         responseKind: 'turn',
-        responseSnapshot: ({ downstream, resultKind, status }) => ({
+        chatResponseMetadata: ({ downstream, resultKind, status }) => ({
           downstream,
           resultKind,
           status,
@@ -2028,6 +2414,7 @@ export function registerTaskModeRoute({
     readonly modelId?: string | undefined;
     readonly requestId: string;
     readonly requestedAgentId: string;
+    readonly reservedTurnId?: string | undefined;
   }) => Promise<z.infer<typeof TurnSchema>>;
   readonly workerCoordinatorCandidates: (
     store: FsStore,
@@ -2041,6 +2428,10 @@ export function registerTaskModeRoute({
       return asInvalidRequestError(parsed.error);
     }
     const taskInput = parsed.data;
+    const requestInputHash = commandInputHash({
+      input: taskInput.input,
+      modelId: taskInput.modelId,
+    });
 
     /**
      * Executes one fresh direct Task command after the ledger accepts its identity.
@@ -2059,6 +2450,40 @@ export function registerTaskModeRoute({
 
       assertProjectWorkspace(workspace, 'start Task Mode');
       store.getThread(workspaceId, threadId);
+
+      if (!coreDb) {
+        throw new TurnStartValidationError(
+          'scheduler_unavailable',
+          'Durable scheduler storage is required to start Task Mode.',
+          503
+        );
+      }
+
+      const reservedTurnId = directTaskModeTurnId(
+        store.getUserId(),
+        workspaceId,
+        threadId,
+        taskInput.requestId
+      );
+      const recoveryDb = repositoryWorkspaceDb(store, workspaceId);
+      try {
+        const checkpoint = getWorkerCheckpoint(recoveryDb, workspaceId, threadId, reservedTurnId);
+        if (checkpoint) {
+          return recoverDirectTaskModeCheckpoint({
+            coreDb,
+            store,
+            workspaceDb: recoveryDb,
+            workspaceId,
+            threadId,
+            requestId: taskInput.requestId,
+            requestInputHash,
+            turnId: reservedTurnId,
+            checkpoint,
+          });
+        }
+      } finally {
+        recoveryDb.sqlite.close();
+      }
 
       const delegation = createTaskModeDelegation({
         store,
@@ -2108,7 +2533,9 @@ export function registerTaskModeRoute({
         });
       }
 
-      if (!delegation.taskDecision || !delegation.coordinator.workerRequest) {
+      const taskDecision = delegation.taskDecision;
+      const workerRequest = delegation.coordinator.workerRequest;
+      if (!taskDecision || !workerRequest) {
         throw new TurnStartValidationError(
           'task_mode_not_delegated',
           delegation.coordinator.explanation,
@@ -2116,32 +2543,81 @@ export function registerTaskModeRoute({
         );
       }
 
-      const attempt = await startTaskModeAttempt({
-        store,
-        workspaceId,
-        threadId,
-        modelId: taskInput.modelId,
-        requestId: taskInput.requestId,
-        decision: delegation.taskDecision,
-        workerRequest: delegation.coordinator.workerRequest,
-        startModeWorkerTurn,
-      });
-
-      const workspaceDb = coreDb ? repositoryWorkspaceDb(store, workspaceId) : null;
-      let evidence: TaskModeEvidence;
-
+      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
       try {
-        evidence = taskModeEvidenceForTurn(store, workspaceDb, workspaceId, threadId, attempt.turn);
+        const repository = getDefaultWorkspaceRepositoryResource(workspaceDb, workspaceId);
+        if (!repository || repository.diagnosticsStatus !== 'ready') {
+          throw new TurnStartValidationError(
+            'workspace_repository_unavailable',
+            'Task Mode requires a ready workspace repository.',
+            409
+          );
+        }
+        await runWorkerTurnLoop({
+          workspaceDb,
+          workspaceId,
+          threadId,
+          requestId: taskInput.requestId,
+          requestInputHash,
+          reviewRequired: false,
+          remainingWorkerIterations: 0,
+          prepare: () => ({
+            repository,
+            delegationRequest: workerRequest,
+            contextPackageDigest: commandInputHash(workerRequest),
+          }),
+          reserveTurn: () => ({ turnId: reservedTurnId }),
+          startWorker: async ({ turnId, prepared }) => {
+            const turn = await startModeWorkerTurn({
+              store,
+              workspaceId,
+              threadId,
+              prompt: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
+              modelId: taskInput.modelId,
+              requestId: taskInput.requestId,
+              requestedAgentId: taskDecision.worker.agentId,
+              reservedTurnId: turnId,
+            });
+            return { workerSessionId: turn.agentSessionId ?? null };
+          },
+          awaitWorker: ({ turnId }) => {
+            const turn = store.getTurn(workspaceId, threadId, turnId);
+            const stopReason = taskModeTerminalStopReason(store, turnId);
+            if (!stopReason) {
+              throw new Error('Task worker Turn has no unique terminal outcome.');
+            }
+            const evidence = taskModeEvidenceForTurn(
+              store,
+              workspaceDb,
+              workspaceId,
+              threadId,
+              turn
+            );
+            return {
+              stopReason,
+              itemIds: evidence.itemIds,
+              artifactIds: evidence.artifactIds,
+            };
+          },
+        });
+        const checkpoint = getWorkerCheckpoint(workspaceDb, workspaceId, threadId, reservedTurnId);
+        if (!checkpoint) {
+          throw directTaskModeRecoveryError('The Task worker checkpoint is unavailable.');
+        }
+        return recoverDirectTaskModeCheckpoint({
+          coreDb,
+          store,
+          workspaceDb,
+          workspaceId,
+          threadId,
+          requestId: taskInput.requestId,
+          requestInputHash,
+          turnId: reservedTurnId,
+          checkpoint,
+        });
       } finally {
-        workspaceDb?.sqlite.close();
+        workspaceDb.sqlite.close();
       }
-
-      return StartTaskModeResponseSchema.parse({
-        state: attempt.state,
-        turn: attempt.turn,
-        completion: taskModeCompletionForTurn(store, workspaceId, threadId, attempt.turn),
-        evidence,
-      });
     }
 
     try {
@@ -2169,10 +2645,94 @@ export function registerTaskModeRoute({
         store,
       });
 
+      if (coreDb) {
+        const reservedTurnId = directTaskModeTurnId(
+          store.getUserId(),
+          workspaceId,
+          threadId,
+          taskInput.requestId
+        );
+        const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+        try {
+          const checkpoint = getWorkerCheckpoint(
+            workspaceDb,
+            workspaceId,
+            threadId,
+            reservedTurnId
+          );
+          if (checkpoint) {
+            const recovered = recoverDirectTaskModeCheckpoint({
+              coreDb,
+              store,
+              workspaceDb,
+              workspaceId,
+              threadId,
+              requestId: taskInput.requestId,
+              requestInputHash,
+              turnId: reservedTurnId,
+              checkpoint,
+            });
+            if (recovered.turn.id !== result.turn.id) {
+              throw directTaskModeRecoveryError(
+                'The Task receipt contradicts its worker checkpoint.'
+              );
+            }
+            if (
+              classifyClosedWorkerApprovalGate(store, recovered.turn) ??
+              classifyClosedWorkerUserInputGate(store, recovered.turn)
+            ) {
+              throw directTaskModeRecoveryError('The Task Gate response receipt is not durable.');
+            }
+          }
+          if (checkpoint && checkpoint.stage !== 'waiting_for_user') {
+            const cleared = await clearWorkerCheckpointAfterTerminalState(workspaceDb, {
+              workspaceId,
+              threadId,
+              turnId: reservedTurnId,
+            });
+            if (!cleared) {
+              throw directTaskModeRecoveryError(
+                'The Task worker checkpoint is not ready for terminal cleanup.'
+              );
+            }
+          }
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+      }
+
       return c.json(result, 202);
     } catch (error) {
       if (error instanceof TurnStartValidationError) {
         return asApiError(error.message, error.code, error.status);
+      }
+      if (error instanceof IdempotencyKeyConflictError) {
+        return asApiError(error.message, error.code, error.status);
+      }
+
+      if (coreDb) {
+        const workspaceId = c.req.param('workspaceId');
+        const threadId = c.req.param('threadId');
+        const store = requestStore(c);
+        const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+        let checkpoint: WorkerCheckpointRecord | null = null;
+        try {
+          checkpoint = getWorkerCheckpoint(
+            workspaceDb,
+            workspaceId,
+            threadId,
+            directTaskModeTurnId(store.getUserId(), workspaceId, threadId, taskInput.requestId)
+          );
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+        if (checkpoint?.requestId === taskInput.requestId) {
+          return asApiError(
+            redactInternalAgentText(error instanceof Error ? error.message : String(error)),
+            'recovery_required',
+            409
+          );
+        }
       }
 
       return asCommandError(error, 'task_mode_start_failed');

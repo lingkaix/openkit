@@ -7,7 +7,7 @@ Implementation: Partial
 
 This spec owns the implementation-facing `AgentEnvironmentPackage` contract and the boundary between NanoCore's worker-execution source of truth and worker governance backends.
 
-It owns the resolved package shape for worker identity, runtime image and command inputs, workspace materialization inputs, provider and vault attachments, policy intent, backend materialization, audit expectations, and backend evidence.
+It owns the resolved package shape for worker identity, governed runtime image, generic shim command, opaque worker-side adapter selector, declared runtime binaries, workspace materialization inputs, provider and vault attachments, exact policy intent, backend materialization, audit expectations, and backend evidence.
 
 ## Does Not Own
 
@@ -39,7 +39,7 @@ The durable decision is that NanoCore owns the product and governance source of 
 NanoCore defines:
 
 - the agent identity and selected profile
-- the worker image, tools, binaries, skills, and startup command
+- the exact governed worker image, tools, runtime binaries, skills, and generic shim startup command
 - the workspace files, repositories, data mounts, attachments, and output paths visible to the worker
 - the provider profiles and provider instances available to the worker
 - the vault references and grants that can satisfy those provider instances
@@ -62,11 +62,11 @@ OpenKit should adopt an OpenShell-inspired provider/profile/policy vocabulary, a
 
 ## Current Implementation Projection
 
-The current NanoCore implementation uses the Agent Environment Package as the concrete V1 contract for worker governance execution. Current code resolves package metadata for local and remote disposable OpenShell Cell paths, including runtime placement, worker-visible workspace roots, generated task context, control endpoint metadata, transcript paths, policy snapshot binding, session workspace layout, workspace synchronization expectations, supply projections, capability projections, vault-backed runtime files, and backend capability requirements. NanoCore also persists redacted workspace-owned package snapshots and exposes them through App API, Core Client, OpenAPI, and MCP readback surfaces for diagnostics, evidence, export/import, and restart investigation.
+The current NanoCore implementation uses the Agent Environment Package as the concrete V1 contract for worker governance execution. Current code resolves package metadata for local and remote disposable OpenShell Cell paths, including runtime placement, worker-visible workspace roots, generated task context, control endpoint metadata, transcript paths, policy snapshot binding, session workspace layout, workspace synchronization expectations, supply projections, capability projections, vault-backed runtime files, and backend capability requirements. NanoCore also persists redacted workspace-owned package snapshots and exposes them through App API, Core Client, OpenAPI, and the unified Skill/CLI `environment.snapshot-list` and `environment.snapshot-read` operations for diagnostics, evidence, export/import, and restart investigation.
 
 The current scope schema still carries `userId`, optional `automationId`, and optional `organizationId`. The accepted shared-Workspace target replaces those fields with `triggerActor: ActorRef`; `responsibleUserId` is accountability context and no longer doubles as a physical Workspace-store owner. Removing the unused organization placeholder and updating every producer, consumer, persisted snapshot, and policy adapter remains part of the multi-user implementation plan.
 
-The OpenShell-backed path uses `openkit-codex-shim` as the sandbox entrypoint. The shim supervises Codex and calls the AEP-resolved NanoCore worker-control endpoint directly; the worker image contains no separate control sidecar.
+The current OpenShell-backed path still uses `openkit-codex-shim`, a Codex-specific command, and NanoCore-owned Codex defaults. This is a pre-WP-2 implementation gap, not an accepted alternate boundary. The target entrypoint is the generic `openkit-worker-shim`, which selects one statically registered worker-side adapter from the AEP's sole opaque selector and contains no separate control sidecar.
 
 The accepted V1 boundary is implemented for NanoCore-owned AEP resolution and OpenShell-backed materialization. Authored setup can project required backend capabilities into AEP backend requirements, backend materialization validates missing required capabilities before launch, grant-backed provider and runtime-file attachments flow through vault records without storing secret material in the package, and redacted package snapshots can be listed and read without exposing backend-private fields, raw credentials, or host-local runtime references.
 
@@ -133,7 +133,7 @@ The package is a resolved NanoCore object, not necessarily a user-authored file.
 
 It may be assembled from server config, workspace config, agent setup, selected profile, user grants, vault references, provider registry, policy engine decisions, turn requirements, and runtime backend capabilities.
 
-The package is then passed to a `WorkerGovernanceBackend` adapter.
+The package is then passed to a `WorkerGovernanceBackend`.
 
 The first serious backend candidate is OpenShell.
 
@@ -144,17 +144,14 @@ It is modeled as an enforcement backend that wraps a worker agent runtime such a
 The architecture is:
 
 ```text
-OpenKit App
-  -> NanoCore
-      owns canonical workspace, thread, turn, agent, provider, vault, policy, and audit semantics
-      -> AgentEnvironmentPackage resolver
-          owns resolved package identity, lineage, policy intent, provider refs, vault refs, and backend requirements
-          -> WorkerGovernanceBackend adapter
-              -> OpenShell materializer
-                  creates backend-native provider records, provider attachments, policy files, sandbox config, mounts, logs, and command
-                  -> Sandbox supervisor / wrapper
-                      launches and governs Codex, OpenCode, Pi Agent, or another worker
-              -> Other backends
+AgentManifest plus selected nested profile
+  -> NanoCore ResolvedAgentSetup
+  -> immutable AgentEnvironmentPackage
+  -> WorkerGovernanceBackend materializes the governed image, exact policy, supply, and package file
+  -> generic openkit-worker-shim selects control.adapter.targetRuntime
+  -> statically registered adapter prepares one native process and collects one bounded result
+  -> generic shim emits schema-conformant candidate records
+  -> NanoCore validates and commits canonical product state
 ```
 
 NanoCore remains the only canonical source for:
@@ -178,7 +175,7 @@ Backends do not replace NanoCore's canonical records.
 
 NanoCore defines the desired worker-visible environment and the allowed capability envelope.
 
-The backend translates that definition into concrete runtime state.
+The backend translates that definition into concrete governed runtime state and launches the AEP-declared generic shim command. The shim then selects one statically registered worker-side adapter by the AEP's opaque adapter id; only that adapter produces runtime-native argv or config.
 
 This keeps product semantics portable across OpenShell, Docker, Kubernetes, VM, managed sandbox, and future hosted sandbox backends.
 
@@ -222,7 +219,7 @@ OpenKit worker control traffic and LLM inference traffic use separate channels.
 
 The inference channel gives agent runtimes an AEP-resolved OpenAI-compatible endpoint without exposing provider credentials. Non-attributed packages may use `https://inference.local`; provenance-required packages receive an exact authenticated NanoCore worker-inference base URL.
 
-The control channel is mandatory for governed workers. `openkit-codex-shim` calls the AEP-resolved NanoCore `/api/worker-control` base URL directly over HTTP or HTTPS, authenticates with the package-bound sandbox token, emits heartbeats and bounded worker records, polls commands, and reports terminal results.
+The control channel is mandatory for governed workers. The generic `openkit-worker-shim` calls the AEP-resolved NanoCore `/api/worker-control` base URL directly over HTTP or HTTPS, authenticates with the package-bound sandbox token, emits heartbeats and bounded worker records, polls the typed interrupt command, and reports final status.
 
 No sandbox-local control alias, sidecar, backend relay, or transcript-only control mode is part of the accepted contract. OpenShell network policy allows only the shim binaries to reach the declared NanoCore control endpoint. The transcript files under `/openkit/session/` remain required evidence collected at turn end; they are not an alternate control path.
 
@@ -239,13 +236,13 @@ Backends may produce security, lifecycle, policy, process, filesystem, network, 
 The preferred lightweight split is:
 
 ```text
-/openkit/session/items.jsonl      -> canonical OpenKit item candidates
+/openkit/session/items.jsonl      -> non-canonical OpenKit item candidates
 /openkit/session/events.jsonl     -> worker lifecycle and progress events
-/openkit/session/artifacts.jsonl  -> artifact candidate records
+/openkit/session/artifacts.jsonl  -> non-canonical artifact candidates
 /var/log/openshell*.log           -> backend security, enforcement, and audit evidence
 ```
 
-On turn end, NanoCore imports OpenKit session files as canonical thread, turn, item, and artifact records, and imports OpenShell OCSF JSONL or shorthand logs as audit and enforcement evidence.
+On turn end, NanoCore validates candidate session records and may commit canonical thread, turn, item, and artifact state. Candidates remain non-canonical until that commit. OpenShell OCSF JSONL or shorthand logs remain audit and enforcement evidence.
 
 Both streams should share `workspaceId`, `threadId`, `turnId`, `agentSessionId`, and `packageSnapshotId` correlation fields.
 
@@ -268,7 +265,8 @@ AgentEnvironmentPackage
   package identity and lineage
   selected agent and profile
   worker runtime and image
-  startup command
+  generic shim startup command
+  opaque worker-side adapter selector
   workspace manifest
   tool, binary, MCP, and skill supply
   worker control channel
@@ -284,7 +282,6 @@ WorkerGovernanceBackend
   capability declaration
   materializer
   session launcher
-  dynamic updater
   evidence collector
   teardown handler
 ```
@@ -298,33 +295,21 @@ The materialized backend session is captured in `AgentSession` runtime metadata 
 The package lifecycle is:
 
 ```text
-authored setup fragments
+one selected AgentManifest plus nested profile
   -> NanoCore resolution
+  -> catalog, policy, grant, and request restriction
   -> policy and vault evaluation
   -> backend selection
   -> package snapshot
   -> backend materialization
   -> worker session start
-  -> dynamic updates where supported
   -> evidence ingestion
   -> teardown and artifact collection
 ```
 
-### Authored Setup Fragments
+### Resolution Inputs
 
-Authored fragments may include:
-
-- server config
-- provider profile files
-- provider instance files
-- agent setup files
-- workspace roots
-- workspace knowledge and context references
-- user-selected turn requirements
-- policy packs
-- backend deployment config
-
-Authored fragments are not the package.
+Exactly one selected `AgentManifest` and one nested profile provide launch declarations. Server and workspace policy, provider and supply catalogs, workspace roots, vault grants, request selections, context references, and backend capability facts may resolve references or restrict those declarations; they must not supply a missing image, adapter, runtime binary, network grant, credential declaration, or backend requirement.
 
 They are inputs to package resolution.
 
@@ -336,16 +321,22 @@ Resolution must:
 
 - select the agent and profile
 - resolve the backend target
-- resolve the worker image and command
+- preserve the exact authored governed image and declared runtime binary paths
+- set the worker command to the generic `openkit-worker-shim`
+- copy the authored opaque adapter id into `control.adapter.targetRuntime`
 - resolve workspace inputs
 - resolve tool and skill supply
 - resolve provider attachments
 - resolve vault grants
+- resolve exact network, credential, and backend declarations without widening them
 - request or reuse permission decisions
 - compute policy intent
 - select LLM routing
 - compute audit expectations
+- intersect manifest capability requirements with selected adapter and image proof
 - verify backend capability support
+
+Every network binary path must match one declared runtime binary path. Missing required adapter or image proof blocks launch; optional unproven capability remains unadvertised.
 
 ### Package Snapshot
 
@@ -357,7 +348,7 @@ The snapshot should include stable OpenKit IDs and redacted summaries.
 
 ### Backend Materialization
 
-The backend materializes the package into runtime-native artifacts.
+The backend materializes the package into governed backend-native artifacts and launches the exact AEP command. It must not add an endpoint, credential path, provider attachment, binary allow rule, or backend capability absent from the resolved package.
 
 For OpenShell, this may include:
 
@@ -409,32 +400,9 @@ The backend starts the worker only after:
 - policy artifacts are accepted by the backend
 - audit sink setup succeeds or the selected policy allows degraded audit
 
-### Dynamic Updates
+### Package Changes
 
-Some fields may be dynamic after session start.
-
-Examples:
-
-- network policy updates when the backend supports hot reload
-- provider attach and detach
-- refreshed credentials for future process launches
-- audit export enablement
-- budget and stop-condition updates that NanoCore enforces
-- turn-specific files, repositories, generated context, object-store snapshots, artifacts, transcripts, and output manifests that populate predeclared workspace slots
-
-Other fields are static.
-
-Examples:
-
-- image
-- base command
-- initial process environment for an already-running process
-- static filesystem mounts
-- user and group identity
-- working directory
-- workspace root, slot path set, slot access envelope, output root declarations, provider placeholder envelope, and control endpoint shape
-
-NanoCore must mark sessions stale when a package change cannot be applied dynamically.
+The AEP is immutable. Any change to image, command, environment, mounts, identity, working directory, workspace layout or contents, provider or credential attachment, network or backend policy, context, budget, output declarations, or other launch input creates a new AEP and a new bounded worker launch. This specification defines no backend update operation, live package mutation, or session-reuse workflow.
 
 ### Session Static And Turn Dynamic Workspace
 
@@ -500,7 +468,11 @@ The conceptual shape is:
   "resources": { "...": "..." },
   "observability": { "...": "..." },
   "backend": { "...": "..." },
-  "extensions": {}
+  "extensions": {
+    "openkit": {
+      "turnInput": "Implement the assigned turn."
+    }
+  }
 }
 ```
 
@@ -516,7 +488,7 @@ Each field should declare one or more classes in schema documentation.
 | --- | --- |
 | `authored` | Can be authored in config or UI input. |
 | `resolved` | Produced by NanoCore after merging inputs. |
-| `materialized` | Produced by a backend adapter from the resolved package. |
+| `materialized` | Produced by a worker governance backend implementation from the resolved package. |
 | `derived` | Computed from other fields and not independently authored. |
 | `secret` | Contains secret material and must never appear in the package snapshot. |
 | `secret-ref` | References secret material without containing it. |
@@ -611,8 +583,26 @@ Rules:
       "digest": "sha256:...",
       "pullPolicy": "if-not-present"
     },
+    "binaries": [
+      {
+        "id": "openkit-worker-shim",
+        "path": "/usr/local/bin/openkit-worker-shim"
+      },
+      {
+        "id": "codex",
+        "path": "/usr/local/bin/codex"
+      },
+      {
+        "id": "git",
+        "path": "/usr/bin/git"
+      },
+      {
+        "id": "gh",
+        "path": "/usr/bin/gh"
+      }
+    ],
     "command": {
-      "argv": ["codex", "app-server", "--listen", "stdio://"],
+      "argv": ["openkit-worker-shim", "--package", "/openkit/config/package.json"],
       "workingDirectory": "/workspace/repo",
       "stdin": "pipe",
       "stdout": "pipe",
@@ -637,10 +627,12 @@ Field notes:
 - `image.kind` may be `container-image`, `vm-image`, `remote-template`, or `managed-sandbox-template`.
 - `image.ref` is static for one session.
 - `image.digest` should be present for reproducible container, VM, or remote image materialization.
-- `command.argv` is the worker command, not a shell string.
+- `binaries` is the exact non-empty authored list of runtime binary ids and absolute worker-local executable paths preserved through resolution. Process and network policy binary references must match these paths.
+- `command.argv` is exactly the generic `openkit-worker-shim` command, not a shell string or runtime-native argv.
 - `workingDirectory` is worker-visible and should be relative to declared workspace roots or a known backend path.
 - `process.user` and `process.group` are backend materialization hints and require backend support.
 - Session reuse is conservative by default because provider, mount, and policy changes can make warm sessions unsafe.
+- `extensions.openkit.turnInput` is the existing private per-turn input consumed by the shim. It is not an adapter selector, native command, policy grant, or public contract.
 
 ## Workspace Manifest
 
@@ -764,25 +756,11 @@ Long-lived container workers should normally use `/workspace` as the base workin
 
 ## Supply Fields
 
-`supply` describes tools, binaries, MCP servers, skills, package managers, and helper services available to the worker.
+`supply` describes static Skill, tool-catalog, MCP-catalog, package-manager, and helper-service metadata available to the worker. Exact executable ids and paths live only in `runtime.binaries` so supply and policy cannot disagree about binary identity.
 
 ```jsonc
 {
   "supply": {
-    "binaries": [
-      {
-        "id": "git",
-        "path": "/usr/bin/git",
-        "required": true,
-        "allowedProviderIds": ["provider_github_read"]
-      },
-      {
-        "id": "gh",
-        "path": "/usr/bin/gh",
-        "required": false,
-        "allowedProviderIds": ["provider_github_read"]
-      }
-    ],
     "skills": [
       {
         "id": "repo-guidelines",
@@ -796,10 +774,9 @@ Long-lived container workers should normally use `/workspace` as the base workin
     "mcpServers": [
       {
         "id": "filesystem-tools",
-        "transport": "stdio",
-        "command": ["/usr/bin/node", "/openkit/mcp/filesystem.js"],
-        "providerInstanceIds": [],
-        "vaultGrantIds": []
+        "version": "1.0.0",
+        "catalogEntryDigest": "sha256:...",
+        "allowedTools": ["read_file", "list_directory"]
       }
     ],
     "services": [
@@ -816,10 +793,10 @@ Long-lived container workers should normally use `/workspace` as the base workin
 
 Rules:
 
-- `binaries.path` is worker-visible, not a host path.
-- `allowedProviderIds` can scope which binaries may reach provider endpoints when the backend supports binary-scoped network enforcement.
+- Supply records that need an executable reference one `runtime.binaries[].id`; they do not repeat or override executable paths.
 - Skills are materialized files or directories; they are not implicit prompt text.
-- MCP server config must not contain raw credentials.
+- MCP entries are exact static catalog metadata. They must not contain transport, command, endpoint, credential, native config target, direct worker connection, or executable route fields.
+- Static MCP supply does not grant worker access. Executable MCP access exists only through the separately governed `capability.local` plane after its owning contract is implemented and proven; current AEP capabilities remain disabled with no routes.
 - Service URLs should be stable worker-local names when possible.
 
 ## Worker Transcript And Direct Control
@@ -859,8 +836,7 @@ Rules:
       "logs": "summary-only"
     },
     "commands": [
-      "interrupt",
-      "terminal-command"
+      "interrupt"
     ],
     "events": [
       "worker.ready",
@@ -889,7 +865,9 @@ Rules:
 - `endpoint.baseUrl` must be a credential-free HTTP(S) URL whose path is exactly `/api/worker-control` after trailing-slash normalization.
 - `endpoint.required` must be `true`, and `endpoint.implementation` must be `direct-nanocore`.
 - `auth.tokenRef` must be `runtime://openkit/control-token`; the image launcher transfers the material to the shim through an inherited anonymous file descriptor and removes it from the child environment.
-- The only declared NanoCore-to-worker command families are `interrupt` and `terminal-command`.
+- The only current NanoCore-to-worker command family is `interrupt`. A future diagnostic operation requires a separately accepted closed typed contract; no arbitrary command placeholder is retained.
+- `control.adapter.kind` must be `openkit-worker-shim`.
+- `control.adapter.targetRuntime` is the sole opaque adapter selector. NanoCore, the governance backend, `agent.runtimeKind`, image names, environment variables, and built-in defaults must not select or infer the adapter.
 - The adapter transport must match the endpoint scheme: `outbound-http` or `outbound-https`.
 - Direct control must preserve event ordering before events reach client-facing streams.
 - The worker or shim may emit candidate events, but NanoCore assigns canonical sequence numbers and persists canonical items.
@@ -986,13 +964,14 @@ Import rules:
 
 ### Direct NanoCore Control Endpoint
 
-The AEP-resolved LLM endpoint and worker-control endpoint are separate. The LLM endpoint carries inference requests, provider routing, credential isolation, and usage attribution. The control endpoint carries worker lifecycle updates, bounded records, heartbeats, interrupt commands, terminal commands, and terminal results.
+The AEP-resolved LLM endpoint and worker-control endpoint are separate. The LLM endpoint carries inference requests, provider routing, credential isolation, and usage attribution. The control endpoint carries worker lifecycle updates, bounded records, heartbeats, and interrupt commands. A current Codex, OpenCode, or Pi worker launch contains exactly one already resolved LLM route; the resolver owns that selection, while the shared shim and adapter fail before child launch on zero or multiple routes and never choose or fall back among them.
 
 The current OpenShell path is direct:
 
 ```text
 Worker runtime
-  -> openkit-codex-shim
+  -> openkit-worker-shim
+  -> statically registered adapter selected by control.adapter.targetRuntime
   -> authenticated HTTP(S)
   -> NanoCore /api/worker-control
   -> NanoCore worker session state
@@ -1006,24 +985,26 @@ Transcript files remain durable turn evidence and artifact inputs. They do not r
 
 Many agent runtimes expose native protocols that do not match OpenKit `Turn` and `Item` semantics.
 
-OpenKit should use a worker shim inside the sandbox when the worker runtime does not natively speak the OpenKit worker control protocol.
+Every real worker image uses the generic `openkit-worker-shim`. The shim selects exactly one statically registered adapter by `control.adapter.targetRuntime`; it never branches on `agent.runtimeKind` or an environment variable.
 
 The shim is responsible for:
 
 - starting the worker runtime
-- translating native runtime events into OpenKit transcript records
+- asking the selected adapter to prepare one native launch plan and collect one bounded normalized result
 - writing `events.jsonl`, `items.jsonl`, and `artifacts.jsonl`
-- receiving NanoCore `interrupt` and `terminal-command` commands
-- translating interrupt and terminal-command requests into runtime-native actions
+- receiving NanoCore `interrupt` commands
+- terminating the supervised process group when interruption is accepted
 - publishing artifact candidates through the transcript sink
 - sending heartbeats through direct NanoCore control
 - reporting terminal outcomes
 
 The shim is not the policy engine.
 
+The shared shim must not understand Codex, OpenCode, Pi, or future runtime-native argv or event schemas. Those details belong only to the selected worker-side adapter.
+
 The backend supervisor remains the local enforcement boundary for filesystem, process, network, credential, and inference controls.
 
-The shim is the semantic adapter that makes worker activity visible as OpenKit turns and items.
+The shim is the runtime-neutral supervisor that emits schema-conformant candidate records. NanoCore alone validates and commits canonical turns, items, artifacts, and worker state.
 
 ### NanoCore Full Thread Control
 
@@ -1037,8 +1018,9 @@ NanoCore creates turn
   -> Backend launches governed worker session
   -> Shim authenticates directly to NanoCore /api/worker-control
   -> Shim reports heartbeats and bounded worker records
-  -> NanoCore may issue interrupt or terminal-command
-  -> Shim translates runtime-native events into item candidate events
+  -> NanoCore may issue interrupt
+  -> Selected adapter returns one bounded normalized result
+  -> Shim emits schema-conformant candidate records
   -> NanoCore persists canonical worker state and selected item events
   -> Shim reports terminal worker outcome
   -> NanoCore collects transcript files, artifacts, and backend evidence
@@ -1714,7 +1696,7 @@ It should not create abstract interfaces for hypothetical features until at leas
 
 ## Worker Governance Backend Interface
 
-Every backend adapter should implement the same conceptual interface.
+Every worker governance backend implementation should provide the same conceptual operations.
 
 ```ts
 interface WorkerGovernanceBackend {
@@ -1722,7 +1704,6 @@ interface WorkerGovernanceBackend {
   validatePackage(input: AgentEnvironmentPackage): BackendValidationResult;
   materialize(input: AgentEnvironmentPackage): Promise<MaterializedWorkerEnvironment>;
   launch(input: MaterializedWorkerEnvironment): Promise<WorkerSessionHandle>;
-  update(handle: WorkerSessionHandle, update: WorkerEnvironmentUpdate): Promise<WorkerUpdateResult>;
   collectEvidence(handle: WorkerSessionHandle): AsyncIterable<WorkerEvidenceEvent>;
   collectArtifacts(handle: WorkerSessionHandle): Promise<ArtifactCollectionResult>;
   teardown(handle: WorkerSessionHandle): Promise<WorkerTeardownResult>;
@@ -1764,12 +1745,6 @@ The backend starts the worker session.
 Launch must return a stable OpenKit-facing session handle.
 
 The handle may include backend-private references in storage, but App API and protocol surfaces should receive only redacted summaries.
-
-### `update`
-
-The backend applies dynamic updates when possible.
-
-If a requested update touches static material, the backend must report `requires_session_recreate`.
 
 ### `collectEvidence`
 
@@ -1818,9 +1793,7 @@ OpenShell-specific constraints:
 
 - OpenShell is the first-class container backend and reference implementation, but OpenKit product semantics remain NanoCore-owned.
 - Provider-derived policy layers are derived materialization output and must not become canonical NanoCore policy records.
-- Provider attach or detach affects future effective policy reads and future process launches, but already-running processes may keep their original environment.
-- Filesystem policy is static and requires sandbox recreation when changed.
-- Network policy may be dynamic when OpenShell supports policy update for the selected session.
+- Provider, credential, filesystem, and network changes produce a new immutable AEP and bounded launch; this contract does not mutate an active package even when OpenShell exposes native update mechanisms.
 - Relay-required packages should route the exact AEP-bound worker-inference base URL to NanoCore so it keeps authenticated package lineage, provider, model, usage, prompt cache, and audit ownership.
 - If OpenShell itself owns final `inference.local` provider routing, NanoCore must treat that as `backend-local` mode and require explicit audit and usage preservation checks.
 - The OpenShell materializer must provide the worker-reachable NanoCore control URL directly and allow only approved shim binaries to reach it.
@@ -1839,7 +1812,7 @@ A hosted sandbox backend should map OpenKit package fields as follows.
 | --- | --- |
 | `workspace.inputs` | Manifest files, directories, repositories, remote mounts, and setup commands. |
 | `workspace.outputs` | Declared output directories synced back after turn completion. |
-| `runtime.command` | Agent startup command or worker entrypoint. |
+| `runtime.command` | The generic `openkit-worker-shim` entrypoint declared by the AEP. |
 | `supply.skills` | Uploaded or generated files in the sandbox workspace. |
 | `providers.attachments` | Backend-specific credential handles or gateway endpoints. |
 | `llm.mode: gateway` | OpenKit gateway endpoint visible from hosted sandbox. |
@@ -1877,8 +1850,22 @@ This example is intentionally compact and shows direct worker control with a sep
       "ref": "ghcr.io/openkit/codex-worker:2026-06-16",
       "digest": "sha256:..."
     },
+    "binaries": [
+      {
+        "id": "openkit-worker-shim",
+        "path": "/usr/local/bin/openkit-worker-shim"
+      },
+      {
+        "id": "codex",
+        "path": "/usr/local/bin/codex"
+      },
+      {
+        "id": "git",
+        "path": "/usr/bin/git"
+      }
+    ],
     "command": {
-      "argv": ["codex", "app-server", "--listen", "stdio://"],
+      "argv": ["openkit-worker-shim", "--package", "/openkit/config/package.json"],
       "workingDirectory": "/workspace/repo"
     }
   },
@@ -1906,14 +1893,6 @@ This example is intentionally compact and shows direct worker control with a sep
     ]
   },
   "supply": {
-    "binaries": [
-      {
-        "id": "git",
-        "path": "/usr/bin/git",
-        "required": true,
-        "allowedProviderIds": ["provider_github_read"]
-      }
-    ],
     "skills": []
   },
   "control": {
@@ -1946,7 +1925,7 @@ This example is intentionally compact and shows direct worker control with a sep
       "heartbeats": true,
       "logs": "summary-only"
     },
-    "commands": ["interrupt", "terminal-command"],
+    "commands": ["interrupt"],
     "adapter": {
       "kind": "openkit-worker-shim",
       "targetRuntime": "codex",
@@ -2009,7 +1988,17 @@ This example is intentionally compact and shows direct worker control with a sep
     },
     "network": {
       "default": "deny",
-      "providerDerived": true
+      "rules": [
+        {
+          "id": "github-source-read",
+          "host": "github.com",
+          "port": 443,
+          "protocol": "https",
+          "access": "read-only",
+          "binaryPaths": ["/usr/bin/git"],
+          "purpose": "source-control"
+        }
+      ]
     },
     "secrets": {
       "defaultVisibility": "none",
@@ -2093,7 +2082,7 @@ The earlier `host-dir` reference remains useful only as historical host-local mo
 
 This spec defines the broader manifest and materialization contract needed for container, remote, object-store, hosted sandbox, and governed provider access.
 
-This spec complements `docs/specs/20260628-agent_setup_runtime_supply_contract.md`.
+Together with `docs/core/agent-supply.md`, `docs/specs/20260703-agent_manifest_aep_resolution.md`, `docs/specs/20260704-session_static_workspace_materialization.md`, and `docs/specs/20260629-worker_runtime_communication_model.md`, this spec replaces the superseded setup/runtime supply overview.
 
 It does not replace `Agent`, `AgentProfile`, or `AgentSession`.
 
@@ -2199,14 +2188,14 @@ NanoCore must know which user, workspace, thread, turn, agent session, provider 
 1. Implement a read-only materializer that compiles one package fixture into OpenShell provider profile references, provider attachments, policy YAML, and sandbox create options.
 2. Do not start real workers in the first slice.
 3. Add golden tests for generated backend artifacts.
-4. Add tests that reject unsupported static-to-dynamic updates.
+4. Add tests that reject attempts to mutate an active AEP instead of creating a new snapshot and bounded launch.
 5. Add tests that keep backend-native generated material out of protocol and public app schemas.
 
 ### Phase 4: Local Container Worker Spike
 
 1. Start a local OpenShell-backed sandbox for a Codex or OpenCode worker.
 2. Materialize `/openkit/session/*.jsonl` as the durable transcript sink.
-3. Package `openkit-codex-shim` as the worker entrypoint and supply the exact NanoCore `/api/worker-control` base URL.
+3. Package `openkit-worker-shim` as the worker entrypoint, select an opaque statically registered adapter through `control.adapter.targetRuntime`, and supply the exact NanoCore `/api/worker-control` base URL.
 4. Allow only the approved shim binaries to reach NanoCore's direct worker-control endpoint.
 5. Expose only the exact AEP-bound NanoCore worker-inference route for attributed model traffic, using a per-package OpenShell placeholder and Codex-only REST policy.
 6. Exercise any GitHub read-only provider attachment in a separate non-attributed sandbox fixture; do not combine it with the attributed inference package.
@@ -2269,16 +2258,16 @@ NanoCore must know which user, workspace, thread, turn, agent session, provider 
 ### Runtime Tests
 
 - Launch a fake worker through a fake backend and stream lifecycle evidence.
-- Launch a fake worker shim that writes `events.jsonl`, `items.jsonl`, and `artifacts.jsonl`, then verify NanoCore imports canonical items and artifacts at turn end.
+- Launch a fake worker shim that writes candidate `events.jsonl`, `items.jsonl`, and `artifacts.jsonl`, then verify NanoCore validates lineage and schema before committing canonical items and artifacts at turn end.
 - Verify NanoCore rejects transcript records with mismatched workspace, thread, turn, agent session, or package snapshot IDs.
 - Launch a fake worker shim that authenticates to the direct NanoCore worker-control endpoint and relays compact progress.
 - Verify live progress updates worker phase, heartbeat, blocked reason, policy denial summary, artifact count, elapsed time, and available actions without creating canonical item records unless NanoCore explicitly imports or promotes them.
 - Verify direct control failure stops or cancels the worker while preserving transcript evidence already written.
-- Verify `interrupt` and `terminal-command` delivery, acknowledgement, terminal-result reporting, and idempotency.
+- Verify `interrupt` delivery, acknowledgement, process-group termination, and idempotency.
 - Launch a fake OpenShell backend that reports policy apply success, network deny, credential placeholder resolution, and teardown.
 - Verify OpenShell OCSF evidence can produce audit records without becoming canonical item deltas.
 - Verify authenticated worker-inference requests map to workspace, thread, turn, agent session, package snapshot, provider instance, usage, and audit records.
-- Verify dynamic provider attach reports that already-running processes may need restart.
+- Verify a provider or credential change creates a new AEP and does not mutate an active worker package.
 - Verify artifact collection registers output artifacts with thread, turn, and input lineage.
 - Verify failed backend audit setup blocks launch when audit is required.
 
@@ -2353,7 +2342,7 @@ Mitigation: keep the official OpenShell Gateway out of process inside the dispos
 - Object-store materialization should start with OpenKit-managed staged files or gateway-mediated reads. Backend FUSE, sync-on-demand, and backend-native mounts require separate backend capability declarations and recovery tests.
 - Generated files are runtime files by default. They become artifacts only when they are user-visible outputs, review inputs, or evidence that must survive beyond the worker session.
 - Public App API readiness projections should expose only redacted package, backend, provider, vault, policy, and capability summaries. Full unredacted AEP snapshots remain internal runtime records and must not become public product records.
-- Package snapshots are diagnostics-only by default. NanoCore exposes only redacted durable package snapshots through `/api/app/workspaces/:workspaceId/agent-environment/snapshots`, Core Client, OpenAPI, and MCP; a redacted snapshot or snapshot reference may become a restricted evidence artifact when needed for review, replay, or audit.
+- Package snapshots are diagnostics-only by default. NanoCore exposes only redacted durable package snapshots through `/api/app/workspaces/:workspaceId/agent-environment/snapshots`, Core Client, OpenAPI, and the unified Skill/CLI `environment.snapshot-list` and `environment.snapshot-read` operations; a redacted snapshot or snapshot reference may become a restricted evidence artifact when needed for review, replay, or audit.
 - Backend version negotiation uses backend capability declarations, feature probes, selected backend version, and required feature flags recorded in materialization evidence. Missing required capabilities fail before launch.
 - OpenShell Gateway placement follows the disposable Cell contract. Local placement uses the Gateway inside the co-located Cell; remote placement binds one fixed SSH lifecycle target to one operator-managed loopback HTTP Gateway origin and one explicit credential-free HTTP(S) `/api/worker-control` URL reachable from the sandbox. A naked or shared external Gateway is invalid.
 - The smallest worker control protocol is owned by `docs/specs/20260703-worker_control_protocol.md`. AEP supplies the direct endpoint, authentication, transcript, channels, commands, and backend capability projection without redefining operation schemas.
@@ -2378,7 +2367,8 @@ Mitigation: keep the official OpenShell Gateway out of process inside the dispos
 - [Runtime Model](../core/runtime-model.md)
 - [Session Static Workspace Materialization](./20260704-session_static_workspace_materialization.md)
 - [Workspace Data Mount Materialization](./superseded/worker-runtime/20260526-workspace_data_mounts.md)
-- [Agent Setup And Runtime Supply Contract](./20260628-agent_setup_runtime_supply_contract.md)
+- [Agent Manifest And AEP Resolution](./20260703-agent_manifest_aep_resolution.md)
+- [Worker Runtime Communication Model](./20260629-worker_runtime_communication_model.md)
 - [Agent Profile Model](./superseded/agent-setup-runtime-supply/20260522-agent_profile_model.md)
 - [Server Config and Data Layout](./superseded/nanocore-config-identity/20260519-server_config_data_layout.md)
 - [LLM Gateway Responses API](./20260526-llm_gateway_responses_api.md)

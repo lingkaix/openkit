@@ -1,7 +1,7 @@
 # Container Image Packaging And Release Publishing
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
 
 ## Owns
 
@@ -111,7 +111,7 @@ Before this spec was implemented, the repository had three active Dockerfiles sp
 
 The repository also had `scripts/docker/staging-*` helpers and Docker cookbooks under `docs/cookbooks/`. Those files encoded useful implementation details, but the naming treated staging as the central packaging concept.
 
-The active worker runtime design has moved to governed container workers. Host execution is not a real Worker Agent product runtime. The first serious worker backend is OpenShell, and the worker-facing contract requires one runtime-specific OpenKit worker shim inside every real worker container; a separate sidecar is not part of the design.
+The active worker runtime design has moved to governed container workers. Host execution is not a real Worker Agent product runtime. The first serious worker backend is OpenShell, and the worker-facing contract requires the generic `openkit-worker-shim` plus one statically registered runtime adapter inside every real worker container; runtime-specific shim entrypoints and a separate sidecar are not part of the design.
 
 The historical `docs/specs/superseded/20260518-staging_docker_distribution.md` is not current guidance. It remains useful background for why the staging image exists, but it still carries host-mode and loopback-agent assumptions that must not shape the new release packaging contract.
 
@@ -127,15 +127,15 @@ The repository-owned image classes are:
 | --- | --- | --- | --- |
 | `app` | Yes | Product app image containing NanoCore, Web UI, public HTTP entrypoint, migrations, and data templates. | Use a pinned Node runtime base that matches repository Node policy. |
 | `worker-codex` | Yes | OpenShell sandbox payload for Codex worker execution through OpenKit worker shim. | Prefer pinned OpenShell Community base, then add OpenKit worker packages and Codex-specific runtime layer. |
-| `worker-opencode` | Yes, when adapter exists | OpenShell sandbox payload for OpenCode worker execution through OpenKit worker shim. | Prefer pinned OpenShell Community base, then add OpenKit worker packages and OpenCode-specific runtime layer. |
-| `worker-pi` | Yes, when adapter exists | OpenShell sandbox payload for Pi worker execution through OpenKit worker shim. | Prefer pinned OpenShell Community base or a pinned upstream Pi sandbox base only if it already satisfies OpenShell sandbox assumptions. |
+| `worker-opencode` | Yes | OpenShell sandbox payload for OpenCode worker execution through OpenKit worker shim. | Prefer pinned OpenShell Community base, then add OpenKit worker packages and OpenCode-specific runtime layer. |
+| `worker-pi` | Yes | OpenShell sandbox payload for Pi worker execution through OpenKit worker shim. | Prefer pinned OpenShell Community base or a pinned upstream Pi sandbox base only if it already satisfies OpenShell sandbox assumptions. |
 | `dev-e2e` | No by default | Local and CI diagnostic toolbox for browser/e2e/debug work. | Use the smallest practical debug base for the test surface. |
 
 App image and worker images are separate release units.
 
 The app image is user-facing. It owns NanoCore startup, Web UI static assets, public HTTP routing, data-root layout, database migrations, app smoke checks, and packaged UI checks.
 
-Worker images are backend payloads. They own agent runtime binaries, the OpenKit worker shim, worker-visible `/openkit` layout, transcript output paths, runtime-native config materialization, and agent-specific adapters. They do not own product state, review decisions, workspace truth, vault truth, or public API semantics.
+Worker images are backend payloads. They own agent runtime binaries, the generic OpenKit worker shim package, worker-visible `/openkit` layout, transcript output paths, runtime-native config materialization, and the manifest-selected adapter projection. They do not own product state, review decisions, workspace truth, vault truth, or public API semantics.
 
 ## Contract / Expected Behavior
 
@@ -185,6 +185,8 @@ Worker image entries must also include:
 - `baseImage`: pinned base image reference. Release worker images must use a digest-pinned reference.
 - `workerContract`: OpenKit worker contract version, initially `openkit-worker-v1`.
 
+The authored `AgentManifest`, not this packaging catalog or a backend-global environment variable, selects the governed image reference and declares the runtime binary ids and absolute worker-local executable paths. NanoCore resolves that declaration into the AEP without a runtime-specific image branch. The image entry records how the selected artifact is built, smoked, and published; it is not a second runtime selector.
+
 The manifest may include optional build args, labels, target names, or publish policy fields when those fields are consumed by scripts and tested.
 
 The manifest must not include secrets, tokens, private registry credentials, local absolute paths, or user-specific image names.
@@ -225,8 +227,9 @@ The app image should not bundle worker agent runtimes as the normal release mode
 Every release worker image must:
 
 - run inside OpenShell as a sandbox payload,
-- provide the runtime-specific OpenKit worker shim,
-- provide a runtime-specific entrypoint such as `openkit-codex-shim`,
+- provide the generic `openkit-worker-shim` entrypoint,
+- include exactly one native runtime and the generic shim package whose existing static registry contains the manifest-selected adapter,
+- provide every runtime binary id and worker-local executable path declared by its authored `AgentManifest`,
 - provide `/openkit/config/package.json`,
 - write `/openkit/session/events.jsonl`,
 - write `/openkit/session/items.jsonl`,
@@ -237,12 +240,15 @@ Every release worker image must:
 - keep runtime-native config generation inside worker packages,
 - fail clearly when the required agent binary is missing.
 
+Worker images must not discover or load adapters dynamically. A fourth runtime adds one image definition and one entry in the existing `containers/images.json` catalog; it does not add another image registry, plugin loader, or runtime-specific NanoCore selector.
+
 Worker images must not:
 
 - read NanoCore private storage directly,
 - store vault secrets as durable image files,
 - assume host filesystem paths,
 - publish product API endpoints,
+- advertise or execute worker capability or MCP routes while the capability plane remains disabled,
 - make final authorization decisions,
 - push, tag, deploy, or mutate protected branches without NanoCore-approved review and apply gates,
 - treat OpenShell-native ids or logs as canonical product state.
@@ -392,19 +398,19 @@ Scripts must not silently fall back to old root Dockerfile paths.
 
 Release docs must set worker image examples to the new repository names.
 
-The default Codex worker image should become:
+The Codex `AgentManifest` should select a release image such as:
 
 ```text
 ghcr.io/<owner>/openkit-worker-codex:<version-or-digest>
 ```
 
-Local development may continue to use:
+The repository-owned Codex manifest template may select this local development image:
 
 ```text
 openkit/worker-codex:dev
 ```
 
-`OPENKIT_OPENSHELL_WORKER_IMAGE` remains the runtime selector for the OpenShell worker payload. The value must be an OpenShell-compatible source accepted by `openshell sandbox create --from`, but release docs should use GHCR image references rather than local Dockerfile paths.
+Every authored `AgentManifest` selects an OpenShell-compatible image reference accepted by `openshell sandbox create --from`; NanoCore copies that resolved reference into the AEP. A global `OPENKIT_OPENSHELL_WORKER_IMAGE` selector is not part of the current contract. Release manifests should use GHCR references or digests, while repository-owned local templates may use cataloged development tags.
 
 ## Proposed Design
 
@@ -596,19 +602,22 @@ Release workflow state:
 
 Runtime default state:
 
-- NanoCore defaults `OPENKIT_OPENSHELL_WORKER_IMAGE` to `openkit/worker-codex:dev` for local development.
+- The current Codex-only implementation still reads a global image environment variable; WP-2 removes that implementation defect, and the variable is not accepted image-selection authority.
+- The accepted target is repository-owned `AgentManifest` templates selecting their cataloged local worker images, with NanoCore resolving those references into the AEP generically.
 - Release docs should prefer `ghcr.io/<owner>/openkit-worker-codex:<version-or-digest>`.
+
+Only `worker-codex` is present in the current catalog. The OpenCode and Pi image definitions, catalog entries, and smoke paths remain WP-2 implementation work.
 
 Release worker base state:
 
 - `containers/images.json` pins `worker-codex.baseImage` to `node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5`.
 - `containers/worker-codex/Dockerfile` uses the same digest-pinned Node base for its builder and runtime stages.
 
-Worker launcher state:
+Codex worker launcher state:
 
 - The Codex launcher preserves the OpenShell-provided proxy variables and enables Node environment-proxy support with `NODE_USE_ENV_PROXY=1` so Node `fetch` follows the governed egress path.
 - The launcher preserves inherited `NO_PROXY` and `no_proxy` entries but MUST NOT add `host.openshell.internal`; the authenticated NanoCore worker-control origin remains reachable through the OpenShell policy proxy.
-- The image and launcher MUST provide a writable runtime home through `CODEX_HOME` or `HOME` before runtime provenance starts. Missing home state is a launch-contract failure and MUST fail closed before inference.
+- The image and launcher MUST provide a writable runtime home through `CODEX_HOME` or `HOME` before the optional S33 Codex provenance extension starts. Missing home state is a Codex image or provenance failure, not a shared adapter-contract requirement, and MUST fail closed before inference when that extension is required.
 
 ## Alternatives Considered
 
@@ -656,7 +665,7 @@ Rejected. The monorepo root package currently uses `0.0.0`, and OpenKit release 
 7. Rename `scripts/docker/stage.sh` to `scripts/docker/run-app.sh` or keep a temporary same-change redirect only until all docs and package scripts are updated in the same PR.
 8. Update Dockerfile static tests to use `containers/images.json`.
 9. Update `docs/cookbooks/` to point at the new app and dev/e2e image docs, or retire the old cookbook pages after their content moves into `containers/*/README.md`.
-10. Update NanoCore default local worker image from `openkit/worker-codex:dev` to `openkit/worker-codex:dev`.
+10. Move worker image and runtime binary selection from the global NanoCore default into each authored `AgentManifest` and its resolved AEP.
 11. Update deployment docs to use GHCR release image examples.
 12. Add GHCR publish jobs to `.github/workflows/ci.yml` or a dedicated image workflow that is triggered by the same release tags and depends on the existing release gate.
 13. After the migration is complete, remove root-level Dockerfiles and stale staging-specific script names.
@@ -679,19 +688,23 @@ Dockerfile static tests:
 
 - App image Dockerfile builds NanoCore and Web dependencies in dependency order.
 - App image Dockerfile copies required migrations, data templates, app entrypoint, and app smoke script.
-- Worker Codex Dockerfile uses digest-pinned base images for release builds.
-- Worker Codex Dockerfile builds `@openkit/worker-protocol` and `@openkit/worker-shim`.
-- Worker Codex Dockerfile installs a native Codex payload or uses a verified Codex binary path.
-- Worker Codex Dockerfile creates `/openkit/config`, `/openkit/session`, and `/openkit/artifacts`.
-- Worker Codex Dockerfile declares the sandbox user expected by OpenShell.
-- Worker Codex Dockerfile and launcher tests require a writable runtime home and the governed Node proxy contract.
+- Every release worker Dockerfile uses digest-pinned base images for release builds.
+- Every release worker Dockerfile builds `@openkit/worker-protocol` and `@openkit/worker-shim`, exposes `openkit-worker-shim`, and proves that the manifest-selected adapter exists in the static registry.
+- Every release worker Dockerfile installs exactly its manifest-declared native runtime and verified binary paths.
+- Every release worker Dockerfile creates `/openkit/config`, `/openkit/session`, and `/openkit/artifacts`.
+- Every release worker Dockerfile declares the sandbox user expected by OpenShell.
+- Codex image and launcher tests separately require a writable runtime home and the governed Node proxy contract when the optional S33 provenance extension is enabled.
 
 Local build acceptance:
 
 - `scripts/docker/build-image.sh app` builds `openkit/app:dev`.
 - `scripts/docker/build-image.sh worker-codex` builds `openkit/worker-codex:dev`.
+- `scripts/docker/build-image.sh worker-opencode` builds `openkit/worker-opencode:dev`.
+- `scripts/docker/build-image.sh worker-pi` builds `openkit/worker-pi:dev`.
 - `scripts/docker/smoke-image.sh app` passes.
 - `scripts/docker/smoke-image.sh worker-codex` passes.
+- `scripts/docker/smoke-image.sh worker-opencode` passes.
+- `scripts/docker/smoke-image.sh worker-pi` passes.
 
 App image smoke acceptance:
 
@@ -702,16 +715,17 @@ App image smoke acceptance:
 
 Worker image smoke acceptance:
 
-- The image contains the runtime-specific shim.
-- The image contains the runtime binary.
+- The image contains the generic `openkit-worker-shim` and proves that its manifest-selected adapter exists in the static registry.
+- The image contains every native runtime binary and worker-local executable path declared by its authored `AgentManifest`.
 - The image can read an AEP package from `/openkit/config/package.json`.
 - The image can write session records under `/openkit/session`.
-- The image exposes a writable `CODEX_HOME` or `HOME` to the runtime-specific shim.
+- The image runs the native runtime's bounded machine-readable mode without advertising worker capability or executable MCP routes.
+- The Codex image exposes a writable `CODEX_HOME` or `HOME` when the optional S33 provenance extension is enabled; this is not a shared worker-image requirement.
 
 OpenShell acceptance:
 
-- The Codex worker image can be used through `openshell sandbox create --from`.
-- A real OpenShell launch proves worker-control readiness and Node egress without bypassing `host.openshell.internal`.
+- Each release worker image can be used through `openshell sandbox create --from`.
+- A real OpenShell launch for each release worker image proves the generic shim, worker-control readiness, declared binary policy, and governed egress without bypassing `host.openshell.internal`.
 - The real OpenShell e2e remains opt-in because it requires a gateway and runtime credentials.
 - A release candidate must run the real OpenShell check for each release worker image before the image is treated as supported.
 

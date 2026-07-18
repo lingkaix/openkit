@@ -196,6 +196,7 @@ async function assertGoalModeRoutes(baseUrl) {
   const goalRoute = `${baseUrl}/api/app/workspaces/${workspaceId}/threads/${threadId}/goal`;
   const started = await postJson(goalRoute, 'start goal', {
     objective: 'Confirm Goal Mode built-artifact smoke coverage.',
+    requestId: randomUUID(),
     title: 'Goal Mode smoke',
   });
 

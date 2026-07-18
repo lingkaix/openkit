@@ -37,6 +37,7 @@ describe('nanocore e2e goal planning', () => {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
+          requestId: randomUUID(),
           objective: 'Make v0.0.6 ready to publish.',
           title: 'Ship v0.0.6',
         }),

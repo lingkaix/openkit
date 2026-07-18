@@ -14,13 +14,15 @@ It covers agent catalogs, agent setup contracts, profiles, capability summaries,
 
 OpenKit needs a stable way to describe what agents are available in a workspace, what supply they require, and how Core can initialize them.
 
-The agent catalog is the discovery layer. Agent setup config is the declarative runtime setup contract. Runtime adapters may resolve and materialize that contract into native files, environment variables, process arguments, containers, proxies, or provider sessions.
+The agent catalog is the discovery layer. One agent setup contract plus one selected nested profile is the declarative runtime setup input. Core alone resolves that input into a policy-checked setup and one immutable launch package; a governance backend materializes the package, and a worker-side adapter produces runtime-native launch details.
 
 The supply model must stay open-ended because OpenKit will add agent fields over time for model routing, runtime selection, workspace inputs, MCP and skills, knowledge/context injection, vault references, sandbox policy, observability, and deployment modes.
 
 ## Principles
 
 Agent supply is declared before it is materialized.
+
+Resolution, governance materialization, and runtime adaptation are one-way projections of the authored setup. None of them is a second authored supply authority.
 
 Agent catalogs are workspace-visible selection surfaces, not runtime launch manifests.
 
@@ -42,7 +44,7 @@ A workspace may include:
 - workspace-local setup entries when a future policy allows them
 - organization-provided agents
 - remote or managed agents in future versions
-- disabled or unavailable agents kept for history and compatibility
+- disabled or unavailable agents kept for current catalog visibility
 
 Global, server-owned, or built-in agent setup sources may exist, but a workspace-visible catalog is the effective selection surface Core uses for routing work.
 
@@ -183,6 +185,8 @@ Capability areas may include:
 
 Capability is separate from permission, sandbox, and agent capability routing. An agent can declare that it is capable of shell execution while permission policy denies shell use, sandbox policy prevents access to specific paths, and the agent capability gateway projection withholds external capability routes.
 
+Launch-time capability availability is the intersection of authored requirements and proof supplied by the selected runtime adapter and governed image. Missing required proof blocks readiness, while optional unproven capability remains unavailable.
+
 ## Readiness
 
 Readiness should not be a boolean.
@@ -214,28 +218,26 @@ Examples:
 
 ## Resolution
 
-Core may resolve agent setup through layers before starting an agent session.
+Core selects exactly one current `AgentManifest` and one nested profile before starting an agent session. Catalogs, grants, policy, and request context resolve references or restrict that setup; they never supply missing launch authority.
 
 Conceptual layers:
 
 ```text
-built-in defaults
-  -> server deployment policy
-  -> provider registry
-  -> workspace catalog
-  -> authored agent setup config
-  -> workspace or user overrides
-  -> turn-specific routing hints
-  -> late-bound vault, knowledge, and runtime values
+one selected AgentManifest plus nested profile
+  -> catalog reference resolution
+  -> server and workspace policy restriction
+  -> allowed request selection and restriction
+  -> late-bound grants and context
+  -> immutable launch package
 ```
 
-The resolved result is used to initialize an agent session.
+The resolved result is captured in one immutable launch package used to initialize an agent session.
 
-The exact `ResolvedAgentSetup` and `MaterializedAgentSetup` records are implementation details unless a future core revision promotes them. They may still be documented in specs for adapter implementation.
+The exact resolved-setup, launch-package, and materialization records remain implementation-facing projections. They must preserve this authority chain without becoming additional authored setup models.
 
 ## Materialization
 
-Materialization converts resolved setup into runtime-native form.
+Materialization converts the immutable launch package into a governed runtime environment. The governance backend starts a generic worker supervisor, and the selected worker-side adapter converts resolved adapter input into one runtime-native process.
 
 Examples:
 
@@ -245,7 +247,6 @@ Examples:
 - environment variables
 - container image and volume mounts
 - governed service endpoints
-- MCP server config
 - sandbox provider payloads
 
 Generated native files are outputs, not the canonical agent setup source.
@@ -256,11 +257,7 @@ Core should be able to explain which setup source and resolution inputs produced
 
 Provider-native and adapter-native fields must live under explicit extension namespaces.
 
-Unknown optional sections should be preserved or ignored by readers that do not understand them.
-
-Required unknown sections must make the agent readiness `blocked` rather than being silently ignored.
-
-Agent setup evolution should be additive by default.
+The current manifest schema is validated strictly. Unknown or unsupported authority-bearing fields block readiness; schema evolution requires an accepted current contract rather than an implicit compatibility path.
 
 ## Invariants
 
@@ -269,6 +266,9 @@ Agent setup evolution should be additive by default.
 - Agent supply MAY declare capability categories, but it MUST NOT own runtime capability routing, gateway projection, metering, permission decisions, or sandbox containment.
 - Agent profiles MUST remain setup-local behavior profiles unless a future core design promotes a standalone concept.
 - Generated native config files MUST remain materialization outputs, not the canonical agent setup source.
+- Each launch MUST derive from exactly one agent setup contract and one selected setup-local profile; resolution, governance materialization, and runtime adaptation MUST NOT become additional authored supply authorities.
+- Launch-time capability availability MUST be the intersection of authored requirements and selected runtime adapter and image proof; missing required proof MUST block readiness, and optional unproven capability MUST remain unavailable.
+- Agent supply MUST NOT create a direct or runtime-native MCP execution route; worker MCP access belongs to the governed capability plane owned by `agent-capability.md`.
 
 ## Relationship To Other Docs
 

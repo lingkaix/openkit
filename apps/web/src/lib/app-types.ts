@@ -190,13 +190,6 @@ export type HumanAttentionRow = Awaited<
 >['items'][number];
 
 /**
- * Artifact review decision sent from Action Center controls.
- */
-export type ArtifactReviewDecision = Parameters<
-  CoreClient['app']['submitArtifactReviewDecision']
->[2]['decision'];
-
-/**
  * Durable workspace review decision sent from Action Center controls.
  */
 export type WorkspaceSyncReviewDecision = Parameters<

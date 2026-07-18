@@ -240,14 +240,7 @@ If the OpenShell worker uses Codex subscription credentials, bootstrap `auth.jso
 OPENKIT_OPENSHELL_CODEX_CONFIG_TOML="$HOME/.codex/config.toml"
 ```
 
-If OpenShell network policy is enforced, add allowed endpoints:
-
-```bash
-OPENKIT_OPENSHELL_EXTRA_NETWORK_ENDPOINTS='[
-  {"name":"openai_api","host":"api.openai.com","port":443,"protocol":"rest","access":"read-write"},
-  {"name":"chatgpt","host":"chatgpt.com","port":443,"protocol":"rest","access":"read-write"}
-]'
-```
+The immutable AEP is the complete network authority. NanoCore has no environment variable or backend default that can append endpoints; direct provider endpoints must be authorized by the selected authored manifest and recorded in that launch's AEP.
 
 ### Disposable Remote Cell
 
@@ -405,9 +398,9 @@ Either acceptance result is valid only when the worker completes, NanoCore clean
 
 The accepted AI-native access path is one end-user `openkit` Skill with a bundled CLI over public NanoCore APIs. The CLI does not start NanoCore, manage OpenShell, bypass authentication, or expose private deployment state.
 
-The unified Skill and CLI are not implemented yet. The current `@openkit/mcp` package is removal-only and this deployment guide no longer recommends configuring it for new use.
+The unified Skill lives at `skills/openkit/` and includes its standalone executable at `scripts/openkit`. User-facing MCP and split setup/loop Skill variants have been removed and must not be restored.
 
-The bundled CLI will use `OPENKIT_NANOCORE_URL` as explicit endpoint configuration. Server-mode access will resolve a scoped token from supported credential storage or the explicit ephemeral `OPENKIT_NANOCORE_TOKEN` override without printing credential material.
+The bundled CLI uses `OPENKIT_NANOCORE_URL` as explicit endpoint configuration. Server-mode access resolves a scoped token from supported credential storage or the explicit ephemeral `OPENKIT_NANOCORE_TOKEN` override without printing credential material.
 
 Use [skills/README.md](../skills/README.md), [the Agent Skill Interface spec](./specs/20260713-openkit_agent_skill_interface.md), and [the implementation plan](./changes/202607131935040001-openkit_agent_skill_interface.md) for the accepted setup and loop direction.
 

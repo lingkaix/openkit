@@ -1,11 +1,11 @@
 import {
   type AgentHealthRefreshResponse,
+  AgentHealthRefreshResponseSchema,
   type GetAgentCatalogEntryResponse,
   GetAgentCatalogEntryResponseSchema,
   type ListAgentCatalogResponse,
   ListAgentCatalogResponseSchema,
 } from '@openkit/app-api-schemas';
-import type { AppApiClient } from './app.js';
 import type { ClientTransport } from './transport.js';
 
 /** Product-facing Agent Catalog client. */
@@ -18,11 +18,13 @@ export interface AgentCatalogClient {
   refreshHealth(workspaceId: string): Promise<AgentHealthRefreshResponse>;
 }
 
-/** Creates the Product-facing Agent Catalog client. */
-export function createAgentCatalogClient(
-  transport: ClientTransport,
-  app: AppApiClient
-): AgentCatalogClient {
+/**
+ * Creates the product-facing Agent Catalog client.
+ *
+ * @param transport Shared Core Client transport.
+ * @returns Agent Catalog operations backed directly by their public routes.
+ */
+export function createAgentCatalogClient(transport: ClientTransport): AgentCatalogClient {
   return {
     list: () => transport.getJson('/api/app/agents', ListAgentCatalogResponseSchema),
     get: (agentId) =>
@@ -30,6 +32,11 @@ export function createAgentCatalogClient(
         `/api/app/agents/${encodeURIComponent(agentId)}`,
         GetAgentCatalogEntryResponseSchema
       ),
-    refreshHealth: (workspaceId) => app.refreshAgentHealth(workspaceId),
+    refreshHealth: (workspaceId) =>
+      transport.postJson(
+        `/api/app/workspaces/${workspaceId}/agents/health/refresh`,
+        {},
+        AgentHealthRefreshResponseSchema
+      ),
   };
 }

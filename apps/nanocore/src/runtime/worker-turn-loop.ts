@@ -2,6 +2,7 @@ import type { StopReason } from '@openkit/protocol';
 
 import { recordWorkerTurnLaunchDecision } from '../policy/permission-decisions.js';
 import type { WorkspaceDb } from '../storage/db.js';
+import { TurnStartValidationError } from './orchestrator.js';
 import type { PreparedNextTurn } from './prepare-next-turn.js';
 import { type StopAfterTurnDecision, shouldStopAfterTurn } from './stop-after-turn.js';
 import {
@@ -247,6 +248,9 @@ export async function runWorkerTurnLoop(
       contextAssembly,
     };
   } catch (error) {
+    if (error instanceof TurnStartValidationError && error.code === 'recovery_required') {
+      throw error;
+    }
     updateWorkerCheckpoint(input.workspaceDb, {
       workspaceId: input.workspaceId,
       threadId: input.threadId,

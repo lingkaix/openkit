@@ -160,6 +160,10 @@ describe('goal planning path', () => {
       });
 
       expect(result.status).toBe('awaiting_user');
+      expect(result.questionItem).toMatchObject({
+        completedAt: expect.any(String),
+        status: 'completed',
+      });
       expect(result.questionItem.questions).toHaveLength(2);
       expect(result.questionItem.questions[0]).toMatchObject({
         id: 'plan_question_1',

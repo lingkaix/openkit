@@ -459,14 +459,14 @@ describe('FsStore persistence', () => {
     const workspace = store.createWorkspace('Idempotency workspace');
 
     store.recordCommandRequest({
-      command: 'thread.create',
+      command: 'chat.start',
       requestId: '0190f4c8-0000-7000-8000-000000000501',
       scope: { workspaceId: workspace.id },
       inputHash: 'sha256:live',
       response: {
-        kind: 'thread',
-        id: 'th_demo',
-        snapshot: { state: 'queued', goalId: 'goal_original' },
+        kind: 'turn',
+        id: 'tu_chat',
+        chatMetadata: { downstream: null, resultKind: 'provider-answer', status: 200 },
       },
       createdAt: '2026-05-27T00:00:00.000Z',
       expiresAt: '2999-01-01T00:00:00.000Z',
@@ -484,13 +484,13 @@ describe('FsStore persistence', () => {
     const restarted = new FsStore({ dataRoot });
 
     expect(
-      restarted.getCommandRequest('thread.create', '0190f4c8-0000-7000-8000-000000000501', {
+      restarted.getCommandRequest('chat.start', '0190f4c8-0000-7000-8000-000000000501', {
         workspaceId: workspace.id,
       })?.response
     ).toEqual({
-      kind: 'thread',
-      id: 'th_demo',
-      snapshot: { state: 'queued', goalId: 'goal_original' },
+      kind: 'turn',
+      id: 'tu_chat',
+      chatMetadata: { downstream: null, resultKind: 'provider-answer', status: 200 },
     });
     expect(
       restarted.getCommandRequest('thread.create', '0190f4c8-0000-7000-8000-000000000502', {
@@ -500,6 +500,51 @@ describe('FsStore persistence', () => {
     expect(restarted.listCommandRequests().map((record) => record.inputHash)).toEqual([
       'sha256:live',
     ]);
+  });
+
+  it('rejects extra receipt metadata outside chat.start', () => {
+    const store = new FsStore();
+
+    expect(() =>
+      store.recordCommandRequest({
+        command: 'thread.create',
+        requestId: '0190f4c8-0000-7000-8000-000000000503',
+        scope: { workspaceId: 'ws_quick_chat' },
+        inputHash: 'sha256:forbidden-snapshot',
+        response: {
+          kind: 'thread',
+          id: 'th_forbidden',
+          chatMetadata: { state: 'queued' },
+        },
+      })
+    ).toThrow('Only chat.start may store extra command receipt metadata.');
+    expect(() =>
+      store.recordCommandRequest({
+        command: 'thread.create',
+        requestId: '0190f4c8-0000-7000-8000-000000000504',
+        scope: { workspaceId: 'ws_quick_chat' },
+        inputHash: 'sha256:forbidden-response-field',
+        response: {
+          kind: 'thread',
+          id: 'th_forbidden_field',
+          snapshot: { state: 'queued' },
+        },
+      } as Parameters<FsStore['recordCommandRequest']>[0])
+    ).toThrow('Command receipt response contains unsupported fields.');
+    expect(() =>
+      store.recordCommandRequest({
+        command: 'chat.start',
+        requestId: '0190f4c8-0000-7000-8000-000000000505',
+        scope: { workspaceId: 'ws_quick_chat' },
+        inputHash: 'sha256:invalid-chat-metadata',
+        response: {
+          kind: 'turn',
+          id: 'tu_invalid_chat_metadata',
+          chatMetadata: { downstream: null, resultKind: 'answered', status: 200 },
+        },
+      })
+    ).toThrow('chat.start command receipt metadata is invalid.');
+    expect(store.listCommandRequests()).toEqual([]);
   });
 
   it('does not create storage for workspace-scoped idempotency without a workspace', () => {

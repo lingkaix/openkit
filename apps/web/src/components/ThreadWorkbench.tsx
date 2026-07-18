@@ -97,7 +97,10 @@ export interface ThreadWorkbenchProps {
   onStartGoal(objective: string): Promise<void>;
   onSubmitQuickChat(prompt: string, modelId: string | null): Promise<void>;
   onRespondApproval(item: ApprovalRequestItem, decision: ApprovalDecision): Promise<void>;
-  onSubmitUserInput(item: UserInputRequestItem, answer: string): Promise<void>;
+  onSubmitUserInput(
+    item: UserInputRequestItem,
+    answers: Extract<Item, { type: 'user-input-response' }>['answers']
+  ): Promise<void>;
   onSubmitTurn(prompt: string, modelId: string | null): Promise<void>;
 }
 
@@ -995,8 +998,8 @@ export function ThreadWorkbench(props: ThreadWorkbenchProps) {
                             )
                           }
                           item={item as UserInputRequestItem}
-                          onSubmit={(requestItem, answer) => {
-                            void props.onSubmitUserInput(requestItem, answer);
+                          onSubmit={(requestItem, answers) => {
+                            void props.onSubmitUserInput(requestItem, answers);
                           }}
                         />
                       </div>

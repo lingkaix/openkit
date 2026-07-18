@@ -136,7 +136,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
         'process-policy',
         'transcript-sink',
         'worker-control',
-        'provider-attachments',
         'nanocore-inference-upstream',
         'trusted-worker-inference-relay',
         'worker.runtime-provenance.v1',
@@ -149,6 +148,9 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     );
     expect((await backend.describeCapabilities()).capabilities).not.toContain(
       'sidecar-capability-endpoint'
+    );
+    expect((await backend.describeCapabilities()).capabilities).not.toContain(
+      'provider-attachments'
     );
     expect((await backend.describeCapabilities()).capabilities).not.toContain('remote-gateway');
   });
@@ -218,7 +220,7 @@ describe('OpenShellWorkerGovernanceBackend', () => {
           heartbeats: true,
           logs: 'summary-only',
         },
-        commands: ['interrupt', 'terminal-command'],
+        commands: ['interrupt'],
         endpoint: {
           baseUrl: 'https://nanocore.local/api/worker-control',
           implementation: 'direct-nanocore',
@@ -533,15 +535,17 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     expect(existsSync(join(dataRoot, identity.stagingDirectoryRef))).toBe(false);
   });
 
-  it('does not mutate providers through a read-only restored OpenShell session', async () => {
+  it('rejects restoring an OpenShell session with non-transient provider credentials', async () => {
     const cli = new FakeOpenShellClient();
     const backend = createTestOpenShellBackend({ cli, gatewayName: 'openshell' });
     const environmentPackage = createOpenShellPackageWithProviderAttachment();
 
-    await backend.restoreSession(environmentPackage, backend.planSession(environmentPackage));
-    await backend.detachProvidersForRevokedGrants(['grant_github_read']);
+    await expect(
+      backend.restoreSession(environmentPackage, backend.planSession(environmentPackage))
+    ).rejects.toThrow('cannot restore a session with non-transient provider attachments');
 
-    expect(cli.detachProviderCalls).toEqual([]);
+    expect(cli.createSandboxCalls).toEqual([]);
+    expect(cli.upsertProviderCalls).toEqual([]);
   });
 
   it('restores a missing staging directory without a speculative preflight', async () => {
@@ -833,7 +837,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       identity.backendSessionId,
       identity.backendSessionId,
     ]);
-    expect(recoveryCli.detachProviderCalls).toEqual([]);
     expect(existsSync(join(dataRoot, identity.stagingDirectoryRef))).toBe(false);
   });
 
@@ -971,7 +974,7 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     );
   });
 
-  it('upserts OpenShell providers from backend-private credentials before sandbox creation', async () => {
+  it('rejects non-transient provider attachments before provider or sandbox effects', async () => {
     const cli = new FakeOpenShellClient();
     const backend = createTestOpenShellBackend({
       cli,
@@ -982,31 +985,47 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     });
     const environmentPackage = createOpenShellPackageWithProviderAttachment();
 
-    await backend.materialize(environmentPackage, {
-      providerCredentials: [
-        {
-          credentialExpiresAt: '2026-07-05T01:00:00.000Z',
-          credentialKey: 'GITHUB_TOKEN',
-          credentialValue: 'ghp_backend_secret',
-          providerInstanceId: 'provider_github_read',
-          providerType: 'github_mcp',
-        },
-      ],
-      workspaceRoots: [],
+    await expect(
+      backend.materialize(environmentPackage, {
+        providerCredentials: [
+          {
+            credentialExpiresAt: '2026-07-05T01:00:00.000Z',
+            credentialKey: 'GITHUB_TOKEN',
+            credentialValue: 'ghp_backend_secret',
+            providerInstanceId: 'provider_github_read',
+            providerType: 'github_mcp',
+          },
+        ],
+        workspaceRoots: [],
+      })
+    ).rejects.toThrow('does not allow non-transient provider attachments');
+    expect(cli.upsertProviderCalls).toEqual([]);
+    expect(cli.createSandboxCalls).toEqual([]);
+  });
+
+  it('rejects attachment-only packages instead of silently dropping the provider', async () => {
+    const cli = new FakeOpenShellClient();
+    const backend = createTestOpenShellBackend({
+      cli,
+      gatewayName: 'openshell',
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'token_openshell_control_1',
+      }),
+    });
+    const declaredPackage = createOpenShellPackageWithProviderAttachment();
+    const environmentPackage = AgentEnvironmentPackageSchema.parse({
+      ...declaredPackage,
+      credentials: { declarations: [] },
     });
 
-    expect(cli.upsertProviderCalls).toEqual([
-      {
-        credentialExpiresAt: '2026-07-05T01:00:00.000Z',
-        credentialKey: 'GITHUB_TOKEN',
-        credentialValue: 'ghp_backend_secret',
-        gateway: 'openshell',
-        name: 'provider_github_read',
-        providerType: 'github_mcp',
-      },
-    ]);
-    expect(cli.createSandboxCalls[0]?.providers).toEqual(['provider_github_read']);
-    expect(JSON.stringify(cli.createSandboxCalls)).not.toContain('ghp_backend_secret');
+    await expect(backend.materialize(environmentPackage)).rejects.toThrow(
+      'does not allow non-transient provider attachments'
+    );
+    await expect(
+      backend.restoreSession(environmentPackage, backend.planSession(environmentPackage))
+    ).rejects.toThrow('cannot restore a session with non-transient provider attachments');
+    expect(cli.upsertProviderCalls).toEqual([]);
+    expect(cli.createSandboxCalls).toEqual([]);
   });
 
   it('uploads backend-private runtime file credentials without leaking them in materialization', async () => {
@@ -1099,26 +1118,51 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     expect(JSON.stringify(cli.createSandboxCalls)).not.toContain('codex_host_secret');
   });
 
-  it('allows Codex network endpoints in generated OpenShell policies', async () => {
+  it('materializes exactly the AEP network allowlist', async () => {
     const cli = new FakeOpenShellClient();
-    const backend = createTestOpenShellBackend({
+    const legacyBackendOptions = {
       cli,
+      extraNetworkEndpoints: [
+        {
+          access: 'read-write' as const,
+          binaries: ['/usr/local/bin/codex'],
+          host: 'api.example.com',
+          name: 'custom_direct_api',
+          port: 443,
+          protocol: 'rest' as const,
+        },
+      ],
       gatewayName: 'openshell',
       workerControlGateway: new WorkerControlGateway({
         createToken: () => 'token_openshell_control_1',
       }),
-    });
+    };
+    const backend = createTestOpenShellBackend(legacyBackendOptions);
 
-    await backend.materialize(createOpenShellPackage(), {
-      workspaceRoots: [],
-    });
+    await backend.materialize(
+      createOpenShellPackage(undefined, {
+        network: [
+          {
+            access: 'read-write',
+            binaries: ['/usr/bin/npm'],
+            host: 'registry.npmjs.org',
+            id: 'npm_registry',
+            port: 443,
+            protocol: 'rest',
+            purpose: 'Install package dependencies',
+          },
+        ],
+      }),
+      { workspaceRoots: [] }
+    );
 
     const policy = readFileSync(cli.createSandboxCalls[0]?.policyPath ?? '', 'utf8');
+    const endpointNames = Array.from(
+      policy.matchAll(/^ {2}([A-Za-z_][A-Za-z0-9_]*):\n {4}name:/gm),
+      (match) => match[1]
+    );
 
-    expect(policy).toContain('chatgpt_backend_rest:');
-    expect(policy).toContain('host: chatgpt.com');
-    expect(policy).toContain('mcp_deepwiki:');
-    expect(policy).toContain('host: mcp.deepwiki.com');
+    expect(endpointNames).toEqual(['openkit_worker_control', 'npm_registry']);
   });
 
   it('materializes distinct verified relay providers without direct credentials or egress', async () => {
@@ -1136,16 +1180,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       cellLifecycle,
       cli,
       codexConfigTomlPath: configPath,
-      extraNetworkEndpoints: [
-        {
-          access: 'read-write',
-          binaries: ['/usr/local/bin/codex'],
-          host: 'api.example.com',
-          name: 'custom_direct_api',
-          port: 443,
-          protocol: 'rest',
-        },
-      ],
       gatewayName: 'openshell',
       workerControlGateway,
     });
@@ -1270,7 +1304,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
 
     await backend.cleanupSession(backend.planSession(secondPackage));
 
-    expect(cli.detachProviderCalls).toEqual([]);
     expect(cellLifecycle.recycleCalls).toEqual([
       backend.planSession(firstPackage).backendSessionId,
       backend.planSession(secondPackage).backendSessionId,
@@ -1301,7 +1334,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     expect(registerSession).not.toHaveBeenCalled();
     expect(cli.upsertProviderCalls).toEqual([]);
     expect(cli.createSandboxCalls).toEqual([]);
-    expect(cli.detachProviderCalls).toEqual([]);
     expect(cellLifecycle.recycleCalls).toEqual([
       backend.planSession(environmentPackage).backendSessionId,
     ]);
@@ -1352,7 +1384,11 @@ describe('OpenShellWorkerGovernanceBackend', () => {
           createTrustedRelayOpenShellPackage(`as_relay_direct_credential_${index + 1}`),
           context
         )
-      ).rejects.toThrow('does not allow backend-private direct credentials');
+      ).rejects.toThrow(
+        context.providerCredentials
+          ? 'does not allow non-transient provider attachments'
+          : 'does not allow backend-private direct credentials'
+      );
     }
     expect(cli.upsertProviderCalls).toEqual([]);
     expect(cli.createSandboxCalls).toEqual([]);
@@ -1380,7 +1416,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     expect(cellLifecycle.recycleCalls).toEqual([
       backend.planSession(environmentPackage).backendSessionId,
     ]);
-    expect(cli.detachProviderCalls).toEqual([]);
     expect(workerControlGateway.getSessionSnapshot(environmentPackage.snapshotId)).toBeNull();
   });
 
@@ -1404,7 +1439,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
 
     expect(error).toBeInstanceOf(AggregateError);
     expect((error as AggregateError).errors).toEqual([createFailure, recycleFailure]);
-    expect(cli.detachProviderCalls).toEqual([]);
     expect(workerControlGateway.getSessionSnapshot(environmentPackage.snapshotId)).toBeNull();
   });
 
@@ -1454,7 +1488,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     await expect(backend.materialize(environmentPackage)).rejects.toThrow('already materialized');
     expect(cli.upsertProviderCalls).toHaveLength(1);
     expect(cli.createSandboxCalls).toHaveLength(1);
-    expect(cli.detachProviderCalls).toEqual([]);
   });
 
   it('rejects concurrent materialization of the same relay package', async () => {
@@ -1572,7 +1605,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     ).rejects.toThrow('worker control gateway is required');
     expect(cli.upsertProviderCalls).toEqual([]);
     expect(cli.createSandboxCalls).toEqual([]);
-    expect(cli.detachProviderCalls).toEqual([]);
   });
 
   it('does not clean up a relay provider before token registration permits its upsert', async () => {
@@ -1598,7 +1630,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     );
     expect(cli.upsertProviderCalls).toEqual([]);
     expect(cli.createSandboxCalls).toEqual([]);
-    expect(cli.detachProviderCalls).toEqual([]);
   });
 
   it('rejects non-canonical relay network rules at the backend boundary', async () => {
@@ -1750,33 +1781,26 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     );
   });
 
-  it('collects provider attachment evidence without backend-private credential values', async () => {
-    const cli = new FakeOpenShellClient({
-      providerOutputs: {
-        provider_github_read:
-          'Provider\n\n  Name: provider_github_read\n  Credential: ghp_backend_secret\n',
-      },
-    });
+  it('collects transient relay provider evidence without its credential value', async () => {
+    const cli = new FakeOpenShellClient();
     const backend = createTestOpenShellBackend({
       cli,
       gatewayName: 'openshell',
       workerControlGateway: new WorkerControlGateway({
-        createToken: () => 'token_openshell_control_1',
+        createToken: () => 'relay_evidence_token',
       }),
     });
-    const environmentPackage = createOpenShellPackageWithProviderAttachment();
+    const environmentPackage = createTrustedRelayOpenShellPackage('as_relay_evidence_1');
+    const providerInstanceId = backend.planSession(environmentPackage).transientProviderInstanceId;
 
-    await backend.materialize(environmentPackage, {
-      providerCredentials: [
-        {
-          credentialKey: 'GITHUB_TOKEN',
-          credentialValue: 'ghp_backend_secret',
-          providerInstanceId: 'provider_github_read',
-          providerType: 'github_mcp',
-        },
-      ],
-      workspaceRoots: [],
+    if (!providerInstanceId) {
+      throw new Error('Trusted relay test fixture requires a transient provider.');
+    }
+    vi.spyOn(cli, 'getProvider').mockResolvedValue({
+      name: providerInstanceId,
+      stdout: `Provider\n\n  Name: ${providerInstanceId}\n  Credential: relay_evidence_token\n`,
     });
+    await backend.materialize(environmentPackage);
 
     const evidence = await backend.collectEvidence(environmentPackage.snapshotId);
 
@@ -1786,132 +1810,42 @@ describe('OpenShellWorkerGovernanceBackend', () => {
           data: expect.objectContaining({
             packageSnapshotId: environmentPackage.snapshotId,
             provider: expect.objectContaining({
-              preview: expect.stringContaining('provider_github_read'),
+              preview: expect.stringContaining(providerInstanceId),
             }),
-            providerInstanceId: 'provider_github_read',
+            providerInstanceId,
             sandboxName: expectedOpenShellSandboxName(environmentPackage.scope.agentSessionId),
           }),
           kind: 'openshell.provider.attached',
         }),
       ])
     );
-    expect(cli.getProviderCalls).toEqual(
-      expect.arrayContaining([
-        {
-          gateway: 'openshell',
-          name: 'provider_github_read',
-        },
-      ])
-    );
-    expect(JSON.stringify(evidence)).not.toContain('ghp_backend_secret');
-  });
-
-  it('normalizes provider refresh and detach evidence from redacted OpenShell output', async () => {
-    const cli = new FakeOpenShellClient({
-      providerOutputs: {
-        provider_github_read:
-          'Provider\n\n  Name: provider_github_read\n  Refresh: refreshed\n  Credential: ghp_backend_secret\n',
-        provider_gitlab_read:
-          'Provider\n\n  Name: provider_gitlab_read\n  Status: detached\n  Credential: glpat_backend_secret\n',
-      },
-      refreshStatusOutputs: {
-        provider_github_read:
-          'Refresh Status\n\n  Provider: provider_github_read\n  Status: refreshed\n  Credential: ghp_backend_secret\n',
-      },
+    expect(cli.getProvider).toHaveBeenCalledWith({
+      gateway: 'openshell',
+      name: providerInstanceId,
     });
-    const backend = createTestOpenShellBackend({
-      cli,
-      gatewayName: 'openshell',
-      workerControlGateway: new WorkerControlGateway({
-        createToken: () => 'token_openshell_control_1',
-      }),
-    });
-    const environmentPackage = createOpenShellPackageWithTwoProviderAttachments();
-
-    await backend.materialize(environmentPackage, {
-      providerCredentials: [
-        {
-          credentialKey: 'GITHUB_TOKEN',
-          credentialValue: 'ghp_backend_secret',
-          providerInstanceId: 'provider_github_read',
-          providerType: 'github_mcp',
-        },
-        {
-          credentialKey: 'GITLAB_TOKEN',
-          credentialValue: 'glpat_backend_secret',
-          providerInstanceId: 'provider_gitlab_read',
-          providerType: 'gitlab_mcp',
-        },
-      ],
-      workspaceRoots: [],
-    });
-
-    const evidence = await backend.collectEvidence(environmentPackage.snapshotId);
-
-    expect(evidence).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          data: expect.objectContaining({
-            providerInstanceId: 'provider_github_read',
-          }),
-          kind: 'openshell.provider.refreshed',
-        }),
-        expect.objectContaining({
-          data: expect.objectContaining({
-            providerInstanceId: 'provider_gitlab_read',
-          }),
-          kind: 'openshell.provider.detached',
-        }),
-        expect.objectContaining({
-          data: expect.objectContaining({
-            providerInstanceId: 'provider_github_read',
-            refreshStatus: expect.objectContaining({
-              preview: expect.stringContaining('provider_github_read'),
-            }),
-          }),
-          kind: 'openshell.provider.refresh_status',
-        }),
-      ])
-    );
-    expect(cli.getProviderRefreshStatusCalls).toEqual(
-      expect.arrayContaining([
-        {
-          gateway: 'openshell',
-          name: 'provider_github_read',
-        },
-      ])
-    );
-    expect(JSON.stringify(evidence)).not.toContain('ghp_backend_secret');
-    expect(JSON.stringify(evidence)).not.toContain('glpat_backend_secret');
+    expect(JSON.stringify(evidence)).not.toContain('relay_evidence_token');
   });
 
   it('polls provider refresh status for active materialized sessions', async () => {
-    const cli = new FakeOpenShellClient({
-      refreshStatusOutputs: {
-        provider_github_read:
-          'Refresh Status\n\n  Provider: provider_github_read\n  Status: refreshed\n  Credential: ghp_backend_secret\n',
-      },
-    });
+    const cli = new FakeOpenShellClient();
     const backend = createTestOpenShellBackend({
       cli,
       gatewayName: 'openshell',
       workerControlGateway: new WorkerControlGateway({
-        createToken: () => 'token_openshell_control_1',
+        createToken: () => 'relay_refresh_token',
       }),
     });
-    const environmentPackage = createOpenShellPackageWithProviderAttachment();
+    const environmentPackage = createTrustedRelayOpenShellPackage('as_relay_refresh_1');
+    const providerInstanceId = backend.planSession(environmentPackage).transientProviderInstanceId;
 
-    await backend.materialize(environmentPackage, {
-      providerCredentials: [
-        {
-          credentialKey: 'GITHUB_TOKEN',
-          credentialValue: 'ghp_backend_secret',
-          providerInstanceId: 'provider_github_read',
-          providerType: 'github_mcp',
-        },
-      ],
-      workspaceRoots: [],
+    if (!providerInstanceId) {
+      throw new Error('Trusted relay test fixture requires a transient provider.');
+    }
+    vi.spyOn(cli, 'getProviderRefreshStatus').mockResolvedValue({
+      name: providerInstanceId,
+      stdout: `Refresh Status\n\n  Provider: ${providerInstanceId}\n  Credential: relay_refresh_token\n`,
     });
+    await backend.materialize(environmentPackage);
 
     const evidence = await backend.collectProviderRefreshStatuses();
 
@@ -1920,24 +1854,20 @@ describe('OpenShellWorkerGovernanceBackend', () => {
         expect.objectContaining({
           data: expect.objectContaining({
             packageSnapshotId: environmentPackage.snapshotId,
-            providerInstanceId: 'provider_github_read',
+            providerInstanceId,
             refreshStatus: expect.objectContaining({
-              preview: expect.stringContaining('provider_github_read'),
+              preview: expect.stringContaining(providerInstanceId),
             }),
           }),
           kind: 'openshell.provider.refresh_status',
         }),
       ])
     );
-    expect(cli.getProviderRefreshStatusCalls).toEqual(
-      expect.arrayContaining([
-        {
-          gateway: 'openshell',
-          name: 'provider_github_read',
-        },
-      ])
-    );
-    expect(JSON.stringify(evidence)).not.toContain('ghp_backend_secret');
+    expect(cli.getProviderRefreshStatus).toHaveBeenCalledWith({
+      gateway: 'openshell',
+      name: providerInstanceId,
+    });
+    expect(JSON.stringify(evidence)).not.toContain('relay_refresh_token');
   });
 
   it('rejects direct OpenShell gateway URLs containing credentials or path state', () => {
@@ -2674,79 +2604,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     );
   });
 
-  it('recycles the Cell without deleting reusable attached providers individually', async () => {
-    const cellLifecycle = new FakeOpenShellCellLifecycle();
-    const cli = new FakeOpenShellClient();
-    const backend = createTestOpenShellBackend({
-      cellLifecycle,
-      cli,
-      gatewayName: 'openshell',
-      workerControlGateway: new WorkerControlGateway({
-        createToken: () => 'token_openshell_control_1',
-      }),
-    });
-    const environmentPackage = createOpenShellPackageWithProviderAttachment();
-
-    await backend.materialize(environmentPackage, {
-      providerCredentials: [
-        {
-          credentialKey: 'GITHUB_TOKEN',
-          credentialValue: 'ghp_backend_secret',
-          providerInstanceId: 'provider_github_read',
-          providerType: 'github_mcp',
-        },
-      ],
-      workspaceRoots: [],
-    });
-
-    await backend.cleanupSession(backend.planSession(environmentPackage));
-
-    expect(cli.detachProviderCalls).toEqual([]);
-    expect(cellLifecycle.recycleCalls).toEqual([
-      backend.planSession(environmentPackage).backendSessionId,
-    ]);
-  });
-
-  it('detaches active OpenShell providers whose vault grants were revoked', async () => {
-    const cli = new FakeOpenShellClient();
-    const backend = createTestOpenShellBackend({
-      cli,
-      gatewayName: 'openshell',
-      workerControlGateway: new WorkerControlGateway({
-        createToken: () => 'token_openshell_control_1',
-      }),
-    });
-    const environmentPackage = createOpenShellPackageWithTwoProviderAttachments();
-
-    await backend.materialize(environmentPackage, {
-      providerCredentials: [
-        {
-          credentialKey: 'GITHUB_TOKEN',
-          credentialValue: 'ghp_backend_secret',
-          providerInstanceId: 'provider_github_read',
-          providerType: 'github_mcp',
-        },
-        {
-          credentialKey: 'GITLAB_TOKEN',
-          credentialValue: 'glpat_backend_secret',
-          providerInstanceId: 'provider_gitlab_read',
-          providerType: 'gitlab_mcp',
-        },
-      ],
-      workspaceRoots: [],
-    });
-
-    await backend.detachProvidersForRevokedGrants(['grant_github_read']);
-
-    expect(cli.detachProviderCalls).toEqual([
-      {
-        gateway: 'openshell',
-        name: expectedOpenShellSandboxName(environmentPackage.scope.agentSessionId),
-        provider: 'provider_github_read',
-      },
-    ]);
-  });
-
   it('recycles the OpenShell Cell after collection', async () => {
     const cellLifecycle = new FakeOpenShellCellLifecycle();
     const cli = new FakeOpenShellClient();
@@ -2783,9 +2640,6 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
     OpenShellWorkerGovernanceClient['createSandbox']
   >[0][] = [];
   public readonly execSandboxCalls: OpenShellSandboxExecInput[] = [];
-  public readonly detachProviderCalls: Parameters<
-    OpenShellWorkerGovernanceClient['detachProvider']
-  >[0][] = [];
   public readonly downloadFileCalls: Parameters<
     OpenShellWorkerGovernanceClient['downloadFile']
   >[0][] = [];
@@ -2809,35 +2663,28 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
   private readonly ensureProviderProfileFailure: Error | null;
   private readonly execSandboxGate: Promise<void> | null;
   private readonly gatewayVersion: string | null;
-  private readonly detachFailures: Error[];
-  private readonly providerOutputs: Record<string, string>;
   private readonly providersV2EnabledFailure: Error | null;
   private readonly providersV2EnabledValue: boolean | null;
-  private readonly refreshStatusOutputs: Record<string, string>;
   private readonly openShellVersion: string;
 
   public constructor(
     options: {
       createSandboxGate?: Promise<void>;
       createSandboxFailure?: Error;
-      detachFailures?: Error[];
       downloads?: Record<string, string>;
       endpoint?: string;
       ensureProviderProfileFailure?: Error;
       execSandboxGate?: Promise<void>;
       gatewayVersion?: string | null;
-      providerOutputs?: Record<string, string>;
       /** Error raised while reading the global providers v2 setting. */
       providersV2EnabledFailure?: Error;
       /** Parsed global providers v2 setting, where null means unset. */
       providersV2Enabled?: boolean | null;
-      refreshStatusOutputs?: Record<string, string>;
       version?: string;
     } = {}
   ) {
     this.createSandboxGate = options.createSandboxGate ?? null;
     this.createSandboxFailure = options.createSandboxFailure ?? null;
-    this.detachFailures = [...(options.detachFailures ?? [])];
     this.downloads = options.downloads ?? {};
     this.endpoint = options.endpoint ?? 'https://127.0.0.1:17670';
     this.ensureProviderProfileFailure = options.ensureProviderProfileFailure ?? null;
@@ -2846,11 +2693,9 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
       options.gatewayVersion === null
         ? null
         : (options.gatewayVersion ?? options.version ?? '0.0.80');
-    this.providerOutputs = options.providerOutputs ?? {};
     this.providersV2EnabledFailure = options.providersV2EnabledFailure ?? null;
     this.providersV2EnabledValue =
       options.providersV2Enabled === undefined ? true : options.providersV2Enabled;
-    this.refreshStatusOutputs = options.refreshStatusOutputs ?? {};
     this.openShellVersion = options.version ?? '0.0.80';
   }
 
@@ -2949,7 +2794,7 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
 
     return {
       name: input.name,
-      stdout: this.providerOutputs[input.name] ?? `Provider\n\n  Name: ${input.name}\n`,
+      stdout: `Provider\n\n  Name: ${input.name}\n`,
     };
   }
 
@@ -2961,23 +2806,7 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
 
     return {
       name: input.name,
-      stdout:
-        this.refreshStatusOutputs[input.name] ?? `Refresh Status\n\n  Provider: ${input.name}\n`,
-    };
-  }
-
-  public async detachProvider(
-    input: Parameters<OpenShellWorkerGovernanceClient['detachProvider']>[0]
-  ): Promise<Awaited<ReturnType<OpenShellWorkerGovernanceClient['detachProvider']>>> {
-    this.detachProviderCalls.push(input);
-    const failure = this.detachFailures.shift();
-
-    if (failure) {
-      throw failure;
-    }
-
-    return {
-      stdout: 'detached',
+      stdout: `Refresh Status\n\n  Provider: ${input.name}\n`,
     };
   }
 
@@ -3124,6 +2953,21 @@ function createOpenShellPackageWithProviderAttachment(): AgentEnvironmentPackage
 
   return AgentEnvironmentPackageSchema.parse({
     ...environmentPackage,
+    credentials: {
+      declarations: [
+        {
+          id: 'github_mcp_read',
+          provider: {
+            credentialKey: 'GITHUB_TOKEN',
+            instanceId: 'provider_github_read',
+            profileId: 'github_mcp',
+            type: 'github_mcp',
+          },
+          vaultGrantId: 'grant_github_read',
+          visibility: 'sandbox-provider',
+        },
+      ],
+    },
     providers: {
       providerProfiles: [
         ...environmentPackage.providers.providerProfiles,
@@ -3154,53 +2998,6 @@ function createOpenShellPackageWithProviderAttachment(): AgentEnvironmentPackage
           id: 'attach_github_mcp',
           providerInstanceId: 'provider_github_read',
           vaultGrantIds: ['grant_github_read'],
-        },
-      ],
-    },
-  });
-}
-
-/**
- * Creates an OpenShell package with two provider attachments.
- *
- * @returns OpenShell package fixture with GitHub and GitLab provider attachments.
- */
-function createOpenShellPackageWithTwoProviderAttachments(): AgentEnvironmentPackage {
-  const environmentPackage = createOpenShellPackageWithProviderAttachment();
-
-  return AgentEnvironmentPackageSchema.parse({
-    ...environmentPackage,
-    providers: {
-      ...environmentPackage.providers,
-      providerProfiles: [
-        ...environmentPackage.providers.providerProfiles,
-        {
-          category: 'mcp',
-          displayName: 'GitLab MCP',
-          id: 'gitlab_mcp',
-          kind: 'custom',
-          models: ['gitlab-mcp'],
-        },
-      ],
-      providerInstances: [
-        ...environmentPackage.providers.providerInstances,
-        {
-          displayName: 'GitLab Read MCP',
-          id: 'provider_gitlab_read',
-          kind: 'custom',
-          models: ['gitlab-mcp'],
-          profileId: 'gitlab_mcp',
-          secretRef: 'vault://vault_gitlab_read',
-          vaultRefIds: ['vault_gitlab_read'],
-          vendor: 'gitlab',
-        },
-      ],
-      attachments: [
-        ...environmentPackage.providers.attachments,
-        {
-          id: 'attach_gitlab_mcp',
-          providerInstanceId: 'provider_gitlab_read',
-          vaultGrantIds: ['grant_gitlab_read'],
         },
       ],
     },

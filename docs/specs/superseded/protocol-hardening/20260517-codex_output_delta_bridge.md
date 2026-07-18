@@ -3,7 +3,7 @@
 Status: Superseded
 Implementation: N/A
 Status Changed: 2026-06-29
-Current Guidance: `docs/specs/20260628-protocol_contract_consolidation.md`, `docs/specs/20260629-worker_runtime_communication_model.md`
+Current Guidance: `docs/core/protocol.md`, `docs/core/communication.md`, `packages/protocol/README.md`, `docs/specs/20260629-worker_runtime_communication_model.md`
 Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
 ## Lifecycle Reason

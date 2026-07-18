@@ -66,8 +66,8 @@ Notes:
 
 ## E2E Surface
 
-The Playwright suite covers the internal self-check full turn flow, agent session badge updates, visible Goal Mode planning, deterministic fixture completion through the test supervise endpoint, settings diagnostics refresh behavior, server-mode email/password sign-up and sign-in, unauthenticated API rejection, logout, and diagnostics redaction.
+The Playwright suite covers Workspace and Thread creation, Knowledge editing and reload, visible Goal Mode planning, deterministic fixture completion through the test supervise endpoint, settings diagnostics, server-mode email/password sign-up and sign-in, unauthenticated API rejection, logout, diagnostics redaction, and the packaged-route worker-entry smoke path.
 
 Server-mode specs start isolated NanoCore and Vite processes on dynamic ports and use disposable temporary data roots so runs do not depend on local persisted state.
 
-The story suite uses `apps/web/playwright.stories.config.ts` to execute Markdown story artifacts from `tests/stories/` through deterministic Playwright adapters in `tests/story-runner/`. The deterministic Web story runs the local self-check flow without real Codex, real provider credentials, or external network access. The real Codex Goal Mode story is an MCP-first kernel acceptance run with a separate opt-in command, `pnpm -w test:stories:real-codex`; it does not claim Web or Playwright coverage.
+The story suite uses `apps/web/playwright.stories.config.ts` to execute Markdown story artifacts from `tests/stories/` through deterministic Playwright adapters in `tests/story-runner/`. The deterministic Web story verifies local Workspace and Thread setup plus diagnostics without real Codex, real provider credentials, a worker runtime, or external network access.

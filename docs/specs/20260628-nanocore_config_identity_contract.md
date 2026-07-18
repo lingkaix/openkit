@@ -70,22 +70,22 @@ The bundled CLI server-mode contract uses the `OPENKIT_NANOCORE_TOKEN` explicit 
 
 ## Current Implementation Projection
 
-The NanoCore config and authentication substrate satisfies its accepted V1 contract, while the owner-independent shared-Workspace identity target and the accepted bundled CLI projection remain incomplete:
+The NanoCore config, authentication, and bundled CLI credential substrate satisfies its accepted V1 contract, while the owner-independent shared-Workspace identity target remains incomplete:
 
 - Better Auth is the current server-mode auth implementation.
 - The Better Auth table layout may use provider-owned table names such as `session`. Core identity doctrine still names the conceptual record `AuthSession`; implementation table names must not redefine the product concept.
 - Local mode resolves an implicit local user through `LOCAL_USER_ID` when no authenticated server-mode subject exists.
 - `apps/nanocore/src/auth/middleware.ts` attaches actor context and enforces server-mode authentication for protected APIs.
 - Core currently records Workspace registry owners and active or removed membership edges, but it does not yet implement fixed owner/editor/viewer access, invitations, transfer, disable-safe lifecycle, or the complete centralized Workspace access resolver.
-- Server-mode bearer-token authentication, first-boot bootstrap, scoped token administration, and the reusable credential-storage substrate are implemented by `docs/specs/20260704-remote_auth_credential_bootstrap.md`; the accepted bundled CLI projection remains pending.
-- The removal-only `mcp/` package currently reads `OPENKIT_NANOCORE_TOKEN` or the desktop credential store and ignores the removed raw `OPENKIT_NANOCORE_COOKIE` and `OPENKIT_NANOCORE_AUTHORIZATION` passthrough variables; this is parity evidence, not a continuing channel contract.
+- Server-mode bearer-token authentication, first-boot bootstrap, scoped token administration, the reusable credential-storage substrate, and the bundled CLI credential path are implemented by `docs/specs/20260704-remote_auth_credential_bootstrap.md` and `docs/specs/20260713-openkit_agent_skill_interface.md`.
+- The bundled CLI reads `OPENKIT_NANOCORE_TOKEN` as the explicit ephemeral override or resolves an endpoint-scoped stored credential, sends fixed `openkit-cli` / `agent-skill` channel metadata, and ignores the removed raw `OPENKIT_NANOCORE_COOKIE` and `OPENKIT_NANOCORE_AUTHORIZATION` passthrough variables.
 - `apps/nanocore/src/config/bind-host.ts` resolves host and port from explicit environment overrides, then the startup server config, then mode-safe defaults.
 - Server mode constructs Better Auth explicitly from the startup config, requires a deployment-specific secret of at least 32 characters, applies `server.publicBaseUrl`, shares `server.cors.origins` with browser CORS, and enforces `auth.signup.enabled` through Better Auth's sign-up policy.
 - `apps/nanocore/src/config/runtime-config.ts` loads provider registry, agent configs, agent manifests, workspace configs, gateway defaults, and runtime config status from the data root or supplied in-memory inputs.
 - Server browser CORS admits only exact configured origins and returns `403 Forbidden` before route work for every rejected origin; local mode additionally permits exact loopback browser origins.
 - Runtime config reload planning distinguishes hot-swappable, session-scoped, restart-required, and rejected changes.
 - Provider registries and authored agent configuration are restart-required because production scheduler services capture those dependencies at startup; reload never claims that a newer snapshot has changed an already constructed dispatcher.
-- Runtime config stale-session diagnostics expose typed `inspect`, `restart_session`, and `request_human` choices through the public diagnostics read model, and the App API and Core Client expose a restart action that retires the stale session record so the next worker launch uses the current runtime config version. The current MCP projection is removal-only, and the bundled CLI operation remains pending.
+- Runtime config stale-session diagnostics expose typed `inspect`, `restart_session`, and `request_human` choices through the public diagnostics read model, and the App API, Core Client, and bundled CLI `runtime.restart-stale-session` operation expose a restart action that retires the stale session record so the next worker launch uses the current runtime config version.
 - `apps/nanocore/src/config/runtime-config-files.ts` owns safe runtime config file reads, writes, validation, schema lookup, optimistic revision checks, and path containment.
 - Provider and agent config loaders reject unknown or unsafe fields, inline raw secret shapes, unsafe workspace paths, and unsupported runtime setup shapes.
 
@@ -111,7 +111,7 @@ The following items remain outside this config and identity contract:
 - Server-mode authentication is not workspace authorization; membership facts and permission decisions remain separate required checks.
 - Better Auth is an implementation provider for auth sessions; it does not rename the OpenKit conceptual `AuthSession`.
 - Runtime config editing must go through NanoCore-owned routes and schemas, not raw file browsing through the bundled CLI.
-- NanoCore bearer tokens used by the bundled CLI or temporary legacy MCP projection are credential material and must not be printed, logged, persisted in documentation, or exposed in artifacts.
+- NanoCore bearer tokens used by the bundled CLI are credential material and must not be printed, logged, persisted in documentation, or exposed in artifacts.
 - Historical identity, auth, config, and data-layout specs are supporting detail, not active guidance.
 
 ## Reference Specs

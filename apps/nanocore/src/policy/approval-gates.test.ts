@@ -51,7 +51,11 @@ describe('policy approval gates', () => {
         },
         status: 'awaiting_human',
       });
+      expect(
+        store.listThreadItems('ws_demo', thread.id).find((item) => item.id === 'it_policy_gate')
+      ).toMatchObject({ status: 'completed', completedAt: expect.any(String) });
       expect(permissionDecision(workspaceDb, 'pd_policy_gate')).toMatchObject({
+        action: 'repo.push',
         approval_id: 'ap_policy_gate',
         policy_engine_version: 'nanocore-approval-policy:v1',
         required_approval_kind: 'permission',
@@ -70,6 +74,24 @@ describe('policy approval gates', () => {
           title: 'Approve protected resource use',
         })
       );
+
+      expect(() =>
+        createPolicyApprovalGate({
+          approvalId: 'ap_duplicate_policy_gate',
+          approvalItemId: 'it_duplicate_policy_gate',
+          decisionId: 'pd_duplicate_policy_gate',
+          description: 'Do not create a second Gate on an awaiting-human Turn.',
+          reasonCode: 'approval_required',
+          resourceSummary: { kind: 'vault-reference', id: 'vault_demo' },
+          store,
+          subjectSummary: { kind: 'agent', id: 'agent_demo' },
+          title: 'Duplicate protected resource use',
+          turnId: turn.id,
+          workspaceDb,
+          workspaceId: 'ws_demo',
+        })
+      ).toThrow('Git push approval requires one exact running Turn owner.');
+      expect(permissionDecision(workspaceDb, 'pd_duplicate_policy_gate')).toBeUndefined();
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -87,22 +109,28 @@ describe('policy approval gates', () => {
 function permissionDecision(
   workspaceDb: ReturnType<typeof openWorkspaceDb>,
   decisionId: string
-): {
-  approval_id: string | null;
-  policy_engine_version: string;
-  required_approval_kind: string | null;
-  result: string;
-} {
+):
+  | {
+      action: string;
+      approval_id: string | null;
+      policy_engine_version: string;
+      required_approval_kind: string | null;
+      result: string;
+    }
+  | undefined {
   return workspaceDb.sqlite
     .prepare(
-      `SELECT approval_id, policy_engine_version, required_approval_kind, result
+      `SELECT action, approval_id, policy_engine_version, required_approval_kind, result
        FROM permission_decisions
        WHERE decision_id = ?`
     )
-    .get(decisionId) as {
-    approval_id: string | null;
-    policy_engine_version: string;
-    required_approval_kind: string | null;
-    result: string;
-  };
+    .get(decisionId) as
+    | {
+        action: string;
+        approval_id: string | null;
+        policy_engine_version: string;
+        required_approval_kind: string | null;
+        result: string;
+      }
+    | undefined;
 }

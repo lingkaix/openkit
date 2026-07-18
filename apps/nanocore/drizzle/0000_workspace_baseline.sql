@@ -78,6 +78,7 @@ CREATE TABLE `goal_tasks` (
 	`goal_id` text NOT NULL,
 	`plan_item_id` text NOT NULL,
 	`status` text NOT NULL,
+	`latest_gate_context_item_id` text,
 	`title` text NOT NULL,
 	`objective` text NOT NULL,
 	`order_index` integer NOT NULL,

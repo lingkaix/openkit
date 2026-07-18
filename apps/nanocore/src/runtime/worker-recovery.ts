@@ -13,12 +13,13 @@ import {
   requireAgentEnvironmentPackageSnapshot,
 } from './aep-snapshot-ledger.js';
 import { getGoalRecord, listGoalTasks } from './goal-store.js';
-import { getWorkerBackendSession } from './worker-backend-sessions.js';
+import { getWorkerBackendSession, listWorkerBackendSessions } from './worker-backend-sessions.js';
 import {
   clearWorkerCheckpoint,
   getWorkerCheckpoint,
   listRecoverableWorkerCheckpoints,
   parseWorkerCheckpointContextAssembly,
+  parseWorkerCheckpointEvidence,
   type WorkerCheckpointContextAssemblySummary,
   type WorkerCheckpointRecord,
 } from './worker-checkpoints.js';
@@ -28,7 +29,11 @@ import {
   turnStatusForCanonicalWorkerStopReason,
 } from './worker-control-records.js';
 import { importWorkerRuntimeProvenance } from './worker-runtime-provenance.js';
-import { isTerminalWorkerTurnStage, type WorkerTurnStage } from './worker-stage.js';
+import {
+  isTerminalWorkerTurnStage,
+  type WorkerTurnStage,
+  workerTurnStageForStopReason,
+} from './worker-stage.js';
 
 /**
  * Worker stages that still need visible recovery materialization.
@@ -130,7 +135,7 @@ export interface ClearWorkerCheckpointAfterTerminalStateInput {
 }
 
 /**
- * Proves one non-terminal checkpoint was already closed by the generic worker owners.
+ * Derives one checkpoint outcome from the complete backend-specific worker owner tuple.
  *
  * @param coreDb Open Core database containing scheduler and worker-control authority.
  * @param store Product store containing the Turn and Agent Session owners.
@@ -139,7 +144,7 @@ export interface ClearWorkerCheckpointAfterTerminalStateInput {
  * @returns Canonical stop reason accepted for the original worker lineage.
  * @throws Error when any durable owner is absent or contradictory.
  */
-export function recoverAcceptedWorkerCheckpointStopReason(
+export function recoverWorkerCheckpointStopReason(
   coreDb: CoreDb,
   store: FsStore,
   workspaceDb: WorkspaceDb,
@@ -164,30 +169,9 @@ export function recoverAcceptedWorkerCheckpointStopReason(
   if (
     agentSession.workspaceId !== checkpoint.workspaceId ||
     agentSession.threadId !== checkpoint.threadId ||
-    !agentSession.environmentPackageSnapshotId
+    turn.agentId !== agentSession.agentId
   ) {
     throw new Error('Worker Agent Session contradicts its checkpoint lineage.');
-  }
-
-  let environmentPackage: ReturnType<typeof requireAgentEnvironmentPackageSnapshot>['snapshot'];
-  try {
-    environmentPackage = requireAgentEnvironmentPackageSnapshot(
-      workspaceDb,
-      checkpoint.workspaceId,
-      agentSession.environmentPackageSnapshotId
-    ).snapshot;
-  } catch {
-    throw new Error('Worker checkpoint is missing its environment package.');
-  }
-  if (
-    environmentPackage.scope.userId !== store.getUserId() ||
-    environmentPackage.scope.workspaceId !== checkpoint.workspaceId ||
-    environmentPackage.scope.threadId !== checkpoint.threadId ||
-    environmentPackage.scope.turnId !== checkpoint.turnId ||
-    environmentPackage.scope.agentSessionId !== checkpoint.workerSessionId ||
-    environmentPackage.scope.requestId !== checkpoint.requestId
-  ) {
-    throw new Error('Worker environment package contradicts its checkpoint lineage.');
   }
 
   const leases = listSchedulerSessionLeasesForTurn(coreDb, {
@@ -196,51 +180,118 @@ export function recoverAcceptedWorkerCheckpointStopReason(
     turnId: checkpoint.turnId,
   });
   const lease = leases[0];
-  if (
-    leases.length !== 1 ||
-    !lease ||
-    lease.agentSessionId !== checkpoint.workerSessionId ||
-    lease.packageSnapshotId !== environmentPackage.snapshotId ||
-    lease.recoveryState !== null
-  ) {
-    throw new Error('Worker checkpoint has no exact terminal scheduler lease.');
+  if (leases.length !== 1 || !lease || lease.agentSessionId !== checkpoint.workerSessionId) {
+    throw new Error('Worker checkpoint has no exact scheduler lease.');
   }
   const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, lease.leaseId);
   if (admission.userId !== store.getUserId() || admission.requestId !== checkpoint.requestId) {
     throw new Error('Worker scheduler admission contradicts its command owner.');
   }
 
+  let stopReason = checkpoint.stopReason;
+  if (stopReason && checkpoint.stage !== workerTurnStageForStopReason(stopReason)) {
+    throw new Error('Worker checkpoint contradicts its recorded StopReason.');
+  }
   const backendSession = getWorkerBackendSession(coreDb, lease.leaseId);
-  if (
-    !backendSession ||
-    backendSession.workspaceId !== checkpoint.workspaceId ||
-    backendSession.threadId !== checkpoint.threadId ||
-    backendSession.turnId !== checkpoint.turnId ||
-    backendSession.agentSessionId !== checkpoint.workerSessionId ||
-    backendSession.packageSnapshotId !== environmentPackage.snapshotId ||
-    backendSession.workspaceHandoffState !== 'complete' ||
-    backendSession.state !== 'cleaned'
+  const environmentPackages = listExportableAgentEnvironmentPackageSnapshots(
+    workspaceDb,
+    checkpoint.workspaceId
+  );
+  if (agentSession.environmentPackageSnapshotId) {
+    let environmentPackage: ReturnType<typeof requireAgentEnvironmentPackageSnapshot>['snapshot'];
+    try {
+      environmentPackage = requireAgentEnvironmentPackageSnapshot(
+        workspaceDb,
+        checkpoint.workspaceId,
+        agentSession.environmentPackageSnapshotId
+      ).snapshot;
+    } catch {
+      throw new Error('Worker checkpoint is missing its environment package.');
+    }
+    if (
+      environmentPackage.scope.userId !== store.getUserId() ||
+      environmentPackage.scope.workspaceId !== checkpoint.workspaceId ||
+      environmentPackage.scope.threadId !== checkpoint.threadId ||
+      environmentPackage.scope.turnId !== checkpoint.turnId ||
+      environmentPackage.scope.agentSessionId !== checkpoint.workerSessionId ||
+      environmentPackage.scope.requestId !== checkpoint.requestId ||
+      lease.packageSnapshotId !== environmentPackage.snapshotId
+    ) {
+      throw new Error('Worker environment package contradicts its checkpoint lineage.');
+    }
+    const accepted = getWorkerControlAcceptedFinalStatus(coreDb, {
+      agentSessionId: checkpoint.workerSessionId,
+      packageSnapshotId: environmentPackage.snapshotId,
+      requestId: checkpoint.requestId,
+      threadId: checkpoint.threadId,
+      turnId: checkpoint.turnId,
+      workspaceId: checkpoint.workspaceId,
+    });
+    if (!accepted) {
+      throw new Error('Worker checkpoint has no accepted final status.');
+    }
+    const acceptedStopReason = canonicalStopReasonForAcceptedWorkerFinalStatus(accepted);
+    if (stopReason && stopReason !== acceptedStopReason) {
+      const closedGate =
+        acceptedStopReason === 'ask_user'
+          ? (classifyClosedWorkerApprovalGate(store, turn) ??
+            classifyClosedWorkerUserInputGate(store, turn))
+          : null;
+      if (closedGate?.stopReason !== stopReason) {
+        throw new Error('Worker checkpoint contradicts its accepted final status.');
+      }
+    } else {
+      stopReason = acceptedStopReason;
+    }
+    if (
+      !backendSession ||
+      backendSession.workspaceId !== checkpoint.workspaceId ||
+      backendSession.threadId !== checkpoint.threadId ||
+      backendSession.turnId !== checkpoint.turnId ||
+      backendSession.agentSessionId !== checkpoint.workerSessionId ||
+      backendSession.packageSnapshotId !== environmentPackage.snapshotId ||
+      backendSession.workspaceHandoffState !== 'complete' ||
+      backendSession.state !== 'cleaned'
+    ) {
+      throw new Error('Worker checkpoint has no complete backend closeout.');
+    }
+  } else if (
+    !stopReason ||
+    checkpoint.stage === 'preparing' ||
+    checkpoint.stage === 'running_worker' ||
+    listWorkerBackendSessions(coreDb).some(
+      (record) => record.agentSessionId === checkpoint.workerSessionId
+    ) ||
+    environmentPackages.some((record) => record.agentSessionId === checkpoint.workerSessionId) ||
+    Boolean(
+      coreDb.sqlite
+        .prepare('SELECT 1 FROM worker_control_records WHERE agent_session_id = ? LIMIT 1')
+        .get(checkpoint.workerSessionId)
+    )
   ) {
-    throw new Error('Worker checkpoint has no complete backend closeout.');
+    throw new Error('In-process worker checkpoint has no complete terminal closeout.');
   }
 
-  const accepted = getWorkerControlAcceptedFinalStatus(coreDb, {
-    agentSessionId: checkpoint.workerSessionId,
-    packageSnapshotId: environmentPackage.snapshotId,
-    requestId: checkpoint.requestId,
-    threadId: checkpoint.threadId,
-    turnId: checkpoint.turnId,
-    workspaceId: checkpoint.workspaceId,
-  });
-  if (!accepted) {
-    throw new Error('Worker checkpoint has no accepted final status.');
-  }
-  const stopReason = canonicalStopReasonForAcceptedWorkerFinalStatus(accepted);
-  if (stopReason === 'ask_user') {
-    throw new Error('Worker ask_user recovery requires an exact human Gate.');
+  if (!stopReason) {
+    throw new Error('Worker checkpoint has no canonical StopReason.');
   }
 
   const expectedTurnStatus = turnStatusForCanonicalWorkerStopReason(stopReason);
+  if (stopReason === 'ask_user') {
+    const evidence = parseWorkerCheckpointEvidence(checkpoint.diagnosticsSummary);
+    if (
+      agentSession.status !== 'suspended' ||
+      !['acquired', 'starting', 'active', 'idle'].includes(lease.status) ||
+      lease.recoveryState !== null ||
+      !turn.humanGate ||
+      !evidence?.itemIds.includes(turn.humanGate.itemId) ||
+      !hasExactActiveHumanGate(store, turn)
+    ) {
+      throw new Error('Worker ask_user checkpoint has no exact active human Gate.');
+    }
+    return stopReason;
+  }
+
   const expectedLeaseStatus = expectedTurnStatus === 'failed' ? 'failed' : 'released';
   const expectedAgentSessionStatus =
     expectedTurnStatus === 'completed'
@@ -248,23 +299,219 @@ export function recoverAcceptedWorkerCheckpointStopReason(
       : expectedTurnStatus === 'cancelled'
         ? 'interrupted'
         : 'failed';
-  const terminalEvent = store
+  const terminalEvents = store
     .getTurnEvents(checkpoint.turnId)
-    .find(
-      (event) =>
-        event.event === 'turn.completed' &&
-        event.data.type === 'turn-completed' &&
-        event.data.stopReason === stopReason
-    );
+    .filter((event) => event.event === 'turn.completed' && event.data.type === 'turn-completed');
   if (
     turn.status !== expectedTurnStatus ||
     agentSession.status !== expectedAgentSessionStatus ||
     lease.status !== expectedLeaseStatus ||
-    !terminalEvent
+    lease.recoveryState !== null ||
+    terminalEvents.length !== 1 ||
+    terminalEvents[0]?.data.type !== 'turn-completed' ||
+    terminalEvents[0].data.stopReason !== stopReason
   ) {
-    throw new Error('Worker generic closeout contradicts its accepted final status.');
+    throw new Error('Worker generic closeout contradicts its canonical StopReason.');
   }
   return stopReason;
+}
+
+/**
+ * Classifies one closed worker Approval Gate from its exact request, decision, and owners.
+ *
+ * @param store Product store containing the Turn, Items, Approval, and terminal event.
+ * @param turn Terminal Turn whose prior Gate may have been closed.
+ * @returns Exact Approval closure, or null when the owner tuple is absent or contradictory.
+ */
+export function classifyClosedWorkerApprovalGate(
+  store: FsStore,
+  turn: ReturnType<FsStore['getTurnById']>
+): {
+  readonly requestItemId: string;
+  readonly responseRequestId: string;
+  readonly responseItemId: string;
+  readonly stopReason: Extract<StopReason, 'aborted' | 'completed'>;
+} | null {
+  if (turn.humanGate || (turn.status !== 'completed' && turn.status !== 'cancelled')) {
+    return null;
+  }
+
+  const candidates: Array<{
+    readonly requestItemId: string;
+    readonly responseItemId: string;
+    readonly stopReason: Extract<StopReason, 'aborted' | 'completed'>;
+  }> = [];
+  for (const response of turn.items) {
+    if (response.status !== 'completed') {
+      continue;
+    }
+    if (response.type !== 'approval-decision') {
+      continue;
+    }
+    const requests = turn.items.filter(
+      (item) =>
+        item.type === 'approval-request' &&
+        item.status === 'completed' &&
+        item.approvalRequestId === response.approvalRequestId
+    );
+    if (requests.length !== 1 || !requests[0]) {
+      continue;
+    }
+    try {
+      const approval = store.getApproval(response.approvalRequestId);
+      if (
+        approval.workspaceId !== turn.workspaceId ||
+        approval.threadId !== turn.threadId ||
+        approval.turnId !== turn.id ||
+        approval.status !== response.decision ||
+        approval.resolvedAt === null
+      ) {
+        continue;
+      }
+    } catch {
+      continue;
+    }
+    candidates.push({
+      requestItemId: requests[0].id,
+      responseItemId: response.id,
+      stopReason: response.decision === 'denied' ? 'aborted' : 'completed',
+    });
+  }
+
+  const closure = candidates[0];
+  if (candidates.length !== 1 || !closure) {
+    return null;
+  }
+  const terminalEvents = store
+    .getTurnEvents(turn.id)
+    .filter((event) => event.event === 'turn.completed' && event.data.type === 'turn-completed');
+  const terminalEvent = terminalEvents[0];
+  const expectedTurnStatus = closure.stopReason === 'aborted' ? 'cancelled' : 'completed';
+  if (
+    turn.status !== expectedTurnStatus ||
+    terminalEvents.length !== 1 ||
+    terminalEvent?.data.type !== 'turn-completed' ||
+    terminalEvent.data.stopReason !== closure.stopReason ||
+    !terminalEvent.requestId
+  ) {
+    return null;
+  }
+  return { ...closure, responseRequestId: terminalEvent.requestId };
+}
+
+/**
+ * Classifies one closed worker user-input Gate from its exact request and response Items.
+ *
+ * @param store Product store containing the Turn and terminal event.
+ * @param turn Terminal Turn whose prior Gate may have been closed.
+ * @returns Exact user-input closure, or null when the Item tuple is absent or contradictory.
+ */
+export function classifyClosedWorkerUserInputGate(
+  store: FsStore,
+  turn: ReturnType<FsStore['getTurnById']>
+): {
+  readonly requestItemId: string;
+  readonly responseRequestId: string;
+  readonly responseItemId: string;
+  readonly stopReason: Extract<StopReason, 'completed'>;
+} | null {
+  if (turn.humanGate || turn.status !== 'completed') {
+    return null;
+  }
+  const candidates: Array<{
+    readonly requestItemId: string;
+    readonly responseItemId: string;
+    readonly stopReason: Extract<StopReason, 'completed'>;
+  }> = [];
+  for (const response of turn.items) {
+    if (response.type !== 'user-input-response' || response.status !== 'completed') {
+      continue;
+    }
+    const requests = turn.items.filter(
+      (item) =>
+        item.type === 'user-input-request' &&
+        item.status === 'completed' &&
+        item.userInputRequestId === response.userInputRequestId
+    );
+    const request = requests[0];
+    if (
+      requests.length !== 1 ||
+      !request ||
+      request.type !== 'user-input-request' ||
+      JSON.stringify(Object.keys(response.answers).sort()) !==
+        JSON.stringify(request.questions.map((question) => question.id).sort())
+    ) {
+      continue;
+    }
+    candidates.push({
+      requestItemId: request.id,
+      responseItemId: response.id,
+      stopReason: 'completed',
+    });
+  }
+  const closure = candidates[0];
+  if (candidates.length !== 1 || !closure) {
+    return null;
+  }
+  const terminalEvents = store
+    .getTurnEvents(turn.id)
+    .filter((event) => event.event === 'turn.completed' && event.data.type === 'turn-completed');
+  const terminalEvent = terminalEvents[0];
+  if (
+    terminalEvents.length !== 1 ||
+    terminalEvent?.data.type !== 'turn-completed' ||
+    terminalEvent.data.stopReason !== 'completed' ||
+    !terminalEvent.requestId
+  ) {
+    return null;
+  }
+  return { ...closure, responseRequestId: terminalEvent.requestId };
+}
+
+/**
+ * Validates the exact active Gate owned by one awaiting-human Turn.
+ *
+ * @param store Product store containing Gate Items and Approval owners.
+ * @param turn Candidate awaiting-human Turn.
+ * @returns True when the Gate tuple is complete and pending.
+ */
+export function hasExactActiveHumanGate(
+  store: FsStore,
+  turn: ReturnType<FsStore['getTurnById']>
+): turn is Extract<ReturnType<FsStore['getTurnById']>, { status: 'awaiting_human' }> {
+  const gate = turn.humanGate;
+  if (turn.status !== 'awaiting_human' || !gate) {
+    return false;
+  }
+  const item = turn.items.find((candidate) => candidate.id === gate.itemId);
+  if (
+    item?.workspaceId !== turn.workspaceId ||
+    item.threadId !== turn.threadId ||
+    item.turnId !== turn.id ||
+    item.status !== 'completed'
+  ) {
+    return false;
+  }
+  if (gate.kind === 'user-input') {
+    return (
+      item.type === 'user-input-request' && item.userInputRequestId === gate.userInputRequestId
+    );
+  }
+  if (item.type !== 'approval-request' || item.approvalRequestId !== gate.approvalRequestId) {
+    return false;
+  }
+  try {
+    const approval = store.getApproval(gate.approvalRequestId);
+    return (
+      approval.workspaceId === turn.workspaceId &&
+      approval.threadId === turn.threadId &&
+      approval.turnId === turn.id &&
+      approval.status === 'pending' &&
+      approval.resolvedAt === null
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**

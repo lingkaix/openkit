@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import {
+  type ChatCommandReceiptMetadata,
   type CommandRequestName,
   type CommandRequestRecord,
   type CommandRequestResponseKind,
@@ -50,8 +51,8 @@ interface IdempotentCommandOptions<T> {
   readonly input: unknown;
   /** Resource kind returned by this command. */
   readonly responseKind: CommandRequestResponseKind;
-  /** Captures an immutable public response when exact replay cannot use a mutable resource. */
-  readonly responseSnapshot?: (result: T) => unknown;
+  /** Captures the sole Core-authorized extra receipt metadata for `chat.start`. */
+  readonly chatResponseMetadata?: (result: T) => ChatCommandReceiptMetadata;
   /** Executes the command when no duplicate exists. */
   readonly execute: () => Promise<T> | T;
   /** Replays the current resource snapshot for an existing ledger record. */
@@ -68,6 +69,9 @@ interface IdempotentCommandOptions<T> {
  * @throws IdempotencyKeyConflictError when the same request id is reused with different input.
  */
 export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<T>): Promise<T> {
+  if (options.chatResponseMetadata && options.command !== 'chat.start') {
+    throw new Error('Only chat.start may store extra command receipt metadata.');
+  }
   const inputHash = commandInputHash(options.input);
   const existingRecord = options.store.getCommandRequest(
     options.command,
@@ -118,7 +122,9 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
         response: {
           kind: options.responseKind,
           id: options.responseId(result),
-          ...(options.responseSnapshot ? { snapshot: options.responseSnapshot(result) } : {}),
+          ...(options.chatResponseMetadata
+            ? { chatMetadata: options.chatResponseMetadata(result) }
+            : {}),
         },
       },
       options.workspaceDb

@@ -84,8 +84,6 @@ import {
   PauseThreadGoalResponseSchema,
   PromoteKnowledgeClaimRequestSchema,
   PromoteKnowledgeClaimResponseSchema,
-  QueueAgentSessionTerminalCommandRequestSchema,
-  QueueAgentSessionTerminalCommandResponseSchema,
   QuickChatRequestSchema,
   QuickChatResponseSchema,
   ReadKnowledgeManagerContextPackageTraceResponseSchema,
@@ -136,8 +134,6 @@ import {
   StartThreadGoalRequestSchema,
   StartThreadGoalResponseSchema,
   StorageLayoutReportResponseSchema,
-  SubmitArtifactReviewDecisionRequestSchema,
-  SubmitArtifactReviewDecisionResponseSchema,
   SubmitGoalReviewDecisionRequestSchema,
   SubmitGoalReviewDecisionResponseSchema,
   SubmitKnowledgeProposalDecisionRequestSchema,
@@ -1654,55 +1650,6 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/agent-sessions/{agentSessionId}/terminal-commands':
-        {
-          post: {
-            operationId: 'queueAgentSessionTerminalCommand',
-            tags: ['app-utils'],
-            summary: 'Queue one terminal command for an active agent session.',
-            security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-            parameters: [
-              WORKSPACE_ID_PARAMETER,
-              THREAD_ID_PARAMETER,
-              {
-                name: 'agentSessionId',
-                in: 'path',
-                required: true,
-                schema: { $ref: '#/components/schemas/AgentSessionId' },
-              },
-            ],
-            requestBody: {
-              required: true,
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/QueueAgentSessionTerminalCommandRequest',
-                  },
-                },
-              },
-            },
-            responses: {
-              '200': {
-                description: 'Queued terminal command.',
-                content: {
-                  [JSON_CONTENT_TYPE]: {
-                    schema: {
-                      $ref: '#/components/schemas/QueueAgentSessionTerminalCommandResponse',
-                    },
-                  },
-                },
-              },
-              default: {
-                description: 'Protocol error envelope.',
-                content: {
-                  [JSON_CONTENT_TYPE]: {
-                    schema: { $ref: '#/components/schemas/ApiError' },
-                  },
-                },
-              },
-            },
-          },
-        },
       '/api/app/workspaces/{workspaceId}/threads/{threadId}/chat': {
         post: {
           operationId: 'startChatMode',
@@ -3122,49 +3069,6 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/workspaces/{workspaceId}/artifacts/{artifactId}/review': {
-        post: {
-          operationId: 'submitArtifactReviewDecision',
-          tags: ['reviews'],
-          summary: 'Record one artifact review decision.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'artifactId',
-              in: 'path',
-              required: true,
-              schema: { $ref: '#/components/schemas/ArtifactId' },
-            },
-          ],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/SubmitArtifactReviewDecisionRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Recorded artifact review decision.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/SubmitArtifactReviewDecisionResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
       '/api/app/workspaces/{workspaceId}/knowledge/proposals/{proposalId}/decision': {
         post: {
           operationId: 'submitKnowledgeProposalDecision',
@@ -4390,39 +4294,6 @@ export function createAppOpenApiDocument() {
             },
           },
         },
-        post: {
-          operationId: 'createDefaultWorkspaceRepository',
-          tags: ['repositories'],
-          summary: 'Create or update the default repository resource for one workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/SetWorkspaceRepositoryRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Redacted repository resource read model.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/SetWorkspaceRepositoryResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
       },
       '/api/app/workspaces/{workspaceId}/repositories/git-push-records': {
         get: {
@@ -4746,12 +4617,6 @@ export function createAppOpenApiDocument() {
         ),
         PromoteKnowledgeClaimRequest: toJsonSchema(PromoteKnowledgeClaimRequestSchema),
         PromoteKnowledgeClaimResponse: toJsonSchema(PromoteKnowledgeClaimResponseSchema),
-        QueueAgentSessionTerminalCommandRequest: toJsonSchema(
-          QueueAgentSessionTerminalCommandRequestSchema
-        ),
-        QueueAgentSessionTerminalCommandResponse: toJsonSchema(
-          QueueAgentSessionTerminalCommandResponseSchema
-        ),
         QuickChatRequest: toJsonSchema(QuickChatRequestSchema),
         QuickChatResponse: toJsonSchema(QuickChatResponseSchema),
         RequestGitPushApprovalRequest: toJsonSchema(RequestGitPushApprovalRequestSchema),
@@ -4802,12 +4667,6 @@ export function createAppOpenApiDocument() {
         StartThreadGoalRequest: toJsonSchema(StartThreadGoalRequestSchema),
         StartThreadGoalResponse: toJsonSchema(StartThreadGoalResponseSchema),
         StorageLayoutReportResponse: toJsonSchema(StorageLayoutReportResponseSchema),
-        SubmitArtifactReviewDecisionRequest: toJsonSchema(
-          SubmitArtifactReviewDecisionRequestSchema
-        ),
-        SubmitArtifactReviewDecisionResponse: toJsonSchema(
-          SubmitArtifactReviewDecisionResponseSchema
-        ),
         SubmitGoalReviewDecisionRequest: toJsonSchema(SubmitGoalReviewDecisionRequestSchema),
         SubmitGoalReviewDecisionResponse: toJsonSchema(SubmitGoalReviewDecisionResponseSchema),
         SubmitKnowledgeProposalDecisionRequest: toJsonSchema(

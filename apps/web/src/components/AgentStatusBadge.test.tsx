@@ -82,9 +82,6 @@ describe('AgentStatusBadge', () => {
             artifactNoticeCount: 1,
             queuedCommandCount: 2,
             deliveredCommandCount: 2,
-            terminalResultCount: 1,
-            lastTerminalExitCode: 0,
-            lastTerminalCompletedAt: '2026-06-16T00:00:03.000Z',
           },
           gatewayName: 'openshell',
           gatewayEndpoint: 'https://127.0.0.1:17670',
@@ -103,56 +100,6 @@ describe('AgentStatusBadge', () => {
 
     expect(badge).toHaveTextContent('openshell ready');
     expect(badge).toHaveTextContent('control running');
-    expect(badge).toHaveTextContent('terminal 1/2');
-  });
-
-  it('queues an active-session terminal command', () => {
-    const onCommandChange = vi.fn();
-    const onQueueTerminalCommand = vi.fn();
-
-    render(() => (
-      <AgentStatusBadge
-        agentId="agent_codex_host"
-        backend={{
-          kind: 'openshell',
-          health: 'ready',
-          controlMode: 'direct-nanocore',
-          control: {
-            heartbeat: {
-              status: 'running',
-              sequence: 4,
-              lastHeartbeatAt: '2026-06-16T00:00:03.000Z',
-            },
-            artifactNoticeCount: 1,
-            queuedCommandCount: 2,
-            deliveredCommandCount: 2,
-            terminalResultCount: 1,
-            lastTerminalExitCode: 0,
-            lastTerminalCompletedAt: '2026-06-16T00:00:03.000Z',
-          },
-          gatewayName: 'openshell',
-          gatewayEndpoint: 'https://127.0.0.1:17670',
-          version: '0.0.63',
-          sandboxName: 'openkit-as-control',
-        }}
-        healthStatus="ready"
-        isRefreshing={false}
-        sessionId="as_control"
-        status="busy"
-        terminalCommand="pwd"
-        onQueueTerminalCommand={onQueueTerminalCommand}
-        onRefresh={() => undefined}
-        onTerminalCommandChange={onCommandChange}
-      />
-    ));
-
-    fireEvent.input(screen.getByRole('textbox', { name: /terminal command/i }), {
-      target: { value: 'git status' },
-    });
-    fireEvent.submit(screen.getByRole('form', { name: /agent session terminal command/i }));
-
-    expect(onCommandChange).toHaveBeenCalledWith('git status');
-    expect(onQueueTerminalCommand).toHaveBeenCalledOnce();
   });
 
   it('copies the full agent session id', async () => {

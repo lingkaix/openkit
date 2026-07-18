@@ -1,7 +1,7 @@
 # OpenKit Agent Skill Interface
 
 Status: Accepted
-Implementation: Not Started
+Implementation: Implemented
 Change Plan: `docs/changes/202607131935040001-openkit_agent_skill_interface.md`
 
 ## Owns
@@ -33,7 +33,7 @@ OpenKit exposes one AI-native end-user interface: a single Skill named `openkit`
 
 The Skill teaches an agent how to connect to NanoCore, discover available capabilities, select Chat Mode, Task Mode, or Goal Mode, operate bounded loops, surface Action Center decisions, inspect artifacts and evidence, use knowledge, recover interrupted work, and perform explicitly authorized operator actions.
 
-The CLI performs deterministic discovery and invocation over public NanoCore contracts. It does not preload every capability into the agent context. The agent first receives Skill metadata, then the concise `SKILL.md`, then only the reference file relevant to the current task, and finally only the operation schemas requested through CLI search and description.
+The CLI performs deterministic discovery and invocation over public NanoCore contracts. Its catalog sources are exactly `app-api`, `core-projection`, and `local-only`; it does not preload every capability into the agent context. The agent first receives Skill metadata, then the concise `SKILL.md`, then only the reference file relevant to the current task, and finally only the operation schemas requested through CLI search and description.
 
 The interface exposes every supported public end-user and operator capability. Private NanoCore internals, raw storage, arbitrary routes, arbitrary shell, credentials, process handles, and runtime-private records are not public capabilities and remain inaccessible.
 
@@ -51,7 +51,7 @@ The accepted change removes the user-facing `@openkit/mcp` package and the four 
 - Keep the Skill focused on end users and remove repository-developer and OpenKit self-improvement variants.
 - Keep the CLI thin, deterministic, typed, JSON-only, and backed by shared schemas and `@openkit/core-client`.
 - Keep workflow truth, authorization, approval, idempotency, audit, recovery, and execution in NanoCore.
-- Make capability coverage mechanically auditable as the App API grows.
+- Make capability coverage mechanically auditable as the App API and public Core projections grow.
 - Keep credentials and one-time secret material out of command arguments, normal output, logs, Skill context, artifacts, and knowledge.
 - Replace the user-facing MCP channel, MCP resources, and MCP prompts completely.
 - Preserve the distinction between the end-user Agent Skill Interface and worker-side capability supply.
@@ -71,7 +71,7 @@ The accepted change removes the user-facing `@openkit/mcp` package and the four 
 
 ## Background
 
-The former AI Interface combined four Skills with a user-facing stdio MCP server. As NanoCore capabilities grew, the MCP server accumulated 99 flat tools plus resources and prompts.
+The former AI Interface combined four Skills with a user-facing stdio MCP server. As NanoCore capabilities grew, the MCP server accumulated a large flat tool registry plus resources and prompts.
 
 The transport remained thin, but every tool schema was advertised as one eager surface, the four Skills repeated setup and loop guidance across audience variants, MCP prompts overlapped Skill guidance, and package documentation had to remain synchronized with all of them.
 
@@ -101,7 +101,7 @@ The release artifact is the complete `skills/openkit/` directory. A host install
 
 The CLI calls only public NanoCore behavior through `@openkit/core-client` and shared schemas. It must not import NanoCore implementation, storage, runtime, or adapter modules.
 
-The CLI operation catalog is a curated agent-facing projection, not a second App API route catalog. Every networked operation must reference one existing App API `operationId` and one existing Core Client method, while request and response schemas remain owned by shared schema packages and the checked OpenAPI projection. Local-only behavior such as executable diagnostics or credential-store access must be labeled explicitly and must not masquerade as a NanoCore operation.
+The CLI operation catalog is a curated agent-facing projection, not a second route catalog. Each operation has exactly one source: `app-api` references an existing App API `operationId`, one existing public Core Client method, and its shared App API schema; `core-projection` references an existing typed `client.core` method and `@openkit/protocol` schema; and `local-only` states why no NanoCore call exists. The catalog must not copy HTTP methods, paths, or payload schemas.
 
 ### No user-facing MCP
 
@@ -186,7 +186,7 @@ openkit ops call <operation-id> --input -
 
 `openkit ops describe` returns one operation's description, mutating flag, sensitivity metadata, required actor/capability summary, and JSON input schema.
 
-`openkit ops call` reads one JSON object from stdin, validates it against the shared operation schema, invokes the public client mapping, and writes one JSON result envelope.
+`openkit ops call` reads one strict flat JSON object from stdin, validates it against the shared operation schema, invokes the public client mapping, and writes one JSON result envelope. Flat means that path scope, query, and body fields share one top-level namespace instead of `params`, `query`, or `body` wrappers; nested product values explicitly required by the referenced schema remain valid. The catalog rejects unknown fields and maps the validated fields to the referenced Core Client method.
 
 The first implementation must not add a large tree of hand-authored convenience subcommands. Repeated real-agent mistakes may justify a later focused command, but only after usage evidence shows that search, describe, and call are insufficient.
 
@@ -199,7 +199,8 @@ Former MCP tool names are migration inputs, not compatibility contracts. Impleme
 Each operation definition must own:
 
 - stable operation id
-- existing App API `operationId`, or an explicit `local-only` classification with reason
+- source classification of exactly `app-api`, `core-projection`, or `local-only`
+- existing App API `operationId` and public Core Client method for `app-api`, existing typed `client.core` method for `core-projection`, or reason for `local-only`
 - capability group
 - concise summary
 - mutating flag
@@ -214,11 +215,13 @@ The operation catalog must not duplicate server authorization or workflow transi
 
 One catalog operation maps to one public Core Client operation plus any required local credential-store handling. The CLI must not compose multi-step OpenKit workflows internally; the Skill-guided agent performs that composition through separate bounded calls.
 
+The first implementation uses one cohesive literal inventory and native lookup. It must not introduce a registration framework, plugin system, generated client, second SDK, or catalog-specific workflow layer.
+
 ### Public capability coverage
 
-Every public App API operation intended for an end user or operator must be represented by one CLI operation or one explicit machine-checked exclusion with a reason and owning spec.
+Every public App API operation and public Core projection intended for an end user or operator must be represented by one CLI operation or one explicit machine-checked exclusion with a reason and owning spec.
 
-The existing checked App API OpenAPI operation catalog is the route-coverage authority. The coverage guard compares its operation ids with CLI mappings and exclusions; the CLI catalog must not copy HTTP methods, paths, request schemas, or response schemas into another hand-maintained inventory.
+The existing checked App API OpenAPI operation catalog is the `app-api` coverage authority. `core-projection` entries and exclusions must resolve to existing typed `client.core` methods and protocol schemas. The coverage guard compares these authorities with CLI mappings and exclusions; the CLI catalog must not copy HTTP methods, paths, request schemas, or response schemas into another hand-maintained inventory.
 
 The coverage guard must fail when a new public user/operator operation is added without an Agent Skill Interface decision.
 
@@ -231,7 +234,7 @@ The initial operation groups cover:
 - connection, readiness, diagnostics, and bootstrap
 - access tokens and credential storage
 - workspaces, resources, repositories, and Git operations
-- threads, Chat Mode, Task Mode, Goal Mode, plans, steering, and bounded steps
+- threads, Chat Mode, Task Mode, Goal Mode, plans, and bounded steps; steering without an accepted durable delivery contract remains an explicit exclusion with a typed fail-closed result
 - Action Center, approvals, questions, reviews, artifacts, evidence, audit, and usage
 - knowledge sources, observations, claims, conflicts, retrieval, context packages, proposals, repair, and health
 - interrupted-worker inspection and checkpoint retry, scheduler admissions, and exact S16 Goal pending input only after its durable owner and delivery proof exist
@@ -242,7 +245,7 @@ The initial operation groups cover:
 
 ### Output and error envelopes
 
-Every CLI command writes exactly one JSON object to stdout.
+Every CLI command that completes writes exactly one JSON object to stdout.
 
 A successful operation uses:
 
@@ -280,6 +283,8 @@ Exit status is `0` for success, `2` for local input or usage failure, `3` for co
 
 The CLI generates an idempotency request id for mutating operations when the public operation permits client generation and the caller did not supply one. The generated id is returned in the envelope.
 
+SIGINT or a transport abort stops only the local wait and must not be reported as product cancellation. Product cancellation or interruption requires an explicit catalog operation followed by a durable state read; the CLI does not infer the remote outcome from local process termination.
+
 ### Authentication and secret handling
 
 The CLI accepts the NanoCore endpoint from non-secret configuration, including `OPENKIT_NANOCORE_URL` for explicit process configuration.
@@ -290,7 +295,7 @@ Persistent bearer credentials are resolved from the supported local credential s
 
 Except for the explicit ephemeral `OPENKIT_NANOCORE_TOKEN` automation override, secret input must use stdin or a platform credential mechanism. Secret values must never be accepted through command arguments.
 
-Operations that return one-time credential material must store it directly when a supported credential destination exists and return only redacted storage metadata. If secure storage is unavailable, the operation must fail with a typed setup error instead of printing the secret into normal agent-visible output.
+Generic access-token create and rotate operations are excluded from V1 because the endpoint-keyed credential store has no safe named destination and must not overwrite the current administration credential. Bootstrap consumption may store the returned current credential directly and return only redacted storage metadata, or fail closed with a typed setup error when secure storage is unavailable; one-time secret material must never be printed into normal agent-visible output.
 
 Redaction applies to stdout, stderr, errors, operation traces, test evidence, Skill examples, artifacts, knowledge, and audit summaries.
 
@@ -349,13 +354,11 @@ The Skill must not mirror every schema. The CLI must not mirror NanoCore busines
 
 ## Current Implementation Projection
 
-The accepted design is not implemented.
+The accepted design is implemented by `skills/openkit/`, `skills/openkit-cli.mjs`, `skills/openkit-operations.mjs`, and `skills/openkit-secrets.mjs`. The checked operation catalog references public App API or typed Core Client owners, the bundled CLI provides JSON-only discovery and invocation, and the Skill progressively routes agents to one-level references.
 
-The repository currently contains the legacy `@openkit/mcp` stdio package, 99 MCP tools, MCP resources and prompts, MCP deterministic stories, and four separate Skills.
+Repository checks enforce public-operation coverage and reject a reachable user-facing MCP package, binary, import, script, release step, Skill metadata entry, active-guide projection, or one of the four former Skill directories. The former user-facing MCP implementation and its dedicated acceptance platform are deleted without an alias or compatibility path.
 
-The current MCP implementation is retained only until the replacement Skill and CLI pass their acceptance stories. It must not receive new capabilities or compatibility work.
-
-Reusable implementation assets include `@openkit/core-client`, shared App API schemas, public NanoCore routes, credential-store behavior, redaction rules, current product-level operation mappings, and existing deterministic stories.
+NanoCore remains authoritative for validation, authorization, idempotency, state, recovery, audit, and execution. Worker-side MCP remains a separate accepted capability plane, and current worker AEPs expose no capability routes.
 
 ## Alternatives Considered
 
@@ -401,7 +404,7 @@ Rejected. The chosen product interface explicitly requires a Skill-capable host 
 3. Add tests for CLI discovery, description, invocation, envelopes, redaction, auth, and capability coverage.
 4. Extract a transport-neutral operation catalog from the existing tested mappings and implement the bundled CLI.
 5. Create and validate the single `openkit` Skill with only end-user guidance and progressively loaded references.
-6. Port deterministic and real-agent acceptance stories from MCP to Skill-plus-CLI operation.
+6. Replace MCP acceptance with lower-layer coverage, one representative local Skill-plus-CLI story, existing auth-owned server evidence, and one real progressive-discovery story.
 7. Delete `mcp/`, all MCP-only wiring, and the four legacy Skill directories in the same implementation change sequence.
 8. Update every active implementation projection, command, package inventory, release gate, and current guide after deletion.
 9. Close the change record only when repository searches and release verification show no reachable user-facing MCP or legacy Skill surface.
@@ -410,30 +413,32 @@ No compatibility period, alias, dual transport, or migration shim is permitted.
 
 ## Testing Strategy / Acceptance Criteria
 
+Coverage is proportional: complete capability mapping is static and contract-tested at L0/L2, CLI behavior is focused at L1, integration uses one representative local L3 plus existing auth-owned proof, and progressive discovery uses one real L6. No new runner or acceptance framework is authorized.
+
 ### L0
 
 - Skill metadata and folder structure pass skill-creator validation.
 - `SKILL.md` contains only the permitted frontmatter fields, stays below 500 lines, links every reference directly, and contains no developer-only mode.
-- Operation coverage fails when a public end-user/operator App API operation has neither a CLI mapping nor an accepted exclusion.
+- Operation coverage fails when a public end-user/operator App API operation or typed Core projection has neither a CLI mapping nor an accepted exclusion.
 - Operation coverage reads the checked App API OpenAPI catalog and rejects CLI-owned copies of route methods, paths, request schemas, or response schemas.
-- Repository checks reject user-facing `@openkit/mcp`, `openkit-mcp`, and the four legacy Skill names outside archived historical material after deletion.
+- Repository checks reject reachable user-facing MCP and legacy Skill surfaces after deletion by scanning current package directories, workspace dependencies, imports, binaries, scripts, release wiring, Skill metadata, and active guides. Canonical removal rules, historical records, and worker-side MCP design may retain those names.
 
 ### L1
 
-- CLI argument parsing, stdin JSON parsing, search, description, schema validation, envelopes, exit statuses, request-id generation, redaction, and credential resolution have focused tests.
+- CLI argument parsing, strict flat stdin JSON parsing, search, description, schema validation, envelopes, exit statuses, request-id generation, redaction, local abort behavior, and credential resolution have focused tests.
 - Operation catalog handlers map to Core Client methods without importing NanoCore internals.
 - Secret-bearing operations never emit submitted or returned material through stdout or stderr.
 
 ### L2
 
 - CLI input and output mappings conform to shared App API schemas.
-- The public operation coverage guard matches the current App API registry.
+- The public operation coverage guard matches the current App API registry and resolves every `core-projection` reference to a typed Core Client method and protocol schema.
 - Auth, permission, error, redaction, and capability-version behavior remain consistent across CLI and NanoCore.
 
 ### L3
 
-- A temporary local NanoCore supports doctor, workspace setup, repository linking, Chat, Task, Goal, Action Center, artifact, evidence, knowledge, recovery, and portability operations through the CLI.
-- A temporary server-mode NanoCore supports bootstrap, secure credential storage, scoped token operation, revocation, and post-revocation denial without exposing tokens.
+- One representative local NanoCore story proves doctor, one mutating call, and a durable read through the packaged CLI without recreating a full capability matrix.
+- Existing auth-owned server and bootstrap evidence remains authoritative; this interface adds no parallel server-mode runner or generic token create/rotate story.
 
 ### L5
 
@@ -442,9 +447,8 @@ No compatibility period, alias, dual transport, or migration shim is permitted.
 
 ### L6
 
-- An agent receives only the Skill metadata initially, loads `SKILL.md`, selects the required references, discovers operations through the CLI, and completes an end-user workspace loop.
-- Deterministic stories cover Chat, Task escalation, Goal planning and bounded execution, Action Center, artifacts, evidence, recovery, knowledge, and workspace portability.
-- At least one real-agent story proves the agent can discover an operation not named in `SKILL.md` without loading the complete catalog.
+- One real-agent story starts with only Skill metadata, loads `SKILL.md` and one relevant reference, discovers an operation not named in `SKILL.md`, describes and calls it, and completes a bounded loop without loading the complete catalog.
+- Legacy stories remain only when they prove a distinct risk not covered at L0-L3; confirmed defects are reduced to the lowest sufficient deterministic regression.
 - No L6 story depends on a developer Skill, OpenKit repository self-improvement workflow, MCP tool, MCP resource, or MCP prompt.
 
 ## Risks & Mitigations

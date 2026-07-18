@@ -7,12 +7,15 @@ import type { StopReason } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { asApiError } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
-import type { ArtifactReviewStatus, FsStore } from './lib/store.js';
+import type { FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
 import { listGoalReviewRecordsForTask } from './runtime/goal-review-records.js';
 import { type GoalRecord, listGoalRecordsForThread, listGoalTasks } from './runtime/goal-store.js';
 import { listWorkerControlRejectedEvidenceForWorkspace } from './runtime/worker-control-rejected-evidence.js';
-import { materializeInterruptedWorkerStates } from './runtime/worker-recovery.js';
+import {
+  hasExactActiveHumanGate,
+  materializeInterruptedWorkerStates,
+} from './runtime/worker-recovery.js';
 import { listWorkspaceReconciliationRecords } from './runtime/workspace-reconciliation-records.js';
 import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
 import {
@@ -93,14 +96,12 @@ export function registerActionCenterRoutes({
  * @returns Human Attention rows in deterministic creation order.
  */
 function buildHumanAttentionRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] {
-  const artifactRows = artifactReviewRows(input);
   const rows = [
     ...approvalRows(input.store, input.workspaceId),
     ...questionRows(input.store, input.workspaceId),
     ...runtimeRows(input),
     ...agentReadinessRows(input.store, input.workspaceId),
-    ...artifactRows,
-    ...durableWorkspaceReviewRows(input, artifactRows),
+    ...durableWorkspaceReviewRows(input),
     ...knowledgeReviewRows(input.store, input.workspaceId),
   ];
 
@@ -114,27 +115,15 @@ function buildHumanAttentionRows(input: BuildHumanAttentionRowsInput): HumanAtte
  * Projects pending durable staged workspace reviews into Action Center rows.
  *
  * @param input Projection dependencies and workspace scope.
- * @param artifactRows Already projected artifact review rows used for de-duplication.
- * @returns Durable workspace review rows that are not already represented by artifacts.
+ * @returns Pending durable Workspace Review rows.
  */
-function durableWorkspaceReviewRows(
-  input: BuildHumanAttentionRowsInput,
-  artifactRows: readonly HumanAttentionRow[]
-): HumanAttentionRow[] {
+function durableWorkspaceReviewRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] {
   if (!input.workspaceDb) {
     return [];
   }
 
-  const projectedArtifactIds = new Set(
-    artifactRows
-      .filter((row) => row.kind === 'workspace_review')
-      .map((row) => row.artifactId)
-      .filter((artifactId): artifactId is string => Boolean(artifactId))
-  );
-
   return listWorkspaceSyncReviews(input.workspaceDb, input.workspaceId)
     .filter((item) => item.review.status === 'pending')
-    .filter((item) => !projectedArtifactIds.has(item.artifactId))
     .map((item) => ({
       id: item.review.actionCenterRowId,
       kind: 'workspace_review',
@@ -198,6 +187,55 @@ function isUserInputResponseItem(item: StoreItem): item is UserInputResponseStor
 }
 
 /**
+ * Checks whether one approval Item has the exact pending Gate owners required for actionability.
+ *
+ * @param store Product store containing the Turn and Approval owners.
+ * @param item Approval request Item to validate.
+ * @returns True only for one completed request owned by the active pending Approval Gate.
+ */
+function isActionableApprovalRequest(store: FsStore, item: ApprovalRequestStoreItem): boolean {
+  if (item.status !== 'completed') {
+    return false;
+  }
+  try {
+    const turn = store.getTurn(item.workspaceId, item.threadId, item.turnId);
+    return (
+      hasExactActiveHumanGate(store, turn) &&
+      turn.humanGate.kind === 'approval' &&
+      turn.humanGate.itemId === item.id &&
+      turn.humanGate.approvalRequestId === item.approvalRequestId
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Checks whether one question Item has the exact active Gate owners required for visibility.
+ *
+ * @param store Product store containing the Turn owner.
+ * @param item User-input request Item to validate.
+ * @returns True only for one completed request with unique questions and an exact active Gate.
+ */
+function isExactUserInputRequest(store: FsStore, item: UserInputRequestStoreItem): boolean {
+  const questionIds = item.questions.map((question) => question.id);
+  if (item.status !== 'completed' || new Set(questionIds).size !== questionIds.length) {
+    return false;
+  }
+  try {
+    const turn = store.getTurn(item.workspaceId, item.threadId, item.turnId);
+    return (
+      hasExactActiveHumanGate(store, turn) &&
+      turn.humanGate.kind === 'user-input' &&
+      turn.humanGate.itemId === item.id &&
+      turn.humanGate.userInputRequestId === item.userInputRequestId
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Projects unresolved approval requests into unified rows.
  *
  * @param store Request-scoped workspace store.
@@ -213,6 +251,7 @@ function approvalRows(store: FsStore, workspaceId: string): HumanAttentionRow[] 
   return items
     .filter(isApprovalRequestItem)
     .filter((item) => !decisions.has(item.approvalRequestId))
+    .filter((item) => isActionableApprovalRequest(store, item))
     .map((item) => {
       const approval = store.getApproval(item.approvalRequestId);
       const thread = store.getThread(item.workspaceId, item.threadId);
@@ -272,6 +311,7 @@ function questionRows(store: FsStore, workspaceId: string): HumanAttentionRow[] 
   return items
     .filter(isUserInputRequestItem)
     .filter((item) => !responses.has(item.userInputRequestId))
+    .filter((item) => isExactUserInputRequest(store, item))
     .map((item) => ({
       id: `question:${item.id}`,
       kind: 'question',
@@ -298,6 +338,12 @@ function questionRows(store: FsStore, workspaceId: string): HumanAttentionRow[] 
           label: 'Answer',
           method: 'POST',
           href: '/api/turns',
+          ...(item.questions.some((question) => question.isSecret)
+            ? {
+                disabled: true,
+                reason: 'Secret answers require a future Vault-backed input contract.',
+              }
+            : {}),
         },
         openThreadAction(item.threadId),
       ],
@@ -827,76 +873,7 @@ function agentReadinessRows(store: FsStore, workspaceId: string): HumanAttention
 }
 
 /**
- * Projects pending artifact review records into rows.
- *
- * @param input Projection dependencies and workspace scope.
- * @returns Artifact review rows.
- */
-function artifactReviewRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] {
-  const { store, workspaceId } = input;
-  const reviews = store.listArtifactReviewDecisions(workspaceId);
-  const decided = new Set(
-    reviews.filter((review) => review.lifecycle === 'completed').map((review) => review.artifactId)
-  );
-  const pendingClaims = new Map(
-    reviews
-      .filter((review) => review.lifecycle === 'pending')
-      .map((review) => [review.artifactId, review.status] as const)
-  );
-  const terminalWorkspaceReviewArtifacts = new Set(
-    (input.workspaceDb ? listWorkspaceSyncReviews(input.workspaceDb, workspaceId) : [])
-      .filter((item) => item.review.status !== 'pending')
-      .map((item) => item.artifactId)
-  );
-
-  return store
-    .listArtifacts(workspaceId)
-    .filter((artifact) => artifact.status === 'ready')
-    .filter((artifact) => !decided.has(artifact.id))
-    .filter(
-      (artifact) =>
-        !terminalWorkspaceReviewArtifacts.has(artifact.id) || pendingClaims.has(artifact.id)
-    )
-    .map((artifact) => {
-      const isWorkspaceReview = artifact.id.startsWith('ar_workspace_changes_');
-      const pendingClaim = pendingClaims.get(artifact.id);
-
-      return {
-        id: `artifact:${artifact.id}`,
-        kind: isWorkspaceReview ? 'workspace_review' : 'artifact_review',
-        workspaceId,
-        threadId: artifact.threadId ?? undefined,
-        turnId: artifact.turnId ?? undefined,
-        artifactId: artifact.id,
-        title: isWorkspaceReview ? 'Review workspace changes' : `Review ${artifact.title}`,
-        summary: artifact.summary ?? 'The artifact is ready for review.',
-        severity: 'needs_input',
-        createdAt: artifact.updatedAt,
-        recommendedAction: pendingClaim
-          ? `Resume the pending ${pendingClaim} decision.`
-          : isWorkspaceReview
-            ? 'Accept, refine, redo, reject, or defer these workspace changes.'
-            : 'Accept, refine, redo, reject, or defer this artifact.',
-        source: {
-          type: 'artifact',
-          artifactId: artifact.id,
-          workspaceId,
-          threadId: artifact.threadId ?? undefined,
-          turnId: artifact.turnId ?? undefined,
-          reviewStatus: 'pending',
-        },
-        actions: artifactReviewActions(
-          workspaceId,
-          artifact.id,
-          artifact.threadId ?? undefined,
-          pendingClaim
-        ),
-      };
-    });
-}
-
-/**
- * Projects pending knowledge proposals into rows.
+ * Projects pending Knowledge proposals into rows.
  *
  * @param store Request-scoped workspace store.
  * @param workspaceId Workspace id to inspect.
@@ -966,61 +943,12 @@ function openThreadAction(threadId: string): HumanAttentionAction {
 }
 
 /**
- * Builds artifact review decision actions for an artifact row.
+ * Builds actions owned by one durable Workspace Review.
  *
  * @param workspaceId Workspace id.
- * @param artifactId Artifact id.
- * @param threadId Optional thread id.
- * @param pendingStatus Claimed decision that must be resumed before another decision.
- * @returns Artifact review actions.
- */
-function artifactReviewActions(
-  workspaceId: string,
-  artifactId: string,
-  threadId?: string,
-  pendingStatus?: ArtifactReviewStatus
-): HumanAttentionAction[] {
-  const href = `/api/app/workspaces/${workspaceId}/artifacts/${artifactId}/review`;
-  const pendingActionKind =
-    pendingStatus === 'accepted'
-      ? 'accept_review'
-      : pendingStatus === 'needs_refinement'
-        ? 'request_refinement'
-        : pendingStatus === 'redo'
-          ? 'retry_work'
-          : pendingStatus === 'rejected'
-            ? 'mark_blocked'
-            : pendingStatus === 'deferred'
-              ? 'defer'
-              : null;
-
-  return (
-    [
-      { kind: 'accept_review', label: 'Accept', method: 'POST', href },
-      { kind: 'request_refinement', label: 'Refine', method: 'POST', href },
-      { kind: 'retry_work', label: 'Redo', method: 'POST', href },
-      { kind: 'mark_blocked', label: 'Reject', method: 'POST', href },
-      { kind: 'defer', label: 'Defer', method: 'POST', href },
-      ...(threadId ? [openThreadAction(threadId)] : []),
-    ] satisfies HumanAttentionAction[]
-  ).map((action) =>
-    pendingActionKind && action.kind !== pendingActionKind && action.kind !== 'open_thread'
-      ? {
-          ...action,
-          disabled: true,
-          reason: 'Resume the pending review decision before choosing another action.',
-        }
-      : action
-  );
-}
-
-/**
- * Builds recovery-safe actions for a durable workspace review fallback row.
- *
- * @param workspaceId Workspace id.
- * @param reviewId Durable staged review id.
- * @param artifactId Backing artifact id, when recorded.
- * @returns Workspace review actions.
+ * @param reviewId Durable Workspace Review id.
+ * @param artifactId Optional presentation Artifact id.
+ * @returns Workspace Review actions.
  */
 function durableWorkspaceReviewActions(
   workspaceId: string,
@@ -1042,25 +970,25 @@ function durableWorkspaceReviewActions(
         : 'The backing artifact is not available; inspect the durable workspace review record.',
     },
     {
-      kind: 'accept_review',
+      kind: 'accepted',
       label: 'Accept',
       method: 'POST',
       href: decisionHref,
     },
     {
-      kind: 'request_refinement',
+      kind: 'needs_refinement',
       label: 'Refine',
       method: 'POST',
       href: decisionHref,
     },
     {
-      kind: 'mark_blocked',
+      kind: 'rejected',
       label: 'Reject',
       method: 'POST',
       href: decisionHref,
     },
     {
-      kind: 'defer',
+      kind: 'blocked',
       label: 'Block',
       method: 'POST',
       href: decisionHref,

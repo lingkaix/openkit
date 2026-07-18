@@ -23,7 +23,7 @@ OpenKit is in internal developer-preview development.
 
 The accepted release posture is deliberately NanoCore-first and end-user Agent-Skill-first. Core mechanisms stabilize at the NanoCore App API layer, then one progressively disclosed `openkit` Skill and its bundled CLI project the complete supported user/operator capability surface. The Web UI remains part of the product direction, but it follows stable NanoCore APIs rather than driving core behavior.
 
-The unified Skill and CLI are not implemented yet. The current checkout still contains the legacy user-facing `@openkit/mcp` package and four setup/loop Skills, but those surfaces are removal-only and must not be used as the basis for new integrations.
+The unified Skill and bundled CLI are implemented under `skills/openkit/`. User-facing MCP and split setup/loop Skill variants have been removed and must not be reintroduced.
 
 ## Core Model
 
@@ -42,8 +42,7 @@ Workspace -> Thread -> Turn -> Item[]
 ## Main Modules
 
 - `apps/nanocore`: the kernel and public App API server for workspaces, threads, Goal Mode, Action Center, artifacts, runtime config, auth, storage, and worker coordination.
-- `skills/`: the accepted home of one end-user `openkit` Skill, its bundled CLI, and progressively disclosed operating guidance; four legacy Skill folders remain temporarily pending deletion.
-- `mcp/`: the removal-only legacy `@openkit/mcp` package, retained temporarily for capability-parity verification before clean deletion.
+- `skills/`: one end-user `openkit` Skill, its bundled CLI, and progressively disclosed operating guidance.
 - `apps/web`: the browser product surface over stabilized NanoCore APIs.
 - `packages/protocol`: stable Core protocol schemas and generated JSON Schema outputs.
 - `packages/app-api-schemas`: shared NanoCore App API schemas for product read models and admin/config surfaces.
@@ -57,18 +56,17 @@ Workspace -> Thread -> Turn -> Item[]
 - Goal Mode for objective capture, plan review, bounded steps, verification evidence, and terminal completion state.
 - Action Center read models for human attention, approvals, blocked work, and follow-up decisions.
 - Workspace repository linking, sync records, review records, apply results, artifacts, and evidence bundles through public NanoCore contracts.
-- A currently implemented legacy `@openkit/mcp` coordinator path that remains only while the unified Skill and CLI reach capability parity.
-- Four currently implemented legacy setup and loop Skills that are scheduled to be replaced by one end-user-only `openkit` Skill.
+- One end-user-only `openkit` Skill with progressive operation discovery and a bundled CLI over public NanoCore contracts.
 - OpenShell and worker-path foundations for running bounded work through NanoCore-managed coordination.
 - Focused static, package, NanoCore, channel, smoke, and story-test layers for release validation.
 
 ## Agent Skill Interface Direction
 
-The accepted AI-native interface is one end-user Skill with a bundled CLI. The Skill will teach setup, diagnostics, workspace operation, Chat Mode, Task Mode, Goal Mode, bounded loops, Action Center decisions, artifacts, evidence, knowledge, recovery, runtime configuration, vault administration, audit, usage, automations, Git operations, and workspace portability.
+The accepted AI-native interface is the end-user Skill at `skills/openkit/` with its bundled CLI. The Skill teaches setup, diagnostics, workspace operation, Chat Mode, Task Mode, Goal Mode, bounded loops, Action Center decisions, artifacts, evidence, knowledge, recovery, runtime configuration, vault administration, audit, usage, automations, Git operations, and workspace portability.
 
-The CLI will use a small agent-first command contract: `openkit doctor`, `openkit ops search`, `openkit ops describe`, and `openkit ops call`. It will expose public NanoCore capabilities progressively rather than advertising a flat eager tool catalog. No user-facing MCP compatibility layer or developer Skill variant will remain.
+The CLI uses a small agent-first command contract: `openkit doctor`, `openkit ops search`, `openkit ops describe`, and `openkit ops call`. It exposes public NanoCore capabilities progressively rather than advertising a flat eager tool catalog. User-facing MCP compatibility layers and developer Skill variants are prohibited.
 
-This is currently an accepted, not-yet-implemented contract. Do not expect `skills/openkit/` or its CLI commands to exist until the implementation stages in [`docs/changes/202607131935040001-openkit_agent_skill_interface.md`](./docs/changes/202607131935040001-openkit_agent_skill_interface.md) are completed.
+The executable package lives under `skills/openkit/`; agents resolve its `scripts/openkit` entrypoint relative to the installed Skill directory. The owning contract is [`docs/specs/20260713-openkit_agent_skill_interface.md`](./docs/specs/20260713-openkit_agent_skill_interface.md).
 
 ## Web UI
 
@@ -110,9 +108,8 @@ Use focused package commands while developing and run release gates before taggi
 ```text
 .
 ├── apps/                   # NanoCore and Web product surfaces
-├── mcp/                    # Removal-only legacy user-facing MCP package
 ├── packages/               # Shared protocol, App API, config, and client packages
-├── skills/                 # Unified end-user Skill target and temporary legacy Skills
+├── skills/                 # Unified end-user Skill and bundled CLI
 ├── docs/                   # Core docs, specs, cookbooks, changes, and working logs
 ├── scripts/                # Bootstrap and helper scripts
 ├── .mise.toml              # Tool versions and top-level tasks
@@ -123,8 +120,7 @@ Use focused package commands while developing and run release gates before taggi
 ## Where To Read More
 
 - [`AGENTS.md`](./AGENTS.md): execution rules for agents working in this repository.
-- [`skills/README.md`](./skills/README.md): unified end-user Skill package direction and transitional state.
-- [`mcp/README.md`](./mcp/README.md): removal-only rules for the legacy user-facing MCP package.
+- [`skills/README.md`](./skills/README.md): unified end-user Skill package and interface boundaries.
 - [`docs/core/work-model.md`](./docs/core/work-model.md): stable user-facing work model.
 - [`docs/deployment.md`](./docs/deployment.md): stable deployment model.
 - [`docs/product-vision.md`](./docs/product-vision.md): long-term product direction.

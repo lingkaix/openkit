@@ -12,14 +12,23 @@ import type { ProviderRegistry } from '../providers/registry.js';
 import {
   completeSchedulerSessionLease,
   dispatchNextSchedulerEntry,
+  requireSchedulerSessionLease,
+  requireSchedulerSessionLeaseAdmissionContext,
   type SchedulerAdmissionEntryRecord,
   type SchedulerDispatchResult,
 } from '../scheduler-records.js';
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
-import { type StartTurnDependencies, startTurn, type TurnHandle } from './orchestrator.js';
+import {
+  type StartTurnDependencies,
+  startTurn,
+  type TurnHandle,
+  TurnStartValidationError,
+} from './orchestrator.js';
 import { generateUuidV7 } from './session-id.js';
 import type { TurnExecutor } from './types.js';
+import { getWorkerBackendSession } from './worker-backend-sessions.js';
+import { getWorkerControlAcceptedFinalStatus } from './worker-control-records.js';
 
 /** Input for one scheduler dispatch loop run. */
 export interface RunSchedulerDispatchLoopInput {
@@ -152,8 +161,9 @@ export async function runSchedulerDispatchLoop(
       return { startedTurns, terminalResult: dispatch };
     }
 
+    let store: FsStore | null = null;
     try {
-      const store = input.storeForEntry?.(dispatch.entry) ?? input.store;
+      store = input.storeForEntry?.(dispatch.entry) ?? input.store;
       const agentSetupWorkspaceDb = input.agentConfigs
         ? openWorkspaceDb(input.coreDb.dataRoot, dispatch.entry.userId, dispatch.entry.workspaceId)
         : null;
@@ -193,17 +203,97 @@ export async function runSchedulerDispatchLoop(
         agentSetupWorkspaceDb?.sqlite.close();
       }
     } catch (error) {
+      const humanGateFallback = isExactUnavailableHumanGateCloseout(
+        input.coreDb,
+        dispatch,
+        store,
+        error
+      );
       completeSchedulerSessionLease(input.coreDb, {
         leaseId: dispatch.lease.leaseId,
         recoveryState: 'needs-evidence',
-        releaseReason: 'turn-start-failed',
-        terminalStatus: 'failed',
+        releaseReason: humanGateFallback ? 'worker-human-gate-unavailable' : 'turn-start-failed',
+        terminalStatus: humanGateFallback ? 'released' : 'failed',
       });
       throw error;
     }
   }
 
   return { startedTurns, terminalResult: { status: 'queued', reason: 'max-dispatches' } };
+}
+
+/**
+ * Proves the bounded AEP fallback from existing Product, scheduler, backend, and worker owners.
+ *
+ * @param coreDb Open Core database handle.
+ * @param dispatch Exact admission, plan, and lease dispatched by this loop iteration.
+ * @param store Product store selected for the admission owner.
+ * @param error Typed recovery failure returned after Product interruption.
+ * @returns Whether scheduler capacity can be released without claiming recoverable completion.
+ */
+function isExactUnavailableHumanGateCloseout(
+  coreDb: CoreDb,
+  dispatch: Extract<SchedulerDispatchResult, { status: 'dispatched' }>,
+  store: FsStore | null,
+  error: unknown
+): boolean {
+  if (
+    !store ||
+    !(error instanceof TurnStartValidationError) ||
+    error.code !== 'recovery_required' ||
+    error.status !== 409
+  ) {
+    return false;
+  }
+
+  try {
+    const lease = requireSchedulerSessionLease(coreDb, dispatch.lease.leaseId);
+    const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, lease.leaseId);
+    const backendSession = getWorkerBackendSession(coreDb, lease.leaseId);
+    const accepted = getWorkerControlAcceptedFinalStatus(coreDb, {
+      agentSessionId: lease.agentSessionId,
+      packageSnapshotId: lease.packageSnapshotId,
+      requestId: admission.requestId,
+      threadId: lease.threadId,
+      turnId: lease.turnId,
+      workspaceId: lease.workspaceId,
+    });
+    const turn = store.getTurnById(lease.turnId);
+    const agentSession = store.getAgentSession(lease.agentSessionId);
+
+    return (
+      lease.planId === dispatch.plan.planId &&
+      lease.workspaceId === dispatch.entry.workspaceId &&
+      lease.threadId === dispatch.entry.threadId &&
+      lease.turnId === dispatch.entry.turnId &&
+      lease.agentSessionId === dispatch.lease.agentSessionId &&
+      lease.packageSnapshotId === dispatch.lease.packageSnapshotId &&
+      lease.status === 'releasing' &&
+      lease.releaseReason === 'worker-final-status' &&
+      admission.requestId === dispatch.entry.requestId &&
+      turn.workspaceId === lease.workspaceId &&
+      turn.threadId === lease.threadId &&
+      turn.agentSessionId === lease.agentSessionId &&
+      turn.status === 'interrupted' &&
+      turn.error?.code === 'worker_human_gate_unavailable' &&
+      turn.error.message === error.message &&
+      agentSession.workspaceId === lease.workspaceId &&
+      agentSession.threadId === lease.threadId &&
+      agentSession.status === 'interrupted' &&
+      agentSession.message === error.message &&
+      backendSession?.leaseId === lease.leaseId &&
+      backendSession.workspaceId === lease.workspaceId &&
+      backendSession.threadId === lease.threadId &&
+      backendSession.turnId === lease.turnId &&
+      backendSession.agentSessionId === lease.agentSessionId &&
+      backendSession.packageSnapshotId === lease.packageSnapshotId &&
+      backendSession.state === 'cleaned' &&
+      accepted?.status === 'blocked' &&
+      accepted.stopReason === 'ask_user'
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**

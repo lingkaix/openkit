@@ -6,6 +6,7 @@ import {
   LLM_PROJECTION_POLICY_VERSION,
   type LlmProjectionPolicy,
 } from '../context/projection-policy.js';
+import type { FsStore } from '../lib/store.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { GoalReviewResolutionError, listGoalReviewRecordsForTask } from './goal-review-records.js';
 import { getGoalRecord, listGoalTasks } from './goal-store.js';
@@ -26,6 +27,8 @@ const GOAL_WORKER_CONTEXT_POLICY: LlmProjectionPolicy = {
  * Input for preparing one selected goal task for worker delegation.
  */
 export interface PrepareGoalTaskDelegationInput {
+  /** Product store containing the exact Human Gate owner tuple. */
+  readonly store: FsStore;
   /** Workspace that owns the goal task. */
   readonly workspaceId: string;
   /** User that owns the workspace database. */
@@ -77,6 +80,7 @@ export function prepareGoalTaskDelegation(
   }
 
   const contextProjection = convertToLlm(input.threadItems, GOAL_WORKER_CONTEXT_POLICY);
+  const gateContextRefs = latestGateContextRefs(input.store, task, input.threadItems);
   const reviewContext = latestGoalReviewContext(workspaceDb, {
     workspaceId: input.workspaceId,
     threadId: input.threadId,
@@ -84,7 +88,7 @@ export function prepareGoalTaskDelegation(
     taskId: task.taskId,
   });
 
-  return prepareNextTurnContext(coreDb, {
+  const prepared = prepareNextTurnContext(coreDb, {
     workspaceId: input.workspaceId,
     ...(input.userId === undefined ? {} : { userId: input.userId }),
     threadId: input.threadId,
@@ -101,6 +105,94 @@ export function prepareGoalTaskDelegation(
     contextProjection,
     reviewContext,
   });
+  const gateContextIds = new Set(gateContextRefs.map((ref) => ref.id));
+  return {
+    ...prepared,
+    contextRefs: [
+      ...gateContextRefs,
+      ...prepared.contextRefs.filter((ref) => !gateContextIds.has(ref.id)),
+    ],
+  };
+}
+
+/**
+ * Resolves the exact closed Human Gate pair carried into the next Goal Task attempt.
+ *
+ * @param store Product store containing Approval owners.
+ * @param task Goal Task whose latest Gate pointer is authoritative.
+ * @param items Latest Thread Items available for delegation.
+ * @returns Request and response Item refs in causal order, or an empty list.
+ * @throws GoalReviewResolutionError when the durable pointer is absent or contradictory.
+ */
+function latestGateContextRefs(
+  store: FsStore,
+  task: ReturnType<typeof listGoalTasks>[number],
+  items: readonly Item[]
+): PreparedNextTurnContext['contextRefs'] {
+  if (!task.latestGateContextItemId) {
+    return [];
+  }
+  const response = items.find((item) => item.id === task.latestGateContextItemId);
+  const requests =
+    response?.type === 'approval-decision'
+      ? items.filter(
+          (item) =>
+            item.type === 'approval-request' &&
+            item.turnId === response.turnId &&
+            item.approvalRequestId === response.approvalRequestId
+        )
+      : response?.type === 'user-input-response'
+        ? items.filter(
+            (item) =>
+              item.type === 'user-input-request' &&
+              item.turnId === response.turnId &&
+              item.userInputRequestId === response.userInputRequestId
+          )
+        : [];
+  const request = requests.length === 1 ? requests[0] : null;
+  const commonTupleMatches =
+    response?.status === 'completed' &&
+    request?.status === 'completed' &&
+    response.workspaceId === task.workspaceId &&
+    response.threadId === task.threadId &&
+    request.workspaceId === response.workspaceId &&
+    request.threadId === response.threadId;
+  let ownerMatches = false;
+  if (
+    commonTupleMatches &&
+    response.type === 'approval-decision' &&
+    request?.type === 'approval-request'
+  ) {
+    try {
+      const approval = store.getApproval(response.approvalRequestId);
+      ownerMatches =
+        approval.workspaceId === response.workspaceId &&
+        approval.threadId === response.threadId &&
+        approval.turnId === response.turnId &&
+        approval.status === response.decision &&
+        approval.resolvedAt !== null;
+    } catch {
+      ownerMatches = false;
+    }
+  } else if (
+    commonTupleMatches &&
+    response.type === 'user-input-response' &&
+    request?.type === 'user-input-request'
+  ) {
+    const questionIds = request.questions.map((question) => question.id).sort();
+    ownerMatches =
+      JSON.stringify(Object.keys(response.answers).sort()) === JSON.stringify(questionIds);
+  }
+  if (!request || !response || !commonTupleMatches || !ownerMatches) {
+    throw new GoalReviewResolutionError(
+      'recovery_required',
+      'Latest Goal Task Human Gate context is incomplete or contradictory.'
+    );
+  }
+  return [
+    { kind: 'item', id: request.id },
+    { kind: 'item', id: response.id },
+  ];
 }
 
 /**

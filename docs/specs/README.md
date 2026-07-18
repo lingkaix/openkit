@@ -68,7 +68,6 @@ Current specs live at the root of this directory. Read the relevant core documen
 
 Kernel, protocol, and product surfaces:
 
-- [`20260628-protocol_contract_consolidation.md`](./20260628-protocol_contract_consolidation.md)
 - [`20260715-contract_stability_baseline.md`](./20260715-contract_stability_baseline.md)
 - [`20260528-core_client_boundary.md`](./20260528-core_client_boundary.md)
 - [`20260628-nanocore_config_identity_contract.md`](./20260628-nanocore_config_identity_contract.md)
@@ -96,7 +95,6 @@ Workflow, human attention, and verification:
 Worker runtime, supply, and synchronization:
 
 - [`20260616-agent_environment_package.md`](./20260616-agent_environment_package.md)
-- [`20260628-agent_setup_runtime_supply_contract.md`](./20260628-agent_setup_runtime_supply_contract.md)
 - [`20260703-agent_manifest_aep_resolution.md`](./20260703-agent_manifest_aep_resolution.md)
 - [`20260629-worker_runtime_communication_model.md`](./20260629-worker_runtime_communication_model.md)
 - [`20260711-worker_runtime_subagent_provenance.md`](./20260711-worker_runtime_subagent_provenance.md)

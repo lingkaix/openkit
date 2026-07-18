@@ -85,7 +85,7 @@ describe('SimulatedTurnExecutor', () => {
     delete process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
   });
 
-  it('runs the same paused approval and question lifecycle across three turns', async () => {
+  it('does not resume a scheduled worker after its approval Gate', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
     const executor = new SimulatedTurnExecutor();
@@ -93,156 +93,65 @@ describe('SimulatedTurnExecutor', () => {
 
     try {
       await linkRepository(app);
+      const turnResponse = await app.request('/api/turns', {
+        method: 'POST',
+        body: JSON.stringify({
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          requestId: '0190f4c8-0000-7000-8000-000000000211',
+          input: 'Simulated scheduled worker run',
+        }),
+        headers: { 'content-type': 'application/json' },
+      });
+      const turn = (await turnResponse.json()) as { id: string };
 
-      for (const index of [1, 2, 3]) {
-        const turnResponse = await app.request('/api/turns', {
-          method: 'POST',
-          body: JSON.stringify({
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            requestId: `0190f4c8-0000-7000-8000-00000000021${index}`,
-            input: `Simulated run ${index}`,
-          }),
-          headers: { 'content-type': 'application/json' },
-        });
-        const turn = (await turnResponse.json()) as { id: string };
+      expect(turnResponse.status, JSON.stringify(turn)).toBe(202);
+      const storedTurn = store.getTurnById(turn.id);
+      expect(storedTurn).toMatchObject({
+        agentId: 'agent_codex_host',
+        agentProfileId: 'default',
+        agentSessionId: expect.stringMatching(/^as_/),
+        status: 'awaiting_human',
+        humanGate: {
+          kind: 'approval',
+          approvalRequestId: `ap_${turn.id}`,
+          itemId: `it_approval_request_${turn.id}`,
+        },
+      });
+      expect(executor.getAgentSession(store, 'ws_demo', 'th_demo').id).toBe(
+        storedTurn.agentSessionId
+      );
 
-        expect(turnResponse.status, JSON.stringify(turn)).toBe(202);
-        expect(store.getTurnById(turn.id)).toMatchObject({
-          agentId: 'agent_codex_host',
-          agentProfileId: 'default',
-          agentSessionId: `session_sim_turn_${turn.id}`,
-          status: 'awaiting_human',
-          humanGate: {
-            kind: 'approval',
-            approvalRequestId: `ap_${turn.id}`,
-            itemId: `it_approval_request_${turn.id}`,
-          },
-        });
-        expect(
-          store
-            .listThreadItems('ws_demo', 'th_demo')
-            .filter((item) => item.turnId === turn.id)
-            .map((item) => item.type)
-        ).toEqual([
-          'user-message',
-          'assistant-message',
-          'reasoning',
-          'command-execution',
-          'approval-request',
-        ]);
-        expect(
-          store
-            .getTurnEvents(turn.id)
-            .filter((event) => event.event === 'item.delta')
-            .map((event) => (event.data as { deltaKind?: string }).deltaKind)
-        ).toEqual(['text-delta', 'text-delta', 'indexed-text-delta', 'output-delta']);
-        const startRequestIds = [
-          ...new Set(store.getTurnEvents(turn.id).map((event) => event.requestId)),
-        ];
+      const approvalResponse = await app.request(`/api/approvals/ap_${turn.id}/respond`, {
+        method: 'POST',
+        body: JSON.stringify({
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          turnId: turn.id,
+          requestId: '0190f4c8-0000-7000-8000-000000000221',
+          decision: 'granted',
+        }),
+        headers: { 'content-type': 'application/json' },
+      });
 
-        expect(startRequestIds).toHaveLength(1);
-        expect(startRequestIds[0]).toBe(`0190f4c8-0000-7000-8000-00000000021${index}`);
-
-        const approvalResponse = await app.request(`/api/approvals/ap_${turn.id}/respond`, {
-          method: 'POST',
-          body: JSON.stringify({
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: turn.id,
-            requestId: `0190f4c8-0000-7000-8000-00000000022${index}`,
-            decision: 'granted',
-          }),
-          headers: { 'content-type': 'application/json' },
-        });
-
-        expect(approvalResponse.status).toBe(200);
-        expect(store.getTurnById(turn.id)).toMatchObject({
-          status: 'awaiting_human',
-          humanGate: {
-            kind: 'user-input',
-            userInputRequestId: `ui_${turn.id}`,
-            itemId: `it_user_input_request_${turn.id}`,
-          },
-        });
-        expect(
-          store
-            .getTurnEvents(turn.id)
-            .filter((event) => {
-              return (
-                event.data.type === 'item-created' && event.data.item.type === 'approval-decision'
-              );
-            })
-            .map((event) => event.requestId)
-        ).toEqual([`0190f4c8-0000-7000-8000-00000000022${index}`]);
-        expect(
-          store
-            .listThreadItems('ws_demo', 'th_demo')
-            .filter((item) => item.turnId === turn.id)
-            .map((item) => item.type)
-        ).toEqual([
-          'user-message',
-          'assistant-message',
-          'reasoning',
-          'command-execution',
-          'approval-request',
-          'approval-decision',
-          'user-input-request',
-        ]);
-
-        const answerResponse = await app.request('/api/turns', {
-          method: 'POST',
-          body: JSON.stringify({
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: turn.id,
-            requestId: `0190f4c8-0000-7000-8000-00000000023${index}`,
-            input: 'Use the deterministic simulator path.',
-          }),
-          headers: { 'content-type': 'application/json' },
-        });
-
-        expect(answerResponse.status).toBe(202);
-        expect(store.getTurnById(turn.id).status).toBe('completed');
-        expect(
-          store
-            .listThreadItems('ws_demo', 'th_demo')
-            .filter((item) => item.turnId === turn.id)
-            .map((item) => item.type)
-        ).toEqual([
-          'user-message',
-          'assistant-message',
-          'reasoning',
-          'command-execution',
-          'approval-request',
-          'approval-decision',
-          'user-input-request',
-          'user-input-response',
-          'artifact-reference',
-        ]);
-        expect(store.getTurnEvents(turn.id).map((event) => event.event)).toEqual(
-          expect.arrayContaining(['artifact.updated', 'turn.completed'])
-        );
-        expect(
-          store
-            .getTurnEvents(turn.id)
-            .filter(
-              (event) => event.event === 'artifact.updated' || event.event === 'turn.completed'
-            )
-            .map((event) => event.requestId)
-        ).toEqual([
-          `0190f4c8-0000-7000-8000-00000000023${index}`,
-          `0190f4c8-0000-7000-8000-00000000023${index}`,
-        ]);
-        expect(
-          store.getTurnEvents(turn.id).find((event) => {
-            return event.data.type === 'item-delta' && event.data.deltaKind === 'artifact-updated';
-          })?.data
-        ).toMatchObject({
-          type: 'item-delta',
-          itemType: 'artifact-reference',
-        });
-      }
+      expect(approvalResponse.status).toBe(409);
+      await expect(approvalResponse.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(store.getTurnById(turn.id)).toMatchObject({
+        status: 'awaiting_human',
+        humanGate: { kind: 'approval', approvalRequestId: `ap_${turn.id}` },
+      });
+      expect(
+        store
+          .listThreadItems('ws_demo', 'th_demo')
+          .filter((item) => item.turnId === turn.id)
+          .map((item) => item.type)
+      ).toEqual([
+        'user-message',
+        'assistant-message',
+        'reasoning',
+        'command-execution',
+        'approval-request',
+      ]);
     } finally {
       coreDb.sqlite.close();
     }

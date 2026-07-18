@@ -163,7 +163,7 @@ describe('agent environment package resolver', () => {
         artifacts: 'batch',
         events: 'batch',
       },
-      commands: ['interrupt', 'terminal-command'],
+      commands: ['interrupt'],
       events: expect.arrayContaining(['turn.failed']),
     });
     expect(resolved.control.relay).toBeUndefined();
@@ -296,7 +296,6 @@ describe('agent environment package resolver', () => {
             { method: 'POST', path: '/api/worker-control/artifacts' },
             { method: 'POST', path: '/api/worker-control/commands/poll' },
             { method: 'POST', path: '/api/worker-control/commands/ack' },
-            { method: 'POST', path: '/api/worker-control/terminal-results' },
             { method: 'POST', path: '/api/worker-control/events/append' },
             { method: 'POST', path: '/api/worker-control/final-status' },
             { method: 'POST', path: '/api/worker-control/supply-refresh-ack' },
