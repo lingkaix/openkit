@@ -105,7 +105,8 @@ export async function runPiAiRealProviderStory(options = {}) {
 
   const fetcher = options.fetchImpl ?? fetch;
   const baseUrl = prerequisites.config.baseUrl.replace(/\/+$/, '');
-  const requestId = randomUUID();
+  const nonStreamingRequestId = randomUUID();
+  const streamingRequestId = randomUUID();
   const headers = {
     'content-type': 'application/json',
     ...(prerequisites.config.token
@@ -117,17 +118,23 @@ export async function runPiAiRealProviderStory(options = {}) {
     messages: [{ role: 'user', content: 'Reply with exactly: ok' }],
     metadata: {
       openkit: {
-        requestId,
+        requestId: nonStreamingRequestId,
         workspaceId: prerequisites.config.workspaceId,
       },
     },
     max_tokens: 8,
   };
   const health = await fetchJson(fetcher, `${baseUrl}/health`);
+  assertNoPublicLeak(JSON.stringify(health.json));
+  assert(health.status === 200, `health check failed: ${health.status}`);
   const diagnostics = await fetchJson(fetcher, `${baseUrl}/api/app/diagnostics`, {
     headers: prerequisites.config.token ? { authorization: headers.authorization } : {},
   });
-  const preflightFailure = gatewayPreflightFailure(diagnostics.json, prerequisites.config);
+  assertNoPublicLeak(JSON.stringify(diagnostics.json));
+  const preflightFailure =
+    diagnostics.status === 200
+      ? gatewayPreflightFailure(diagnostics.json, prerequisites.config)
+      : { reason: `diagnostics-http-${diagnostics.status}` };
 
   if (preflightFailure) {
     writeEvidenceResult(prerequisites.config, {
@@ -183,13 +190,27 @@ export async function runPiAiRealProviderStory(options = {}) {
     `non-streaming gateway request failed: ${completion.status}${publicErrorSummary(completion.json)}`
   );
   assert(
-    typeof completion.json?.choices?.[0]?.message?.content === 'string',
-    'non-streaming response did not contain assistant text'
+    typeof completion.json?.choices?.[0]?.message?.content === 'string' &&
+      completion.json.choices[0].message.content.trim().length > 0,
+    'non-streaming response did not contain non-empty assistant text'
   );
   assertNoPublicLeak(JSON.stringify(completion.json));
+  assert(
+    nonStreamingRequestId !== streamingRequestId,
+    'gateway requests did not receive distinct request ids'
+  );
 
   const stream = await fetchText(fetcher, `${baseUrl}/v1/chat/completions`, {
-    body: JSON.stringify({ ...body, stream: true }),
+    body: JSON.stringify({
+      ...body,
+      metadata: {
+        openkit: {
+          ...body.metadata.openkit,
+          requestId: streamingRequestId,
+        },
+      },
+      stream: true,
+    }),
     headers,
     method: 'POST',
   });
@@ -205,27 +226,35 @@ export async function runPiAiRealProviderStory(options = {}) {
   );
 
   assert(usage.status === 200, `capability usage read failed: ${usage.status}`);
-  const calls = usage.json?.capabilityCalls ?? [];
-  const usageRows = usage.json?.usageRecords ?? [];
-
-  assert(
-    calls.some(
-      (call) =>
-        call.requestId === requestId &&
-        call.capabilityId === 'llm.chat_completions' &&
-        call.providerRef === prerequisites.config.providerId &&
-        call.status === 'succeeded'
-    ),
-    'capability usage evidence did not include the successful real-provider call'
+  const calls = Array.isArray(usage.json?.capabilityCalls) ? usage.json.capabilityCalls : [];
+  const usageRows = Array.isArray(usage.json?.usageRecords) ? usage.json.usageRecords : [];
+  const requestIds = [nonStreamingRequestId, streamingRequestId];
+  const successfulCalls = calls.filter(
+    (call) =>
+      requestIds.includes(call.requestId) &&
+      call.capabilityId === 'llm.chat_completions' &&
+      call.providerRef === prerequisites.config.providerId &&
+      call.status === 'succeeded'
   );
-  assert(
-    usageRows.some(
-      (row) =>
-        row.requestId === requestId &&
-        row.providerRef === prerequisites.config.providerId &&
-        row.category === 'llm'
-    ),
-    'capability usage evidence did not include linked LLM usage rows'
+
+  for (const requestId of requestIds) {
+    assert(
+      successfulCalls.filter((call) => call.requestId === requestId).length === 1,
+      `capability usage evidence did not include one successful call for request ${requestId}`
+    );
+  }
+
+  const cacheReadTokens = reportedCacheTokenTotal(
+    usageRows,
+    requestIds,
+    prerequisites.config.providerId,
+    'llm-gateway-adapter-reported:cache_read'
+  );
+  const cacheWriteTokens = reportedCacheTokenTotal(
+    usageRows,
+    requestIds,
+    prerequisites.config.providerId,
+    'llm-gateway-adapter-reported:cache_write'
   );
 
   const result = {
@@ -240,9 +269,13 @@ export async function runPiAiRealProviderStory(options = {}) {
     },
     workspaceId: prerequisites.config.workspaceId,
     assertions: {
+      cacheReadTokens,
+      cacheWriteTokens,
       capabilityCallCount: calls.length,
       nonStreamingStatus: completion.status,
+      requestIdsDistinct: true,
       streamingDone: true,
+      successfulCapabilityCallCount: successfulCalls.length,
       usageRecordCount: usageRows.length,
     },
   };
@@ -327,18 +360,88 @@ function writeEvidenceResult(config, result) {
 function gatewayPreflightFailure(json, config) {
   const gateway = json?.defaultProviders?.gateway;
   if (!gateway || typeof gateway !== 'object') {
-    return null;
+    return { providerId: config.providerId, model: config.model, reason: 'default-missing' };
   }
 
-  if (gateway.configured === true) {
-    return null;
+  if (gateway.configured !== true) {
+    return {
+      providerId: typeof gateway.providerId === 'string' ? gateway.providerId : config.providerId,
+      model: typeof gateway.model === 'string' ? gateway.model : config.model,
+      reason: typeof gateway.reason === 'string' ? gateway.reason : 'not-configured',
+    };
   }
 
-  return {
-    providerId: typeof gateway.providerId === 'string' ? gateway.providerId : config.providerId,
-    model: typeof gateway.model === 'string' ? gateway.model : config.model,
-    reason: typeof gateway.reason === 'string' ? gateway.reason : 'not-configured',
-  };
+  if (gateway.providerId !== config.providerId) {
+    return { providerId: gateway.providerId, model: gateway.model, reason: 'provider-mismatch' };
+  }
+  if (gateway.model !== config.model) {
+    return { providerId: gateway.providerId, model: gateway.model, reason: 'model-mismatch' };
+  }
+
+  const registry = json?.providers?.registry;
+  const provider = Array.isArray(registry)
+    ? registry.find((entry) => entry?.id === config.providerId)
+    : null;
+
+  if (!provider || typeof provider !== 'object') {
+    return { providerId: config.providerId, model: config.model, reason: 'registry-row-missing' };
+  }
+  if (provider.dispatchFamily !== 'provider-api') {
+    return {
+      providerId: config.providerId,
+      model: config.model,
+      reason: 'provider-dispatch-ineligible',
+    };
+  }
+  if (typeof provider.kind !== 'string' || provider.kind === 'custom') {
+    return {
+      providerId: config.providerId,
+      model: config.model,
+      reason: 'provider-kind-ineligible',
+    };
+  }
+  if (!Array.isArray(provider.models) || !provider.models.includes(config.model)) {
+    return { providerId: config.providerId, model: config.model, reason: 'model-unlisted' };
+  }
+  if (!['native', 'bridged'].includes(provider.gatewayCapabilities?.chatCompletions)) {
+    return {
+      providerId: config.providerId,
+      model: config.model,
+      reason: 'chat-completions-unsupported',
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Sums provider-reported cache token rows for the two story requests.
+ *
+ * @param {unknown[]} usageRows Workspace usage rows returned by NanoCore.
+ * @param {string[]} requestIds Story request ids.
+ * @param {string} providerId Selected provider id.
+ * @param {string} source Cache-read or cache-write source vocabulary.
+ * @returns {number | 'unreported'} Reported token total, or unreported when no matching row exists.
+ */
+function reportedCacheTokenTotal(usageRows, requestIds, providerId, source) {
+  const matching = usageRows.filter(
+    (row) =>
+      requestIds.includes(row?.requestId) &&
+      row?.providerRef === providerId &&
+      row?.category === 'llm' &&
+      row?.unit === 'tokens' &&
+      row?.source === source
+  );
+
+  if (matching.length === 0) {
+    return 'unreported';
+  }
+
+  assert(
+    matching.every((row) => typeof row.quantity === 'number' && row.quantity >= 0),
+    `provider cache evidence contained an invalid quantity for ${source}`
+  );
+  return matching.reduce((total, row) => total + row.quantity, 0);
 }
 
 /**

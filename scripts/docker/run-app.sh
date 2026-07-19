@@ -100,22 +100,6 @@ function writeFileIfMissing(target, content) {
   return true;
 }
 
-function readAgentSecretEnvName(serverConfigPath) {
-  if (!fs.existsSync(serverConfigPath)) {
-    return null;
-  }
-
-  const serverConfig = readServerConfig(serverConfigPath);
-  const providers = Array.isArray(serverConfig.providers) ? serverConfig.providers : [];
-  const provider = providers.find((entry) => entry?.id === 'nano-agent-openrouter');
-
-  if (!provider?.secretRef) {
-    return null;
-  }
-
-  return readEnvSecretName(provider.secretRef, provider.id);
-}
-
 function readServerConfig(serverConfigPath) {
   const errors = [];
   const text = fs.readFileSync(serverConfigPath, 'utf8');
@@ -154,22 +138,6 @@ function validateNoInlineProviderSecrets(serverConfig) {
       }
     }
   }
-}
-
-function readEnvSecretName(secretRef, providerId) {
-  if (typeof secretRef !== 'string' || !secretRef.startsWith('env:')) {
-    throw new Error(
-      `App provider ${providerId} must use an env: secretRef such as "${defaultSecretRef}".`
-    );
-  }
-
-  const envName = secretRef.slice('env:'.length);
-
-  if (!envName) {
-    throw new Error(`App provider ${providerId} has an empty env: secretRef.`);
-  }
-
-  return envName;
 }
 
 function serverConfig() {
@@ -217,71 +185,18 @@ function serverConfig() {
   )}\n`;
 }
 
-function agentConfig(id, displayName, kind, adapter) {
-  return `${JSON.stringify(
-    {
-      schemaVersion: 1,
-      id,
-      displayName,
-      mode: 'host',
-      runtime: {
-        kind,
-        adapter,
-      },
-      provider: {
-        ref: 'nano-agent-openrouter',
-        model: defaultModel,
-      },
-      deployment: {
-        host:
-          kind === 'codex'
-            ? { command: 'codex', args: ['app-server', '--listen', 'stdio://'] }
-            : { command: 'opencode', args: ['serve'] },
-      },
-    },
-    null,
-    2
-  )}\n`;
-}
-
-function codexConfig(envName) {
-  return `model = "${defaultModel}"
-model_provider = "openrouter"
-model_reasoning_effort = "low"
-
-[model_providers.openrouter]
-name = "OpenRouter"
-base_url = "https://openrouter.ai/api/v1"
-env_key = "${envName}"
-wire_api = "responses"
-`;
-}
-
 if (!dataRoot) {
   throw new Error('APP_DATA_ROOT is required.');
 }
 
 mkdirp(dataRoot);
 mkdirp(path.join(dataRoot, 'config', 'providers'));
-mkdirp(path.join(dataRoot, 'config', 'agents', 'codex-home'));
-mkdirp(path.join(dataRoot, 'users', 'user_local', 'workspaces'));
+mkdirp(path.join(dataRoot, 'users', 'user_local'));
+mkdirp(path.join(dataRoot, 'workspaces'));
 
 const serverConfigPath = path.join(dataRoot, 'config', 'server.jsonc');
 const wroteServerConfig = writeFileIfMissing(serverConfigPath, serverConfig());
-const agentSecretEnvName = readAgentSecretEnvName(serverConfigPath);
-writeFileIfMissing(
-  path.join(dataRoot, 'config', 'agents', 'codex.agent.jsonc'),
-  agentConfig('agent_codex_host', 'Codex Host Agent', 'codex', 'codex-app-server')
-);
-writeFileIfMissing(
-  path.join(dataRoot, 'config', 'agents', 'opencode-server.agent.jsonc'),
-  agentConfig('agent_opencode_server', 'OpenCode Server Agent', 'opencode', 'opencode-server')
-);
-fs.writeFileSync(
-  path.join(dataRoot, 'config', 'agents', 'codex-home', 'config.toml'),
-  codexConfig(agentSecretEnvName ?? 'OPENROUTER_API_KEY'),
-  { mode: 0o600 }
-);
+readServerConfig(serverConfigPath);
 
 if (wroteServerConfig) {
   console.log(`Created ${serverConfigPath} with secretRef env references.`);

@@ -1,6 +1,5 @@
-import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { existsSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
@@ -22,40 +21,14 @@ import * as schema from './schema/index.js';
  * Open NanoCore SQLite database handles.
  */
 export interface CoreDb {
+  /** Database ownership scope. */
+  scope: 'core';
   /** Raw better-sqlite3 connection for low-level migration checks. */
   sqlite: Database.Database;
   /** Drizzle ORM database client bound to the NanoCore schema. */
   db: BetterSQLite3Database<typeof schema>;
   /** Absolute data root that owns the database file. */
   dataRoot: string;
-}
-
-/** SQLite source-of-truth recovery event produced before opening a boot database. */
-export interface DatabaseIntegrityRecoveryEvent {
-  /** Ownership scope that owns the recovered database. */
-  scope: 'server' | 'user' | 'workspace';
-  /** User id for user- or workspace-scoped recovery. */
-  userId?: string;
-  /** Workspace id for workspace-scoped recovery. */
-  workspaceId?: string;
-  /** Original database path that failed integrity validation. */
-  originalPath: string;
-  /** Quarantine path that now preserves the original database file. */
-  quarantinePath: string;
-  /** SHA-256 digest of the quarantined database file before it moved. */
-  contentDigest: string;
-  /** Machine-readable recovery reason. */
-  reason: 'database_integrity_check_failed';
-  /** Human-readable integrity failure detail. */
-  detail: string;
-}
-
-/** Result of opening the boot Core database with integrity recovery. */
-export interface OpenCoreDbWithIntegrityRecoveryResult {
-  /** Open Core database handles after any recovery. */
-  coreDb: CoreDb;
-  /** Recovery events produced before the returned database was opened. */
-  recoveryEvents: DatabaseIntegrityRecoveryEvent[];
 }
 
 /**
@@ -84,8 +57,6 @@ export interface WorkspaceDb {
   db: BetterSQLite3Database<typeof schema>;
   /** Absolute data root that owns the database file. */
   dataRoot: string;
-  /** User id that owns the workspace. */
-  userId: string;
   /** Workspace id that owns this database. */
   workspaceId: string;
 }
@@ -104,6 +75,7 @@ export function openCoreDb(dataRoot: string): CoreDb {
   const sqlite = new Database(coreDbPath(dataRoot));
 
   return {
+    scope: 'core',
     sqlite,
     db: drizzle(sqlite, { schema }),
     dataRoot,
@@ -111,68 +83,50 @@ export function openCoreDb(dataRoot: string): CoreDb {
 }
 
 /**
- * Opens the boot Core database after quarantining a corrupt source-of-truth file.
+ * Opens the boot Core database after validating any existing authoritative file.
  *
  * @param dataRoot Data root that will contain server/db/core.sqlite.
- * @returns Open Core database and any recovery events.
+ * @returns Open Core database.
+ * @throws When the existing authoritative database fails SQLite integrity validation.
  */
-export function openCoreDbWithIntegrityRecovery(
-  dataRoot: string
-): OpenCoreDbWithIntegrityRecoveryResult {
+export function openCoreDbWithIntegrityCheck(dataRoot: string): CoreDb {
   ensureLayout(dataRoot);
-
-  const path = coreDbPath(dataRoot);
-  const recoveryEvents = recoverCorruptDatabase({
-    path,
-    quarantineDir: join(dataRoot, 'server', 'quarantine'),
-    scope: 'server',
-  });
-
-  return {
-    coreDb: openCoreDb(dataRoot),
-    recoveryEvents,
-  };
+  assertSqliteIntegrity(coreDbPath(dataRoot));
+  return openCoreDb(dataRoot);
 }
 
 /**
- * Recovers and migrates existing user- and workspace-scope databases at boot.
+ * Validates and migrates existing user- and workspace-scope databases at boot.
  *
  * @param dataRoot Data root to scan.
- * @returns Recovery events produced before scoped databases were migrated.
+ * @throws When any existing authoritative database fails SQLite integrity validation.
  */
-export function recoverExistingScopedDatabases(dataRoot: string): DatabaseIntegrityRecoveryEvent[] {
+export function verifyAndMigrateExistingScopedDatabases(dataRoot: string): void {
   ensureLayout(dataRoot);
 
-  const recoveryEvents: DatabaseIntegrityRecoveryEvent[] = [];
   const usersRoot = join(dataRoot, 'users');
 
   for (const userId of listChildDirectories(usersRoot)) {
-    recoveryEvents.push(...recoverAndMigrateUserDatabase(dataRoot, userId));
-
-    const workspacesRoot = join(dataRoot, 'users', userId, 'workspaces');
-    for (const workspaceId of listChildDirectories(workspacesRoot)) {
-      recoveryEvents.push(...recoverAndMigrateWorkspaceDatabase(dataRoot, userId, workspaceId));
-    }
+    verifyAndMigrateUserDatabase(dataRoot, userId);
   }
 
-  return recoveryEvents;
+  for (const workspaceId of listChildDirectories(join(dataRoot, 'workspaces'))) {
+    verifyAndMigrateWorkspaceDatabase(dataRoot, workspaceId);
+  }
 }
 
 /**
  * Lists existing workspace database scopes in stable boot order.
  *
  * @param dataRoot Data root whose existing workspace directories should be scanned.
- * @returns User and Workspace ids for every existing workspace scope.
+ * @returns Workspace ids for every existing workspace scope.
+ * @throws When the data root is not a valid owner-independent layout.
  */
 export function listExistingWorkspaceDatabaseScopes(
   dataRoot: string
-): Array<{ readonly userId: string; readonly workspaceId: string }> {
-  return listChildDirectories(join(dataRoot, 'users')).flatMap((userId) =>
-    listChildDirectories(join(dataRoot, 'users', userId, 'workspaces')).map((workspaceId) => ({
-      userId,
-      workspaceId,
-    }))
-  );
+): Array<{ readonly workspaceId: string }> {
+  ensureLayout(dataRoot);
+  return listChildDirectories(join(dataRoot, 'workspaces')).map((workspaceId) => ({ workspaceId }));
 }
 
 /**
@@ -194,25 +148,19 @@ export function openUserDb(dataRoot: string, userId: string): UserDb {
  * Opens one workspace-scope database under the provided data root.
  *
  * @param dataRoot Data root that contains the workspace tree.
- * @param userId User id that owns the workspace.
  * @param workspaceId Workspace id that owns the database.
  * @returns Raw SQLite handle for the workspace-scope database.
  */
-export function openWorkspaceDb(
-  dataRoot: string,
-  userId: string,
-  workspaceId: string
-): WorkspaceDb {
-  ensureWorkspaceLayout(dataRoot, userId, workspaceId);
+export function openWorkspaceDb(dataRoot: string, workspaceId: string): WorkspaceDb {
+  ensureWorkspaceLayout(dataRoot, workspaceId);
 
-  const sqlite = new Database(workspaceDbPath(dataRoot, userId, workspaceId));
+  const sqlite = new Database(workspaceDbPath(dataRoot, workspaceId));
 
   return {
     scope: 'workspace',
     sqlite,
     db: drizzle(sqlite, { schema }),
     dataRoot,
-    userId,
     workspaceId,
   };
 }
@@ -220,12 +168,11 @@ export function openWorkspaceDb(
 /**
  * Opens one workspace-scope database under an already resolved workspace root.
  *
- * @param input Data root, owner ids, and resolved workspace root.
+ * @param input Data root, Workspace id, and resolved workspace root.
  * @returns Raw SQLite and Drizzle handles for the staged workspace database.
  */
 export function openWorkspaceDbAtRoot(input: {
   dataRoot: string;
-  userId: string;
   workspaceId: string;
   workspaceRoot: string;
 }): WorkspaceDb {
@@ -238,7 +185,6 @@ export function openWorkspaceDbAtRoot(input: {
     sqlite,
     db: drizzle(sqlite, { schema }),
     dataRoot: input.dataRoot,
-    userId: input.userId,
     workspaceId: input.workspaceId,
   };
 }
@@ -258,22 +204,14 @@ export function getCoreDb(env: NodeJS.ProcessEnv = process.env): CoreDb {
 }
 
 /**
- * Recovers one user database and applies user-scope migrations.
+ * Validates one user database and applies user-scope migrations.
  *
  * @param dataRoot Data root that owns the database.
  * @param userId User id that owns the database.
- * @returns Recovery events produced for the file.
+ * @throws When the existing authoritative database fails SQLite integrity validation.
  */
-function recoverAndMigrateUserDatabase(
-  dataRoot: string,
-  userId: string
-): DatabaseIntegrityRecoveryEvent[] {
-  const recoveryEvents = recoverCorruptDatabase({
-    path: userDbPath(dataRoot, userId),
-    quarantineDir: join(dataRoot, 'users', userId, 'quarantine'),
-    scope: 'user',
-    userId,
-  });
+function verifyAndMigrateUserDatabase(dataRoot: string, userId: string): void {
+  assertSqliteIntegrity(userDbPath(dataRoot, userId));
   const userDb = openUserDb(dataRoot, userId);
 
   try {
@@ -281,31 +219,18 @@ function recoverAndMigrateUserDatabase(
   } finally {
     userDb.sqlite.close();
   }
-
-  return recoveryEvents;
 }
 
 /**
- * Recovers one workspace database and applies workspace-scope migrations.
+ * Validates one workspace database and applies workspace-scope migrations.
  *
  * @param dataRoot Data root that owns the database.
- * @param userId User id that owns the workspace.
  * @param workspaceId Workspace id that owns the database.
- * @returns Recovery events produced for the file.
+ * @throws When the existing authoritative database fails SQLite integrity validation.
  */
-function recoverAndMigrateWorkspaceDatabase(
-  dataRoot: string,
-  userId: string,
-  workspaceId: string
-): DatabaseIntegrityRecoveryEvent[] {
-  const recoveryEvents = recoverCorruptDatabase({
-    path: workspaceDbPath(dataRoot, userId, workspaceId),
-    quarantineDir: join(dataRoot, 'users', userId, 'workspaces', workspaceId, 'quarantine'),
-    scope: 'workspace',
-    userId,
-    workspaceId,
-  });
-  const workspaceDb = openWorkspaceDb(dataRoot, userId, workspaceId);
+function verifyAndMigrateWorkspaceDatabase(dataRoot: string, workspaceId: string): void {
+  assertSqliteIntegrity(workspaceDbPath(dataRoot, workspaceId));
+  const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
 
   try {
     applyScopedMigrations(workspaceDb);
@@ -313,52 +238,25 @@ function recoverAndMigrateWorkspaceDatabase(
   } finally {
     workspaceDb.sqlite.close();
   }
-
-  return recoveryEvents;
 }
 
 /**
- * Quarantines a corrupt SQLite database file.
+ * Fails closed when an existing authoritative SQLite database is corrupt.
  *
- * @param input Recovery target.
- * @returns Recovery events produced for the file.
+ * @param path SQLite database path.
+ * @throws When SQLite cannot open or validate the existing file.
  */
-function recoverCorruptDatabase(input: {
-  path: string;
-  quarantineDir: string;
-  scope: DatabaseIntegrityRecoveryEvent['scope'];
-  userId?: string;
-  workspaceId?: string;
-}): DatabaseIntegrityRecoveryEvent[] {
-  if (!existsSync(input.path)) {
-    return [];
+function assertSqliteIntegrity(path: string): void {
+  if (!existsSync(path)) {
+    return;
   }
 
-  const integrity = checkSqliteIntegrity(input.path);
+  const integrity = checkSqliteIntegrity(path);
   if (integrity.ok) {
-    return [];
+    return;
   }
 
-  mkdirSync(input.quarantineDir, { recursive: true });
-  const quarantinePath = join(
-    input.quarantineDir,
-    `${Date.now()}-${process.pid}-${basename(input.path)}`
-  );
-  const contentDigest = sha256File(input.path);
-  renameSync(input.path, quarantinePath);
-
-  return [
-    {
-      scope: input.scope,
-      ...(input.userId ? { userId: input.userId } : {}),
-      ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
-      originalPath: input.path,
-      quarantinePath,
-      contentDigest,
-      reason: 'database_integrity_check_failed',
-      detail: integrity.detail,
-    },
-  ];
+  throw new Error(`SQLite integrity check failed for ${path}: ${integrity.detail}`);
 }
 
 /**
@@ -396,14 +294,4 @@ function checkSqliteIntegrity(path: string): { ok: true } | { ok: false; detail:
   } finally {
     sqlite?.close();
   }
-}
-
-/**
- * Computes a SHA-256 digest for one file.
- *
- * @param path File path.
- * @returns Hex encoded SHA-256 digest.
- */
-function sha256File(path: string): string {
-  return createHash('sha256').update(readFileSync(path)).digest('hex');
 }

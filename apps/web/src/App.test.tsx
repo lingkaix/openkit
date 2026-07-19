@@ -2,6 +2,7 @@
 
 import '@testing-library/jest-dom/vitest';
 
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { ApiCallError, type CoreClient, type SseEventEnvelope } from '@openkit/core-client';
 import type {
@@ -213,6 +214,7 @@ interface FakeClientOptions {
   onApproval?(input: ApprovalResponseInput): void;
   onInterrupt?(input: Parameters<CoreClient['core']['interruptTurn']>[0]): void;
   onRefreshAgentHealth?(workspaceId: string): void;
+  onQuickChat?(input: Parameters<CoreClient['app']['quickChat']>[0]): void;
   onReloadRuntimeConfig?(input: Parameters<CoreClient['runtimeConfig']['reload']>[0]): void;
   onSetupDiagnostics?(): void;
   onApproveThreadGoalPlan?(
@@ -813,6 +815,7 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
       turnId: turn.id,
       type: 'user-message',
       status: 'completed',
+      actor: { kind: 'user', id: 'user_demo' },
       text: input,
       createdAt: turn.startedAt ?? timestamp,
       completedAt: turn.startedAt ?? timestamp,
@@ -955,7 +958,8 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
    */
   function publishApprovalResolution(
     approvalRequestId: string,
-    decision: 'granted' | 'denied'
+    decision: 'granted' | 'denied',
+    causationId: string
   ): ApprovalRequest {
     const approval = approvals.get(approvalRequestId);
 
@@ -984,6 +988,8 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
         turnId: approval.turnId,
         type: 'approval-decision',
         status: 'completed',
+        actor: { kind: 'user', id: 'user_demo' },
+        causationId,
         approvalRequestId,
         decision,
         createdAt: resolvedApproval.resolvedAt!,
@@ -1044,6 +1050,7 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
         turnId: approval.turnId,
         type: 'user-input-request',
         status: 'completed',
+        responsibleUserId: 'user_demo',
         userInputRequestId: `question_${approval.turnId}`,
         prompt: 'Which summary tone should the simulator use?',
         questions: [
@@ -1120,11 +1127,15 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
       turnId: input.turnId,
       type: 'user-input-response',
       status: 'completed',
+      actor: { kind: 'user', id: 'user_demo' },
+      causationId: input.requestId ?? `req_user_input_response_${input.turnId}`,
       userInputRequestId: `question_${input.turnId}`,
       answers: input.answers,
       createdAt: '2026-04-15T09:00:04.000Z',
       completedAt: '2026-04-15T09:00:04.000Z',
     };
+    const artifactBody = `Workspace protocol review completed with ${Object.values(input.answers)[0]?.[0]}.`;
+    const artifactRequestId = `req_artifact_${input.turnId}`;
     const artifact: Artifact = {
       id: `ar_${artifactCounter++}`,
       workspaceId: input.workspaceId,
@@ -1133,11 +1144,19 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
       kind: 'summary',
       title: 'Protocol review summary',
       status: 'ready',
-      summary: `Workspace protocol review completed with ${Object.values(input.answers)[0]?.[0]}.`,
+      summary: artifactBody,
       version: 1,
       content: {
         format: 'text',
-        body: `Workspace protocol review completed with ${Object.values(input.answers)[0]?.[0]}.`,
+        body: artifactBody,
+      },
+      contentDigest: `sha256:${createHash('sha256').update(artifactBody).digest('hex')}`,
+      lastMutationRequestId: artifactRequestId,
+      origin: {
+        kind: 'turn-output',
+        requestId: artifactRequestId,
+        threadId: input.threadId,
+        turnId: input.turnId,
       },
       createdAt: '2026-04-15T09:00:05.000Z',
       updatedAt: '2026-04-15T09:00:05.000Z',
@@ -1408,6 +1427,7 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
         id: `tu_${turnCounter++}`,
         workspaceId: input.workspaceId,
         threadId: input.threadId,
+        triggerActor: { kind: 'user', id: 'user_demo' },
         items: [],
         status: 'running',
         humanGate: null,
@@ -1462,7 +1482,11 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
     },
     respondApproval: async (approvalRequestId, input) => {
       options.onApproval?.({ ...input, approvalRequestId });
-      return publishApprovalResolution(approvalRequestId, input.decision);
+      return publishApprovalResolution(
+        approvalRequestId,
+        input.decision,
+        input.requestId ?? `req_approval_decision_${approvalRequestId}`
+      );
     },
     listArtifacts: async (workspaceId) => ({
       items: [...artifacts.values()].filter((artifact) => artifact.workspaceId === workspaceId),
@@ -1946,6 +1970,7 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
         ],
         registry: [
           {
+            dispatchFamily: 'provider-api',
             id: 'openai',
             displayName: 'OpenAI',
             gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
@@ -2258,6 +2283,8 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
       automationRecords = automationRecords.filter((item) => item.id !== automationId);
     },
     quickChat: async (input) => {
+      options.onQuickChat?.(input);
+
       if (options.quickChatError) {
         throw options.quickChatError;
       }
@@ -2265,9 +2292,9 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
       return {
         id: 'chat_1',
         status: 'completed',
-        workspaceId: input.workspaceId ?? 'ws_quick_chat',
-        providerId: input.providerId ?? 'openai',
-        model: input.model ?? 'gpt-5.4',
+        workspaceId: 'ws_quick_chat',
+        providerId: 'openai',
+        model: 'gpt-5.4',
         content: `Quick response: ${input.input}`,
       };
     },
@@ -2362,6 +2389,88 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
       subscribeTurnEvents: implementations.subscribeTurnEvents,
     },
     app: {
+      listAuthorizedWorkspaces: async () => {
+        throw new Error('Authorized Workspace list fixture not configured.');
+      },
+      listWorkspaceMembers: async () => {
+        throw new Error('Workspace member list fixture not configured.');
+      },
+      listWorkspaceInvitations: async () => {
+        throw new Error('Workspace invitation list fixture not configured.');
+      },
+      createWorkspaceInvitation: async () => {
+        throw new Error('Workspace invitation create fixture not configured.');
+      },
+      listMyWorkspaceInvitations: async () => {
+        throw new Error('Current-user Workspace invitation list fixture not configured.');
+      },
+      acceptWorkspaceInvitation: async () => {
+        throw new Error('Workspace invitation acceptance fixture not configured.');
+      },
+      declineWorkspaceInvitation: async () => {
+        throw new Error('Workspace invitation decline fixture not configured.');
+      },
+      revokeWorkspaceInvitation: async () => {
+        throw new Error('Workspace invitation revocation fixture not configured.');
+      },
+      changeWorkspaceMemberAccess: async () => {
+        throw new Error('Workspace member access fixture not configured.');
+      },
+      removeWorkspaceMember: async () => {
+        throw new Error('Workspace member removal fixture not configured.');
+      },
+      leaveWorkspace: async () => {
+        throw new Error('Workspace leave fixture not configured.');
+      },
+      transferWorkspaceOwnership: async () => {
+        throw new Error('Workspace ownership transfer fixture not configured.');
+      },
+      getWorkspaceAccessRecoveryState: async () => {
+        throw new Error('Workspace access recovery fixture not configured.');
+      },
+      recoverWorkspaceAccess: async () => {
+        throw new Error('Workspace access recovery mutation fixture not configured.');
+      },
+      disableUser: async () => {
+        throw new Error('User disable fixture not configured.');
+      },
+      importWorkspaceArtifact: async () => {
+        throw new Error('Artifact import fixture not configured.');
+      },
+      introduceWorkspaceArtifact: async () => {
+        throw new Error('Artifact introduction fixture not configured.');
+      },
+      listArtifactReviews: async () => ({ reviews: [] }),
+      submitArtifactReviewDecision: async () => {
+        throw new Error('Artifact Review decision fixture not configured.');
+      },
+      listWorkspaceMaterials: async () => ({ materials: [] }),
+      createWorkspaceMaterial: async () => {
+        throw new Error('Workspace Material create fixture not configured.');
+      },
+      getWorkspaceMaterial: async () => {
+        throw new Error('Workspace Material fixture not configured.');
+      },
+      listWorkspaceMaterialRevisions: async () => ({ revisions: [] }),
+      saveWorkspaceMaterialRevision: async () => {
+        throw new Error('Workspace Material save fixture not configured.');
+      },
+      getWorkspaceMaterialRevision: async () => {
+        throw new Error('Workspace Material revision fixture not configured.');
+      },
+      getThreadMaterial: async () => ({ material: null }),
+      bindThreadMaterial: async () => {
+        throw new Error('Thread Material binding fixture not configured.');
+      },
+      unbindThreadMaterial: async () => {
+        throw new Error('Thread Material unbinding fixture not configured.');
+      },
+      excludeThreadMaterial: async () => {
+        throw new Error('Thread Material exclusion fixture not configured.');
+      },
+      restoreThreadMaterial: async () => {
+        throw new Error('Thread Material restore fixture not configured.');
+      },
       getWorkspaceDashboard: implementations.workspaceDashboard,
       getThreadDashboard: implementations.threadDashboard,
       getThreadGoalSummary: implementations.threadGoalSummary,
@@ -2412,9 +2521,6 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
       listKnowledgeClaims: async () => {
         throw new Error('Knowledge claims fixture not configured.');
       },
-      promoteKnowledgeClaim: async () => {
-        throw new Error('Knowledge claim promotion fixture not configured.');
-      },
       recordKnowledgeConflict: async () => {
         throw new Error('Knowledge conflict fixture not configured.');
       },
@@ -2446,6 +2552,12 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
         throw new Error('Knowledge health fixture not configured.');
       },
       submitThreadGoalSteering: implementations.submitThreadGoalSteering,
+      convertGoalSteeringToFollowUp: async () => {
+        throw new Error('Goal steering follow-up fixture not configured.');
+      },
+      cancelGoalSteering: async () => {
+        throw new Error('Goal steering cancellation fixture not configured.');
+      },
       submitWorkspaceSyncReviewDecision: implementations.submitWorkspaceSyncReviewDecision,
       submitWorkspaceRecoveryDecision: async () => {
         throw new Error('Workspace recovery decision fixture not configured.');
@@ -3326,7 +3438,17 @@ describe('App', () => {
   });
 
   it('uses quick chat from the composer mode toggle', async () => {
-    render(() => <App client={createFakeClient()} />);
+    let quickChatInput: Parameters<CoreClient['app']['quickChat']>[0] | null = null;
+
+    render(() => (
+      <App
+        client={createFakeClient({
+          onQuickChat: (input) => {
+            quickChatInput = input;
+          },
+        })}
+      />
+    ));
 
     await screen.findByRole('button', { name: /demo workspace/i });
     fireEvent.click(screen.getByRole('button', { name: /^chat$/i }));
@@ -3343,6 +3465,9 @@ describe('App', () => {
     expect(
       screen.queryByRole('heading', { name: /quick chat dashboard/i })
     ).not.toBeInTheDocument();
+    expect(quickChatInput).toEqual({
+      input: 'How many threads are running?',
+    });
   });
 
   it('starts Goal Mode from the thread workbench', async () => {

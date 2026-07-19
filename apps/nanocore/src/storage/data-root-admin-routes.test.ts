@@ -16,6 +16,14 @@ describe('data-root admin routes', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
+    coreDb.sqlite
+      .prepare(
+        `INSERT INTO users
+          (id, display_name, email, email_verified, created_at, updated_at, kind)
+         VALUES ('user_data_root_admin', 'Data Root User',
+                 'data-root-user@example.com', false, ?, ?, 'human')`
+      )
+      .run(Date.now(), Date.now());
     const serverAdmin = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
       ownerUserId: 'user_local',

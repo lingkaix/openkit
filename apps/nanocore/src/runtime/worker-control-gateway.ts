@@ -136,22 +136,6 @@ export interface WorkerControlFinalStatus {
 }
 
 /**
- * Product-safe knowledge proposal summary reported by a worker runtime adapter.
- */
-export interface WorkerControlKnowledgeProposalSummary {
-  /** Worker sequence number for replay ordering. */
-  sequence: number;
-  /** Stable proposal id suggested by the worker runtime adapter. */
-  proposalId: string;
-  /** Human-readable proposal title. */
-  title: string;
-  /** Human-readable proposal summary. */
-  summary: string;
-  /** Timestamp recorded by NanoCore when the summary arrived. */
-  receivedAt: string;
-}
-
-/**
  * Product-safe live worker control session snapshot.
  */
 export interface WorkerControlSessionSnapshot {
@@ -175,8 +159,6 @@ export interface WorkerControlSessionSnapshot {
   supplyRefreshAcks: WorkerControlSupplyRefreshAck[];
   /** Product-safe capability summaries reported by the worker. */
   capabilitySummaries: WorkerCapabilityCallSummary[];
-  /** Product-safe knowledge proposal summaries reported by the worker. */
-  knowledgeProposalSummaries: WorkerControlKnowledgeProposalSummary[];
   /** Canonical live events accepted through worker-control append. */
   events: WorkerCanonicalEventRecord[];
   /** Timestamp recorded when the session was registered. */
@@ -203,8 +185,6 @@ export interface WorkerControlSessionRestoreInput {
   readonly supplyRefreshAcks?: readonly WorkerControlSupplyRefreshAck[];
   /** Durable capability summaries. */
   readonly capabilitySummaries?: readonly WorkerCapabilityCallSummary[];
-  /** Durable knowledge proposal summaries. */
-  readonly knowledgeProposalSummaries?: readonly WorkerControlKnowledgeProposalSummary[];
   /** Durable canonical worker events. */
   readonly events?: readonly WorkerCanonicalEventRecord[];
 }
@@ -314,8 +294,6 @@ export type WorkerControlFinalStatusTokenBindingResolution =
       readonly status: 'accepted';
       /** True when only an exact already-accepted final status may replay. */
       readonly replayOnly: boolean;
-      /** Store owner resolved through the scheduler admission chain. */
-      readonly ownerUserId: string;
     }
   | {
       /** Binding cannot authorize this final-status request. */
@@ -445,8 +423,6 @@ export interface WorkerControlFinalStatusAcceptedInput {
   readonly sandboxBindingRef: string;
   /** Worker-provided lineage for request binding. */
   readonly lineage: WorkerControlLineage;
-  /** Store owner resolved through the scheduler admission chain. */
-  readonly ownerUserId: string;
   /** Canonical terminal event type. */
   readonly eventType: 'turn.completed' | 'turn.failed';
 }
@@ -580,7 +556,6 @@ export class WorkerControlGateway {
       commands: [],
       events: [],
       heartbeat: null,
-      knowledgeProposalSummaries: [],
       packageSnapshotId: environmentPackage.snapshotId,
       registeredAt: this.now(),
       supplyRefreshAcks: [],
@@ -657,9 +632,6 @@ export class WorkerControlGateway {
       commands,
       events,
       heartbeat: input.heartbeat ? { ...input.heartbeat } : null,
-      knowledgeProposalSummaries: [...(input.knowledgeProposalSummaries ?? [])].map((summary) => ({
-        ...summary,
-      })),
       packageSnapshotId: input.lineage.packageSnapshotId,
       registeredAt: input.registeredAt,
       supplyRefreshAcks: [...(input.supplyRefreshAcks ?? [])].map((ack) => ({ ...ack })),
@@ -1084,69 +1056,6 @@ export class WorkerControlGateway {
   }
 
   /**
-   * Records one product-safe knowledge proposal summary from the authenticated worker.
-   *
-   * @param input Authenticated knowledge proposal summary request.
-   * @returns Recorded knowledge proposal summary.
-   */
-  public recordKnowledgeProposalSummary(
-    input: AuthenticatedWorkerControlInput & {
-      /** Worker sequence number. */
-      sequence: number;
-      /** Stable proposal id suggested by the worker runtime adapter. */
-      proposalId: string;
-      /** Human-readable proposal title. */
-      title: string;
-      /** Human-readable proposal summary. */
-      summary: string;
-    }
-  ): WorkerControlKnowledgeProposalSummary {
-    const state = this.requireSession(input);
-    const sequence = acceptSequencedControlOperation(
-      state,
-      'knowledge_proposal_summary',
-      input.sequence,
-      input,
-      input.lineage,
-      this.sequenceRecorder
-    );
-
-    if (sequence.duplicate) {
-      const summary = state.snapshot.knowledgeProposalSummaries.find(
-        (candidate) => candidate.sequence === input.sequence
-      );
-
-      if (!summary) {
-        throw new Error(
-          `Sequenced knowledge proposal summary retry has no recorded summary: ${input.sequence}`
-        );
-      }
-
-      return { ...summary };
-    }
-
-    const summary: WorkerControlKnowledgeProposalSummary = {
-      proposalId: input.proposalId,
-      receivedAt: this.now(),
-      sequence: input.sequence,
-      summary: input.summary,
-      title: input.title,
-    };
-
-    state.snapshot.knowledgeProposalSummaries.push(summary);
-    this.recordAcceptedRecord({
-      acceptedAt: summary.receivedAt,
-      lineage: input.lineage,
-      operation: 'knowledge_proposal_summary',
-      record: summary,
-      recordKey: String(input.sequence),
-      sequence: input.sequence,
-    });
-
-    return { ...summary };
-  }
-
-  /**
    * Authenticates a worker-facing request and returns its product-safe session snapshot.
    *
    * @param input Authenticated worker request.
@@ -1290,8 +1199,7 @@ export class WorkerControlGateway {
     const hadEventFingerprint = state.eventFingerprintsBySequence.has(input.sequence);
     const hadFinalStatusFingerprint =
       state.operationFingerprintsBySequence.get('final_status')?.has(input.sequence) ?? false;
-    const accept = (): string => {
-      let ownerUserId = state.environmentPackage?.scope.userId ?? null;
+    const accept = (): void => {
       let replayOnly = false;
 
       if (this.resolveFinalStatusTokenBinding) {
@@ -1304,18 +1212,9 @@ export class WorkerControlGateway {
           this.throwTokenBindingRejection(resolution.reason);
         }
 
-        ownerUserId = resolution.ownerUserId;
         replayOnly = resolution.replayOnly;
       } else {
         this.assertTokenBinding(token, input.lineage);
-      }
-
-      if (!ownerUserId) {
-        throw new WorkerControlGatewayError(
-          'worker_control_lineage_mismatch',
-          'Worker final status has no durable store owner.',
-          403
-        );
       }
 
       const finalStatusSequence = acceptSequencedControlOperation(
@@ -1351,20 +1250,16 @@ export class WorkerControlGateway {
         this.onFinalStatusAccepted?.({
           eventType,
           lineage: input.lineage,
-          ownerUserId,
           sandboxBindingRef: state.token,
         });
       }
-
-      return ownerUserId;
     };
 
-    let ownerUserId: string;
     try {
       if (this.runFinalStatusTransaction) {
-        ownerUserId = this.runFinalStatusTransaction(accept);
+        this.runFinalStatusTransaction(accept);
       } else {
-        ownerUserId = accept();
+        accept();
       }
     } catch (error) {
       if (!hadFinalStatusFingerprint) {
@@ -1379,7 +1274,6 @@ export class WorkerControlGateway {
     this.onFinalStatusCommitted?.({
       eventType,
       lineage: input.lineage,
-      ownerUserId,
       sandboxBindingRef: state.token,
     });
 
@@ -2019,9 +1913,6 @@ function cloneSnapshot(snapshot: WorkerControlSessionSnapshot): WorkerControlSes
     commands: snapshot.commands.map(cloneCommand),
     events: snapshot.events.map(cloneCanonicalEventRecord),
     heartbeat: snapshot.heartbeat ? { ...snapshot.heartbeat } : null,
-    knowledgeProposalSummaries: snapshot.knowledgeProposalSummaries.map((summary) => ({
-      ...summary,
-    })),
     supplyRefreshAcks: snapshot.supplyRefreshAcks.map((ack) => ({ ...ack })),
   };
 }

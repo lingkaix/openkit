@@ -5,9 +5,11 @@ import {
   SubmitKnowledgeProposalDecisionResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 
 import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
+import { assertAuthorizedWorkspaceLineage } from './auth/operation-authorizer.js';
 import type { FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
 import {
@@ -45,6 +47,35 @@ function buildGoalReviewDecisionResponse(review: GoalReviewRecord): unknown {
 }
 
 /**
+ * Requires one review route Thread to belong to the centrally authorized path Workspace.
+ *
+ * @param context Request context carrying optional central authorization.
+ * @param store Existing Thread owner.
+ * @param workspaceId Authorized path Workspace.
+ * @param threadId Requested Thread identifier.
+ * @throws The original missing error in no-Core tests, or uniform Workspace denial in guarded mode.
+ */
+function requireAuthorizedReviewThread(
+  context: Context<{ Variables: AuthVariables }>,
+  store: FsStore,
+  workspaceId: string,
+  threadId: string
+): void {
+  const access = context.get('workspaceAccess');
+  try {
+    const thread = store.getThread(workspaceId, threadId);
+    if (access) {
+      assertAuthorizedWorkspaceLineage(access, thread.workspaceId);
+    }
+  } catch (error) {
+    if (access) {
+      assertAuthorizedWorkspaceLineage(access, null);
+    }
+    throw error;
+  }
+}
+
+/**
  * Registers the Knowledge and Goal review decision App API feature paths.
  *
  * @param dependencies Hono app and concrete review-decision dependencies.
@@ -59,7 +90,7 @@ export function registerReviewDecisionRoutes({
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
-  readonly repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb;
+  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
 }): void {
   registerAppApiRoute(app, 'submitKnowledgeProposalDecision', async (c) => {
@@ -94,23 +125,13 @@ export function registerReviewDecisionRoutes({
         responseKind: 'knowledge_proposal_review',
         execute: () => {
           const proposal = store.getKnowledgeProposal(proposalId);
+          const workspaceAccess = c.get('workspaceAccess');
+          if (workspaceAccess) {
+            assertAuthorizedWorkspaceLineage(workspaceAccess, proposal?.workspaceId ?? null);
+          }
           const sourceClaimId =
             proposal && proposal.status !== 'accepted' ? proposal.sourceClaimId : undefined;
           const shouldApplyClaim = input.decision === 'accepted' && sourceClaimId !== undefined;
-          if (input.decision === 'edited') {
-            const updates: { title?: string; summary?: string; updatedAt: string } = {
-              updatedAt: decidedAt,
-            };
-            if (input.title !== undefined) {
-              updates.title = input.title;
-            }
-            if (input.summary !== undefined) {
-              updates.summary = input.summary;
-            }
-            store.updateKnowledgeProposalContent(proposalId, {
-              ...updates,
-            });
-          }
           const review = store.recordKnowledgeProposalReviewDecision({
             proposalId,
             workspaceId,
@@ -138,6 +159,10 @@ export function registerReviewDecisionRoutes({
           if (!replayed) {
             throw new Error(`Knowledge proposal review decision not found: ${record.response.id}`);
           }
+          const workspaceAccess = c.get('workspaceAccess');
+          if (workspaceAccess) {
+            assertAuthorizedWorkspaceLineage(workspaceAccess, replayed.workspaceId);
+          }
 
           return replayed;
         },
@@ -150,6 +175,9 @@ export function registerReviewDecisionRoutes({
         })
       );
     } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       return asCommandError(error, 'knowledge_proposal_review_failed');
     }
   });
@@ -182,9 +210,9 @@ export function registerReviewDecisionRoutes({
       const actorId = c.get('actor').userId;
 
       store.getWorkspace(workspaceId);
-      store.getThread(workspaceId, threadId);
+      requireAuthorizedReviewThread(c, store, workspaceId, threadId);
 
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         const response = await runIdempotentCommand({
           store,
@@ -205,9 +233,17 @@ export function registerReviewDecisionRoutes({
               );
 
               if (!review) {
+                const workspaceAccess = c.get('workspaceAccess');
+                if (workspaceAccess) {
+                  assertAuthorizedWorkspaceLineage(workspaceAccess, null);
+                }
                 throw new Error(
                   `Goal review record not found: ${workspaceId}/${threadId}/${goalId}/${reviewId}`
                 );
+              }
+              const workspaceAccess = c.get('workspaceAccess');
+              if (workspaceAccess) {
+                assertAuthorizedWorkspaceLineage(workspaceAccess, review.workspaceId);
               }
 
               if (review.resolvedAt) {
@@ -293,6 +329,10 @@ export function registerReviewDecisionRoutes({
                 `Goal review record not found: ${workspaceId}/${threadId}/${goalId}/${record.response.id}`
               );
             }
+            const workspaceAccess = c.get('workspaceAccess');
+            if (workspaceAccess) {
+              assertAuthorizedWorkspaceLineage(workspaceAccess, review.workspaceId);
+            }
 
             return buildGoalReviewDecisionResponse(review);
           },
@@ -305,6 +345,9 @@ export function registerReviewDecisionRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       if (error instanceof GoalReviewResolutionError) {
         return asApiError(error.message, error.code, error.status);
       }

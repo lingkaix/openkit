@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import type {
   WorkerCanonicalEventRecord,
@@ -17,7 +19,6 @@ import type {
   WorkerControlGateway,
   WorkerControlHeartbeat,
   WorkerControlInterruptCommand,
-  WorkerControlKnowledgeProposalSummary,
   WorkerControlLineage,
   WorkerControlSupplyRefreshAck,
 } from './worker-control-gateway.js';
@@ -54,7 +55,7 @@ export function rebuildWorkerControlGatewaySessions(
     }
 
     const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, lease.leaseId);
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, admission.userId, lease.workspaceId);
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lease.workspaceId);
     let environmentPackage: AgentEnvironmentPackage;
 
     try {
@@ -129,7 +130,7 @@ function listFinalStatusReplayLeases(coreDb: CoreDb): SchedulerSessionLeaseRecor
 }
 
 /**
- * Verifies that a durable AEP belongs to the scheduler lease and admission owner being restored.
+ * Verifies that a durable AEP belongs to the scheduler lease and admission actor being restored.
  *
  * @param environmentPackage Durable redacted AEP snapshot.
  * @param lease Restorable scheduler lease.
@@ -139,7 +140,7 @@ function listFinalStatusReplayLeases(coreDb: CoreDb): SchedulerSessionLeaseRecor
 function assertRestoredPackageLineage(
   environmentPackage: AgentEnvironmentPackage,
   lease: SchedulerSessionLeaseRecord,
-  admission: { readonly requestId: string | null; readonly userId: string }
+  admission: ReturnType<typeof requireSchedulerSessionLeaseAdmissionContext>
 ): void {
   const scope = environmentPackage.scope;
 
@@ -149,7 +150,7 @@ function assertRestoredPackageLineage(
     scope.workspaceId !== lease.workspaceId ||
     scope.threadId !== lease.threadId ||
     scope.turnId !== lease.turnId ||
-    scope.userId !== admission.userId ||
+    !isDeepStrictEqual(scope.triggerActor, admission.triggerActor) ||
     scope.requestId !== admission.requestId
   ) {
     throw new Error(`Restored worker-control package lineage mismatch: ${lease.leaseId}`);
@@ -171,7 +172,6 @@ function readAcceptedRecords(
   capabilitySummaries: WorkerCapabilityCallSummary[];
   events: WorkerCanonicalEventRecord[];
   heartbeat: WorkerControlHeartbeat | null;
-  knowledgeProposalSummaries: WorkerControlKnowledgeProposalSummary[];
   supplyRefreshAcks: WorkerControlSupplyRefreshAck[];
 } {
   const rows = coreDb.sqlite
@@ -190,7 +190,6 @@ function readAcceptedRecords(
     capabilitySummaries: [] as WorkerCapabilityCallSummary[],
     events: [] as WorkerCanonicalEventRecord[],
     heartbeat: null as WorkerControlHeartbeat | null,
-    knowledgeProposalSummaries: [] as WorkerControlKnowledgeProposalSummary[],
     supplyRefreshAcks: [] as WorkerControlSupplyRefreshAck[],
   };
 
@@ -205,8 +204,6 @@ function readAcceptedRecords(
       result.supplyRefreshAcks.push(record as WorkerControlSupplyRefreshAck);
     } else if (row.operation === 'capability_summary') {
       result.capabilitySummaries.push(record as WorkerCapabilityCallSummary);
-    } else if (row.operation === 'knowledge_proposal_summary') {
-      result.knowledgeProposalSummaries.push(record as WorkerControlKnowledgeProposalSummary);
     } else if (row.operation === 'event_append') {
       result.events.push(record as WorkerCanonicalEventRecord);
     }

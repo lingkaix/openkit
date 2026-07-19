@@ -32,7 +32,7 @@ const workspacePatchDigest = `sha256:${createHash('sha256').update(workspacePatc
 describe('workspace sync records', () => {
   it('rejects reviews without persisted input snapshot lineage', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-missing-input-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -46,7 +46,7 @@ describe('workspace sync records', () => {
 
   it('rejects reviews without persisted materialization lineage', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-missing-lineage-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -61,7 +61,7 @@ describe('workspace sync records', () => {
 
   it('records one linked audit event when a staged review is first stored', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-review-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -175,7 +175,7 @@ describe('workspace sync records', () => {
     },
   ])('rejects invalid initial workspace review $field before persistence', ({ invalid }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-review-ingress-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -200,7 +200,7 @@ describe('workspace sync records', () => {
 
   it('carries source ids into staged workspace review change sets', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-source-review-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -217,7 +217,7 @@ describe('workspace sync records', () => {
 
   it('treats an identical workspace change set replay as a no-op', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-change-set-replay-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -242,7 +242,7 @@ describe('workspace sync records', () => {
 
   it('treats an identical staged workspace review replay as a no-op', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-review-replay-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -308,7 +308,7 @@ describe('workspace sync records', () => {
     },
   ])('rejects a same-id staged workspace review replay that changes $field', ({ replay }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-review-conflict-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -346,7 +346,7 @@ describe('workspace sync records', () => {
     },
   ])('rejects a same-id workspace change set replay that changes $field', ({ replay }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-change-set-conflict-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -361,7 +361,7 @@ describe('workspace sync records', () => {
 
   it('preserves a terminal review decision when staging evidence is replayed', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-terminal-review-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -397,7 +397,7 @@ describe('workspace sync records', () => {
 
   it('promotes materialization readiness evidence into the evidence bundle ledger', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-materialization-evidence-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -462,7 +462,7 @@ describe('workspace sync records', () => {
 
   it('repairs an interrupted materialization handoff on exact replay', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-materialization-replay-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -533,7 +533,7 @@ describe('workspace sync records', () => {
 
   it('rolls back the complete materialization handoff when derived evidence fails', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-materialization-atomic-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -587,7 +587,7 @@ describe('workspace sync records', () => {
 
   it('records redacted backend workspace handles with materialization records', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-backend-handle-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -616,7 +616,7 @@ describe('workspace sync records', () => {
 
   it('marks backend workspace handles retained from transport events without downgrading cleanup', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-backend-retained-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -665,7 +665,7 @@ describe('workspace sync records', () => {
 
   it('records worker output manifests before workspace change sets are reviewed', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-output-manifest-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -698,7 +698,7 @@ describe('workspace sync records', () => {
 
   it('returns the stored input snapshots and materialization records on exact replay', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-record-return-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -720,7 +720,7 @@ describe('workspace sync records', () => {
 
   it('treats an identical workspace sync import as a no-op', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-import-replay-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -738,7 +738,7 @@ describe('workspace sync records', () => {
 
   it('rejects imported review lineage that does not match its change set before writing', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-import-lineage-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -831,7 +831,7 @@ describe('workspace sync records', () => {
     },
   ])('rejects a conflicting $field during workspace sync import', ({ replay }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-import-conflict-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);

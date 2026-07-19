@@ -5,10 +5,13 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { createApp } from './app.js';
+import { ensureLocalUser } from './auth/identity.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
  * Creates a temporary NanoCore data root with one runtime config.
@@ -92,7 +95,14 @@ describe('runtime config reload API', () => {
     const dataRoot = createConfiguredDataRoot('openai/gpt-5.1');
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: 'ws_demo',
+    });
     const app = createApp({
+      agentManifests: [createTestAgentSetup({ provider: null }).manifest],
       coreDb,
       dataRoot,
       store: createDemoStore({ dataRoot }),

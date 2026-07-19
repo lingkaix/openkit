@@ -9,6 +9,7 @@ import {
   actorFromRequest,
   actorFromSession,
 } from './identity.js';
+import type { WorkspaceAccess } from './operation-authorizer.js';
 
 /**
  * Minimal Better Auth server surface used by NanoCore middleware.
@@ -29,6 +30,8 @@ export interface BetterAuthServer {
 export interface AuthVariables {
   /** Authenticated or implicit request actor. */
   actor: Actor;
+  /** Optional centralized Workspace authorization result for the current operation. */
+  workspaceAccess?: WorkspaceAccess;
 }
 
 /**
@@ -49,13 +52,8 @@ type AccessTokenVerifier = (
   request: Request
 ) => AccessTokenVerification | null | Promise<AccessTokenVerification | null>;
 
-/**
- * Checks whether one authenticated actor is an active workspace member.
- */
-type WorkspaceMembershipVerifier = (
-  actor: Actor,
-  workspaceId: string
-) => boolean | Promise<boolean>;
+/** Checks whether one canonical user may authenticate. */
+type CanonicalUserActiveVerifier = (userId: string) => boolean | Promise<boolean>;
 
 /**
  * Optional auth middleware dependencies.
@@ -63,8 +61,8 @@ type WorkspaceMembershipVerifier = (
 interface AuthMiddlewareOptions {
   /** Verifier for OpenKit `okt_` bearer tokens. */
   accessTokenVerifier?: AccessTokenVerifier;
-  /** Verifier for authenticated-actor workspace membership. */
-  workspaceMembershipVerifier?: WorkspaceMembershipVerifier;
+  /** Verifier for the canonical lifecycle status of local and session users. */
+  canonicalUserActive?: CanonicalUserActiveVerifier;
 }
 
 /**
@@ -96,7 +94,12 @@ export function createAuthMiddleware(
     }
 
     if (mode === 'local') {
-      c.set('actor', actorFromRequest(c.req.raw, mode));
+      const actor = actorFromRequest(c.req.raw, mode);
+      if (options.canonicalUserActive && !(await options.canonicalUserActive(actor.userId))) {
+        return unauthorized(c);
+      }
+
+      c.set('actor', actor);
       await next();
       return;
     }
@@ -114,17 +117,6 @@ export function createAuthMiddleware(
       }
 
       c.set('actor', { ...token.actor, kind: 'token', tokenId: token.tokenId });
-      const scopeError = await tokenScopeViolation(
-        c.req.method,
-        c.req.path,
-        c.req.raw,
-        c.get('actor'),
-        options.workspaceMembershipVerifier
-      );
-      if (scopeError) {
-        return scopeForbidden(c);
-      }
-
       await next();
       return;
     }
@@ -135,18 +127,11 @@ export function createAuthMiddleware(
       return unauthorized(c);
     }
 
-    const actor = actorFromSession(session);
-    c.set('actor', actor);
-    const workspaceId =
-      workspaceIdFromPath(c.req.path) ?? (await workspaceIdFromJsonBody(c.req.raw));
-    if (
-      workspaceId &&
-      (!options.workspaceMembershipVerifier ||
-        !(await options.workspaceMembershipVerifier(actor, workspaceId)))
-    ) {
-      return scopeForbidden(c);
+    if (options.canonicalUserActive && !(await options.canonicalUserActive(session.user.id))) {
+      return unauthorized(c);
     }
 
+    c.set('actor', actorFromSession(session));
     await next();
   };
 }
@@ -247,108 +232,6 @@ export function isLoopbackHost(hostname: string): boolean {
 }
 
 /**
- * Checks coarse token scope before product route handling.
- *
- * @param method HTTP method.
- * @param path Request path.
- * @param request HTTP request.
- * @param actor Authenticated token actor.
- * @param workspaceMembershipVerifier Optional token-owner membership verifier.
- * @returns True when the route is outside the token scope.
- */
-async function tokenScopeViolation(
-  method: string,
-  path: string,
-  request: Request,
-  actor: Actor,
-  workspaceMembershipVerifier?: WorkspaceMembershipVerifier
-): Promise<boolean> {
-  if (actor.kind !== 'token' || actor.tokenScope === 'server-admin') {
-    return false;
-  }
-
-  const workspaceId = workspaceIdFromPath(path) ?? (await workspaceIdFromJsonBody(request));
-  if (!workspaceId) {
-    return !isReadMethod(method);
-  }
-
-  if (!actor.tokenWorkspaceIds?.includes(workspaceId)) {
-    return true;
-  }
-
-  if (!workspaceMembershipVerifier || !(await workspaceMembershipVerifier(actor, workspaceId))) {
-    return true;
-  }
-
-  return actor.tokenScope === 'workspace-readonly' && !isReadMethod(method);
-}
-
-/**
- * Extracts a product workspace id from NanoCore public paths.
- *
- * @param path Request path.
- * @returns Workspace id when the path targets a workspace.
- */
-function workspaceIdFromPath(path: string): string | null {
-  const match = /^\/api\/(?:app\/)?workspaces\/([^/]+)/.exec(path);
-  return match ? decodeURIComponent(match[1] ?? '') : null;
-}
-
-/**
- * Extracts a route-owned workspace id from a JSON request body without consuming it.
- *
- * @param request HTTP request.
- * @returns Workspace id when the body names one.
- */
-async function workspaceIdFromJsonBody(request: Request): Promise<string | null> {
-  if (!request.body) {
-    return null;
-  }
-
-  const payload = await request
-    .clone()
-    .json()
-    .catch(() => null);
-
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return null;
-  }
-
-  const record = payload as Record<string, unknown>;
-  const workspaceId = record.workspaceId;
-
-  if (!new URL(request.url).pathname.startsWith('/v1/')) {
-    return typeof workspaceId === 'string' && workspaceId.length > 0 ? workspaceId : null;
-  }
-
-  const metadata = record.metadata;
-  const openkit =
-    metadata && typeof metadata === 'object' && !Array.isArray(metadata)
-      ? (metadata as Record<string, unknown>).openkit
-      : null;
-  const gatewayWorkspaceId =
-    openkit && typeof openkit === 'object' && !Array.isArray(openkit)
-      ? (openkit as Record<string, unknown>).workspaceId
-      : null;
-
-  if (typeof gatewayWorkspaceId === 'string' && gatewayWorkspaceId.length > 0) {
-    return gatewayWorkspaceId;
-  }
-
-  return typeof workspaceId === 'string' && workspaceId.length > 0 ? workspaceId : null;
-}
-
-/**
- * Checks whether one HTTP method is read-only at the auth-scope layer.
- *
- * @param method HTTP method.
- * @returns True for read-only methods.
- */
-function isReadMethod(method: string): boolean {
-  return method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
-}
-
-/**
  * Creates a uniform auth failure response without echoing credential material.
  *
  * @param c Hono context.
@@ -379,22 +262,5 @@ function insecureTransport(c: Parameters<MiddlewareHandler>[0]) {
       message: 'Bearer token authentication requires HTTPS outside loopback.',
     }),
     400
-  );
-}
-
-/**
- * Creates a uniform scope failure without revealing target resource existence.
- *
- * @param c Hono context.
- * @returns JSON response.
- */
-function scopeForbidden(c: Parameters<MiddlewareHandler>[0]) {
-  return c.json(
-    ApiErrorSchema.parse({
-      protocolVersion: PROTOCOL_VERSION,
-      code: 'core.auth.scope_forbidden',
-      message: 'Actor scope does not allow this request.',
-    }),
-    403
   );
 }

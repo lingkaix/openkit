@@ -1,13 +1,21 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import {
-  openCoreDbWithIntegrityRecovery,
+  openCoreDbWithIntegrityCheck,
   openUserDb,
   openWorkspaceDb,
-  recoverExistingScopedDatabases,
+  verifyAndMigrateExistingScopedDatabases,
 } from './db.js';
 import { coreDbPath, userDbPath, workspaceDbPath } from './fs-layout.js';
 import { applyScopedMigrations } from './migrate.js';
@@ -45,7 +53,8 @@ describe('scoped storage databases', () => {
 
   it('opens and migrates a workspace-scoped SQLite database', () => {
     const dataRoot = createDataRoot();
-    const workspaceDb = openWorkspaceDb(dataRoot, 'user_1', 'ws_1');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_1');
+    const expectedPath = join(dataRoot, 'workspaces', 'ws_1', 'db', 'workspace.sqlite');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -53,8 +62,16 @@ describe('scoped storage databases', () => {
 
       const tables = listTables(workspaceDb.sqlite);
 
-      expect(statSync(workspaceDbPath(dataRoot, 'user_1', 'ws_1')).isFile()).toBe(true);
+      expect(workspaceDbPath(dataRoot, 'ws_1')).toBe(expectedPath);
+      expect(statSync(expectedPath).isFile()).toBe(true);
+      expect(workspaceDb).not.toHaveProperty('userId');
+      expect(
+        existsSync(
+          join(dataRoot, 'users', 'user_1', 'workspaces', 'ws_1', 'db', 'workspace.sqlite')
+        )
+      ).toBe(false);
       expect(tables).toEqual([
+        'artifact_reviews',
         'audit_events',
         'backend_workspace_handles',
         'capability_calls',
@@ -67,11 +84,14 @@ describe('scoped storage databases', () => {
         'goal_verification_records',
         'idempotency_requests',
         'mcp_tool_schema_snapshots',
+        'pending_user_turn_records',
         'permission_decisions',
         'resolved_agent_setups',
         'runtime_evidence',
         'schema_migrations',
         'staged_workspace_reviews',
+        'steering_terminal_outcomes',
+        'thread_material_bindings',
         'usage_records',
         'vault_use_records',
         'worker_output_manifests',
@@ -81,7 +101,9 @@ describe('scoped storage databases', () => {
         'workspace_change_sets',
         'workspace_filesystem_staging_roots',
         'workspace_input_snapshots',
+        'workspace_material_revisions',
         'workspace_materialization_records',
+        'workspace_materials',
         'workspace_quarantine_records',
         'workspace_reconciliation_records',
         'workspace_repository_resources',
@@ -92,6 +114,199 @@ describe('scoped storage databases', () => {
         'workspace_0002_idempotency_requests',
         'workspace_0003_drop_sync_evidence_bundles',
         'workspace_0004_capability_runtime_correlation',
+        'workspace_0005_material_authority',
+        'workspace_0006_goal_steering_authority',
+        'workspace_0007_artifact_review_authority',
+        'workspace_0008_shared_attribution',
+        'workspace_0009_usage_responsible_user',
+      ]);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('stores the three Material authorities with their native graph and binding uniqueness', () => {
+    const dataRoot = createDataRoot();
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_1');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+
+      expect(
+        workspaceDb.sqlite
+          .prepare('PRAGMA table_info(workspace_materials)')
+          .all()
+          .map((column) => (column as { name: string }).name)
+      ).toEqual([
+        'workspace_id',
+        'material_id',
+        'title',
+        'kind',
+        'current_revision_id',
+        'sensitivity',
+        'last_mutation_request_id',
+        'created_at',
+        'updated_at',
+      ]);
+      expect(
+        workspaceDb.sqlite
+          .prepare('PRAGMA table_info(workspace_material_revisions)')
+          .all()
+          .map((column) => (column as { name: string }).name)
+      ).toEqual([
+        'workspace_id',
+        'material_id',
+        'revision_id',
+        'parent_revision_id',
+        'media_type',
+        'content_digest',
+        'content',
+        'author_id',
+        'created_by_request_id',
+        'created_at',
+      ]);
+      expect(
+        workspaceDb.sqlite
+          .prepare('PRAGMA table_info(thread_material_bindings)')
+          .all()
+          .map((column) => (column as { name: string }).name)
+      ).toEqual([
+        'workspace_id',
+        'thread_id',
+        'material_id',
+        'binding_state',
+        'latest_queued_revision_id',
+        'inclusion_state',
+        'last_mutation_request_id',
+        'created_at',
+        'updated_at',
+      ]);
+
+      const insertMaterial = workspaceDb.sqlite.prepare(
+        `INSERT INTO workspace_materials (
+           workspace_id, material_id, title, kind, current_revision_id, sensitivity,
+           last_mutation_request_id, created_at, updated_at
+         ) VALUES (?, ?, ?, 'markdown', NULL, 'internal', ?, ?, ?)`
+      );
+      const timestamp = '2026-07-18T00:00:00.000Z';
+      for (const materialId of ['mat_1', 'mat_2', 'mat_3', 'mat_4']) {
+        insertMaterial.run(
+          'ws_1',
+          materialId,
+          materialId,
+          `req_${materialId}`,
+          timestamp,
+          timestamp
+        );
+      }
+
+      const insertRevision = workspaceDb.sqlite.prepare(
+        `INSERT INTO workspace_material_revisions (
+           workspace_id, material_id, revision_id, parent_revision_id, media_type,
+           content_digest, content, author_id, created_by_request_id, created_at
+         ) VALUES (?, 'mat_1', ?, ?, 'text/markdown', ?, ?, 'user_1', ?, ?)`
+      );
+      insertRevision.run(
+        'ws_1',
+        'rev_root',
+        null,
+        `sha256:${'a'.repeat(64)}`,
+        'root',
+        'req_root',
+        timestamp
+      );
+      expect(() =>
+        insertRevision.run(
+          'ws_1',
+          'rev_other_root',
+          null,
+          `sha256:${'b'.repeat(64)}`,
+          'other root',
+          'req_other_root',
+          timestamp
+        )
+      ).toThrow(/UNIQUE constraint failed/);
+      insertRevision.run(
+        'ws_1',
+        'rev_child',
+        'rev_root',
+        `sha256:${'c'.repeat(64)}`,
+        'child',
+        'req_child',
+        timestamp
+      );
+      expect(() =>
+        insertRevision.run(
+          'ws_1',
+          'rev_other_child',
+          'rev_root',
+          `sha256:${'d'.repeat(64)}`,
+          'other child',
+          'req_other_child',
+          timestamp
+        )
+      ).toThrow(/UNIQUE constraint failed/);
+
+      const insertBinding = workspaceDb.sqlite.prepare(
+        `INSERT INTO thread_material_bindings (
+           workspace_id, thread_id, material_id, binding_state, latest_queued_revision_id,
+           inclusion_state, last_mutation_request_id, created_at, updated_at
+         ) VALUES ('ws_1', 'th_1', ?, ?, NULL, 'included', ?, ?, ?)`
+      );
+      insertBinding.run('mat_1', 'unbound', 'req_unbound_1', timestamp, timestamp);
+      insertBinding.run('mat_2', 'unbound', 'req_unbound_2', timestamp, timestamp);
+      insertBinding.run('mat_3', 'bound', 'req_bound_1', timestamp, timestamp);
+      expect(() =>
+        insertBinding.run('mat_4', 'bound', 'req_bound_2', timestamp, timestamp)
+      ).toThrow(/UNIQUE constraint failed/);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('stores only the two bounded Goal steering authority families', () => {
+    const dataRoot = createDataRoot();
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_1');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+
+      expect(tableColumns(workspaceDb.sqlite, 'pending_user_turn_records')).toEqual([
+        'workspace_id',
+        'thread_id',
+        'pending_turn_id',
+        'goal_id',
+        'active_turn_id',
+        'request_id',
+        'content_item_id',
+        'input_kind',
+        'material_id',
+        'revision_id',
+        'content_digest',
+        'queue_mode',
+        'received_at',
+        'terminal_claim_kind',
+        'terminal_claim_id',
+        'terminal_claimed_at',
+      ]);
+      expect(tableColumns(workspaceDb.sqlite, 'steering_terminal_outcomes')).toEqual([
+        'workspace_id',
+        'thread_id',
+        'pending_turn_id',
+        'outcome_id',
+        'state',
+        'send_request_id',
+        'terminal_request_id',
+        'content_item_id',
+        'goal_id',
+        'active_turn_id',
+        'input_kind',
+        'material_id',
+        'revision_id',
+        'content_digest',
+        'follow_up_turn_id',
+        'follow_up_item_id',
+        'accepted_at',
       ]);
     } finally {
       workspaceDb.sqlite.close();
@@ -102,82 +317,50 @@ describe('scoped storage databases', () => {
     const dataRoot = createDataRoot();
 
     expect(() => userDbPath(dataRoot, '../user_1')).toThrow(/parent-directory escapes/);
-    expect(() => workspaceDbPath(dataRoot, 'user_1', '../ws_1')).toThrow(
-      /parent-directory escapes/
-    );
+    expect(() => workspaceDbPath(dataRoot, '../ws_1')).toThrow(/parent-directory escapes/);
   });
 
-  it('quarantines a corrupt server database before reopening it during boot', () => {
+  it.each([
+    {
+      scope: 'Core',
+      path: (dataRoot: string) => coreDbPath(dataRoot),
+      quarantine: (dataRoot: string) => join(dataRoot, 'server', 'quarantine'),
+      verify: (dataRoot: string) => openCoreDbWithIntegrityCheck(dataRoot).sqlite.close(),
+    },
+    {
+      scope: 'User',
+      path: (dataRoot: string) => userDbPath(dataRoot, 'user_1'),
+      quarantine: (dataRoot: string) => join(dataRoot, 'users', 'user_1', 'quarantine'),
+      verify: (dataRoot: string) => verifyAndMigrateExistingScopedDatabases(dataRoot),
+    },
+    {
+      scope: 'Workspace',
+      path: (dataRoot: string) => workspaceDbPath(dataRoot, 'ws_1'),
+      quarantine: (dataRoot: string) => join(dataRoot, 'workspaces', 'ws_1', 'quarantine'),
+      verify: (dataRoot: string) => verifyAndMigrateExistingScopedDatabases(dataRoot),
+    },
+  ])('fails boot closed when the $scope database is corrupt', ({ path, quarantine, verify }) => {
     const dataRoot = createDataRoot();
-    const dbPath = coreDbPath(dataRoot);
-    mkdirSync(join(dataRoot, 'server', 'db'), { recursive: true });
-    writeFileSync(dbPath, 'not sqlite');
+    const dbPath = path(dataRoot);
+    const originalBytes = Buffer.from(`not sqlite: ${dbPath}`);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    writeFileSync(dbPath, originalBytes);
 
-    const result = openCoreDbWithIntegrityRecovery(dataRoot);
-
-    try {
-      expect(result.recoveryEvents).toHaveLength(1);
-      expect(result.recoveryEvents[0]).toMatchObject({
-        scope: 'server',
-        originalPath: dbPath,
-        reason: 'database_integrity_check_failed',
-      });
-      expect(result.recoveryEvents[0].contentDigest).toMatch(/^[a-f0-9]{64}$/);
-      expect(existsSync(result.recoveryEvents[0].quarantinePath)).toBe(true);
-      expect(readdirSync(join(dataRoot, 'server', 'quarantine'))).toHaveLength(1);
-      expect(result.coreDb.sqlite.prepare('PRAGMA quick_check').pluck().get()).toBe('ok');
-    } finally {
-      result.coreDb.sqlite.close();
-    }
-  });
-
-  it('quarantines corrupt user and workspace databases during boot scan', () => {
-    const dataRoot = createDataRoot();
-    const userPath = userDbPath(dataRoot, 'user_1');
-    const workspacePath = workspaceDbPath(dataRoot, 'user_1', 'ws_1');
-    mkdirSync(join(dataRoot, 'users', 'user_1', 'db'), { recursive: true });
-    mkdirSync(join(dataRoot, 'users', 'user_1', 'workspaces', 'ws_1', 'db'), {
-      recursive: true,
-    });
-    writeFileSync(userPath, 'not sqlite');
-    writeFileSync(workspacePath, 'not sqlite');
-
-    const events = recoverExistingScopedDatabases(dataRoot);
-
-    expect(events).toHaveLength(2);
-    expect(events.map((event) => event.scope).sort()).toEqual(['user', 'workspace']);
-    expect(events.every((event) => existsSync(event.quarantinePath))).toBe(true);
-    expect(readdirSync(join(dataRoot, 'users', 'user_1', 'quarantine'))).toHaveLength(1);
-    expect(
-      readdirSync(join(dataRoot, 'users', 'user_1', 'workspaces', 'ws_1', 'quarantine'))
-    ).toHaveLength(1);
-
-    const userDb = openUserDb(dataRoot, 'user_1');
-    const workspaceDb = openWorkspaceDb(dataRoot, 'user_1', 'ws_1');
-
-    try {
-      expect(listMigrationIds(userDb.sqlite)).toEqual([
-        'user_0000_baseline',
-        'user_0001_idempotency_requests',
-      ]);
-      expect(listMigrationIds(workspaceDb.sqlite)).toContain('workspace_0000_baseline');
-    } finally {
-      userDb.sqlite.close();
-      workspaceDb.sqlite.close();
-    }
+    expect(() => verify(dataRoot)).toThrow(/SQLite integrity check failed/);
+    expect(readFileSync(dbPath)).toEqual(originalBytes);
+    expect(readdirSync(dirname(dbPath))).toEqual([basename(dbPath)]);
+    expect(existsSync(quarantine(dataRoot))).toBe(false);
   });
 
   it('migrates healthy existing scoped databases during boot scan', () => {
     const dataRoot = createDataRoot();
     mkdirSync(join(dataRoot, 'users', 'user_1', 'db'), { recursive: true });
-    mkdirSync(join(dataRoot, 'users', 'user_1', 'workspaces', 'ws_1', 'db'), {
-      recursive: true,
-    });
+    mkdirSync(join(dataRoot, 'workspaces', 'ws_1', 'db'), { recursive: true });
 
-    expect(recoverExistingScopedDatabases(dataRoot)).toEqual([]);
+    verifyAndMigrateExistingScopedDatabases(dataRoot);
 
     const userDb = openUserDb(dataRoot, 'user_1');
-    const workspaceDb = openWorkspaceDb(dataRoot, 'user_1', 'ws_1');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_1');
 
     try {
       expect(listMigrationIds(userDb.sqlite)).toEqual([
@@ -193,11 +376,12 @@ describe('scoped storage databases', () => {
 
   it('recovers running capability calls during boot workspace scan', () => {
     const dataRoot = createDataRoot();
-    const workspaceDb = openWorkspaceDb(dataRoot, 'user_1', 'ws_1');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_1');
 
     try {
       applyScopedMigrations(workspaceDb);
       startCapabilityCall({
+        authorityActor: { kind: 'user', id: 'user_1' },
         callId: 'cap_boot_recovery',
         capabilityId: 'llm.responses',
         family: 'llm',
@@ -211,9 +395,9 @@ describe('scoped storage databases', () => {
       workspaceDb.sqlite.close();
     }
 
-    expect(recoverExistingScopedDatabases(dataRoot)).toEqual([]);
+    verifyAndMigrateExistingScopedDatabases(dataRoot);
 
-    const restartedDb = openWorkspaceDb(dataRoot, 'user_1', 'ws_1');
+    const restartedDb = openWorkspaceDb(dataRoot, 'ws_1');
 
     try {
       const row = restartedDb.sqlite
@@ -242,6 +426,23 @@ function listTables(sqlite: { prepare: (sql: string) => { all: () => unknown[] }
     .all() as Array<{ name: string }>;
 
   return rows.map((row) => row.name);
+}
+
+/**
+ * Lists one SQLite table's columns in declaration order.
+ *
+ * @param sqlite Open SQLite database.
+ * @param tableName Exact trusted table name from the test.
+ * @returns Column names in declaration order.
+ */
+function tableColumns(
+  sqlite: { prepare: (sql: string) => { all: () => unknown[] } },
+  tableName: string
+): string[] {
+  return sqlite
+    .prepare(`PRAGMA table_info(${tableName})`)
+    .all()
+    .map((column) => (column as { name: string }).name);
 }
 
 /**

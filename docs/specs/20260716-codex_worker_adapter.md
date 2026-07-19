@@ -1,7 +1,7 @@
 # Codex Worker Adapter
 
 Status: Accepted
-Implementation: Partial
+Implementation: Implemented
 
 ## Summary
 
@@ -34,12 +34,12 @@ The accepted implementation pin is Codex CLI `0.144.1`, matching the real worker
 The bounded native command is equivalent to:
 
 ```text
-codex exec --json --ignore-user-config --ignore-rules [--ephemeral] --output-last-message <session-final-message-path> --cd <workspace> --dangerously-bypass-approvals-and-sandbox <turn-input>
+codex exec --json --ignore-user-config --ignore-rules --strict-config [--ephemeral] --output-last-message <session-final-message-path> --cd <workspace> <adapter-owned -c provider projection> --model <model> --dangerously-bypass-approvals-and-sandbox <turn-input>
 ```
 
 Every invocation also uses `--ignore-user-config` and `--ignore-rules`. When S33 provenance is disabled it uses `--ephemeral`; when S33 provenance is required it omits `--ephemeral` only so the pinned rollout files can be captured from a fresh turn-scoped `CODEX_HOME`.
 
-The approval and sandbox bypass flag is permitted only because OpenKit already places the process inside a governed, least-privilege worker container and NanoCore owns filesystem, network, credential, review, and external-side-effect policy. It must never be used to create a host runtime path.
+The approval and sandbox bypass flag is permitted only because the authored AgentManifest and resolved AEP declare the filesystem, network, credential, image, and binary authority that stock OpenShell enforces around the process, while NanoCore retains canonical review and external-side-effect decisions. It must never be used to create a host runtime path.
 
 ## AEP Inputs Consumed
 
@@ -61,7 +61,7 @@ The shared harness supplies one fresh empty session state root. `prepare` select
 
 `prepare` returns a native launch plan containing command argv, safe child environment additions, whether exact stdout capture is required, and the final assistant extraction strategy. The plan has no config-artifact field.
 
-An explicit adapter-local command override may exist for tests and image diagnostics. NanoCore must not construct or override a Codex command.
+No environment variable, AEP extension, test option, or image diagnostic may replace the adapter-produced argv. Tests inject a process runner or a static test adapter without creating a production command override.
 
 The adapter contract has no separate interrupt or provenance operation. The shared harness owns process-group termination, while `prepare` may attach the existing Codex-local provenance sink lifecycle to the launch plan.
 
@@ -92,13 +92,29 @@ NanoCore may resolve approved static Skill and MCP supply into the AEP, but this
 
 ## Provider And Credentials
 
-Provider selection, trusted inference, OAuth account choice, credential declarations, vault grants, and network rules are NanoCore-owned AgentManifest and AEP decisions.
+The authored AgentManifest owns provider, model, credential, backend-capability, and network requirements; the resolved AEP owns the exact selected route, credential binding, and effective launch policy. NanoCore performs that resolution but does not own a second native-runtime configuration.
 
-The adapter consumes the AEP's one resolved route and its safe credential bindings and expresses Codex-native setup only through argv and safe environment additions. It rejects zero or multiple routes and never selects a provider, model, or fallback. The AgentManifest declares credential requirements and governed attachment inputs, but neither NanoCore nor the shared harness knows a Codex config-file schema.
+The AEP remains authoritative for the selected route, but native route projection is adapter-specific. NanoCore and the shared harness must not infer Codex provider configuration. The adapter rejects zero or multiple routes and any route whose exact endpoint, credential binding, model, or wire protocol Codex `0.144.1` cannot represent.
+
+For the trusted NanoCore relay, the adapter uses the fixed adapter-owned provider id `openkit-worker-inference`; it never projects an arbitrary AEP provider id into Codex. Its argv contains TOML-quoted `-c` values equivalent to:
+
+```text
+model_provider="openkit-worker-inference"
+web_search="disabled"
+model_providers.openkit-worker-inference.name="OpenKit Worker Inference"
+model_providers.openkit-worker-inference.base_url="<exact workerBaseUrl>"
+model_providers.openkit-worker-inference.env_key="OPENKIT_WORKER_INFERENCE_TOKEN"
+model_providers.openkit-worker-inference.wire_api="responses"
+model_providers.openkit-worker-inference.requires_openai_auth=false
+```
+
+The child environment carries only the OpenShell-injected `OPENKIT_WORKER_INFERENCE_TOKEN` placeholder. Its value must not appear in argv, native configuration, diagnostics, or evidence. Codex `0.144.1` supports only the Responses wire API through this projection, so a Chat-Completions-only relay is unsupported.
+
+Direct-provider routes are unsupported in this change because the current AEP route does not carry a separately proved Responses wire protocol and exact credential target for truthful Codex projection. Direct, Chat Completions, Anthropic Messages, Gemini, and other non-relay routes fail closed before spawn. The adapter never substitutes a direct route for the trusted relay, and neither NanoCore nor the shared harness knows a Codex config-file schema.
 
 ## Manifest And Image Contract
 
-The repository-owned Codex AgentManifest selects adapter id `codex`, the Codex worker image, pinned runtime version `0.144.1`, native executable paths used by network policy, trusted-inference or explicit credential requirements, and only capabilities proven by this specification.
+The repository-owned Codex AgentManifest selects adapter id `codex`, the Codex worker image, pinned runtime version `0.144.1`, native executable paths used by network policy, trusted-relay requirements, and only capabilities proven by this specification.
 
 The Codex image installs the generic worker shim and Codex `0.144.1`, sets the generic shim as its entrypoint, runs as a non-root worker user, and contains no OpenCode or Pi runtime. Its smoke check verifies the exact native version, `codex exec` machine-readable flags, generic shim dry run, non-root identity, and expected worker filesystem layout.
 
@@ -140,8 +156,9 @@ The authored manifest is the sole launch-time capability declaration. Adapter co
 
 Required adapter tests cover:
 
-- exact command construction from an adapter input
-- command override isolation inside the adapter
+- exact command construction, TOML quoting, fixed native provider id, model, base URL, environment-key reference, and Responses-only rejection from an adapter input
+- proof that credential values never enter argv or evidence and direct routes fail before spawn
+- rejection of retired environment and AEP-extension command overrides
 - final-message success, absence, non-file, and size-bound behavior
 - isolated `CODEX_HOME`, ignored ambient config/rules, ephemeral cleanup without S33, and bounded retained artifacts with S33
 - non-zero exit and redacted failure diagnostics
@@ -152,6 +169,12 @@ Required adapter tests cover:
 Shared harness tests cover process-group interruption uniformly for Codex, OpenCode, and Pi.
 
 Required image smoke covers the pinned `codex --version`, machine-readable `codex exec` help, generic shim entrypoint, non-root user, and adapter dry run.
+
+## Implementation Evidence And Limit
+
+The Codex `0.144.1` adapter, static registry entry, authored manifest, pinned worker image, bounded `prepare`/`collect` tests, and image smoke are implemented. On A1, the arm64 image was built directly, passed its smoke check, and stock unpatched OpenShell `0.0.80` created a sandbox from it, uploaded the AEP package, completed the generic shim dry run, and deleted the sandbox after the Cell's separate same-tag image cache was refreshed.
+
+This dry run proves image contents, adapter preparation, stock OpenShell containment, upload, and cleanup. It does not prove a real-provider turn, worker-control readiness, heartbeat, interruption, reconnect, or recovery lifecycle; those remain acceptance obligations of their owning specifications and change packages.
 
 ## Acceptance
 

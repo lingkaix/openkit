@@ -47,7 +47,7 @@ Documentation should cover purpose, parameters, return values, and error behavio
 
 ### 3. Keep specs and change records current
 
-- Follow `docs/change-tracking.md` before adding files under `docs/specs/`, `docs/changes/`, or `docs/working_logs/`.
+- Follow `docs/documentation-model.md` for the documentation type system and index, and `docs/change-tracking.md` before adding files under `docs/specs/` or `docs/changes/`.
 - Use `docs/specs/` for non-trivial changes:
   - architecture or workflow changes
   - public API changes
@@ -55,7 +55,7 @@ Documentation should cover purpose, parameters, return values, and error behavio
   - work with meaningful trade-offs
 - Use `docs/changes/` for material change lifecycle records: write change plans before significant work, keep curated progress checkpoints during execution, and finish with implementation summaries for major PR, standalone, or release-level records.
 - Every material change record must link related core architecture, product design, and spec docs where relevant, especially `docs/core/architecture.md`, `docs/core/work-model.md`, `docs/product-vision.md`, and applicable `docs/specs/` files.
-- Use `docs/working_logs/` for archived release PRDs, task lists, and progress logs from long-run agent cycles.
+- Use `docs/audits/` for dated, rule-generated observation records such as calibration reports and drift findings; they carry no design authority.
 - Keep spec and change record aligned with implementation.
 - Apply the selective-rehydration rule in `docs/change-tracking.md` whenever documentation is compressed, split, promoted, or reconciled.
 - Keep Core documents short and normative, specifications precise and narrow, and change plans execution-focused; keep curated execution evidence in change plans without treating it as design authority.
@@ -181,6 +181,8 @@ Before finishing work, verify:
 ## Quick References
 
 - Repository entry point: `README.md`
+- Documentation index: `docs/INDEX.md`
+- Documentation type system: `docs/documentation-model.md`
 - Human workflow: `CONTRIBUTING.md`
 - Template design: `docs/template-overview.md`
 - Setup/ops recipes: `docs/cookbooks/`

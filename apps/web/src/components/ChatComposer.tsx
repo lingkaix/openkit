@@ -24,12 +24,19 @@ export interface ChatComposerModelOption {
   name: string;
 }
 
-export interface ChatComposerSubmitInput {
-  input: string;
-  mode: ChatComposerMode;
-  modelId: string | null;
-  workspaceId: string;
-}
+/** Composer submission normalized to the authority of the selected mode. */
+export type ChatComposerSubmitInput =
+  | {
+      input: string;
+      mode: 'agent';
+      modelId: string | null;
+      workspaceId: string;
+    }
+  | {
+      input: string;
+      mode: 'quick';
+      workspaceId: string;
+    };
 
 export interface ChatComposerProps {
   ariaLabel: string;
@@ -96,12 +103,12 @@ export function ChatComposer(props: ChatComposerProps): JSX.Element {
       return;
     }
 
-    props.onSubmit({
-      input,
-      mode: props.mode,
-      modelId: selectedModelId(),
-      workspaceId,
-    });
+    if (props.mode === 'quick') {
+      props.onSubmit({ input, mode: 'quick', workspaceId });
+      return;
+    }
+
+    props.onSubmit({ input, mode: 'agent', modelId: selectedModelId(), workspaceId });
   }
 
   return (
@@ -152,29 +159,31 @@ export function ChatComposer(props: ChatComposerProps): JSX.Element {
           </fieldset>
         </div>
         <div class="chat-composer-right">
-          <label
-            class="sr-only"
-            for={`${props.ariaLabel.replace(/\s+/g, '-').toLowerCase()}-model`}
-          >
-            Model
-          </label>
-          <select
-            id={`${props.ariaLabel.replace(/\s+/g, '-').toLowerCase()}-model`}
-            aria-label="Model"
-            class="chat-model-select"
-            name="composerModel"
-            value={selectedModelId() ?? ''}
-            onInput={(event) => props.onModelChange(event.currentTarget.value || null)}
-            onChange={(event) => props.onModelChange(event.currentTarget.value || null)}
-          >
-            <For each={props.models}>
-              {(model) => (
-                <option disabled={!model.enabled} value={model.id}>
-                  {model.name}
-                </option>
-              )}
-            </For>
-          </select>
+          <Show when={props.mode === 'agent'}>
+            <label
+              class="sr-only"
+              for={`${props.ariaLabel.replace(/\s+/g, '-').toLowerCase()}-model`}
+            >
+              Model
+            </label>
+            <select
+              id={`${props.ariaLabel.replace(/\s+/g, '-').toLowerCase()}-model`}
+              aria-label="Model"
+              class="chat-model-select"
+              name="composerModel"
+              value={selectedModelId() ?? ''}
+              onInput={(event) => props.onModelChange(event.currentTarget.value || null)}
+              onChange={(event) => props.onModelChange(event.currentTarget.value || null)}
+            >
+              <For each={props.models}>
+                {(model) => (
+                  <option disabled={!model.enabled} value={model.id}>
+                    {model.name}
+                  </option>
+                )}
+              </For>
+            </select>
+          </Show>
           <button
             aria-label="Use voice input (not available yet)"
             class="icon-button"

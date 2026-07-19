@@ -68,13 +68,22 @@ export const ProviderReadinessSchema = z
  */
 export const ProviderProfileSchema = z
   .object({
-    baseUrl: z.string().url().optional(),
+    baseUrl: z
+      .string()
+      .url()
+      .refine((value) => {
+        if (!URL.canParse(value)) {
+          return true;
+        }
+
+        const url = new URL(value);
+        return !url.username && !url.password;
+      }, 'Provider base URL must not contain credentials; use secretRef.')
+      .optional(),
     category: z.string().min(1).optional(),
     defaultModel: z.string().min(1).optional(),
     displayName: z.string().min(1),
     extensions: ProviderExtensionsSchema.optional(),
-    extraBody: z.record(z.string().min(1), z.unknown()).optional(),
-    extraHeaders: z.record(z.string().min(1), z.unknown()).optional(),
     id: z.string().min(1),
     kind: ProviderKindSchema,
     models: z.array(z.string().min(1)).min(1),

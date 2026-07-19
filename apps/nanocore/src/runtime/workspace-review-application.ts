@@ -1,28 +1,40 @@
 import {
   GetWorkspaceSyncReviewResponseSchema,
   type SubmitWorkspaceSyncReviewDecisionResponse,
+  type WorkspaceApplyPlan,
   WorkspaceApplyPlanSchema,
   type WorkspaceApplyResult,
   type WorkspaceSyncReviewDecision,
   type WorkspaceSyncReviewItem,
 } from '@openkit/app-api-schemas';
+import type { ActorRef } from '@openkit/protocol';
+import { listArtifactReviews } from '../artifact-reviews.js';
+import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import type { FsStore } from '../lib/store.js';
-import type { WorkspaceDb } from '../storage/db.js';
-import { getWorkspaceRepositoryResource } from '../workspace/repository-store.js';
+import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import {
+  getWorkspaceRepositoryResource,
+  type WorkspaceRepositoryResourceRecord,
+} from '../workspace/repository-store.js';
 import {
   applyStagedFilesystemChanges,
   cleanupCommittedFilesystemRollback,
 } from './filesystem-workspace-sync.js';
+import { TurnStartValidationError } from './orchestrator.js';
 import { recordWorkspaceApplyPlan } from './workspace-apply-plans.js';
 import {
   recordWorkspaceApplyResult,
   requireWorkspaceApplyResult,
 } from './workspace-apply-results.js';
-import { getFilesystemWorkspaceStagingRoot } from './workspace-filesystem-staging.js';
+import {
+  type FilesystemWorkspaceStagingRootRecord,
+  getFilesystemWorkspaceStagingRoot,
+} from './workspace-filesystem-staging.js';
 import { applyGitWorkspaceReview, discardGitWorkspaceReview } from './workspace-review-git.js';
 import {
   getWorkspaceSyncReview,
   listWorkspaceSyncReviews,
+  parseWorkspaceSyncReviewItem,
   updateWorkspaceSyncReviewDecision,
 } from './workspace-sync-records.js';
 
@@ -104,11 +116,13 @@ export function listWorkspaceSyncReviewsForRead(
  * The command owns review lifecycle transitions while strategy-specific modules own external
  * effects and compensation. Replaying an already-recorded matching terminal decision is read-only.
  *
- * @param input Workspace database, review identity, and decision.
+ * @param input Current actor authority, Workspace database, review identity, and decision.
  * @returns Durable review response shared by both App API decision routes.
  * @throws Error when the review is missing, already resolved differently, or application fails.
  */
 export async function decideWorkspaceSyncReview(input: {
+  readonly authorityActor: ActorRef;
+  readonly coreDb: CoreDb;
   readonly decidedAt: string;
   readonly decision: WorkspaceSyncReviewDecision;
   readonly requestId: string;
@@ -147,10 +161,22 @@ async function executeWorkspaceSyncReviewDecision(
   input: Parameters<typeof decideWorkspaceSyncReview>[0]
 ): Promise<SubmitWorkspaceSyncReviewDecisionResponse> {
   const { workspaceDb, workspaceId, reviewId } = input;
-  const review = getWorkspaceSyncReview(workspaceDb, workspaceId, reviewId);
+  const storedReview = getWorkspaceSyncReview(workspaceDb, workspaceId, reviewId);
 
-  if (!review) {
+  if (!storedReview) {
     throw new Error(`Workspace synchronization review not found: ${reviewId}`);
+  }
+  const review = parseWorkspaceSyncReviewItem(storedReview, false);
+  if (
+    listArtifactReviews(workspaceDb).some(
+      (artifactReview) => artifactReview.artifactId === review.artifactId
+    )
+  ) {
+    throw new TurnStartValidationError(
+      'recovery_required',
+      'The Artifact has conflicting Review authorities and requires recovery.',
+      409
+    );
   }
 
   if (review.review.status !== 'pending') {
@@ -223,18 +249,39 @@ async function executeWorkspaceSyncReviewDecision(
     };
   }
 
-  recordWorkspaceApplyPlanForReview(workspaceDb, review, input.decidedAt);
+  const target =
+    review.changeSet.strategy === 'filesystem'
+      ? {
+          kind: 'filesystem' as const,
+          staging: requireFilesystemWorkspaceStaging(workspaceDb, review),
+        }
+      : {
+          kind: 'git' as const,
+          repository: requireWorkspaceRepository(workspaceDb, review),
+        };
+  if (
+    !currentWorkspaceAuthority(
+      input.coreDb,
+      workspaceId,
+      input.authorityActor,
+      'review.apply',
+      true
+    )
+  ) {
+    throw new TurnStartValidationError('workspace_access_denied', 'Workspace access denied.', 403);
+  }
+  const plan = recordWorkspaceApplyPlanForReview(workspaceDb, review, input.decidedAt);
 
-  if (review.changeSet.strategy === 'filesystem') {
+  if (target.kind === 'filesystem') {
     await applyWorkspaceSyncReviewFilesystem({
-      appliedAt: input.decidedAt,
+      appliedAt: plan.createdAt,
       persistResult: (appliedResult) => {
         workspaceDb.sqlite.transaction(() => {
           recordAcceptedWorkspaceReview(workspaceDb, input, appliedResult);
         })();
       },
       review,
-      workspaceDb,
+      staging: target.staging,
     });
 
     return {
@@ -247,24 +294,14 @@ async function executeWorkspaceSyncReviewDecision(
     };
   }
 
-  const repository = getWorkspaceRepositoryResource(
-    workspaceDb,
-    workspaceId,
-    review.changeSet.resourceId
-  );
-
-  if (!repository) {
-    throw new Error('Workspace repository is not configured.');
-  }
-
   const result = await applyGitWorkspaceReview({
-    appliedAt: input.decidedAt,
+    appliedAt: plan.createdAt,
     persistResult: (appliedResult) => {
       workspaceDb.sqlite.transaction(() => {
         recordAcceptedWorkspaceReview(workspaceDb, input, appliedResult);
       })();
     },
-    repository,
+    repository: target.repository,
     review,
     store: input.store,
   });
@@ -305,39 +342,19 @@ function recordAcceptedWorkspaceReview(
 /**
  * Applies one accepted filesystem review through its internal staging root.
  *
- * @param input Filesystem review, database, and application timestamp.
+ * @param input Filesystem review, validated staging target, and application timestamp.
  * @returns Product-safe filesystem apply result.
  */
 async function applyWorkspaceSyncReviewFilesystem(input: {
   readonly appliedAt: string;
   readonly persistResult: (result: WorkspaceApplyResult) => void;
   readonly review: WorkspaceSyncReviewItem;
-  readonly workspaceDb: WorkspaceDb;
+  readonly staging: FilesystemWorkspaceStagingRootRecord;
 }): Promise<WorkspaceApplyResult> {
-  const { workspaceDb, review, appliedAt } = input;
+  const { review, appliedAt, staging } = input;
 
   if (review.changeSet.strategy !== 'filesystem') {
     throw new Error(`Workspace review is not filesystem-backed: ${review.review.id}`);
-  }
-
-  const staging = getFilesystemWorkspaceStagingRoot(
-    workspaceDb,
-    review.review.workspaceId,
-    review.review.id
-  );
-
-  if (!staging) {
-    throw new Error(`Filesystem workspace staging root is not available: ${review.review.id}`);
-  }
-  if (staging.changeSetId !== review.changeSet.id) {
-    throw new Error(`Filesystem workspace staging change set mismatch: ${review.review.id}`);
-  }
-  if (
-    staging.before.workspaceId !== review.review.workspaceId ||
-    staging.before.resourceId !== review.changeSet.resourceId ||
-    staging.before.contentDigest !== review.changeSet.base.contentDigest
-  ) {
-    throw new Error(`Filesystem workspace staging lineage mismatch: ${review.review.id}`);
   }
 
   return applyStagedFilesystemChanges({
@@ -355,6 +372,68 @@ async function applyWorkspaceSyncReviewFilesystem(input: {
 }
 
 /**
+ * Requires the exact filesystem target tuple for one pending review.
+ *
+ * @param workspaceDb Workspace database owning the review target.
+ * @param review Pending filesystem review.
+ * @returns Matching staging and target-root record.
+ * @throws Error when the target tuple is missing or contradictory.
+ */
+function requireFilesystemWorkspaceStaging(
+  workspaceDb: WorkspaceDb,
+  review: WorkspaceSyncReviewItem
+): FilesystemWorkspaceStagingRootRecord {
+  const staging = getFilesystemWorkspaceStagingRoot(
+    workspaceDb,
+    review.review.workspaceId,
+    review.review.id
+  );
+  if (!staging) {
+    throw new Error(`Filesystem workspace staging root is not available: ${review.review.id}`);
+  }
+  if (staging.changeSetId !== review.changeSet.id) {
+    throw new Error(`Filesystem workspace staging change set mismatch: ${review.review.id}`);
+  }
+  if (
+    staging.workspaceId !== review.review.workspaceId ||
+    staging.reviewId !== review.review.id ||
+    staging.before.workspaceId !== review.review.workspaceId ||
+    staging.before.resourceId !== review.changeSet.resourceId ||
+    staging.before.contentDigest !== review.changeSet.base.contentDigest
+  ) {
+    throw new Error(`Filesystem workspace staging lineage mismatch: ${review.review.id}`);
+  }
+  return staging;
+}
+
+/**
+ * Requires the exact configured Git repository target for one pending review.
+ *
+ * @param workspaceDb Workspace database owning the repository target.
+ * @param review Pending Git review.
+ * @returns Matching repository resource.
+ * @throws Error when the repository target is unavailable or contradictory.
+ */
+function requireWorkspaceRepository(
+  workspaceDb: WorkspaceDb,
+  review: WorkspaceSyncReviewItem
+): WorkspaceRepositoryResourceRecord {
+  const repository = getWorkspaceRepositoryResource(
+    workspaceDb,
+    review.review.workspaceId,
+    review.changeSet.resourceId
+  );
+  if (
+    !repository ||
+    repository.workspaceId !== review.review.workspaceId ||
+    repository.resourceId !== review.changeSet.resourceId
+  ) {
+    throw new Error('Workspace repository is not configured.');
+  }
+  return repository;
+}
+
+/**
  * Records the existing durable apply plan for one accepted review.
  *
  * @param workspaceDb Open workspace database.
@@ -366,8 +445,8 @@ function recordWorkspaceApplyPlanForReview(
   workspaceDb: WorkspaceDb,
   review: WorkspaceSyncReviewItem,
   createdAt: string
-): void {
-  recordWorkspaceApplyPlan(
+): WorkspaceApplyPlan {
+  return recordWorkspaceApplyPlan(
     workspaceDb,
     WorkspaceApplyPlanSchema.parse({
       approvalState: 'approved',

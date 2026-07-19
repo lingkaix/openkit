@@ -38,7 +38,7 @@ Storage may persist vault metadata, references, grants, and audit records, but n
 
 ## Scope
 
-Vault records may be server-scoped, user-scoped, workspace-scoped, or organization-scoped.
+Vault records may be server-scoped, user-scoped, or workspace-scoped.
 
 Server-owned provider config may use secret references for deployment-level credentials. Cross-scope use must be explicit and auditable.
 

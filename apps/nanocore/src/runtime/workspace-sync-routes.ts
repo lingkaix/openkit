@@ -20,13 +20,17 @@ import {
   type WorkspaceSyncReviewItem,
 } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 
 import { asApiError, asCommandError, asInvalidRequestError } from '../api-errors.js';
+import { listArtifactReviews } from '../artifact-reviews.js';
 import type { AuthVariables } from '../auth/middleware.js';
+import { assertAuthorizedWorkspaceLineage } from '../auth/operation-authorizer.js';
 import type { FsStore } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
-import type { WorkspaceDb } from '../storage/db.js';
+import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { type InflightIdempotentCommand, runIdempotentCommand } from './idempotent-command.js';
+import { TurnStartValidationError } from './orchestrator.js';
 import { listWorkspaceApplyPlans } from './workspace-apply-plans.js';
 import {
   getWorkspaceApplyResult,
@@ -59,20 +63,22 @@ import {
  */
 export function registerWorkspaceSyncRoutes({
   app,
+  coreDb,
   inflightCommands,
   repositoryWorkspaceDb,
   requestStore,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
+  readonly coreDb: CoreDb | undefined;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
-  readonly repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb;
+  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
 }): void {
   registerAppApiRoute(app, 'listWorkspaceSyncReviews', (c) => {
     try {
       const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         const items = listWorkspaceSyncReviewsForRead(
           store.listArtifacts(workspaceId),
@@ -94,7 +100,7 @@ export function registerWorkspaceSyncRoutes({
       const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
       const reviewId = c.req.param('reviewId');
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       let review: WorkspaceSyncReviewItem | null;
       try {
         review =
@@ -106,6 +112,10 @@ export function registerWorkspaceSyncRoutes({
       } finally {
         workspaceDb.sqlite.close();
       }
+      assertAuthorizedWorkspaceLineage(
+        c.get('workspaceAccess'),
+        review?.review.workspaceId ?? null
+      );
 
       if (!review) {
         return asApiError(`Workspace synchronization review not found: ${reviewId}`);
@@ -113,6 +123,9 @@ export function registerWorkspaceSyncRoutes({
 
       return c.json(GetWorkspaceSyncReviewResponseSchema.parse(review));
     } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       return asApiError((error as Error).message);
     }
   });
@@ -137,6 +150,22 @@ export function registerWorkspaceSyncRoutes({
       }
 
       const requestId = input.requestId;
+      if (!coreDb) {
+        throw new TurnStartValidationError(
+          'workspace_access_denied',
+          'Workspace access denied.',
+          403
+        );
+      }
+      const authorityActor = { kind: 'user' as const, id: c.get('actor').userId };
+      const ownerDb = repositoryWorkspaceDb(workspaceId);
+      let owner: ReturnType<typeof getWorkspaceSyncReview>;
+      try {
+        owner = getWorkspaceSyncReview(ownerDb, workspaceId, reviewId);
+      } finally {
+        ownerDb.sqlite.close();
+      }
+      assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), owner?.review.workspaceId ?? null);
       const response = await runIdempotentCommand({
         store,
         inflightCommands,
@@ -147,9 +176,11 @@ export function registerWorkspaceSyncRoutes({
         responseKind: 'workspace_sync_review',
         execute: async () => {
           const decidedAt = new Date().toISOString();
-          const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+          const workspaceDb = repositoryWorkspaceDb(workspaceId);
           try {
             return await decideWorkspaceSyncReview({
+              authorityActor,
+              coreDb,
               decidedAt,
               decision: input.decision,
               requestId,
@@ -163,12 +194,23 @@ export function registerWorkspaceSyncRoutes({
           }
         },
         replay: (record) => {
-          const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+          const workspaceDb = repositoryWorkspaceDb(workspaceId);
           try {
             const review = getWorkspaceSyncReview(workspaceDb, workspaceId, record.response.id);
 
             if (!review) {
               throw new Error(`Workspace synchronization review not found: ${reviewId}`);
+            }
+            if (
+              listArtifactReviews(workspaceDb).some(
+                (artifactReview) => artifactReview.artifactId === review.artifactId
+              )
+            ) {
+              throw new TurnStartValidationError(
+                'recovery_required',
+                'The Artifact has conflicting Review authorities and requires recovery.',
+                409
+              );
             }
 
             return {
@@ -187,6 +229,9 @@ export function registerWorkspaceSyncRoutes({
 
       return c.json(SubmitWorkspaceSyncReviewDecisionResponseSchema.parse(response));
     } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       return asCommandError(error, 'workspace_sync_review_failed');
     }
   });
@@ -194,8 +239,7 @@ export function registerWorkspaceSyncRoutes({
   registerAppApiRoute(app, 'listWorkspaceInputSnapshots', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
-      const store = requestStore(c);
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         const items = listWorkspaceInputSnapshots(workspaceDb, workspaceId);
 
@@ -211,8 +255,7 @@ export function registerWorkspaceSyncRoutes({
   registerAppApiRoute(app, 'listWorkspaceMaterializationRecords', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
-      const store = requestStore(c);
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         const items = listWorkspaceMaterializationRecords(workspaceDb, workspaceId);
 
@@ -228,8 +271,7 @@ export function registerWorkspaceSyncRoutes({
   registerAppApiRoute(app, 'listBackendWorkspaceHandles', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
-      const store = requestStore(c);
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         const items = listBackendWorkspaceHandles(workspaceDb, workspaceId);
 
@@ -245,8 +287,7 @@ export function registerWorkspaceSyncRoutes({
   registerAppApiRoute(app, 'listWorkerOutputManifests', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
-      const store = requestStore(c);
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         const items = listWorkerOutputManifests(workspaceDb, workspaceId);
 
@@ -262,8 +303,7 @@ export function registerWorkspaceSyncRoutes({
   registerAppApiRoute(app, 'listWorkspaceChangeSets', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
-      const store = requestStore(c);
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         const items = listWorkspaceChangeSets(workspaceDb, workspaceId);
 
@@ -279,8 +319,7 @@ export function registerWorkspaceSyncRoutes({
   registerAppApiRoute(app, 'listStagedWorkspaceReviews', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
-      const store = requestStore(c);
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         const items = listWorkspaceSyncReviews(workspaceDb, workspaceId).map((item) => item.review);
 
@@ -296,8 +335,7 @@ export function registerWorkspaceSyncRoutes({
   registerAppApiRoute(app, 'listWorkspaceApplyPlans', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
-      const store = requestStore(c);
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         const items = listWorkspaceApplyPlans(workspaceDb, workspaceId);
 
@@ -313,8 +351,7 @@ export function registerWorkspaceSyncRoutes({
   registerAppApiRoute(app, 'listWorkspaceReconciliationRecords', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
-      const store = requestStore(c);
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         const items = listWorkspaceReconciliationRecords(workspaceDb, workspaceId);
 
@@ -346,6 +383,16 @@ export function registerWorkspaceSyncRoutes({
         return asApiError('requestId is required.', 'invalid_request', 400);
       }
 
+      const ownerDb = repositoryWorkspaceDb(workspaceId);
+      let owner: ReturnType<typeof listWorkspaceReconciliationRecords>[number] | undefined;
+      try {
+        owner = listWorkspaceReconciliationRecords(ownerDb, workspaceId).find(
+          (candidate) => candidate.id === reconciliationRecordId
+        );
+      } finally {
+        ownerDb.sqlite.close();
+      }
+      assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), owner?.workspaceId ?? null);
       const response = await runIdempotentCommand({
         store,
         inflightCommands,
@@ -356,7 +403,7 @@ export function registerWorkspaceSyncRoutes({
         responseKind: 'workspace_sync_review',
         execute: () => {
           const decidedAt = new Date().toISOString();
-          const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+          const workspaceDb = repositoryWorkspaceDb(workspaceId);
           try {
             return {
               reconciliationRecord: resolveWorkspaceReconciliationRecord({
@@ -373,7 +420,7 @@ export function registerWorkspaceSyncRoutes({
           }
         },
         replay: (record) => {
-          const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+          const workspaceDb = repositoryWorkspaceDb(workspaceId);
           try {
             const reconciliationRecord = listWorkspaceReconciliationRecords(
               workspaceDb,
@@ -396,6 +443,9 @@ export function registerWorkspaceSyncRoutes({
 
       return c.json(SubmitWorkspaceRecoveryDecisionResponseSchema.parse(response));
     } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       return asCommandError(error, 'workspace_recovery_decision_failed');
     }
   });
@@ -403,8 +453,7 @@ export function registerWorkspaceSyncRoutes({
   registerAppApiRoute(app, 'listWorkspaceQuarantineRecords', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
-      const store = requestStore(c);
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         const items = listWorkspaceQuarantineRecords(workspaceDb, workspaceId);
 
@@ -420,8 +469,7 @@ export function registerWorkspaceSyncRoutes({
   registerAppApiRoute(app, 'listWorkspaceApplyResults', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
-      const store = requestStore(c);
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         const items = listWorkspaceApplyResults(workspaceDb, workspaceId);
 
@@ -438,14 +486,14 @@ export function registerWorkspaceSyncRoutes({
     try {
       const workspaceId = c.req.param('workspaceId');
       const applyResultId = c.req.param('applyResultId');
-      const store = requestStore(c);
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       let result: WorkspaceApplyResult | null;
       try {
         result = getWorkspaceApplyResult(workspaceDb, workspaceId, applyResultId);
       } finally {
         workspaceDb.sqlite.close();
       }
+      assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), result?.workspaceId ?? null);
 
       if (!result) {
         return asApiError(`Workspace apply result not found: ${applyResultId}`);
@@ -453,6 +501,9 @@ export function registerWorkspaceSyncRoutes({
 
       return c.json(GetWorkspaceApplyResultResponseSchema.parse(result));
     } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       return asApiError((error as Error).message);
     }
   });

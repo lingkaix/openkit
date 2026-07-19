@@ -14,6 +14,111 @@ const codexSchemaMetadataPath = join(
   'codex-app-server-schema',
   'metadata.json'
 );
+const workerImageContracts = [
+  {
+    id: 'worker-codex',
+    manifest: 'codex.agent.jsonc',
+    nativeBinary: '/usr/local/bin/codex',
+    nativeVersion: '0.144.1',
+    runtime: 'codex',
+  },
+  {
+    id: 'worker-opencode',
+    manifest: 'opencode-server.agent.jsonc',
+    nativeBinary: '/usr/local/bin/opencode',
+    nativeVersion: '1.18.1',
+    runtime: 'opencode',
+  },
+  {
+    id: 'worker-pi',
+    manifest: 'pi.agent.jsonc',
+    nativeBinary: '/usr/local/bin/pi',
+    nativeVersion: '0.80.7',
+    runtime: 'pi',
+  },
+] as const;
+
+describe('governed worker image contracts', () => {
+  it.each(
+    workerImageContracts
+  )('keeps $runtime image, manifest, and generic shim authority aligned', ({
+    id,
+    manifest,
+    nativeBinary,
+    nativeVersion,
+    runtime,
+  }) => {
+    const catalog = JSON.parse(readFileSync(imageManifestPath, 'utf8')) as {
+      images: Array<{
+        baseImage?: string;
+        dockerfile: string;
+        id: string;
+        localTag: string;
+        runtime?: string;
+      }>;
+    };
+    const image = catalog.images.find((entry) => entry.id === id);
+    const dockerfile = readFileSync(join(repoRoot, image?.dockerfile ?? ''), 'utf8');
+    const agentManifest = JSON.parse(
+      readFileSync(
+        join(repoRoot, 'apps', 'nanocore', 'data-templates', 'config', 'agents', manifest),
+        'utf8'
+      )
+    ) as {
+      runtime: {
+        adapter: string;
+        binaries: Array<{ path: string }>;
+        image: { ref: string };
+        version?: string;
+      };
+    };
+
+    expect(image).toMatchObject({ runtime });
+    expect(image?.baseImage).toMatch(/@sha256:[a-f0-9]{64}$/);
+    expect(dockerfile).toContain(`FROM ${image?.baseImage} AS builder`);
+    expect(dockerfile).toContain(`FROM ${image?.baseImage} AS runtime`);
+    expect(dockerfile).toContain(
+      'COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./'
+    );
+    expect(dockerfile).toContain(
+      '&& rm package.json \\\n  && pnpm --filter @openkit/worker-shim deploy'
+    );
+    expect(dockerfile).toContain('dist/bin/openkit-worker-shim.js');
+    expect(dockerfile).toContain('USER sandbox');
+    expect(dockerfile).toContain(`LABEL org.openkit.worker.runtime="${runtime}"`);
+    expect(agentManifest.runtime).toMatchObject({
+      adapter: runtime,
+      image: { ref: image?.localTag },
+      version: nativeVersion,
+    });
+    expect(agentManifest.runtime.binaries.map((binary) => binary.path)).toContain(nativeBinary);
+  });
+
+  it('keeps OpenCode ambient config absent and Pi egress scoped to its Node interpreter', () => {
+    const openCodeDockerfile = readFileSync(
+      join(repoRoot, 'containers', 'worker-opencode', 'Dockerfile'),
+      'utf8'
+    );
+    const piManifest = JSON.parse(
+      readFileSync(
+        join(repoRoot, 'apps', 'nanocore', 'data-templates', 'config', 'agents', 'pi.agent.jsonc'),
+        'utf8'
+      )
+    ) as { sandbox: { network: Array<{ binaries: string[]; host: string }> } };
+
+    expect(openCodeDockerfile).toContain('test ! -e /etc/opencode');
+    expect(openCodeDockerfile).toContain('export HOME=/tmp/opencode-home');
+    expect(openCodeDockerfile).toContain(
+      'rm -rf /tmp/opencode-cache /tmp/opencode-config /tmp/opencode-data /tmp/opencode-home /tmp/opencode-state'
+    );
+    expect(piManifest.sandbox.network).toEqual([
+      expect.objectContaining({
+        binaries: ['/usr/local/bin/node'],
+        host: 'api.anthropic.com',
+      }),
+    ]);
+  });
+});
 
 describe('Codex worker Dockerfile', () => {
   it('uses digest-pinned Node base images for release builds', () => {
@@ -37,7 +142,8 @@ describe('Codex worker Dockerfile', () => {
     expect(dockerfile).toContain('pnpm --filter @openkit/worker-shim build');
     expect(dockerfile).toContain('pnpm --filter @openkit/worker-shim deploy --prod --legacy');
     expect(dockerfile).toContain('/usr/local/lib/openkit/worker-shim');
-    expect(dockerfile).toContain('/usr/local/bin/openkit-codex-shim');
+    expect(dockerfile).toContain('/usr/local/bin/openkit-worker-shim');
+    expect(dockerfile).not.toContain('/usr/local/bin/openkit-codex-shim');
     expect(dockerfile).not.toContain('/usr/local/bin/openkit-worker-sidecar');
     expect(dockerfile).not.toContain('openkit-worker-sidecar.js');
     expect(dockerfile).toContain(`exec 3<<<"\${OPENKIT_CONTROL_TOKEN:-}"`);

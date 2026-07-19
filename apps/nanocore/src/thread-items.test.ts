@@ -7,7 +7,10 @@ describe('thread item replay app API', () => {
   it('returns ordered durable thread items for reload and right-sidebar replay', async () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Replay thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Persisted prompt');
+    const turn = store.createTurn('ws_demo', thread.id, 'Persisted prompt', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const first = store.createItem({
       id: 'it_replay_user',
       workspaceId: 'ws_demo',
@@ -15,6 +18,7 @@ describe('thread item replay app API', () => {
       turnId: turn.id,
       type: 'user-message',
       status: 'completed',
+      actor: turn.triggerActor,
       text: 'Persisted prompt',
       createdAt: '2026-05-06T00:00:00.000Z',
       completedAt: '2026-05-06T00:00:00.000Z',

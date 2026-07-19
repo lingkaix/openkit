@@ -40,17 +40,15 @@ describe('NanoCore startup storage layout', () => {
         join(dataRoot, 'server', 'evidence'),
         join(dataRoot, 'server', 'exports'),
         join(dataRoot, 'users', 'user_local', 'db'),
-        join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_quick_chat', 'workspace.json'),
-        join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_quick_chat', 'knowledge'),
-        join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_quick_chat', 'sources'),
-        join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_quick_chat', 'indexes'),
+        join(dataRoot, 'workspaces', 'ws_quick_chat', 'workspace.json'),
+        join(dataRoot, 'workspaces', 'ws_quick_chat', 'knowledge'),
+        join(dataRoot, 'workspaces', 'ws_quick_chat', 'sources'),
+        join(dataRoot, 'workspaces', 'ws_quick_chat', 'indexes'),
       ]) {
         expect(existsSync(path)).toBe(true);
       }
 
-      expect(
-        existsSync(join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_quick_chat', 'memory'))
-      ).toBe(false);
+      expect(existsSync(join(dataRoot, 'workspaces', 'ws_quick_chat', 'memory'))).toBe(false);
     } finally {
       coreDb.sqlite.close();
     }

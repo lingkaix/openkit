@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   appendFileSync,
   existsSync,
@@ -24,6 +25,44 @@ import { describe, expect, it } from 'vitest';
 import { FsStore } from './store.js';
 
 const timestamp = '2026-07-06T00:00:00.000Z';
+const localActor = { kind: 'user', id: 'user_local' } as const;
+
+/**
+ * Computes the canonical S16 digest for exact UTF-8 Artifact content.
+ *
+ * @param content Exact Artifact body.
+ * @returns Lowercase SHA-256 digest with the required prefix.
+ */
+function artifactDigest(content: string): string {
+  return `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`;
+}
+
+/**
+ * Builds the matching current-version proof for a work-produced Artifact fixture.
+ *
+ * @param threadId Producing Thread id.
+ * @param turnId Producing Turn id.
+ * @param requestId Artifact creation request id.
+ * @param content Exact Artifact body.
+ * @returns S16 content, mutation, and immutable-origin proof.
+ */
+function turnOutputArtifactProof(
+  threadId: string,
+  turnId: string,
+  requestId: string,
+  content: string
+) {
+  return {
+    contentDigest: artifactDigest(content),
+    lastMutationRequestId: requestId,
+    origin: {
+      kind: 'turn-output' as const,
+      threadId,
+      turnId,
+      requestId,
+    },
+  };
+}
 
 /**
  * Builds a minimal workspace import payload for FsStore tests.
@@ -44,6 +83,7 @@ function workspaceImportPayload(
     threadId,
     turnId: `turn_${workspaceId}`,
     type: 'user-message',
+    actor: localActor,
     status: 'completed',
     text: 'Imported message',
     createdAt: timestamp,
@@ -95,6 +135,7 @@ function workspaceImportPayload(
         id: item.turnId,
         workspaceId,
         threadId,
+        triggerActor: localActor,
         items: [item],
         status: 'completed',
         humanGate: null,
@@ -107,7 +148,6 @@ function workspaceImportPayload(
     ],
     itemRevisions: [item],
     artifacts: [],
-    artifactReviews: [],
     agentSessions: [],
     turnEvents: [],
   };
@@ -122,7 +162,8 @@ describe('FsStore canonical reload', () => {
     const firstTurn = store.createTurn(
       firstWorkspace.id,
       firstThread.id,
-      'Persist the first canonical turn'
+      'Persist the first canonical turn',
+      localActor
     );
     const firstItem = store.createItem({
       id: `it_${firstTurn.id}`,
@@ -143,7 +184,8 @@ describe('FsStore canonical reload', () => {
     const secondTurn = store.createTurn(
       secondWorkspace.id,
       secondThread.id,
-      'Persist the second canonical turn'
+      'Persist the second canonical turn',
+      localActor
     );
     const secondItem = store.createItem({
       id: `it_${secondTurn.id}`,
@@ -151,18 +193,13 @@ describe('FsStore canonical reload', () => {
       threadId: secondThread.id,
       turnId: secondTurn.id,
       type: 'user-message',
+      actor: localActor,
       status: 'completed',
       text: 'Second workspace item.',
       createdAt: secondTurn.startedAt ?? timestamp,
       completedAt: secondTurn.startedAt ?? timestamp,
     });
-    const firstWorkspaceRoot = join(
-      dataRoot,
-      'users',
-      'user_local',
-      'workspaces',
-      firstWorkspace.id
-    );
+    const firstWorkspaceRoot = join(dataRoot, 'workspaces', firstWorkspace.id);
     const firstItemsPath = join(
       firstWorkspaceRoot,
       'threads',
@@ -207,7 +244,12 @@ describe('FsStore canonical reload', () => {
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Canonical persistence workspace');
     const thread = store.createThread(workspace.id, 'Canonical persistence thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Persist canonical records only');
+    const turn = store.createTurn(
+      workspace.id,
+      thread.id,
+      'Persist canonical records only',
+      localActor
+    );
 
     store.createItem({
       id: `it_${turn.id}`,
@@ -215,6 +257,7 @@ describe('FsStore canonical reload', () => {
       threadId: thread.id,
       turnId: turn.id,
       type: 'user-message',
+      actor: localActor,
       status: 'completed',
       text: 'Canonical persistence only.',
       createdAt: turn.startedAt ?? timestamp,
@@ -225,9 +268,7 @@ describe('FsStore canonical reload', () => {
       store
         .listWorkspaces()
         .some((persistedWorkspace) =>
-          existsSync(
-            join(dataRoot, 'users', 'user_local', 'workspaces', persistedWorkspace.id, 'store.json')
-          )
+          existsSync(join(dataRoot, 'workspaces', persistedWorkspace.id, 'store.json'))
         )
     ).toBe(false);
   });
@@ -237,7 +278,7 @@ describe('FsStore canonical reload', () => {
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Append-only item workspace');
     const thread = store.createThread(workspace.id, 'Append-only item thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Append item revisions');
+    const turn = store.createTurn(workspace.id, thread.id, 'Append item revisions', localActor);
     const item = store.createItem({
       id: `it_${turn.id}`,
       workspaceId: workspace.id,
@@ -251,8 +292,6 @@ describe('FsStore canonical reload', () => {
     });
     const itemsPath = join(
       dataRoot,
-      'users',
-      'user_local',
       'workspaces',
       workspace.id,
       'threads',
@@ -287,7 +326,7 @@ describe('FsStore canonical reload', () => {
       content: 'Snapshot reload should preserve this knowledge entry.',
     });
     const thread = store.createThread(workspace.id, 'Reload thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Persist the whole turn');
+    const turn = store.createTurn(workspace.id, thread.id, 'Persist the whole turn', localActor);
     const knowledgeSourceContent = 'Reload source material.';
     const knowledgeSource = store.createKnowledgeSource(
       {
@@ -312,6 +351,7 @@ describe('FsStore canonical reload', () => {
       threadId: thread.id,
       turnId: turn.id,
       type: 'user-message',
+      actor: localActor,
       status: 'completed',
       text: 'Persist the whole turn',
       createdAt: turn.startedAt ?? new Date().toISOString(),
@@ -340,7 +380,7 @@ describe('FsStore canonical reload', () => {
       createdAt: userItem.createdAt,
       resolvedAt: null,
     });
-    store.createItem({
+    const approvalRequestItem = store.createItem({
       id: `it_approval_request_${turn.id}`,
       workspaceId: workspace.id,
       threadId: thread.id,
@@ -360,6 +400,8 @@ describe('FsStore canonical reload', () => {
       threadId: thread.id,
       turnId: turn.id,
       type: 'approval-decision',
+      actor: localActor,
+      causationId: approvalRequestItem.id,
       status: 'completed',
       approvalRequestId: approval.id,
       decision: 'granted',
@@ -380,6 +422,7 @@ describe('FsStore canonical reload', () => {
       createdAt: userItem.createdAt,
       updatedAt: userItem.createdAt,
     });
+    const artifactBody = '# Canonical artifact body\n\nOnly the content file owns these bytes.';
     const artifact = store.createArtifact({
       id: `ar_${turn.id}`,
       workspaceId: workspace.id,
@@ -390,26 +433,17 @@ describe('FsStore canonical reload', () => {
       status: 'ready',
       summary: 'Artifact survives canonical reload.',
       version: 1,
-      content: {
-        format: 'markdown',
-        body: '# Canonical artifact body\n\nOnly the content file owns these bytes.',
-      },
+      content: { format: 'markdown', body: artifactBody },
+      ...turnOutputArtifactProof(
+        thread.id,
+        turn.id,
+        'artifact-create-canonical-reload',
+        artifactBody
+      ),
       createdAt: userItem.createdAt,
       updatedAt: userItem.createdAt,
     });
-    const artifactReview = store.recordArtifactReviewDecision({
-      artifactId: artifact.id,
-      workspaceId: workspace.id,
-      threadId: thread.id,
-      turnId: turn.id,
-      status: 'accepted',
-      requestId: 'artifact-review-reload',
-      message: 'Canonical review survives restart.',
-      decidedAt: userItem.createdAt,
-      followUpTurnId: null,
-      lifecycle: 'completed',
-    });
-    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', workspace.id);
+    const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
     const artifactMetadataPath = join(workspaceRoot, 'artifacts', artifact.id, 'artifact.json');
     const artifactContentPath = join(
       workspaceRoot,
@@ -418,7 +452,6 @@ describe('FsStore canonical reload', () => {
       'files',
       'content.md'
     );
-    const artifactReviewPath = join(workspaceRoot, 'reviews', 'artifacts', `${artifact.id}.json`);
     const eventLogPath = join(
       workspaceRoot,
       'threads',
@@ -451,15 +484,12 @@ describe('FsStore canonical reload', () => {
     const forbiddenLegacyStorePaths = store
       .listWorkspaces()
       .map((persistedWorkspace) =>
-        join(dataRoot, 'users', 'user_local', 'workspaces', persistedWorkspace.id, 'store.json')
+        join(dataRoot, 'workspaces', persistedWorkspace.id, 'store.json')
       );
     const artifactMetadata = JSON.parse(readFileSync(artifactMetadataPath, 'utf8')) as Record<
       string,
       unknown
     >;
-    const persistedArtifactReview = existsSync(artifactReviewPath)
-      ? JSON.parse(readFileSync(artifactReviewPath, 'utf8'))
-      : null;
     const finalEventLog = existsSync(eventLogPath) ? readFileSync(eventLogPath, 'utf8') : '';
 
     expect.soft(artifactMetadata).toEqual({
@@ -468,7 +498,6 @@ describe('FsStore canonical reload', () => {
     });
     expect.soft(JSON.stringify(artifactMetadata)).not.toContain(artifact.content.body);
     expect.soft(readFileSync(artifactContentPath, 'utf8')).toBe(artifact.content.body);
-    expect.soft(persistedArtifactReview).toEqual(artifactReview);
     expect.soft(initialEventLog).toBe(`${JSON.stringify(agentSessionEvent)}\n`);
     expect.soft(finalEventLog).toBe(`${initialEventLog}${JSON.stringify(artifactEvent)}\n`);
 
@@ -488,7 +517,6 @@ describe('FsStore canonical reload', () => {
     expect(restarted.getApproval(approval.id)).toEqual(resolvedApproval);
     expect(restarted.getAgentSession(agentSession.id)).toEqual(agentSession);
     expect(restarted.getArtifact(workspace.id, artifact.id)).toEqual(artifact);
-    expect(restarted.getArtifactReviewDecision(artifact.id)).toEqual(artifactReview);
     expect(restarted.getTurnEvents(turn.id)).toEqual([agentSessionEvent, artifactEvent]);
   });
 
@@ -497,7 +525,12 @@ describe('FsStore canonical reload', () => {
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Event window workspace');
     const thread = store.createThread(workspace.id, 'Event window thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Append bounded replay events');
+    const turn = store.createTurn(
+      workspace.id,
+      thread.id,
+      'Append bounded replay events',
+      localActor
+    );
 
     for (let index = 0; index < 105; index += 1) {
       store.emitTurnEvent(turn.id, {
@@ -517,54 +550,21 @@ describe('FsStore canonical reload', () => {
     expect(events.at(-1)?.sequence).toBe(105);
   });
 
-  it('removes stale knowledge, artifact, and review records', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-stale-records-'));
+  it('removes stale knowledge records', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-stale-knowledge-'));
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Stale record workspace');
-    const thread = store.createThread(workspace.id, 'Stale record thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Delete canonical records');
+    const workspace = store.createWorkspace('Stale knowledge workspace');
     const knowledge = store.createKnowledgeEntry(workspace.id, {
       kind: 'project-context',
       title: 'Delete this knowledge',
       content: 'This canonical page must be removed.',
     });
-    const artifact = store.createArtifact({
-      id: `ar_${turn.id}`,
-      workspaceId: workspace.id,
-      threadId: thread.id,
-      turnId: turn.id,
-      kind: 'summary',
-      title: 'Delete this artifact',
-      status: 'ready',
-      summary: null,
-      version: 1,
-      content: { format: 'text', body: 'Delete this body.' },
-      createdAt: turn.startedAt ?? timestamp,
-      updatedAt: turn.startedAt ?? timestamp,
-    });
-    store.recordArtifactReviewDecision({
-      artifactId: artifact.id,
-      workspaceId: workspace.id,
-      threadId: thread.id,
-      turnId: turn.id,
-      status: 'accepted',
-      requestId: 'delete-artifact-review',
-      message: null,
-      decidedAt: artifact.updatedAt,
-      followUpTurnId: null,
-      lifecycle: 'completed',
-    });
-    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', workspace.id);
+    const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
     const knowledgePath = join(workspaceRoot, 'knowledge', 'pages', `${knowledge.id}.md`);
-    const artifactRoot = join(workspaceRoot, 'artifacts', artifact.id);
-    const reviewPath = join(workspaceRoot, 'reviews', 'artifacts', `${artifact.id}.json`);
 
     store.deleteKnowledgeEntry(workspace.id, knowledge.id);
-    store.deleteArtifact(workspace.id, artifact.id);
 
     expect(existsSync(knowledgePath)).toBe(false);
-    expect(existsSync(artifactRoot)).toBe(false);
-    expect(existsSync(reviewPath)).toBe(false);
   });
 
   it('preserves a workspace-authored knowledge schema during unrelated persistence', () => {
@@ -573,8 +573,6 @@ describe('FsStore canonical reload', () => {
     const workspace = store.createWorkspace('Custom schema workspace');
     const schemaPath = join(
       dataRoot,
-      'users',
-      'user_local',
       'workspaces',
       workspace.id,
       'knowledge',
@@ -594,15 +592,9 @@ describe('FsStore canonical reload', () => {
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Safe path workspace');
     const thread = store.createThread(workspace.id, 'Safe path thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Reject unsafe artifact id');
-    const escapedPath = join(
-      dataRoot,
-      'users',
-      'user_local',
-      'workspaces',
-      workspace.id,
-      'escaped_artifact'
-    );
+    const turn = store.createTurn(workspace.id, thread.id, 'Reject unsafe artifact id', localActor);
+    const artifactBody = 'Must not escape.';
+    const escapedPath = join(dataRoot, 'workspaces', workspace.id, 'escaped_artifact');
 
     expect(() =>
       store.createArtifact({
@@ -615,7 +607,13 @@ describe('FsStore canonical reload', () => {
         status: 'ready',
         summary: null,
         version: 1,
-        content: { format: 'text', body: 'Must not escape.' },
+        content: { format: 'text', body: artifactBody },
+        ...turnOutputArtifactProof(
+          thread.id,
+          turn.id,
+          'artifact-create-unsafe-path-fixture',
+          artifactBody
+        ),
         createdAt: turn.startedAt ?? timestamp,
         updatedAt: turn.startedAt ?? timestamp,
       })
@@ -628,7 +626,8 @@ describe('FsStore canonical reload', () => {
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Canonical symlink workspace');
     const thread = store.createThread(workspace.id, 'Canonical symlink thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Reject canonical symlinks');
+    const turn = store.createTurn(workspace.id, thread.id, 'Reject canonical symlinks', localActor);
+    const artifactBody = 'Canonical artifact body.';
     const artifact = store.createArtifact({
       id: `ar_${turn.id}`,
       workspaceId: workspace.id,
@@ -639,7 +638,13 @@ describe('FsStore canonical reload', () => {
       status: 'ready',
       summary: null,
       version: 1,
-      content: { format: 'text', body: 'Canonical artifact body.' },
+      content: { format: 'text', body: artifactBody },
+      ...turnOutputArtifactProof(
+        thread.id,
+        turn.id,
+        'artifact-create-before-symlink-corruption',
+        artifactBody
+      ),
       createdAt: turn.startedAt ?? timestamp,
       updatedAt: turn.startedAt ?? timestamp,
     });
@@ -659,7 +664,7 @@ describe('FsStore canonical reload', () => {
       },
       'Canonical source material.'
     );
-    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', workspace.id);
+    const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
     const outsidePath = join(dataRoot, 'outside-canonical-content.txt');
     const artifactBodyPath = join(workspaceRoot, 'artifacts', artifact.id, 'files', 'content.txt');
     const sourceMaterialPath = join(
@@ -689,7 +694,12 @@ describe('FsStore canonical reload', () => {
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Approval request recovery workspace');
     const thread = store.createThread(workspace.id, 'Approval request recovery thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Recover the pending approval gate');
+    const turn = store.createTurn(
+      workspace.id,
+      thread.id,
+      'Recover the pending approval gate',
+      localActor
+    );
     const approval = store.createApproval({
       id: `ap_${turn.id}`,
       workspaceId: workspace.id,
@@ -734,8 +744,6 @@ describe('FsStore canonical reload', () => {
         readFileSync(
           join(
             dataRoot,
-            'users',
-            'user_local',
             'workspaces',
             workspace.id,
             'threads',
@@ -755,7 +763,12 @@ describe('FsStore canonical reload', () => {
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Approval decision recovery workspace');
     const thread = store.createThread(workspace.id, 'Approval decision recovery thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Recover the approval decision');
+    const turn = store.createTurn(
+      workspace.id,
+      thread.id,
+      'Recover the approval decision',
+      localActor
+    );
     const approval = store.createApproval({
       id: `ap_${turn.id}`,
       workspaceId: workspace.id,
@@ -797,6 +810,8 @@ describe('FsStore canonical reload', () => {
       threadId: thread.id,
       turnId: turn.id,
       type: 'approval-decision',
+      actor: localActor,
+      causationId: requestItem.id,
       status: 'completed',
       approvalRequestId: approval.id,
       decision: 'granted',
@@ -821,7 +836,12 @@ describe('FsStore canonical reload', () => {
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Orphan approval gate workspace');
     const thread = store.createThread(workspace.id, 'Orphan approval gate thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Reject an orphan approval gate');
+    const turn = store.createTurn(
+      workspace.id,
+      thread.id,
+      'Reject an orphan approval gate',
+      localActor
+    );
 
     store.updateTurn(turn.id, {
       status: 'awaiting_human',
@@ -840,7 +860,12 @@ describe('FsStore canonical reload', () => {
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Terminal approval request workspace');
     const thread = store.createThread(workspace.id, 'Terminal approval request thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Reject terminal approval recovery');
+    const turn = store.createTurn(
+      workspace.id,
+      thread.id,
+      'Reject terminal approval recovery',
+      localActor
+    );
     const approvalId = `ap_${turn.id}`;
 
     store.createItem({
@@ -871,7 +896,12 @@ describe('FsStore canonical reload', () => {
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Truncated item log workspace');
     const thread = store.createThread(workspace.id, 'Truncated item log thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Repair the final item fragment');
+    const turn = store.createTurn(
+      workspace.id,
+      thread.id,
+      'Repair the final item fragment',
+      localActor
+    );
     const item = store.createItem({
       id: `it_${turn.id}`,
       workspaceId: workspace.id,
@@ -885,8 +915,6 @@ describe('FsStore canonical reload', () => {
     });
     const itemsPath = join(
       dataRoot,
-      'users',
-      'user_local',
       'workspaces',
       workspace.id,
       'threads',
@@ -915,7 +943,12 @@ describe('FsStore canonical reload', () => {
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Item log newline workspace');
     const thread = store.createThread(workspace.id, 'Item log newline thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Normalize the final item row');
+    const turn = store.createTurn(
+      workspace.id,
+      thread.id,
+      'Normalize the final item row',
+      localActor
+    );
     const item = store.createItem({
       id: `it_${turn.id}`,
       workspaceId: workspace.id,
@@ -929,8 +962,6 @@ describe('FsStore canonical reload', () => {
     });
     const itemsPath = join(
       dataRoot,
-      'users',
-      'user_local',
       'workspaces',
       workspace.id,
       'threads',
@@ -957,7 +988,12 @@ describe('FsStore canonical reload', () => {
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Truncated event log workspace');
     const thread = store.createThread(workspace.id, 'Truncated event log thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Repair the final event fragment');
+    const turn = store.createTurn(
+      workspace.id,
+      thread.id,
+      'Repair the final event fragment',
+      localActor
+    );
     const event = store.emitTurnEvent(turn.id, {
       event: 'turn.started',
       workspaceId: workspace.id,
@@ -967,8 +1003,6 @@ describe('FsStore canonical reload', () => {
     });
     const eventPath = join(
       dataRoot,
-      'users',
-      'user_local',
       'workspaces',
       workspace.id,
       'threads',
@@ -992,18 +1026,16 @@ describe('FsStore canonical reload', () => {
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Artifact parent link workspace');
     const thread = store.createThread(workspace.id, 'Artifact parent link thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Reject the linked artifact root');
-    const artifactId = `ar_linked_${turn.id}`;
-    const outsideRoot = join(dataRoot, 'outside-artifact-root');
-    const linkedRoot = join(
-      dataRoot,
-      'users',
-      'user_local',
-      'workspaces',
+    const turn = store.createTurn(
       workspace.id,
-      'artifacts',
-      artifactId
+      thread.id,
+      'Reject the linked artifact root',
+      localActor
     );
+    const artifactId = `ar_linked_${turn.id}`;
+    const artifactBody = 'Must not escape through the linked parent.';
+    const outsideRoot = join(dataRoot, 'outside-artifact-root');
+    const linkedRoot = join(dataRoot, 'workspaces', workspace.id, 'artifacts', artifactId);
 
     mkdirSync(outsideRoot);
     symlinkSync(outsideRoot, linkedRoot);
@@ -1019,7 +1051,13 @@ describe('FsStore canonical reload', () => {
         status: 'ready',
         summary: null,
         version: 1,
-        content: { format: 'text', body: 'Must not escape through the linked parent.' },
+        content: { format: 'text', body: artifactBody },
+        ...turnOutputArtifactProof(
+          thread.id,
+          turn.id,
+          'artifact-create-linked-parent-fixture',
+          artifactBody
+        ),
         createdAt: turn.startedAt ?? timestamp,
         updatedAt: turn.startedAt ?? timestamp,
       })
@@ -1033,7 +1071,12 @@ describe('FsStore canonical reload', () => {
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Immutable item workspace');
     const thread = store.createThread(workspace.id, 'Immutable item thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Protect immutable item identity');
+    const turn = store.createTurn(
+      workspace.id,
+      thread.id,
+      'Protect immutable item identity',
+      localActor
+    );
     const item = store.createItem({
       id: `it_${turn.id}`,
       workspaceId: workspace.id,
@@ -1047,8 +1090,6 @@ describe('FsStore canonical reload', () => {
     });
     const itemsPath = join(
       dataRoot,
-      'users',
-      'user_local',
       'workspaces',
       workspace.id,
       'threads',
@@ -1061,7 +1102,10 @@ describe('FsStore canonical reload', () => {
     expect(() => store.updateItem(item.id, { createdAt: '2026-07-07T00:00:00.000Z' })).toThrow(
       /immutable identity/
     );
-    appendFileSync(itemsPath, `${JSON.stringify({ ...item, type: 'user-message' })}\n`);
+    appendFileSync(
+      itemsPath,
+      `${JSON.stringify({ ...item, type: 'user-message', actor: localActor })}\n`
+    );
     expect(() => new FsStore({ dataRoot })).toThrow(/immutable identity/);
   });
 
@@ -1070,18 +1114,25 @@ describe('FsStore canonical reload', () => {
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Embedded canonical body workspace');
     const thread = store.createThread(workspace.id, 'Embedded canonical body thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Reject embedded canonical bodies');
+    const turn = store.createTurn(
+      workspace.id,
+      thread.id,
+      'Reject embedded canonical bodies',
+      localActor
+    );
     const item = store.createItem({
       id: `it_${turn.id}`,
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
       type: 'user-message',
+      actor: localActor,
       status: 'completed',
       text: 'Canonical item body.',
       createdAt: turn.startedAt ?? timestamp,
       completedAt: turn.startedAt ?? timestamp,
     });
+    const artifactBody = 'Canonical artifact body.';
     const artifact = store.createArtifact({
       id: `ar_${turn.id}`,
       workspaceId: workspace.id,
@@ -1092,11 +1143,17 @@ describe('FsStore canonical reload', () => {
       status: 'ready',
       summary: null,
       version: 1,
-      content: { format: 'text', body: 'Canonical artifact body.' },
+      content: { format: 'text', body: artifactBody },
+      ...turnOutputArtifactProof(
+        thread.id,
+        turn.id,
+        'artifact-create-before-embedded-body-corruption',
+        artifactBody
+      ),
       createdAt: turn.startedAt ?? timestamp,
       updatedAt: turn.startedAt ?? timestamp,
     });
-    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', workspace.id);
+    const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
     const turnPath = join(workspaceRoot, 'threads', thread.id, 'turns', turn.id, 'turn.json');
     const artifactPath = join(workspaceRoot, 'artifacts', artifact.id, 'artifact.json');
     const turnMetadata = JSON.parse(readFileSync(turnPath, 'utf8')) as Record<string, unknown>;
@@ -1125,7 +1182,12 @@ describe('FsStore canonical reload', () => {
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Event payload lineage workspace');
     const thread = store.createThread(workspace.id, 'Event payload lineage thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Reject nested event lineage');
+    const turn = store.createTurn(
+      workspace.id,
+      thread.id,
+      'Reject nested event lineage',
+      localActor
+    );
     const event = store.emitTurnEvent(turn.id, {
       event: 'turn.started',
       workspaceId: workspace.id,
@@ -1135,8 +1197,6 @@ describe('FsStore canonical reload', () => {
     });
     const eventPath = join(
       dataRoot,
-      'users',
-      'user_local',
       'workspaces',
       workspace.id,
       'threads',
@@ -1163,8 +1223,6 @@ describe('FsStore canonical reload', () => {
     store.createThread(secondWorkspace.id, 'Second collision thread');
     const duplicateRoot = join(
       dataRoot,
-      'users',
-      'user_local',
       'workspaces',
       secondWorkspace.id,
       'threads',
@@ -1187,7 +1245,8 @@ describe('FsStore canonical reload', () => {
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Missing identity workspace');
     const thread = store.createThread(workspace.id, 'Missing identity thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Missing identity turn');
+    const turn = store.createTurn(workspace.id, thread.id, 'Missing identity turn', localActor);
+    const artifactBody = 'Artifact body.';
     const artifact = store.createArtifact({
       id: `ar_${turn.id}`,
       workspaceId: workspace.id,
@@ -1198,7 +1257,13 @@ describe('FsStore canonical reload', () => {
       status: 'ready',
       summary: null,
       version: 1,
-      content: { format: 'text', body: 'Artifact body.' },
+      content: { format: 'text', body: artifactBody },
+      ...turnOutputArtifactProof(
+        thread.id,
+        turn.id,
+        'artifact-create-before-missing-record-corruption',
+        artifactBody
+      ),
       createdAt: turn.startedAt ?? timestamp,
       updatedAt: turn.startedAt ?? timestamp,
     });
@@ -1212,7 +1277,7 @@ describe('FsStore canonical reload', () => {
       createdAt: turn.startedAt ?? timestamp,
       updatedAt: turn.startedAt ?? timestamp,
     });
-    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', workspace.id);
+    const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
     const paths = [
       join(workspaceRoot, 'workspace.json'),
       join(workspaceRoot, 'threads', thread.id, 'thread.json'),
@@ -1229,6 +1294,131 @@ describe('FsStore canonical reload', () => {
       expect(() => new FsStore({ dataRoot })).toThrow(/missing .+\.jsonl?/i);
       writeFileSync(path, content);
     }
+  });
+
+  it.each([
+    ['missing Turn.triggerActor', 'turn', null, 'triggerActor', undefined],
+    [
+      'invalid Turn.triggerActor',
+      'turn',
+      null,
+      'triggerActor',
+      { kind: 'automation', id: 'automation_invalid' },
+    ],
+    ['missing user-message actor', 'item', 'user-message', 'actor', undefined],
+    [
+      'invalid user-message actor',
+      'item',
+      'user-message',
+      'actor',
+      { kind: 'automation', id: 'automation_invalid' },
+    ],
+    ['missing approval-decision actor', 'item', 'approval-decision', 'actor', undefined],
+    [
+      'invalid approval-decision actor',
+      'item',
+      'approval-decision',
+      'actor',
+      { kind: 'automation', id: 'automation_invalid', responsibleUserId: 'user_local' },
+    ],
+    [
+      'missing user-input-request responsible user',
+      'item',
+      'user-input-request',
+      'responsibleUserId',
+      undefined,
+    ],
+    [
+      'mismatched user-input-request responsible user',
+      'item',
+      'user-input-request',
+      'responsibleUserId',
+      'user_other',
+    ],
+    ['missing user-input-response actor', 'item', 'user-input-response', 'actor', undefined],
+    [
+      'invalid user-input-response actor',
+      'item',
+      'user-input-response',
+      'actor',
+      { kind: 'automation', id: 'automation_invalid', responsibleUserId: 'user_local' },
+    ],
+  ] as const)('rejects a canonical Workspace with %s', (_name, recordKind, itemType, field, invalidValue) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-invalid-attribution-'));
+    const store = new FsStore({ dataRoot });
+    const workspaceId = `ws_attribution_${itemType ?? 'turn'}`;
+    const input = workspaceImportPayload(workspaceId, 'th_attribution', 'it_attribution');
+    store.importWorkspaceSnapshot(input);
+    const turn = input.turns[0]!;
+
+    const turnRoot = join(
+      dataRoot,
+      'workspaces',
+      workspaceId,
+      'threads',
+      turn.threadId,
+      'turns',
+      turn.id
+    );
+    const recordPath = join(turnRoot, recordKind === 'turn' ? 'turn.json' : 'items.jsonl');
+    if (recordKind === 'turn') {
+      const record = JSON.parse(readFileSync(recordPath, 'utf8')) as Record<string, unknown>;
+      if (invalidValue === undefined) {
+        delete record[field];
+      } else {
+        record[field] = invalidValue;
+      }
+      writeFileSync(recordPath, `${JSON.stringify(record, null, 2)}\n`);
+    } else {
+      const records = readFileSync(recordPath, 'utf8')
+        .trimEnd()
+        .split('\n')
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      const record = records[0]!;
+      record.type = itemType;
+      if (itemType === 'approval-decision') {
+        Object.assign(record, {
+          actor: localActor,
+          causationId: 'it_approval_request_attribution',
+          approvalRequestId: 'apr_attribution',
+          decision: 'granted',
+        });
+      } else if (itemType === 'user-input-request') {
+        Object.assign(record, {
+          responsibleUserId: localActor.id,
+          userInputRequestId: 'uir_attribution',
+          prompt: 'Provide attributable input.',
+          questions: [
+            {
+              id: 'question_attribution',
+              header: 'Attribution',
+              question: 'Continue?',
+              options: null,
+              isOther: true,
+              isSecret: false,
+            },
+          ],
+        });
+      } else if (itemType === 'user-input-response') {
+        Object.assign(record, {
+          actor: localActor,
+          causationId: 'it_user_input_request_attribution',
+          userInputRequestId: 'uir_attribution',
+          answers: { question_attribution: ['Yes'] },
+        });
+      }
+      if (invalidValue === undefined) {
+        delete record[field];
+      } else {
+        record[field] = invalidValue;
+      }
+      writeFileSync(
+        recordPath,
+        `${records.map((candidate) => JSON.stringify(candidate)).join('\n')}\n`
+      );
+    }
+
+    expect(() => new FsStore({ dataRoot })).toThrow();
   });
 
   it.each([
@@ -1296,7 +1486,8 @@ describe('FsStore canonical reload', () => {
           },
         ];
         break;
-      case 'orphan turn-bound artifact':
+      case 'orphan turn-bound artifact': {
+        const artifactBody = 'This Artifact has no Item lineage.';
         input.artifacts = [
           {
             id: 'ar_orphan_turn_bound_import',
@@ -1308,12 +1499,19 @@ describe('FsStore canonical reload', () => {
             status: 'ready',
             summary: null,
             version: 1,
-            content: { format: 'text', body: 'This Artifact has no Item lineage.' },
+            content: { format: 'text', body: artifactBody },
+            ...turnOutputArtifactProof(
+              turn.threadId,
+              turn.id,
+              'artifact-create-orphan-import-fixture',
+              artifactBody
+            ),
             createdAt: timestamp,
             updatedAt: timestamp,
           },
         ];
         break;
+      }
     }
 
     expect(() => store.importWorkspaceSnapshot(input)).toThrow(expectedError);
@@ -1324,9 +1522,9 @@ describe('FsStore canonical reload', () => {
     const store = new FsStore({ dataRoot });
     const workspaceId = 'ws_blocked';
     const threadId = 'th_blocked';
-    const workspacePath = join(dataRoot, 'users', 'user_local', 'workspaces', workspaceId);
+    const workspacePath = join(dataRoot, 'workspaces', workspaceId);
 
-    mkdirSync(join(dataRoot, 'users', 'user_local', 'workspaces'), { recursive: true });
+    mkdirSync(join(dataRoot, 'workspaces'), { recursive: true });
     writeFileSync(workspacePath, 'not a directory');
 
     expect(() => store.importWorkspaceSnapshot(workspaceImportPayload(workspaceId))).toThrow();
@@ -1345,7 +1543,7 @@ describe('FsStore canonical reload', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-import-staging-'));
     const store = new FsStore({ dataRoot });
     const workspaceId = 'ws_staged';
-    const stagingPath = join(dataRoot, 'users', 'user_local', 'workspaces', '.staging');
+    const stagingPath = join(dataRoot, 'workspaces', '.staging');
 
     writeFileSync(stagingPath, 'not a directory');
 
@@ -1353,9 +1551,7 @@ describe('FsStore canonical reload', () => {
       store.importWorkspaceSnapshot(workspaceImportPayload(workspaceId, 'th_staged', 'it_staged'))
     ).toThrow();
 
-    expect(existsSync(join(dataRoot, 'users', 'user_local', 'workspaces', workspaceId))).toBe(
-      false
-    );
+    expect(existsSync(join(dataRoot, 'workspaces', workspaceId))).toBe(false);
     expect(() => store.getWorkspace(workspaceId)).toThrow(`Workspace not found: ${workspaceId}`);
   });
 
@@ -1363,7 +1559,7 @@ describe('FsStore canonical reload', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-import-staged-effects-'));
     const store = new FsStore({ dataRoot });
     const workspaceId = 'ws_staged_effects';
-    const finalRoot = join(dataRoot, 'users', 'user_local', 'workspaces', workspaceId);
+    const finalRoot = join(dataRoot, 'workspaces', workspaceId);
     let finalRootExistedDuringCallback = true;
 
     store.importWorkspaceSnapshot({
@@ -1445,9 +1641,7 @@ describe('FsStore canonical reload', () => {
       })
     ).toThrow('staged effect failed');
 
-    expect(existsSync(join(dataRoot, 'users', 'user_local', 'workspaces', workspaceId))).toBe(
-      false
-    );
+    expect(existsSync(join(dataRoot, 'workspaces', workspaceId))).toBe(false);
     expect(() => store.getWorkspace(workspaceId)).toThrow(`Workspace not found: ${workspaceId}`);
   });
 
@@ -1455,14 +1649,7 @@ describe('FsStore canonical reload', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-import-staging-cleanup-'));
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Staging cleanup workspace');
-    const stagingRoot = join(
-      dataRoot,
-      'users',
-      'user_local',
-      'workspaces',
-      '.staging',
-      'ws_orphaned'
-    );
+    const stagingRoot = join(dataRoot, 'workspaces', '.staging', 'ws_orphaned');
 
     mkdirSync(stagingRoot, { recursive: true });
     writeFileSync(join(stagingRoot, 'orphaned-import'), 'discarded');
@@ -1478,11 +1665,9 @@ describe('FsStore canonical reload', () => {
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Removed event protocol version');
     const thread = store.createThread(workspace.id, 'Replay event thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Replay event turn');
+    const turn = store.createTurn(workspace.id, thread.id, 'Replay event turn', localActor);
     const eventLogPath = join(
       dataRoot,
-      'users',
-      'user_local',
       'workspaces',
       workspace.id,
       'threads',

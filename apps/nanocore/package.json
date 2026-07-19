@@ -8,6 +8,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "data-root:restore": "tsx scripts/restore-data-root.ts",
+    "workspace-storage:migrate": "tsx scripts/migrate-workspace-storage.ts",
     "openapi:generate": "tsx scripts/generate-openapi.ts",
     "openapi:validate": "tsx scripts/validate-openapi.ts",
     "openapi:check": "pnpm run openapi:generate && pnpm run openapi:validate && git diff --exit-code -- openapi/app-api.openapi.json",

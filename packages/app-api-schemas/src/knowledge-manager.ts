@@ -2,13 +2,8 @@ import { ArtifactSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { WorkspaceRelativePathSchema } from './workspace-sync.js';
 
-/** Caller allowed to invoke the Knowledge Manager answer operation. */
-export const KnowledgeManagerCallerSchema = z.enum([
-  'assistant',
-  'workflow-coordinator',
-  'user',
-  'system',
-]);
+/** Server-assigned semantic owner of one Knowledge Manager invocation path. */
+export const KnowledgeManagerCallerSchema = z.enum(['assistant', 'task-mode', 'app-api']);
 
 /** Workspace knowledge source material category. */
 export const KnowledgeSourceKindSchema = z.enum([
@@ -49,17 +44,18 @@ export const KnowledgeSourceDerivedRepresentationSchema = z.object({
 });
 
 /** Request body for explicit Knowledge Source registration. */
-export const RegisterKnowledgeSourceRequestSchema = z.object({
-  requestId: z.string().min(1),
-  kind: KnowledgeSourceKindSchema,
-  title: z.string().min(1),
-  content: z.string().min(1),
-  caller: KnowledgeManagerCallerSchema.default('system'),
-  uri: z.string().min(1).optional(),
-  originatingThreadId: z.string().min(1).optional(),
-  originatingTurnId: z.string().min(1).optional(),
-  originatingFileId: z.string().min(1).optional(),
-});
+export const RegisterKnowledgeSourceRequestSchema = z
+  .object({
+    requestId: z.string().min(1),
+    kind: KnowledgeSourceKindSchema,
+    title: z.string().min(1),
+    content: z.string().min(1),
+    uri: z.string().min(1).optional(),
+    originatingThreadId: z.string().min(1).optional(),
+    originatingTurnId: z.string().min(1).optional(),
+    originatingFileId: z.string().min(1).optional(),
+  })
+  .strict();
 
 /** Response returned after registering one Knowledge Source. */
 export const RegisterKnowledgeSourceResponseSchema = z.object({
@@ -379,41 +375,66 @@ export const RetrieveKnowledgeRequestSchema = z.object({
   pinnedConceptIds: z.array(z.string().min(1)).default([]),
 });
 
-/** Selected Knowledge Store retrieval candidate. */
-export const KnowledgeRetrievalCandidateSchema = z.object({
-  conceptId: z.string().min(1),
-  title: z.string().min(1),
-  path: z.string().min(1),
-  score: z.number(),
-  matchedTerms: z.array(z.string().min(1)),
-  sourceReferences: z.array(z.string().min(1)),
-});
+/** Canonical server-generated identity of one governed Knowledge retrieval trace. */
+const KnowledgeRetrievalTraceIdSchema = z
+  .string()
+  .regex(/^krt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 
-/** Retrieval candidate excluded from the selected context budget. */
-export const KnowledgeRetrievalExclusionSchema = z.object({
-  conceptId: z.string().min(1),
-  title: z.string().min(1),
-  path: z.string().min(1),
-  reason: z.enum(['relevance_too_low', 'budget_exceeded']),
-  detail: z.string().min(1),
-});
+/** Selected Knowledge Store retrieval candidate. */
+export const KnowledgeRetrievalCandidateSchema = z
+  .object({
+    knowledgePageId: z.string().min(1),
+    contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    score: z.number().int().nonnegative(),
+    sourceReferences: z.array(z.string().min(1)),
+  })
+  .strict();
+
+/** Retrieval candidate excluded by one governed disposition. */
+export const KnowledgeRetrievalExclusionSchema = z
+  .object({
+    knowledgePageId: z.string().min(1),
+    contentDigest: z
+      .string()
+      .regex(/^sha256:[a-f0-9]{64}$/)
+      .nullable(),
+    reason: z.enum([
+      'sensitive_content',
+      'lower_conformance',
+      'policy_excluded',
+      'freshness_expired',
+      'budget_exceeded',
+      'source_unavailable',
+    ]),
+  })
+  .strict();
 
 /** Response and persisted trace returned by deterministic Knowledge Store retrieval. */
-export const KnowledgeRetrievalResponseSchema = z.object({
-  traceId: z.string().min(1),
-  workspaceId: z.string().min(1),
-  query: z.string().min(1),
-  createdAt: z.string().min(1),
-  selected: z.array(KnowledgeRetrievalCandidateSchema),
-  excluded: z.array(KnowledgeRetrievalExclusionSchema),
-});
+export const KnowledgeRetrievalResponseSchema = z
+  .object({
+    traceId: KnowledgeRetrievalTraceIdSchema,
+    workspaceId: z.string().min(1),
+    caller: KnowledgeManagerCallerSchema,
+    requestDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    retrievalParameters: z
+      .object({
+        limit: z.number().int().positive().max(20),
+        pinnedConceptIds: z.array(z.string().min(1)),
+      })
+      .strict(),
+    selected: z.array(KnowledgeRetrievalCandidateSchema),
+    excluded: z.array(KnowledgeRetrievalExclusionSchema),
+    createdAt: z.string().min(1),
+  })
+  .strict();
 
 /** Request body for one bounded Knowledge Manager answer operation. */
-export const KnowledgeManagerAnswerRequestSchema = z.object({
-  query: z.string().min(1),
-  caller: KnowledgeManagerCallerSchema.default('assistant'),
-  limit: z.number().int().positive().max(10).optional(),
-});
+export const KnowledgeManagerAnswerRequestSchema = z
+  .object({
+    query: z.string().min(1),
+    limit: z.number().int().positive().max(10).optional(),
+  })
+  .strict();
 
 /** Source citation returned by one Knowledge Manager answer. */
 export const KnowledgeManagerAnswerCitationSchema = z.object({
@@ -429,6 +450,7 @@ export const KnowledgeManagerAnswerResponseSchema = z.object({
   operation: z.literal('answer'),
   workspaceId: z.string().min(1),
   caller: KnowledgeManagerCallerSchema,
+  retrievalTraceId: KnowledgeRetrievalTraceIdSchema,
   query: z.string().min(1),
   outcome: z.enum(['answered', 'insufficient-evidence']),
   answer: z.string().min(1),
@@ -447,17 +469,18 @@ export const KnowledgeManagerWorkspaceRootFileRequestSchema = z.object({
 });
 
 /** Request body for one bounded Knowledge Manager context-material operation. */
-export const KnowledgeManagerPrepareContextRequestSchema = z.object({
-  query: z.string().min(1),
-  caller: KnowledgeManagerCallerSchema.default('workflow-coordinator'),
-  limit: z.number().int().positive().max(10).optional(),
-  artifactIds: z.array(z.string().min(1)).max(20).default([]),
-  workspaceFiles: z
-    .array(z.object({ path: WorkspaceRelativePathSchema }))
-    .max(20)
-    .default([]),
-  workspaceRootFiles: z.array(KnowledgeManagerWorkspaceRootFileRequestSchema).max(20).default([]),
-});
+export const KnowledgeManagerPrepareContextRequestSchema = z
+  .object({
+    query: z.string().min(1),
+    limit: z.number().int().positive().max(10).optional(),
+    artifactIds: z.array(z.string().min(1)).max(20).default([]),
+    workspaceFiles: z
+      .array(z.object({ path: WorkspaceRelativePathSchema }))
+      .max(20)
+      .default([]),
+    workspaceRootFiles: z.array(KnowledgeManagerWorkspaceRootFileRequestSchema).max(20).default([]),
+  })
+  .strict();
 
 /** Source trace for one Knowledge Manager context material item. */
 export const KnowledgeManagerContextTraceSchema = z.object({
@@ -530,6 +553,7 @@ export const KnowledgeManagerPrepareContextResponseSchema = z.object({
   operation: z.literal('prepare-context-material'),
   workspaceId: z.string().min(1),
   caller: KnowledgeManagerCallerSchema,
+  retrievalTraceId: KnowledgeRetrievalTraceIdSchema,
   query: z.string().min(1),
   outcome: z.enum(['prepared', 'insufficient-evidence']),
   materials: z.array(KnowledgeManagerContextMaterialSchema),
@@ -634,14 +658,15 @@ export const MaterializeKnowledgeContextPackageResponseSchema = z.object({
 });
 
 /** Request body for one governed Knowledge Manager proposal draft operation. */
-export const KnowledgeManagerDraftProposalRequestSchema = z.object({
-  requestId: z.string().min(1),
-  title: z.string().min(1),
-  summary: z.string().min(1),
-  caller: KnowledgeManagerCallerSchema.default('system'),
-  sourceReferences: z.array(z.string().min(1)).default([]),
-  confidence: z.number().min(0).max(1).default(0.5),
-});
+export const KnowledgeManagerDraftProposalRequestSchema = z
+  .object({
+    requestId: z.string().min(1),
+    title: z.string().min(1),
+    summary: z.string().min(1),
+    sourceReferences: z.array(z.string().min(1)).default([]),
+    confidence: z.number().min(0).max(1).default(0.5),
+  })
+  .strict();
 
 /** Pending knowledge proposal created by a Knowledge Manager draft operation. */
 export const KnowledgeManagerDraftedProposalSchema = z.object({
@@ -694,23 +719,12 @@ export const KnowledgeManagerDraftProposalResponseSchema = z.object({
   confidence: z.number().min(0).max(1),
 });
 
-/** Request body for promoting one accepted Knowledge Claim into a review proposal. */
-export const PromoteKnowledgeClaimRequestSchema = z.object({
-  requestId: z.string().min(1),
-  caller: KnowledgeManagerCallerSchema.default('system'),
-});
-
-/** Response returned after promoting one Knowledge Claim into a proposal draft. */
-export const PromoteKnowledgeClaimResponseSchema = z.object({
-  claim: KnowledgeClaimSchema,
-  draft: KnowledgeManagerDraftProposalResponseSchema,
-});
-
 /** Request body for one bounded Knowledge Manager repair suggestion operation. */
-export const KnowledgeManagerSuggestRepairRequestSchema = z.object({
-  caller: KnowledgeManagerCallerSchema.default('system'),
-  limit: z.number().int().positive().max(20).default(10),
-});
+export const KnowledgeManagerSuggestRepairRequestSchema = z
+  .object({
+    limit: z.number().int().positive().max(20).default(10),
+  })
+  .strict();
 
 /** Repair suggestion returned by Knowledge Manager without applying changes. */
 export const KnowledgeManagerRepairSuggestionSchema = z.object({
@@ -734,10 +748,11 @@ export const KnowledgeManagerSuggestRepairResponseSchema = z.object({
 });
 
 /** Request body for one bounded Knowledge Manager health-check operation. */
-export const KnowledgeManagerHealthCheckRequestSchema = z.object({
-  caller: KnowledgeManagerCallerSchema.default('system'),
-  limit: z.number().int().positive().max(20).default(10),
-});
+export const KnowledgeManagerHealthCheckRequestSchema = z
+  .object({
+    limit: z.number().int().positive().max(20).default(10),
+  })
+  .strict();
 
 /** Individual check returned by one Knowledge Manager health report. */
 export const KnowledgeManagerHealthCheckItemSchema = z.object({
@@ -800,10 +815,6 @@ export type KnowledgeManagerDraftProposalRequest = z.infer<
 export type KnowledgeManagerDraftProposalResponse = z.infer<
   typeof KnowledgeManagerDraftProposalResponseSchema
 >;
-/** Request body for promoting one accepted Knowledge Claim into a review proposal. */
-export type PromoteKnowledgeClaimRequest = z.input<typeof PromoteKnowledgeClaimRequestSchema>;
-/** Response returned after promoting one Knowledge Claim into a proposal draft. */
-export type PromoteKnowledgeClaimResponse = z.infer<typeof PromoteKnowledgeClaimResponseSchema>;
 /** Request body for one bounded Knowledge Manager repair suggestion operation. */
 export type KnowledgeManagerSuggestRepairRequest = z.infer<
   typeof KnowledgeManagerSuggestRepairRequestSchema

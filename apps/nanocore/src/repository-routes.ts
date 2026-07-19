@@ -15,10 +15,16 @@ import {
   WorkspaceRepositoryResourceSchema,
 } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 
 import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
+import {
+  assertAuthorizedWorkspaceLineage,
+  currentWorkspaceAuthority,
+} from './auth/operation-authorizer.js';
+import { listWorkspaceCapabilityCalls } from './capability/usage-ledger.js';
 import { createInjectionPlan } from './injection-plans.js';
 import { createInjectionReceipt } from './injection-receipts.js';
 import type { FsStore } from './lib/store.js';
@@ -39,6 +45,7 @@ import {
 } from './runtime/idempotent-command.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import { isTargetIssuedEffectAuthority } from './storage/workspace-import-authority.js';
 import type { VaultBackend } from './vault/vault-backend.js';
 import { vaultSecretMaterialToString } from './vault/vault-backend.js';
 import { getVaultGrant } from './vault/vault-grants.js';
@@ -115,7 +122,7 @@ export function registerRepositoryRoutes({
   ) => void;
   readonly coreDb: CoreDb | undefined;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
-  readonly repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb;
+  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
   readonly vaultBackend: (() => VaultBackend) | undefined;
 }): void {
@@ -125,7 +132,7 @@ export function registerRepositoryRoutes({
       const store = requestStore(c);
 
       store.getWorkspace(workspaceId);
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         const items = listWorkspaceRepositoryResources(workspaceDb, workspaceId).map((record) =>
           repositoryReadModel(record)
@@ -153,7 +160,7 @@ export function registerRepositoryRoutes({
       const store = requestStore(c);
 
       store.getWorkspace(workspaceId);
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         const resources = listWorkspaceRepositoryResources(workspaceDb, workspaceId).map((record) =>
           createWorkspaceRepositoryDiagnostic(record)
@@ -184,7 +191,7 @@ export function registerRepositoryRoutes({
       const store = requestStore(c);
 
       store.getWorkspace(workspaceId);
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         return c.json(
           ListGitPushRecordsResponseSchema.parse({
@@ -214,12 +221,24 @@ export function registerRepositoryRoutes({
       const store = requestStore(c);
       const input = parsed.data;
       const workspace = store.getWorkspace(workspaceId);
+      const actorId = c.get('actor').userId;
 
       assertProjectWorkspace(workspace, 'request Git push approval');
-      store.getTurn(workspaceId, input.threadId, input.turnId);
-
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      let turn: ReturnType<FsStore['getTurn']> | null = null;
       try {
+        turn = store.getTurn(workspaceId, input.threadId, input.turnId);
+      } catch {
+        // Scoped-only owners use the uniform non-enumerating denial.
+      }
+      assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), turn?.workspaceId ?? null);
+
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
+      try {
+        const repository = getWorkspaceRepositoryResource(workspaceDb, workspaceId, resourceId);
+        assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), repository?.workspaceId ?? null);
+        if (!repository) {
+          throw new Error(`Repository resource not found: ${resourceId}`);
+        }
         const commandScope = {
           workspaceId,
           repositoryResourceId: resourceId,
@@ -228,7 +247,7 @@ export function registerRepositoryRoutes({
         };
         const ownerDigest = commandInputHash({
           command: 'git_push.approval.request',
-          actorId: store.getUserId(),
+          actorId,
           ...commandScope,
           requestId: input.requestId,
         }).slice('sha256:'.length);
@@ -257,16 +276,6 @@ export function registerRepositoryRoutes({
                   409
                 );
               }
-              const repository = getWorkspaceRepositoryResource(
-                workspaceDb,
-                workspaceId,
-                resourceId
-              );
-
-              if (!repository) {
-                throw new Error(`Repository resource not found: ${resourceId}`);
-              }
-
               const inspection = inspectGitPushRepository(repository.localPath, input.sourceRef);
 
               if (inspection.sourceCommit !== input.commitIds.at(-1)) {
@@ -282,7 +291,7 @@ export function registerRepositoryRoutes({
                 reasonCode: 'repo_push_requires_human_approval',
                 title: `Approve Git push to ${input.targetBranch}`,
                 description: `Publish ${input.commitIds.join(', ')} from ${input.sourceRef} to ${input.targetBranch} on ${inspection.remoteSummary}.`,
-                subjectSummary: { kind: 'user', userId: store.getUserId() },
+                subjectSummary: { kind: 'user', userId: actorId },
                 resourceSummary: {
                   kind: 'git-push-target',
                   workspaceId,
@@ -312,6 +321,7 @@ export function registerRepositoryRoutes({
             },
             replay: (record) => {
               const approval = store.getApproval(record.response.id);
+              assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), approval.workspaceId);
               const decision = readPolicyApprovalDecision(
                 workspaceDb,
                 workspaceId,
@@ -371,6 +381,9 @@ export function registerRepositoryRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       return asCommandError(error, 'git_push_approval_request_failed');
     }
   });
@@ -388,11 +401,19 @@ export function registerRepositoryRoutes({
       const store = requestStore(c);
       const input = parsed.data;
       const workspace = store.getWorkspace(workspaceId);
+      const actorId = c.get('actor').userId;
 
       assertProjectWorkspace(workspace, 'execute Git push');
+      const approval = store.getApproval(input.approvalRequestId);
+      assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), approval.workspaceId);
 
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
+        const repository = getWorkspaceRepositoryResource(workspaceDb, workspaceId, resourceId);
+        assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), repository?.workspaceId ?? null);
+        if (!repository) {
+          throw new Error(`Repository resource not found: ${resourceId}`);
+        }
         const response = await runIdempotentCommand({
           store,
           inflightCommands,
@@ -405,8 +426,6 @@ export function registerRepositoryRoutes({
           input: { approvalRequestId: input.approvalRequestId },
           responseKind: 'git_push_record',
           execute: () => {
-            const approval = store.getApproval(input.approvalRequestId);
-
             if (approval.workspaceId !== workspaceId || approval.status !== 'granted') {
               throw new Error(`Git push approval is not granted: ${input.approvalRequestId}`);
             }
@@ -438,10 +457,20 @@ export function registerRepositoryRoutes({
               );
             }
 
-            const repository = getWorkspaceRepositoryResource(workspaceDb, workspaceId, resourceId);
+            const interruptedCall = listWorkspaceCapabilityCalls(workspaceDb, workspaceId).some(
+              (call) =>
+                call.itemId === approvalItem.id &&
+                call.capabilityId === 'workspace.git.push' &&
+                call.family === 'network' &&
+                call.operation === 'git.push'
+            );
 
-            if (!repository) {
-              throw new Error(`Repository resource not found: ${resourceId}`);
+            if (interruptedCall) {
+              throw new TurnStartValidationError(
+                'recovery_required',
+                'The Git push outcome cannot be proven from local records.',
+                409
+              );
             }
 
             const policyDecision = RepoPushApprovalDecisionSchema.parse(
@@ -457,7 +486,6 @@ export function registerRepositoryRoutes({
             const inspection = inspectGitPushRepository(repository.localPath, intent.sourceRef);
 
             if (
-              policyDecision.subjectSummary.userId !== store.getUserId() ||
               policyDecision.contextSummary.workspaceId !== workspaceId ||
               policyDecision.contextSummary.threadId !== approval.threadId ||
               policyDecision.contextSummary.turnId !== approval.turnId ||
@@ -474,7 +502,7 @@ export function registerRepositoryRoutes({
 
             return executeGitPushAttempt(workspaceDb, {
               attempt: {
-                actorId: store.getUserId(),
+                actorId,
                 approvalNamesProtectedTarget: true,
                 approvalRowId: approvalItem.id,
                 commitIds: intent.commitIds,
@@ -488,12 +516,14 @@ export function registerRepositoryRoutes({
                 targetBranch: intent.targetBranch,
                 workspaceId,
               },
+              coreDb,
               objectDirectory: inspection.objectDirectory,
               objectFormat: inspection.objectFormat,
               provider: inspection.provider,
               remoteName: inspection.pushTarget,
               resolveEnv: (capabilityCallId) =>
                 resolveGitPushCredentialEnv({
+                  actorId,
                   capabilityCallId,
                   coreDb,
                   repository,
@@ -507,6 +537,10 @@ export function registerRepositoryRoutes({
           },
           replay: (record) => {
             const pushRecord = getGitPushRecord(workspaceDb, workspaceId, record.response.id);
+            assertAuthorizedWorkspaceLineage(
+              c.get('workspaceAccess'),
+              pushRecord?.workspaceId ?? null
+            );
 
             if (!pushRecord) {
               throw new Error(`Git push record not found: ${record.response.id}`);
@@ -522,6 +556,9 @@ export function registerRepositoryRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       return asCommandError(error, 'git_push_failed');
     }
   });
@@ -534,13 +571,14 @@ export function registerRepositoryRoutes({
 
       store.getWorkspace(workspaceId);
 
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       let record: GitPushRecord | null;
       try {
         record = getGitPushRecord(workspaceDb, workspaceId, pushRecordId);
       } finally {
         workspaceDb.sqlite.close();
       }
+      assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), record?.workspaceId ?? null);
 
       if (!record) {
         return asApiError(`Git push record not found: ${pushRecordId}`);
@@ -548,6 +586,9 @@ export function registerRepositoryRoutes({
 
       return c.json(GetGitPushRecordResponseSchema.parse(record));
     } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       return asRepositoryApiError(error);
     }
   });
@@ -576,7 +617,7 @@ export function registerRepositoryRoutes({
 
       assertProjectWorkspace(workspace, 'link repositories');
 
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         const repository = upsertWorkspaceRepositoryResource(workspaceDb, {
           workspaceExists: (candidateWorkspaceId) => {
@@ -595,7 +636,6 @@ export function registerRepositoryRoutes({
         });
         syncRepositoryDataSourceCatalog({
           dataRoot: workspaceDb.dataRoot,
-          userId: workspaceDb.userId,
           workspaceId,
           record: repository,
         });
@@ -646,41 +686,65 @@ function repositoryReadModel(record: WorkspaceRepositoryResourceRecord): unknown
  * @returns Scrubbed credential env for the GitHub V1 adapter.
  */
 function resolveGitPushCredentialEnv(input: {
+  readonly actorId: string;
   readonly capabilityCallId: string;
   readonly coreDb: CoreDb | undefined;
   readonly repository: WorkspaceRepositoryResourceRecord;
   readonly vaultBackend: (() => VaultBackend) | undefined;
   readonly workspaceDb: WorkspaceDb;
   readonly workspaceId: string;
-}): NodeJS.ProcessEnv {
+}): NodeJS.ProcessEnv | null {
   const grantId = input.repository.git.vaultGrantRef;
 
   if (!grantId) {
     throw new Error('Git push requires a repository-bound vault grant.');
   }
-  if (!input.coreDb || !input.vaultBackend) {
+  if (!input.coreDb) {
     throw new Error('Git push vault credential resolution is unavailable.');
   }
 
   const grant = getVaultGrant(input.coreDb, grantId);
-
-  if (!grant) {
-    throw new Error(`Git push vault grant not found: ${grantId}`);
+  const reference = grant ? getVaultReference(input.coreDb, grant.vaultReferenceId) : null;
+  if (!grant || !reference) {
+    return null;
   }
-  if (grant.ownerScope === 'workspace' && grant.workspaceId !== input.workspaceId) {
-    throw new Error(`Git push vault grant is not scoped to workspace: ${grantId}`);
+  const ownerAuthority =
+    grant.ownerScope === reference.ownerScope &&
+    grant.workspaceId === reference.workspaceId &&
+    grant.userId === reference.userId &&
+    ((grant.ownerScope === 'server' && grant.workspaceId === null && grant.userId === null) ||
+      (grant.ownerScope === 'workspace' &&
+        grant.workspaceId === input.workspaceId &&
+        grant.userId === null) ||
+      (grant.ownerScope === 'user' &&
+        grant.workspaceId === null &&
+        grant.userId === input.actorId));
+  const activeTargetGrant =
+    isTargetIssuedEffectAuthority(grant.grantId) &&
+    grant.vaultReferenceId === reference.referenceId &&
+    ownerAuthority &&
+    grant.status === 'active' &&
+    (grant.expiresAt === null || Date.parse(grant.expiresAt) > Date.now()) &&
+    grant.allowedInjectionPaths.includes('gateway-only') &&
+    reference.status === 'active' &&
+    grant.targetAgentId === null &&
+    grant.targetAgentSessionId === null &&
+    (grant.targetCapabilityId === null || grant.targetCapabilityId === 'workspace.git.push') &&
+    (grant.approvalId === null ||
+      (isTargetIssuedEffectAuthority(grant.approvalId) && grant.policyDecisionId !== null));
+  if (
+    !currentWorkspaceAuthority(
+      input.coreDb,
+      input.workspaceId,
+      { kind: 'user', id: input.actorId },
+      'vault.use',
+      activeTargetGrant
+    )
+  ) {
+    return null;
   }
-  if (grant.status !== 'active' || (grant.expiresAt && Date.parse(grant.expiresAt) <= Date.now())) {
-    throw new Error(`Git push vault grant is not active: ${grantId}`);
-  }
-  if (!grant.allowedInjectionPaths.includes('gateway-only')) {
-    throw new Error(`Git push vault grant does not allow gateway-only use: ${grantId}`);
-  }
-
-  const reference = getVaultReference(input.coreDb, grant.vaultReferenceId);
-
-  if (!reference || reference.status !== 'active') {
-    throw new Error(`Git push vault reference is not active: ${grant.vaultReferenceId}`);
+  if (!input.vaultBackend) {
+    throw new Error('Git push vault credential resolution is unavailable.');
   }
 
   const id = randomUUID();

@@ -9,9 +9,10 @@ import {
   listWorkspaceUsageRecords,
 } from '../capability/usage-ledger.js';
 import { recordProductPermissionDecision } from '../policy/permission-decisions.js';
-import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
+import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import type { WorkspaceRepositoryGitConfig } from '../workspace/repository-store.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   executeGitPushAttempt,
   type GitPushCommandRunner,
@@ -66,11 +67,28 @@ function gitPushAttempt(
  *
  * @returns Migrated workspace database handles.
  */
-function createWorkspaceDb(): WorkspaceDb {
+function createWorkspaceDb(): WorkspaceDb & { readonly coreDb: CoreDb } {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-git-push-executor-'));
-  const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  const now = Date.parse('2026-07-05T00:00:00.000Z');
+
+  coreDb.sqlite
+    .prepare(
+      `INSERT INTO users (
+        id, display_name, email, email_verified, created_at, updated_at, kind
+      ) VALUES ('user_1', 'Git Push User', 'git-push@example.invalid', false, ?, ?, 'human')`
+    )
+    .run(now, now);
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'user_1',
+    workspaceId: 'ws_demo',
+    now: new Date(now),
+  });
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
   applyScopedMigrations(workspaceDb);
-  return workspaceDb;
+  return Object.assign(workspaceDb, { coreDb });
 }
 
 /**
@@ -150,11 +168,13 @@ function recordLinkedCommit(workspaceDb: WorkspaceDb, commitIds = ['commit_a']):
  * @param workspaceDb Workspace database handle.
  * @param decisionId Permission decision id.
  * @param targetBranch Push target branch.
+ * @param approvalId Approval identity linked to the decision.
  */
 function recordRepoPushAllowDecision(
   workspaceDb: WorkspaceDb,
   decisionId: string,
-  targetBranch = 'feature/demo'
+  targetBranch = 'feature/demo',
+  approvalId: string | null = 'ap_repo_push_target'
 ): void {
   recordProductPermissionDecision({
     workspaceDb,
@@ -174,6 +194,7 @@ function recordRepoPushAllowDecision(
     },
     result: 'allow',
     subjectSummary: { id: 'user_1', kind: 'user' },
+    approvalId,
     workspaceId: 'ws_demo',
     now: new Date('2026-07-05T00:00:00.000Z'),
   });
@@ -193,6 +214,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_refused',
           requestId: '00000000-0000-4000-8000-000000000028',
         }),
+        coreDb: workspaceDb.coreDb,
         cwd: '/repo',
         env: { GITHUB_TOKEN: 'secret-token' },
         objectDirectory: '/repo/.git/objects',
@@ -207,6 +229,121 @@ describe('Git push executor', () => {
       expect(listGitPushRecords(workspaceDb, 'ws_demo')).toHaveLength(1);
     } finally {
       workspaceDb.sqlite.close();
+    }
+  });
+
+  it('refuses missing current repo.push authority before credential or runner effects', async () => {
+    const workspaceDb = createWorkspaceDb();
+    const repository = createGitRepository();
+    let resolverCalls = 0;
+    let runnerCalls = 0;
+
+    try {
+      recordLinkedCommit(workspaceDb, [SOURCE_COMMIT]);
+      recordRepoPushAllowDecision(workspaceDb, 'pd_1');
+      workspaceDb.coreDb.sqlite
+        .prepare(
+          `UPDATE users
+           SET status = 'disabled', disabled_at = ?, updated_at = ?
+           WHERE id = 'user_1'`
+        )
+        .run('2026-07-05T00:00:01.000Z', '2026-07-05T00:00:01.000Z');
+
+      const record = await executeGitPushAttempt(workspaceDb, {
+        attempt: gitPushAttempt({
+          commitIds: [SOURCE_COMMIT],
+          recordId: 'gpr_current_authority_refused',
+          requestId: '00000000-0000-4000-8000-000000000050',
+        }),
+        coreDb: workspaceDb.coreDb,
+        objectDirectory: repository.objectDirectory,
+        objectFormat: 'sha1',
+        provider: 'github',
+        remoteName: 'https://github.com/openkit/openkit.git',
+        resolveEnv: () => {
+          resolverCalls += 1;
+          return { GITHUB_TOKEN: 'secret-token' };
+        },
+        runner: async () => {
+          runnerCalls += 1;
+          return { exitCode: 0, stderr: '', stdout: '' };
+        },
+        sourceCommit: SOURCE_COMMIT,
+      });
+
+      expect(record).toMatchObject({
+        id: 'gpr_current_authority_refused',
+        outcome: 'refused-policy',
+      });
+      expect({ resolverCalls, runnerCalls }).toEqual({ resolverCalls: 0, runnerCalls: 0 });
+      expect(listWorkspaceCapabilityCalls(workspaceDb, 'ws_demo')).toEqual([]);
+    } finally {
+      workspaceDb.sqlite.close();
+      workspaceDb.coreDb.sqlite.close();
+    }
+  });
+
+  it('rechecks repo.push authority after reads and before the mutating push', async () => {
+    const workspaceDb = createWorkspaceDb();
+    const repository = createGitRepository();
+    const calls: Parameters<GitPushCommandRunner>[0][] = [];
+    const runner: GitPushCommandRunner = async (command) => {
+      calls.push(command);
+      if (calls.length === 1) {
+        return {
+          exitCode: 0,
+          stderr: '',
+          stdout: `${BASE_COMMIT}\trefs/heads/feature/demo\n`,
+        };
+      }
+      if (calls.length === 2) {
+        return { exitCode: 0, stderr: '', stdout: '' };
+      }
+      if (calls.length === 3) {
+        workspaceDb.coreDb.sqlite
+          .prepare(
+            `UPDATE users
+             SET status = 'disabled', disabled_at = ?, updated_at = ?
+             WHERE id = 'user_1'`
+          )
+          .run('2026-07-05T00:00:02.000Z', '2026-07-05T00:00:02.000Z');
+        return { exitCode: 0, stderr: '', stdout: `${SOURCE_COMMIT}\n` };
+      }
+      throw new Error('push must not run after current authority is removed');
+    };
+
+    try {
+      recordLinkedCommit(workspaceDb, [SOURCE_COMMIT]);
+      recordRepoPushAllowDecision(workspaceDb, 'pd_1');
+      const record = await executeGitPushAttempt(workspaceDb, {
+        attempt: gitPushAttempt({
+          commitIds: [SOURCE_COMMIT],
+          recordId: 'gpr_authority_removed_after_read',
+          requestId: '00000000-0000-4000-8000-000000000051',
+        }),
+        coreDb: workspaceDb.coreDb,
+        env: { GITHUB_TOKEN: 'secret-token' },
+        objectDirectory: repository.objectDirectory,
+        objectFormat: 'sha1',
+        provider: 'github',
+        remoteName: 'https://github.com/openkit/openkit.git',
+        runner,
+        sourceCommit: SOURCE_COMMIT,
+      });
+
+      expect(calls).toHaveLength(3);
+      expect(record).toMatchObject({
+        errorSummary: 'Git push refused because current repo.push authority was removed.',
+        outcome: 'refused-policy',
+        remoteHeadAfter: null,
+        remoteHeadBefore: BASE_COMMIT,
+      });
+      expect(listWorkspaceUsageRecords(workspaceDb, 'ws_demo')).toMatchObject([
+        { quantity: 1, unit: 'requests' },
+      ]);
+    } finally {
+      workspaceDb.sqlite.close();
+      workspaceDb.coreDb.sqlite.close();
     }
   });
 
@@ -240,6 +377,7 @@ describe('Git push executor', () => {
             remoteSummary: 'GitLab repository openkit on origin',
             requestId,
           }),
+          coreDb: workspaceDb.coreDb,
           cwd: '/repo',
           objectFormat: 'sha1',
           provider: provider as 'github' | 'unsupported',
@@ -274,6 +412,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_policy_missing',
           requestId: '00000000-0000-4000-8000-000000000034',
         }),
+        coreDb: workspaceDb.coreDb,
         cwd: '/repo',
         objectDirectory: '/repo/.git/objects',
         objectFormat: 'sha1',
@@ -294,6 +433,62 @@ describe('Git push executor', () => {
     }
   });
 
+  it('keeps imported repo.push decisions readable but refuses imported or unlinked authority', async () => {
+    const workspaceDb = createWorkspaceDb();
+    let runnerCalls = 0;
+    const runner: GitPushCommandRunner = async () => {
+      runnerCalls += 1;
+      throw new Error('runner should not be called');
+    };
+
+    try {
+      recordLinkedCommit(workspaceDb);
+      recordRepoPushAllowDecision(
+        workspaceDb,
+        'pd_imported_allow',
+        'feature/demo',
+        'apr_imported_ws_demo_1'
+      );
+      recordRepoPushAllowDecision(workspaceDb, 'pd_unlinked_allow', 'feature/demo', null);
+      recordRepoPushAllowDecision(workspaceDb, 'pd_empty_allow', 'feature/demo', '');
+
+      for (const [decisionId, recordId, requestId] of [
+        ['pd_imported_allow', 'gpr_imported_authority', '00000000-0000-4000-8000-000000000047'],
+        ['pd_unlinked_allow', 'gpr_unlinked_authority', '00000000-0000-4000-8000-000000000048'],
+        ['pd_empty_allow', 'gpr_empty_authority', '00000000-0000-4000-8000-000000000049'],
+      ] as const) {
+        const record = await executeGitPushAttempt(workspaceDb, {
+          attempt: gitPushAttempt({ policyDecisionId: decisionId, recordId, requestId }),
+          coreDb: workspaceDb.coreDb,
+          objectDirectory: '/unused',
+          objectFormat: 'sha1',
+          provider: 'github',
+          remoteName: 'origin',
+          runner,
+          sourceCommit: 'commit_a',
+        });
+
+        expect(record).toMatchObject({
+          id: recordId,
+          outcome: 'refused-policy',
+          policyDecisionId: decisionId,
+        });
+      }
+      expect(runnerCalls).toBe(0);
+      expect(
+        workspaceDb.sqlite
+          .prepare(
+            `SELECT approval_id AS approvalId, result
+             FROM permission_decisions
+             WHERE decision_id = ?`
+          )
+          .get('pd_imported_allow')
+      ).toEqual({ approvalId: 'apr_imported_ws_demo_1', result: 'allow' });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
   it('records policy refusals when the repo.push decision targets a different branch', async () => {
     const workspaceDb = createWorkspaceDb();
     const runner: GitPushCommandRunner = async () => {
@@ -309,6 +504,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_policy_target_mismatch',
           requestId: '00000000-0000-4000-8000-000000000035',
         }),
+        coreDb: workspaceDb.coreDb,
         cwd: '/repo',
         objectFormat: 'sha1',
         provider: 'github',
@@ -345,6 +541,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_auth_failed',
           requestId: '00000000-0000-4000-8000-000000000036',
         }),
+        coreDb: workspaceDb.coreDb,
         cwd: '/repo',
         objectFormat: 'sha1',
         provider: 'github',
@@ -391,6 +588,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_unsafe_source',
           requestId: '00000000-0000-4000-8000-000000000040',
         }),
+        coreDb: workspaceDb.coreDb,
         cwd: '/repo',
         objectDirectory: '/repo/.git/objects',
         objectFormat: 'sha1',
@@ -439,6 +637,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_missing_remote_branch',
           requestId: '00000000-0000-4000-8000-000000000042',
         }),
+        coreDb: workspaceDb.coreDb,
         env: { GITHUB_TOKEN: 'secret-token' },
         objectDirectory: '/repo/.git/objects',
         objectFormat: 'sha1',
@@ -486,6 +685,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_divergent_remote_head',
           requestId: '00000000-0000-4000-8000-000000000043',
         }),
+        coreDb: workspaceDb.coreDb,
         env: { GITHUB_TOKEN: 'secret-token' },
         objectDirectory: '/repo/.git/objects',
         objectFormat: 'sha1',
@@ -588,6 +788,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_pushed',
           requestId: '00000000-0000-4000-8000-000000000029',
         }),
+        coreDb: workspaceDb.coreDb,
         cwd: repositoryPath,
         env: { GITHUB_TOKEN: 'secret-token', PATH: '/usr/bin' },
         objectDirectory: repository.objectDirectory,
@@ -642,6 +843,7 @@ describe('Git push executor', () => {
           providerRef: 'github',
           quantity: 2,
           requestId: '00000000-0000-4000-8000-000000000029',
+          responsibleUserId: 'user_1',
           source: 'git-push-executor',
           unit: 'requests',
           workspaceId: 'ws_demo',
@@ -690,6 +892,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_sha256',
           requestId: '00000000-0000-4000-8000-000000000044',
         }),
+        coreDb: workspaceDb.coreDb,
         env: { GITHUB_TOKEN: 'secret-token' },
         objectDirectory: repository.objectDirectory,
         objectFormat: 'sha256',
@@ -759,6 +962,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_hidden_ancestor',
           requestId: '00000000-0000-4000-8000-000000000041',
         }),
+        coreDb: workspaceDb.coreDb,
         env: { GITHUB_TOKEN: 'secret-token' },
         objectDirectory: repository.objectDirectory,
         objectFormat: 'sha1',
@@ -832,6 +1036,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_cas_race',
           requestId: '00000000-0000-4000-8000-000000000045',
         }),
+        coreDb: workspaceDb.coreDb,
         env: { GITHUB_TOKEN: 'secret-token' },
         objectDirectory: repository.objectDirectory,
         objectFormat: 'sha1',
@@ -904,6 +1109,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_rejected',
           requestId: '00000000-0000-4000-8000-000000000030',
         }),
+        coreDb: workspaceDb.coreDb,
         cwd: '/repo',
         env: { GITHUB_TOKEN: 'secret-token' },
         objectDirectory: '/repo/.git/objects',
@@ -962,6 +1168,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_runner_failure',
           requestId: '00000000-0000-4000-8000-000000000038',
         }),
+        coreDb: workspaceDb.coreDb,
         cwd: '/repo',
         objectDirectory: '/repo/.git/objects',
         objectFormat: 'sha1',

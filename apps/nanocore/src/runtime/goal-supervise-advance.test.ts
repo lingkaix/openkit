@@ -22,7 +22,7 @@ import { advanceGoalAfterReview } from './goal-supervise-advance.js';
  */
 function createWorkspaceDb(): WorkspaceDb {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-goal-supervise-advance-'));
-  const workspaceDb = openWorkspaceDb(dataRoot, 'user_demo', 'ws_demo');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }

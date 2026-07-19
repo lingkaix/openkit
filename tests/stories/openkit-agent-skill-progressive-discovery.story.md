@@ -7,6 +7,7 @@ default_tool: codex-cli
 timeout_seconds: 300
 requires_real_provider: true
 requires_real_codex: true
+contracts: docs/specs/20260713-openkit_agent_skill_interface.md, docs/specs/20260704-app_api_openapi_projection.md
 ---
 
 # OpenKit Agent Skill Progressive Discovery
@@ -29,7 +30,7 @@ Prove that a real Skill-capable agent can begin with only the `openkit` Skill me
 3. Expose the `openkit` Skill metadata to the agent without preloading `SKILL.md`, references, source modules, or catalog contents.
 4. Ask the agent to create one workspace with the chosen name, confirm it appears in the durable workspace list, and stop.
 
-## User-Visible Flow
+## User-visible Steps
 
 1. The agent selects the `openkit` Skill from its metadata.
 2. The agent loads `SKILL.md` and `references/loop.md`, but does not load every reference.
@@ -38,19 +39,25 @@ Prove that a real Skill-capable agent can begin with only the `openkit` Skill me
 5. The agent searches for or describes the public workspace-list operation, calls it, and confirms the created workspace is present.
 6. The agent reports the confirmed workspace name and stops without starting unrelated work.
 
-## Acceptance Assertions
+## Expected Outcomes
 
-- The real agent run executes and passes; a skipped or unexecuted run is not evidence.
-- The agent starts from Skill metadata and reads only `SKILL.md` plus `references/loop.md` before invoking the product.
-- `workspace.create` is discovered through CLI search and inspected through CLI describe; it is not copied from `SKILL.md` or supplied in the user prompt.
-- Every product request uses the packaged `scripts/openkit` CLI. No MCP tool, MCP resource, MCP prompt, direct HTTP call, raw storage access, or repository source module is used.
-- `doctor` reports the exact supported NanoCore protocol contract.
-- The mutation succeeds, and a subsequent public `workspace.list` call contains the same workspace record.
-- The agent does not load the complete operation inventory or perform a second mutation.
-- Captured evidence contains no credential, token, local private path, or unrelated environment value.
+- The agent progresses from Skill metadata to a confirmed durable workspace using only progressive disclosure and the bundled CLI.
+- The created workspace is durably visible through the public list operation.
+- The agent stops after confirming the result without starting unrelated work.
+
+## Deterministic Assertions
+
+- The redacted Codex event stream shows the agent starts from Skill metadata and reads only `SKILL.md` plus `references/loop.md` before invoking the product.
+- The event stream and the recorded actor prompt show `workspace.create` is discovered through CLI search and inspected through CLI describe, not copied from `SKILL.md` or supplied in the user prompt.
+- The event stream shows every product request uses the packaged `scripts/openkit` CLI, with no MCP tool, MCP resource, MCP prompt, direct HTTP call, raw storage access, or repository source module.
+- The captured `doctor` envelope reports the exact supported NanoCore protocol contract.
+- The captured `workspace.create` envelope succeeds and the subsequent public `workspace.list` envelope contains the same workspace record.
+- The event stream shows the agent does not load the complete operation inventory and performs no second mutation.
+- The evidence leak scan finds no credential, token, local private path, or unrelated environment value.
 
 ## Evidence To Collect
 
+- The verbatim actor prompt.
 - Redacted Codex JSONL events sufficient to show Skill/reference reads and CLI command order.
 - The final agent response.
 - The successful public `workspace.create` and `workspace.list` envelopes, or equivalent redacted command evidence within the Codex event stream.
@@ -58,9 +65,10 @@ Prove that a real Skill-capable agent can begin with only the `openkit` Skill me
 ## Cleanup
 
 - Stop the temporary NanoCore.
-- Delete the temporary data root, temporary agent workspace, installed test Skill copy, and redacted run evidence after the result has been recorded in the owning change plan.
+- Delete the temporary data root, temporary agent workspace, and installed test Skill copy.
+- Retain the redacted evidence package under the L6 retention policy after the result has been recorded in the owning change plan.
 
-## Failure Triage
+## Failure Triage Notes
 
 - A missing or incompatible packaged CLI is a WP-1 interface defect.
 - A NanoCore rejection is inspected through its typed error and request id; the story does not bypass the public interface.

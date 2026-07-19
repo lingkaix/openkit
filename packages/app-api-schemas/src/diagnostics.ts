@@ -33,6 +33,7 @@ export const ProviderDiagnosticSchema = z
 /** Provider registry row returned by App Diagnostics. */
 export const ProviderRegistryEntrySchema = z
   .object({
+    dispatchFamily: z.enum(['codex-oauth', 'provider-api']),
     id: z.string().min(1),
     displayName: z.string().min(1),
     kind: z.string().min(1),
@@ -62,8 +63,8 @@ export const ProvidersDiagnosticsSchema = z
 /** Gateway usage summary returned by App Diagnostics. */
 export const GatewayUsageSummarySchema = z
   .object({
-    cachedInputTokens: z.number(),
-    cacheHitRate: z.number(),
+    cacheReadTokens: z.number().optional(),
+    cacheWriteTokens: z.number().optional(),
     completionTokens: z.number(),
     endpoint: z.enum(['chat_completions', 'responses', 'quick_chat']),
     inputTokens: z.number(),

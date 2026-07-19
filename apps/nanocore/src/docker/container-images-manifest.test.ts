@@ -53,7 +53,13 @@ describe('container image manifest', () => {
 
     expect(manifest.schemaVersion).toBe(1);
     expect(manifest.registry).toBe('ghcr.io');
-    expect(manifest.images.map((image) => image.id)).toEqual(['app', 'worker-codex', 'dev-e2e']);
+    expect(manifest.images.map((image) => image.id)).toEqual([
+      'app',
+      'worker-codex',
+      'worker-opencode',
+      'worker-pi',
+      'dev-e2e',
+    ]);
 
     for (const image of manifest.images) {
       expect(image.repository).toMatch(/^openkit-/);
@@ -69,17 +75,19 @@ describe('container image manifest', () => {
     }
   });
 
-  it('keeps worker image metadata explicit and releaseable', () => {
+  it('keeps every manifest-selected worker image explicit and releaseable', () => {
     const manifest = readManifest();
-    const codex = manifest.images.find((image) => image.id === 'worker-codex');
+    const workers = manifest.images.filter((image) => image.kind === 'worker');
 
-    expect(codex).toMatchObject({
-      kind: 'worker',
-      release: true,
-      runtime: 'codex',
-      workerContract: 'openkit-worker-v1',
-    });
-    expect(codex?.baseImage).toBeTruthy();
+    expect(workers.map((image) => image.runtime)).toEqual(['codex', 'opencode', 'pi']);
+    for (const worker of workers) {
+      expect(worker).toMatchObject({
+        kind: 'worker',
+        release: true,
+        workerContract: 'openkit-worker-v1',
+      });
+      expect(worker.baseImage).toBeTruthy();
+    }
   });
 
   it('pins release worker base images by digest', () => {

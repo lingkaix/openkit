@@ -7,6 +7,7 @@ import type {
   WorkerCapabilityCallSummary,
 } from '@openkit/worker-protocol';
 import { describe, expect, it } from 'vitest';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import {
@@ -25,16 +26,17 @@ function createWorkerControlFixture(): {
   lineage: WorkerControlLineage;
 } {
   const store = createDemoStore();
-  const turn = store.createTurn('ws_demo', 'th_demo', 'Control worker');
-  const agent = store.getAgent('ws_demo', 'agent_codex_host');
+  const turn = store.createTurn('ws_demo', 'th_demo', 'Control worker', {
+    kind: 'user',
+    id: 'user_local',
+  });
   const environmentPackage = resolveAgentEnvironmentPackage({
-    agent,
+    agentSetup: createTestAgentSetup(),
     agentSessionId: 'as_control_1',
-    userId: 'user_local',
+    triggerActor: { kind: 'user', id: 'user_local' },
     backend: {
       workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
       kind: 'openshell',
-      sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
     },
     createdAt: '2026-06-16T00:00:00.000Z',
     requestId: 'req_control_1',
@@ -318,29 +320,14 @@ describe('WorkerControlGateway', () => {
     ]);
   });
 
-  it('records knowledge proposal summaries in the session snapshot', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
+  it('does not project knowledge proposal summaries in the session snapshot', () => {
+    const { environmentPackage } = createWorkerControlFixture();
     const gateway = new WorkerControlGateway({ createToken: () => 'token_control_1' });
-    const registration = gateway.registerSession(environmentPackage);
+    gateway.registerSession(environmentPackage);
 
-    const summary = gateway.recordKnowledgeProposalSummary({
-      authorization: `Bearer ${registration.token}`,
-      lineage,
-      proposalId: 'knowledge_proposal_1',
-      sequence: 6,
-      summary: 'Persist the worker-discovered project decision.',
-      title: 'Remember project decision',
-    });
-
-    expect(summary).toMatchObject({
-      proposalId: 'knowledge_proposal_1',
-      sequence: 6,
-      summary: 'Persist the worker-discovered project decision.',
-      title: 'Remember project decision',
-    });
-    expect(
-      gateway.getSessionSnapshot(environmentPackage.snapshotId)?.knowledgeProposalSummaries
-    ).toEqual([expect.objectContaining({ proposalId: 'knowledge_proposal_1' })]);
+    expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)).not.toHaveProperty(
+      'knowledgeProposalSummaries'
+    );
   });
 
   it('deduplicates exact sequenced control operation retries', () => {
@@ -388,30 +375,12 @@ describe('WorkerControlGateway', () => {
       lineage,
       summary: createCapabilitySummary(lineage, 4),
     });
-    gateway.recordKnowledgeProposalSummary({
-      authorization,
-      lineage,
-      proposalId: 'knowledge_proposal_1',
-      sequence: 5,
-      summary: 'Persist the worker-discovered project decision.',
-      title: 'Remember project decision',
-    });
-    gateway.recordKnowledgeProposalSummary({
-      authorization,
-      lineage,
-      proposalId: 'knowledge_proposal_1',
-      sequence: 5,
-      summary: 'Persist the worker-discovered project decision.',
-      title: 'Remember project decision',
-    });
-
     const snapshot = gateway.getSessionSnapshot(environmentPackage.snapshotId);
 
     expect(snapshot?.heartbeat).toMatchObject({ sequence: 1, status: 'running' });
     expect(snapshot?.artifacts).toHaveLength(1);
     expect(snapshot?.supplyRefreshAcks).toHaveLength(1);
     expect(snapshot?.capabilitySummaries).toHaveLength(1);
-    expect(snapshot?.knowledgeProposalSummaries).toHaveLength(1);
   });
 
   it('retries heartbeat projection before durably recording or publishing its snapshot', () => {
@@ -815,5 +784,34 @@ describe('WorkerControlGateway', () => {
         status: 403,
       }) as WorkerControlGatewayError
     );
+  });
+
+  it('passes owner-independent lineage to final-status lifecycle hooks', () => {
+    const { environmentPackage, lineage } = createWorkerControlFixture();
+    const acceptedInputs: unknown[] = [];
+    const committedInputs: unknown[] = [];
+    const gateway = new WorkerControlGateway({
+      createToken: () => 'lease-binding:final_status_1',
+      onFinalStatusAccepted: (input) => acceptedInputs.push(input),
+      onFinalStatusCommitted: (input) => committedInputs.push(input),
+      resolveFinalStatusTokenBinding: () => ({ replayOnly: false, status: 'accepted' }),
+    });
+    const registration = gateway.registerSession(environmentPackage);
+
+    gateway.recordFinalStatus({
+      authorization: `Bearer ${registration.token}`,
+      lineage,
+      sequence: 7,
+      status: 'completed',
+      stopReason: 'completed',
+    });
+
+    const expectedInput = {
+      eventType: 'turn.completed',
+      lineage,
+      sandboxBindingRef: registration.token,
+    };
+    expect(acceptedInputs).toEqual([expectedInput]);
+    expect(committedInputs).toEqual([expectedInput]);
   });
 });

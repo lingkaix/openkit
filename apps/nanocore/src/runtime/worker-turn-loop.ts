@@ -1,7 +1,8 @@
-import type { StopReason } from '@openkit/protocol';
+import type { ActorRef, StopReason } from '@openkit/protocol';
 
+import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { recordWorkerTurnLaunchDecision } from '../policy/permission-decisions.js';
-import type { WorkspaceDb } from '../storage/db.js';
+import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import type { PreparedNextTurn } from './prepare-next-turn.js';
 import { type StopAfterTurnDecision, shouldStopAfterTurn } from './stop-after-turn.js';
@@ -104,6 +105,10 @@ export type WorkerTurnLoopAwaitWorkerEffect = (
  * Input used to execute one worker turn loop.
  */
 export interface RunWorkerTurnLoopInput {
+  /** Core database owning current Workspace authority. */
+  readonly coreDb: CoreDb;
+  /** Immutable actor responsible for this worker effect. */
+  readonly triggerActor: ActorRef;
   /** Open workspace-scope database handle for worker checkpoint storage. */
   readonly workspaceDb: WorkspaceDb;
   /** Workspace that owns the worker turn. */
@@ -168,6 +173,17 @@ export async function runWorkerTurnLoop(
   input: RunWorkerTurnLoopInput
 ): Promise<RunWorkerTurnLoopResult> {
   const prepared = await input.prepare();
+  if (
+    !currentWorkspaceAuthority(
+      input.coreDb,
+      input.workspaceId,
+      input.triggerActor,
+      'runtime.launch',
+      true
+    )
+  ) {
+    throw new TurnStartValidationError('workspace_access_denied', 'Workspace access denied.', 403);
+  }
   const contextAssembly = createContextAssemblySummary(prepared);
   const turn = input.workspaceDb.sqlite.transaction(() => {
     const reserved = input.reserveTurn({ prepared });
@@ -204,6 +220,7 @@ export async function runWorkerTurnLoop(
     workerSessionId = started.workerSessionId ?? null;
 
     updateWorkerCheckpoint(input.workspaceDb, {
+      authorityActor: input.triggerActor,
       workspaceId: input.workspaceId,
       threadId: input.threadId,
       turnId: turn.turnId,
@@ -228,6 +245,7 @@ export async function runWorkerTurnLoop(
     };
 
     updateWorkerCheckpoint(input.workspaceDb, {
+      authorityActor: input.triggerActor,
       workspaceId: input.workspaceId,
       threadId: input.threadId,
       turnId: turn.turnId,
@@ -252,6 +270,7 @@ export async function runWorkerTurnLoop(
       throw error;
     }
     updateWorkerCheckpoint(input.workspaceDb, {
+      authorityActor: input.triggerActor,
       workspaceId: input.workspaceId,
       threadId: input.threadId,
       turnId: turn.turnId,

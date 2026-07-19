@@ -9,9 +9,16 @@ import type {
   CommandRequestResponseKind,
   CommandRequestScope,
 } from '../lib/store.js';
-import { openUserDb, openWorkspaceDb, type UserDb, type WorkspaceDb } from './db.js';
-import { resolveDataRootPath, userDbPath, workspaceDbPath } from './fs-layout.js';
-import { applyScopedMigrations } from './migrate.js';
+import {
+  type CoreDb,
+  openCoreDb,
+  openUserDb,
+  openWorkspaceDb,
+  type UserDb,
+  type WorkspaceDb,
+} from './db.js';
+import { coreDbPath, resolveDataRootPath, userDbPath, workspaceDbPath } from './fs-layout.js';
+import { applyMigrations, applyScopedMigrations } from './migrate.js';
 
 /** Raw SQLite row for one command idempotency request. */
 type CommandRequestRow = {
@@ -28,7 +35,13 @@ type CommandRequestRow = {
 };
 
 /** Scoped database that can own command idempotency requests. */
-type CommandRequestDb = UserDb | WorkspaceDb;
+type CommandRequestDb = CoreDb | UserDb | WorkspaceDb;
+
+/** Exact physical owner selected by one command request scope. */
+type CommandRequestOwner =
+  | { readonly scope: 'core' }
+  | { readonly scope: 'user'; readonly userId: string }
+  | { readonly scope: 'workspace'; readonly workspaceId: string };
 
 /** Closed schema for the sole extra metadata allowed on a command receipt. */
 const ChatCommandReceiptMetadataSchema: z.ZodType<ChatCommandReceiptMetadata> = z
@@ -103,31 +116,20 @@ export function normalizeCommandRequestResponse(
  * Stores one command idempotency request in its owning scoped database.
  *
  * @param dataRoot Data root that owns the databases.
- * @param userId User that owns the request.
  * @param record Command request record to store.
+ * @throws Error when the scope has no exact Core, User, or Workspace owner.
  */
-export function recordCommandRequestRecord(
-  dataRoot: string,
-  userId: string,
-  record: CommandRequestRecord
-): void {
+export function recordCommandRequestRecord(dataRoot: string, record: CommandRequestRecord): void {
+  const owner = commandRequestOwner(record.scope);
+
   if (
-    record.scope.workspaceId !== undefined &&
-    !existsSync(
-      resolveDataRootPath(
-        dataRoot,
-        'users',
-        userId,
-        'workspaces',
-        record.scope.workspaceId,
-        'workspace.json'
-      )
-    )
+    owner.scope === 'workspace' &&
+    !existsSync(resolveDataRootPath(dataRoot, 'workspaces', owner.workspaceId, 'workspace.json'))
   ) {
-    throw new Error(`Workspace not found: ${record.scope.workspaceId}`);
+    throw new Error(`Workspace not found: ${owner.workspaceId}`);
   }
 
-  const db = openCommandRequestDb(dataRoot, userId, record.scope.workspaceId);
+  const db = openCommandRequestDb(dataRoot, owner);
 
   try {
     recordCommandRequestRecordInDb(db, record);
@@ -146,6 +148,7 @@ export function recordCommandRequestRecordInDb(
   db: CommandRequestDb,
   record: CommandRequestRecord
 ): void {
+  assertCommandRequestDbOwner(db, record.scope);
   const response = normalizeCommandRequestResponse(record.command, record.response);
   db.sqlite
     .prepare(
@@ -181,38 +184,39 @@ export function recordCommandRequestRecordInDb(
  * Gets one active command idempotency request from its owning scoped database.
  *
  * @param dataRoot Data root that owns the databases.
- * @param userId User that owns the request.
- * @param workspaceId Workspace owner, or undefined for user scope.
+ * @param scope Exact Core, User, or Workspace request owner.
  * @param key Stable command request key.
  * @param referenceTime Current ISO timestamp used for expiry.
  * @returns Stored active request, or null.
+ * @throws Error when the scope has no exact Core, User, or Workspace owner.
  */
 export function getCommandRequestRecord(
   dataRoot: string,
-  userId: string,
-  workspaceId: string | undefined,
+  scope: CommandRequestScope,
   key: string,
   referenceTime: string
 ): CommandRequestRecord | null {
+  const owner = commandRequestOwner(scope);
+
   if (
-    workspaceId !== undefined &&
-    !existsSync(
-      resolveDataRootPath(dataRoot, 'users', userId, 'workspaces', workspaceId, 'workspace.json')
-    )
+    owner.scope === 'workspace' &&
+    !existsSync(resolveDataRootPath(dataRoot, 'workspaces', owner.workspaceId, 'workspace.json'))
   ) {
     return null;
   }
 
   const path =
-    workspaceId === undefined
-      ? userDbPath(dataRoot, userId)
-      : workspaceDbPath(dataRoot, userId, workspaceId);
+    owner.scope === 'core'
+      ? coreDbPath(dataRoot)
+      : owner.scope === 'user'
+        ? userDbPath(dataRoot, owner.userId)
+        : workspaceDbPath(dataRoot, owner.workspaceId);
 
   if (!existsSync(path)) {
     return null;
   }
 
-  const db = openCommandRequestDb(dataRoot, userId, workspaceId);
+  const db = openCommandRequestDb(dataRoot, owner);
 
   try {
     return getCommandRequestRecordFromDb(db, key, referenceTime);
@@ -239,26 +243,39 @@ export function getCommandRequestRecordFromDb(
     | CommandRequestRow
     | undefined;
 
-  return row ? mapCommandRequestRow(row) : null;
+  if (!row) {
+    return null;
+  }
+
+  const record = mapCommandRequestRow(row);
+  assertCommandRequestDbOwner(db, record.scope);
+  return record;
 }
 
 /**
- * Lists active user- and workspace-owned command requests in deterministic order.
+ * Lists active User- and Workspace-owned command requests in deterministic order.
  *
  * @param dataRoot Data root that owns the databases.
- * @param userId User that owns the requests.
  * @param referenceTime Current ISO timestamp used for expiry.
  * @returns Active command request records.
  */
 export function listCommandRequestRecords(
   dataRoot: string,
-  userId: string,
   referenceTime: string
 ): CommandRequestRecord[] {
-  const scopes: Array<string | undefined> = existsSync(userDbPath(dataRoot, userId))
-    ? [undefined]
-    : [];
-  const workspacesRoot = resolveDataRootPath(dataRoot, 'users', userId, 'workspaces');
+  const owners: CommandRequestOwner[] = [];
+  const usersRoot = resolveDataRootPath(dataRoot, 'users');
+  const workspacesRoot = resolveDataRootPath(dataRoot, 'workspaces');
+
+  if (existsSync(usersRoot)) {
+    for (const entry of readdirSync(usersRoot, { withFileTypes: true }).sort((left, right) =>
+      left.name.localeCompare(right.name)
+    )) {
+      if (entry.isDirectory() && existsSync(userDbPath(dataRoot, entry.name))) {
+        owners.push({ scope: 'user', userId: entry.name });
+      }
+    }
+  }
 
   if (existsSync(workspacesRoot)) {
     for (const entry of readdirSync(workspacesRoot, { withFileTypes: true }).sort((left, right) =>
@@ -267,15 +284,15 @@ export function listCommandRequestRecords(
       if (
         entry.isDirectory() &&
         entry.name !== '.staging' &&
-        existsSync(workspaceDbPath(dataRoot, userId, entry.name))
+        existsSync(workspaceDbPath(dataRoot, entry.name))
       ) {
-        scopes.push(entry.name);
+        owners.push({ scope: 'workspace', workspaceId: entry.name });
       }
     }
   }
 
-  const records = scopes.flatMap((workspaceId) => {
-    const db = openCommandRequestDb(dataRoot, userId, workspaceId);
+  const records = owners.flatMap((owner) => {
+    const db = openCommandRequestDb(dataRoot, owner);
 
     try {
       pruneCommandRequestRecords(db, referenceTime);
@@ -283,7 +300,11 @@ export function listCommandRequestRecords(
         db.sqlite
           .prepare(`${COMMAND_REQUEST_SELECT} ORDER BY created_at ASC, request_key ASC`)
           .all() as CommandRequestRow[]
-      ).map(mapCommandRequestRow);
+      ).map((row) => {
+        const record = mapCommandRequestRow(row);
+        assertCommandRequestDbOwner(db, record.scope);
+        return record;
+      });
     } finally {
       db.sqlite.close();
     }
@@ -299,22 +320,75 @@ export function listCommandRequestRecords(
  * Opens and migrates the database that owns one command request scope.
  *
  * @param dataRoot Data root that owns the database.
- * @param userId User that owns the database.
- * @param workspaceId Workspace owner, or undefined for user scope.
+ * @param owner Exact Core, User, or Workspace database owner.
  * @returns Open migrated scoped database.
  */
-function openCommandRequestDb(
-  dataRoot: string,
-  userId: string,
-  workspaceId: string | undefined
-): CommandRequestDb {
+function openCommandRequestDb(dataRoot: string, owner: CommandRequestOwner): CommandRequestDb {
   const db =
-    workspaceId === undefined
-      ? openUserDb(dataRoot, userId)
-      : openWorkspaceDb(dataRoot, userId, workspaceId);
+    owner.scope === 'core'
+      ? openCoreDb(dataRoot)
+      : owner.scope === 'user'
+        ? openUserDb(dataRoot, owner.userId)
+        : openWorkspaceDb(dataRoot, owner.workspaceId);
 
-  applyScopedMigrations(db);
+  if (db.scope === 'core') {
+    applyMigrations(db);
+  } else {
+    applyScopedMigrations(db);
+  }
   return db;
+}
+
+/**
+ * Selects one exact durable owner from a command request scope.
+ *
+ * @param scope Non-secret command scope identifiers.
+ * @returns Exact Core, User, or Workspace database owner.
+ * @throws Error when the scope names zero or multiple owners.
+ */
+function commandRequestOwner(scope: CommandRequestScope): CommandRequestOwner {
+  const coreId = scope.coreId;
+  const userId = scope.userId;
+  const workspaceId = scope.workspaceId;
+
+  if (coreId === 'server' && userId === undefined && workspaceId === undefined) {
+    return { scope: 'core' };
+  }
+  if (coreId === undefined && userId && workspaceId === undefined) {
+    return { scope: 'user', userId };
+  }
+  if (coreId === undefined && workspaceId && userId === undefined) {
+    return { scope: 'workspace', workspaceId };
+  }
+
+  throw new Error('Command request scope must name exactly one Core, User, or Workspace owner.');
+}
+
+/**
+ * Verifies that one open database matches a command request's authoritative scope.
+ *
+ * @param db Open Core, User, or Workspace database.
+ * @param scope Command request scope stored in or destined for that database.
+ * @throws Error when the request scope selects a different durable owner.
+ */
+function assertCommandRequestDbOwner(db: CommandRequestDb, scope: CommandRequestScope): void {
+  const owner = commandRequestOwner(scope);
+
+  if (db.scope === 'core' && owner.scope === 'core') {
+    return;
+  }
+  if (db.scope === 'user' && owner.scope === 'user' && owner.userId === db.userId) {
+    return;
+  }
+  if (
+    db.scope === 'workspace' &&
+    owner.scope === 'workspace' &&
+    owner.workspaceId === db.workspaceId
+  ) {
+    return;
+  }
+
+  throw new Error('Command request scope does not match its owning database.');
 }
 
 /**
@@ -324,7 +398,29 @@ function openCommandRequestDb(
  * @param referenceTime Current ISO timestamp used for expiry.
  */
 function pruneCommandRequestRecords(db: CommandRequestDb, referenceTime: string): void {
-  db.sqlite.prepare('DELETE FROM idempotency_requests WHERE expires_at <= ?').run(referenceTime);
+  if (db.scope === 'core' || db.scope === 'user') {
+    db.sqlite.prepare('DELETE FROM idempotency_requests WHERE expires_at <= ?').run(referenceTime);
+    return;
+  }
+
+  db.sqlite
+    .prepare(
+      `DELETE FROM idempotency_requests
+       WHERE expires_at <= ?
+         AND NOT (
+           command_name = 'goal.steering.send'
+           AND response_kind = 'pending_user_turn'
+           AND EXISTS (
+             SELECT 1
+             FROM pending_user_turn_records AS pending
+             WHERE pending.pending_turn_id = idempotency_requests.response_id
+               AND pending.request_id = idempotency_requests.request_id
+               AND pending.workspace_id = json_extract(idempotency_requests.scope_json, '$.workspaceId')
+               AND pending.thread_id = json_extract(idempotency_requests.scope_json, '$.threadId')
+           )
+         )`
+    )
+    .run(referenceTime);
 }
 
 /**

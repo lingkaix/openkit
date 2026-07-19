@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "requiredFeatures": [],
+  "id": "agent_pi",
+  "displayName": "Pi Agent",
+  "runtime": {
+    "kind": "pi",
+    "adapter": "pi",
+    "version": "0.80.7",
+    "image": {
+      "ref": "openkit/worker-pi:dev",
+      "pullPolicy": "if-not-present"
+    },
+    "binaries": [
+      { "id": "openkit-worker-shim", "path": "/usr/local/bin/openkit-worker-shim" },
+      { "id": "node", "path": "/usr/local/bin/node" },
+      { "id": "pi", "path": "/usr/local/bin/pi" }
+    ]
+  },
+  "provider": {
+    "ref": "anthropic",
+    "model": "claude-sonnet-4-5"
+  },
+  "profiles": [
+    {
+      "id": "default",
+      "instructionsRef": "pi",
+      "skills": []
+    }
+  ],
+  "defaultProfileId": "default",
+  "skills": [],
+  "mcp": [],
+  "workspace": {
+    "root": "."
+  },
+  "sandbox": {
+    "filesystem": [],
+    "network": [
+      {
+        "id": "anthropic-api",
+        "host": "api.anthropic.com",
+        "port": 443,
+        "protocol": "rest",
+        "access": "read-write",
+        "purpose": "Use the pinned Anthropic direct provider.",
+        "binaries": ["/usr/local/bin/node"]
+      }
+    ],
+    "credentialDeclarations": [
+      {
+        "id": "anthropic_api_key",
+        "vaultGrantId": "grant_anthropic_api_key",
+        "visibility": "runtime-env",
+        "targetEnvVarName": "ANTHROPIC_API_KEY"
+      }
+    ],
+    "backend": {
+      "allowedKinds": ["openshell"],
+      "preferred": "openshell",
+      "requiredCapabilities": []
+    }
+  },
+  "extensions": {}
+}

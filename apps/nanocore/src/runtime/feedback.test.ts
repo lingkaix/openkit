@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -30,7 +30,10 @@ describe('turn feedback', () => {
   it('creates a feedback file when a turn completes', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-'));
     const store = createDemoStore({ dataRoot });
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Run tests');
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Run tests', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const completedAt = new Date().toISOString();
 
     store.updateTurn(turn.id, {
@@ -42,6 +45,18 @@ describe('turn feedback', () => {
     const feedbackPath = feedbackFilePath(store, store.getTurnById(turn.id));
 
     expect(existsSync(feedbackPath)).toBe(true);
+    expect(feedbackPath).toBe(
+      join(
+        dataRoot,
+        'workspaces',
+        'ws_demo',
+        'threads',
+        'th_demo',
+        'turns',
+        turn.id,
+        'feedback.json'
+      )
+    );
     expect(readTurnFeedback(store, turn.id)).toMatchObject({
       note: null,
       rating: null,
@@ -53,7 +68,10 @@ describe('turn feedback', () => {
   it('updates rating and note through the feedback route', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-'));
     const store = createDemoStore({ dataRoot });
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Run tests');
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Run tests', {
+      kind: 'user',
+      id: 'user_local',
+    });
     store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
     const app = createApp({ store });
 
@@ -78,7 +96,10 @@ describe('turn feedback', () => {
   it('returns a typed 400 response for invalid feedback bodies', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-'));
     const store = createDemoStore({ dataRoot });
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Run tests');
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Run tests', {
+      kind: 'user',
+      id: 'user_local',
+    });
     store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
     const app = createApp({ store });
 
@@ -101,9 +122,9 @@ describe('turn feedback', () => {
     expect(source).toContain('.tmp');
   });
 
-  it('rejects cross-user feedback updates in server mode', async () => {
+  it('keeps feedback Workspace-owned across authenticated request actors', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-'));
-    const ownerStore = createDemoStore({ dataRoot, userId: 'user_1' });
+    const ownerStore = createDemoStore({ dataRoot }, 'user_1');
     const workspace = ownerStore.listWorkspaces().find((item) => item.kind === 'code') ?? null;
     const thread = workspace ? (ownerStore.listThreads(workspace.id)[0] ?? null) : null;
 
@@ -111,7 +132,10 @@ describe('turn feedback', () => {
       throw new Error('Expected default server-mode workspace and thread.');
     }
 
-    const turn = ownerStore.createTurn(workspace.id, thread.id, 'Run tests');
+    const turn = ownerStore.createTurn(workspace.id, thread.id, 'Run tests', {
+      kind: 'user',
+      id: 'user_local',
+    });
     ownerStore.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
     const app = createApp({
       auth: createHeaderAuthStub(),
@@ -120,14 +144,15 @@ describe('turn feedback', () => {
     });
 
     const res = await app.request(`/api/turns/${turn.id}/feedback`, {
-      body: JSON.stringify({ note: 'Should fail.', rating: 'bad' }),
+      body: JSON.stringify({ note: 'Shared feedback.', rating: 'bad' }),
       headers: { 'content-type': 'application/json', 'x-user-id': 'user_2' },
       method: 'POST',
     });
 
-    expect(res.status).toBe(404);
-    expect(readdirSync(join(dataRoot, 'users')).sort()).toEqual(
-      expect.arrayContaining(['user_1', 'user_2'])
-    );
+    expect(res.status).toBe(200);
+    expect(readTurnFeedback(ownerStore, turn.id)).toMatchObject({
+      note: 'Shared feedback.',
+      rating: 'bad',
+    });
   });
 });

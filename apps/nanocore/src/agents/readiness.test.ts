@@ -12,13 +12,20 @@ import { computeReadiness } from './readiness.js';
  */
 function manifest(input: Partial<AgentManifest> = {}): AgentManifest {
   return {
-    adapter: 'custom-http',
-    deployments: ['local'],
     displayName: 'Agent',
     id: 'agent_test',
-    kind: 'custom',
-    runtime: 'custom',
-    version: '0.0.2',
+    requiredFeatures: [],
+    runtime: {
+      adapter: 'custom',
+      binaries: [
+        { id: 'openkit-worker-shim', path: '/usr/local/bin/openkit-worker-shim' },
+        { id: 'node', path: '/usr/local/bin/node' },
+        { id: 'custom', path: '/usr/local/bin/custom' },
+      ],
+      image: { pullPolicy: 'never', ref: 'openkit/worker-custom:test' },
+      kind: 'custom',
+    },
+    schemaVersion: 1,
     ...input,
   };
 }
@@ -33,7 +40,74 @@ describe('computeReadiness', () => {
     });
   });
 
-  it('returns degraded when provider credentials are missing', () => {
+  it('returns blocked when required provider credentials are missing', () => {
+    const registry = new ProviderRegistry([
+      {
+        baseUrl: 'https://api.example.com/v1',
+        displayName: 'Hosted',
+        id: 'hosted',
+        kind: 'direct',
+        models: ['model'],
+        readiness: { status: 'ready' },
+      },
+    ]);
+
+    expect(computeReadiness(manifest({ provider: { ref: 'hosted' } }), registry)).toEqual({
+      reasons: ['Provider hosted is missing credentials.'],
+      status: 'blocked',
+    });
+  });
+
+  it('defers manifest-owned worker credential validation to turn-scoped AEP resolution', () => {
+    const registry = new ProviderRegistry([
+      {
+        baseUrl: 'https://api.example.com/v1',
+        displayName: 'Hosted',
+        id: 'hosted',
+        kind: 'direct',
+        models: ['model'],
+        readiness: { status: 'ready' },
+      },
+    ]);
+
+    expect(
+      computeReadiness(
+        manifest({
+          provider: { ref: 'hosted' },
+          sandbox: {
+            credentialDeclarations: [
+              {
+                id: 'hosted_api_key',
+                targetEnvVarName: 'HOSTED_API_KEY',
+                vaultGrantId: 'grant_hosted_api_key',
+                visibility: 'runtime-env',
+              },
+            ],
+            filesystem: [],
+            network: [
+              {
+                access: 'read-write',
+                binaries: ['/usr/local/bin/custom'],
+                host: 'api.example.com',
+                id: 'hosted_api',
+                port: 443,
+                protocol: 'https',
+                purpose: 'Use the selected provider.',
+              },
+            ],
+          },
+        }),
+        registry
+      )
+    ).toEqual({
+      reasons: [
+        'Provider hosted defers manifest-owned worker credential validation to turn-scoped AEP resolution.',
+      ],
+      status: 'degraded',
+    });
+  });
+
+  it('does not defer before the direct provider explicitly reports ready', () => {
     const registry = new ProviderRegistry([
       {
         baseUrl: 'https://api.example.com/v1',
@@ -44,21 +118,297 @@ describe('computeReadiness', () => {
       },
     ]);
 
-    expect(computeReadiness(manifest({ providerRef: 'hosted' }), registry)).toEqual({
+    expect(
+      computeReadiness(
+        manifest({
+          provider: { ref: 'hosted' },
+          sandbox: {
+            credentialDeclarations: [
+              {
+                id: 'hosted_api_key',
+                targetEnvVarName: 'HOSTED_API_KEY',
+                vaultGrantId: 'grant_hosted_api_key',
+                visibility: 'runtime-env',
+              },
+            ],
+            filesystem: [],
+            network: [
+              {
+                access: 'read-write',
+                binaries: ['/usr/local/bin/custom'],
+                host: 'api.example.com',
+                id: 'hosted_api',
+                port: 443,
+                protocol: 'https',
+                purpose: 'Use the selected provider.',
+              },
+            ],
+          },
+        }),
+        registry
+      )
+    ).toEqual({
       reasons: ['Provider hosted is missing credentials.'],
-      status: 'degraded',
+      status: 'blocked',
     });
   });
 
-  it('returns blocked for missing provider profiles and unsupported manifest versions', () => {
+  it('does not mask an unresolved provider credential with a manifest declaration', () => {
+    const registry = new ProviderRegistry([
+      {
+        baseUrl: 'https://api.example.com/v1',
+        displayName: 'Hosted',
+        id: 'hosted',
+        kind: 'direct',
+        models: ['model'],
+        readiness: { status: 'ready' },
+        secretRef: 'vault://provider_hosted',
+      },
+    ]);
+
+    expect(
+      computeReadiness(
+        manifest({
+          provider: { ref: 'hosted' },
+          sandbox: {
+            credentialDeclarations: [
+              {
+                id: 'hosted_api_key',
+                targetEnvVarName: 'HOSTED_API_KEY',
+                vaultGrantId: 'grant_hosted_api_key',
+                visibility: 'runtime-env',
+              },
+            ],
+            filesystem: [],
+            network: [
+              {
+                access: 'read-write',
+                binaries: ['/usr/local/bin/custom'],
+                host: 'api.example.com',
+                id: 'hosted_api',
+                port: 443,
+                protocol: 'https',
+                purpose: 'Use the selected provider.',
+              },
+            ],
+          },
+        }),
+        registry,
+        { providerCredentialResolver: () => null }
+      )
+    ).toEqual({
+      reasons: ['Provider hosted is missing credentials.'],
+      status: 'blocked',
+    });
+  });
+
+  it('does not treat unrelated worker credential declarations as provider credentials', () => {
+    const registry = new ProviderRegistry([
+      {
+        baseUrl: 'https://api.example.com/v1',
+        displayName: 'Hosted',
+        id: 'hosted',
+        kind: 'direct',
+        models: ['model'],
+        readiness: { status: 'ready' },
+      },
+    ]);
+
+    expect(
+      computeReadiness(
+        manifest({
+          provider: { ref: 'hosted' },
+          sandbox: {
+            credentialDeclarations: [
+              {
+                id: 'runtime_config',
+                targetPath: '/sandbox/.config/runtime.json',
+                vaultGrantId: 'grant_runtime_config',
+                visibility: 'runtime-file',
+              },
+            ],
+            filesystem: [],
+            network: [
+              {
+                access: 'read-write',
+                binaries: ['/usr/local/bin/custom'],
+                host: 'api.example.com',
+                id: 'hosted_api',
+                port: 443,
+                protocol: 'https',
+                purpose: 'Use the selected provider.',
+              },
+            ],
+          },
+        }),
+        registry
+      )
+    ).toEqual({
+      reasons: ['Provider hosted is missing credentials.'],
+      status: 'blocked',
+    });
+  });
+
+  it('does not defer a runtime-env credential without direct network access', () => {
+    const registry = new ProviderRegistry([
+      {
+        baseUrl: 'https://api.example.com/v1',
+        displayName: 'Hosted',
+        id: 'hosted',
+        kind: 'direct',
+        models: ['model'],
+        readiness: { status: 'ready' },
+      },
+    ]);
+
+    expect(
+      computeReadiness(
+        manifest({
+          provider: { ref: 'hosted' },
+          sandbox: {
+            credentialDeclarations: [
+              {
+                id: 'hosted_api_key',
+                targetEnvVarName: 'HOSTED_API_KEY',
+                vaultGrantId: 'grant_hosted_api_key',
+                visibility: 'runtime-env',
+              },
+            ],
+            filesystem: [],
+            network: [],
+          },
+        }),
+        registry
+      )
+    ).toEqual({
+      reasons: ['Provider hosted is missing credentials.'],
+      status: 'blocked',
+    });
+  });
+
+  it('does not defer multiple manifest-owned credentials', () => {
+    const registry = new ProviderRegistry([
+      {
+        baseUrl: 'https://api.example.com/v1',
+        displayName: 'Hosted',
+        id: 'hosted',
+        kind: 'direct',
+        models: ['model'],
+        readiness: { status: 'ready' },
+      },
+    ]);
+
+    expect(
+      computeReadiness(
+        manifest({
+          provider: { ref: 'hosted' },
+          sandbox: {
+            credentialDeclarations: [
+              {
+                id: 'hosted_api_key',
+                targetEnvVarName: 'HOSTED_API_KEY',
+                vaultGrantId: 'grant_hosted_api_key',
+                visibility: 'runtime-env',
+              },
+              {
+                id: 'secondary_api_key',
+                targetEnvVarName: 'SECONDARY_API_KEY',
+                vaultGrantId: 'grant_secondary_api_key',
+                visibility: 'runtime-env',
+              },
+            ],
+            filesystem: [],
+            network: [
+              {
+                access: 'read-write',
+                binaries: ['/usr/local/bin/custom'],
+                host: 'api.example.com',
+                id: 'hosted_api',
+                port: 443,
+                protocol: 'https',
+                purpose: 'Use the selected provider.',
+              },
+            ],
+          },
+        }),
+        registry
+      )
+    ).toEqual({
+      reasons: ['Provider hosted is missing credentials.'],
+      status: 'blocked',
+    });
+  });
+
+  it('does not defer credentials for a non-direct provider profile', () => {
+    const registry = new ProviderRegistry([
+      {
+        baseUrl: 'https://api.example.com/v1',
+        displayName: 'Hosted',
+        id: 'hosted',
+        kind: 'gateway',
+        models: ['model'],
+        readiness: { status: 'ready' },
+      },
+    ]);
+
+    expect(
+      computeReadiness(
+        manifest({
+          provider: { ref: 'hosted' },
+          sandbox: {
+            credentialDeclarations: [
+              {
+                id: 'hosted_api_key',
+                targetEnvVarName: 'HOSTED_API_KEY',
+                vaultGrantId: 'grant_hosted_api_key',
+                visibility: 'runtime-env',
+              },
+            ],
+            filesystem: [],
+            network: [
+              {
+                access: 'read-write',
+                binaries: ['/usr/local/bin/custom'],
+                host: 'api.example.com',
+                id: 'hosted_api',
+                port: 443,
+                protocol: 'https',
+                purpose: 'Use the selected provider.',
+              },
+            ],
+          },
+        }),
+        registry
+      )
+    ).toEqual({
+      reasons: ['Provider hosted is missing credentials.'],
+      status: 'blocked',
+    });
+  });
+
+  it('returns blocked for missing provider profiles', () => {
     const registry = new ProviderRegistry([]);
 
-    expect(computeReadiness(manifest({ providerRef: 'missing' }), registry)).toEqual({
+    expect(computeReadiness(manifest({ provider: { ref: 'missing' } }), registry)).toEqual({
       reasons: ['Provider profile missing is missing.'],
       status: 'blocked',
     });
-    expect(computeReadiness(manifest({ version: '9.9.9' }), registry)).toEqual({
-      reasons: ['Unsupported agent manifest version: 9.9.9.'],
+  });
+
+  it('propagates non-launchable provider readiness', () => {
+    const registry = new ProviderRegistry([
+      {
+        baseUrl: 'https://api.example.com/v1',
+        displayName: 'Hosted',
+        id: 'hosted',
+        kind: 'custom',
+        models: ['model'],
+        readiness: { message: 'Provider account setup is incomplete.', status: 'blocked' },
+      },
+    ]);
+
+    expect(computeReadiness(manifest({ provider: { ref: 'hosted' } }), registry)).toEqual({
+      reasons: ['Provider account setup is incomplete.'],
       status: 'blocked',
     });
   });
@@ -80,7 +430,9 @@ describe('computeReadiness', () => {
   it('does not probe runtime binaries from agent manifests', () => {
     const registry = new ProviderRegistry([]);
 
-    expect(computeReadiness(manifest({ runtime: 'codex' }), registry)).toEqual({
+    expect(
+      computeReadiness(manifest({ runtime: { ...manifest().runtime, kind: 'codex' } }), registry)
+    ).toEqual({
       reasons: [],
       status: 'ready',
     });
@@ -98,16 +450,18 @@ describe('computeReadiness', () => {
       },
     ]);
     const opencode = manifest({
-      adapter: 'opencode-server',
       displayName: 'OpenCode Server Agent',
       id: 'agent_opencode_server',
-      kind: 'custom',
-      providerRef: 'openrouter',
-      runtime: 'opencode',
+      provider: { ref: 'openrouter' },
+      runtime: {
+        ...manifest().runtime,
+        adapter: 'opencode',
+        kind: 'opencode',
+      },
     });
 
     expect(
-      computeReadiness(manifest({ ...opencode, providerRef: 'missing' }), providerRegistry, {
+      computeReadiness(manifest({ ...opencode, provider: { ref: 'missing' } }), providerRegistry, {
         providerCredentialResolver: () => 'secret',
       })
     ).toEqual({
@@ -120,7 +474,7 @@ describe('computeReadiness', () => {
       })
     ).toEqual({
       reasons: ['Provider openrouter is missing credentials.'],
-      status: 'degraded',
+      status: 'blocked',
     });
     expect(
       computeReadiness(

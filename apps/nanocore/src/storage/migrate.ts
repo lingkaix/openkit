@@ -3,7 +3,6 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BootConfigError } from '../config/mode.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
-import { schemaMigrations } from './schema/index.js';
 
 /**
  * One committed SQL migration file.
@@ -17,6 +16,9 @@ interface MigrationFile {
 
 const migrations: MigrationFile[] = [
   { id: 'core_0000_baseline', fileName: '0000_core_baseline.sql' },
+  { id: 'core_0001_workspace_sharing', fileName: '0001_core_workspace_sharing.sql' },
+  { id: 'core_0002_scheduler_trigger_actor', fileName: '0002_core_scheduler_trigger_actor.sql' },
+  { id: 'core_0003_lifecycle_authority', fileName: '0003_core_lifecycle_authority.sql' },
 ];
 
 const workspaceMigrations: MigrationFile[] = [
@@ -36,6 +38,26 @@ const workspaceMigrations: MigrationFile[] = [
   {
     id: '0004_capability_runtime_correlation',
     fileName: '0004_workspace_capability_runtime_correlation.sql',
+  },
+  {
+    id: '0005_material_authority',
+    fileName: '0005_workspace_material_authority.sql',
+  },
+  {
+    id: '0006_goal_steering_authority',
+    fileName: '0006_workspace_goal_steering_authority.sql',
+  },
+  {
+    id: '0007_artifact_review_authority',
+    fileName: '0007_workspace_artifact_review_authority.sql',
+  },
+  {
+    id: '0008_shared_attribution',
+    fileName: '0008_workspace_shared_attribution.sql',
+  },
+  {
+    id: '0009_usage_responsible_user',
+    fileName: '0009_workspace_usage_responsible_user.sql',
   },
 ];
 
@@ -72,12 +94,12 @@ export function applyMigrations(coreDb: CoreDb): void {
     }
 
     try {
-      coreDb.sqlite.exec(readMigrationSql(migration));
-      coreDb.db
-        .insert(schemaMigrations)
-        .values({ id: migration.id, appliedAt: new Date().toISOString() })
-        .onConflictDoNothing()
-        .run();
+      coreDb.sqlite.transaction(() => {
+        coreDb.sqlite.exec(readMigrationSql(migration));
+        coreDb.sqlite
+          .prepare('INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES (?, ?)')
+          .run(migration.id, new Date().toISOString());
+      })();
       appliedIds.add(migration.id);
     } catch (error) {
       throw new BootConfigError(

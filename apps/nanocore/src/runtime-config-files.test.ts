@@ -78,11 +78,11 @@ describe('runtime config file API', () => {
     const dataRoot = createDataRoot();
     writeServerConfig(dataRoot);
     const store = createDemoStore({ dataRoot });
-    mkdirSync(join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo', 'config'), {
+    mkdirSync(join(dataRoot, 'workspaces', 'ws_demo', 'config'), {
       recursive: true,
     });
     writeFileSync(
-      join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo', 'config', 'workspace.jsonc'),
+      join(dataRoot, 'workspaces', 'ws_demo', 'config', 'workspace.jsonc'),
       `{
         "schemaVersion": 1,
         "workspace": {
@@ -119,7 +119,7 @@ describe('runtime config file API', () => {
     const dataRoot = createDataRoot();
     writeServerConfig(dataRoot);
     const store = createDemoStore({ dataRoot });
-    const configRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo', 'config');
+    const configRoot = join(dataRoot, 'workspaces', 'ws_demo', 'config');
     mkdirSync(configRoot, { recursive: true });
     writeFileSync(
       join(configRoot, 'data-sources.jsonc'),
@@ -170,7 +170,7 @@ describe('runtime config file API', () => {
     applyMigrations(coreDb);
     writeServerConfig(dataRoot);
     const store = createDemoStore({ dataRoot });
-    const configRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo', 'config');
+    const configRoot = join(dataRoot, 'workspaces', 'ws_demo', 'config');
     mkdirSync(configRoot, { recursive: true });
     writeFileSync(
       join(configRoot, 'data-sources.jsonc'),
@@ -206,7 +206,7 @@ describe('runtime config file API', () => {
           expectedRevision: read.file.revision,
         }),
       });
-      const workspaceDb = openWorkspaceDb(dataRoot, 'user_local', 'ws_demo');
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
       applyScopedMigrations(workspaceDb);
 
       try {

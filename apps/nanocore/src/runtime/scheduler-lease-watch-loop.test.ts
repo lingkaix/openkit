@@ -78,6 +78,7 @@ function seedLocalTarget(coreDb: ReturnType<typeof createMigratedCoreDb>, suffix
 function dispatchLease(coreDb: ReturnType<typeof createMigratedCoreDb>, suffix: string): void {
   seedLocalTarget(coreDb, suffix);
   createSchedulerAdmissionEntry(coreDb, {
+    triggerActor: { kind: 'user', id: 'user_local' },
     queueEntryId: `queue_${suffix}`,
     workspaceId: 'ws_demo',
     threadId: `thread_${suffix}`,

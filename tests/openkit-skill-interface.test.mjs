@@ -84,16 +84,20 @@ test('one catalog covers the checked App API and public Core projection', async 
   assert.deepEqual(new Set([...coreMappings, ...coreExclusions]), new Set(coreMethods));
 
   assert.deepEqual(operationExclusions.map(({ source, name }) => `${source}:${name}`).sort(), [
+    'app-api:acceptWorkspaceInvitation',
     'app-api:createOpenKitAccessToken',
+    'app-api:declineWorkspaceInvitation',
     'app-api:getThreadDashboard',
     'app-api:getWorkspaceDashboard',
+    'app-api:leaveWorkspace',
+    'app-api:listMyWorkspaceInvitations',
     'app-api:rotateOpenKitAccessToken',
     'app-api:searchApp',
-    'app-api:submitThreadGoalSteering',
+    'core-projection:listWorkspaces',
     'core-projection:subscribeTurnEvents',
   ]);
-
   assert.equal(new Set(operationCatalog.map((entry) => entry.id)).size, operationCatalog.length);
+  assert.ok(!operationCatalog.some((entry) => entry.id === 'knowledge.claim-promote'));
   assert.equal(operationCatalog.filter((entry) => entry.id === 'thread.items').length, 1);
   assert.deepEqual(
     operationCatalog.filter((entry) => entry.source === 'local-only').map((entry) => entry.id),
@@ -143,9 +147,9 @@ test('one catalog covers the checked App API and public Core projection', async 
     proposalDecision.inputSchema.safeParse({
       workspaceId: 'workspace_1',
       proposalId: 'proposal_1',
-      decision: 'edited',
+      decision: 'accepted',
     }).success,
-    false
+    true
   );
 
   const idsWithAccess = (requiredAccess) =>
@@ -178,11 +182,14 @@ test('one catalog covers the checked App API and public Core projection', async 
       'runtime.schemas',
       'runtime.validate',
       'storage.layout-report',
+      'user.disable',
       'vault.bootstrap-codex-auth',
       'vault.lock',
       'vault.server-use-list',
       'vault.status',
       'vault.unlock',
+      'workspace.access-recover',
+      'workspace.access-recovery-read',
     ]
   );
   assert.deepEqual(idsWithAccess('server-admin bearer token in server mode'), [
@@ -201,6 +208,181 @@ test('one catalog covers the checked App API and public Core projection', async 
     ['bootstrap.consume']
   );
   assert.ok(operationCatalog.some((entry) => entry.requiredAccess === 'authenticated user'));
+});
+
+test('the catalog projects the bearer-reachable Workspace sharing subset', async () => {
+  const { operationCatalog, operationExclusions } = await operations();
+  const sharingMappings = {
+    'user.disable': ['disableUser', 'app.disableUser'],
+    'workspace.access-recover': ['recoverWorkspaceAccess', 'app.recoverWorkspaceAccess'],
+    'workspace.access-recovery-read': [
+      'getWorkspaceAccessRecoveryState',
+      'app.getWorkspaceAccessRecoveryState',
+    ],
+    'workspace.invitation-create': ['createWorkspaceInvitation', 'app.createWorkspaceInvitation'],
+    'workspace.invitation-list': ['listWorkspaceInvitations', 'app.listWorkspaceInvitations'],
+    'workspace.invitation-revoke': ['revokeWorkspaceInvitation', 'app.revokeWorkspaceInvitation'],
+    'workspace.list': ['listAuthorizedWorkspaces', 'app.listAuthorizedWorkspaces'],
+    'workspace.member-access-change': [
+      'changeWorkspaceMemberAccess',
+      'app.changeWorkspaceMemberAccess',
+    ],
+    'workspace.member-list': ['listWorkspaceMembers', 'app.listWorkspaceMembers'],
+    'workspace.member-remove': ['removeWorkspaceMember', 'app.removeWorkspaceMember'],
+    'workspace.ownership-transfer': [
+      'transferWorkspaceOwnership',
+      'app.transferWorkspaceOwnership',
+    ],
+  };
+  assert.deepEqual(
+    Object.fromEntries(
+      operationCatalog
+        .filter((entry) => entry.id in sharingMappings)
+        .map((entry) => [entry.id, [entry.appOperationId, entry.clientMethod]])
+    ),
+    sharingMappings
+  );
+  assert.equal(
+    operationCatalog.find((entry) => entry.id === 'workspace.invitation-create')?.inputSensitivity,
+    'secret stdin'
+  );
+  assert.deepEqual(
+    operationExclusions
+      .filter((entry) => entry.owner === 'docs/specs/20260715-multi_user_workspace_system.md')
+      .map(({ source, name }) => `${source}:${name}`)
+      .sort(),
+    [
+      'app-api:acceptWorkspaceInvitation',
+      'app-api:declineWorkspaceInvitation',
+      'app-api:leaveWorkspace',
+      'app-api:listMyWorkspaceInvitations',
+      'core-projection:listWorkspaces',
+    ]
+  );
+});
+
+test('the catalog projects the approved Artifact, Material, and Goal steering operations', async () => {
+  const { operationCatalog } = await operations();
+  const expectedMappings = {
+    'artifact.import': 'importWorkspaceArtifact',
+    'artifact.introduce': 'introduceWorkspaceArtifact',
+    'artifact.review-decide': 'submitArtifactReviewDecision',
+    'artifact.review-list': 'listArtifactReviews',
+    'material.list': 'listWorkspaceMaterials',
+    'material.create': 'createWorkspaceMaterial',
+    'material.read': 'getWorkspaceMaterial',
+    'material.revision-list': 'listWorkspaceMaterialRevisions',
+    'material.revision-read': 'getWorkspaceMaterialRevision',
+    'material.revision-save': 'saveWorkspaceMaterialRevision',
+    'material.thread-read': 'getThreadMaterial',
+    'material.bind': 'bindThreadMaterial',
+    'material.unbind': 'unbindThreadMaterial',
+    'material.exclude': 'excludeThreadMaterial',
+    'material.restore': 'restoreThreadMaterial',
+    'goal.steering-send': 'submitThreadGoalSteering',
+    'goal.steering-follow-up': 'convertGoalSteeringToFollowUp',
+    'goal.steering-cancel': 'cancelGoalSteering',
+  };
+  const mapped = Object.fromEntries(
+    operationCatalog
+      .filter((entry) => entry.id in expectedMappings)
+      .map((entry) => [entry.id, entry.appOperationId])
+  );
+
+  assert.deepEqual(mapped, expectedMappings);
+  const artifactReviewDecision = operationCatalog.find(
+    (entry) => entry.id === 'artifact.review-decide'
+  );
+  assert.equal(
+    artifactReviewDecision?.inputSchema.safeParse({
+      workspaceId: 'ws_demo',
+      artifactId: 'artifact_demo',
+      artifactVersion: 1,
+      requestId: 'request_review',
+      decision: 'accepted',
+    }).success,
+    true
+  );
+  assert.equal(
+    artifactReviewDecision?.inputSchema.safeParse({
+      workspaceId: 'ws_demo',
+      artifactId: 'artifact_demo',
+      artifactVersion: 0,
+      requestId: 'request_review',
+      decision: 'accepted',
+    }).success,
+    false
+  );
+  assert.equal(
+    operationCatalog
+      .find((entry) => entry.id === 'goal.steering-send')
+      .inputSchema.safeParse({
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        requestId: 'req_material',
+        materialId: 'material_demo',
+        revisionId: 'revision_demo',
+        contentDigest: `sha256:${'a'.repeat(64)}`,
+      }).success,
+    true
+  );
+});
+
+test('restricted Material content operations fail before content-bearing transport', async () => {
+  const { operationCatalog } = await operations();
+  const contentCalls = [];
+  const client = {
+    app: {
+      createWorkspaceMaterial() {
+        contentCalls.push('create');
+      },
+      async getWorkspaceMaterial() {
+        return { material: { sensitivity: 'restricted' } };
+      },
+      getWorkspaceMaterialRevision() {
+        contentCalls.push('read');
+      },
+      saveWorkspaceMaterialRevision() {
+        contentCalls.push('save');
+      },
+    },
+  };
+  const cases = [
+    [
+      'material.create',
+      {
+        workspaceId: 'ws_demo',
+        requestId: 'req_create',
+        title: 'Restricted notes',
+        kind: 'markdown',
+        sensitivity: 'restricted',
+      },
+    ],
+    [
+      'material.revision-read',
+      { workspaceId: 'ws_demo', materialId: 'material_demo', revisionId: 'revision_demo' },
+    ],
+    [
+      'material.revision-save',
+      {
+        workspaceId: 'ws_demo',
+        materialId: 'material_demo',
+        requestId: 'req_save',
+        expectedRevisionId: 'revision_demo',
+        contentDigest: `sha256:${'a'.repeat(64)}`,
+        content: 'Restricted notes',
+      },
+    ],
+  ];
+
+  for (const [id, input] of cases) {
+    const operation = operationCatalog.find((entry) => entry.id === id);
+    await assert.rejects(
+      Promise.resolve().then(() => operation.handler({ client }, input)),
+      (error) => error.status === 409 && error.code === 'sensitive_content'
+    );
+  }
+  assert.deepEqual(contentCalls, []);
 });
 
 test('catalog search is concise and describe returns one machine-readable input contract', async () => {
@@ -316,7 +498,7 @@ test('the bundled CLI performs one typed call with fixed audit headers', async (
   const fetchStub = dataModule(`
     globalThis.fetch = async (url, options) => {
       const headers = new Headers(options.headers);
-      if (url !== 'http://nanocore.example/api/workspaces') throw new Error('unexpected URL');
+      if (url !== 'http://nanocore.example/api/app/workspaces') throw new Error('unexpected URL');
       if (options.method !== 'GET') throw new Error('unexpected method');
       if (headers.get('x-openkit-client-channel') !== 'openkit-cli') throw new Error('missing channel');
       if (headers.get('x-openkit-client-source') !== 'agent-skill') throw new Error('missing source');
@@ -397,7 +579,7 @@ test('the bundled CLI keeps discovery, typed failures, and local aborts truthful
         code: 'conflict',
         details: { path: '/Users/private', token: 'okt_environment' },
         message: 'Rejected okt_environment',
-        protocolVersion: '0.3.0',
+        protocolVersion: '0.4.0',
         requestId: 'server_request_1',
       }),
     ]
@@ -421,7 +603,7 @@ test('the bundled CLI keeps discovery, typed failures, and local aborts truthful
         code: 'vault_key_rejected',
         details: { masterKeyBase64 },
         message: `Rejected ${masterKeyBase64}`,
-        protocolVersion: '0.3.0',
+        protocolVersion: '0.4.0',
       }),
     ]
   );
@@ -442,7 +624,7 @@ test('the bundled CLI keeps discovery, typed failures, and local aborts truthful
       responseModule(401, {
         code: 'unauthorized',
         message: 'Authentication required.',
-        protocolVersion: '0.3.0',
+        protocolVersion: '0.4.0',
       }),
     ]
   );

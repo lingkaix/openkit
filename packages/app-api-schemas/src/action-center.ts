@@ -116,7 +116,6 @@ export const HumanAttentionActionKindSchema = z.enum([
   'refresh_agent_readiness',
   'switch_agent',
   'accept_knowledge',
-  'edit_knowledge',
   'reject_knowledge',
   'defer',
   ...WorkspaceSyncReviewDecisionSchema.options,
@@ -245,6 +244,21 @@ export const GoalReviewHumanAttentionSourceSchema = z
   })
   .strict();
 
+/** Verified pending-input source for one accepted Goal steering command. */
+export const PendingGoalSteeringHumanAttentionSourceSchema = z
+  .object({
+    type: z.literal('pending_input'),
+    workspaceId: z.string().min(1),
+    threadId: z.string().min(1),
+    pendingTurnId: z.string().min(1),
+    requestId: z.string().min(1),
+    contentItemId: z.string().min(1),
+    goalId: z.string().min(1),
+    activeTurnId: z.string().min(1),
+    state: z.enum(['queued', 'applied']),
+  })
+  .strict();
+
 /** Stable reference to one agent readiness-backed attention source. */
 export const AgentReadinessHumanAttentionSourceSchema = z
   .object({
@@ -255,15 +269,16 @@ export const AgentReadinessHumanAttentionSourceSchema = z
   })
   .strict();
 
-/** Stable reference to one artifact review-backed attention source. */
-export const ArtifactHumanAttentionSourceSchema = z
+/** Stable reference to one exact version-keyed Artifact Review attention source. */
+export const ArtifactReviewHumanAttentionSourceSchema = z
   .object({
-    type: z.literal('artifact'),
+    type: z.literal('artifact_review'),
+    reviewId: z.string().min(1),
     artifactId: z.string().min(1),
+    artifactVersion: z.number().int().positive(),
     workspaceId: z.string().min(1),
-    threadId: z.string().min(1).optional(),
-    turnId: z.string().min(1).optional(),
-    reviewStatus: z.string().min(1),
+    threadId: z.string().min(1),
+    turnId: z.string().min(1),
   })
   .strict();
 
@@ -314,8 +329,9 @@ export const HumanAttentionSourceSchema = z.discriminatedUnion('type', [
   GoalHumanAttentionSourceSchema,
   GoalTaskHumanAttentionSourceSchema,
   GoalReviewHumanAttentionSourceSchema,
+  PendingGoalSteeringHumanAttentionSourceSchema,
   AgentReadinessHumanAttentionSourceSchema,
-  ArtifactHumanAttentionSourceSchema,
+  ArtifactReviewHumanAttentionSourceSchema,
   WorkspaceReviewHumanAttentionSourceSchema,
   WorkspaceRecoveryHumanAttentionSourceSchema,
   KnowledgeHumanAttentionSourceSchema,
@@ -342,7 +358,9 @@ export const HumanAttentionRowSchema = z
     threadId: z.string().min(1).optional(),
     turnId: z.string().min(1).optional(),
     itemId: z.string().min(1).optional(),
+    reviewId: z.string().min(1).optional(),
     artifactId: z.string().min(1).optional(),
+    artifactVersion: z.number().int().positive().optional(),
     agentSessionId: z.string().min(1).optional(),
     goalId: z.string().min(1).optional(),
     taskId: z.string().min(1).optional(),
@@ -354,7 +372,28 @@ export const HumanAttentionRowSchema = z
     source: HumanAttentionSourceSchema,
     actions: z.array(HumanAttentionActionSchema),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (value.source.type !== 'artifact_review') {
+      return;
+    }
+    if (
+      value.kind !== 'artifact_review' ||
+      value.id !== `artifact-review:${value.source.reviewId}` ||
+      value.workspaceId !== value.source.workspaceId ||
+      value.threadId !== value.source.threadId ||
+      value.turnId !== value.source.turnId ||
+      value.reviewId !== value.source.reviewId ||
+      value.artifactId !== value.source.artifactId ||
+      value.artifactVersion !== value.source.artifactVersion
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Artifact Review rows require exact version-owned source lineage.',
+        path: ['source'],
+      });
+    }
+  });
 
 /** Unified Human Attention Action Center response payload. */
 export const ListHumanAttentionResponseSchema = z
@@ -388,12 +427,7 @@ export const ArtifactReviewDecisionSchema = z.enum([
 ]);
 
 /** Knowledge proposal decisions accepted by the app-local Action Center workflow. */
-export const KnowledgeProposalDecisionSchema = z.enum([
-  'accepted',
-  'edited',
-  'rejected',
-  'deferred',
-]);
+export const KnowledgeProposalDecisionSchema = z.enum(['accepted', 'rejected', 'deferred']);
 
 /** Request payload for recording one knowledge proposal decision. */
 export const SubmitKnowledgeProposalDecisionRequestSchema = z
@@ -401,27 +435,8 @@ export const SubmitKnowledgeProposalDecisionRequestSchema = z
     decision: KnowledgeProposalDecisionSchema,
     requestId: z.string().min(1).optional(),
     message: z.string().min(1).optional(),
-    title: z.string().min(1).optional(),
-    summary: z.string().min(1).optional(),
   })
-  .strict()
-  .superRefine((value, context) => {
-    const hasEdit = value.title !== undefined || value.summary !== undefined;
-    if (value.decision === 'edited' && !hasEdit) {
-      context.addIssue({
-        code: 'custom',
-        message: 'Edited knowledge proposal decisions require title or summary.',
-        path: ['decision'],
-      });
-    }
-    if (value.decision !== 'edited' && hasEdit) {
-      context.addIssue({
-        code: 'custom',
-        message: 'Knowledge proposal edit fields are only allowed for edited decisions.',
-        path: ['decision'],
-      });
-    }
-  });
+  .strict();
 
 /** Response payload after recording one knowledge proposal decision. */
 export const SubmitKnowledgeProposalDecisionResponseSchema = z

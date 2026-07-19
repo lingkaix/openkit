@@ -8,6 +8,7 @@ const completedTurn: Turn = {
   id: 'turn_demo',
   workspaceId: 'ws_demo',
   threadId: 'th_demo',
+  triggerActor: { kind: 'user', id: 'user_demo' },
   items: [],
   status: 'completed',
   humanGate: null,

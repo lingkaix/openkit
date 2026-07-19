@@ -235,6 +235,9 @@ importers:
 
   packages/config-schema:
     dependencies:
+      '@openkit/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@openkit/worker-protocol':
         specifier: workspace:*
         version: link:../worker-protocol

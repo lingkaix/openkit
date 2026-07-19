@@ -3,12 +3,14 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { GitPushRecord } from '@openkit/app-api-schemas';
+import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import {
   finishCapabilityCall,
   recordUsage,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
-import type { WorkspaceDb } from '../storage/db.js';
+import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import {
   assertGitPushCommandShape,
   buildGitPushCommand,
@@ -82,14 +84,16 @@ export async function runGitPushCommand(
 export interface ExecuteGitPushAttemptInput {
   /** Preflight and record lineage input. */
   readonly attempt: PrepareGitPushAttemptInput;
+  /** Core database owning current Workspace membership authority. */
+  readonly coreDb: CoreDb | undefined;
   /** Candidate process environment. */
   readonly env?: NodeJS.ProcessEnv;
   /** Approved repository object directory exposed to the isolated Git view. */
   readonly objectDirectory: string;
   /** Git object format required by the approved repository object database. */
   readonly objectFormat: 'sha1' | 'sha256';
-  /** Lazily resolves process environment after preflight and policy checks pass. */
-  readonly resolveEnv?: (capabilityCallId: string) => NodeJS.ProcessEnv | undefined;
+  /** Lazily resolves process environment, returning null for a current-authority refusal. */
+  readonly resolveEnv?: (capabilityCallId: string) => NodeJS.ProcessEnv | null | undefined;
   /** V1 provider gate result. */
   readonly provider: 'github' | 'unsupported';
   /** Remote name selected by the provider adapter. */
@@ -117,7 +121,10 @@ export async function executeGitPushAttempt(
     return preflight.record;
   }
 
-  if (!allowsRepoPush(workspaceDb, input)) {
+  if (!input.attempt.actorId) {
+    throw new Error('Git push execution requires an authenticated actor.');
+  }
+  if (!hasCurrentRepoPushAuthority(workspaceDb, input)) {
     return recordTerminalPushOutcome(workspaceDb, input, preflight.reviewIds, {
       errorSummary: 'Git push refused because the repo.push policy decision is not allowed.',
       outcome: 'refused-policy',
@@ -161,10 +168,12 @@ export async function executeGitPushAttempt(
     const capabilityCallId = `cap_${input.attempt.recordId}`;
     const now = new Date(timestamp(input));
     const call = startCapabilityCall({
+      authorityActor: { kind: 'user', id: input.attempt.actorId },
       workspaceDb,
       callId: capabilityCallId,
       capabilityId: 'workspace.git.push',
       family: 'network',
+      itemId: input.attempt.approvalRowId,
       operation: 'git.push',
       providerRef: 'github',
       redactionClass: 'product-safe',
@@ -176,7 +185,22 @@ export async function executeGitPushAttempt(
     });
     let env: NodeJS.ProcessEnv | undefined;
     try {
-      env = input.env ?? input.resolveEnv?.(call.id);
+      const resolvedEnv = input.env ?? input.resolveEnv?.(call.id);
+      if (resolvedEnv === null) {
+        finishCapabilityCall({
+          workspaceDb,
+          callId: call.id,
+          errorCode: 'refused-policy',
+          status: 'failed',
+          now,
+        });
+        return recordTerminalPushOutcome(workspaceDb, input, preflight.reviewIds, {
+          errorSummary: 'Git push refused because current vault.use authority is not allowed.',
+          outcome: 'refused-policy',
+          remoteHeadAfter: null,
+        });
+      }
+      env = resolvedEnv;
       if (!env?.GITHUB_TOKEN && !env?.GH_TOKEN) {
         throw new Error('GitHub credential is unavailable.');
       }
@@ -330,29 +354,37 @@ export async function executeGitPushAttempt(
     }
 
     if (!outcome && remoteHeadBefore) {
-      networkCalls = 2;
-      const pushCommand = buildGitPushCommand({
-        env,
-        expectedRemoteHead: remoteHeadBefore,
-        remoteName: input.remoteName,
-        sourceRef: input.sourceCommit,
-        targetBranch: input.attempt.targetBranch,
-      });
-      let pushResult: GitPushCommandRunnerResult;
-      try {
-        pushResult = await input.runner({
-          ...pushCommand,
-          cwd: view.directory,
-          env: networkEnv,
+      if (!hasCurrentRepoPushAuthority(workspaceDb, input)) {
+        outcome = {
+          errorSummary: 'Git push refused because current repo.push authority was removed.',
+          outcome: 'refused-policy',
+          remoteHeadAfter: null,
+        };
+      } else {
+        networkCalls = 2;
+        const pushCommand = buildGitPushCommand({
+          env,
+          expectedRemoteHead: remoteHeadBefore,
+          remoteName: input.remoteName,
+          sourceRef: input.sourceCommit,
+          targetBranch: input.attempt.targetBranch,
         });
-      } catch {
-        runnerFailed = true;
-        pushResult = { exitCode: 1, stderr: '', stdout: '' };
+        let pushResult: GitPushCommandRunnerResult;
+        try {
+          pushResult = await input.runner({
+            ...pushCommand,
+            cwd: view.directory,
+            env: networkEnv,
+          });
+        } catch {
+          runnerFailed = true;
+          pushResult = { exitCode: 1, stderr: '', stdout: '' };
+        }
+        outcome =
+          pushResult.exitCode === 0
+            ? successfulPush(input)
+            : failedPush(input, preflight.reviewIds, pushResult);
       }
-      outcome =
-        pushResult.exitCode === 0
-          ? successfulPush(input)
-          : failedPush(input, preflight.reviewIds, pushResult);
     }
 
     if (!outcome) {
@@ -479,13 +511,14 @@ function allowsRepoPush(workspaceDb: WorkspaceDb, input: ExecuteGitPushAttemptIn
 
   const row = workspaceDb.sqlite
     .prepare(
-      `SELECT action, owner_scope, workspace_id, result, resource_summary_json
+      `SELECT action, approval_id, owner_scope, workspace_id, result, resource_summary_json
        FROM permission_decisions
        WHERE decision_id = ?`
     )
     .get(decisionId) as
     | {
         action: string;
+        approval_id: string | null;
         owner_scope: string;
         resource_summary_json: string;
         result: string;
@@ -498,7 +531,8 @@ function allowsRepoPush(workspaceDb: WorkspaceDb, input: ExecuteGitPushAttemptIn
     row.action !== 'repo.push' ||
     row.owner_scope !== 'workspace' ||
     row.workspace_id !== input.attempt.workspaceId ||
-    row.result !== 'allow'
+    row.result !== 'allow' ||
+    !isTargetIssuedEffectAuthority(row.approval_id)
   ) {
     return false;
   }
@@ -509,6 +543,31 @@ function allowsRepoPush(workspaceDb: WorkspaceDb, input: ExecuteGitPushAttemptIn
     resource.repositoryResourceId === input.attempt.repositoryResourceId &&
     resource.targetBranch === input.attempt.targetBranch &&
     resource.workspaceId === input.attempt.workspaceId
+  );
+}
+
+/**
+ * Intersects the exact target-issued push decision with current actor authority.
+ *
+ * @param workspaceDb Open workspace-scope database handle.
+ * @param input Push execution input.
+ * @returns True only while the fresh actor may perform the exact approved push.
+ */
+function hasCurrentRepoPushAuthority(
+  workspaceDb: WorkspaceDb,
+  input: ExecuteGitPushAttemptInput
+): boolean {
+  const actorId = input.attempt.actorId;
+  return Boolean(
+    input.coreDb &&
+      actorId &&
+      currentWorkspaceAuthority(
+        input.coreDb,
+        input.attempt.workspaceId,
+        { kind: 'user', id: actorId },
+        'repo.push',
+        allowsRepoPush(workspaceDb, input)
+      )
   );
 }
 

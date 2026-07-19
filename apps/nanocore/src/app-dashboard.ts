@@ -8,15 +8,22 @@ import {
 } from '@openkit/app-api-schemas';
 import type { ArtifactSchema, ItemSchema, ThreadSchema, TurnSchema } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 
 import { asApiError } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
+import {
+  assertAuthorizedWorkspaceLineage,
+  isWorkspaceOperationAuthorized,
+} from './auth/operation-authorizer.js';
 import type { RuntimeConfigManager } from './config/runtime-config.js';
 import type { FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
 import { getThreadAgentSession } from './runtime/agent-session-read-model.js';
 import type { TurnExecutor } from './runtime/types.js';
 import type { WorkerControlGateway } from './runtime/worker-control-gateway.js';
+import { hasExactActiveHumanGate } from './runtime/worker-recovery.js';
+import type { CoreDb } from './storage/db.js';
 
 type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type Item = import('zod').infer<typeof ItemSchema>;
@@ -24,12 +31,7 @@ type Thread = import('zod').infer<typeof ThreadSchema>;
 type Turn = import('zod').infer<typeof TurnSchema>;
 
 const ACTIVE_WORK_STATUSES = new Set<Turn['status']>(['pending', 'running']);
-const ATTENTION_TURN_STATUSES = new Set<Turn['status']>([
-  'awaiting_human',
-  'failed',
-  'interrupted',
-  'cancelled',
-]);
+const ATTENTION_TURN_STATUSES = new Set<Turn['status']>(['failed', 'interrupted', 'cancelled']);
 
 /**
  * Returns true when a turn should appear as active work.
@@ -76,12 +78,19 @@ function sortArtifactsNewestFirst(artifacts: readonly Artifact[]): Artifact[] {
 /**
  * Returns unresolved approval request items.
  *
+ * @param store Store that owns the exact human Gate.
  * @param items Thread items to inspect.
- * @returns Approval request items without a matching decision item.
+ * @param decisionAuthorized Whether the actor may respond to approvals.
+ * @returns Completed approval request Items owned by an exact active Gate.
  */
 function pendingApprovalItems(
-  items: readonly Item[]
+  store: FsStore,
+  items: readonly Item[],
+  decisionAuthorized: boolean
 ): Array<Extract<Item, { type: 'approval-request' }>> {
+  if (!decisionAuthorized) {
+    return [];
+  }
   const decisions = new Set(
     items
       .filter((item): item is Extract<Item, { type: 'approval-decision' }> => {
@@ -91,19 +100,45 @@ function pendingApprovalItems(
   );
 
   return items.filter((item): item is Extract<Item, { type: 'approval-request' }> => {
-    return item.type === 'approval-request' && !decisions.has(item.approvalRequestId);
+    if (
+      item.type !== 'approval-request' ||
+      item.status !== 'completed' ||
+      decisions.has(item.approvalRequestId)
+    ) {
+      return false;
+    }
+    try {
+      const turn = store.getTurn(item.workspaceId, item.threadId, item.turnId);
+      return (
+        hasExactActiveHumanGate(store, turn) &&
+        turn.humanGate.kind === 'approval' &&
+        turn.humanGate.itemId === item.id &&
+        turn.humanGate.approvalRequestId === item.approvalRequestId
+      );
+    } catch {
+      return false;
+    }
   });
 }
 
 /**
  * Returns unresolved user-input request items.
  *
+ * @param store Store that owns the exact human Gate.
  * @param items Thread items to inspect.
- * @returns User-input request items without a matching response item.
+ * @param decisionAuthorized Whether the actor may run the responding Turn operation.
+ * @param responsibleUserId Actor id that must exactly own the input request.
+ * @returns Completed non-secret unique-question Items owned by an exact active Gate.
  */
 function pendingQuestionItems(
-  items: readonly Item[]
+  store: FsStore,
+  items: readonly Item[],
+  decisionAuthorized: boolean,
+  responsibleUserId: string | null
 ): Array<Extract<Item, { type: 'user-input-request' }>> {
+  if (!decisionAuthorized) {
+    return [];
+  }
   const responses = new Set(
     items
       .filter((item): item is Extract<Item, { type: 'user-input-response' }> => {
@@ -113,7 +148,30 @@ function pendingQuestionItems(
   );
 
   return items.filter((item): item is Extract<Item, { type: 'user-input-request' }> => {
-    return item.type === 'user-input-request' && !responses.has(item.userInputRequestId);
+    if (item.type !== 'user-input-request') {
+      return false;
+    }
+    const questionIds = item.questions.map((question) => question.id);
+    if (
+      item.status !== 'completed' ||
+      item.responsibleUserId !== responsibleUserId ||
+      responses.has(item.userInputRequestId) ||
+      item.questions.some((question) => question.isSecret) ||
+      new Set(questionIds).size !== questionIds.length
+    ) {
+      return false;
+    }
+    try {
+      const turn = store.getTurn(item.workspaceId, item.threadId, item.turnId);
+      return (
+        hasExactActiveHumanGate(store, turn) &&
+        turn.humanGate.kind === 'user-input' &&
+        turn.humanGate.itemId === item.id &&
+        turn.humanGate.userInputRequestId === item.userInputRequestId
+      );
+    } catch {
+      return false;
+    }
   });
 }
 
@@ -221,18 +279,31 @@ function terminalTurnSummary(turn: Turn): string {
  * @returns Product work status for the thread workbench.
  */
 function buildThreadWorkStatus(input: {
+  store: FsStore;
   turns: readonly Turn[];
   items: readonly Item[];
   artifacts: readonly Artifact[];
   selectedAgentId: string | null;
+  approvalDecisionAuthorized: boolean;
+  turnDecisionAuthorized: boolean;
+  responsibleUserId: string | null;
 }): ThreadWorkStatus {
   const turns = sortTurns(input.turns);
   const activeTurn = [...turns]
     .reverse()
     .find((turn) => !['completed', 'failed', 'interrupted', 'cancelled'].includes(turn.status));
   const latestArtifact = sortArtifactsNewestFirst(input.artifacts)[0] ?? null;
-  const pendingApprovals = pendingApprovalItems(input.items);
-  const pendingQuestions = pendingQuestionItems(input.items);
+  const pendingApprovals = pendingApprovalItems(
+    input.store,
+    input.items,
+    input.approvalDecisionAuthorized
+  );
+  const pendingQuestions = pendingQuestionItems(
+    input.store,
+    input.items,
+    input.turnDecisionAuthorized,
+    input.responsibleUserId
+  );
 
   return {
     currentMode: 'automation',
@@ -256,13 +327,19 @@ function buildThreadWorkStatus(input: {
  * @param workspaceId Workspace whose work sections are projected.
  * @param threads Workspace threads in the caller's preferred base ordering.
  * @param artifacts Workspace artifact inventory.
+ * @param approvalDecisionAuthorized Whether the actor may respond to approvals.
+ * @param turnDecisionAuthorized Whether the actor may run the responding Turn operation.
+ * @param responsibleUserId Actor id that must exactly own user-input requests.
  * @returns Active work, completions, and attention-needed sections.
  */
 function buildWorkspaceWorkSections(
   store: FsStore,
   workspaceId: string,
   threads: readonly Thread[],
-  artifacts: readonly Artifact[]
+  artifacts: readonly Artifact[],
+  approvalDecisionAuthorized: boolean,
+  turnDecisionAuthorized: boolean,
+  responsibleUserId: string | null
 ): Pick<WorkspaceDashboardResponse, 'activeWork' | 'recentCompletions' | 'attentionNeeded'> {
   const activeWork: WorkspaceDashboardResponse['activeWork'] = [];
   const recentCompletions: WorkspaceDashboardResponse['recentCompletions'] = [];
@@ -303,7 +380,7 @@ function buildWorkspaceWorkSections(
       }
     }
 
-    const pendingApproval = pendingApprovalItems(items)[0];
+    const pendingApproval = pendingApprovalItems(store, items, approvalDecisionAuthorized)[0];
 
     if (pendingApproval) {
       attentionNeeded.push({
@@ -318,7 +395,12 @@ function buildWorkspaceWorkSections(
       continue;
     }
 
-    const pendingQuestion = pendingQuestionItems(items)[0];
+    const pendingQuestion = pendingQuestionItems(
+      store,
+      items,
+      turnDecisionAuthorized,
+      responsibleUserId
+    )[0];
 
     if (pendingQuestion) {
       attentionNeeded.push({
@@ -369,12 +451,14 @@ function buildWorkspaceWorkSections(
  */
 export function registerDashboardRoutes({
   app,
+  coreDb,
   requestStore,
   runtimeConfigManager,
   turnExecutor,
   workerControlGateway,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
+  readonly coreDb: CoreDb | undefined;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
   readonly runtimeConfigManager: RuntimeConfigManager;
   readonly turnExecutor: TurnExecutor;
@@ -384,6 +468,21 @@ export function registerDashboardRoutes({
     try {
       const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
+      const actor = c.get('actor');
+      const approvalDecisionAuthorized =
+        coreDb === undefined ||
+        (actor !== undefined &&
+          isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
+            mutating: true,
+            policyOperation: 'approval.respond',
+          }));
+      const turnDecisionAuthorized =
+        coreDb === undefined ||
+        (actor !== undefined &&
+          isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
+            mutating: true,
+            policyOperation: 'turn.run',
+          }));
       const workspace = store.getWorkspace(workspaceId);
       const resources = store.getWorkspaceResources(workspaceId);
       const threads = store
@@ -395,7 +494,10 @@ export function registerDashboardRoutes({
         store,
         workspaceId,
         threads,
-        workspaceArtifacts
+        workspaceArtifacts,
+        approvalDecisionAuthorized,
+        turnDecisionAuthorized,
+        actor?.userId ?? null
       );
 
       return c.json(
@@ -431,9 +533,36 @@ export function registerDashboardRoutes({
     try {
       const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
+      const actor = c.get('actor');
+      const approvalDecisionAuthorized =
+        coreDb === undefined ||
+        (actor !== undefined &&
+          isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
+            mutating: true,
+            policyOperation: 'approval.respond',
+          }));
+      const turnDecisionAuthorized =
+        coreDb === undefined ||
+        (actor !== undefined &&
+          isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
+            mutating: true,
+            policyOperation: 'turn.run',
+          }));
       const threadId = c.req.param('threadId');
       const workspace = store.getWorkspace(workspaceId);
-      const thread = store.getThread(workspaceId, threadId);
+      const workspaceAccess = c.get('workspaceAccess');
+      let thread: ReturnType<FsStore['getThread']>;
+      try {
+        thread = store.getThread(workspaceId, threadId);
+      } catch (error) {
+        if (workspaceAccess) {
+          assertAuthorizedWorkspaceLineage(workspaceAccess, null);
+        }
+        throw error;
+      }
+      if (workspaceAccess) {
+        assertAuthorizedWorkspaceLineage(workspaceAccess, thread.workspaceId);
+      }
       const turns = store.listThreadTurns(workspaceId, threadId);
       const threadItems = store.listThreadItems(workspaceId, threadId);
       const latestTurn = turns.at(-1) ?? null;
@@ -459,13 +588,17 @@ export function registerDashboardRoutes({
           turns,
           artifacts,
           workStatus: buildThreadWorkStatus({
+            store,
             turns,
             items: threadItems,
             artifacts: threadArtifacts,
             selectedAgentId,
+            approvalDecisionAuthorized,
+            turnDecisionAuthorized,
+            responsibleUserId: actor?.userId ?? null,
           }),
           composer: {
-            disabled: false,
+            disabled: !turnDecisionAuthorized,
             defaultModelId: workspace.defaults?.defaultModelId ?? null,
             defaultAgentId: workspace.defaults?.defaultAgentId ?? null,
           },
@@ -475,6 +608,9 @@ export function registerDashboardRoutes({
         })
       );
     } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       return asApiError((error as Error).message);
     }
   });

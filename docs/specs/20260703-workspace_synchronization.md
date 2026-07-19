@@ -226,9 +226,7 @@ The implementation now persists redacted `BackendWorkspaceHandle` rows at materi
 
 ## Record Contract
 
-Workspace synchronization uses workspace-owned records. Every record carries
-workspace, thread, turn, agent session, package snapshot, backend summary, and
-digest references where applicable.
+Workspace synchronization uses workspace-owned records. The named synchronization graph is authoritative in `workspace.sqlite`; any inspectable or portable file form is a non-authoritative projection or manifest. Every record carries workspace, thread, turn, agent session, package snapshot, backend summary, and digest references where applicable.
 
 `WorkspaceInputSnapshot` records what NanoCore intended to expose:
 
@@ -471,36 +469,6 @@ The OpenShell materializer should:
 
 The OpenShell adapter compiles OpenKit-owned materialization plans into OpenShell-native artifacts and normalizes OpenShell evidence back into OpenKit-owned records. Public App API, end-user CLI, Action Center, and reviewer surfaces must not need OpenShell-native ids or YAML.
 
-## OpenShell Codex Runtime Configuration
-
-OpenShell Codex workers need the same effective Codex home that works on the
-host.
-
-For ChatGPT-account based Codex subscriptions, `auth.json` is injected only
-through the vault-backed runtime-file path created by
-`POST /api/app/vault/bootstrap/codex-auth-json`. Uploading a host `auth.json`
-path directly is not supported.
-
-The OpenShell backend may still upload the non-secret Codex config file so the
-container uses the same model defaults as the host Codex CLI:
-
-- `OPENKIT_OPENSHELL_CODEX_CONFIG_TOML`, copied to `/sandbox/.codex/config.toml`
-
-The config path is runtime configuration and must not be exposed through public
-App API responses or bundled-CLI envelopes.
-
-The backend may also accept `OPENKIT_OPENSHELL_CODEX_MODEL` for deployments that
-intentionally override the host Codex model, but the safest default is to
-preserve the host Codex config that already works with the logged-in
-subscription.
-
-For direct provider use, the authored manifest and resolved AEP must explicitly
-allow the Codex binary to reach every required OpenAI or ChatGPT HTTPS endpoint.
-The first verified dogfood AEP allowed `api.openai.com`, `chatgpt.com`,
-`chat.openai.com`, and `auth.openai.com` for `/usr/local/bin/codex` and
-`/usr/local/lib/codex/bin/codex`. This historical set is not a backend or
-deployment default.
-
 ## Generated Files And Object Store Inputs
 
 Generated files can be:
@@ -539,21 +507,21 @@ A Workspace Sync Review decision is exactly one of `accepted`, `needs_refinement
 
 The durable Workspace Sync Review is the only decision and apply owner for its change set. Its command is addressed by `reviewId` through the workspace-sync review decision route. The backing `artifactId` is inspection and evidence linkage only: the generic Artifact Review route MUST NOT decide or apply it, no Artifact id prefix may select the Workspace Sync Review path, and no generic Artifact Review verdict may be translated into this vocabulary.
 
-Only `accepted` authorizes creation or continuation of the exact `WorkspaceApplyPlan`, strategy-specific mutation, and `WorkspaceApplyResult`. `needs_refinement`, `rejected`, and `blocked` are terminal review decisions with no workspace mutation and no implicit retry, follow-up Turn, or generic Artifact Review effect; any later work must use its separately documented owner and produce a new review when appropriate.
+Only a command decision of `accepted` authorizes creation or continuation of the exact `WorkspaceApplyPlan`, strategy-specific mutation, and `WorkspaceApplyResult`. Before handoff the durable Review remains `pending`; the existing apply owner persists the terminal `accepted` Review and successful apply result together. `needs_refinement`, `rejected`, and `blocked` are terminal review decisions with no workspace mutation and no implicit retry, follow-up Turn, or generic Artifact Review effect; any later work must use its separately documented owner and produce a new review when appropriate.
 
-Before applying, NanoCore must:
+The authenticated actor of the fresh Workspace Sync Review/apply command is the current `review.apply` authority. After validating the exact pending Review, requested `accepted` decision, change set, target, and existing policy or Approval preconditions, NanoCore applies the shared current-authority predicate immediately before handing the accepted command to the existing serialized Git or filesystem apply owner. That handoff is the V1 governed-effect boundary. The owner may finish its existing queue, apply preflight, staging, and target mutation if membership changes after handoff; revocation applies at the next owner boundary. The worker Turn's `triggerActor` remains immutable source lineage and does not authorize apply; a removed or disabled worker origin does not prevent a different currently authorized owner or editor from applying the reviewed output through their own new command. A failed handoff check performs no strategy mutation and writes no successful `WorkspaceApplyResult`; it leaves the Review pending, does not promote stale output by inference, and creates no apply-recovery state. The existing plan and worker evidence remain non-authorizing inspection records, and a later fresh authorized command re-runs every normal precondition. V1 adds no inner authorization callback, cross-owner lock, rollback protocol, or settlement workflow for the bounded post-handoff race.
+
+After a successful authority handoff, the existing apply owner must:
 
 - verify workspace baseline still matches expected digests
 - detect path conflicts
 - detect binary overwrite risks
 - detect unsupported permission changes and record supported permission changes
-- re-run policy checks
-- confirm approval state
 - create an apply plan
 
 Conflicts create a review item or apply result and do not silently merge.
 
-The Git-backed apply slice uses only an `accepted` durable Workspace Sync Review. NanoCore validates the collected patch payload against the `WorkspaceChangeSet.patch` digest and byte count, runs `git apply --check`, and then applies the patch to the linked repository.
+The Git-backed apply slice accepts only a `pending` durable Workspace Sync Review plus the command decision `accepted` at handoff. NanoCore validates the collected patch payload against the `WorkspaceChangeSet.patch` digest and byte count, runs `git apply --check`, applies the patch to the linked repository, and persists the terminal `accepted` Review with the successful `WorkspaceApplyResult` through the existing owner.
 
 The first filesystem apply slice uses a NanoCore-owned opaque staging registry.
 Public review payloads expose only `filesystem-staging://...` references, while

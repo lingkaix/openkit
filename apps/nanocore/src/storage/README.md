@@ -1,6 +1,6 @@
 # Storage
 
-This directory owns NanoCore's physical data-root layout, ownership-scoped SQLite databases, canonical workspace file records, migrations, integrity recovery, derived indexes, backup, export, and import mechanics.
+This directory owns NanoCore's physical data-root layout, ownership-scoped SQLite databases, canonical workspace file records, migrations, integrity validation, derived indexes, backup, export, and import mechanics.
 
 ## Source Of Truth
 
@@ -17,9 +17,12 @@ One record family must have one durable authority. Do not add aggregate workspac
 ## Boundaries
 
 - `fs-layout.ts` owns safe paths and accepted directory placement.
-- `db.ts` and `migrate.ts` own database opening, integrity recovery, and committed migrations.
+- `db.ts` and `migrate.ts` own database opening, integrity validation, and committed migrations.
+- Authoritative SQLite integrity failure stops boot and leaves the original database file unchanged; only derived indexes may rebuild automatically.
 - `workspace-file-records.ts` owns canonical workspace record serialization and boot loading.
 - `command-request-records.ts` owns scope-homed SQLite command idempotency; process-local duplicate collapse remains in `../runtime/idempotent-command.ts`.
+- `../workspace-materials.ts` owns exactly the three app-local Material tables and their same-transaction command mutations; worker delivery, Artifact Review, and portable graph rewriting remain with their later S16 stages.
+- `../goal-steering-authority.ts` owns the Thread-unique pending input and immutable terminal outcome rows; callers own Item, Context Package, follow-up Turn, and body-free receipt effects around its exact transaction fences.
 - `workspace-export.ts` owns the V2 export tree, manifest, exact-byte inventory, and offline verification.
 - `workspace-import.ts` parses only verified bytes, validates and remints the import graph, and reconstructs importable records.
 - `workspace-portable-file-state.ts` owns portable knowledge ledgers, workspace config and schema, native OKF pages, and export/import capture and publication of context materializations.
@@ -39,7 +42,7 @@ One record family must have one durable authority. Do not add aggregate workspac
 
 ## Verification
 
-Run focused layout, migration, database, canonical reload, index rebuild, export, import, integrity recovery, and backup tests for the changed owner, followed by the package gates in the [NanoCore source guide](../README.md).
+Run focused layout, migration, database, canonical reload, index rebuild, export, import, integrity failure, and backup tests for the changed owner, followed by the package gates in the [NanoCore source guide](../README.md).
 
 ## Related Design
 

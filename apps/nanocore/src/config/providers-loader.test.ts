@@ -10,6 +10,14 @@ import { loadProviderProfiles } from './providers-loader.js';
 
 const EXPECTED_V003_PROVIDER_TEMPLATES = [
   {
+    baseUrl: 'https://api.anthropic.com',
+    displayName: 'Anthropic Worker Direct',
+    fileName: 'anthropic-worker-direct.provider.jsonc',
+    id: 'anthropic',
+    kind: 'direct',
+    secretRef: undefined,
+  },
+  {
     baseUrl: 'https://api.openai.com/v1',
     displayName: 'OpenAI',
     fileName: 'openai-default.provider.jsonc',
@@ -97,9 +105,9 @@ describe('loadProviderProfiles', () => {
           displayName: template.displayName,
           id: template.id,
           kind: template.kind,
-          secretRef: template.secretRef,
         })
       );
+      expect(profile?.secretRef).toBe(template.secretRef);
       expect(parsed.secretRef).toBe(template.secretRef);
     }
   });

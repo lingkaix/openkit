@@ -11,7 +11,7 @@ import type {
 import { DiagnosticsPanel } from './DiagnosticsPanel';
 
 const meta: MetaResponse = {
-  protocolVersion: '0.3.0',
+  protocolVersion: '0.4.0',
   capabilities: ['core.approvals', 'core.artifacts'],
   eventFamilies: ['turn.started', 'item.created', 'turn.completed'],
   itemTypes: ['assistant-message'],
@@ -184,7 +184,7 @@ function setupDiagnostics(): SetupDiagnostics {
  */
 function event(sequence: number, name: TurnEvent['event']): TurnEvent {
   return {
-    protocolVersion: '0.3.0',
+    protocolVersion: '0.4.0',
     event: name,
     requestId: null,
     workspaceId: 'ws_demo',
@@ -230,7 +230,7 @@ describe('DiagnosticsPanel', () => {
     render(() => <DiagnosticsPanel events={[]} meta={meta} turns={[]} />);
 
     expect(screen.getByRole('heading', { name: /api\/meta snapshot/i })).toBeInTheDocument();
-    expect(screen.getByText(/"protocolVersion": "0.3.0"/i)).toBeInTheDocument();
+    expect(screen.getByText(/"protocolVersion": "0.4.0"/i)).toBeInTheDocument();
   });
 
   it('renders configured usable role default providers from app diagnostics', () => {
@@ -355,8 +355,8 @@ describe('DiagnosticsPanel', () => {
             usage: {
               summaries: [
                 {
-                  cachedInputTokens: 60,
-                  cacheHitRate: 0.6,
+                  cacheReadTokens: 60,
+                  cacheWriteTokens: 20,
                   completionTokens: 25,
                   endpoint: 'responses',
                   inputTokens: 100,
@@ -366,6 +366,16 @@ describe('DiagnosticsPanel', () => {
                   requestCount: 1,
                   totalTokens: 125,
                 },
+                {
+                  completionTokens: 10,
+                  endpoint: 'responses',
+                  inputTokens: 40,
+                  lastObservedAt: '2026-05-26T00:01:00.000Z',
+                  model: 'gpt-5.1-mini',
+                  providerId: 'openai-no-cache-report',
+                  requestCount: 1,
+                  totalTokens: 50,
+                },
               ],
             },
           },
@@ -373,6 +383,7 @@ describe('DiagnosticsPanel', () => {
             diagnostics: [],
             registry: [
               {
+                dispatchFamily: 'provider-api',
                 id: 'openai-default',
                 gatewayCapabilities: {
                   chatCompletions: 'native',
@@ -383,6 +394,7 @@ describe('DiagnosticsPanel', () => {
                 models: ['gpt-5.1'],
               },
               {
+                dispatchFamily: 'codex-oauth',
                 id: 'openai-codex',
                 gatewayCapabilities: {
                   chatCompletions: 'bridged',
@@ -405,8 +417,11 @@ describe('DiagnosticsPanel', () => {
     expect(screen.getByText(/chat native/i)).toBeInTheDocument();
     expect(screen.getAllByText(/responses native/i)).toHaveLength(2);
     expect(screen.getByText(/chat bridged/i)).toBeInTheDocument();
-    expect(screen.getByText(/60 cached input tokens/i)).toBeInTheDocument();
-    expect(screen.getByText(/60% cache hit rate/i)).toBeInTheDocument();
+    expect(screen.getByText(/60 cache read tokens/i)).toBeInTheDocument();
+    expect(screen.getByText(/20 cache write tokens/i)).toBeInTheDocument();
+    expect(screen.queryByText(/cache hit rate/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/cached input tokens/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/undefined cache (?:read|write) tokens/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/prompt_cache_key/i)).not.toBeInTheDocument();
   });
 
@@ -821,6 +836,7 @@ describe('DiagnosticsPanel', () => {
         id: 'tu_1',
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
+        triggerActor: { kind: 'user', id: 'user_demo' },
         items: [],
         status: 'running',
         humanGate: null,
@@ -834,6 +850,7 @@ describe('DiagnosticsPanel', () => {
         id: 'tu_2',
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
+        triggerActor: { kind: 'user', id: 'user_demo' },
         items: [],
         status: 'completed',
         humanGate: null,
@@ -861,6 +878,7 @@ describe('DiagnosticsPanel', () => {
         id: 'tu_failed',
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
+        triggerActor: { kind: 'user', id: 'user_demo' },
         items: [],
         status: 'failed',
         humanGate: null,

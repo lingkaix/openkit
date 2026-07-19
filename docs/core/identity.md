@@ -36,7 +36,7 @@ App API may expose sign-in, invitation, and profile endpoints, but those endpoin
 
 ## Core Concepts
 
-`User` is an account-level human subject.
+`User` is Core's canonical human-subject record family. Account-backed humans and the implicit local human use the same family; `kind = local` is an implementation projection for the implicit local human, not a distinct identity type.
 
 `WorkspaceMember` is a user's membership in one workspace.
 
@@ -48,25 +48,26 @@ App API may expose sign-in, invitation, and profile endpoints, but those endpoin
 
 `Invitation` is a pending request to join a workspace.
 
-`AutomationIdentity` is a non-human actor that can trigger work under a declared owner or policy context.
+`AutomationIdentity` is a non-human actor that can trigger work under a declared owner or policy context. The concept alone does not define a token-issuance or Workspace-membership contract; any such contract requires a separate owning specification.
 
 `IntegrationIdentity` is an external system identity such as a webhook source, repository app, or provider integration.
 
-`ActorRef` is the stable, non-secret identity summary attached to shared history and governed actions. It carries actor kind (`user`, `agent`, `automation`, `integration`, or `system`), stable actor ID, and a nullable responsible user ID. For a human actor, the responsible user ID equals the actor ID. Credential kind, credential ID, channel, display name, and email are request or audit projections rather than part of the stable actor reference.
+`ActorRef` is the stable, non-secret identity summary attached to shared history and governed actions. It is a closed tagged union: a human actor carries `kind=user` and its stable `id`, and that same ID is the responsible user by definition; an `agent`, `automation`, `integration`, or `system` actor additionally carries nullable `responsibleUserId`. This avoids duplicating a human identifier in two fields and keeps the complete invariant representable in both the canonical Zod schema and generated JSON Schema. Credential kind, credential ID, channel, display name, and email are request or audit projections rather than part of the stable actor reference.
 
 These are conceptual record families, not a complete field list.
 
 ## Typical Record Areas
 
-`User` record areas include stable identity, `kind` (`local` for the implicit local user or `human` for an account-level human subject), display name, contact handles, status, creation time, last activity time, and profile metadata.
+`User` record areas include stable identity, `kind` (`local` only for the implicit local-human projection or `human` for an account-backed human), display name, contact handles, status, creation time, last activity time, and profile metadata. Both `kind` values remain projections of the same Core `User` family.
 
-User status values may include:
+The current User lifecycle has exactly these status values:
 
 ```text
 active
 disabled
-deleted
 ```
+
+`disabled` preserves the stable User identity and historical references while denying new authentication and authority. V1 exposes no re-enable or hard-delete transition; adding either requires an accepted owning specification before implementation.
 
 `WorkspaceMember` record areas include workspace ID, user ID, membership status, access level or policy attributes, invitation reference, joined time, removed time, and revision.
 
@@ -138,7 +139,7 @@ Every shared workspace must be able to answer:
 
 Workspace ownership is a distinguished lifecycle and authority relationship. It does not make the owner's user storage the parent of canonical workspace data, and changing the owner must not change workspace identity or move workspace-owned state.
 
-The canonical owner must also have active membership. Ownership is stored once and effective owner authority is derived from that relationship rather than duplicated as a mutable membership role. Disabling or deleting a user cannot cascade-delete a Workspace; ownership must first transfer or the destructive user operation must fail.
+The canonical owner must also have active membership. Ownership is stored once and effective owner authority is derived from that relationship rather than duplicated as a mutable membership role. Disabling a user preserves ownership for explicit administrator recovery and cannot cascade-delete a Workspace. Any future destructive user-deletion design must transfer ownership first or fail.
 
 ## Invariants
 

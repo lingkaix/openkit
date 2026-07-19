@@ -1,11 +1,10 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
-import type { AgentManifest, AuthoredAgentConfig } from './agents/manifest.js';
+import type { AgentManifest } from './agents/manifest.js';
 import type { BetterAuthServer } from './auth/middleware.js';
-import { parseJsoncObject } from './config/jsonc.js';
 import type { OpenKitConfig } from './config/openkit-config.js';
 import { loadOpenKitConfig, openKitConfigPath } from './config/openkit-config.js';
 import { ProviderRegistry } from './providers/registry.js';
@@ -59,53 +58,29 @@ function createConfig(providerId?: string): OpenKitConfig {
 }
 
 /**
- * Creates an authored agent config for setup diagnostics tests.
- *
- * @param overrides Partial config override.
- * @returns Authored agent config.
- */
-function createAgentConfig(overrides: Partial<AuthoredAgentConfig> = {}): AuthoredAgentConfig {
-  return {
-    schemaVersion: 1,
-    id: 'agent_codex_host',
-    displayName: 'Codex Host Agent',
-    runtime: {
-      kind: 'codex',
-      adapter: 'codex-app-server',
-      version: '0.130.0',
-    },
-    mode: 'local',
-    transport: { kind: 'stdio' },
-    provider: {
-      ref: 'agent-openrouter',
-      model: 'openai/gpt-5.2',
-    },
-    deployment: {
-      local: {
-        command: 'codex',
-        args: ['app-server', '--listen', 'stdio://'],
-      },
-    },
-    extensions: {},
-    ...overrides,
-  };
-}
-
-/**
  * Creates an agent manifest aligned with the authored agent config.
  *
+ * @param overrides Manifest fields to override.
  * @returns Agent manifest.
  */
-function createAgentManifest(): AgentManifest {
+function createAgentManifest(overrides: Partial<AgentManifest> = {}): AgentManifest {
   return {
-    adapter: 'codex-app-server',
-    deployments: ['local'],
     displayName: 'Codex Host Agent',
     id: 'agent_codex_host',
-    kind: 'custom',
-    providerRef: 'agent-openrouter',
-    runtime: 'codex',
-    version: '0.0.2',
+    provider: { model: 'openai/gpt-5.2', ref: 'agent-openrouter' },
+    requiredFeatures: [],
+    runtime: {
+      adapter: 'codex',
+      binaries: [
+        { id: 'openkit-worker-shim', path: '/usr/local/bin/openkit-worker-shim' },
+        { id: 'node', path: '/usr/local/bin/node' },
+        { id: 'codex', path: '/usr/local/bin/codex' },
+      ],
+      image: { pullPolicy: 'never', ref: 'openkit/worker-codex:test' },
+      kind: 'codex',
+    },
+    schemaVersion: 1,
+    ...overrides,
   };
 }
 
@@ -119,7 +94,6 @@ function createSeededDiagnosticsApp(providerId?: string): ReturnType<typeof crea
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-seeded-diagnostics-'));
 
   ensureLayout(dataRoot);
-  rewriteOpenRouterBaseUrl(dataRoot, 'https://user:password@openrouter.ai/api/v1');
 
   if (providerId) {
     writeFileSync(
@@ -133,19 +107,6 @@ function createSeededDiagnosticsApp(providerId?: string): ReturnType<typeof crea
     openKitConfig: loadOpenKitConfig(dataRoot),
     agentManifests: [],
   });
-}
-
-/**
- * Rewrites the seeded OpenRouter profile base URL inside one temporary data root.
- *
- * @param dataRoot Temporary data root that already contains seeded provider templates.
- * @param baseUrl Replacement OpenRouter base URL.
- */
-function rewriteOpenRouterBaseUrl(dataRoot: string, baseUrl: string): void {
-  const profilePath = join(dataRoot, 'config', 'providers', 'openrouter-default.provider.jsonc');
-  const parsed = parseJsoncObject(readFileSync(profilePath, 'utf8'), profilePath);
-
-  writeFileSync(profilePath, `${JSON.stringify({ ...parsed, baseUrl }, null, 2)}\n`);
 }
 
 /**
@@ -207,6 +168,7 @@ describe('Settings diagnostics app API', () => {
       providers: {
         registry: [
           {
+            dispatchFamily: 'provider-api',
             baseUrl: 'https://example.com/v1',
             defaultModel: 'llama3.2',
             displayName: 'Ollama',
@@ -262,6 +224,7 @@ describe('Settings diagnostics app API', () => {
       expect(res.status).toBe(200);
       expect(body.providers.registry).toEqual([
         {
+          dispatchFamily: 'provider-api',
           baseUrl: 'https://openrouter.ai/api/v1',
           displayName: 'OpenRouter',
           gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
@@ -323,9 +286,11 @@ describe('Settings diagnostics app API', () => {
         providerId: 'openrouter',
         reason: 'credentials-missing',
       });
-      expect((stillMissingCredentials.providers as { registry: unknown[] }).registry).toHaveLength(
-        5
-      );
+      expect(
+        (stillMissingCredentials.providers as { registry: Array<{ id: string }> }).registry.map(
+          (provider) => provider.id
+        )
+      ).toContain('anthropic');
       expect(stillMissingCredentials.providers).toEqual({
         diagnostics: [],
         registry: expect.arrayContaining([
@@ -616,7 +581,6 @@ describe('Settings diagnostics app API', () => {
       providerRegistry,
       providerCredentialResolver: (secretRef) =>
         secretRef === 'env:OPENROUTER_API_KEY' ? rawSecrets[1] : null,
-      agentConfigs: [createAgentConfig()],
       agentManifests: [createAgentManifest()],
     });
 
@@ -660,7 +624,7 @@ describe('Settings diagnostics app API', () => {
           readiness: { status: 'ready' },
           setup: {
             status: 'ready',
-            deploymentMode: 'local',
+            deploymentMode: null,
             providerId: 'agent-openrouter',
           },
         },
@@ -691,8 +655,7 @@ describe('Settings diagnostics app API', () => {
       ]),
       providerCredentialResolver: (secretRef) =>
         secretRef === 'env:OPENROUTER_API_KEY' ? 'configured-test-credential' : null,
-      agentConfigs: [createAgentConfig({ requiredFeatures: ['workspace.mount.fuse'] })],
-      agentManifests: [createAgentManifest()],
+      agentManifests: [createAgentManifest({ requiredFeatures: ['workspace.mount.fuse'] })],
     });
 
     const res = await app.request('/api/setup/diagnostics');

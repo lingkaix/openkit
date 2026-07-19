@@ -64,7 +64,7 @@ function createGitRepositoryPath(): string {
  * @param workspaceId Workspace id that owns the repository.
  */
 function addReadyRepository(coreDb: CoreDb, workspaceId: string): void {
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'user_local', workspaceId);
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
   try {
     applyScopedMigrations(workspaceDb);
     upsertWorkspaceRepositoryResource(workspaceDb, {

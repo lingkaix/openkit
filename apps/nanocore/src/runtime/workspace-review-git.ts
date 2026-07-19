@@ -108,7 +108,8 @@ export async function stageGitWorkspaceReview(input: {
       input.repository.localPath,
       prepared,
       commitMessage,
-      identity
+      identity,
+      input.review.review.createdAt
     );
     const missingRef = zeroObjectId(commitId);
     let branchCreated = false;
@@ -419,7 +420,8 @@ export async function applyGitWorkspaceReview(input: {
             input.repository.localPath,
             prepared,
             commitMessage,
-            identity
+            identity,
+            input.appliedAt
           )
         : null;
     let patchApplied = indexedPatchRecovered;
@@ -1194,6 +1196,7 @@ async function worktreeMatchesPreparedTree(
  * @param prepared Validated patch tree.
  * @param message Lineage-bearing commit message.
  * @param identity Configured human Git identity.
+ * @param timestamp Canonical timestamp for both Git commit identities.
  * @returns New commit object id.
  */
 async function createCommitObject(
@@ -1201,7 +1204,8 @@ async function createCommitObject(
   repositoryPath: string,
   prepared: PreparedWorkspaceReviewPatch,
   message: string,
-  identity: { readonly email: string; readonly name: string }
+  identity: { readonly email: string; readonly name: string },
+  timestamp: string
 ): Promise<string> {
   return requireCommitId(
     (
@@ -1213,8 +1217,10 @@ async function createCommitObject(
         {
           GIT_AUTHOR_EMAIL: identity.email,
           GIT_AUTHOR_NAME: identity.name,
+          GIT_AUTHOR_DATE: timestamp,
           GIT_COMMITTER_EMAIL: identity.email,
           GIT_COMMITTER_NAME: identity.name,
+          GIT_COMMITTER_DATE: timestamp,
         }
       )
     ).trim(),
@@ -1619,13 +1625,8 @@ function workspaceReviewCommitMessage(
       `Workspace review worker turn belongs to another workspace: ${review.review.id}`
     );
   }
-  const agent = turn.agentId ? store.getAgent(review.review.workspaceId, turn.agentId) : null;
-  const safeAgentId = (agent?.id ?? 'unknown-agent').replace(/[^A-Za-z0-9._+-]/g, '-');
-  const workerName =
-    (agent?.name ?? 'Unknown OpenKit Agent')
-      .replace(/[<>\r\n]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim() || 'Unknown OpenKit Agent';
+  const safeAgentId = (turn.agentId ?? 'unknown-agent').replace(/[^A-Za-z0-9._+-]/g, '-');
+  const workerName = turn.agentId ? `OpenKit Agent ${safeAgentId}` : 'Unknown OpenKit Agent';
   return [
     `${staged ? 'Stage' : 'Apply'} workspace review ${review.review.id}`,
     '',

@@ -36,7 +36,7 @@ function createFixture(prefix: string) {
     dataRoot,
     store,
     workspace,
-    workspaceRoot: join(dataRoot, 'users', 'user_local', 'workspaces', workspace.id),
+    workspaceRoot: join(dataRoot, 'workspaces', workspace.id),
   };
 }
 
@@ -150,7 +150,6 @@ function workspaceImportPayload(
     turns: [],
     itemRevisions: [],
     artifacts: [],
-    artifactReviews: [],
     agentSessions: [],
     turnEvents: [],
   };
@@ -161,7 +160,7 @@ describe('direct canonical write boundaries', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-import-staging-symlink-'));
     const store = new FsStore({ dataRoot });
     const workspaceId = 'ws_import_staging_symlink';
-    const workspacesRoot = join(dataRoot, 'users', 'user_local', 'workspaces');
+    const workspacesRoot = join(dataRoot, 'workspaces');
     const outsideRoot = installOutsideParent(
       join(workspacesRoot, '.staging'),
       'openkit-import-staging-outside-'
@@ -325,7 +324,10 @@ describe('direct canonical write boundaries', () => {
       'openkit-event-continuity-'
     );
     const thread = store.createThread(workspace.id, 'Event continuity thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Validate event continuity');
+    const turn = store.createTurn(workspace.id, thread.id, 'Validate event continuity', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const item = store.createItem({
       id: `it_${turn.id}`,
       workspaceId: workspace.id,

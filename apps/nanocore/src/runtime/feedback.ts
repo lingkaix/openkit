@@ -30,8 +30,6 @@ export function feedbackFilePath(store: FsStore, turn: Turn): string {
 
   return join(
     dataRoot,
-    'users',
-    store.getUserId(),
     'workspaces',
     turn.workspaceId,
     'threads',

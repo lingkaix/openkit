@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
@@ -29,8 +31,6 @@ export interface TurnExecutorFactoryEnv {
   OPENKIT_CONTAINER_PLACEMENT?: string | undefined;
   /** Container backend family selected for real Worker Agent execution. */
   OPENKIT_CONTAINER_BACKEND?: string | undefined;
-  /** Worker image or source passed to `openshell sandbox create`. */
-  OPENKIT_OPENSHELL_WORKER_IMAGE?: string | undefined;
   /** Direct NanoCore worker-control URL reached by the sandbox worker. */
   OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL?: string | undefined;
   /** SSH destination that owns the remote disposable Cell lifecycle helper. */
@@ -39,10 +39,6 @@ export interface TurnExecutorFactoryEnv {
   OPENKIT_OPENSHELL_GATEWAY?: string | undefined;
   /** OpenShell gateway endpoint used for remote placement. */
   OPENKIT_OPENSHELL_GATEWAY_URL?: string | undefined;
-  /** Optional host Codex config file uploaded into explicitly configured OpenShell workers. */
-  OPENKIT_OPENSHELL_CODEX_CONFIG_TOML?: string | undefined;
-  /** Optional Codex model used by one-shot OpenShell worker commands. */
-  OPENKIT_OPENSHELL_CODEX_MODEL?: string | undefined;
   /** HTTP port used when deriving the default worker-control upstream. */
   PORT?: string | undefined;
 }
@@ -57,8 +53,8 @@ export interface CreateConfiguredTurnExecutorOptions {
   workerControlGateway?: WorkerControlGateway | undefined;
   /** Optional vault backend used for grant-derived provider attachments. */
   vaultBackend?: (() => VaultBackend) | undefined;
-  /** Optional process-local store owner shared with the public App API. */
-  storeForUserId?: ((userId: string) => FsStore) | undefined;
+  /** Optional process-local store shared with the public App API. */
+  store?: FsStore | undefined;
 }
 
 /** Shared real-worker lifecycle selected from NanoCore runtime configuration. */
@@ -132,7 +128,7 @@ export function createConfiguredWorkerLifecycleRuntime(
     options.coreDb,
     placement,
     options.vaultBackend,
-    options.storeForUserId
+    options.store
   );
 }
 
@@ -161,7 +157,7 @@ function parseContainerPlacement(value: string | undefined): 'local' | 'remote' 
  * @param coreDb Durable Core database and deployment identity source.
  * @param placement Local or remote disposable Cell placement.
  * @param vaultBackend Optional vault backend used for runtime provider grants.
- * @param storeForUserId Optional process-local store owner shared with the App API.
+ * @param sharedStore Optional process-local store shared with the App API.
  * @returns Shared worker lifecycle runtime.
  */
 function createOpenShellWorkerLifecycleRuntime(
@@ -170,10 +166,8 @@ function createOpenShellWorkerLifecycleRuntime(
   coreDb: CoreDb,
   placement: 'local' | 'remote',
   vaultBackend?: (() => VaultBackend) | undefined,
-  storeForUserId?: ((userId: string) => FsStore) | undefined
+  sharedStore?: FsStore | undefined
 ): ConfiguredWorkerLifecycleRuntime {
-  const sandboxImageRef =
-    normalizeEnvValue(env.OPENKIT_OPENSHELL_WORKER_IMAGE) ?? 'openkit/worker-codex:dev';
   const sshTarget =
     placement === 'remote'
       ? readRequiredRemoteEnv(
@@ -190,10 +184,8 @@ function createOpenShellWorkerLifecycleRuntime(
         )
       : 'http://127.0.0.1:17670';
   const workerControlBaseUrl = resolveWorkerControlBaseUrl(env, placement);
-  const codexModel = normalizeEnvValue(env.OPENKIT_OPENSHELL_CODEX_MODEL);
   const layoutMarker = readDataRootLayoutMarker(coreDb.dataRoot);
   const backend = new OpenShellWorkerGovernanceBackend({
-    codexConfigTomlPath: normalizeEnvValue(env.OPENKIT_OPENSHELL_CODEX_CONFIG_TOML),
     cellLifecycle: new OpenShellCellController(sshTarget ? { sshTarget } : {}),
     cli: new OpenShellCli(),
     dataRoot: coreDb.dataRoot,
@@ -222,23 +214,19 @@ function createOpenShellWorkerLifecycleRuntime(
           backend,
           coreDb,
           environmentBackend: {
-            ...(codexModel ? { codexModel } : {}),
             workerControlBaseUrl,
             gatewayUrl,
             kind: 'openshell',
             placement,
-            sandboxImageRef,
           },
           ...(vaultBackend ? { vaultBackend } : {}),
         });
 
-  /** Restores the existing immutable package, owner, and read-only backend handle. */
-  async function restoreDurableSession(session: WorkerBackendSessionRecord): Promise<{
-    readonly environmentPackage: AgentEnvironmentPackage;
-    readonly userId: string;
-  }> {
-    const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, session.leaseId);
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, admission.userId, session.workspaceId);
+  /** Restores the existing immutable package and read-only backend handle. */
+  async function restoreDurableSession(
+    session: WorkerBackendSessionRecord
+  ): Promise<AgentEnvironmentPackage> {
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, session.workspaceId);
     let environmentPackage: AgentEnvironmentPackage;
     try {
       applyScopedMigrations(workspaceDb);
@@ -251,7 +239,9 @@ function createOpenShellWorkerLifecycleRuntime(
       workspaceDb.sqlite.close();
     }
     const capabilities = await backend.describeCapabilities();
+    const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, session.leaseId);
     if (
+      !isDeepStrictEqual(environmentPackage.scope.triggerActor, admission.triggerActor) ||
       session.backendKind !== 'openshell' ||
       session.backendVersion !== (capabilities.version ?? null) ||
       session.workerImage !== environmentPackage.runtime.image.ref ||
@@ -269,7 +259,7 @@ function createOpenShellWorkerLifecycleRuntime(
       stagingDirectoryRef: session.stagingDirectoryRef,
       transientProviderInstanceId: session.transientProviderInstanceId,
     });
-    return { environmentPackage, userId: admission.userId };
+    return environmentPackage;
   }
 
   return {
@@ -279,8 +269,8 @@ function createOpenShellWorkerLifecycleRuntime(
       if (!(turnExecutor instanceof WorkerGovernanceTurnExecutor)) {
         throw new Error('The self-check executor cannot reconcile a real worker session.');
       }
-      const { environmentPackage, userId } = await restoreDurableSession(session);
-      const store = storeForUserId?.(userId) ?? new FsStore({ dataRoot: coreDb.dataRoot, userId });
+      const environmentPackage = await restoreDurableSession(session);
+      const store = sharedStore ?? new FsStore({ dataRoot: coreDb.dataRoot });
       const recoveredStatus = await turnExecutor.resumeAcceptedFinalStatus(
         store,
         environmentPackage,

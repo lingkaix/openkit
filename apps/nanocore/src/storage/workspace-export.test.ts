@@ -4,22 +4,63 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
+import { createArtifactReview } from '../artifact-reviews.js';
 import { createDemoWorkspaceForUser, FsStore } from '../lib/store.js';
 import { createApp } from '../test-support/app.js';
-import { openWorkspaceDb } from './db.js';
+import {
+  bindThreadMaterial,
+  createWorkspaceMaterial,
+  saveWorkspaceMaterialRevision,
+} from '../workspace-materials.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { openCoreDb, openWorkspaceDb } from './db.js';
 import { LOCAL_USER_ID } from './fs-layout.js';
-import { applyScopedMigrations } from './migrate.js';
+import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import {
   dryRunWorkspaceImport,
   verifyWorkspaceExportTree,
   WORKSPACE_EXPORT_MANIFEST_FILE,
   WORKSPACE_EXPORT_NON_PORTABLE_WORKSPACE_SQLITE_TABLES,
   WORKSPACE_EXPORT_PORTABLE_WORKSPACE_SQLITE_TABLES,
-  writeWorkspaceExportTree,
+  type WriteWorkspaceExportTreeInput,
+  writeWorkspaceExportTree as writeWorkspaceExportTreeOwner,
 } from './workspace-export.js';
+import {
+  artifactReferenceItemId,
+  listUnresolvedUserInputRequestItemIds,
+} from './workspace-file-records.js';
 import { readWorkspaceImportSnapshot } from './workspace-import.js';
 
 const timestamp = '2026-07-05T00:00:00.000Z';
+const localActor = { kind: 'user', id: LOCAL_USER_ID } as const;
+
+/** Export fixture input with empty Material owner families supplied by the local writer wrapper. */
+type WorkspaceExportTestInput = Omit<
+  WriteWorkspaceExportTreeInput,
+  'threadMaterialBindings' | 'workspaceMaterialRevisions' | 'workspaceMaterials'
+> &
+  Partial<
+    Pick<
+      WriteWorkspaceExportTreeInput,
+      'threadMaterialBindings' | 'workspaceMaterialRevisions' | 'workspaceMaterials'
+    >
+  >;
+
+/**
+ * Writes one test export while supplying explicit empty private work-resource owner families.
+ *
+ * @param input Complete export fixture with optional work-resource rows.
+ * @returns Verified export tree.
+ * @throws Error when the production export writer rejects the fixture.
+ */
+function writeWorkspaceExportTree(input: WorkspaceExportTestInput) {
+  return writeWorkspaceExportTreeOwner({
+    threadMaterialBindings: [],
+    workspaceMaterialRevisions: [],
+    workspaceMaterials: [],
+    ...input,
+  });
+}
 
 /** Returns one absent export root beneath a unique temporary parent. */
 function freshExportRoot(prefix: string): string {
@@ -32,6 +73,20 @@ function readImportSnapshot(exportRoot: string, targetWorkspaceId: string) {
     verified: verifyWorkspaceExportTree({ exportRoot }),
     targetWorkspaceId,
   });
+}
+
+/**
+ * Removes completed user-input responses from canonical Item JSONL.
+ *
+ * @param text Canonical Item revision JSONL.
+ * @returns Canonical JSONL containing the unresolved request only.
+ */
+function withoutUserInputResponses(text: string): string {
+  return `${text
+    .trim()
+    .split('\n')
+    .filter((line) => JSON.parse(line).type !== 'user-input-response')
+    .join('\n')}\n`;
 }
 
 /**
@@ -146,6 +201,13 @@ describe('workspace export verifier', () => {
       itemRevisions: [],
       artifacts: [],
       artifactReviews: [],
+      workspaceMaterials: [{ workspaceId: 'ws_demo', materialId: 'mat_demo' }],
+      workspaceMaterialRevisions: [
+        { workspaceId: 'ws_demo', materialId: 'mat_demo', revisionId: 'mrev_demo' },
+      ],
+      threadMaterialBindings: [
+        { workspaceId: 'ws_demo', threadId: 'th_demo', materialId: 'mat_demo' },
+      ],
       agentSessions: [],
       turnEvents: [],
       workspaceQuarantineRecords: [
@@ -176,9 +238,12 @@ describe('workspace export verifier', () => {
       'records/knowledge-observations.jsonl',
       'records/knowledge-retrieval-traces.jsonl',
       'records/knowledge.jsonl',
+      'records/thread-material-bindings.jsonl',
       'records/threads.jsonl',
       'records/turn-events.jsonl',
       'records/turns.jsonl',
+      'records/workspace-material-revisions.jsonl',
+      'records/workspace-materials.jsonl',
       'records/workspace-quarantine-records.jsonl',
       'records/workspace.json',
     ]);
@@ -187,6 +252,9 @@ describe('workspace export verifier', () => {
         readFileSync(join(root, 'records', 'workspace-quarantine-records.jsonl'), 'utf8').trim()
       )
     ).toMatchObject({ id: 'wqr_1', workspaceId: 'ws_demo' });
+    expect(
+      JSON.parse(readFileSync(join(root, 'records', 'workspace-materials.jsonl'), 'utf8').trim())
+    ).toEqual({ materialId: 'mat_demo', workspaceId: 'ws_demo' });
     expect(existsSync(join(root, 'records', 'workspace-sync-evidence-bundles.jsonl'))).toBe(false);
     expect(JSON.parse(readFileSync(join(root, 'records', 'workspace.json'), 'utf8'))).toMatchObject(
       {
@@ -244,6 +312,7 @@ describe('workspace export verifier', () => {
         workspaceSchema: null,
         nativeKnowledgePages: new Map(),
         contextMaterializations: new Map(),
+        workerContextPackageFiles: new Map(),
       },
       knowledgeProposals: [
         {
@@ -345,11 +414,21 @@ describe('workspace export verifier', () => {
         format: 'markdown',
         body: '# Portable artifact\n\nThe body has one file owner.',
       },
+      contentDigest: `sha256:${createHash('sha256')
+        .update('# Portable artifact\n\nThe body has one file owner.', 'utf8')
+        .digest('hex')}`,
+      lastMutationRequestId: 'artifact-create-source',
+      origin: {
+        kind: 'turn-output',
+        threadId: thread.id,
+        turnId: firstItemRevision.turnId,
+        requestId: 'artifact-create-source',
+      },
       createdAt: timestamp,
       updatedAt: timestamp,
     };
     const artifactItem = {
-      id: 'it_artifact_source',
+      id: artifactReferenceItemId(artifact.id, firstItemRevision.turnId),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: firstItemRevision.turnId,
@@ -358,6 +437,7 @@ describe('workspace export verifier', () => {
       parentItemId: firstItemRevision.id,
       artifactId: artifact.id,
       artifactVersion: artifact.version,
+      lastMutationRequestId: artifact.lastMutationRequestId,
       title: artifact.title,
       summary: artifact.summary,
       createdAt: timestamp,
@@ -377,35 +457,90 @@ describe('workspace export verifier', () => {
       createdAt: timestamp,
       completedAt: null,
     };
+    const userMessageItem = {
+      id: 'it_user_source',
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: firstItemRevision.turnId,
+      type: 'user-message',
+      actor: localActor,
+      status: 'completed',
+      text: 'Preserve the initiating actor.',
+      createdAt: timestamp,
+      completedAt: timestamp,
+    } as const;
+    const userInputRequestItem = {
+      id: 'it_user_input_request_source',
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: firstItemRevision.turnId,
+      type: 'user-input-request',
+      responsibleUserId: localActor.id,
+      status: 'completed',
+      userInputRequestId: 'uir_source',
+      prompt: 'Confirm portable attribution.',
+      questions: [
+        {
+          id: 'question_portable',
+          header: 'Portable attribution',
+          question: 'Continue?',
+          options: null,
+          isOther: true,
+          isSecret: false,
+        },
+      ],
+      createdAt: timestamp,
+      completedAt: timestamp,
+    } as const;
+    const userInputResponseRequestId = 'req_user_input_response_source';
+    const userInputResponseItem = {
+      id: 'it_user_input_response_source',
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: firstItemRevision.turnId,
+      type: 'user-input-response',
+      actor: localActor,
+      causationId: userInputResponseRequestId,
+      status: 'completed',
+      userInputRequestId: userInputRequestItem.userInputRequestId,
+      answers: { question_portable: ['Yes'] as [string] },
+      createdAt: timestamp,
+      completedAt: timestamp,
+    } as const;
+    expect(
+      listUnresolvedUserInputRequestItemIds([
+        userInputRequestItem,
+        {
+          ...userInputResponseItem,
+          actor: { kind: 'user', id: 'user_other' },
+        },
+      ])
+    ).toEqual([userInputRequestItem.id]);
     const turn = {
       id: firstItemRevision.turnId,
       workspaceId: workspace.id,
       threadId: thread.id,
-      items: [currentItem, artifactItem, approvalItem],
+      triggerActor: localActor,
+      items: [
+        currentItem,
+        artifactItem,
+        approvalItem,
+        userMessageItem,
+        userInputRequestItem,
+        userInputResponseItem,
+      ],
       status: 'awaiting_human',
       humanGate: {
         kind: 'approval',
         approvalRequestId: approvalItem.approvalRequestId,
         itemId: approvalItem.id,
       },
-      agentSessionId: agentSession.id,
+      agentSessionId: null,
       error: null,
       configVersion: null,
       startedAt: timestamp,
       completedAt: null,
       durationMs: null,
-    };
-    const artifactReview = {
-      artifactId: artifact.id,
-      workspaceId: workspace.id,
-      threadId: thread.id,
-      turnId: turn.id,
-      status: 'needs_refinement',
-      requestId: 'artifact-review-export',
-      message: 'Refine this artifact in a deterministic future turn.',
-      decidedAt: timestamp,
-      followUpTurnId: 'tu_future_refinement',
-      lifecycle: 'pending',
     };
     const agentSessionEvent = {
       protocolVersion: PROTOCOL_VERSION,
@@ -469,9 +604,17 @@ describe('workspace export verifier', () => {
       threads: [thread],
       turns: [turn],
       knowledge: [],
-      itemRevisions: [firstItemRevision, artifactItem, approvalItem, currentItem],
+      itemRevisions: [
+        firstItemRevision,
+        artifactItem,
+        approvalItem,
+        currentItem,
+        userMessageItem,
+        userInputRequestItem,
+        userInputResponseItem,
+      ],
       artifacts: [artifact],
-      artifactReviews: [artifactReview],
+      artifactReviews: [],
       agentSessions: [agentSession],
       turnEvents: [[turn.id, [agentSessionEvent, artifactDeltaEvent, approvalEvent]]],
     };
@@ -495,9 +638,15 @@ describe('workspace export verifier', () => {
     const imported = snapshot as unknown as {
       threads: Array<typeof thread>;
       turns: Array<typeof turn>;
-      itemRevisions: Array<typeof currentItem | typeof artifactItem | typeof approvalItem>;
+      itemRevisions: Array<
+        | typeof currentItem
+        | typeof artifactItem
+        | typeof approvalItem
+        | typeof userMessageItem
+        | typeof userInputRequestItem
+        | typeof userInputResponseItem
+      >;
       artifacts: Array<typeof artifact>;
-      artifactReviews: Array<typeof artifactReview>;
       agentSessions: Array<typeof agentSession>;
       turnEvents: Array<
         [string, Array<typeof agentSessionEvent | typeof artifactDeltaEvent | typeof approvalEvent>]
@@ -505,9 +654,8 @@ describe('workspace export verifier', () => {
     };
 
     expect.soft(imported.turns).toHaveLength(1);
-    expect.soft(imported.itemRevisions).toHaveLength(4);
+    expect.soft(imported.itemRevisions).toHaveLength(7);
     expect.soft(imported.artifacts).toHaveLength(1);
-    expect.soft(imported.artifactReviews).toHaveLength(1);
     expect.soft(imported.agentSessions).toHaveLength(1);
     expect.soft(imported.turnEvents).toHaveLength(1);
 
@@ -515,16 +663,14 @@ describe('workspace export verifier', () => {
     const importedTurn = imported.turns?.[0];
     const importedRevisions = imported.itemRevisions ?? [];
     const importedArtifact = imported.artifacts?.[0];
-    const importedReview = imported.artifactReviews?.[0];
     const importedSession = imported.agentSessions?.[0];
     const importedEventEntry = imported.turnEvents?.[0];
 
     if (
       importedThread &&
       importedTurn &&
-      importedRevisions.length === 4 &&
+      importedRevisions.length === 7 &&
       importedArtifact &&
-      importedReview &&
       importedSession &&
       importedEventEntry
     ) {
@@ -534,6 +680,9 @@ describe('workspace export verifier', () => {
       const importedArtifactItem = importedRevisions[1]!;
       const importedApprovalItem = importedRevisions[2]!;
       const importedCurrentItem = importedRevisions[3]!;
+      const importedUserMessageItem = importedRevisions[4]!;
+      const importedUserInputRequestItem = importedRevisions[5]!;
+      const importedUserInputResponseItem = importedRevisions[6]!;
 
       expect.soft(importedThread.id).not.toBe(thread.id);
       expect.soft(importedTurn.id).not.toBe(turn.id);
@@ -543,9 +692,17 @@ describe('workspace export verifier', () => {
       expect.soft(importedTurn).toMatchObject({
         workspaceId: targetWorkspaceId,
         threadId: importedThread.id,
-        agentSessionId: importedSession.id,
+        agentSessionId: null,
         humanGate: { itemId: importedApprovalItem.id },
-        items: [importedCurrentItem, importedArtifactItem, importedApprovalItem],
+        triggerActor: localActor,
+        items: [
+          importedCurrentItem,
+          importedArtifactItem,
+          importedApprovalItem,
+          importedUserMessageItem,
+          importedUserInputRequestItem,
+          importedUserInputResponseItem,
+        ],
       });
       expect
         .soft(
@@ -558,12 +715,28 @@ describe('workspace export verifier', () => {
           'artifact-reference',
           'approval-request',
           `assistant-message:${currentItem.text}`,
+          'user-message',
+          'user-input-request',
+          'user-input-response',
         ]);
       expect.soft(importedCurrentItem.id).toBe(importedFirstRevision.id);
       expect.soft(importedArtifactItem).toMatchObject({
         parentItemId: importedCurrentItem.id,
         artifactId: importedArtifact.id,
         artifactVersion: importedArtifact.version,
+      });
+      expect.soft(importedUserMessageItem).toMatchObject({
+        type: 'user-message',
+        actor: localActor,
+      });
+      expect.soft(importedUserInputRequestItem).toMatchObject({
+        type: 'user-input-request',
+        responsibleUserId: localActor.id,
+      });
+      expect.soft(importedUserInputResponseItem).toMatchObject({
+        type: 'user-input-response',
+        actor: localActor,
+        causationId: userInputResponseRequestId,
       });
       expect.soft(importedRevisions).toEqual(
         importedRevisions.map((item) => ({
@@ -579,15 +752,6 @@ describe('workspace export verifier', () => {
         turnId: importedTurn.id,
         content: artifact.content,
       });
-      expect.soft(importedReview).toMatchObject({
-        artifactId: importedArtifact.id,
-        workspaceId: targetWorkspaceId,
-        threadId: importedThread.id,
-        turnId: importedTurn.id,
-        status: 'needs_refinement',
-        lifecycle: 'pending',
-      });
-      expect.soft(importedReview.followUpTurnId).not.toBe(artifactReview.followUpTurnId);
       expect.soft(importedSession).toMatchObject({
         workspaceId: targetWorkspaceId,
         threadId: importedThread.id,
@@ -639,10 +803,55 @@ describe('workspace export verifier', () => {
         turns: [{ id: importedTurn.id }],
         itemRevisions: importedRevisions.map((item) => ({ id: item.id })),
         artifacts: [{ id: importedArtifact.id }],
-        artifactReviews: [{ followUpTurnId: importedReview.followUpTurnId }],
         agentSessions: [{ id: importedSession.id }],
       });
     }
+
+    const unresolvedRoot = freshExportRoot('openkit-workspace-history-unresolved-writer-');
+    const unresolvedItems = turn.items.filter((item) => item.type !== 'user-input-response');
+    const unresolvedRevisions = exportInput.itemRevisions.filter(
+      (item) => item.type !== 'user-input-response'
+    );
+
+    expect(() =>
+      writeWorkspaceExportTree({
+        ...exportInput,
+        exportRoot: unresolvedRoot,
+        exportId: 'wsexp_history_unresolved',
+        turns: [{ ...turn, items: unresolvedItems }],
+        itemRevisions: unresolvedRevisions,
+      })
+    ).toThrow(new RegExp(userInputRequestItem.id));
+    expect(existsSync(unresolvedRoot)).toBe(false);
+
+    const itemPath = 'records/item-revisions.jsonl';
+    const unresolvedItemText = withoutUserInputResponses(exported.fileContents.get(itemPath)!);
+    const unresolvedFileContents = new Map(exported.fileContents);
+
+    unresolvedFileContents.set(itemPath, unresolvedItemText);
+    expect(() =>
+      readWorkspaceImportSnapshot({
+        verified: { ...exported, fileContents: unresolvedFileContents },
+        targetWorkspaceId: 'ws_unresolved_import_target',
+      })
+    ).toThrow(new RegExp(userInputRequestItem.id));
+
+    const manifestPath = join(root, WORKSPACE_EXPORT_MANIFEST_FILE);
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    const itemEntry = manifest.contentInventory.find(
+      (candidate: { path: string }) => candidate.path === itemPath
+    );
+
+    writeFileSync(join(root, itemPath), unresolvedItemText);
+    itemEntry.bytes = Buffer.byteLength(unresolvedItemText);
+    itemEntry.digest = `sha256:${createHash('sha256').update(unresolvedItemText).digest('hex')}`;
+    manifest.contentDigest = `sha256:${createHash('sha256')
+      .update(JSON.stringify(manifest.contentInventory))
+      .digest('hex')}`;
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    expect(() => verifyWorkspaceExportTree({ exportRoot: root })).toThrow(
+      new RegExp(userInputRequestItem.id)
+    );
 
     const invalidRoot = freshExportRoot('openkit-workspace-history-invalid-');
     expect(() => {
@@ -650,7 +859,13 @@ describe('workspace export verifier', () => {
         ...exportInput,
         exportRoot: invalidRoot,
         exportId: 'wsexp_history_invalid',
-        artifacts: [{ ...artifact, turnId: 'tu_stale' }],
+        artifacts: [
+          {
+            ...artifact,
+            turnId: 'tu_stale',
+            origin: { ...artifact.origin, turnId: 'tu_stale' },
+          },
+        ],
       });
       readImportSnapshot(invalidRoot, targetWorkspaceId);
     }).toThrow(`Artifact ${artifact.id} has invalid artifact-reference lineage.`);
@@ -687,11 +902,15 @@ describe('workspace export verifier', () => {
       knowledge: fixture.knowledge,
       itemRevisions: [],
       artifacts: [],
-      artifactReviews: [],
       agentSessions: [],
       turnEvents: [],
     });
-    const turn = store.createTurn(fixture.workspace.id, fixture.thread.id, 'Retain full history');
+    const turn = store.createTurn(
+      fixture.workspace.id,
+      fixture.thread.id,
+      'Retain full history',
+      localActor
+    );
     for (let index = 0; index < 101; index += 1) {
       store.emitTurnEvent(turn.id, {
         event: 'turn.started',
@@ -721,6 +940,162 @@ describe('workspace export verifier', () => {
         Array.from({ length: 101 }, (_, index) => index + 1)
       );
     }
+  });
+
+  it('round-trips private Material and Review owners through the workspace endpoints', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-material-review-export-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const now = Date.parse(timestamp);
+    coreDb.sqlite
+      .prepare(
+        `INSERT INTO users (
+          id, display_name, email, email_verified, created_at, updated_at, kind
+        ) VALUES (?, ?, ?, false, ?, ?, 'human')`
+      )
+      .run(LOCAL_USER_ID, 'Local user', 'local@example.com', now, now);
+    const fixture = createDemoWorkspaceForUser(LOCAL_USER_ID);
+    const store = new FsStore({ dataRoot });
+    store.importWorkspaceSnapshot({
+      workspace: fixture.workspace,
+      threads: [fixture.thread],
+      turns: [],
+      knowledge: [],
+      itemRevisions: [],
+      artifacts: [],
+      agentSessions: [],
+      turnEvents: [],
+    });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: fixture.workspace.id,
+      now: new Date(timestamp),
+    });
+    const turn = store.createTurn(
+      fixture.workspace.id,
+      fixture.thread.id,
+      'Create review output',
+      localActor
+    );
+    const workspaceDb = openWorkspaceDb(dataRoot, fixture.workspace.id);
+    applyScopedMigrations(workspaceDb);
+    const material = createWorkspaceMaterial(workspaceDb, {
+      acceptedAt: timestamp,
+      actorId: LOCAL_USER_ID,
+      kind: 'markdown',
+      requestId: 'request-material-export',
+      sensitivity: 'internal',
+      title: 'Portable material',
+    });
+    const baseContent = '# Base material\n';
+    const baseContentDigest = `sha256:${createHash('sha256').update(baseContent).digest('hex')}`;
+    saveWorkspaceMaterialRevision(workspaceDb, {
+      acceptedAt: timestamp,
+      actorId: LOCAL_USER_ID,
+      content: baseContent,
+      contentDigest: baseContentDigest,
+      expectedRevisionId: null,
+      materialId: material.materialId,
+      requestId: 'request-material-revision-export',
+    });
+    bindThreadMaterial(workspaceDb, {
+      acceptedAt: timestamp,
+      expectedBindingState: 'absent',
+      materialId: material.materialId,
+      requestId: 'request-material-binding-export',
+      threadId: fixture.thread.id,
+    });
+    const artifactContent = '# Proposed material\n';
+    const artifactDigest = `sha256:${createHash('sha256').update(artifactContent).digest('hex')}`;
+    const artifact = store.createArtifact({
+      id: 'art_material_review_export',
+      workspaceId: fixture.workspace.id,
+      threadId: fixture.thread.id,
+      turnId: turn.id,
+      kind: 'report',
+      title: 'Portable review',
+      status: 'ready',
+      summary: null,
+      version: 1,
+      content: { body: artifactContent, format: 'markdown' },
+      contentDigest: artifactDigest,
+      lastMutationRequestId: 'request-artifact-export',
+      origin: {
+        kind: 'turn-output',
+        requestId: 'request-artifact-export',
+        threadId: fixture.thread.id,
+        turnId: turn.id,
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    createArtifactReview(workspaceDb, {
+      artifactId: artifact.id,
+      artifactVersion: artifact.version,
+      contentDigest: artifact.contentDigest,
+      sourceAgentId: null,
+      sourceThreadId: fixture.thread.id,
+      sourceTurnId: turn.id,
+      materialProposal: null,
+      createdAt: timestamp,
+    });
+    workspaceDb.sqlite.close();
+
+    const app = createApp({ coreDb, dataRoot, store });
+    const response = await app.request(`/api/app/workspaces/${fixture.workspace.id}/export`, {
+      method: 'POST',
+    });
+    expect(response.status).toBe(200);
+    const { exportId } = (await response.json()) as { exportId: string };
+    const importResponse = await app.request('/api/app/workspace-imports', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        sourceWorkspaceId: fixture.workspace.id,
+        exportId,
+        requestId: '00000000-0000-4000-8000-000000000051',
+      }),
+    });
+    const importResponseText = await importResponse.text();
+    expect(importResponse.status, importResponseText).toBe(200);
+    const { importedWorkspaceId } = JSON.parse(importResponseText) as {
+      importedWorkspaceId: string;
+    };
+    const importedWorkspaceDb = openWorkspaceDb(dataRoot, importedWorkspaceId);
+    try {
+      expect(
+        importedWorkspaceDb.sqlite
+          .prepare(
+            `SELECT
+              (SELECT COUNT(*) FROM workspace_materials) AS materials,
+              (SELECT COUNT(*) FROM workspace_material_revisions) AS revisions,
+              (SELECT COUNT(*) FROM thread_material_bindings) AS bindings,
+              (SELECT COUNT(*) FROM artifact_reviews) AS reviews`
+          )
+          .get()
+      ).toEqual({ materials: 1, revisions: 1, bindings: 1, reviews: 1 });
+    } finally {
+      importedWorkspaceDb.sqlite.close();
+    }
+
+    const reExportResponse = await app.request(
+      `/api/app/workspaces/${importedWorkspaceId}/export`,
+      { method: 'POST' }
+    );
+    expect(reExportResponse.status).toBe(200);
+    const { exportId: reExportId } = (await reExportResponse.json()) as { exportId: string };
+    const secondImportResponse = await app.request('/api/app/workspace-imports', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        sourceWorkspaceId: importedWorkspaceId,
+        exportId: reExportId,
+        requestId: '00000000-0000-4000-8000-000000000052',
+      }),
+    });
+    expect(secondImportResponse.status).toBe(200);
+    coreDb.sqlite.close();
   });
 
   it('dry-runs workspace import verification and collision preview without mutating', () => {
@@ -765,7 +1140,7 @@ describe('workspace export verifier', () => {
         suggestedWorkspaceId: 'ws_imported_ws_demo',
       },
       verification: {
-        fileCount: 13,
+        fileCount: 16,
         checkedFiles: [
           'records/agent-sessions.jsonl',
           'records/artifact-reviews.jsonl',
@@ -776,9 +1151,12 @@ describe('workspace export verifier', () => {
           'records/knowledge-observations.jsonl',
           'records/knowledge-retrieval-traces.jsonl',
           'records/knowledge.jsonl',
+          'records/thread-material-bindings.jsonl',
           'records/threads.jsonl',
           'records/turn-events.jsonl',
           'records/turns.jsonl',
+          'records/workspace-material-revisions.jsonl',
+          'records/workspace-materials.jsonl',
           'records/workspace.json',
         ],
       },
@@ -1111,6 +1489,7 @@ describe('workspace export verifier', () => {
         {
           id: 'use_extra',
           workspaceId: 'ws_demo',
+          responsibleUserId: 'user_1',
           threadId: null,
           turnId: null,
           itemId: null,
@@ -1305,6 +1684,7 @@ describe('workspace export verifier', () => {
       id: 'turn_1',
       workspaceId: 'ws_demo',
       threadId: workerThread.id,
+      triggerActor: localActor,
       items: [],
       status: 'completed',
       humanGate: null,
@@ -1519,7 +1899,7 @@ describe('workspace export verifier', () => {
 
   it('keeps workspace sqlite table export coverage explicit', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-export-coverage-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, LOCAL_USER_ID, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -1542,6 +1922,14 @@ describe('workspace export verifier', () => {
         {
           table: 'idempotency_requests',
           reason: 'short-lived request replay state is local to the source workspace',
+        },
+        {
+          table: 'pending_user_turn_records',
+          reason: 'active Goal steering delivery proof is local to the source workspace',
+        },
+        {
+          table: 'steering_terminal_outcomes',
+          reason: 'terminal Goal steering command proof is local to the source workspace',
         },
         {
           table: 'workspace_filesystem_staging_roots',

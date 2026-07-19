@@ -47,10 +47,17 @@ function writeAgentConfig(dataRoot: string, displayName: string): void {
       "schemaVersion": 1,
       "id": "agent_runtime",
       "displayName": "${displayName}",
-      "mode": "local",
-      "runtime": { "kind": "codex", "adapter": "codex-app-server" },
-      "deployment": {
-        "local": { "command": "codex", "args": ["app-server"], "cwdPolicy": "workspace" }
+      "runtime": {
+        "kind": "future-runtime",
+        "adapter": "future-adapter",
+        "image": {
+          "ref": "ghcr.io/openkit/worker-future:test",
+          "pullPolicy": "if-not-present"
+        },
+        "binaries": [
+          { "id": "openkit-worker-shim", "path": "/usr/local/bin/openkit-worker-shim" },
+          { "id": "future-runtime", "path": "/usr/local/bin/future-runtime" }
+        ]
       },
       "provider": { "ref": "agent-openrouter", "model": "openai/gpt-5.1" },
       "profiles": [{ "id": "default", "instructionsRef": "codex", "skills": [] }],
@@ -63,14 +70,14 @@ function writeAgentConfig(dataRoot: string, displayName: string): void {
 }
 
 /**
- * Writes one workspace config file to the canonical user-owned workspace path.
+ * Writes one workspace config file to the canonical owner-independent Workspace path.
  *
- * @param dataRoot Data root that owns the user workspace tree.
+ * @param dataRoot Data root that owns the Workspace tree.
  * @param workspaceId Workspace id to configure.
  * @param body JSONC body to write.
  */
 function writeWorkspaceConfig(dataRoot: string, workspaceId: string, body: string): void {
-  const configRoot = join(dataRoot, 'users', 'user_local', 'workspaces', workspaceId, 'config');
+  const configRoot = join(dataRoot, 'workspaces', workspaceId, 'config');
 
   mkdirSync(configRoot, { recursive: true });
   writeFileSync(join(configRoot, 'workspace.jsonc'), body);
@@ -79,12 +86,12 @@ function writeWorkspaceConfig(dataRoot: string, workspaceId: string, body: strin
 /**
  * Writes one workspace data source catalog to the canonical workspace config path.
  *
- * @param dataRoot Data root that owns the user workspace tree.
+ * @param dataRoot Data root that owns the Workspace tree.
  * @param workspaceId Workspace id to configure.
  * @param body JSONC body to write.
  */
 function writeWorkspaceDataSources(dataRoot: string, workspaceId: string, body: string): void {
-  const configRoot = join(dataRoot, 'users', 'user_local', 'workspaces', workspaceId, 'config');
+  const configRoot = join(dataRoot, 'workspaces', workspaceId, 'config');
 
   mkdirSync(configRoot, { recursive: true });
   writeFileSync(join(configRoot, 'data-sources.jsonc'), body);
@@ -155,7 +162,18 @@ describe('runtime config loading and reload planning', () => {
     expect(snapshot.providerRegistry.get('agent-openrouter')?.models).toEqual(['openai/gpt-5.1']);
   });
 
-  it('loads workspace config from the user-owned workspace tree', () => {
+  it('exposes one authored agent manifest collection without a derived projection', () => {
+    const dataRoot = createDataRoot();
+    writeServerConfig(dataRoot, serverConfig('openai/gpt-5.1'));
+    writeAgentConfig(dataRoot, 'Opaque Runtime Agent');
+
+    const snapshot = loadRuntimeConfig(dataRoot, { version: 1 });
+
+    expect(snapshot).not.toHaveProperty('agentConfigs');
+    expect(snapshot.agentManifests).toEqual([expect.objectContaining({ id: 'agent_runtime' })]);
+  });
+
+  it('loads workspace config from the owner-independent Workspace tree', () => {
     const dataRoot = createDataRoot();
     writeServerConfig(dataRoot, serverConfig('openai/gpt-5.1'));
     writeWorkspaceConfig(
@@ -180,7 +198,6 @@ describe('runtime config loading and reload planning', () => {
 
     expect(snapshot.workspaceConfigs).toEqual([
       expect.objectContaining({
-        userId: 'user_local',
         workspaceId: 'ws_demo',
         config: expect.objectContaining({
           workspace: expect.objectContaining({
@@ -191,7 +208,7 @@ describe('runtime config loading and reload planning', () => {
     ]);
   });
 
-  it('loads workspace data source catalogs from the user-owned workspace tree', () => {
+  it('loads workspace data source catalogs from the owner-independent Workspace tree', () => {
     const dataRoot = createDataRoot();
     writeServerConfig(dataRoot, serverConfig('openai/gpt-5.1'));
     writeWorkspaceDataSources(
@@ -218,7 +235,6 @@ describe('runtime config loading and reload planning', () => {
 
     expect(snapshot.workspaceDataSourceCatalogs).toEqual([
       expect.objectContaining({
-        userId: 'user_local',
         workspaceId: 'ws_demo',
         catalog: expect.objectContaining({
           sources: [expect.objectContaining({ id: 'main-repo', kind: 'git' })],

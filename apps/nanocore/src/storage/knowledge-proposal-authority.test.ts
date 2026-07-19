@@ -26,7 +26,7 @@ function createFixture() {
     createdAt: TIMESTAMP,
     updatedAt: TIMESTAMP,
   });
-  const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', workspace.id);
+  const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
 
   return {
     dataRoot,

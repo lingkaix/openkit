@@ -3,6 +3,10 @@ import { createHash } from 'node:crypto';
 import {
   ApproveThreadGoalPlanRequestSchema,
   ApproveThreadGoalPlanResponseSchema,
+  CancelGoalSteeringRequestSchema,
+  CancelGoalSteeringResponseSchema,
+  ConvertGoalSteeringToFollowUpRequestSchema,
+  ConvertGoalSteeringToFollowUpResponseSchema,
   CreateThreadGoalPlanRequestSchema,
   CreateThreadGoalPlanResponseSchema,
   type GoalPendingHumanAttention,
@@ -22,17 +26,35 @@ import {
   StartThreadGoalRequestSchema,
   StartThreadGoalResponseSchema,
   SubmitThreadGoalSteeringRequestSchema,
+  SubmitThreadGoalSteeringResponseSchema,
   type ThreadGoalCurrentTask,
   type ThreadGoalSummary,
   ThreadGoalSummaryResponseSchema,
 } from '@openkit/app-api-schemas';
-import type { StopReason, TurnSchema } from '@openkit/protocol';
+import type { ActorRef, StopReason, TurnSchema } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import type { z } from 'zod';
 
 import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
+import { assertAuthorizedWorkspaceLineage } from './auth/operation-authorizer.js';
 import type { CoreMode } from './config/mode.js';
+import { requireVerifiedGoalSteeringTrace } from './context/worker-context-projection.js';
+import {
+  claimPendingUserTurnRecord,
+  completeSteeringTerminalOutcome,
+  createPendingUserTurnRecord,
+  derivePendingUserTurnIds,
+  deriveSteeringTerminalIds,
+  GoalSteeringAuthorityError,
+  getPendingUserTurnRecord,
+  getSteeringTerminalOutcome,
+  getSteeringTerminalOutcomeByRequestId,
+  type PendingUserTurnRecord,
+  requireGoalSteeringSendProof,
+  type SteeringTerminalOutcome,
+} from './goal-steering-authority.js';
 import { serializeStructuredWorkerDelegationRequest } from './internal-agents/delegation.js';
 import { redactInternalAgentText } from './internal-agents/redaction.js';
 import {
@@ -108,14 +130,644 @@ import {
   resolveInterruptedWorkerRetryDecision,
 } from './runtime/worker-recovery.js';
 import { runWorkerTurnLoop } from './runtime/worker-turn-loop.js';
-import { completeSchedulerLeaseForTerminalTurn } from './scheduler-records.js';
+import {
+  completeSchedulerLeaseForTerminalTurn,
+  listSchedulerSessionLeasesForTurn,
+  requireSchedulerSessionLeaseAdmissionContext,
+} from './scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import { getWorkspaceMaterial, getWorkspaceMaterialRevision } from './workspace-materials.js';
 
 /** Parsed turn read model used by Goal worker lifecycle guards. */
 type TurnReadModel = z.infer<typeof TurnSchema>;
 
 /** Durable item shape returned by the app-local store. */
 type StoreItem = ReturnType<FsStore['listAllItems']>[number];
+
+/** Completed user input Item owned by one accepted steering send. */
+type SteeringSourceItem = ReturnType<typeof requireGoalSteeringSendProof>;
+
+/** Public result returned by accepted Goal steering. */
+type SteeringSendResponse = z.infer<typeof SubmitThreadGoalSteeringResponseSchema>;
+
+/** Removes command identity while preserving the parsed steering input union. */
+type WithoutRequestId<T> = T extends { readonly requestId: string } ? Omit<T, 'requestId'> : never;
+
+/** Raw caller input hashed by the send command ledger. */
+type SteeringSendCommandInput = WithoutRequestId<
+  z.infer<typeof SubmitThreadGoalSteeringRequestSchema>
+>;
+
+/** Public result returned by either terminal steering command. */
+type SteeringTerminalResponse =
+  | z.infer<typeof ConvertGoalSteeringToFollowUpResponseSchema>
+  | z.infer<typeof CancelGoalSteeringResponseSchema>;
+
+/** Creates one fail-closed S16 recovery error. @param message Failure summary. @returns Typed error. */
+function steeringRecoveryRequired(message: string): GoalSteeringAuthorityError {
+  return new GoalSteeringAuthorityError('recovery_required', message);
+}
+
+/** Projects an accepted send receipt from its original pending, terminal, or applied owner. @param coreDb Core authority needed for applied trace verification. @param workspaceDb Workspace database. @param store Turn and Item owner. @param record Send receipt. @param workspaceId Workspace id. @param threadId Thread id. @returns Original queued response. */
+function projectSteeringSendResponse(
+  coreDb: CoreDb,
+  workspaceDb: WorkspaceDb,
+  store: FsStore,
+  record: CommandRequestRecord,
+  workspaceId: string,
+  threadId: string
+): SteeringSendResponse {
+  if (record.response.kind !== 'pending_user_turn' || record.response.chatMetadata !== undefined) {
+    throw steeringRecoveryRequired('The Goal steering send receipt is contradictory.');
+  }
+  const ids = derivePendingUserTurnIds({ workspaceId, threadId, requestId: record.requestId });
+  if (record.response.id !== ids.pendingTurnId) {
+    throw steeringRecoveryRequired('The Goal steering send receipt is contradictory.');
+  }
+  const pending = getPendingUserTurnRecord(workspaceDb, workspaceId, threadId);
+  const owner =
+    pending?.pendingTurnId === record.response.id
+      ? pending
+      : getSteeringTerminalOutcome(workspaceDb, workspaceId, threadId, record.response.id);
+  if (owner) {
+    const requestId = 'requestId' in owner ? owner.requestId : owner.sendRequestId;
+    if (
+      requestId !== record.requestId ||
+      owner.pendingTurnId !== ids.pendingTurnId ||
+      owner.contentItemId !== ids.contentItemId
+    ) {
+      throw steeringRecoveryRequired('The Goal steering send owner is contradictory.');
+    }
+    const goal = getGoalRecord(workspaceDb, workspaceId, threadId, owner.goalId);
+    if (!goal || (!('requestId' in owner) && !projectGoalTerminalState(goal))) {
+      throw steeringRecoveryRequired('The Goal steering send owner has invalid Goal lineage.');
+    }
+    requireGoalSteeringSendProof(workspaceDb, store, owner);
+    return SubmitThreadGoalSteeringResponseSchema.parse({
+      state: 'queued',
+      pendingTurnId: owner.pendingTurnId,
+      requestId,
+      contentItemId: owner.contentItemId,
+      goalId: owner.goalId,
+      activeTurnId: owner.activeTurnId,
+    });
+  }
+
+  const sourceItem = store.listAllItems().find((item) => item.id === ids.contentItemId);
+  if (
+    !sourceItem ||
+    sourceItem.workspaceId !== workspaceId ||
+    sourceItem.threadId !== threadId ||
+    sourceItem.type !== 'user-message' ||
+    sourceItem.status !== 'completed' ||
+    sourceItem.parentItemId !== null ||
+    sourceItem.causationId !== record.requestId ||
+    sourceItem.completedAt === null ||
+    sourceItem.createdAt !== sourceItem.completedAt
+  ) {
+    throw steeringRecoveryRequired('The applied Goal steering Item is contradictory.');
+  }
+  const trace = requireVerifiedGoalSteeringTrace({
+    coreDb,
+    store,
+    workspaceDb,
+    threadId,
+    contentItemId: ids.contentItemId,
+  });
+  return SubmitThreadGoalSteeringResponseSchema.parse({
+    state: 'queued',
+    pendingTurnId: ids.pendingTurnId,
+    requestId: record.requestId,
+    contentItemId: ids.contentItemId,
+    goalId: trace.goalId,
+    activeTurnId: sourceItem.turnId,
+  });
+}
+
+/** Resolves one fresh send target. @param workspaceDb Workspace database. @param store Turn owner. @param workspaceId Workspace id. @param threadId Thread id. @returns Exact active Goal and checkpoint-backed Turn. */
+function requireSteeringSendTarget(
+  workspaceDb: WorkspaceDb,
+  store: FsStore,
+  workspaceId: string,
+  threadId: string
+): { readonly goal: GoalRecord; readonly turn: TurnReadModel } {
+  const turns = store.listThreadTurns(workspaceId, threadId).filter(isNonTerminalTurn);
+  if (turns.length === 0) {
+    throw new TurnStartValidationError('stale', 'The active Goal has no live worker Turn.', 409);
+  }
+  if (turns.length !== 1) {
+    throw new TurnStartValidationError('thread_busy', 'The Thread has competing active work.', 409);
+  }
+  const goal = listGoalRecordsForThread(workspaceDb, { workspaceId, threadId }).findLast(
+    isActiveGoal
+  );
+  if (!goal) {
+    throw new TurnStartValidationError('stale', 'The Thread has no active Goal.', 409);
+  }
+  const turn = turns[0]!;
+  const checkpoint = getWorkerCheckpoint(workspaceDb, workspaceId, threadId, turn.id);
+  if (checkpoint?.goalId !== goal.goalId) {
+    throw new TurnStartValidationError(
+      'thread_busy',
+      'The active Turn is not owned by the current Goal worker.',
+      409
+    );
+  }
+  return { goal, turn };
+}
+
+/** Resolves exact message text and pending input lineage. @param workspaceDb Workspace database. @param input Parsed raw caller input. @returns Durable Item text and pending input. */
+function resolveSteeringSendInput(
+  workspaceDb: WorkspaceDb,
+  input: SteeringSendCommandInput
+): {
+  readonly text: string;
+  readonly pendingInput:
+    | { readonly kind: 'message' }
+    | {
+        readonly kind: 'material';
+        readonly materialId: string;
+        readonly revisionId: string;
+        readonly contentDigest: string;
+      };
+} {
+  if ('message' in input) {
+    return { text: input.message, pendingInput: { kind: 'message' } };
+  }
+  const material = getWorkspaceMaterial(workspaceDb, input.materialId);
+  const revisionOwner = workspaceDb.sqlite
+    .prepare(
+      `SELECT material_id AS materialId
+       FROM workspace_material_revisions
+       WHERE workspace_id = ? AND revision_id = ?`
+    )
+    .get(workspaceDb.workspaceId, input.revisionId) as { materialId: string } | undefined;
+  if (!revisionOwner) {
+    throw new TurnStartValidationError('stale', 'The Material revision does not exist.', 409);
+  }
+  if (revisionOwner.materialId !== input.materialId) {
+    throw new TurnStartValidationError(
+      'conflict',
+      'The Material revision belongs to another Material.',
+      409
+    );
+  }
+  if (material.currentRevisionId !== input.revisionId) {
+    throw new TurnStartValidationError('stale', 'The Material revision is no longer current.', 409);
+  }
+  if (material.sensitivity === 'restricted') {
+    throw new TurnStartValidationError(
+      'sensitive_content',
+      'Restricted Material cannot be sent to an active Goal.',
+      409
+    );
+  }
+  const revision = getWorkspaceMaterialRevision(workspaceDb, input.materialId, input.revisionId);
+  if (revision.contentDigest !== input.contentDigest) {
+    throw new TurnStartValidationError(
+      'conflict',
+      'The Material revision digest does not match the request.',
+      409
+    );
+  }
+  return {
+    text: input.note ?? `Use Workspace Material ${input.materialId} revision ${input.revisionId}.`,
+    pendingInput: {
+      kind: 'material',
+      materialId: input.materialId,
+      revisionId: input.revisionId,
+      contentDigest: input.contentDigest,
+    },
+  };
+}
+
+/** Loads one terminal-command pending owner and source proof. @param workspaceDb Workspace database. @param store Turn and Item owner. @param workspaceId Workspace id. @param threadId Thread id. @param pendingTurnId Pending id. @param terminalRequestId Command id. @param state Requested result. @returns Verified pending owner and Item. */
+function requireTerminalSteeringPending(
+  workspaceDb: WorkspaceDb,
+  store: FsStore,
+  workspaceId: string,
+  threadId: string,
+  pendingTurnId: string,
+  terminalRequestId: string,
+  state: 'follow-up' | 'cancelled'
+): { readonly pending: PendingUserTurnRecord; readonly sourceItem: SteeringSourceItem } {
+  const outcome = getSteeringTerminalOutcome(workspaceDb, workspaceId, threadId, pendingTurnId);
+  if (outcome) {
+    if (outcome.terminalRequestId === terminalRequestId && outcome.state === state) {
+      throw steeringRecoveryRequired('A terminal steering outcome exists without its receipt.');
+    }
+    throw new GoalSteeringAuthorityError(
+      'conflict',
+      'Another terminal steering command already owns this input.'
+    );
+  }
+  const pending = getPendingUserTurnRecord(workspaceDb, workspaceId, threadId);
+  if (!pending) {
+    throw new GoalSteeringAuthorityError('stale', 'The pending steering input does not exist.');
+  }
+  if (pending.pendingTurnId !== pendingTurnId) {
+    throw new GoalSteeringAuthorityError(
+      'conflict',
+      'Another pending steering input owns this Thread.'
+    );
+  }
+  const goal = getGoalRecord(workspaceDb, pending.workspaceId, pending.threadId, pending.goalId);
+  if (!goal) {
+    throw steeringRecoveryRequired('The pending steering owner has no original Goal.');
+  }
+  if (!projectGoalTerminalState(goal)) {
+    throw new GoalSteeringAuthorityError(
+      'conflict',
+      'The original Goal is still eligible to deliver this steering input.'
+    );
+  }
+  if (pending.requestId === terminalRequestId) {
+    throw new GoalSteeringAuthorityError(
+      'idempotency_key_conflict',
+      'Terminal and send request identities must be distinct.'
+    );
+  }
+  return { pending, sourceItem: requireGoalSteeringSendProof(workspaceDb, store, pending) };
+}
+
+/** Requires an idle Thread. @param store Turn owner. @param workspaceId Workspace id. @param threadId Thread id. @throws TurnStartValidationError when work remains active. */
+function requireIdleSteeringThread(store: FsStore, workspaceId: string, threadId: string): void {
+  if (store.listThreadTurns(workspaceId, threadId).some(isNonTerminalTurn)) {
+    throw new TurnStartValidationError(
+      'thread_busy',
+      'The Thread already has a non-terminal Turn.',
+      409
+    );
+  }
+}
+
+/** Checks for either follow-up owner. @param store Turn and Item owner. @param followUpTurnId Turn id. @param followUpItemId Item id. @returns Whether either owner exists. */
+function hasFollowUpProof(store: FsStore, followUpTurnId: string, followUpItemId: string): boolean {
+  if (store.listAllItems().some((item) => item.id === followUpItemId)) {
+    return true;
+  }
+  try {
+    store.getTurnById(followUpTurnId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Verifies or excludes one deterministic follow-up pair. @param store Turn and Item owner. @param owner Original lineage. @param sourceItem Source Item. @param terminalRequestId Command id. @param followUpTurnId Turn id. @param followUpItemId Item id. @param acceptedAt Claim time. @returns Pair state. @throws GoalSteeringAuthorityError for partial proof. */
+function inspectSteeringFollowUpProof(
+  store: FsStore,
+  owner: Pick<PendingUserTurnRecord, 'workspaceId' | 'threadId' | 'contentItemId'>,
+  sourceItem: SteeringSourceItem,
+  terminalRequestId: string,
+  followUpTurnId: string,
+  followUpItemId: string,
+  acceptedAt: string | null
+): 'absent' | 'complete' {
+  const turn = store
+    .listThreadTurns(owner.workspaceId, owner.threadId)
+    .find((candidate) => candidate.id === followUpTurnId);
+  const item = store.listAllItems().find((candidate) => candidate.id === followUpItemId);
+  const turnItem = turn?.items[0];
+  if (!turn && !item) {
+    return 'absent';
+  }
+  if (
+    !turn ||
+    !item ||
+    item.type !== 'user-message' ||
+    acceptedAt === null ||
+    turn.workspaceId !== owner.workspaceId ||
+    turn.threadId !== owner.threadId ||
+    JSON.stringify(turn.triggerActor) !== JSON.stringify(sourceItem.actor) ||
+    turn.status !== 'completed' ||
+    turn.humanGate !== null ||
+    turn.error !== null ||
+    turn.configVersion !== null ||
+    (turn.agentId ?? null) !== null ||
+    (turn.agentProfileId ?? null) !== null ||
+    (turn.agentSessionId ?? null) !== null ||
+    (turn.triggerSource ?? null) !== null ||
+    turn.startedAt !== acceptedAt ||
+    turn.completedAt !== acceptedAt ||
+    turn.durationMs !== 0 ||
+    turn.items.length !== 1 ||
+    !turnItem ||
+    turnItem.type !== 'user-message' ||
+    turnItem.id !== item.id ||
+    JSON.stringify(turnItem.actor) !== JSON.stringify(sourceItem.actor) ||
+    turnItem.text !== item.text ||
+    turnItem.status !== item.status ||
+    turnItem.createdAt !== item.createdAt ||
+    turnItem.completedAt !== item.completedAt ||
+    item.workspaceId !== owner.workspaceId ||
+    item.threadId !== owner.threadId ||
+    item.turnId !== followUpTurnId ||
+    item.status !== 'completed' ||
+    JSON.stringify(item.actor) !== JSON.stringify(sourceItem.actor) ||
+    item.text !== sourceItem.text ||
+    item.parentItemId !== owner.contentItemId ||
+    item.causationId !== terminalRequestId ||
+    item.createdAt !== acceptedAt ||
+    item.completedAt !== acceptedAt
+  ) {
+    throw steeringRecoveryRequired('The deterministic steering follow-up proof is incomplete.');
+  }
+  return 'complete';
+}
+
+/** Claims and ensures the deterministic follow-up pair. @param workspaceDb Workspace database. @param store Turn and Item owner. @param workspaceId Workspace id. @param threadId Thread id. @param pendingTurnId Pending id. @param terminalRequestId Command id. */
+function ensureSteeringFollowUpProof(
+  workspaceDb: WorkspaceDb,
+  store: FsStore,
+  workspaceId: string,
+  threadId: string,
+  pendingTurnId: string,
+  terminalRequestId: string
+): void {
+  let { pending, sourceItem } = requireTerminalSteeringPending(
+    workspaceDb,
+    store,
+    workspaceId,
+    threadId,
+    pendingTurnId,
+    terminalRequestId,
+    'follow-up'
+  );
+  const ids = deriveSteeringTerminalIds({
+    workspaceId,
+    threadId,
+    pendingTurnId,
+    terminalRequestId,
+  });
+
+  if (pending.terminalClaimKind === null) {
+    if (
+      inspectSteeringFollowUpProof(
+        store,
+        pending,
+        sourceItem,
+        terminalRequestId,
+        ids.followUpTurnId,
+        ids.followUpItemId,
+        null
+      ) !== 'absent'
+    ) {
+      throw steeringRecoveryRequired('Follow-up proof exists without its winning claim.');
+    }
+    requireIdleSteeringThread(store, workspaceId, threadId);
+  }
+  const acceptedAt = new Date().toISOString();
+  pending = claimPendingUserTurnRecord(workspaceDb, {
+    workspaceId,
+    threadId,
+    pendingTurnId,
+    terminalClaimKind: 'follow-up',
+    terminalClaimId: ids.followUpTurnId,
+    terminalClaimedAt: acceptedAt,
+  });
+  const proof = inspectSteeringFollowUpProof(
+    store,
+    pending,
+    sourceItem,
+    terminalRequestId,
+    ids.followUpTurnId,
+    ids.followUpItemId,
+    pending.terminalClaimedAt
+  );
+  if (proof === 'absent') {
+    requireIdleSteeringThread(store, workspaceId, threadId);
+    const acceptedAt = pending.terminalClaimedAt;
+    if (!acceptedAt) {
+      throw steeringRecoveryRequired('The follow-up claim has no accepted timestamp.');
+    }
+    store.createTurn(workspaceId, threadId, sourceItem.text, sourceItem.actor, null, {
+      turnId: ids.followUpTurnId,
+      startedAt: acceptedAt,
+    });
+    store.createItem({
+      id: ids.followUpItemId,
+      workspaceId,
+      threadId,
+      turnId: ids.followUpTurnId,
+      type: 'user-message',
+      status: 'completed',
+      actor: sourceItem.actor,
+      text: sourceItem.text,
+      parentItemId: pending.contentItemId,
+      causationId: terminalRequestId,
+      createdAt: acceptedAt,
+      completedAt: acceptedAt,
+    });
+    store.updateTurn(ids.followUpTurnId, {
+      status: 'completed',
+      completedAt: acceptedAt,
+      durationMs: 0,
+    });
+    inspectSteeringFollowUpProof(
+      store,
+      pending,
+      sourceItem,
+      terminalRequestId,
+      ids.followUpTurnId,
+      ids.followUpItemId,
+      acceptedAt
+    );
+  }
+}
+
+/** Verifies the immutable receipt-named terminal outcome. @param workspaceDb Workspace database. @param store Turn and Item owner. @param record Terminal receipt. @param workspaceId Workspace id. @param threadId Thread id. @param pendingTurnId Pending id. @param terminalRequestId Command id. @param state Expected state. @returns Verified outcome. @throws GoalSteeringAuthorityError for contradictory proof. */
+function requireSteeringTerminalOutcome(
+  workspaceDb: WorkspaceDb,
+  store: FsStore,
+  record: CommandRequestRecord,
+  workspaceId: string,
+  threadId: string,
+  pendingTurnId: string,
+  terminalRequestId: string,
+  state: 'follow-up' | 'cancelled'
+): SteeringTerminalOutcome {
+  const outcome = getSteeringTerminalOutcome(workspaceDb, workspaceId, threadId, pendingTurnId);
+  const ids = deriveSteeringTerminalIds({
+    workspaceId,
+    threadId,
+    pendingTurnId,
+    terminalRequestId,
+  });
+  if (
+    !outcome ||
+    record.response.kind !== 'steering_terminal_outcome' ||
+    record.response.id !== ids.outcomeId ||
+    record.response.chatMetadata !== undefined ||
+    outcome.workspaceId !== workspaceId ||
+    outcome.threadId !== threadId ||
+    outcome.pendingTurnId !== pendingTurnId ||
+    outcome.outcomeId !== ids.outcomeId ||
+    outcome.state !== state ||
+    outcome.terminalRequestId !== terminalRequestId ||
+    outcome.sendRequestId === terminalRequestId
+  ) {
+    throw steeringRecoveryRequired('The terminal steering receipt or outcome is contradictory.');
+  }
+  const goal = getGoalRecord(workspaceDb, workspaceId, threadId, outcome.goalId);
+  if (!goal || !projectGoalTerminalState(goal)) {
+    throw steeringRecoveryRequired('The terminal outcome has no terminal original Goal.');
+  }
+  const sourceItem = requireGoalSteeringSendProof(workspaceDb, store, outcome);
+  if (state === 'follow-up') {
+    if (
+      outcome.followUpTurnId !== ids.followUpTurnId ||
+      outcome.followUpItemId !== ids.followUpItemId ||
+      inspectSteeringFollowUpProof(
+        store,
+        outcome,
+        sourceItem,
+        terminalRequestId,
+        ids.followUpTurnId,
+        ids.followUpItemId,
+        outcome.acceptedAt
+      ) !== 'complete'
+    ) {
+      throw steeringRecoveryRequired('The terminal follow-up proof is incomplete.');
+    }
+  } else if (
+    outcome.followUpTurnId !== null ||
+    outcome.followUpItemId !== null ||
+    hasFollowUpProof(store, ids.followUpTurnId, ids.followUpItemId)
+  ) {
+    throw steeringRecoveryRequired('Cancelled steering has contradictory follow-up proof.');
+  }
+  return outcome;
+}
+
+/** Projects one terminal outcome. @param outcome Verified outcome. @returns Closed public response. */
+function projectSteeringTerminalOutcome(
+  outcome: SteeringTerminalOutcome
+): SteeringTerminalResponse {
+  const base = {
+    pendingTurnId: outcome.pendingTurnId,
+    requestId: outcome.terminalRequestId,
+    sourceRequestId: outcome.sendRequestId,
+    contentItemId: outcome.contentItemId,
+    goalId: outcome.goalId,
+    activeTurnId: outcome.activeTurnId,
+  };
+  return outcome.state === 'follow-up'
+    ? ConvertGoalSteeringToFollowUpResponseSchema.parse({
+        ...base,
+        state: 'follow-up',
+        followUpTurnId: outcome.followUpTurnId,
+        followUpItemId: outcome.followUpItemId,
+      })
+    : CancelGoalSteeringResponseSchema.parse({ ...base, state: 'cancelled' });
+}
+
+/** Finalizes or replays one terminal command. @param workspaceDb Workspace database. @param store Durable store. @param inflightCommands Duplicate collapse. @param workspaceId Workspace id. @param threadId Thread id. @param pendingTurnId Pending id. @param terminalRequestId Command id. @param state Requested state. @returns Public result. */
+async function runSteeringTerminalCommand(
+  workspaceDb: WorkspaceDb,
+  store: FsStore,
+  inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>,
+  workspaceId: string,
+  threadId: string,
+  pendingTurnId: string,
+  terminalRequestId: string,
+  state: 'follow-up' | 'cancelled'
+): Promise<SteeringTerminalResponse> {
+  const command =
+    state === 'follow-up'
+      ? ('goal.steering.follow_up' as const)
+      : ('goal.steering.cancel' as const);
+  const scope = { workspaceId, threadId, pendingTurnId };
+  const existingReceipt = store.getCommandRequest(command, terminalRequestId, scope, workspaceDb);
+  if (!existingReceipt) {
+    const existingOutcome = getSteeringTerminalOutcomeByRequestId(
+      workspaceDb,
+      workspaceId,
+      threadId,
+      terminalRequestId
+    );
+    if (existingOutcome && existingOutcome.pendingTurnId !== pendingTurnId) {
+      throw new GoalSteeringAuthorityError(
+        'idempotency_key_conflict',
+        'The terminal request already owns a different pending steering input.'
+      );
+    }
+    if (state === 'follow-up') {
+      ensureSteeringFollowUpProof(
+        workspaceDb,
+        store,
+        workspaceId,
+        threadId,
+        pendingTurnId,
+        terminalRequestId
+      );
+    }
+  }
+  const ids = deriveSteeringTerminalIds({
+    workspaceId,
+    threadId,
+    pendingTurnId,
+    terminalRequestId,
+  });
+
+  return runIdempotentCommand({
+    store,
+    inflightCommands,
+    command,
+    requestId: terminalRequestId,
+    scope,
+    input: {},
+    responseKind: 'steering_terminal_outcome',
+    workspaceDb,
+    workspaceTransaction: true,
+    execute: () => {
+      if (state === 'cancelled') {
+        requireTerminalSteeringPending(
+          workspaceDb,
+          store,
+          workspaceId,
+          threadId,
+          pendingTurnId,
+          terminalRequestId,
+          state
+        );
+        if (hasFollowUpProof(store, ids.followUpTurnId, ids.followUpItemId)) {
+          throw steeringRecoveryRequired('Cancellation has contradictory follow-up proof.');
+        }
+        claimPendingUserTurnRecord(workspaceDb, {
+          workspaceId,
+          threadId,
+          pendingTurnId,
+          terminalClaimKind: 'cancelled',
+          terminalClaimId: terminalRequestId,
+          terminalClaimedAt: new Date().toISOString(),
+        });
+      }
+      const outcome = completeSteeringTerminalOutcome(workspaceDb, {
+        workspaceId,
+        threadId,
+        pendingTurnId,
+        terminalRequestId,
+        state,
+      });
+      return projectSteeringTerminalOutcome(outcome);
+    },
+    replay: (record) =>
+      projectSteeringTerminalOutcome(
+        requireSteeringTerminalOutcome(
+          workspaceDb,
+          store,
+          record,
+          workspaceId,
+          threadId,
+          pendingTurnId,
+          terminalRequestId,
+          state
+        )
+      ),
+    responseId: () => ids.outcomeId,
+  });
+}
 
 /**
  * Checks whether a Turn still owns non-terminal thread work.
@@ -365,7 +1017,7 @@ type GoalStepResponse = z.output<typeof RunThreadGoalStepResponseSchema>;
  * @returns Deterministic reserved Turn id.
  */
 function goalStepTurnId(input: {
-  readonly store: FsStore;
+  readonly actorId: string;
   readonly workspaceId: string;
   readonly threadId: string;
   readonly requestId: string;
@@ -374,7 +1026,7 @@ function goalStepTurnId(input: {
     .update(
       JSON.stringify([
         'goal.step',
-        input.store.getUserId(),
+        input.actorId,
         input.workspaceId,
         input.threadId,
         input.requestId,
@@ -433,6 +1085,7 @@ function projectGoalStepResponse(input: {
  * @throws Error when the durable Task graph contradicts the stop decision or persistence fails.
  */
 function commitGoalStepOwnerOutcome(input: {
+  readonly authorityActor: ActorRef;
   readonly workspaceDb: WorkspaceDb;
   readonly workspaceId: string;
   readonly threadId: string;
@@ -465,6 +1118,7 @@ function commitGoalStepOwnerOutcome(input: {
   try {
     input.workspaceDb.sqlite.transaction(() => {
       recordGoalTaskWorkerOutcome(input.workspaceDb, {
+        authorityActor: input.authorityActor,
         workspaceDb: input.workspaceDb,
         workspaceId: input.workspaceId,
         threadId: input.threadId,
@@ -720,6 +1374,26 @@ export async function classifyGoalStepCheckpointAfterSchedulerRecovery(input: {
   readonly checkpoint: WorkerCheckpointRecord;
 }): Promise<'complete' | 'live'> {
   const { checkpoint } = input;
+  const leases = listSchedulerSessionLeasesForTurn(input.coreDb, {
+    workspaceId: checkpoint.workspaceId,
+    threadId: checkpoint.threadId,
+    turnId: checkpoint.turnId,
+  });
+  const lease = leases[0];
+  if (leases.length !== 1 || !lease || lease.agentSessionId !== checkpoint.workerSessionId) {
+    throw goalStepRecoveryError('The boot Goal checkpoint has no exact scheduler lease.');
+  }
+  let admission: ReturnType<typeof requireSchedulerSessionLeaseAdmissionContext>;
+  try {
+    admission = requireSchedulerSessionLeaseAdmissionContext(input.coreDb, lease.leaseId);
+  } catch {
+    throw goalStepRecoveryError('The boot Goal checkpoint has no scheduler admission owner.');
+  }
+  if (admission.requestId !== checkpoint.requestId || admission.triggerActor.kind !== 'user') {
+    throw goalStepRecoveryError(
+      'The boot Goal scheduler admission contradicts its human command identity.'
+    );
+  }
   if (
     !checkpoint.goalId ||
     !checkpoint.taskId ||
@@ -727,7 +1401,7 @@ export async function classifyGoalStepCheckpointAfterSchedulerRecovery(input: {
     checkpoint.requestInputHash !== commandInputHash({}) ||
     checkpoint.turnId !==
       goalStepTurnId({
-        store: input.store,
+        actorId: admission.triggerActor.id,
         workspaceId: checkpoint.workspaceId,
         threadId: checkpoint.threadId,
         requestId: checkpoint.requestId,
@@ -736,7 +1410,11 @@ export async function classifyGoalStepCheckpointAfterSchedulerRecovery(input: {
     throw goalStepRecoveryError('The boot Goal checkpoint contradicts its command identity.');
   }
 
-  const scope = { workspaceId: checkpoint.workspaceId, threadId: checkpoint.threadId };
+  const scope = {
+    actorId: admission.triggerActor.id,
+    workspaceId: checkpoint.workspaceId,
+    threadId: checkpoint.threadId,
+  };
   const receipt = input.store.getCommandRequest(
     'goal.step',
     checkpoint.requestId,
@@ -862,6 +1540,7 @@ export async function classifyGoalStepCheckpointAfterSchedulerRecovery(input: {
   if (!receipt && uncommitted) {
     input.workspaceDb.sqlite.transaction(() => {
       commitGoalStepOwnerOutcome({
+        authorityActor: admission.triggerActor,
         workspaceDb: input.workspaceDb,
         workspaceId: checkpoint.workspaceId,
         threadId: checkpoint.threadId,
@@ -1102,6 +1781,7 @@ function projectGoalLifecycleCommand(
  * @throws TurnStartValidationError when lifecycle authority is invalid or unavailable.
  */
 function runGoalLifecycleCommand(input: {
+  readonly actorId: string;
   readonly store: FsStore;
   readonly workspaceDb: WorkspaceDb;
   readonly workspaceId: string;
@@ -1111,7 +1791,11 @@ function runGoalLifecycleCommand(input: {
 }):
   | z.output<typeof PauseThreadGoalResponseSchema>
   | z.output<typeof ResumeThreadGoalResponseSchema> {
-  const scope = { workspaceId: input.workspaceId, threadId: input.threadId };
+  const scope = {
+    actorId: input.actorId,
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+  };
   const inputHash = commandInputHash({});
 
   return input.workspaceDb.sqlite.transaction(() => {
@@ -1128,9 +1812,10 @@ function runGoalLifecycleCommand(input: {
       if (
         receipt.command !== input.command ||
         receipt.requestId !== input.requestId ||
+        receipt.scope.actorId !== input.actorId ||
         receipt.scope.workspaceId !== input.workspaceId ||
         receipt.scope.threadId !== input.threadId ||
-        Object.keys(receipt.scope).length !== 2 ||
+        Object.keys(receipt.scope).length !== 3 ||
         receipt.response.kind !== 'goal'
       ) {
         throw new TurnStartValidationError(
@@ -1361,9 +2046,9 @@ type GoalStartResult = {
  * @returns Deterministic Goal, Turn, and objective Item ids.
  */
 export function goalStartOwnerIds(input: {
+  readonly actorId: string;
   readonly owningCommand: GoalStartOwningCommand;
   readonly requestId: string;
-  readonly store: FsStore;
   readonly workspaceId: string;
   readonly threadId: string;
 }): { readonly goalId: string; readonly turnId: string; readonly objectiveItemId: string } {
@@ -1371,7 +2056,7 @@ export function goalStartOwnerIds(input: {
     .update(
       JSON.stringify([
         input.owningCommand,
-        input.store.getUserId(),
+        input.actorId,
         input.workspaceId,
         input.threadId,
         input.requestId,
@@ -1395,6 +2080,7 @@ export function goalStartOwnerIds(input: {
  * @throws TurnStartValidationError when owners are partial or contradictory.
  */
 function readGoalStartOwners(input: {
+  readonly triggerActor: ActorRef;
   readonly owningCommand: GoalStartOwningCommand;
   readonly requestId: string;
   readonly store: FsStore;
@@ -1404,7 +2090,7 @@ function readGoalStartOwners(input: {
   readonly objective: string;
   readonly title?: string | undefined;
 }): GoalStartResult | null {
-  const ids = goalStartOwnerIds(input);
+  const ids = goalStartOwnerIds({ ...input, actorId: input.triggerActor.id });
   const turn = input.store
     .listThreadTurns(input.workspaceId, input.threadId)
     .find((candidate) => candidate.id === ids.turnId);
@@ -1420,9 +2106,11 @@ function readGoalStartOwners(input: {
     !turn ||
     turn.status !== 'completed' ||
     !turn.completedAt ||
+    JSON.stringify(turn.triggerActor) !== JSON.stringify(input.triggerActor) ||
     !objectiveItem ||
     objectiveItem.type !== 'user-message' ||
     objectiveItem.status !== 'completed' ||
+    JSON.stringify(objectiveItem.actor) !== JSON.stringify(input.triggerActor) ||
     !objectiveItem.completedAt ||
     objectiveItem.turnId !== turn.id ||
     objectiveItem.causationId !== input.requestId ||
@@ -1470,6 +2158,8 @@ function readGoalStartOwners(input: {
  * @returns Started Goal Mode projection.
  */
 export function startGoalModeObjective(input: {
+  /** Authenticated actor that owns the command identity. */
+  readonly triggerActor: ActorRef;
   /** Optional Core database that enables Goal persistence. */
   readonly coreDb: CoreDb | undefined;
   /** Enforces project-only Goal startup. */
@@ -1478,7 +2168,7 @@ export function startGoalModeObjective(input: {
     action: string
   ) => void;
   /** Opens the migrated workspace database. */
-  readonly repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb;
+  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   /** Store that owns the workspace and thread. */
   readonly store: FsStore;
   /** Workspace that owns the goal. */
@@ -1504,7 +2194,7 @@ export function startGoalModeObjective(input: {
 
   input.assertProjectWorkspace(input.store.getWorkspace(input.workspaceId), 'start Goal Mode');
 
-  const workspaceDb = input.repositoryWorkspaceDb(input.store, input.workspaceId);
+  const workspaceDb = input.repositoryWorkspaceDb(input.workspaceId);
   try {
     const existingOwners = readGoalStartOwners({ ...input, workspaceDb });
     if (existingOwners) {
@@ -1527,10 +2217,15 @@ export function startGoalModeObjective(input: {
       );
     }
 
-    const ids = goalStartOwnerIds(input);
-    const turn = input.store.createTurn(input.workspaceId, input.threadId, input.objective, null, {
-      turnId: ids.turnId,
-    });
+    const ids = goalStartOwnerIds({ ...input, actorId: input.triggerActor.id });
+    const turn = input.store.createTurn(
+      input.workspaceId,
+      input.threadId,
+      input.objective,
+      input.triggerActor,
+      null,
+      { turnId: ids.turnId }
+    );
     const timestamp = turn.startedAt ?? new Date().toISOString();
     const objectiveItem = input.store.createItem({
       id: ids.objectiveItemId,
@@ -1539,6 +2234,7 @@ export function startGoalModeObjective(input: {
       turnId: turn.id,
       type: 'user-message',
       status: 'completed',
+      actor: input.triggerActor,
       causationId: input.requestId,
       text: input.objective,
       createdAt: timestamp,
@@ -1599,6 +2295,38 @@ export function startGoalModeObjective(input: {
 }
 
 /**
+ * Requires one Goal route Thread to belong to the centrally authorized path Workspace.
+ *
+ * @param context Request context carrying optional central authorization in Core-backed mode.
+ * @param store Existing Thread owner.
+ * @param workspaceId Authorized path Workspace.
+ * @param threadId Child Thread identifier.
+ * @returns Existing Thread after lineage verification.
+ * @throws The original missing error in no-Core tests, or uniform Workspace denial in guarded mode.
+ */
+function requireAuthorizedGoalThread(
+  context: Context<{ Variables: AuthVariables }>,
+  store: FsStore,
+  workspaceId: string,
+  threadId: string
+): ReturnType<FsStore['getThread']> {
+  const workspaceAccess = context.get('workspaceAccess');
+  let thread: ReturnType<FsStore['getThread']>;
+  try {
+    thread = store.getThread(workspaceId, threadId);
+  } catch (error) {
+    if (workspaceAccess) {
+      assertAuthorizedWorkspaceLineage(workspaceAccess, null);
+    }
+    throw error;
+  }
+  if (workspaceAccess) {
+    assertAuthorizedWorkspaceLineage(workspaceAccess, thread.workspaceId);
+  }
+  return thread;
+}
+
+/**
  * Registers the Goal Mode lifecycle, planning, steering, execution, and local supervise routes.
  *
  * @param dependencies Goal route storage, runtime, repository, and coordinator dependencies.
@@ -1629,11 +2357,12 @@ export function registerGoalRoutes({
   /** Deployment mode that gates deterministic local-only routes. */
   readonly mode: CoreMode;
   /** Opens the migrated workspace database. */
-  readonly repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb;
+  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   /** Resolves request-scoped storage. */
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
   /** Starts one reserved worker turn through the durable scheduler. */
   readonly startModeWorkerTurn: (input: {
+    readonly triggerActor: ActorRef;
     readonly store: FsStore;
     readonly workspaceId: string;
     readonly threadId: string;
@@ -1650,6 +2379,77 @@ export function registerGoalRoutes({
     workspaceId: string
   ) => WorkerCoordinatorCandidate[];
 }): void {
+  /** Handles either terminal route. @param c Request context. @param state Requested state. @returns Command or error response. */
+  async function handleSteeringTerminal(
+    c: Context<{ Variables: AuthVariables }>,
+    state: 'follow-up' | 'cancelled'
+  ): Promise<Response> {
+    const schema =
+      state === 'follow-up'
+        ? ConvertGoalSteeringToFollowUpRequestSchema
+        : CancelGoalSteeringRequestSchema;
+    const parsed = schema.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) {
+      return asInvalidRequestError(parsed.error);
+    }
+
+    try {
+      const workspaceId = c.req.param('workspaceId')!;
+      const threadId = c.req.param('threadId')!;
+      const pendingTurnId = c.req.param('pendingTurnId')!;
+      const store = requestStore(c);
+      store.getWorkspace(workspaceId);
+      requireAuthorizedGoalThread(c, store, workspaceId, threadId);
+      if (!coreDb) {
+        return asApiError(
+          'Goal storage is unavailable for this NanoCore instance.',
+          'goal_storage_unavailable',
+          503
+        );
+      }
+
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
+      try {
+        const pending = getPendingUserTurnRecord(workspaceDb, workspaceId, threadId);
+        const outcome =
+          pending?.pendingTurnId === pendingTurnId
+            ? null
+            : getSteeringTerminalOutcome(workspaceDb, workspaceId, threadId, pendingTurnId);
+        const workspaceAccess = c.get('workspaceAccess');
+        if (workspaceAccess) {
+          assertAuthorizedWorkspaceLineage(
+            workspaceAccess,
+            pending?.pendingTurnId === pendingTurnId
+              ? pending.workspaceId
+              : (outcome?.workspaceId ?? null)
+          );
+        }
+        return c.json(
+          await runSteeringTerminalCommand(
+            workspaceDb,
+            store,
+            inflightCommands,
+            workspaceId,
+            threadId,
+            pendingTurnId,
+            parsed.data.requestId,
+            state
+          )
+        );
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
+      if (error instanceof GoalSteeringAuthorityError) {
+        return asApiError(error.message, error.code, error.status);
+      }
+      return asCommandError(error, 'goal_steering_terminal_failed', 400);
+    }
+  }
+
   registerAppApiRoute(app, 'getThreadGoalSummary', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
@@ -1657,13 +2457,13 @@ export function registerGoalRoutes({
       const store = requestStore(c);
 
       store.getWorkspace(workspaceId);
-      store.getThread(workspaceId, threadId);
+      requireAuthorizedGoalThread(c, store, workspaceId, threadId);
 
       if (!coreDb) {
         return c.json(ThreadGoalSummaryResponseSchema.parse({ goal: null }));
       }
 
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         return c.json(
           ThreadGoalSummaryResponseSchema.parse({
@@ -1674,6 +2474,9 @@ export function registerGoalRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       return asApiError((error as Error).message);
     }
   });
@@ -1690,10 +2493,15 @@ export function registerGoalRoutes({
       const threadId = c.req.param('threadId');
       const store = requestStore(c);
       const workspace = store.getWorkspace(workspaceId);
+      const triggerActor = {
+        kind: 'user',
+        id: c.get('actor').userId,
+      } as const satisfies ActorRef;
 
       assertProjectWorkspace(workspace, 'start Goal Mode');
-      store.getThread(workspaceId, threadId);
+      requireAuthorizedGoalThread(c, store, workspaceId, threadId);
       const ownerInput = {
+        triggerActor,
         owningCommand: 'goal.start' as const,
         requestId: parsed.data.requestId,
         store,
@@ -1704,7 +2512,7 @@ export function registerGoalRoutes({
       };
       /** Reads direct Goal start owners through one scoped database handle. */
       const readOwners = (): GoalStartResult | null => {
-        const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+        const workspaceDb = repositoryWorkspaceDb(workspaceId);
         try {
           return readGoalStartOwners({ ...ownerInput, workspaceDb });
         } finally {
@@ -1717,7 +2525,7 @@ export function registerGoalRoutes({
         inflightCommands,
         command: 'goal.start',
         requestId: parsed.data.requestId,
-        scope: { workspaceId, threadId },
+        scope: { actorId: ownerInput.triggerActor.id, workspaceId, threadId },
         input: { objective: parsed.data.objective, title: parsed.data.title },
         responseKind: 'goal',
         execute: () =>
@@ -1764,6 +2572,9 @@ export function registerGoalRoutes({
       });
       return c.json(response);
     } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       if (error instanceof TurnStartValidationError) {
         return asApiError(error.message, error.code, error.status);
       }
@@ -1787,17 +2598,144 @@ export function registerGoalRoutes({
       const store = requestStore(c);
 
       store.getWorkspace(workspaceId);
-      store.getThread(workspaceId, threadId);
+      requireAuthorizedGoalThread(c, store, workspaceId, threadId);
+      if (!coreDb) {
+        return asApiError(
+          'Goal storage is unavailable for this NanoCore instance.',
+          'goal_storage_unavailable',
+          503
+        );
+      }
 
-      return asApiError(
-        'Goal steering is unavailable until the real worker path can persist delivery proof.',
-        'goal_steering_delivery_unavailable',
-        503
-      );
+      const { requestId, ...input } = parsed.data;
+      const ids = derivePendingUserTurnIds({ workspaceId, threadId, requestId });
+      const scope = { workspaceId, threadId };
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
+      try {
+        try {
+          return c.json(
+            await runIdempotentCommand({
+              store,
+              workspaceDb,
+              inflightCommands,
+              command: 'goal.steering.send',
+              requestId,
+              scope,
+              input,
+              responseKind: 'pending_user_turn',
+              responseId: (result) => result.pendingTurnId,
+              replay: (record) =>
+                projectSteeringSendResponse(
+                  coreDb,
+                  workspaceDb,
+                  store,
+                  record,
+                  workspaceId,
+                  threadId
+                ),
+              workspaceTransaction: true,
+              execute: () => {
+                const existing = getPendingUserTurnRecord(workspaceDb, workspaceId, threadId);
+                if (existing) {
+                  if (existing.requestId !== requestId) {
+                    throw new GoalSteeringAuthorityError(
+                      'conflict',
+                      'This Thread already has a pending steering input.'
+                    );
+                  }
+                  throw steeringRecoveryRequired(
+                    'The steering owner exists without its completed send receipt.'
+                  );
+                }
+                if (store.listAllItems().some((item) => item.id === ids.contentItemId)) {
+                  throw steeringRecoveryRequired(
+                    'The steering Item exists without its pending owner and receipt.'
+                  );
+                }
+
+                const resolved = resolveSteeringSendInput(workspaceDb, input);
+                const target = requireSteeringSendTarget(workspaceDb, store, workspaceId, threadId);
+                const acceptedAt = new Date().toISOString();
+                store.createItem({
+                  id: ids.contentItemId,
+                  workspaceId,
+                  threadId,
+                  turnId: target.turn.id,
+                  type: 'user-message',
+                  status: 'completed',
+                  actor: { kind: 'user', id: c.get('actor').userId },
+                  text: resolved.text,
+                  parentItemId: null,
+                  causationId: requestId,
+                  createdAt: acceptedAt,
+                  completedAt: acceptedAt,
+                });
+                const pending = createPendingUserTurnRecord(workspaceDb, {
+                  workspaceId,
+                  threadId,
+                  goalId: target.goal.goalId,
+                  activeTurnId: target.turn.id,
+                  requestId,
+                  input: resolved.pendingInput,
+                  receivedAt: acceptedAt,
+                });
+                return SubmitThreadGoalSteeringResponseSchema.parse({
+                  state: 'queued',
+                  pendingTurnId: pending.pendingTurnId,
+                  requestId,
+                  contentItemId: pending.contentItemId,
+                  goalId: pending.goalId,
+                  activeTurnId: pending.activeTurnId,
+                });
+              },
+            }),
+            202
+          );
+        } catch (error) {
+          const receipt = store.getCommandRequest(
+            'goal.steering.send',
+            requestId,
+            scope,
+            workspaceDb
+          );
+          if (!receipt && store.listAllItems().some((item) => item.id === ids.contentItemId)) {
+            throw steeringRecoveryRequired(
+              'The steering Item exists without its pending owner and receipt.'
+            );
+          }
+          throw error;
+        }
+      } finally {
+        workspaceDb.sqlite.close();
+      }
     } catch (error) {
-      return asApiError((error as Error).message, 'goal_steering_failed', 400);
+      if (error instanceof HTTPException) {
+        throw error;
+      }
+      if (error instanceof GoalSteeringAuthorityError) {
+        return asApiError(error.message, error.code, error.status);
+      }
+      const candidate = error as {
+        readonly code?: unknown;
+        readonly message?: unknown;
+        readonly status?: unknown;
+      };
+      if (
+        typeof candidate.code === 'string' &&
+        typeof candidate.message === 'string' &&
+        typeof candidate.status === 'number'
+      ) {
+        return asApiError(candidate.message, candidate.code, candidate.status);
+      }
+      return asCommandError(error, 'goal_steering_failed', 400);
     }
   });
+
+  registerAppApiRoute(app, 'convertGoalSteeringToFollowUp', (c) =>
+    handleSteeringTerminal(c, 'follow-up')
+  );
+
+  registerAppApiRoute(app, 'cancelGoalSteering', (c) => handleSteeringTerminal(c, 'cancelled'));
 
   registerAppApiRoute(app, 'createThreadGoalPlan', async (c) => {
     const parsed = CreateThreadGoalPlanRequestSchema.safeParse(
@@ -1814,7 +2752,7 @@ export function registerGoalRoutes({
       const store = requestStore(c);
 
       store.getWorkspace(workspaceId);
-      store.getThread(workspaceId, threadId);
+      requireAuthorizedGoalThread(c, store, workspaceId, threadId);
 
       if (!coreDb) {
         return asApiError(
@@ -1824,18 +2762,19 @@ export function registerGoalRoutes({
         );
       }
 
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         const response = await runIdempotentCommand({
           store,
           inflightCommands,
           command: 'goal.plan',
           requestId: parsed.data.requestId,
-          scope: { workspaceId, threadId },
+          scope: { actorId: c.get('actor').userId, workspaceId, threadId },
           input: {},
           responseKind: 'goal_plan',
           execute: async () => {
             const existing = readGoalPlanCreation({
+              triggerActor: { kind: 'user', id: c.get('actor').userId },
               workspaceDb,
               store,
               workspaceId,
@@ -1862,6 +2801,7 @@ export function registerGoalRoutes({
               objective: goal.objective,
             });
             const result = await createGoalPlan({
+              triggerActor: { kind: 'user', id: c.get('actor').userId },
               workspaceDb,
               store,
               workspaceId,
@@ -1889,6 +2829,7 @@ export function registerGoalRoutes({
               );
             }
             const existing = readGoalPlanCreation({
+              triggerActor: { kind: 'user', id: c.get('actor').userId },
               workspaceDb,
               store,
               workspaceId,
@@ -1913,6 +2854,7 @@ export function registerGoalRoutes({
             throw error;
           }
           const existing = readGoalPlanCreation({
+            triggerActor: { kind: 'user', id: c.get('actor').userId },
             workspaceDb,
             store,
             workspaceId,
@@ -1932,6 +2874,9 @@ export function registerGoalRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       if (error instanceof GoalPlanApprovalError) {
         return asApiError(error.message, error.code, error.status);
       }
@@ -1954,7 +2899,7 @@ export function registerGoalRoutes({
       const store = requestStore(c);
 
       store.getWorkspace(workspaceId);
-      store.getThread(workspaceId, threadId);
+      requireAuthorizedGoalThread(c, store, workspaceId, threadId);
 
       if (!coreDb) {
         return asApiError(
@@ -1964,17 +2909,27 @@ export function registerGoalRoutes({
         );
       }
 
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         const response = await runIdempotentCommand({
           store,
           inflightCommands,
           command: 'goal.plan.approve',
           requestId: parsed.data.requestId,
-          scope: { workspaceId, threadId },
+          scope: { actorId: c.get('actor').userId, workspaceId, threadId },
           input: { planItemId: parsed.data.planItemId },
           responseKind: 'goal_plan',
           execute: () => {
+            const plan = getGoalPlanRecord(
+              workspaceDb,
+              workspaceId,
+              threadId,
+              parsed.data.planItemId
+            );
+            const workspaceAccess = c.get('workspaceAccess');
+            if (workspaceAccess) {
+              assertAuthorizedWorkspaceLineage(workspaceAccess, plan?.workspaceId ?? null);
+            }
             const goal = listGoalRecordsForThread(workspaceDb, { workspaceId, threadId }).find(
               (candidate) => candidate.planItemId === parsed.data.planItemId
             );
@@ -2073,6 +3028,9 @@ export function registerGoalRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       if (error instanceof GoalPlanApprovalError) {
         return asApiError(error.message, error.code, error.status);
       }
@@ -2095,7 +3053,7 @@ export function registerGoalRoutes({
       const store = requestStore(c);
 
       store.getWorkspace(workspaceId);
-      store.getThread(workspaceId, threadId);
+      requireAuthorizedGoalThread(c, store, workspaceId, threadId);
 
       if (!coreDb) {
         return asApiError(
@@ -2105,18 +3063,19 @@ export function registerGoalRoutes({
         );
       }
 
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         const revised = await runIdempotentCommand({
           store,
           inflightCommands,
           command: 'goal.plan.revise',
           requestId: parsed.data.requestId,
-          scope: { workspaceId, threadId },
+          scope: { actorId: c.get('actor').userId, workspaceId, threadId },
           input: { revision: parsed.data.revision },
           responseKind: 'goal',
           execute: () => {
             const existing = readGoalPlanRevision({
+              triggerActor: { kind: 'user', id: c.get('actor').userId },
               workspaceDb,
               store,
               workspaceId,
@@ -2142,6 +3101,7 @@ export function registerGoalRoutes({
               );
             }
             const revised = reviseGoalPlan({
+              triggerActor: { kind: 'user', id: c.get('actor').userId },
               workspaceDb,
               store,
               workspaceId,
@@ -2161,6 +3121,7 @@ export function registerGoalRoutes({
               );
             }
             const existing = readGoalPlanRevision({
+              triggerActor: { kind: 'user', id: c.get('actor').userId },
               workspaceDb,
               store,
               workspaceId,
@@ -2189,6 +3150,7 @@ export function registerGoalRoutes({
             throw error;
           }
           const existing = readGoalPlanRevision({
+            triggerActor: { kind: 'user', id: c.get('actor').userId },
             workspaceDb,
             store,
             workspaceId,
@@ -2208,6 +3170,9 @@ export function registerGoalRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       if (error instanceof GoalPlanApprovalError) {
         return asApiError(error.message, error.code, error.status);
       }
@@ -2227,7 +3192,7 @@ export function registerGoalRoutes({
       const store = requestStore(c);
 
       store.getWorkspace(workspaceId);
-      store.getThread(workspaceId, threadId);
+      requireAuthorizedGoalThread(c, store, workspaceId, threadId);
 
       if (!coreDb) {
         return asApiError(
@@ -2237,10 +3202,11 @@ export function registerGoalRoutes({
         );
       }
 
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         return c.json(
           runGoalLifecycleCommand({
+            actorId: c.get('actor').userId,
             store,
             workspaceDb,
             workspaceId,
@@ -2253,6 +3219,9 @@ export function registerGoalRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       return asCommandError(error, 'goal_pause_failed', 400);
     }
   });
@@ -2269,7 +3238,7 @@ export function registerGoalRoutes({
       const store = requestStore(c);
 
       store.getWorkspace(workspaceId);
-      store.getThread(workspaceId, threadId);
+      requireAuthorizedGoalThread(c, store, workspaceId, threadId);
 
       if (!coreDb) {
         return asApiError(
@@ -2279,10 +3248,11 @@ export function registerGoalRoutes({
         );
       }
 
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         return c.json(
           runGoalLifecycleCommand({
+            actorId: c.get('actor').userId,
             store,
             workspaceDb,
             workspaceId,
@@ -2295,6 +3265,9 @@ export function registerGoalRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       return asCommandError(error, 'goal_resume_failed', 400);
     }
   });
@@ -2313,9 +3286,13 @@ export function registerGoalRoutes({
       const workspaceId = c.req.param('workspaceId');
       const threadId = c.req.param('threadId');
       const store = requestStore(c);
+      const triggerActor = {
+        kind: 'user',
+        id: c.get('actor').userId,
+      } as const satisfies ActorRef;
 
       store.getWorkspace(workspaceId);
-      store.getThread(workspaceId, threadId);
+      requireAuthorizedGoalThread(c, store, workspaceId, threadId);
 
       if (!coreDb) {
         return asApiError(
@@ -2325,11 +3302,11 @@ export function registerGoalRoutes({
         );
       }
 
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         const requestInputHash = commandInputHash({});
         const reservedTurnId = goalStepTurnId({
-          store,
+          actorId: triggerActor.id,
           workspaceId,
           threadId,
           requestId: parsed.data.requestId,
@@ -2340,7 +3317,7 @@ export function registerGoalRoutes({
           inflightCommands,
           command: 'goal.step',
           requestId: parsed.data.requestId,
-          scope: { workspaceId, threadId },
+          scope: { actorId: triggerActor.id, workspaceId, threadId },
           input: {},
           responseKind: 'goal',
           responseId: (result) => result.goal.goalId,
@@ -2412,6 +3389,8 @@ export function registerGoalRoutes({
             const reviewRequired = task.reviewPolicy.required;
 
             const loop = await runWorkerTurnLoop({
+              coreDb,
+              triggerActor,
               workspaceDb,
               workspaceId,
               threadId,
@@ -2425,7 +3404,7 @@ export function registerGoalRoutes({
                 const preparedContext = prepareGoalTaskDelegation(coreDb!, workspaceDb, {
                   store,
                   workspaceId,
-                  userId: store.getUserId(),
+                  userId: c.get('actor').userId,
                   threadId,
                   goalId: goal.goalId,
                   taskId: task.taskId,
@@ -2462,7 +3441,51 @@ export function registerGoalRoutes({
                   contextPackageDigest: preparedContext.contextPackageDigest,
                 };
               },
-              reserveTurn: () => {
+              reserveTurn: ({ prepared }) => {
+                const pending = getPendingUserTurnRecord(workspaceDb, workspaceId, threadId);
+                if (pending?.goalId === goal.goalId) {
+                  requireGoalSteeringSendProof(workspaceDb, store, pending);
+                  if (pending.inputKind === 'material') {
+                    if (!pending.materialId || !pending.revisionId || !pending.contentDigest) {
+                      throw goalStepRecoveryError(
+                        'Goal steering Material authority is incomplete before reservation.'
+                      );
+                    }
+                    let steeringRevision: ReturnType<typeof getWorkspaceMaterialRevision>;
+                    try {
+                      steeringRevision = getWorkspaceMaterialRevision(
+                        workspaceDb,
+                        pending.materialId,
+                        pending.revisionId
+                      );
+                    } catch {
+                      throw goalStepRecoveryError(
+                        'Goal steering Material authority is unavailable before reservation.'
+                      );
+                    }
+                    if (steeringRevision.contentDigest !== pending.contentDigest) {
+                      throw goalStepRecoveryError(
+                        'Goal steering Material digest is contradictory before reservation.'
+                      );
+                    }
+                    const workerRequestBytes = serializeStructuredWorkerDelegationRequest(
+                      prepared.delegationRequest
+                    );
+                    if (
+                      Math.ceil(
+                        (Buffer.byteLength(workerRequestBytes, 'utf8') +
+                          Buffer.byteLength(steeringRevision.content, 'utf8')) /
+                          4
+                      ) > prepared.delegationRequest.constraints.maxContextTokens
+                    ) {
+                      throw new TurnStartValidationError(
+                        'goal_steering_delivery_unavailable',
+                        'Goal steering Material exceeds the worker Context Package budget.',
+                        503
+                      );
+                    }
+                  }
+                }
                 const reservation = reserveGoalTaskForWorkerTurn(workspaceDb, {
                   workspaceId,
                   threadId,
@@ -2477,6 +3500,17 @@ export function registerGoalRoutes({
                   );
                 }
 
+                if (pending?.goalId === goal.goalId) {
+                  claimPendingUserTurnRecord(workspaceDb, {
+                    workspaceId,
+                    threadId,
+                    pendingTurnId: pending.pendingTurnId,
+                    terminalClaimKind: 'applied',
+                    terminalClaimId: `ctxpkg_${reservedTurnId}`,
+                    terminalClaimedAt: new Date().toISOString(),
+                  });
+                }
+
                 return { turnId: reservedTurnId };
               },
               startWorker: async ({ turnId, prepared }) => {
@@ -2489,6 +3523,7 @@ export function registerGoalRoutes({
                 }
 
                 await startModeWorkerTurn({
+                  triggerActor,
                   store,
                   workspaceId,
                   threadId,
@@ -2536,6 +3571,7 @@ export function registerGoalRoutes({
               );
             }
             return commitGoalStepOwnerOutcome({
+              authorityActor: triggerActor,
               workspaceDb,
               workspaceId,
               threadId,
@@ -2570,6 +3606,9 @@ export function registerGoalRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       if (error instanceof GoalReviewResolutionError) {
         return asApiError(error.message, error.code, error.status);
       }
@@ -2613,7 +3652,7 @@ export function registerGoalRoutes({
             );
           }
 
-          const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+          const workspaceDb = repositoryWorkspaceDb(workspaceId);
           try {
             const goal = requireLatestActiveGoal(workspaceDb, workspaceId, threadId);
 
@@ -2640,6 +3679,7 @@ export function registerGoalRoutes({
             const worker = await startGoalTaskWorkerTurn({
               workspaceDb,
               store,
+              triggerActor: { kind: 'user', id: c.get('actor').userId },
               workspaceId,
               threadId,
               goalId: goal.goalId,
@@ -2671,6 +3711,7 @@ export function registerGoalRoutes({
             });
 
             const workerOutcome = recordGoalTaskWorkerOutcome(workspaceDb, {
+              authorityActor: worker.turn.triggerActor,
               workspaceDb,
               workspaceId,
               threadId,

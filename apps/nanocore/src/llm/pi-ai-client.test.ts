@@ -31,10 +31,9 @@ function providerConfig(input: Partial<ResolvedLLMProviderConfig> = {}): Resolve
     backend: 'pi-ai',
     baseUrl: null,
     displayName: 'Anthropic',
-    extraBody: {},
-    extraHeaders: {},
     gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
     id: 'anthropic_primary',
+    models: ['faux-chat', 'gpt-test'],
     requiresApiKey: true,
     ...input,
   };
@@ -206,7 +205,9 @@ describe('PiAiGatewayClient', () => {
         baseUrl: 'https://proxy.example/v1',
         provider: 'proxy-openai',
       });
-      await expect(models.getAuth(model)).resolves.toBeUndefined();
+      await expect(models.getAuth(model)).resolves.toEqual({
+        auth: { apiKey: 'openkit-keyless' },
+      });
 
       expect(client.resolveModel(provider, 'private-gpt')).toMatchObject({
         api: 'openai-responses',

@@ -32,7 +32,7 @@ describe('filesystem workspace staging roots', () => {
     mkdirSync(targetRoot);
     symlinkSync(stagingRoot, stagingRootAlias, 'dir');
     symlinkSync(targetRoot, targetRootAlias, 'dir');
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
     const before = {
       contentDigest: 'sha256:before',
       createdAt: '2026-07-05T00:00:00.000Z',

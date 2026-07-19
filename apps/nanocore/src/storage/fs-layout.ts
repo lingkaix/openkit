@@ -21,7 +21,7 @@ const CONFIG_TEMPLATE_SUFFIXES = {
   providers: '.provider.jsonc',
   agents: '.agent.jsonc',
 } as const;
-const DATA_ROOT_LAYOUT_VERSION = 1;
+const DATA_ROOT_LAYOUT_VERSION = 2;
 const DATA_ROOT_TEXT_RECORD_EXTENSIONS = new Set([
   '.json',
   '.jsonc',
@@ -37,7 +37,7 @@ const DATA_ROOT_SUPPORTED_CANONICAL_RECORD_TYPES = new Set([
 ]);
 
 /**
- * Deterministic local-mode user id for v0.0.2.
+ * Deterministic local user id retained for user scope and internal resource-id generation.
  */
 export const LOCAL_USER_ID = 'user_local';
 
@@ -57,8 +57,8 @@ export interface FsLayoutPaths {
   users: string;
   /** Implicit local user directory. */
   localUser: string;
-  /** Workspace root for the implicit local user. */
-  localUserWorkspaces: string;
+  /** Owner-independent Workspace root directory. */
+  workspaces: string;
   /** Local-mode runtime data directory. */
   local: string;
   /** Server-mode runtime data directory. */
@@ -98,7 +98,7 @@ export interface DataRootLayoutMarker {
   /** Marker schema version. */
   schemaVersion: 1;
   /** DATA_ROOT layout version supported by this build. */
-  layoutVersion: 1;
+  layoutVersion: 2;
   /** Deployment id used for export and backup lineage. */
   deploymentId: string;
   /** Previous deployment id when this data root was moved to a new deployment. */
@@ -121,8 +121,6 @@ export interface UserLayoutPaths {
   logs: string;
   /** User-scoped config directory. */
   config: string;
-  /** User workspaces directory. */
-  workspaces: string;
 }
 
 /**
@@ -161,8 +159,6 @@ export interface WorkspaceLayoutPaths {
   reviews: string;
   /** Workspace change-review directory. */
   reviewsWorkspace: string;
-  /** Workspace artifact-review directory. */
-  reviewsArtifacts: string;
   /** Workspace evidence directory. */
   evidence: string;
   /** Workspace evidence bundle directory. */
@@ -178,7 +174,7 @@ export interface WorkspaceLayoutPaths {
  *
  * The layout guarantees `config/`, `config/providers/`, `config/agents/`,
  * server-owned runtime directories, target server database ownership, the
- * implicit local user skeleton, `local/`, and `logs/`.
+ * implicit local user skeleton, owner-independent `workspaces/`, `local/`, and `logs/`.
  *
  * @param root Data root directory to initialize.
  * @returns Absolute or relative paths for the created layout.
@@ -192,7 +188,7 @@ export function ensureLayout(root: string): FsLayoutPaths {
     agents: resolveDataRootPath(root, 'config', 'agents'),
     users: resolveDataRootPath(root, 'users'),
     localUser: resolveDataRootPath(root, 'users', LOCAL_USER_ID),
-    localUserWorkspaces: resolveDataRootPath(root, 'users', LOCAL_USER_ID, 'workspaces'),
+    workspaces: resolveDataRootPath(root, 'workspaces'),
     local: resolveDataRootPath(root, 'local'),
     server: serverRoot,
     serverFiles: join(serverRoot, 'files'),
@@ -212,14 +208,16 @@ export function ensureLayout(root: string): FsLayoutPaths {
   };
 
   ensureLayoutDirectory(paths.root, true);
+  ensureLayoutDirectory(paths.server);
+  ensureDataRootLayoutMarker(root);
+
   for (const path of Object.values(paths).filter(
-    (path) => path !== paths.root && path !== paths.serverVault
+    (path) => path !== paths.root && path !== paths.server && path !== paths.serverVault
   )) {
     ensureLayoutDirectory(path);
   }
   ensureEncryptedFileVaultStoreDirectory({ storeDir: paths.serverVault });
 
-  ensureDataRootLayoutMarker(root);
   clearManagedCodexRuntimeScratch(root);
   verifyNoLegacyOwnershipViolations(root);
   verifyCanonicalDatabaseOwnership(root);
@@ -366,7 +364,6 @@ export function ensureUserLayout(root: string, userId: string): UserLayoutPaths 
     db: join(userRoot, 'db'),
     logs: join(userRoot, 'logs'),
     config: join(userRoot, 'config'),
-    workspaces: join(userRoot, 'workspaces'),
   };
 
   ensureLayoutDirectory(root, true);
@@ -382,19 +379,12 @@ export function ensureUserLayout(root: string, userId: string): UserLayoutPaths 
  * Creates the canonical subtree for one workspace.
  *
  * @param root Data root directory.
- * @param userId User id that owns the workspace.
  * @param workspaceId Workspace id whose subtree should exist.
  * @returns Paths created for the workspace subtree.
  */
-export function ensureWorkspaceLayout(
-  root: string,
-  userId: string,
-  workspaceId: string
-): WorkspaceLayoutPaths {
-  ensureUserLayout(root, userId);
-  return ensureWorkspaceLayoutRoot(
-    resolveDataRootPath(root, 'users', userId, 'workspaces', workspaceId)
-  );
+export function ensureWorkspaceLayout(root: string, workspaceId: string): WorkspaceLayoutPaths {
+  ensureLayout(root);
+  return ensureWorkspaceLayoutRoot(resolveDataRootPath(root, 'workspaces', workspaceId));
 }
 
 /**
@@ -421,7 +411,6 @@ export function ensureWorkspaceLayoutRoot(workspaceRoot: string): WorkspaceLayou
     runtimeAgentSessions: join(workspaceRoot, 'runtime', 'agent-sessions'),
     reviews: join(workspaceRoot, 'reviews'),
     reviewsWorkspace: join(workspaceRoot, 'reviews', 'workspace'),
-    reviewsArtifacts: join(workspaceRoot, 'reviews', 'artifacts'),
     evidence: join(workspaceRoot, 'evidence'),
     evidenceBundles: join(workspaceRoot, 'evidence', 'bundles'),
     evidenceBackend: join(workspaceRoot, 'evidence', 'backend'),
@@ -461,15 +450,11 @@ export function userDbPath(root: string, userId: string): string {
  * Resolves one workspace-scope SQLite file path.
  *
  * @param root Data root directory.
- * @param userId User id that owns the workspace.
  * @param workspaceId Workspace id that owns the database.
  * @returns Absolute path to the workspace-owned SQLite file.
  */
-export function workspaceDbPath(root: string, userId: string, workspaceId: string): string {
-  return join(
-    resolveDataRootPath(root, 'users', userId, 'workspaces', workspaceId, 'db'),
-    'workspace.sqlite'
-  );
+export function workspaceDbPath(root: string, workspaceId: string): string {
+  return join(resolveDataRootPath(root, 'workspaces', workspaceId, 'db'), 'workspace.sqlite');
 }
 
 /**
@@ -561,6 +546,10 @@ function verifyNoLegacyOwnershipViolations(root: string): void {
   for (const userId of listChildDirectories(usersRoot)) {
     const workspacesRoot = resolveDataRootPath(root, 'users', userId, 'workspaces');
 
+    if (!existsSync(workspacesRoot)) {
+      continue;
+    }
+
     for (const workspaceId of listChildDirectories(workspacesRoot)) {
       const legacyStoreSnapshot = join(workspacesRoot, workspaceId, 'store.json');
 
@@ -581,6 +570,8 @@ function verifyNoLegacyOwnershipViolations(root: string): void {
         throw new Error(`Unsupported legacy workspace memory directory: ${legacyMemory}`);
       }
     }
+
+    throw new Error(`Unsupported owner-nested Workspace tree: ${workspacesRoot}`);
   }
 }
 
@@ -607,7 +598,7 @@ function verifyCanonicalDatabaseOwnership(root: string): void {
 
     if (
       path.endsWith(`${sep}workspace.sqlite`) &&
-      !/^users\/[^/]+\/workspaces\/[^/]+\/db\/workspace\.sqlite$/.test(reportPath)
+      !/^workspaces\/[^/]+\/db\/workspace\.sqlite$/.test(reportPath)
     ) {
       throw new Error(`DATA_ROOT database ownership violation: ${reportPath}`);
     }

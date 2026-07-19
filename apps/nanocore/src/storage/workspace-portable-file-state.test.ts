@@ -24,6 +24,7 @@ import { describe, expect, it } from 'vitest';
 import { createApp } from '../app.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 import { WORKSPACE_EXPORT_MANIFEST_FILE } from './workspace-export.js';
@@ -84,7 +85,12 @@ describe('workspace portable file state', () => {
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
     const sourceWorkspaceId = 'ws_demo';
-    const sourceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', sourceWorkspaceId);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: sourceWorkspaceId,
+    });
+    const sourceRoot = join(dataRoot, 'workspaces', sourceWorkspaceId);
     const firstTimestamp = '2026-07-06T00:00:00.000Z';
     const secondTimestamp = '2026-07-06T00:00:01.000Z';
     const knowledge = store.createKnowledgeEntry(sourceWorkspaceId, {
@@ -408,7 +414,7 @@ describe('workspace portable file state', () => {
     expect(importRes.status, await importRes.clone().text()).toBe(200);
     const imported = WorkspaceImportResponseSchema.parse(await importRes.json());
     const importedWorkspaceId = imported.importedWorkspaceId;
-    const importedRoot = join(dataRoot, 'users', 'user_local', 'workspaces', importedWorkspaceId);
+    const importedRoot = join(dataRoot, 'workspaces', importedWorkspaceId);
     const importedKnowledge = store
       .listKnowledge(importedWorkspaceId)
       .find((entry) => entry.title === knowledge.title);

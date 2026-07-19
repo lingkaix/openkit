@@ -14,12 +14,12 @@ const smokeScript = join(repoRoot, 'scripts', 'docker', 'app-persistence-smoke.s
 /**
  * Creates a host-mounted data-root fixture that matches the target persistence contract.
  *
- * @param workspaceId Workspace id to create under the local user subtree.
+ * @param workspaceId Workspace id to create under the canonical Workspace root.
  * @returns Temporary data-root path.
  */
 async function createMountedDataRootFixture(workspaceId: string): Promise<string> {
   const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-app-smoke-'));
-  const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', workspaceId);
+  const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
 
   for (const directory of [
     join(dataRoot, 'config', 'providers'),
@@ -72,7 +72,7 @@ async function createMountedDataRootFixture(workspaceId: string): Promise<string
  * Runs the app persistence smoke in assertion-only mode.
  *
  * @param dataRoot Data root for the assertion run.
- * @param workspaceId Workspace id expected under the local user subtree.
+ * @param workspaceId Workspace id expected under the canonical Workspace root.
  * @returns Completed child process result.
  */
 function runAssertOnlySmoke(dataRoot: string, workspaceId: string): ReturnType<typeof spawnSync> {
@@ -108,9 +108,7 @@ describe('app persistence smoke script', () => {
     expect(result.stdout).toContain('PASS data-root server/files');
     expect(result.stdout).toContain('PASS data-root server/runtime');
     expect(result.stdout).toContain('PASS data-root server/vendor');
-    expect(result.stdout).toContain(
-      `PASS data-root users/user_local/workspaces/${workspaceId}/runtime`
-    );
+    expect(result.stdout).toContain(`PASS data-root workspaces/${workspaceId}/runtime`);
     expect(result.stdout).toContain('OpenKit app persistence smoke PASS');
   });
 

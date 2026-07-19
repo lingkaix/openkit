@@ -163,7 +163,9 @@ The declaration MUST NOT include `apiKey`, `token`, `password`, `clientSecret`, 
 
 NanoCore MUST validate each declaration before worker package materialization.
 
-Validation MUST require an active `VaultGrant`, an active target `VaultReference`, matching owner scope, matching target agent session when present, unexpired grant lifetime, and an allowed injection path that matches the requested declaration visibility.
+Validation MUST require an active `VaultGrant`, an active target `VaultReference`, matching owner scope and reference identity, exact current-package matches for every non-null grant `userId`, `workspaceId`, `targetAgentId`, and `targetAgentSessionId`, unexpired grant lifetime, and an allowed injection path that matches the requested declaration visibility.
+
+A nullable grant identity or target field means that the grant adds no constraint for that dimension; it does not act as inferred identity, wildcard authority, or a bypass for the remaining checks. A non-null `targetCapabilityId` requires the exact active callable capability route in the current AEP. Backend `requiredCapabilities` and static Skill or MCP supply ids do not satisfy that proof, so the current disabled AEP capability plane MUST reject every capability-targeted credential grant before durable injection records, vault resolution, or backend-private sink effects.
 
 Validation MUST fail closed when the selected backend cannot enforce the requested visibility.
 
@@ -327,6 +329,8 @@ The current implementation is partial.
 
 `apps/nanocore/src/runtime/agent-environment.ts` generates and resolves `sandbox-provider` declarations for provider-backed credentials.
 
+The shared declaration resolver validates every non-null durable grant user, workspace, agent, session, and capability constraint against the current package context before it creates injection records or resolves secret material. Current packages emit a disabled capability plane, so a non-null grant `targetCapabilityId` is intentionally fail-closed on this path.
+
 The durable GitHub MCP and Codex auth JSON materialization paths have already moved to the shared declaration resolver.
 
 `apps/nanocore/src/runtime/worker-governance-backend.ts` supports backend-private runtime-file uploads and runtime-env materialization. It rejects backend-private provider credentials before any OpenShell provider or sandbox effect and does not advertise `provider-attachments`; only the exact internally generated trusted-inference provider remains.
@@ -394,6 +398,7 @@ The next step should be one shared declaration resolver.
 
 - L1 schema tests cover valid declarations, missing target fields, duplicate ids, invalid visibility, secret-shaped inline fields, invalid target paths, and invalid environment variable names.
 - L1 resolver tests prove invalid grants fail before materialization, expired grants fail closed, inactive references fail closed, disallowed visibility fails closed, and successful declarations create plan, receipt, and vault-use records.
+- One table-driven L1 resolver test varies grant user, workspace, agent, and capability constraints and proves every mismatch leaves backend-private sinks, injection plans, injection receipts, and vault-use records empty.
 - L1 redaction tests prove secret values, provider placeholder values, host temporary paths, and raw credential file contents are absent from AEP snapshots and product-safe materialization records.
 - L1 OpenShell backend tests prove provider credentials are upserted before sandbox creation, runtime files are uploaded through backend-private temporary files, runtime env values are merged only into sandbox env, and none of those values appear in returned materialization summaries.
 - L2 contract tests prove the generated schemas, OpenAPI, and end-user CLI projections expose only non-secret metadata when those surfaces are updated.

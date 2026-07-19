@@ -19,6 +19,7 @@ import {
   ensureConfiguredSchedulerBaseline,
   expireReleasingSchedulerLeases,
   listQueuedSchedulerAdmissionEntries,
+  listSchedulerAdmissionEntriesForWorkspace,
   listSchedulerLeasesNeedingWorkspaceRecovery,
   markExpiredSchedulerLeasesStale,
   markSchedulerSessionLeaseReleasing,
@@ -57,6 +58,7 @@ function createAcquiredLease(coreDb: ReturnType<typeof createMigratedCoreDb>, le
   const suffix = leaseId.replace('lease_', '');
 
   createSchedulerAdmissionEntry(coreDb, {
+    triggerActor: { kind: 'user', id: 'user_local' },
     queueEntryId: `queue_${suffix}`,
     workspaceId: 'ws_demo',
     threadId: `thread_${suffix}`,
@@ -143,6 +145,7 @@ function createDispatchedLease(coreDb: ReturnType<typeof createMigratedCoreDb>, 
     nextProbeAt: '2026-07-05T00:01:00.000Z',
   });
   createSchedulerAdmissionEntry(coreDb, {
+    triggerActor: { kind: 'user', id: 'user_local' },
     queueEntryId: `queue_${suffix}`,
     workspaceId: 'ws_demo',
     threadId: `thread_${suffix}`,
@@ -323,6 +326,7 @@ describe('scheduler records', () => {
 
     try {
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_automation',
         workspaceId: 'ws_b',
         threadId: 'thread_b',
@@ -336,7 +340,11 @@ describe('scheduler records', () => {
       });
       createSchedulerAdmissionEntry(coreDb, {
         queueEntryId: 'queue_interactive',
-        userId: 'user_interactive',
+        triggerActor: {
+          kind: 'automation',
+          id: 'automation_interactive',
+          responsibleUserId: 'user_interactive',
+        },
         workspaceId: 'ws_a',
         threadId: 'thread_a',
         turnId: 'turn_a',
@@ -358,6 +366,7 @@ describe('scheduler records', () => {
         now: () => '2026-07-05T00:00:03.000Z',
       });
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_maintenance',
         workspaceId: 'ws_c',
         threadId: 'thread_c',
@@ -376,7 +385,11 @@ describe('scheduler records', () => {
       expect(listQueuedSchedulerAdmissionEntries(coreDb)[0]?.turnInput).toBe(
         'Run interactive work'
       );
-      expect(listQueuedSchedulerAdmissionEntries(coreDb)[0]?.userId).toBe('user_interactive');
+      expect(listQueuedSchedulerAdmissionEntries(coreDb)[0]?.triggerActor).toEqual({
+        kind: 'automation',
+        id: 'automation_interactive',
+        responsibleUserId: 'user_interactive',
+      });
       expect(listQueuedSchedulerAdmissionEntries(coreDb)[0]?.workspaceCwd).toBe(
         '/workspace/project'
       );
@@ -399,6 +412,7 @@ describe('scheduler records', () => {
 
     try {
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_one',
         workspaceId: 'ws_demo',
         threadId: 'thread_demo',
@@ -413,6 +427,7 @@ describe('scheduler records', () => {
 
       expect(() =>
         createSchedulerAdmissionEntry(coreDb, {
+          triggerActor: { kind: 'user', id: 'user_local' },
           queueEntryId: 'queue_two',
           workspaceId: 'ws_demo',
           threadId: 'thread_demo',
@@ -435,6 +450,7 @@ describe('scheduler records', () => {
 
     try {
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_denied',
         workspaceId: 'ws_demo',
         threadId: 'thread_demo',
@@ -466,6 +482,7 @@ describe('scheduler records', () => {
     try {
       createSchedulerAdmissionEntry(coreDb, {
         queueEntryId: 'queue_retry_denied',
+        triggerActor: { kind: 'user', id: 'user_original_trigger' },
         workspaceId: 'ws_demo',
         threadId: 'thread_demo',
         turnId: 'turn_demo',
@@ -483,7 +500,6 @@ describe('scheduler records', () => {
 
       const retried = retryDeniedSchedulerAdmissionEntry(coreDb, {
         queueEntryId: 'queue_retry_denied',
-        userId: 'user_local',
         workspaceId: 'ws_demo',
       });
 
@@ -492,6 +508,16 @@ describe('scheduler records', () => {
       expect(
         listQueuedSchedulerAdmissionEntries(coreDb).map((entry) => entry.queueEntryId)
       ).toEqual(['queue_retry_denied']);
+      expect(
+        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          workspaceId: 'ws_demo',
+          statuses: ['queued'],
+        })
+      ).toEqual([
+        expect.objectContaining({
+          triggerActor: { kind: 'user', id: 'user_original_trigger' },
+        }),
+      ]);
     } finally {
       coreDb.sqlite.close();
     }
@@ -503,6 +529,7 @@ describe('scheduler records', () => {
     try {
       createSchedulerAdmissionEntry(coreDb, {
         queueEntryId: 'queue_cancel',
+        triggerActor: { kind: 'user', id: 'user_original_trigger' },
         workspaceId: 'ws_demo',
         threadId: 'thread_demo',
         turnId: 'turn_demo',
@@ -516,7 +543,6 @@ describe('scheduler records', () => {
 
       const cancelled = cancelSchedulerAdmissionEntry(coreDb, {
         queueEntryId: 'queue_cancel',
-        userId: 'user_local',
         workspaceId: 'ws_demo',
       });
 
@@ -533,6 +559,7 @@ describe('scheduler records', () => {
 
     try {
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_plan',
         workspaceId: 'ws_demo',
         threadId: 'thread_demo',
@@ -587,6 +614,7 @@ describe('scheduler records', () => {
 
     try {
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_denied_plan',
         workspaceId: 'ws_demo',
         threadId: 'thread_demo',
@@ -632,6 +660,7 @@ describe('scheduler records', () => {
 
     try {
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_lease',
         workspaceId: 'ws_demo',
         threadId: 'thread_demo',
@@ -703,6 +732,7 @@ describe('scheduler records', () => {
 
     try {
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_double_lease',
         workspaceId: 'ws_demo',
         threadId: 'thread_demo',
@@ -2037,6 +2067,7 @@ describe('scheduler records', () => {
         nextProbeAt: '2026-07-05T00:01:00.000Z',
       });
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_dispatch',
         workspaceId: 'ws_demo',
         threadId: 'thread_demo',
@@ -2128,6 +2159,7 @@ describe('scheduler records', () => {
         nextProbeAt: '2026-07-05T00:01:00.000Z',
       });
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_thread_first',
         workspaceId: 'ws_demo',
         threadId: 'thread_shared',
@@ -2157,6 +2189,7 @@ describe('scheduler records', () => {
 
       expect(first.status).toBe('dispatched');
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_thread_second',
         workspaceId: 'ws_demo',
         threadId: 'thread_shared',
@@ -2169,6 +2202,7 @@ describe('scheduler records', () => {
         now: () => '2026-07-05T00:00:03.000Z',
       });
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_thread_other',
         workspaceId: 'ws_demo',
         threadId: 'thread_other',
@@ -2263,6 +2297,7 @@ describe('scheduler records', () => {
         nextProbeAt: '2026-07-05T00:01:00.000Z',
       });
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_wait',
         workspaceId: 'ws_demo',
         threadId: 'thread_demo',

@@ -38,9 +38,7 @@ describe('nanocore e2e local boot', () => {
       'x-openkit-protocol-version': PROTOCOL_VERSION,
       'x-openkit-source-digest': expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
     });
-    expect(
-      statSync(join(harness.dataRoot, 'users', 'user_local', 'workspaces')).isDirectory()
-    ).toBe(true);
+    expect(statSync(join(harness.dataRoot, 'workspaces')).isDirectory()).toBe(true);
     expect(existsSync(join(harness.dataRoot, 'server', 'db', 'core.sqlite'))).toBe(true);
   });
 });

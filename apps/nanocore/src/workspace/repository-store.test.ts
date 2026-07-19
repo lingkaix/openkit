@@ -19,7 +19,7 @@ import {
  */
 function createWorkspaceDb(): WorkspaceDb {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-repository-store-'));
-  const workspaceDb = openWorkspaceDb(dataRoot, 'user_1', 'workspace_1');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'workspace_1');
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }

@@ -131,13 +131,11 @@ Each entry is a configured provider instance.
 | `kind` | `"direct"`, `"gateway"`, `"local"`, `"oauth"`, or `"custom"` | Yes | Provider routing kind. |
 | `displayName` | string | Yes | Human-readable name. |
 | `models` | non-empty string array | Yes | Models available through this instance. |
-| `baseUrl` | URL string | No | Provider API base URL. |
+| `baseUrl` | URL string | No | Provider API base URL. Username or password userinfo is rejected. |
 | `defaultModel` | string | No | Default model for this provider instance. |
 | `secretRef` | string | No | Secret reference such as `vault://provider_openai`. |
-| `extraHeaders` | object | No | Extra upstream HTTP headers. |
-| `extraBody` | object | No | Extra upstream request body fields. |
 
-Provider instance entries reject inline credential fields such as `apiKey`, `token`, `secret`, and `clientSecret`. Use `secretRef` for secret material; unknown or consumer-free provider settings are rejected.
+Provider instance entries reject inline credential fields such as `apiKey`, `token`, `secret`, and `clientSecret`, URL userinfo, and the removed `extraHeaders` and `extraBody` fields. Use `secretRef` for secret material; unknown or consumer-free provider settings are rejected without compatibility handling.
 
 ### Provider Kind Decision Guide
 
@@ -181,7 +179,7 @@ These IDs all reference the same merged provider registry, so a provider can liv
 
 ### Secret References
 
-Prefer `secretRef` over inline credentials. Provider credentials should use `vault://<referenceId>`, and the matching `VaultReference` must exist before the provider is usable.
+`secretRef` is the only authored provider credential path. Provider credentials should use `vault://<referenceId>`, and the matching `VaultReference` must exist before the provider is usable.
 
 Example:
 
@@ -200,7 +198,7 @@ Example:
 
 The matching `provider_openai` vault reference must be created before using this provider.
 
-Inline fields such as `apiKey`, `token`, `secret`, and `clientSecret` are rejected. Use `secretRef` and keep raw credential values in the vault.
+Authored provider config has no credential path other than `secretRef`. Inline fields such as `apiKey`, `token`, `secret`, and `clientSecret` and username or password userinfo in `baseUrl` are rejected. The consumer-free `extraHeaders` and `extraBody` fields are removed, rejected as unknown fields, and have no compatibility path. Keep raw credential values in the vault.
 
 ### Codex ChatGPT Subscription Providers
 
@@ -287,7 +285,7 @@ Options:
 | `displayName` | string | Yes | Human-readable provider name. |
 | `kind` | `"direct"`, `"gateway"`, `"local"`, `"oauth"`, or `"custom"` | Yes | Provider kind. |
 | `models` | non-empty string array | Yes | Supported model IDs. |
-| `baseUrl` | URL string | No | Provider API base URL. |
+| `baseUrl` | URL string | No | Provider API base URL. Username or password userinfo is rejected. |
 | `defaultModel` | string | No | Default model for this profile. |
 | `secretRef` | string | No | Secret reference. Provider credentials should use `vault://<referenceId>`. |
 | `readiness.status` | `"ready"`, `"degraded"`, `"blocked"`, `"disabled"`, or `"unknown"` | No | Operator-authored readiness status. |

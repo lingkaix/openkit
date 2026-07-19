@@ -60,20 +60,17 @@ import {
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { coreDbPath, LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 
 /**
  * Creates an app with one registered worker control session.
  *
- * @param userId Store owner represented by the Agent Environment Package.
  * @param workspaceRoots Workspace inputs declared by the package fixture.
  * @returns App, gateway, token, package, and lineage fixtures.
  */
-function createWorkerControlRouteFixture(
-  userId = LOCAL_USER_ID,
-  workspaceRoots: MaterializedWorkspaceRoot[] = []
-): {
+function createWorkerControlRouteFixture(workspaceRoots: MaterializedWorkspaceRoot[] = []): {
   app: ReturnType<typeof createApp>;
   environmentPackage: AgentEnvironmentPackage;
   gateway: WorkerControlGateway;
@@ -82,17 +79,18 @@ function createWorkerControlRouteFixture(
   token: string;
 } {
   const store = createDemoStore();
-  const turn = store.createTurn('ws_demo', 'th_demo', 'Control worker over HTTP');
-  const agent = store.getAgent('ws_demo', 'agent_codex_host');
+  const turn = store.createTurn('ws_demo', 'th_demo', 'Control worker over HTTP', {
+    kind: 'user',
+    id: 'user_local',
+  });
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
-      agent,
+      agentSetup: createTestAgentSetup(),
       agentSessionId: 'as_control_route_1',
-      userId,
+      triggerActor: { kind: 'user', id: LOCAL_USER_ID },
       backend: {
         workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
-        sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
       },
       createdAt: '2026-06-16T00:00:00.000Z',
       requestId: 'req_control_route_1',
@@ -131,15 +129,13 @@ function createWorkerControlRouteFixture(
  * @param environmentPackage Durable package snapshot owned by the lease.
  * @param lineage Worker lineage owned by the lease.
  * @param suffix Stable test id suffix.
- * @param userId Store owner recorded on the scheduler admission.
  * @returns Sandbox binding ref registered on the lease.
  */
 function createDurableWorkerControlLease(
   coreDb: CoreDb,
   environmentPackage: AgentEnvironmentPackage,
   lineage: WorkerControlLineage,
-  suffix: string,
-  userId = LOCAL_USER_ID
+  suffix: string
 ): string {
   const poolId = `pool_${suffix}`;
   const targetId = `target_${suffix}`;
@@ -179,6 +175,7 @@ function createDurableWorkerControlLease(
     targetId,
   });
   createSchedulerAdmissionEntry(coreDb, {
+    triggerActor: { kind: 'user', id: LOCAL_USER_ID },
     priorityClass: 'interactive',
     profileRef: 'profile_worker',
     queueEntryId: `queue_${suffix}`,
@@ -188,7 +185,6 @@ function createDurableWorkerControlLease(
     threadId: lineage.threadId,
     turnId: lineage.turnId,
     turnInput: 'Run durable worker-control test',
-    userId,
     workspaceId: lineage.workspaceId,
   });
   dispatchNextSchedulerEntry(coreDb, {
@@ -205,7 +201,7 @@ function createDurableWorkerControlLease(
     schedulerEpoch: 1,
     startupTimeoutMs: 120_000,
   });
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, userId, lineage.workspaceId);
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
 
   try {
     applyScopedMigrations(workspaceDb);
@@ -301,7 +297,6 @@ describe('worker control routes', () => {
       'POST /api/worker-control/final-status',
       'POST /api/worker-control/supply-refresh-ack',
       'POST /api/worker-control/capability-summary',
-      'POST /api/worker-control/knowledge-proposal-summary',
       'ALL /api/worker-inference/*',
       'POST /api/worker-inference/v1/chat/completions',
       'POST /api/worker-inference/v1/responses',
@@ -429,17 +424,18 @@ describe('worker control routes', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-sequence-')));
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Durable sequence thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Control worker');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+    const turn = store.createTurn('ws_demo', thread.id, 'Control worker', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
-        agent,
+        agentSetup: createTestAgentSetup(),
         agentSessionId: 'session_durable_sequence',
-        userId: 'user_local',
+        triggerActor: { kind: 'user', id: 'user_local' },
         backend: {
           workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
         createdAt: '2026-06-16T00:00:00.000Z',
         requestId: 'req_durable_sequence',
@@ -538,17 +534,18 @@ describe('worker control routes', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-records-')));
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Durable control records thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Control worker');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+    const turn = store.createTurn('ws_demo', thread.id, 'Control worker', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
-        agent,
+        agentSetup: createTestAgentSetup(),
         agentSessionId: 'session_durable_records',
-        userId: 'user_local',
+        triggerActor: { kind: 'user', id: 'user_local' },
         backend: {
           workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
         createdAt: '2026-06-16T00:00:00.000Z',
         requestId: 'req_durable_records',
@@ -700,32 +697,6 @@ describe('worker control routes', () => {
           operation: 'supply_refresh_ack',
           route: '/api/worker-control/supply-refresh-ack',
         },
-        {
-          accepted: {
-            body: {
-              proposalId: 'proposal_token_redaction',
-              summary: 'Original summary',
-              title: 'Proposal',
-            },
-            lineage,
-            operation: 'knowledge_proposal_summary',
-            schemaVersion: 1,
-            sequence: 4,
-          },
-          conflict: {
-            body: {
-              proposalId: 'proposal_token_redaction',
-              summary: 'Changed summary',
-              title: 'Proposal',
-            },
-            lineage,
-            operation: 'knowledge_proposal_summary',
-            schemaVersion: 1,
-            sequence: 4,
-          },
-          operation: 'knowledge_proposal_summary',
-          route: '/api/worker-control/knowledge-proposal-summary',
-        },
       ] as const;
 
       for (const request of requests) {
@@ -786,17 +757,18 @@ describe('worker control routes', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-rejected-')));
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Rejected control records thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Control worker');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+    const turn = store.createTurn('ws_demo', thread.id, 'Control worker', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
-        agent,
+        agentSetup: createTestAgentSetup(),
         agentSessionId: 'session_rejected_records',
-        userId: 'user_local',
+        triggerActor: { kind: 'user', id: 'user_local' },
         backend: {
           workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
         createdAt: '2026-06-16T00:00:00.000Z',
         requestId: 'req_rejected_records',
@@ -891,17 +863,18 @@ describe('worker control routes', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-default-')));
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Default binding thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Control worker');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+    const turn = store.createTurn('ws_demo', thread.id, 'Control worker', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
-        agent,
+        agentSetup: createTestAgentSetup(),
         agentSessionId: 'session_default_binding',
-        userId: 'user_local',
+        triggerActor: { kind: 'user', id: 'user_local' },
         backend: {
           workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
         createdAt: '2026-06-16T00:00:00.000Z',
         requestId: 'req_default_binding',
@@ -955,6 +928,7 @@ describe('worker control routes', () => {
       targetId: 'target_default_binding',
     });
     createSchedulerAdmissionEntry(coreDb, {
+      triggerActor: { kind: 'user', id: 'user_local' },
       priorityClass: 'interactive',
       profileRef: 'profile_worker',
       queueEntryId: 'queue_default_binding',
@@ -1281,17 +1255,18 @@ describe('worker control routes', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-final-')));
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Final status thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Complete worker');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+    const turn = store.createTurn('ws_demo', thread.id, 'Complete worker', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
-        agent,
+        agentSetup: createTestAgentSetup(),
         agentSessionId: 'session_final_status',
-        userId: 'user_local',
+        triggerActor: { kind: 'user', id: 'user_local' },
         backend: {
           workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
         createdAt: '2026-06-16T00:00:00.000Z',
         requestId: 'req_final_status',
@@ -1311,7 +1286,7 @@ describe('worker control routes', () => {
 
     applyMigrations(coreDb);
     const gateway = createDefaultWorkerControlGateway(coreDb);
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, lineage.workspaceId);
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
     applyScopedMigrations(workspaceDb);
     recordAgentEnvironmentPackageSnapshot(workspaceDb, {
       createdAt: environmentPackage.createdAt,
@@ -1368,6 +1343,7 @@ describe('worker control routes', () => {
       targetId: 'target_final_status',
     });
     createSchedulerAdmissionEntry(coreDb, {
+      triggerActor: { kind: 'user', id: 'user_local' },
       priorityClass: 'interactive',
       profileRef: 'profile_worker',
       queueEntryId: 'queue_final_status',
@@ -1773,10 +1749,9 @@ describe('worker control routes', () => {
     }
   });
 
-  it('retains the backend handle in the admission owner workspace only', async () => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-owner-')));
-    const ownerUserId = 'user_server_owner';
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-final-status-owner-repo-'));
+  it('retains the backend handle in the canonical Workspace across final-status replay', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-workspace-')));
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-final-status-workspace-repo-'));
 
     execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
     execFileSync('git', ['config', 'user.email', 'openkit@example.invalid'], {
@@ -1790,7 +1765,7 @@ describe('worker control routes', () => {
       cwd: repositoryPath,
       encoding: 'utf8',
     }).trim();
-    const { environmentPackage, lineage, store } = createWorkerControlRouteFixture(ownerUserId, [
+    const { environmentPackage, lineage, store } = createWorkerControlRouteFixture([
       {
         access: 'read-write',
         id: 'repo_default',
@@ -1800,8 +1775,7 @@ describe('worker control routes', () => {
         workerPath: '/workspace/repo',
       },
     ]);
-    const ownerWorkspaceDb = openWorkspaceDb(coreDb.dataRoot, ownerUserId, lineage.workspaceId);
-    const localWorkspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, lineage.workspaceId);
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
 
     try {
       applyMigrations(coreDb);
@@ -1809,18 +1783,16 @@ describe('worker control routes', () => {
         coreDb,
         environmentPackage,
         lineage,
-        'final_status_owner',
-        ownerUserId
+        'final_status_workspace'
       );
       const backendLeaseId = recordWorkerControlBackendSession(
         coreDb,
         environmentPackage,
         lineage,
         binding,
-        'sandbox_final_status_owner'
+        'sandbox_final_status_workspace'
       );
-      applyScopedMigrations(ownerWorkspaceDb);
-      applyScopedMigrations(localWorkspaceDb);
+      applyScopedMigrations(workspaceDb);
       const inputSnapshots = buildWorkspaceInputSnapshots({
         backendCapabilities: environmentPackage.backend.requiredCapabilities,
         backendKind: 'openshell',
@@ -1835,17 +1807,15 @@ describe('worker control routes', () => {
           backendStatus: { health: 'ready', version: '0.0.80' },
           packageSnapshotId: environmentPackage.snapshotId,
           requiredCapabilities: environmentPackage.backend.requiredCapabilities,
-          sandbox: { name: 'sandbox_final_status_owner', state: 'created' },
+          sandbox: { name: 'sandbox_final_status_workspace', state: 'created' },
           workspaceInputs: environmentPackage.workspace.inputs.map((input) => ({
             id: input.id,
             target: input.target,
           })),
         },
       });
-      recordWorkspaceInputSnapshots(ownerWorkspaceDb, inputSnapshots);
-      recordWorkspaceMaterializationRecords(ownerWorkspaceDb, materializations);
-      recordWorkspaceInputSnapshots(localWorkspaceDb, inputSnapshots);
-      recordWorkspaceMaterializationRecords(localWorkspaceDb, materializations);
+      recordWorkspaceInputSnapshots(workspaceDb, inputSnapshots);
+      recordWorkspaceMaterializationRecords(workspaceDb, materializations);
       const gateway = createDefaultWorkerControlGateway(coreDb);
       const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
       const request = {
@@ -1862,15 +1832,12 @@ describe('worker control routes', () => {
       const response = await app.request('/api/worker-control/final-status', request);
 
       expect(response.status).toBe(200);
-      expect(listBackendWorkspaceHandles(ownerWorkspaceDb, lineage.workspaceId)).toEqual([
+      expect(listBackendWorkspaceHandles(workspaceDb, lineage.workspaceId)).toEqual([
         expect.objectContaining({ cleanupStatus: 'retained' }),
-      ]);
-      expect(listBackendWorkspaceHandles(localWorkspaceDb, lineage.workspaceId)).toEqual([
-        expect.objectContaining({ cleanupStatus: 'pending' }),
       ]);
 
       updateBackendWorkspaceHandleCleanupStatus(
-        ownerWorkspaceDb,
+        workspaceDb,
         lineage.workspaceId,
         lineage.packageSnapshotId,
         'pending',
@@ -1886,15 +1853,12 @@ describe('worker control routes', () => {
       const replay = await restartedApp.request('/api/worker-control/final-status', request);
 
       expect(replay.status).toBe(200);
-      expect(listBackendWorkspaceHandles(ownerWorkspaceDb, lineage.workspaceId)).toEqual([
+      expect(listBackendWorkspaceHandles(workspaceDb, lineage.workspaceId)).toEqual([
         expect.objectContaining({ cleanupStatus: 'retained' }),
-      ]);
-      expect(listBackendWorkspaceHandles(localWorkspaceDb, lineage.workspaceId)).toEqual([
-        expect.objectContaining({ cleanupStatus: 'pending' }),
       ]);
 
       markWorkerControlBackendSessionCleaned(coreDb, backendLeaseId);
-      const releasingLease = requireSchedulerSessionLease(coreDb, 'lease_final_status_owner');
+      const releasingLease = requireSchedulerSessionLease(coreDb, 'lease_final_status_workspace');
       completeSchedulerSessionLease(coreDb, {
         leaseId: releasingLease.leaseId,
         recoveryState: 'needs-evidence',
@@ -1911,7 +1875,7 @@ describe('worker control routes', () => {
         renewalLeadMs: 300_000,
       });
 
-      expect(listWorkspaceReconciliationRecords(ownerWorkspaceDb, lineage.workspaceId)).toEqual([
+      expect(listWorkspaceReconciliationRecords(workspaceDb, lineage.workspaceId)).toEqual([
         expect.objectContaining({
           backendHandleSummary: expect.objectContaining({ cleanupStatus: 'retained' }),
           backendReachability: expect.objectContaining({ detail: 'release-grace-timeout' }),
@@ -1919,11 +1883,7 @@ describe('worker control routes', () => {
           triggerReason: 'backend_takeover',
         }),
       ]);
-      expect(listWorkspaceReconciliationRecords(localWorkspaceDb, lineage.workspaceId)).toEqual([]);
-      expect(listBackendWorkspaceHandles(localWorkspaceDb, lineage.workspaceId)).toEqual([
-        expect.objectContaining({ cleanupStatus: 'pending' }),
-      ]);
-      expect(requireSchedulerSessionLease(coreDb, 'lease_final_status_owner')).toMatchObject({
+      expect(requireSchedulerSessionLease(coreDb, 'lease_final_status_workspace')).toMatchObject({
         recoveryState: 'recovery-projected',
         releaseReason: 'release-grace-timeout',
         status: 'lost',
@@ -1933,11 +1893,10 @@ describe('worker control routes', () => {
           .prepare(
             'SELECT in_use_count AS inUseCount FROM scheduler_capacity_records WHERE target_id = ?'
           )
-          .get('target_final_status_owner')
+          .get('target_final_status_workspace')
       ).toEqual({ inUseCount: 0 });
     } finally {
-      ownerWorkspaceDb.sqlite.close();
-      localWorkspaceDb.sqlite.close();
+      workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
   });
@@ -2101,17 +2060,18 @@ describe('worker control routes', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-supply-refresh-ack-')));
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Supply refresh thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Control worker');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+    const turn = store.createTurn('ws_demo', thread.id, 'Control worker', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
-        agent,
+        agentSetup: createTestAgentSetup(),
         agentSessionId: 'session_supply_refresh',
-        userId: 'user_local',
+        triggerActor: { kind: 'user', id: 'user_local' },
         backend: {
           workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
         createdAt: '2026-06-16T00:00:00.000Z',
         requestId: 'req_supply_refresh',
@@ -2166,6 +2126,7 @@ describe('worker control routes', () => {
         targetId: 'target_supply_refresh',
       });
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         priorityClass: 'interactive',
         profileRef: 'profile_worker',
         queueEntryId: 'queue_supply_refresh',
@@ -2264,181 +2225,6 @@ describe('worker control routes', () => {
     expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.capabilitySummaries).toEqual([
       expect.objectContaining({ capabilityCallId: 'capability_1', status: 'succeeded' }),
     ]);
-  });
-
-  it('accepts knowledge proposal summaries through the control envelope', async () => {
-    const { app, environmentPackage, gateway, lineage, store, token } =
-      createWorkerControlRouteFixture();
-
-    const res = await app.request('/api/worker-control/knowledge-proposal-summary', {
-      body: JSON.stringify({
-        body: {
-          proposalId: 'knowledge_proposal_1',
-          summary: 'Persist the worker-discovered project decision.',
-          title: 'Remember project decision',
-        },
-        lineage,
-        operation: 'knowledge_proposal_summary',
-        schemaVersion: 1,
-        sequence: 11,
-      }),
-      headers: {
-        authorization: `Bearer ${token}`,
-        'content-type': 'application/json',
-      },
-      method: 'POST',
-    });
-    const body = (await res.json()) as {
-      knowledgeProposalSummary: { proposalId: string; title: string };
-    };
-
-    expect(res.status).toBe(200);
-    expect(body.knowledgeProposalSummary).toMatchObject({
-      proposalId: 'knowledge_proposal_1',
-      title: 'Remember project decision',
-    });
-    expect(
-      gateway.getSessionSnapshot(environmentPackage.snapshotId)?.knowledgeProposalSummaries
-    ).toEqual([expect.objectContaining({ proposalId: 'knowledge_proposal_1' })]);
-    expect(store.listKnowledgeProposals(lineage.workspaceId)).toEqual([
-      expect.objectContaining({
-        id: 'knowledge_proposal_1',
-        status: 'pending',
-        summary: 'Persist the worker-discovered project decision.',
-        title: 'Remember project decision',
-      }),
-    ]);
-  });
-
-  it('preserves stored knowledge proposal timestamps on exact replay', async () => {
-    vi.useFakeTimers();
-
-    try {
-      vi.setSystemTime(new Date('2026-06-16T00:00:03.000Z'));
-      const { app, lineage, store, token } = createWorkerControlRouteFixture();
-      const request = {
-        body: {
-          proposalId: 'knowledge_proposal_replay',
-          summary: 'Persist the worker-discovered project decision.',
-          title: 'Remember replayed project decision',
-        },
-        lineage,
-        operation: 'knowledge_proposal_summary',
-        schemaVersion: 1,
-        sequence: 12,
-      };
-      const init = {
-        body: JSON.stringify(request),
-        headers: {
-          authorization: `Bearer ${token}`,
-          'content-type': 'application/json',
-        },
-        method: 'POST',
-      };
-
-      const first = await app.request('/api/worker-control/knowledge-proposal-summary', init);
-      store.updateKnowledgeProposalContent('knowledge_proposal_replay', {
-        summary: 'Human-edited project decision.',
-        title: 'Reviewed project decision',
-        updatedAt: '2026-06-16T00:30:03.000Z',
-      });
-      store.recordKnowledgeProposalReviewDecision({
-        decidedAt: '2026-06-16T00:31:03.000Z',
-        message: 'Keep the edited proposal.',
-        proposalId: 'knowledge_proposal_replay',
-        requestId: 'req_review_proposal_replay',
-        status: 'edited',
-        workspaceId: lineage.workspaceId,
-      });
-      const reviewed = store.getKnowledgeProposal('knowledge_proposal_replay');
-
-      vi.setSystemTime(new Date('2026-06-16T01:00:03.000Z'));
-      const replay = await app.request('/api/worker-control/knowledge-proposal-summary', init);
-
-      expect(first.status).toBe(200);
-      expect(replay.status).toBe(200);
-      expect(store.getKnowledgeProposal('knowledge_proposal_replay')).toEqual(reviewed);
-      expect(store.getKnowledgeProposalReviewDecision('knowledge_proposal_replay')).toMatchObject({
-        status: 'edited',
-        message: 'Keep the edited proposal.',
-      });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('rejects a colliding worker proposal id before accepting its sequence', async () => {
-    const { app, environmentPackage, gateway, lineage, store, token } =
-      createWorkerControlRouteFixture();
-    const existing = store.createKnowledgeProposal({
-      createdAt: '2026-06-15T00:00:00.000Z',
-      id: 'knowledge_proposal_collision',
-      status: 'pending',
-      summary: 'Existing workspace proposal.',
-      title: 'Existing proposal',
-      updatedAt: '2026-06-15T00:00:00.000Z',
-      workspaceId: lineage.workspaceId,
-    });
-    const init = {
-      body: JSON.stringify({
-        body: {
-          proposalId: existing.id,
-          summary: 'Worker proposal must not overwrite an existing proposal.',
-          title: 'Conflicting worker proposal',
-        },
-        lineage,
-        operation: 'knowledge_proposal_summary',
-        schemaVersion: 1,
-        sequence: 13,
-      }),
-      headers: {
-        authorization: `Bearer ${token}`,
-        'content-type': 'application/json',
-      },
-      method: 'POST',
-    };
-
-    const first = await app.request('/api/worker-control/knowledge-proposal-summary', init);
-    const replay = await app.request('/api/worker-control/knowledge-proposal-summary', init);
-    const firstBody = (await first.json()) as { code?: string };
-    const replayBody = (await replay.json()) as { code?: string };
-
-    expect([first.status, replay.status]).toEqual([409, 409]);
-    expect([firstBody.code, replayBody.code]).toEqual([
-      'worker_control_knowledge_proposal_conflict',
-      'worker_control_knowledge_proposal_conflict',
-    ]);
-    expect(store.getKnowledgeProposal(existing.id)).toEqual(existing);
-    expect(
-      gateway.getSessionSnapshot(environmentPackage.snapshotId)?.knowledgeProposalSummaries
-    ).toEqual([]);
-  });
-
-  it('rejects oversized control envelopes before schema handling', async () => {
-    const { app, lineage, token } = createWorkerControlRouteFixture();
-
-    const res = await app.request('/api/worker-control/knowledge-proposal-summary', {
-      body: JSON.stringify({
-        body: {
-          proposalId: 'knowledge_proposal_large',
-          summary: 'x'.repeat(70 * 1024),
-          title: 'Oversized proposal',
-        },
-        lineage,
-        operation: 'knowledge_proposal_summary',
-        schemaVersion: 1,
-        sequence: 12,
-      }),
-      headers: {
-        authorization: `Bearer ${token}`,
-        'content-type': 'application/json',
-      },
-      method: 'POST',
-    });
-    const body = (await res.json()) as { code: string };
-
-    expect(res.status).toBe(413);
-    expect(body.code).toBe('worker_control_payload_too_large');
   });
 
   it('rejects oversized simple control requests before sandbox authentication', async () => {
@@ -2603,17 +2389,18 @@ describe('worker control routes', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-command-ack-')));
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Durable command ack thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Control worker');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+    const turn = store.createTurn('ws_demo', thread.id, 'Control worker', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
-        agent,
+        agentSetup: createTestAgentSetup(),
         agentSessionId: 'session_durable_command_ack',
-        userId: 'user_local',
+        triggerActor: { kind: 'user', id: 'user_local' },
         backend: {
           workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
         createdAt: '2026-06-16T00:00:00.000Z',
         requestId: 'req_durable_command_ack',
@@ -2684,17 +2471,18 @@ describe('worker control routes', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-rebuild-')));
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Rebuild worker session');
-    const turn = store.createTurn('ws_demo', thread.id, 'Control worker');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+    const turn = store.createTurn('ws_demo', thread.id, 'Control worker', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
-        agent,
+        agentSetup: createTestAgentSetup(),
         agentSessionId: 'session_rebuild',
-        userId: 'user_local',
+        triggerActor: { kind: 'user', id: 'user_local' },
         backend: {
           workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
         createdAt: '2026-06-16T00:00:00.000Z',
         requestId: 'req_rebuild',
@@ -2749,6 +2537,7 @@ describe('worker control routes', () => {
         targetId: 'target_rebuild',
       });
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         priorityClass: 'interactive',
         profileRef: 'profile_worker',
         queueEntryId: 'queue_rebuild',
@@ -2814,7 +2603,7 @@ describe('worker control routes', () => {
         method: 'POST',
       });
 
-      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, lineage.workspaceId);
+      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
       try {
         applyScopedMigrations(workspaceDb);
         recordAgentEnvironmentPackageSnapshot(workspaceDb, {

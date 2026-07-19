@@ -1,10 +1,7 @@
 import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
+import type { AgentEnvironmentPackage, WorkspaceDataSourceCatalog } from '@openkit/config-schema';
 import type {
-  AgentEnvironmentPackage,
-  WorkerSandboxAccess,
-  WorkspaceDataSourceCatalog,
-} from '@openkit/config-schema';
-import type {
+  ActorRef,
   AgentSchema,
   AgentSessionStatus,
   ApprovalRequestSchema,
@@ -12,34 +9,13 @@ import type {
   UserInputResponseItemSchema,
 } from '@openkit/protocol';
 import type { z } from 'zod';
+import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import type { FsStore } from '../lib/store.js';
 
 type Agent = z.infer<typeof AgentSchema>;
 
-/**
- * App-local runnable agent adapter configuration kept out of the Core protocol.
- */
-export interface RuntimeAgentConfig {
-  /** Local worker runtime adapter. */
-  adapterType: 'codex' | 'opencode';
-  /** Optional command used to start the adapter. */
-  command: string | null;
-  /** Optional server URL used by server-backed adapters. */
-  baseUrl: string | null;
-  /** Host workspace root used by the runtime adapter. */
-  workspaceRoot: string;
-  /** Environment variables merged into the adapter process. */
-  environment: Record<string, string>;
-  /** Adapter-native capability flags. */
-  capabilities: string[];
-  /** Worker-side MCP server catalog ids requested for the runtime. */
-  mcpServerIds?: string[] | undefined;
-}
-
-/**
- * App-local runnable agent record that augments the stable protocol summary.
- */
-export type RuntimeAgent = Agent & { config: RuntimeAgentConfig };
+/** Product agent record selected before resolving its separate AgentManifest. */
+export type RuntimeAgent = Agent;
 
 /**
  * Product-visible capability flags exposed by `/api/meta`.
@@ -160,7 +136,7 @@ export interface TurnExecutor {
     store: FsStore,
     approvalRequestId: string,
     decision: ApprovalDecision,
-    context?: TurnCommandRuntimeContext
+    context: HumanResponseCommandRuntimeContext
   ): Promise<z.infer<typeof ApprovalRequestSchema>>;
 
   /**
@@ -170,7 +146,7 @@ export interface TurnExecutor {
     store: FsStore,
     turnId: string,
     answers: z.infer<typeof UserInputResponseItemSchema>['answers'],
-    context?: TurnCommandRuntimeContext
+    context: HumanResponseCommandRuntimeContext
   ): Promise<unknown>;
 
   /**
@@ -271,22 +247,8 @@ export interface AgentSessionReadModel {
 export interface TurnStartRuntimeContext {
   /** Scheduler-owned agent session id used when a lease already reserved lineage. */
   agentSessionId?: string;
-  /** Backend requirements resolved from authored agent setup. */
-  backendRequirements?: {
-    /** Backend kinds allowed by the authored setup. */
-    allowedKinds: AgentEnvironmentPackage['backend']['allowedKinds'];
-    /** Preferred backend kind, when declared. */
-    preferred: AgentEnvironmentPackage['backend']['preferred'] | null;
-    /** Backend capabilities required by the authored setup. */
-    requiredCapabilities: AgentEnvironmentPackage['backend']['requiredCapabilities'];
-  };
-  /** Immutable provider and model selection resolved from the authored agent setup. */
-  providerSelection?: {
-    /** Model selected for this worker turn. */
-    model: string | null;
-    /** NanoCore provider instance selected for this worker turn. */
-    providerId: string;
-  };
+  /** Complete selected manifest and resolved provider inputs for governed workers. */
+  agentSetup?: ResolvedAgentSetup;
   /** Materialized workspace roots captured from the effective config snapshot. */
   workspaceRoots: MaterializedWorkspaceRoot[];
   /** Optional workspace data source catalog captured for sourceRef-backed roots. */
@@ -295,12 +257,12 @@ export interface TurnStartRuntimeContext {
   workspaceSourceRefs?: Record<string, string>;
   /** Scheduler-owned non-secret sandbox binding reference for worker-control auth. */
   sandboxBindingRef?: string;
-  /** User-authored sandbox access declarations captured for this turn. */
-  sandboxAccess?: WorkerSandboxAccess;
   /** Host-local worker working directory selected for this turn. */
   workspaceCwd?: string | null;
   /** Request id for the client command that accepted this turn. */
   requestId?: string | null;
+  /** Exact actor whose action triggered this turn. */
+  triggerActor: ActorRef;
 }
 
 /**
@@ -309,4 +271,10 @@ export interface TurnStartRuntimeContext {
 export interface TurnCommandRuntimeContext {
   /** Request id for the client command that caused the emitted events. */
   requestId: string | null;
+}
+
+/** Runtime context for one human response that must retain the authenticated user actor. */
+export interface HumanResponseCommandRuntimeContext extends TurnCommandRuntimeContext {
+  /** Exact authenticated human who submitted the decision or answer. */
+  actor: Extract<ActorRef, { readonly kind: 'user' }>;
 }

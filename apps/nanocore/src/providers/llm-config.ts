@@ -21,14 +21,12 @@ export interface ResolvedLLMProviderConfig {
   readonly baseUrl: string | null;
   /** Human-readable provider name. */
   readonly displayName: string;
-  /** OpenAI-compatible extra request body fields. */
-  readonly extraBody: Record<string, unknown>;
-  /** OpenAI-compatible extra request headers. */
-  readonly extraHeaders: Record<string, string>;
   /** Gateway endpoint support matrix. */
   readonly gatewayCapabilities: ProviderGatewayCapabilities;
   /** Configured provider instance id. */
   readonly id: string;
+  /** Models explicitly authorized by the provider profile. */
+  readonly models: readonly string[];
   /** Whether dispatch requires an explicit credential. */
   readonly requiresApiKey: boolean;
   /** Codex OAuth account slot for subscription providers. */
@@ -46,6 +44,10 @@ export function resolveProviderProfileToLLMConfig(
   profile: ProviderProfile,
   credentialResolver?: ProviderCredentialResolver
 ): ResolvedLLMProviderConfig {
+  if (!isProviderProfileDispatchable(profile)) {
+    throw new Error(`LLM provider is not dispatchable: ${profile.id}`);
+  }
+
   const baseUrl = profile.baseUrl ?? null;
   const isCodexOAuth = isCodexOAuthProviderProfile(profile);
   const adapterId = isCodexOAuth ? 'openai_codex' : readProviderAdapterId(profile);
@@ -58,13 +60,26 @@ export function resolveProviderProfileToLLMConfig(
     backend: isCodexOAuth ? 'codex-oauth' : 'pi-ai',
     baseUrl,
     displayName: profile.displayName,
-    extraBody: readStringRecord((profile as { extraBody?: unknown }).extraBody),
-    extraHeaders: readStringHeaders((profile as { extraHeaders?: unknown }).extraHeaders),
     gatewayCapabilities: gatewayCapabilitiesForProfile(profile),
     id: profile.id,
+    models: [...profile.models],
     requiresApiKey: isCodexOAuth ? false : providerRequiresCredentials(profile),
     ...(codexOAuthAccountSlotId ? { codexOAuthAccountSlotId } : {}),
   };
+}
+
+/**
+ * Checks whether provider readiness permits dispatch.
+ *
+ * @param profile Provider profile to inspect.
+ * @returns True when readiness is omitted, ready, or degraded.
+ */
+export function isProviderProfileDispatchable(profile: ProviderProfile): boolean {
+  return (
+    profile.readiness === undefined ||
+    profile.readiness.status === 'ready' ||
+    profile.readiness.status === 'degraded'
+  );
 }
 
 /**
@@ -77,22 +92,4 @@ function readProviderAdapterId(profile: ProviderProfile): string {
   const vendor = (profile as { vendor?: unknown }).vendor;
 
   return normalizeProviderId(typeof vendor === 'string' && vendor.trim() ? vendor : profile.id);
-}
-
-function readStringHeaders(value: unknown): Record<string, string> {
-  if (!value || typeof value !== 'object') {
-    return {};
-  }
-
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).filter(
-      (entry): entry is [string, string] => typeof entry[1] === 'string'
-    )
-  );
-}
-
-function readStringRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? { ...(value as Record<string, unknown>) }
-    : {};
 }

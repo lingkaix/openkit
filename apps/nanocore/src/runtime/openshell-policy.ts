@@ -12,7 +12,7 @@ export interface RenderOpenShellWorkerPolicyInput {
   /** Direct NanoCore Worker Control Gateway URL. */
   controlBaseUrl: string;
   /** Executable paths allowed to use the worker control endpoint. */
-  binaries?: string[] | undefined;
+  binaries: string[];
 }
 
 /**
@@ -32,7 +32,7 @@ export interface OpenShellNetworkEndpoint {
   /** Access mode granted by OpenShell for the endpoint. */
   access?: 'read-only' | 'read-write' | undefined;
   /** Executable paths allowed to use this endpoint. */
-  binaries?: string[] | undefined;
+  binaries: string[];
   /** Hostname or address allowed by the endpoint. */
   host: string;
   /** Stable policy entry name. */
@@ -58,7 +58,6 @@ export interface OpenShellNetworkEndpoint {
  */
 export function renderOpenShellWorkerPolicy(input: RenderOpenShellWorkerPolicyInput): string {
   const endpoint = resolveControlEndpoint(input.controlBaseUrl);
-  const binaries = input.binaries ?? ['/usr/local/bin/node', '/usr/local/bin/openkit-codex-shim'];
   const additionalNetworkPolicies = (input.additionalNetworkEndpoints ?? []).flatMap((entry) =>
     renderNetworkPolicyEntry(entry)
   );
@@ -96,7 +95,7 @@ export function renderOpenShellWorkerPolicy(input: RenderOpenShellWorkerPolicyIn
     '  openkit_worker_control:',
     '    name: openkit_worker_control',
     '    binaries:',
-    ...binaries.map((binary) => `      - path: ${binary}`),
+    ...input.binaries.map((binary) => `      - path: ${binary}`),
     '    endpoints:',
     `      - host: ${endpoint.host}`,
     `        port: ${endpoint.port}`,
@@ -152,14 +151,6 @@ function renderNetworkPolicyEntry(entry: OpenShellNetworkEndpoint): string[] {
     throw new Error('OpenShell additional network endpoint port must be between 1 and 65535.');
   }
 
-  const binaries = entry.binaries ?? [
-    '/usr/bin/git',
-    '/usr/bin/curl',
-    '/usr/local/bin/codex',
-    '/usr/local/lib/codex/bin/codex',
-    '/usr/lib/git-core/git-remote-http',
-    '/usr/lib/git-core/git-remote-https',
-  ];
   const protocol = entry.protocol ?? 'rest';
   const access = entry.access ?? 'read-only';
   const rules = entry.rules ?? [];
@@ -183,7 +174,7 @@ function renderNetworkPolicyEntry(entry: OpenShellNetworkEndpoint): string[] {
     `  ${entry.name}:`,
     `    name: ${entry.name}`,
     '    binaries:',
-    ...binaries.map((binary) => `      - path: ${binary}`),
+    ...entry.binaries.map((binary) => `      - path: ${binary}`),
     '    endpoints:',
     `      - host: ${entry.host}`,
     `        port: ${entry.port}`,

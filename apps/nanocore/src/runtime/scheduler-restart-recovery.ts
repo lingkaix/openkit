@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import {
   completeSchedulerSessionLease,
@@ -530,19 +532,25 @@ function parseRestartBackendKind(
   }
 }
 
-/** Opens the admission owner's workspace and loads its immutable AEP snapshot. */
+/** Opens the lease Workspace and loads its immutable AEP snapshot. */
 function openRecoveryWorkspace(coreDb: CoreDb, row: LeaseRecoveryRow): RecoveryWorkspace {
-  const { userId } = requireSchedulerSessionLeaseAdmissionContext(coreDb, row.leaseId);
-  const db = openWorkspaceDb(coreDb.dataRoot, userId, row.workspaceId);
+  const db = openWorkspaceDb(coreDb.dataRoot, row.workspaceId);
   try {
     applyScopedMigrations(db);
+    const environmentPackage = requireAgentEnvironmentPackageSnapshot(
+      db,
+      row.workspaceId,
+      row.packageSnapshotId
+    ).snapshot;
+    const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, row.leaseId);
+    if (!isDeepStrictEqual(environmentPackage.scope.triggerActor, admission.triggerActor)) {
+      throw new Error(
+        `Agent environment package ${environmentPackage.snapshotId} does not match scheduler trigger actor.`
+      );
+    }
     return {
       db,
-      environmentPackage: requireAgentEnvironmentPackageSnapshot(
-        db,
-        row.workspaceId,
-        row.packageSnapshotId
-      ).snapshot,
+      environmentPackage,
     };
   } catch (error) {
     db.sqlite.close();

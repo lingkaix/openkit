@@ -18,7 +18,7 @@ import { listVaultUseRecords } from './vault-use-records.js';
 function createDbs(): { coreDb: CoreDb; workspaceDb: WorkspaceDb } {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-vault-use-audited-'));
   const coreDb = openCoreDb(dataRoot);
-  const workspaceDb = openWorkspaceDb(dataRoot, 'user_1', 'ws_1');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_1');
   applyMigrations(coreDb);
   applyScopedMigrations(workspaceDb);
   return { coreDb, workspaceDb };

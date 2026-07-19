@@ -129,6 +129,7 @@ describe('ThreadWorkbench', () => {
           ...baseItem,
           id: 'it_user',
           type: 'user-message',
+          actor: { kind: 'user', id: 'user_demo' },
           text: 'User prompt',
         },
       }),
@@ -416,6 +417,8 @@ describe('ThreadWorkbench', () => {
   });
 
   it('renders quick chat routing separately from worker execution', () => {
+    let quickChatArguments: unknown[] = [];
+
     render(() => (
       <ThreadWorkbench
         activeTurnStatus="idle"
@@ -441,6 +444,9 @@ describe('ThreadWorkbench', () => {
         onOpenArtifact={() => undefined}
         onOpenItemLog={() => undefined}
         onRespondApproval={async () => undefined}
+        onSubmitQuickChat={async (...args: [string]) => {
+          quickChatArguments = args;
+        }}
         onSubmitUserInput={async () => undefined}
         onSubmitTurn={async () => undefined}
       />
@@ -451,6 +457,12 @@ describe('ThreadWorkbench', () => {
     expect(screen.getByText(/quickchatagent/i)).toBeInTheDocument();
     expect(screen.getByText(/without starting a worker turn/i)).toBeInTheDocument();
     expect(screen.getByText(/quick answer from nanocore/i)).toBeInTheDocument();
+
+    fireEvent.input(screen.getByRole('textbox', { name: /turn prompt/i }), {
+      target: { value: 'Answer without a caller model' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /send turn/i }));
+    expect(quickChatArguments).toEqual(['Answer without a caller model']);
   });
 
   it.each([
@@ -919,6 +931,7 @@ describe('ThreadWorkbench', () => {
       type: 'user-input-request',
       status: 'in_progress',
       completedAt: null,
+      responsibleUserId: 'user_demo',
       userInputRequestId: 'ui_attention',
       prompt: 'Choose release scope.',
       questions: [

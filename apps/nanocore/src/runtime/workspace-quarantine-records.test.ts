@@ -15,7 +15,7 @@ const timestamp = '2026-07-08T00:00:00.000Z';
 describe('workspace quarantine records', () => {
   it('records durable quarantine decisions for workspace synchronization recovery', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-quarantine-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);

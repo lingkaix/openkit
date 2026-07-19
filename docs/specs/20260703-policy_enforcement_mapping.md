@@ -88,7 +88,7 @@ Actions:
 - inject secret
 - read knowledge
 - propose knowledge change
-- register artifact
+- import, introduce, or create an artifact through its owning operation
 - read artifact
 - approve request
 - change policy
@@ -132,6 +132,47 @@ Context:
 - request origin
 - time and retention class
 
+## V1 Product Operation And Access-Right Registry
+
+The following registry is the unique owner of the closed V1 product-operation to access-right mapping for centralized Workspace authorization and the governed effects already named by current specifications. A concrete public operation maps to exactly one primary product operation below. Operation identifiers and access-right identifiers are intentionally distinct. Fixed-role associations are owned separately by `docs/specs/20260715-multi_user_workspace_system.md` and may only narrow through current policy and lifecycle facts.
+
+| Product operation | Required access right | Operation boundary |
+| --- | --- | --- |
+| `api.call` | `ar:core-api-call` | Boot and deployment API calls. |
+| `workspace.read` | `ar:workspace-read` | Ordinary Workspace content and collection reads. |
+| `workspace.write` | `ar:workspace-write` | Ordinary Workspace content mutation. |
+| `thread.read` | `ar:thread-read` | Thread, Turn-status, and event reads. |
+| `turn.run` | `ar:turn-run` | Turn start, steering, interrupt, and retry admission. |
+| `artifact.read` | `ar:artifact-read` | Artifact metadata, content, and review-list reads. |
+| `artifact.write` | `ar:artifact-write` | Artifact import, introduction, and accepted mutation. |
+| `review.apply` | `ar:review-apply` | Human review decisions; exact eligibility remains with the durable review owner. |
+| `approval.respond` | `ar:approval-respond` | Human Approval response; exact eligibility remains with the durable Approval owner. |
+| `knowledge.read` | `ar:knowledge-read` | Knowledge reads and retrieval. |
+| `knowledge.write` | `ar:knowledge-write` | Knowledge authority mutation. |
+| `knowledge.propose` | `ar:knowledge-propose` | Knowledge proposal creation. |
+| `audit.read` | `ar:audit-read` | Audit, usage, evidence, backend-handle, and permission-decision readback. |
+| `workspace.configure` | `ar:workspace-configure` | Repository, data-source, agent-supply, and Workspace policy configuration; Vault is excluded. |
+| `workspace.export` | `ar:workspace-export` | Portable Workspace export. |
+| `workspace.lifecycle` | `ar:workspace-lifecycle` | Archive, delete, and ordinary ownership transfer. |
+| `membership.manage` | `ar:membership-manage` | Invitation creation or revocation and non-owner membership access or removal; ownership transfer is excluded. |
+| `invitation.respond` | `ar:invitation-respond` | List the authenticated user's own invitations and accept or decline one exact bound invitation before membership exists. |
+| `workspace.leave` | `ar:workspace-leave` | Active non-owner self-removal. |
+| `deployment.recover` | `ar:deployment-recover` | Explicit deployment-administrator recovery only; never ordinary content access. |
+| `vault.use` | `ar:vault-use` | Target-issued Vault grant use. |
+| `vault.admin` | `ar:vault-admin` | Existing owner-only Workspace Vault reference list/rebind and non-secret grant, injection-plan, and injection-receipt listing. It does not authorize a grant issue/revoke surface. |
+| `tool.use` | `ar:tool-use` | Governed tool invocation. |
+| `tool.grant` | `ar:tool-grant` | Tool or capability grant administration. |
+| `runtime.launch` | `ar:runtime-launch` | Governed worker launch. |
+| `network.egress` | `ar:network-egress` | Governed external network access. |
+| `llm.gateway.use` | `ar:llm-gateway-use` | Workspace-attributed public LLM Gateway use. |
+| `repo.push` | `ar:repo-push` | Approval-gated repository publication. |
+
+A handler may enforce a durable lifecycle precondition such as exact invitee, responsible user, expected revision, or winning Approval claimant, but it must not define a competing role table. Ownership transfer maps only to `workspace.lifecycle`; the existing Workspace Vault reference list/rebind and grant/plan/receipt metadata lists map only to `vault.admin`; VaultUse and other audit, usage, evidence, backend-handle, and permission-decision reads map only to `audit.read`.
+
+Mutation posture is separate from the product operation. It describes whether a public request may change protected product state or cause an external effect and is the authority for `workspace-readonly` token enforcement. It MUST NOT be inferred from the HTTP method. Incidental redacted audit or usage evidence does not turn an otherwise read-only operation into a content mutation, while an operation such as Knowledge retrieval may be marked mutating when its accepted contract updates authoritative indexes or traces.
+
+Owner-only reads, user-scoped invitation discovery and response, self-leave, and deployment recovery demonstrate why neither HTTP method nor a generic `workspace.read` or `workspace.write` split is sufficient. Owner-visible member and invitation collections map to `membership.manage`; the authenticated invitee's own invitation collection and exact accept or decline map to `invitation.respond`. A new product-operation family or access-right identifier requires an owning-spec update before it is added to runtime metadata. A route-level authorization allow never substitutes for a deeper effect check such as `runtime.launch`, `vault.use`, `network.egress`, or `repo.push`.
+
 ## PermissionDecision
 
 `PermissionDecision` should carry:
@@ -163,6 +204,8 @@ Decision results:
 
 Decisions are immutable.
 
+A portable Workspace import preserves immutable permission decisions and their linked Approval rows only as historical evidence. `apr_imported_` and `grant_imported_` are reserved non-authorizing import namespaces and target-side authority creation rejects them. An effect consumer MUST require current-deployment authority: any decision linked to the Approval remint, any Vault grant carrying the VaultGrant remint, and any effect decision missing the target-issuance identity required by its owning contract is non-authorizing regardless of target repository or Vault-reference re-binding. The enforcement point applies one stateless target-issuance predicate before external mutation or secret resolution; it does not rewrite history, synthesize a deny row, infer missing origin, or create an import-specific policy state machine. Fresh target-issued authority is the only promotion path.
+
 ## Enforcement Points
 
 NanoCore should evaluate policy at:
@@ -179,10 +222,12 @@ NanoCore should evaluate policy at:
 - secret injection
 - knowledge retrieval and read
 - workspace review and apply
-- artifact registration
+- artifact import, introduction, or verified worker-output creation
 - runtime teardown when destructive
 
 Backend adapters enforce derived runtime policy, but they do not decide product authorization.
+
+The centralized Workspace request resolver uses the low-level kernel only for a transient `allow` or `deny`. Missing registry, membership, role, token, lineage, policy, or dependency facts and any policy-evaluation error fail closed as the same non-enumerating access denial. This ordinary request check never creates `defer`, a pending workflow, an Action Center row, an Approval, or a per-request durable `PermissionDecision`. Existing enforcement points that intentionally own a governed effect may continue to record their accepted durable decisions and linked redacted audit evidence. Stage 4 adds no access-decision ledger or new audit owner.
 
 ## Outcome Mapping
 
@@ -234,7 +279,7 @@ The V1 enforcement bridge exists, but full alignment with the standard-aligned p
 - `apps/nanocore/src/runtime/openshell-policy.ts` renders derived OpenShell filesystem, process, and network policy YAML from NanoCore runtime inputs.
 - `recordProductPermissionDecision` persists the accepted product decision result set, including `require_approval` and `require_escalation`, fails closed when a `require_approval` decision does not name the required approval kind, and emits linked server- or workspace-scoped `AuditEvent` rows with `permissionDecisionId` filled. Server-owned decisions are exposed through `GET /api/app/permission-decisions`, `client.app.listServerPermissionDecisions`, and the unified Skill/CLI `permission.server-list` operation; workspace-owned decisions are exposed through `GET /api/app/workspaces/:workspaceId/permission-decisions`, `client.app.listWorkspacePermissionDecisions`, and the unified Skill/CLI `permission.workspace-list` operation.
 - `apps/nanocore/src/policy/approval-gates.ts` creates the first policy-originated approval gate by recording a `require_approval` permission decision, creating the matching `ApprovalRequest`, creating the item-backed `approval-request`, and pausing the turn with `humanGate.kind: "approval"` so the existing Action Center projection can surface it. No current enforcement point produces a `require_escalation` workflow or higher-authority Action Center row.
-- The Git push executor now treats durable `repo.push` permission decisions as target-bound authority. Before invoking the Git command runner, `executeGitPushAttempt` requires an immutable workspace-scoped `allow` decision whose resource summary matches the current workspace id, repository resource id, and target branch, and it records a terminal `refused-policy` push record when the selected decision is missing or belongs to a different push target.
+- The Git push executor now treats durable target-issued `repo.push` permission decisions as target-bound authority. Before invoking the Git command runner, `executeGitPushAttempt` requires an immutable workspace-scoped `allow` decision whose resource summary matches the current workspace id, repository resource id, and target branch and whose linked Approval id is not the portable-import remint; it records a terminal `refused-policy` push record when the selected decision is missing, imported, or belongs to a different push target. Secret-injection plan creation applies the same target-issuance predicate to the VaultGrant id, so Vault-reference re-binding cannot reactivate an imported grant.
 - `ApprovalStatus` in `packages/protocol/src/models/approval.ts` and `ApprovalDecision` in `apps/nanocore/src/runtime/types.ts` represent current approval states and decisions.
 - App and runtime code already emits approval requests, approval decisions, and Action Center rows for human attention.
 
@@ -298,7 +343,7 @@ Minimum facts:
 - authentication assurance level when policy depends on it
 - time and retention class when policy depends on it
 
-If any required membership fact is unavailable, the permission outcome should be `defer` when the missing fact can be supplied by normal lookup, or `deny` when the missing fact means the actor is not authorized. Server mode must not silently fall back to local implicit-owner assumptions for workspace policy.
+If any required membership fact is unavailable to the ordinary centralized Workspace resolver, it denies the request. `defer` is available only to an already accepted governed workflow whose owning specification defines how the missing fact becomes available; it is not a request-authorization fallback. Server mode must not silently fall back to local implicit-owner assumptions for Workspace policy.
 
 Invitation state is not active membership and must never satisfy a Workspace access request. A `server-admin` credential proves deployment-administration authority only; it does not synthesize Workspace membership or an owner/editor/viewer role. Any future break-glass content path requires a separate accepted design, an explicit reason, a bounded grant, and durable audit.
 
@@ -313,14 +358,14 @@ The fixed product roles are adapter vocabulary. The centralized resolver convert
 - Launch must be blocked for denied runtime placement, workspace root access, secret injection, vault grant, sandbox containment, or required capability routing. Optional capability degradation may produce degraded readiness instead of blocking launch when policy marks the capability optional.
 - Product diagnostics may include decision id, result, reason code, enforcement point, redacted subject/resource/context summaries, policy snapshot id, and matched policy ids. They must not expose secret values, unrestricted path lists, raw membership graphs, raw provider payloads, or sensitive source contents.
 - Policy changes during an active worker session should update future checks when safe, mark the session stale when setup or resource assumptions changed, and interrupt or recycle the session when a newly denied high-risk action would otherwise remain possible.
-- Server mode requires explicit actor, responsible user, workspace membership, role or principal, grant or restriction, request-origin, policy snapshot, assurance, and time facts before enforcing workspace policy. Missing required facts produce `defer` or `deny`, not implicit local-owner behavior.
+- Server mode requires explicit actor, responsible user, Workspace membership, role or principal, grant or restriction, request-origin, policy snapshot, assurance, and time facts before enforcing Workspace policy. Missing required facts deny ordinary requests; only an owning governed workflow may use its explicitly accepted `defer` outcome.
 - Owner/editor/viewer are fixed product roles projected into the NGAC-aligned kernel, not a second authorization engine.
 - Deployment-administrator authority and Workspace content authority are separate; `server-admin` has no implicit content bypass.
 
 ## Deferred / Future Work
 
-- Add full product fact mapping from NanoCore objects to `@openkit/policy-kernel` policy state and access requests.
-- Add product-action to NGAC-access-right mapping before using product actions as kernel inputs.
+- Extend the accepted V1 product-operation registry only when a new owning specification introduces a materially different authorization family.
+- Add broader product fact mapping from NanoCore objects to `@openkit/policy-kernel` policy state and access requests outside the fixed-role Workspace authorization slice.
 - Extend or wrap the policy kernel itself to produce `require_approval`, `require_escalation`, `defer`, `not_applicable`, and policy errors instead of mapping those product outcomes in NanoCore helper code.
 - Bind future worker-session families and future AEP snapshot producers to policy snapshot ids as they ship.
 - Replace remaining runtime-native approval prompts with policy-originated approval gates when their owning runtime surfaces are migrated.
@@ -331,7 +376,7 @@ The fixed product roles are adapter vocabulary. The centralized resolver convert
 
 - Fact mapping tests for each product object family.
 - Decision tests for allow, deny, approval, and escalation outcomes.
-- Approval linkage tests proving approval satisfies a specific policy requirement.
+- Approval linkage tests proving only a target-issued approval satisfies a specific policy requirement and imported authority remains readable but effect-inert after repository or Vault re-binding.
 - Capability gateway policy tests.
 - Vault grant policy tests.
 - OpenShell derived policy fixture tests.

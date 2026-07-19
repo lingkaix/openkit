@@ -4,6 +4,7 @@ These JSONC templates are copied into `OPENKIT_DATA_ROOT/config/providers/` when
 
 ## Templates
 
+- `anthropic-worker-direct.provider.jsonc`: credential-free registry metadata for the pinned Pi worker route; the Pi AgentManifest and its VaultGrant own `ANTHROPIC_API_KEY` injection.
 - `openai-default.provider.jsonc`: OpenAI direct provider using `vault://provider_openai`.
 - `openrouter-default.provider.jsonc`: OpenRouter gateway provider using `vault://provider_openrouter`.
 - `xai-grok-default.provider.jsonc`: xAI Grok direct provider using `vault://provider_xai`.

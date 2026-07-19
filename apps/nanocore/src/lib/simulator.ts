@@ -1,10 +1,12 @@
+import { createHash } from 'node:crypto';
 import type { ApprovalRequestSchema, ItemSchema, ItemType } from '@openkit/protocol';
-import { ItemDeltaEventSchema } from '@openkit/protocol';
+import { ItemDeltaEventSchema, responsibleUserIdForActor } from '@openkit/protocol';
 import type { z } from 'zod';
 
 import type {
   AgentSessionReadModel,
   ApprovalDecision,
+  HumanResponseCommandRuntimeContext,
   RuntimeCapabilities,
   RuntimeEventFamily,
   RuntimeItemDeltaKind,
@@ -98,22 +100,37 @@ export class SimulatedTurnExecutor implements TurnExecutor {
 
   /**
    * Starts one deterministic simulated turn and pauses on approval.
+   *
+   * @throws When launch did not supply the selected agent setup or its manifest does not match the
+   * turn.
    */
   public async startTurn(
     store: FsStore,
     turnId: string,
     input: string,
-    context: TurnStartRuntimeContext = { requestId: null, workspaceRoots: [] }
+    context: TurnStartRuntimeContext = {
+      requestId: null,
+      triggerActor: { kind: 'system', id: 'simulator', responsibleUserId: null },
+      workspaceRoots: [],
+    }
   ): Promise<void> {
     const turn = store.getTurnById(turnId);
+    if (!context.agentSetup) {
+      throw new Error('Simulator execution requires one resolved agent setup.');
+    }
     if (!turn.agentId) {
       throw new Error(`Simulator turn has no assigned agent: ${turn.id}`);
     }
-    const selectedAgent = store.getAgent(turn.workspaceId, turn.agentId);
+    const manifest = context.agentSetup.manifest;
+    if (turn.agentId !== manifest.id) {
+      throw new Error(
+        `Simulator turn agent ${turn.agentId} does not match resolved agent setup ${manifest.id}.`
+      );
+    }
     const timestamp = turn.startedAt ?? new Date().toISOString();
     const agentSession = store.createAgentSession({
       id: context.agentSessionId ?? `session_sim_turn_${turn.id}`,
-      agentId: selectedAgent.id,
+      agentId: manifest.id,
       workspaceId: turn.workspaceId,
       threadId: turn.threadId,
       status: 'created',
@@ -122,13 +139,10 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       createdAt: timestamp,
       updatedAt: timestamp,
     });
-    const selectedProfile =
-      selectedAgent.profiles.find((profile) => profile.id === selectedAgent.defaultProfileId) ??
-      selectedAgent.profiles[0] ??
-      null;
+    const selectedProfileId = manifest.defaultProfileId ?? manifest.profiles?.[0]?.id ?? null;
 
     store.updateTurn(turnId, {
-      agentProfileId: selectedProfile?.id ?? null,
+      agentProfileId: selectedProfileId,
       agentSessionId: agentSession.id,
     });
     const state: SimulatedTurnState = {
@@ -209,7 +223,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
     store: FsStore,
     approvalRequestId: string,
     decision: ApprovalDecision,
-    context: TurnCommandRuntimeContext = { requestId: null }
+    context: HumanResponseCommandRuntimeContext
   ): Promise<z.infer<typeof ApprovalRequestSchema>> {
     const state = this.pendingByApprovalId.get(approvalRequestId);
 
@@ -217,7 +231,18 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       throw new Error(`Simulator approval request is not active: ${approvalRequestId}`);
     }
 
-    state.requestId = context.requestId;
+    const requestId = context.requestId;
+    if (!requestId) {
+      throw new Error('Simulator approval resolution requires the current request identity.');
+    }
+    const responsibleUserId = responsibleUserIdForActor(
+      store.getTurnById(state.turnId).triggerActor
+    );
+    if (decision === 'granted' && responsibleUserId === null) {
+      throw new Error('Simulator user-input responsibility is unavailable.');
+    }
+
+    state.requestId = requestId;
     const timestamp = new Date().toISOString();
     const approval = store.updateApproval(approvalRequestId, {
       status: decision,
@@ -230,6 +255,8 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       turnId: state.turnId,
       type: 'approval-decision',
       status: 'completed',
+      actor: context.actor,
+      causationId: requestId,
       approvalRequestId,
       decision,
       createdAt: timestamp,
@@ -260,6 +287,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       turnId: state.turnId,
       type: 'user-input-request',
       status: 'completed',
+      responsibleUserId: responsibleUserId!,
       userInputRequestId: state.userInputRequestId,
       prompt: 'Which summary tone should the simulator use?',
       questions: [
@@ -350,7 +378,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
     store: FsStore,
     turnId: string,
     answers: Record<string, [string]>,
-    context: TurnCommandRuntimeContext = { requestId: null }
+    context: HumanResponseCommandRuntimeContext
   ) {
     const state = this.pendingByTurnId.get(turnId);
 
@@ -358,7 +386,11 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       throw new Error(`Simulator user-input request is not active for turn: ${turnId}`);
     }
 
-    state.requestId = context.requestId;
+    const requestId = context.requestId;
+    if (!requestId) {
+      throw new Error('Simulator Artifact creation requires the current request identity.');
+    }
+    state.requestId = requestId;
     const input = Object.values(answers)[0]?.[0];
     if (!input) {
       throw new Error('Simulator user-input response has no answer.');
@@ -371,6 +403,8 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       turnId,
       type: 'user-input-response',
       status: 'completed',
+      actor: context.actor,
+      causationId: requestId,
       userInputRequestId: state.userInputRequestId,
       answers,
       createdAt: timestamp,
@@ -385,7 +419,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
     this.emitItemCompleted(store, state, responseItem);
     this.emitTurnUpdated(store, state, runningTurn);
     this.emitAgentSessionUpdated(store, state, runningAgentSession);
-    this.emitArtifactAndComplete(store, state, input);
+    this.emitArtifactAndComplete(store, state, input, requestId);
     this.pendingByTurnId.delete(turnId);
     return store.getTurnById(turnId);
   }
@@ -408,6 +442,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       turnId: state.turnId,
       type: 'user-message',
       status: 'completed',
+      actor: turn.triggerActor,
       text: input,
       createdAt: timestamp,
       completedAt: timestamp,
@@ -600,10 +635,21 @@ export class SimulatedTurnExecutor implements TurnExecutor {
   }
 
   /**
-   * Emits a synthetic artifact update and terminal turn events.
+   * Emits one final synthetic Artifact and terminal Turn events.
+   *
+   * @param store Store that owns the Turn.
+   * @param state Active simulator lineage.
+   * @param input Accepted user answer.
+   * @param requestId Request proof validated before any response mutation.
    */
-  private emitArtifactAndComplete(store: FsStore, state: SimulatedTurnState, input: string): void {
+  private emitArtifactAndComplete(
+    store: FsStore,
+    state: SimulatedTurnState,
+    input: string,
+    requestId: string
+  ): void {
     const timestamp = new Date().toISOString();
+    const body = `Simulator answer: ${input}`;
     const artifact = store.createArtifact({
       id: `ar_${state.turnId}`,
       workspaceId: state.workspaceId,
@@ -611,20 +657,22 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       turnId: state.turnId,
       kind: 'summary',
       title: 'Simulated protocol summary',
-      status: 'draft',
-      summary: 'Draft simulator artifact.',
+      status: 'ready',
+      summary: 'Deterministic simulator artifact ready.',
       version: 1,
       content: {
         format: 'markdown',
-        body: `Simulator answer: ${input}`,
+        body,
+      },
+      contentDigest: `sha256:${createHash('sha256').update(body, 'utf8').digest('hex')}`,
+      lastMutationRequestId: requestId,
+      origin: {
+        kind: 'turn-output',
+        requestId,
+        threadId: state.threadId,
+        turnId: state.turnId,
       },
       createdAt: timestamp,
-      updatedAt: timestamp,
-    });
-    const updatedArtifact = store.updateArtifact(state.workspaceId, artifact.id, {
-      status: 'ready',
-      summary: 'Deterministic simulator artifact ready.',
-      version: 2,
       updatedAt: timestamp,
     });
     const artifactItem = store
@@ -632,11 +680,11 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       .find(
         (item) =>
           item.type === 'artifact-reference' &&
-          item.artifactId === updatedArtifact.id &&
-          item.artifactVersion === updatedArtifact.version
+          item.artifactId === artifact.id &&
+          item.artifactVersion === artifact.version
       );
     if (!artifactItem) {
-      throw new Error(`Artifact reference was not persisted: ${updatedArtifact.id}`);
+      throw new Error(`Artifact reference was not persisted: ${artifact.id}`);
     }
     const completedAt = new Date().toISOString();
     const agentSession = store.updateAgentSession(state.agentSessionId, {
@@ -657,21 +705,13 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       turnId: state.turnId,
       data: { type: 'artifact-created', artifact },
     });
-    store.emitTurnEvent(state.turnId, {
-      event: 'artifact.updated',
-      requestId: state.requestId,
-      workspaceId: state.workspaceId,
-      threadId: state.threadId,
-      turnId: state.turnId,
-      data: { type: 'artifact-updated', artifact: updatedArtifact },
-    });
     this.emitItemCreated(store, state, artifactItem);
     this.emitItemDelta(
       store,
       state,
       artifactItem.id,
       'artifact-updated',
-      updatedArtifact.id,
+      artifact.id,
       'artifact-reference'
     );
     this.emitItemCompleted(store, state, artifactItem);

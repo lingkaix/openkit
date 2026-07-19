@@ -80,6 +80,7 @@ function dispatchLease(
 ): void {
   seedLocalTarget(coreDb, suffix);
   createSchedulerAdmissionEntry(coreDb, {
+    triggerActor: { kind: 'user', id: 'user_local' },
     priorityClass: 'interactive',
     profileRef: 'profile_worker',
     queueEntryId: `queue_${suffix}`,

@@ -28,6 +28,7 @@ import {
   readDataRootLayoutMarker,
 } from '../dist/storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../dist/storage/migrate.js';
+import { createTestAgentSetup } from '../dist/test-support/agent-environment.js';
 import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
 
 it('reconnects one anchored worker across a killed NanoCore process', async () => {
@@ -37,14 +38,18 @@ it('reconnects one anchored worker across a killed NanoCore process', async () =
   try {
     ensureLayout(dataRoot);
     seedDemoWorkspaceDataRoot(dataRoot);
-    const store = new FsStore({ dataRoot, userId: LOCAL_USER_ID });
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Finish after NanoCore restarts.');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+    const store = new FsStore({ dataRoot });
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Finish after NanoCore restarts.', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    const agentSetup = createTestAgentSetup();
+    const agentId = agentSetup.manifest.id;
     const agentSessionId = 'as_restart_e2e';
     const requestId = randomUUID();
-    store.updateTurn(turn.id, { agentId: agent.id, agentSessionId, status: 'running' });
+    store.updateTurn(turn.id, { agentId, agentSessionId, status: 'running' });
     store.createAgentSession({
-      agentId: agent.id,
+      agentId,
       createdAt: new Date().toISOString(),
       id: agentSessionId,
       message: null,
@@ -54,8 +59,9 @@ it('reconnects one anchored worker across a killed NanoCore process', async () =
       workspaceId: turn.workspaceId,
     });
     const environmentPackage = resolveAgentEnvironmentPackage({
-      agent,
+      agentSetup,
       agentSessionId,
+      triggerActor: turn.triggerActor,
       backend: {
         gatewayUrl: 'http://127.0.0.1:17670',
         kind: 'openshell',
@@ -88,7 +94,7 @@ it('reconnects one anchored worker across a killed NanoCore process', async () =
       .digest('base64url');
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const workspaceDb = openWorkspaceDb(dataRoot, LOCAL_USER_ID, turn.workspaceId);
+    const workspaceDb = openWorkspaceDb(dataRoot, turn.workspaceId);
     applyScopedMigrations(workspaceDb);
     recordAgentEnvironmentPackageSnapshot(workspaceDb, {
       createdAt: environmentPackage.createdAt,
@@ -101,7 +107,7 @@ it('reconnects one anchored worker across a killed NanoCore process', async () =
       profileRef: 'profile_restart_e2e',
       queueEntryId: 'queue_restart_e2e',
       requestId,
-      requestedAgentId: agent.id,
+      requestedAgentId: agentId,
       requiredPoolConstraints: ['openshell.local'],
       threadId: turn.threadId,
       turnId: turn.id,

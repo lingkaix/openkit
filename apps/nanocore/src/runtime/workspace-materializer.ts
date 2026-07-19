@@ -89,31 +89,46 @@ export function buildWorkspaceInputSnapshots(
   return input.environmentPackage.workspace.inputs.map((workspaceInput) => {
     const sourceId =
       typeof workspaceInput.source.sourceId === 'string' ? workspaceInput.source.sourceId : null;
+    const contextPackageRootDigest = acceptedContextPackageRootDigest(
+      input.environmentPackage,
+      workspaceInput
+    );
 
     return WorkspaceInputSnapshotSchema.parse({
       id: `wis_${input.environmentPackage.snapshotId}_${workspaceInput.id}`,
       workspaceId: input.environmentPackage.scope.workspaceId,
       resourceId: workspaceInput.id,
       ...(sourceId ? { sourceId } : {}),
-      resourceKind: workspaceInput.kind === 'repository' ? 'git_repository' : 'git_repository',
-      strategy: workspaceInput.kind === 'snapshot' ? 'filesystem' : 'git',
+      resourceKind: contextPackageRootDigest ? 'filesystem' : 'git_repository',
+      strategy:
+        contextPackageRootDigest || workspaceInput.kind === 'snapshot' ? 'filesystem' : 'git',
       pathScope: [workspaceInput.id],
       writableRoots: workspaceInput.access === 'read-write' ? [workspaceInput.id] : [],
       ignoredPaths: [],
-      generatedFiles: input.environmentPackage.workspace.generatedFiles.map((file) => ({
-        id: file.id,
-        target: toRelativeWorkspacePath(file.target),
-      })),
+      generatedFiles: contextPackageRootDigest
+        ? []
+        : input.environmentPackage.workspace.generatedFiles.map((file) => ({
+            id: file.id,
+            target: toRelativeWorkspacePath(file.target),
+          })),
       base: {
-        commit:
-          typeof workspaceInput.source.commit === 'string' ? workspaceInput.source.commit : null,
-        contentDigest:
-          typeof workspaceInput.materialization?.contentDigest === 'string'
-            ? workspaceInput.materialization.contentDigest
+        commit: contextPackageRootDigest
+          ? null
+          : typeof workspaceInput.source.commit === 'string'
+            ? workspaceInput.source.commit
             : null,
+        contentDigest:
+          contextPackageRootDigest ??
+          (typeof workspaceInput.materialization?.contentDigest === 'string'
+            ? workspaceInput.materialization.contentDigest
+            : null),
       },
       backend: {
-        capabilitySummary: [...input.backendCapabilities],
+        capabilitySummary: [
+          ...(contextPackageRootDigest
+            ? input.environmentPackage.backend.requiredCapabilities
+            : input.backendCapabilities),
+        ],
         kind: input.backendKind,
         label: `${input.backendKind} worker backend`,
       },
@@ -143,11 +158,16 @@ export function buildWorkspaceMaterializationRecords(
     requiredCapabilities: input.materialization.requiredCapabilities,
   });
 
-  return input.inputSnapshots.map((snapshot) =>
-    WorkspaceMaterializationRecordSchema.parse({
+  return input.inputSnapshots.map((snapshot) => {
+    const contextPackageSnapshot = isAcceptedContextPackageSnapshot(
+      snapshot,
+      input.materialization
+    );
+
+    return WorkspaceMaterializationRecordSchema.parse({
       backendKind: input.materialization.backendKind,
       base: snapshot.base,
-      createdAt: input.createdAt,
+      createdAt: contextPackageSnapshot ? snapshot.createdAt : input.createdAt,
       id: `wmr_${input.materialization.packageSnapshotId}_${snapshot.resourceId}`,
       inputSnapshotId: snapshot.id,
       ...(snapshot.sourceId ? { sourceId: snapshot.sourceId } : {}),
@@ -161,7 +181,74 @@ export function buildWorkspaceMaterializationRecords(
       workerSessionId:
         input.materialization.sandbox?.name ?? input.materialization.packageSnapshotId,
       workspaceId: snapshot.workspaceId,
-    })
+    });
+  });
+}
+
+/**
+ * Returns the package-root digest only for the exact accepted S39 Context Package input tuple.
+ *
+ * @param environmentPackage Package that owns the current Thread and Turn lineage.
+ * @param workspaceInput Candidate generated workspace input.
+ * @returns The exact package-root digest, or null for every non-matching input.
+ */
+function acceptedContextPackageRootDigest(
+  environmentPackage: AgentEnvironmentPackage,
+  workspaceInput: AgentEnvironmentPackage['workspace']['inputs'][number]
+): string | null {
+  const { threadId, turnId } = environmentPackage.scope;
+  const materialization = workspaceInput.materialization;
+  const contentDigest = materialization?.contentDigest;
+
+  if (
+    workspaceInput.id !== `context_${turnId}` ||
+    workspaceInput.kind !== 'generated' ||
+    workspaceInput.access !== 'read-only' ||
+    workspaceInput.target !== '/openkit/context' ||
+    'mount' in workspaceInput ||
+    workspaceInput.source.kind !== 'generated' ||
+    workspaceInput.source.pathRef !== `threads/${threadId}/turns/${turnId}/context-package` ||
+    Object.keys(workspaceInput.source).length !== 2 ||
+    !materialization ||
+    materialization.strategy !== 'filesystem' ||
+    materialization.slotId !== 'context' ||
+    typeof contentDigest !== 'string' ||
+    !/^sha256:[0-9a-f]{64}$/.test(contentDigest) ||
+    Object.keys(materialization).length !== 3
+  ) {
+    return null;
+  }
+
+  return contentDigest;
+}
+
+/**
+ * Checks whether one snapshot is the exact WIS projection of an accepted S39 Context Package input.
+ *
+ * @param snapshot Candidate Workspace Input Snapshot.
+ * @param materialization Backend materialization summary for the same AEP.
+ * @returns True only for the exact dedicated Context Package snapshot tuple.
+ */
+function isAcceptedContextPackageSnapshot(
+  snapshot: WorkspaceInputSnapshot,
+  materialization: BuildWorkspaceMaterializationRecordsMaterialization
+): boolean {
+  return (
+    snapshot.resourceId.startsWith('context_') &&
+    snapshot.resourceId.length > 'context_'.length &&
+    snapshot.id === `wis_${materialization.packageSnapshotId}_${snapshot.resourceId}` &&
+    !('sourceId' in snapshot) &&
+    snapshot.resourceKind === 'filesystem' &&
+    snapshot.strategy === 'filesystem' &&
+    snapshot.pathScope.length === 1 &&
+    snapshot.pathScope[0] === snapshot.resourceId &&
+    snapshot.writableRoots.length === 0 &&
+    snapshot.ignoredPaths.length === 0 &&
+    snapshot.generatedFiles.length === 0 &&
+    snapshot.base.commit === null &&
+    typeof snapshot.base.contentDigest === 'string' &&
+    /^sha256:[0-9a-f]{64}$/.test(snapshot.base.contentDigest) &&
+    snapshot.backend.kind === materialization.backendKind
   );
 }
 

@@ -62,12 +62,11 @@ function createCoreDb(): CoreDb {
  *
  * @param coreDb Open Core database handles.
  * @param workspaceId Workspace id that owns the repository.
- * @param userId User id that owns the workspace database.
  */
-function addReadyRepository(coreDb: CoreDb, workspaceId: string, userId = 'user_local'): void {
+function addReadyRepository(coreDb: CoreDb, workspaceId: string): void {
   const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-goal-task-delegation-repo-'));
   mkdirSync(join(repositoryPath, '.git'));
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, userId, workspaceId);
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
   try {
     applyScopedMigrations(workspaceDb);
     upsertWorkspaceRepositoryResource(workspaceDb, {
@@ -135,6 +134,7 @@ function threadItems(): Item[] {
       turnId: 'tu_context',
       type: 'user-message',
       status: 'completed',
+      actor: { kind: 'user', id: 'user_local' },
       text: 'Relevant task context.',
       createdAt: '2026-05-31T00:00:00.000Z',
       completedAt: '2026-05-31T00:00:00.000Z',
@@ -158,7 +158,7 @@ function threadItems(): Item[] {
 describe('goal task delegation preparation', () => {
   it('prepares authorized delegation facts for a selected goal task', () => {
     const coreDb = createCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'user_local', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -207,11 +207,11 @@ describe('goal task delegation preparation', () => {
 
   it('uses the request user workspace database when preparing repository context', () => {
     const coreDb = createCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'user_owner', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
-      addReadyRepository(coreDb, 'ws_demo', 'user_owner');
+      addReadyRepository(coreDb, 'ws_demo');
       addReadyGoalTask(workspaceDb);
 
       const prepared = prepareGoalTaskDelegation(coreDb, workspaceDb, {
@@ -233,7 +233,7 @@ describe('goal task delegation preparation', () => {
 
   it('fails preparation when the workspace repository is missing', () => {
     const coreDb = createCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'user_local', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -257,7 +257,7 @@ describe('goal task delegation preparation', () => {
 
   it('rejects a Task whose immutable Plan lineage differs from its Goal', () => {
     const coreDb = createCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'user_local', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -281,7 +281,7 @@ describe('goal task delegation preparation', () => {
 
   it('rejects ambiguous matching Human Gate request Items', () => {
     const coreDb = createCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'user_local', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -300,6 +300,7 @@ describe('goal task delegation preparation', () => {
         turnId: 'tu_gate',
         type: 'user-input-request' as const,
         status: 'completed' as const,
+        responsibleUserId: 'user_local',
         userInputRequestId: 'ui_gate',
         prompt: 'Choose a path.',
         questions: [
@@ -326,6 +327,8 @@ describe('goal task delegation preparation', () => {
           turnId: 'tu_gate',
           type: 'user-input-response',
           status: 'completed',
+          actor: { kind: 'user', id: 'user_local' },
+          causationId: 'it_gate_request_one',
           userInputRequestId: 'ui_gate',
           answers: { path: ['Use path A'] },
           createdAt: '2026-05-31T00:00:03.000Z',

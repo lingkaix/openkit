@@ -8,15 +8,13 @@ export const StartTaskModeRequestSchema = z.object({
   requestId: z.string().min(1),
 });
 
-/** Worker runtime family selected by the Workflow Coordinator. */
-export const TaskModeWorkerRuntimeSchema = z.enum(['codex', 'opencode']);
-
 /** Product-visible Task Mode worker target. */
-export const TaskModeWorkerTargetSchema = z.object({
-  agentId: z.string().min(1),
-  displayName: z.string().min(1),
-  runtime: TaskModeWorkerRuntimeSchema,
-});
+export const TaskModeWorkerTargetSchema = z
+  .object({
+    agentId: z.string().min(1),
+    displayName: z.string().min(1),
+  })
+  .strict();
 
 /** Task Mode attempt state projected from the accepted worker turn. */
 export const TaskModeAttemptStateSchema = z.enum([

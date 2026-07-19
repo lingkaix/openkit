@@ -28,15 +28,31 @@ export const StorageDirectoryReportSchema = z
   .strict();
 
 /** Quarantined storage file preserved for operator inspection. */
-export const StorageQuarantineEntrySchema = z
-  .object({
-    scope: z.enum(['server', 'user', 'workspace']),
-    userId: z.string().min(1).optional(),
-    workspaceId: z.string().min(1).optional(),
-    path: z.string().min(1),
-    bytes: z.number().int().nonnegative(),
-  })
-  .strict();
+export const StorageQuarantineEntrySchema = z.discriminatedUnion('scope', [
+  z
+    .object({
+      scope: z.literal('server'),
+      path: z.string().min(1),
+      bytes: z.number().int().nonnegative(),
+    })
+    .strict(),
+  z
+    .object({
+      scope: z.literal('user'),
+      userId: z.string().min(1),
+      path: z.string().min(1),
+      bytes: z.number().int().nonnegative(),
+    })
+    .strict(),
+  z
+    .object({
+      scope: z.literal('workspace'),
+      workspaceId: z.string().min(1),
+      path: z.string().min(1),
+      bytes: z.number().int().nonnegative(),
+    })
+    .strict(),
+]);
 
 /** Workspace subtree in the storage layout report. */
 export const StorageWorkspaceReportSchema = z
@@ -52,7 +68,6 @@ export const StorageUserReportSchema = z
   .object({
     userId: z.string().min(1),
     userDb: StorageDatabaseReportSchema,
-    workspaces: z.array(StorageWorkspaceReportSchema),
   })
   .strict();
 
@@ -62,6 +77,7 @@ export const StorageLayoutReportResponseSchema = z
     dataRoot: z.string().min(1),
     serverDb: StorageDatabaseReportSchema,
     users: z.array(StorageUserReportSchema),
+    workspaces: z.array(StorageWorkspaceReportSchema),
     quarantineEntries: z.array(StorageQuarantineEntrySchema),
   })
   .strict()

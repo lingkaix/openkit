@@ -5,13 +5,11 @@ import { join } from 'node:path';
  * Writes the explicit Demo Workspace fixture used by black-box tests.
  *
  * @param {string} dataRoot NanoCore data root to seed.
- * @param {{ userId?: string }} [options] Seed options.
  * @returns {void}
  */
-export function seedDemoWorkspaceDataRoot(dataRoot, options = {}) {
-  const userId = options.userId ?? 'user_local';
-  const workspaceRoot = join(dataRoot, 'users', userId, 'workspaces', 'ws_demo');
-  const quickChatRoot = join(dataRoot, 'users', userId, 'workspaces', 'ws_quick_chat');
+export function seedDemoWorkspaceDataRoot(dataRoot) {
+  const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+  const quickChatRoot = join(dataRoot, 'workspaces', 'ws_quick_chat');
   const workspacePath = join(workspaceRoot, 'workspace.json');
   const quickChatPath = join(quickChatRoot, 'workspace.json');
 
@@ -105,7 +103,6 @@ export function seedDemoWorkspaceDataRoot(dataRoot, options = {}) {
       'knowledge/pages',
       'knowledge/proposals',
       'knowledge/reviews',
-      'reviews/artifacts',
       'runtime/agent-sessions',
       'sources/derived',
       'sources/materials',

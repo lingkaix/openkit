@@ -14,10 +14,9 @@ function providerConfig(): ResolvedLLMProviderConfig {
     backend: 'pi-ai',
     baseUrl: 'https://api.example.test/v1',
     displayName: 'OpenAI',
-    extraBody: {},
-    extraHeaders: {},
     gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
     id: 'openai',
+    models: ['gpt-test'],
     requiresApiKey: true,
   };
 }
@@ -34,7 +33,7 @@ describe('GatewayUsageTracker', () => {
         totalTokens: 19,
       })
     ).toEqual({
-      cachedInputTokens: 7,
+      cacheReadTokens: 7,
       cacheWriteTokens: 5,
       completionTokens: 4,
       costEstimateUsd: 0.0012,
@@ -51,8 +50,6 @@ describe('GatewayUsageTracker', () => {
         totalTokens: -1,
       })
     ).toEqual({
-      cachedInputTokens: 0,
-      cacheWriteTokens: 0,
       completionTokens: 0,
       costEstimateUsd: 0,
       inputTokens: 0,
@@ -60,7 +57,7 @@ describe('GatewayUsageTracker', () => {
     });
   });
 
-  it('preserves public diagnostics semantics for raw pi-ai usage', () => {
+  it('preserves provider-reported cache quantities in diagnostics', () => {
     const tracker = new GatewayUsageTracker({ now: () => new Date('2026-05-26T00:00:00.000Z') });
 
     tracker.recordUsage({
@@ -76,10 +73,15 @@ describe('GatewayUsageTracker', () => {
       },
     });
 
-    expect(tracker.snapshot().summaries[0]).toMatchObject({
-      cachedInputTokens: 60,
-      cacheHitRate: 0.6,
+    expect(tracker.snapshot().summaries[0]).toEqual({
+      cacheReadTokens: 60,
+      cacheWriteTokens: 20,
+      completionTokens: 5,
+      endpoint: 'chat_completions',
       inputTokens: 100,
+      lastObservedAt: '2026-05-26T00:00:00.000Z',
+      model: 'claude-sonnet-4-5',
+      providerId: 'openai',
       requestCount: 1,
       totalTokens: 105,
     });
@@ -105,8 +107,7 @@ describe('GatewayUsageTracker', () => {
     expect(tracker.snapshot()).toEqual({
       summaries: [
         {
-          cachedInputTokens: 80,
-          cacheHitRate: 0.8,
+          cacheReadTokens: 80,
           completionTokens: 20,
           endpoint: 'chat_completions',
           inputTokens: 100,
@@ -128,20 +129,24 @@ describe('GatewayUsageTracker', () => {
       model: 'gpt-5.1',
       provider: providerConfig(),
       usage: {
+        cacheRead: 0,
+        cacheWrite: 0,
         input_tokens: 200,
         output_tokens: 30,
         total_tokens: 230,
-        input_tokens_details: {
-          cached_tokens: 150,
-        },
       },
     });
 
-    expect(tracker.snapshot().summaries[0]).toMatchObject({
-      cachedInputTokens: 150,
-      cacheHitRate: 0.75,
-      inputTokens: 200,
+    expect(tracker.snapshot().summaries[0]).toEqual({
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
       completionTokens: 30,
+      endpoint: 'responses',
+      inputTokens: 200,
+      lastObservedAt: '2026-05-26T00:00:00.000Z',
+      model: 'gpt-5.1',
+      providerId: 'openai',
+      requestCount: 1,
       totalTokens: 230,
     });
   });
@@ -155,7 +160,7 @@ describe('GatewayUsageTracker', () => {
             [
               'data: {"type":"response.output_text.delta","delta":"Hi"}',
               '',
-              'data: {"type":"response.completed","response":{"usage":{"input_tokens":50,"output_tokens":5,"total_tokens":55,"input_tokens_details":{"cached_tokens":25}}}}',
+              'data: {"type":"response.completed","response":{"usage":{"input_tokens":50,"output_tokens":5,"total_tokens":55}}}',
               '',
               'data: [DONE]',
               '',
@@ -176,10 +181,15 @@ describe('GatewayUsageTracker', () => {
     });
 
     await expect(new Response(observed).text()).resolves.toContain('response.completed');
-    expect(tracker.snapshot().summaries[0]).toMatchObject({
-      cachedInputTokens: 25,
+    expect(tracker.snapshot().summaries[0]).toEqual({
+      completionTokens: 5,
+      endpoint: 'responses',
       inputTokens: 50,
+      lastObservedAt: '2026-05-26T00:00:00.000Z',
+      model: 'gpt-5.1',
+      providerId: 'openai',
       requestCount: 1,
+      totalTokens: 55,
     });
   });
 

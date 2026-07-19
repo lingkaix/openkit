@@ -36,11 +36,6 @@ export type WorkerCoordinatorRequiredUserAction =
   | 'review_ready';
 
 /**
- * Worker runtime family known to v0.0.5 routing.
- */
-export type WorkerCoordinatorRuntime = 'codex' | 'opencode';
-
-/**
  * Worker readiness state consumed by WorkerCoordinatorAgent.
  */
 export type WorkerCoordinatorReadiness = 'ready' | 'blocked' | 'unknown';
@@ -53,8 +48,6 @@ export interface WorkerCoordinatorCandidate {
   readonly agentId: string;
   /** Human-readable agent name. */
   readonly displayName: string;
-  /** Runtime family. */
-  readonly runtime: WorkerCoordinatorRuntime;
   /** Readiness status. */
   readonly readiness: WorkerCoordinatorReadiness;
   /** Optional readiness reasons. */
@@ -337,10 +330,10 @@ export function createWorkerCoordinatorDecision(
     };
   }
 
-  const selected = selectWorkerCandidate(input.readiness, normalizedPrompt);
+  const selected = selectWorkerCandidate(input.readiness);
 
   if (!selected) {
-    return blockedDecision('No ready Codex or OpenCode worker candidate is available.');
+    return blockedDecision('No ready worker candidate is available.');
   }
 
   const contextRefs = [
@@ -388,7 +381,7 @@ export function createWorkerCoordinatorDecision(
 
   return {
     decision: 'worker_turn',
-    confidence: selected.runtime === 'codex' ? 0.86 : 0.8,
+    confidence: 0.8,
     explanation: `The request needs bounded worker execution and ${selected.displayName} is ready.`,
     selectedWorkerCandidate: selected,
     requiredUserAction: 'none',
@@ -628,27 +621,12 @@ function requiresWorker(prompt: string): boolean {
  * Selects a ready worker candidate.
  *
  * @param candidates Worker readiness candidates.
- * @param prompt Lowercase prompt.
  * @returns Selected candidate, or null when none is ready.
  */
 function selectWorkerCandidate(
-  candidates: readonly WorkerCoordinatorCandidate[],
-  prompt: string
+  candidates: readonly WorkerCoordinatorCandidate[]
 ): WorkerCoordinatorCandidate | null {
-  const ready = candidates.filter((candidate) => candidate.readiness === 'ready');
-
-  if (/\bopencode\b/.test(prompt)) {
-    return ready.find((candidate) => candidate.runtime === 'opencode') ?? null;
-  }
-  if (/\bcodex\b/.test(prompt)) {
-    return ready.find((candidate) => candidate.runtime === 'codex') ?? null;
-  }
-
-  return (
-    ready.find((candidate) => candidate.runtime === 'codex') ??
-    ready.find((candidate) => candidate.runtime === 'opencode') ??
-    null
-  );
+  return candidates.find((candidate) => candidate.readiness === 'ready') ?? null;
 }
 
 /**

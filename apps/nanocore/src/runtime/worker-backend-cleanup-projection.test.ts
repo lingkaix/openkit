@@ -25,12 +25,12 @@ import {
 function createFixture() {
   const workspaceDb = openWorkspaceDb(
     mkdtempSync(join(tmpdir(), 'openkit-cleanup-projection-')),
-    'user_owner',
     'ws_demo'
   );
   applyScopedMigrations(workspaceDb);
   const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
     suffix: 'cleanup_projection',
+    triggerActor: { kind: 'user', id: 'user_owner' },
     workspaceInputIds: ['repo'],
   });
   const inputSnapshots = recordWorkspaceInputSnapshots(

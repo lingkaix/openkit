@@ -8,9 +8,11 @@ import type { z } from 'zod';
 
 import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
+import { assertAuthorizedWorkspaceLineage } from './auth/operation-authorizer.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
 import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
 import type { FsStore } from './lib/store.js';
+import type { ProviderCredentialResolver } from './providers/registry.js';
 import { registerFeedbackRoutes } from './runtime/feedback-routes.js';
 import {
   getGoalRecord,
@@ -38,6 +40,7 @@ import {
   classifyClosedWorkerUserInputGate,
   clearWorkerCheckpointAfterTerminalState,
   recoverWorkerCheckpointStopReason,
+  requireWorkerCheckpointHumanCommandScope,
 } from './runtime/worker-recovery.js';
 import {
   completeSchedulerLeaseForTerminalTurn,
@@ -98,6 +101,7 @@ export function registerTurnRoutes({
   app,
   coreDb,
   inflightCommands,
+  providerCredentialResolver,
   requestStore,
   repositoryWorkspaceDb,
   runtimeConfig,
@@ -108,8 +112,9 @@ export function registerTurnRoutes({
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
+  readonly providerCredentialResolver: ProviderCredentialResolver;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
-  readonly repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb;
+  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   readonly schedulerEpoch: number;
   readonly turnExecutor: TurnExecutor;
@@ -127,7 +132,28 @@ export function registerTurnRoutes({
       const store = requestStore(c);
       if ('turnId' in input) {
         const turnId = input.turnId;
+        const responseActor = { kind: 'user', id: c.get('actor').userId } as const;
         rejectSecretUserInput(store, input);
+        const activeTurn = store.getTurn(input.workspaceId, input.threadId, turnId);
+        if (activeTurn.status === 'awaiting_human' && activeTurn.humanGate.kind === 'user-input') {
+          const request = activeTurn.items.find((item) => item.id === activeTurn.humanGate.itemId);
+          if (
+            request?.type !== 'user-input-request' ||
+            request.status !== 'completed' ||
+            request.userInputRequestId !== activeTurn.humanGate.userInputRequestId
+          ) {
+            throw workerGateRecoveryError(
+              'The user-input Gate has no exact responsible-user owner.'
+            );
+          }
+          if (request.responsibleUserId !== responseActor.id) {
+            throw new TurnStartValidationError(
+              'workspace_access_denied',
+              'Workspace access denied.',
+              403
+            );
+          }
+        }
         const commandScope = {
           workspaceId: input.workspaceId,
           threadId: input.threadId,
@@ -139,7 +165,7 @@ export function registerTurnRoutes({
           commandScope
         );
         if (coreDb) {
-          const workspaceDb = repositoryWorkspaceDb(store, input.workspaceId);
+          const workspaceDb = repositoryWorkspaceDb(input.workspaceId);
           try {
             const checkpoint = getWorkerCheckpoint(
               workspaceDb,
@@ -148,6 +174,18 @@ export function registerTurnRoutes({
               turnId
             );
             if (checkpoint) {
+              let gateOwner: ReturnType<typeof requireWorkerCheckpointHumanCommandScope>;
+              try {
+                gateOwner = requireWorkerCheckpointHumanCommandScope(coreDb, checkpoint);
+              } catch {
+                throw workerGateRecoveryError(
+                  'The worker user-input Gate has no exact human command identity.'
+                );
+              }
+              if (gateOwner.actorId !== c.get('actor').userId) {
+                return asApiError('Workspace access denied.', 'workspace_access_denied', 403);
+              }
+
               let turn: TurnReadModel;
               try {
                 turn = await runIdempotentCommand({
@@ -158,7 +196,8 @@ export function registerTurnRoutes({
                   scope: commandScope,
                   input,
                   responseKind: 'turn',
-                  execute: () => closeWorkerUserInputGate(coreDb, store, workspaceDb, input),
+                  execute: () =>
+                    closeWorkerUserInputGate(coreDb, store, workspaceDb, input, responseActor.id),
                   replay: (record) =>
                     TurnSchema.parse(
                       store.getTurn(input.workspaceId, input.threadId, record.response.id)
@@ -209,8 +248,9 @@ export function registerTurnRoutes({
 
             if (!isAwaitingUserInputGate(currentTurn)) {
               throw new TurnStartValidationError(
-                'turn_not_awaiting_user_input',
-                `Turn is not awaiting user input: ${turnId}.`
+                'not_awaiting_input',
+                `Turn is not awaiting user input: ${turnId}.`,
+                409
               );
             }
 
@@ -218,7 +258,7 @@ export function registerTurnRoutes({
               store,
               turnId,
               input.answers,
-              { requestId: input.requestId }
+              { requestId: input.requestId, actor: responseActor }
             );
 
             if (!updatedTurn) {
@@ -271,9 +311,11 @@ export function registerTurnRoutes({
 
           const handle = await startProductTurn({
             input,
+            providerCredentialResolver,
             schedulerEpoch,
             snapshot: runtimeConfig(),
             store,
+            triggerActor: { kind: 'user', id: c.get('actor').userId },
             turnExecutor,
             workerPlacement,
             ...(coreDb ? { coreDb } : {}),
@@ -305,33 +347,61 @@ export function registerTurnRoutes({
   registerFeedbackRoutes({ app, requestStore });
 
   app.get('/api/workspaces/:workspaceId/threads/:threadId/turns/:turnId', (c) => {
+    const workspaceId = c.req.param('workspaceId');
+    const threadId = c.req.param('threadId');
+    const turnId = c.req.param('turnId');
+    const store = requestStore(c);
+    let ownerTurn: ReturnType<FsStore['getTurnById']>;
+
     try {
-      return c.json(
-        TurnSchema.parse(
-          requestStore(c).getTurn(
-            c.req.param('workspaceId'),
-            c.req.param('threadId'),
-            c.req.param('turnId')
-          )
-        )
-      );
+      ownerTurn = store.getTurnById(turnId);
+    } catch (error) {
+      return asApiError((error as Error).message);
+    }
+
+    const workspaceAccess = c.get('workspaceAccess');
+    if (workspaceAccess) {
+      assertAuthorizedWorkspaceLineage(workspaceAccess, ownerTurn.workspaceId);
+    }
+
+    try {
+      return c.json(TurnSchema.parse(store.getTurn(workspaceId, threadId, turnId)));
     } catch (error) {
       return asApiError((error as Error).message);
     }
   });
 
   app.post('/api/workspaces/:workspaceId/threads/:threadId/turns/:turnId/interrupt', async (c) => {
+    const parsed = InterruptTurnRequestSchema.safeParse(await c.req.json().catch(() => ({})));
+
+    if (!parsed.success) {
+      return asInvalidRequestError(parsed.error);
+    }
+
+    const workspaceId = c.req.param('workspaceId');
+    const threadId = c.req.param('threadId');
+    const turnId = c.req.param('turnId');
+    const store = requestStore(c);
+    let ownerTurn: ReturnType<FsStore['getTurnById']>;
+
     try {
-      const parsed = InterruptTurnRequestSchema.safeParse(await c.req.json().catch(() => ({})));
+      ownerTurn = store.getTurnById(turnId);
+    } catch (error) {
+      return asCommandError(error, 'turn_interrupt_failed');
+    }
 
-      if (!parsed.success) {
-        return asInvalidRequestError(parsed.error);
-      }
+    const workspaceAccess = c.get('workspaceAccess');
+    if (workspaceAccess) {
+      assertAuthorizedWorkspaceLineage(workspaceAccess, ownerTurn.workspaceId);
+    }
 
-      const workspaceId = c.req.param('workspaceId');
-      const threadId = c.req.param('threadId');
-      const turnId = c.req.param('turnId');
-      const store = requestStore(c);
+    try {
+      store.getTurn(workspaceId, threadId, turnId);
+    } catch (error) {
+      return asCommandError(error, 'turn_interrupt_failed');
+    }
+
+    try {
       const turn = await runIdempotentCommand({
         store,
         inflightCommands,
@@ -405,6 +475,7 @@ type WorkerUserInputCommand = Extract<
  * @param store Product store containing the Turn, Session, Items, and receipts.
  * @param workspaceDb Workspace database containing the worker checkpoint.
  * @param input Exact structured user-input command.
+ * @param actorId Authenticated responsible user answering the request.
  * @returns Terminal Turn for the closed worker envelope.
  * @throws TurnStartValidationError when the Gate owner tuple is absent or contradictory.
  */
@@ -412,7 +483,8 @@ function closeWorkerUserInputGate(
   coreDb: CoreDb,
   store: FsStore,
   workspaceDb: WorkspaceDb,
-  input: WorkerUserInputCommand
+  input: WorkerUserInputCommand,
+  actorId: string
 ): TurnReadModel {
   const checkpoint = getWorkerCheckpoint(
     workspaceDb,
@@ -493,10 +565,18 @@ function closeWorkerUserInputGate(
     throw workerGateRecoveryError('The worker user-input Gate has no authoritative worker input.');
   }
   const evidence = parseWorkerCheckpointEvidence(checkpoint.diagnosticsSummary);
+  let ownerScope: ReturnType<typeof requireWorkerCheckpointHumanCommandScope>;
+  try {
+    ownerScope = requireWorkerCheckpointHumanCommandScope(coreDb, checkpoint);
+  } catch {
+    throw workerGateRecoveryError(
+      'The worker user-input Gate has no exact human command identity.'
+    );
+  }
   const ownerReceipt = store.getCommandRequest(
     goalTaskCheckpoint ? 'goal.step' : 'task.start',
     checkpoint.requestId,
-    { workspaceId: input.workspaceId, threadId: input.threadId },
+    ownerScope,
     goalTaskCheckpoint ? workspaceDb : undefined
   );
   if (
@@ -534,6 +614,8 @@ function closeWorkerUserInputGate(
     turnId: input.turnId,
     type: 'user-input-response',
     status: 'completed',
+    actor: { kind: 'user', id: actorId },
+    causationId: input.requestId,
     userInputRequestId: gate.userInputRequestId,
     answers: input.answers,
     createdAt: timestamp,
@@ -557,6 +639,7 @@ function closeWorkerUserInputGate(
     data: { type: 'turn-completed', stopReason: 'completed', turn: closedTurn },
   });
   const terminalCheckpoint = updateWorkerCheckpoint(workspaceDb, {
+    authorityActor: turn.triggerActor,
     workspaceId: input.workspaceId,
     threadId: input.threadId,
     turnId: input.turnId,
@@ -634,7 +717,7 @@ async function clearWorkerUserInputGateCheckpoint(
     ? store.getCommandRequest(
         checkpoint.goalId && checkpoint.taskId ? 'goal.step' : 'task.start',
         checkpoint.requestId,
-        { workspaceId: input.workspaceId, threadId: input.threadId },
+        requireWorkerCheckpointHumanCommandScope(coreDb, checkpoint),
         checkpoint.goalId && checkpoint.taskId ? workspaceDb : undefined
       )
     : null;

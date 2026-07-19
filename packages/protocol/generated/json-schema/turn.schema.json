@@ -16,6 +16,63 @@
           "type": "string",
           "minLength": 1
         },
+        "triggerActor": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "user"
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "agent",
+                    "automation",
+                    "integration",
+                    "system"
+                  ]
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "responsibleUserId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "id",
+                "responsibleUserId"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
         "items": {
           "type": "array",
           "items": {
@@ -89,6 +146,63 @@
                     "type": "string",
                     "const": "user-message"
                   },
+                  "actor": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "user"
+                          },
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "id"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "agent",
+                              "automation",
+                              "integration",
+                              "system"
+                            ]
+                          },
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "responsibleUserId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "id",
+                          "responsibleUserId"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
                   "text": {
                     "type": "string",
                     "minLength": 1
@@ -103,6 +217,7 @@
                   "createdAt",
                   "completedAt",
                   "type",
+                  "actor",
                   "text"
                 ],
                 "additionalProperties": false
@@ -367,6 +482,10 @@
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
                   },
+                  "lastMutationRequestId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
                   "title": {
                     "type": "string",
                     "minLength": 1
@@ -393,6 +512,7 @@
                   "type",
                   "artifactId",
                   "artifactVersion",
+                  "lastMutationRequestId",
                   "title",
                   "summary"
                 ],
@@ -665,15 +785,8 @@
                     ]
                   },
                   "causationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "type": "string",
+                    "minLength": 1
                   },
                   "createdAt": {
                     "type": "string",
@@ -694,6 +807,24 @@
                     "type": "string",
                     "const": "approval-decision"
                   },
+                  "actor": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
                   "approvalRequestId": {
                     "type": "string",
                     "minLength": 1
@@ -712,9 +843,11 @@
                   "threadId",
                   "turnId",
                   "status",
+                  "causationId",
                   "createdAt",
                   "completedAt",
                   "type",
+                  "actor",
                   "approvalRequestId",
                   "decision"
                 ],
@@ -788,6 +921,10 @@
                   "type": {
                     "type": "string",
                     "const": "user-input-request"
+                  },
+                  "responsibleUserId": {
+                    "type": "string",
+                    "minLength": 1
                   },
                   "userInputRequestId": {
                     "type": "string",
@@ -871,6 +1008,7 @@
                   "createdAt",
                   "completedAt",
                   "type",
+                  "responsibleUserId",
                   "userInputRequestId",
                   "prompt",
                   "questions"
@@ -917,15 +1055,8 @@
                     ]
                   },
                   "causationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "type": "string",
+                    "minLength": 1
                   },
                   "createdAt": {
                     "type": "string",
@@ -946,6 +1077,24 @@
                     "type": "string",
                     "const": "user-input-response"
                   },
+                  "actor": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
                   "userInputRequestId": {
                     "type": "string",
                     "minLength": 1
@@ -953,15 +1102,17 @@
                   "answers": {
                     "type": "object",
                     "propertyNames": {
-                      "type": "string"
+                      "type": "string",
+                      "minLength": 1
                     },
                     "additionalProperties": {
-                      "minItems": 1,
                       "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      }
+                      "prefixItems": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      ]
                     }
                   }
                 },
@@ -971,9 +1122,11 @@
                   "threadId",
                   "turnId",
                   "status",
+                  "causationId",
                   "createdAt",
                   "completedAt",
                   "type",
+                  "actor",
                   "userInputRequestId",
                   "answers"
                 ],
@@ -1839,6 +1992,7 @@
         "id",
         "workspaceId",
         "threadId",
+        "triggerActor",
         "items",
         "error",
         "configVersion",
@@ -1864,6 +2018,63 @@
         "threadId": {
           "type": "string",
           "minLength": 1
+        },
+        "triggerActor": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "user"
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "agent",
+                    "automation",
+                    "integration",
+                    "system"
+                  ]
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "responsibleUserId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "id",
+                "responsibleUserId"
+              ],
+              "additionalProperties": false
+            }
+          ]
         },
         "items": {
           "type": "array",
@@ -1938,6 +2149,63 @@
                     "type": "string",
                     "const": "user-message"
                   },
+                  "actor": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "user"
+                          },
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "id"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "agent",
+                              "automation",
+                              "integration",
+                              "system"
+                            ]
+                          },
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "responsibleUserId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "id",
+                          "responsibleUserId"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
                   "text": {
                     "type": "string",
                     "minLength": 1
@@ -1952,6 +2220,7 @@
                   "createdAt",
                   "completedAt",
                   "type",
+                  "actor",
                   "text"
                 ],
                 "additionalProperties": false
@@ -2216,6 +2485,10 @@
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
                   },
+                  "lastMutationRequestId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
                   "title": {
                     "type": "string",
                     "minLength": 1
@@ -2242,6 +2515,7 @@
                   "type",
                   "artifactId",
                   "artifactVersion",
+                  "lastMutationRequestId",
                   "title",
                   "summary"
                 ],
@@ -2514,15 +2788,8 @@
                     ]
                   },
                   "causationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "type": "string",
+                    "minLength": 1
                   },
                   "createdAt": {
                     "type": "string",
@@ -2543,6 +2810,24 @@
                     "type": "string",
                     "const": "approval-decision"
                   },
+                  "actor": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
                   "approvalRequestId": {
                     "type": "string",
                     "minLength": 1
@@ -2561,9 +2846,11 @@
                   "threadId",
                   "turnId",
                   "status",
+                  "causationId",
                   "createdAt",
                   "completedAt",
                   "type",
+                  "actor",
                   "approvalRequestId",
                   "decision"
                 ],
@@ -2637,6 +2924,10 @@
                   "type": {
                     "type": "string",
                     "const": "user-input-request"
+                  },
+                  "responsibleUserId": {
+                    "type": "string",
+                    "minLength": 1
                   },
                   "userInputRequestId": {
                     "type": "string",
@@ -2720,6 +3011,7 @@
                   "createdAt",
                   "completedAt",
                   "type",
+                  "responsibleUserId",
                   "userInputRequestId",
                   "prompt",
                   "questions"
@@ -2766,15 +3058,8 @@
                     ]
                   },
                   "causationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "type": "string",
+                    "minLength": 1
                   },
                   "createdAt": {
                     "type": "string",
@@ -2795,6 +3080,24 @@
                     "type": "string",
                     "const": "user-input-response"
                   },
+                  "actor": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
                   "userInputRequestId": {
                     "type": "string",
                     "minLength": 1
@@ -2802,15 +3105,17 @@
                   "answers": {
                     "type": "object",
                     "propertyNames": {
-                      "type": "string"
+                      "type": "string",
+                      "minLength": 1
                     },
                     "additionalProperties": {
-                      "minItems": 1,
                       "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      }
+                      "prefixItems": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      ]
                     }
                   }
                 },
@@ -2820,9 +3125,11 @@
                   "threadId",
                   "turnId",
                   "status",
+                  "causationId",
                   "createdAt",
                   "completedAt",
                   "type",
+                  "actor",
                   "userInputRequestId",
                   "answers"
                 ],
@@ -3688,6 +3995,7 @@
         "id",
         "workspaceId",
         "threadId",
+        "triggerActor",
         "items",
         "error",
         "configVersion",
@@ -3713,6 +4021,63 @@
         "threadId": {
           "type": "string",
           "minLength": 1
+        },
+        "triggerActor": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "user"
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "agent",
+                    "automation",
+                    "integration",
+                    "system"
+                  ]
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "responsibleUserId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "id",
+                "responsibleUserId"
+              ],
+              "additionalProperties": false
+            }
+          ]
         },
         "items": {
           "type": "array",
@@ -3787,6 +4152,63 @@
                     "type": "string",
                     "const": "user-message"
                   },
+                  "actor": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "user"
+                          },
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "id"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "agent",
+                              "automation",
+                              "integration",
+                              "system"
+                            ]
+                          },
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "responsibleUserId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "id",
+                          "responsibleUserId"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
                   "text": {
                     "type": "string",
                     "minLength": 1
@@ -3801,6 +4223,7 @@
                   "createdAt",
                   "completedAt",
                   "type",
+                  "actor",
                   "text"
                 ],
                 "additionalProperties": false
@@ -4065,6 +4488,10 @@
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
                   },
+                  "lastMutationRequestId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
                   "title": {
                     "type": "string",
                     "minLength": 1
@@ -4091,6 +4518,7 @@
                   "type",
                   "artifactId",
                   "artifactVersion",
+                  "lastMutationRequestId",
                   "title",
                   "summary"
                 ],
@@ -4363,15 +4791,8 @@
                     ]
                   },
                   "causationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "type": "string",
+                    "minLength": 1
                   },
                   "createdAt": {
                     "type": "string",
@@ -4392,6 +4813,24 @@
                     "type": "string",
                     "const": "approval-decision"
                   },
+                  "actor": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
                   "approvalRequestId": {
                     "type": "string",
                     "minLength": 1
@@ -4410,9 +4849,11 @@
                   "threadId",
                   "turnId",
                   "status",
+                  "causationId",
                   "createdAt",
                   "completedAt",
                   "type",
+                  "actor",
                   "approvalRequestId",
                   "decision"
                 ],
@@ -4486,6 +4927,10 @@
                   "type": {
                     "type": "string",
                     "const": "user-input-request"
+                  },
+                  "responsibleUserId": {
+                    "type": "string",
+                    "minLength": 1
                   },
                   "userInputRequestId": {
                     "type": "string",
@@ -4569,6 +5014,7 @@
                   "createdAt",
                   "completedAt",
                   "type",
+                  "responsibleUserId",
                   "userInputRequestId",
                   "prompt",
                   "questions"
@@ -4615,15 +5061,8 @@
                     ]
                   },
                   "causationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "type": "string",
+                    "minLength": 1
                   },
                   "createdAt": {
                     "type": "string",
@@ -4644,6 +5083,24 @@
                     "type": "string",
                     "const": "user-input-response"
                   },
+                  "actor": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
                   "userInputRequestId": {
                     "type": "string",
                     "minLength": 1
@@ -4651,15 +5108,17 @@
                   "answers": {
                     "type": "object",
                     "propertyNames": {
-                      "type": "string"
+                      "type": "string",
+                      "minLength": 1
                     },
                     "additionalProperties": {
-                      "minItems": 1,
                       "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      }
+                      "prefixItems": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      ]
                     }
                   }
                 },
@@ -4669,9 +5128,11 @@
                   "threadId",
                   "turnId",
                   "status",
+                  "causationId",
                   "createdAt",
                   "completedAt",
                   "type",
+                  "actor",
                   "userInputRequestId",
                   "answers"
                 ],
@@ -5584,6 +6045,7 @@
         "id",
         "workspaceId",
         "threadId",
+        "triggerActor",
         "items",
         "error",
         "configVersion",
@@ -5609,6 +6071,63 @@
         "threadId": {
           "type": "string",
           "minLength": 1
+        },
+        "triggerActor": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "user"
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "agent",
+                    "automation",
+                    "integration",
+                    "system"
+                  ]
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "responsibleUserId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "id",
+                "responsibleUserId"
+              ],
+              "additionalProperties": false
+            }
+          ]
         },
         "items": {
           "type": "array",
@@ -5683,6 +6202,63 @@
                     "type": "string",
                     "const": "user-message"
                   },
+                  "actor": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "user"
+                          },
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "id"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "agent",
+                              "automation",
+                              "integration",
+                              "system"
+                            ]
+                          },
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "responsibleUserId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "id",
+                          "responsibleUserId"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
                   "text": {
                     "type": "string",
                     "minLength": 1
@@ -5697,6 +6273,7 @@
                   "createdAt",
                   "completedAt",
                   "type",
+                  "actor",
                   "text"
                 ],
                 "additionalProperties": false
@@ -5961,6 +6538,10 @@
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
                   },
+                  "lastMutationRequestId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
                   "title": {
                     "type": "string",
                     "minLength": 1
@@ -5987,6 +6568,7 @@
                   "type",
                   "artifactId",
                   "artifactVersion",
+                  "lastMutationRequestId",
                   "title",
                   "summary"
                 ],
@@ -6259,15 +6841,8 @@
                     ]
                   },
                   "causationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "type": "string",
+                    "minLength": 1
                   },
                   "createdAt": {
                     "type": "string",
@@ -6288,6 +6863,24 @@
                     "type": "string",
                     "const": "approval-decision"
                   },
+                  "actor": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
                   "approvalRequestId": {
                     "type": "string",
                     "minLength": 1
@@ -6306,9 +6899,11 @@
                   "threadId",
                   "turnId",
                   "status",
+                  "causationId",
                   "createdAt",
                   "completedAt",
                   "type",
+                  "actor",
                   "approvalRequestId",
                   "decision"
                 ],
@@ -6382,6 +6977,10 @@
                   "type": {
                     "type": "string",
                     "const": "user-input-request"
+                  },
+                  "responsibleUserId": {
+                    "type": "string",
+                    "minLength": 1
                   },
                   "userInputRequestId": {
                     "type": "string",
@@ -6465,6 +7064,7 @@
                   "createdAt",
                   "completedAt",
                   "type",
+                  "responsibleUserId",
                   "userInputRequestId",
                   "prompt",
                   "questions"
@@ -6511,15 +7111,8 @@
                     ]
                   },
                   "causationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "type": "string",
+                    "minLength": 1
                   },
                   "createdAt": {
                     "type": "string",
@@ -6540,6 +7133,24 @@
                     "type": "string",
                     "const": "user-input-response"
                   },
+                  "actor": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
                   "userInputRequestId": {
                     "type": "string",
                     "minLength": 1
@@ -6547,15 +7158,17 @@
                   "answers": {
                     "type": "object",
                     "propertyNames": {
-                      "type": "string"
+                      "type": "string",
+                      "minLength": 1
                     },
                     "additionalProperties": {
-                      "minItems": 1,
                       "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      }
+                      "prefixItems": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      ]
                     }
                   }
                 },
@@ -6565,9 +7178,11 @@
                   "threadId",
                   "turnId",
                   "status",
+                  "causationId",
                   "createdAt",
                   "completedAt",
                   "type",
+                  "actor",
                   "userInputRequestId",
                   "answers"
                 ],
@@ -7433,6 +8048,7 @@
         "id",
         "workspaceId",
         "threadId",
+        "triggerActor",
         "items",
         "error",
         "configVersion",
@@ -7458,6 +8074,63 @@
         "threadId": {
           "type": "string",
           "minLength": 1
+        },
+        "triggerActor": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "user"
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "agent",
+                    "automation",
+                    "integration",
+                    "system"
+                  ]
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "responsibleUserId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "id",
+                "responsibleUserId"
+              ],
+              "additionalProperties": false
+            }
+          ]
         },
         "items": {
           "type": "array",
@@ -7532,6 +8205,63 @@
                     "type": "string",
                     "const": "user-message"
                   },
+                  "actor": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "user"
+                          },
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "id"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "agent",
+                              "automation",
+                              "integration",
+                              "system"
+                            ]
+                          },
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "responsibleUserId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "id",
+                          "responsibleUserId"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
                   "text": {
                     "type": "string",
                     "minLength": 1
@@ -7546,6 +8276,7 @@
                   "createdAt",
                   "completedAt",
                   "type",
+                  "actor",
                   "text"
                 ],
                 "additionalProperties": false
@@ -7810,6 +8541,10 @@
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
                   },
+                  "lastMutationRequestId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
                   "title": {
                     "type": "string",
                     "minLength": 1
@@ -7836,6 +8571,7 @@
                   "type",
                   "artifactId",
                   "artifactVersion",
+                  "lastMutationRequestId",
                   "title",
                   "summary"
                 ],
@@ -8108,15 +8844,8 @@
                     ]
                   },
                   "causationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "type": "string",
+                    "minLength": 1
                   },
                   "createdAt": {
                     "type": "string",
@@ -8137,6 +8866,24 @@
                     "type": "string",
                     "const": "approval-decision"
                   },
+                  "actor": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
                   "approvalRequestId": {
                     "type": "string",
                     "minLength": 1
@@ -8155,9 +8902,11 @@
                   "threadId",
                   "turnId",
                   "status",
+                  "causationId",
                   "createdAt",
                   "completedAt",
                   "type",
+                  "actor",
                   "approvalRequestId",
                   "decision"
                 ],
@@ -8231,6 +8980,10 @@
                   "type": {
                     "type": "string",
                     "const": "user-input-request"
+                  },
+                  "responsibleUserId": {
+                    "type": "string",
+                    "minLength": 1
                   },
                   "userInputRequestId": {
                     "type": "string",
@@ -8314,6 +9067,7 @@
                   "createdAt",
                   "completedAt",
                   "type",
+                  "responsibleUserId",
                   "userInputRequestId",
                   "prompt",
                   "questions"
@@ -8360,15 +9114,8 @@
                     ]
                   },
                   "causationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "type": "string",
+                    "minLength": 1
                   },
                   "createdAt": {
                     "type": "string",
@@ -8389,6 +9136,24 @@
                     "type": "string",
                     "const": "user-input-response"
                   },
+                  "actor": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
                   "userInputRequestId": {
                     "type": "string",
                     "minLength": 1
@@ -8396,15 +9161,17 @@
                   "answers": {
                     "type": "object",
                     "propertyNames": {
-                      "type": "string"
+                      "type": "string",
+                      "minLength": 1
                     },
                     "additionalProperties": {
-                      "minItems": 1,
                       "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      }
+                      "prefixItems": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      ]
                     }
                   }
                 },
@@ -8414,9 +9181,11 @@
                   "threadId",
                   "turnId",
                   "status",
+                  "causationId",
                   "createdAt",
                   "completedAt",
                   "type",
+                  "actor",
                   "userInputRequestId",
                   "answers"
                 ],
@@ -9282,6 +10051,7 @@
         "id",
         "workspaceId",
         "threadId",
+        "triggerActor",
         "items",
         "error",
         "configVersion",
@@ -9307,6 +10077,63 @@
         "threadId": {
           "type": "string",
           "minLength": 1
+        },
+        "triggerActor": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "user"
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "agent",
+                    "automation",
+                    "integration",
+                    "system"
+                  ]
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "responsibleUserId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "id",
+                "responsibleUserId"
+              ],
+              "additionalProperties": false
+            }
+          ]
         },
         "items": {
           "type": "array",
@@ -9381,6 +10208,63 @@
                     "type": "string",
                     "const": "user-message"
                   },
+                  "actor": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "user"
+                          },
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "id"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "agent",
+                              "automation",
+                              "integration",
+                              "system"
+                            ]
+                          },
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "responsibleUserId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "id",
+                          "responsibleUserId"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
                   "text": {
                     "type": "string",
                     "minLength": 1
@@ -9395,6 +10279,7 @@
                   "createdAt",
                   "completedAt",
                   "type",
+                  "actor",
                   "text"
                 ],
                 "additionalProperties": false
@@ -9659,6 +10544,10 @@
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
                   },
+                  "lastMutationRequestId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
                   "title": {
                     "type": "string",
                     "minLength": 1
@@ -9685,6 +10574,7 @@
                   "type",
                   "artifactId",
                   "artifactVersion",
+                  "lastMutationRequestId",
                   "title",
                   "summary"
                 ],
@@ -9957,15 +10847,8 @@
                     ]
                   },
                   "causationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "type": "string",
+                    "minLength": 1
                   },
                   "createdAt": {
                     "type": "string",
@@ -9986,6 +10869,24 @@
                     "type": "string",
                     "const": "approval-decision"
                   },
+                  "actor": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
                   "approvalRequestId": {
                     "type": "string",
                     "minLength": 1
@@ -10004,9 +10905,11 @@
                   "threadId",
                   "turnId",
                   "status",
+                  "causationId",
                   "createdAt",
                   "completedAt",
                   "type",
+                  "actor",
                   "approvalRequestId",
                   "decision"
                 ],
@@ -10080,6 +10983,10 @@
                   "type": {
                     "type": "string",
                     "const": "user-input-request"
+                  },
+                  "responsibleUserId": {
+                    "type": "string",
+                    "minLength": 1
                   },
                   "userInputRequestId": {
                     "type": "string",
@@ -10163,6 +11070,7 @@
                   "createdAt",
                   "completedAt",
                   "type",
+                  "responsibleUserId",
                   "userInputRequestId",
                   "prompt",
                   "questions"
@@ -10209,15 +11117,8 @@
                     ]
                   },
                   "causationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "type": "string",
+                    "minLength": 1
                   },
                   "createdAt": {
                     "type": "string",
@@ -10238,6 +11139,24 @@
                     "type": "string",
                     "const": "user-input-response"
                   },
+                  "actor": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
                   "userInputRequestId": {
                     "type": "string",
                     "minLength": 1
@@ -10245,15 +11164,17 @@
                   "answers": {
                     "type": "object",
                     "propertyNames": {
-                      "type": "string"
+                      "type": "string",
+                      "minLength": 1
                     },
                     "additionalProperties": {
-                      "minItems": 1,
                       "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      }
+                      "prefixItems": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      ]
                     }
                   }
                 },
@@ -10263,9 +11184,11 @@
                   "threadId",
                   "turnId",
                   "status",
+                  "causationId",
                   "createdAt",
                   "completedAt",
                   "type",
+                  "actor",
                   "userInputRequestId",
                   "answers"
                 ],
@@ -11131,6 +12054,7 @@
         "id",
         "workspaceId",
         "threadId",
+        "triggerActor",
         "items",
         "error",
         "configVersion",
@@ -11156,6 +12080,63 @@
         "threadId": {
           "type": "string",
           "minLength": 1
+        },
+        "triggerActor": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "user"
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "agent",
+                    "automation",
+                    "integration",
+                    "system"
+                  ]
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "responsibleUserId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "id",
+                "responsibleUserId"
+              ],
+              "additionalProperties": false
+            }
+          ]
         },
         "items": {
           "type": "array",
@@ -11230,6 +12211,63 @@
                     "type": "string",
                     "const": "user-message"
                   },
+                  "actor": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "user"
+                          },
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "id"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "agent",
+                              "automation",
+                              "integration",
+                              "system"
+                            ]
+                          },
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "responsibleUserId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "id",
+                          "responsibleUserId"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
                   "text": {
                     "type": "string",
                     "minLength": 1
@@ -11244,6 +12282,7 @@
                   "createdAt",
                   "completedAt",
                   "type",
+                  "actor",
                   "text"
                 ],
                 "additionalProperties": false
@@ -11508,6 +12547,10 @@
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
                   },
+                  "lastMutationRequestId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
                   "title": {
                     "type": "string",
                     "minLength": 1
@@ -11534,6 +12577,7 @@
                   "type",
                   "artifactId",
                   "artifactVersion",
+                  "lastMutationRequestId",
                   "title",
                   "summary"
                 ],
@@ -11806,15 +12850,8 @@
                     ]
                   },
                   "causationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "type": "string",
+                    "minLength": 1
                   },
                   "createdAt": {
                     "type": "string",
@@ -11835,6 +12872,24 @@
                     "type": "string",
                     "const": "approval-decision"
                   },
+                  "actor": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
                   "approvalRequestId": {
                     "type": "string",
                     "minLength": 1
@@ -11853,9 +12908,11 @@
                   "threadId",
                   "turnId",
                   "status",
+                  "causationId",
                   "createdAt",
                   "completedAt",
                   "type",
+                  "actor",
                   "approvalRequestId",
                   "decision"
                 ],
@@ -11929,6 +12986,10 @@
                   "type": {
                     "type": "string",
                     "const": "user-input-request"
+                  },
+                  "responsibleUserId": {
+                    "type": "string",
+                    "minLength": 1
                   },
                   "userInputRequestId": {
                     "type": "string",
@@ -12012,6 +13073,7 @@
                   "createdAt",
                   "completedAt",
                   "type",
+                  "responsibleUserId",
                   "userInputRequestId",
                   "prompt",
                   "questions"
@@ -12058,15 +13120,8 @@
                     ]
                   },
                   "causationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "type": "string",
+                    "minLength": 1
                   },
                   "createdAt": {
                     "type": "string",
@@ -12087,6 +13142,24 @@
                     "type": "string",
                     "const": "user-input-response"
                   },
+                  "actor": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
                   "userInputRequestId": {
                     "type": "string",
                     "minLength": 1
@@ -12094,15 +13167,17 @@
                   "answers": {
                     "type": "object",
                     "propertyNames": {
-                      "type": "string"
+                      "type": "string",
+                      "minLength": 1
                     },
                     "additionalProperties": {
-                      "minItems": 1,
                       "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      }
+                      "prefixItems": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      ]
                     }
                   }
                 },
@@ -12112,9 +13187,11 @@
                   "threadId",
                   "turnId",
                   "status",
+                  "causationId",
                   "createdAt",
                   "completedAt",
                   "type",
+                  "actor",
                   "userInputRequestId",
                   "answers"
                 ],
@@ -12980,6 +14057,7 @@
         "id",
         "workspaceId",
         "threadId",
+        "triggerActor",
         "items",
         "error",
         "configVersion",

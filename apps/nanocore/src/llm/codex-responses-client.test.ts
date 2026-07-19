@@ -91,10 +91,9 @@ function codexProvider(
     backend: 'codex-oauth',
     baseUrl: 'https://chatgpt.example.test/backend-api',
     displayName: 'OpenAI Codex',
-    extraBody: {},
-    extraHeaders: {},
     gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
     id: 'openai_codex',
+    models: ['gpt-test', 'openai-codex/gpt-5.1-codex'],
     requiresApiKey: false,
     ...overrides,
   };

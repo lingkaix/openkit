@@ -62,6 +62,8 @@ The implementation is covered across NanoCore route tests, account-slot storage 
 
 All OAuth actions are account-scoped. Clients must pass the target `accountSlotId`.
 
+These deployment-owned routes require deployment-administrator authority. Local mode uses the implicit local actor; server mode requires a `server-admin` bearer token. Better Auth sessions and workspace-scoped tokens do not grant deployment-administrator authority and receive `403 Forbidden`.
+
 `GET /api/app/oauth/openai-codex/accounts/:accountSlotId/status` returns a sanitized status payload:
 
 ```json
@@ -195,6 +197,8 @@ The Settings Diagnostics panel shows a `Codex ChatGPT accounts` section with:
 ## Security
 
 The public payload must only contain sanitized account and flow metadata. It must never contain access tokens, refresh tokens, authorization headers, or raw secret-shaped values.
+
+OAuth failures use only two stable public messages: `unavailable` returns `Codex app-server is unavailable.`, while `error` returns `Codex ChatGPT account operation failed.`. A failed login keeps its known login mode so the UI can identify the affected flow, but raw app-server exceptions and failed-login notification details are discarded at the OAuth boundary. Status responses, account lists, diagnostics, and `account.json.lastError` must contain only the fixed message for their failure status; persisted raw `lastError` values are sanitized before public projection and on the next write. This boundary does not create a restricted raw-error sink.
 
 ## Verification
 

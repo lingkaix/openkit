@@ -222,16 +222,6 @@ function formatProviderGatewayCapabilities(
 }
 
 /**
- * Formats a cache hit ratio as a compact percentage.
- *
- * @param value Ratio from zero to one.
- * @returns Percentage label.
- */
-function formatCacheHitRate(value: number): string {
-  return `${Math.round(value * 100)}%`;
-}
-
-/**
  * Renders protocol diagnostics for meta, event envelopes, and turn lifecycle state.
  */
 export function DiagnosticsPanel(props: DiagnosticsPanelProps) {
@@ -406,7 +396,7 @@ export function DiagnosticsPanel(props: DiagnosticsPanelProps) {
             <For each={props.appDiagnostics?.gateway.usage?.summaries ?? []}>
               {(summary) => (
                 <span class="badge badge-outline badge-sm">
-                  {`${summary.providerId} ${summary.model} ${summary.cachedInputTokens} cached input tokens - ${formatCacheHitRate(summary.cacheHitRate)} cache hit rate`}
+                  {`${summary.providerId} ${summary.model}${summary.cacheReadTokens === undefined ? '' : ` - ${summary.cacheReadTokens} cache read tokens`}${summary.cacheWriteTokens === undefined ? '' : ` - ${summary.cacheWriteTokens} cache write tokens`}`}
                 </span>
               )}
             </For>

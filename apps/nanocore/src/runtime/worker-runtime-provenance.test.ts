@@ -27,6 +27,7 @@ import { listWorkspaceCapabilityCalls, startCapabilityCall } from '../capability
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
@@ -760,6 +761,7 @@ function startGatewayCall(
 ): void {
   startCapabilityCall({
     agentSessionId: fixture.lineage.agentSessionId,
+    authorityActor: fixture.environmentPackage.scope.triggerActor,
     callId: input.callId,
     capabilityId: 'llm.responses',
     family: 'llm',
@@ -779,25 +781,24 @@ function startGatewayCall(
 /** Creates one migrated workspace and a provenance-required AEP. */
 function createImportFixture(prefix: string): ImportFixture {
   const dataRoot = mkdtempSync(join(tmpdir(), prefix));
-  const workspaceDb = openWorkspaceDb(dataRoot, 'user_local', 'ws_demo');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
   const store = createDemoStore();
-  const turn = store.createTurn('ws_demo', 'th_demo', 'Import runtime provenance');
+  const turn = store.createTurn('ws_demo', 'th_demo', 'Import runtime provenance', {
+    kind: 'user',
+    id: 'user_local',
+  });
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
-      agent: store.getAgent('ws_demo', 'agent_codex_host'),
+      agentSetup: createTestAgentSetup({
+        requiredCapabilities: ['trusted-worker-inference-relay', 'worker.runtime-provenance.v1'],
+      }),
       agentSessionId: 'as_runtime_provenance_1',
+      triggerActor: turn.triggerActor,
       backend: {
         workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
         kind: 'openshell',
-        sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
-      },
-      backendRequirements: {
-        allowedKinds: ['openshell'],
-        preferred: 'openshell',
-        requiredCapabilities: ['trusted-worker-inference-relay', 'worker.runtime-provenance.v1'],
       },
       createdAt: '2026-07-13T00:00:00.000Z',
-      providerSelection: { model: 'openai/gpt-5.2', providerId: 'agent-openrouter' },
       requestId: 'req_runtime_provenance_import_1',
       turn,
       turnInput: 'Import runtime provenance',
@@ -819,7 +820,7 @@ function createImportFixture(prefix: string): ImportFixture {
       workspaceId: environmentPackage.scope.workspaceId,
     },
     workspaceDb,
-    workspaceRoot: join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo'),
+    workspaceRoot: join(dataRoot, 'workspaces', 'ws_demo'),
   };
 }
 

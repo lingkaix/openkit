@@ -1,3 +1,4 @@
+import { ActorRefSchema } from '@openkit/protocol';
 import { WORKER_RUNTIME_PROVENANCE_FEATURE } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import { ProviderProfileSchema } from './provider.js';
@@ -25,7 +26,6 @@ export const OPENKIT_WORKER_CONTROL_POST_PATHS = [
   '/api/worker-control/final-status',
   '/api/worker-control/supply-refresh-ack',
   '/api/worker-control/capability-summary',
-  '/api/worker-control/knowledge-proposal-summary',
 ] as const;
 
 export { WORKER_RUNTIME_PROVENANCE_FEATURE } from '@openkit/worker-protocol';
@@ -35,7 +35,7 @@ const TRUSTED_WORKER_CONTROL_NETWORK_RULE_SCHEMA = z
     action: z.literal('allow'),
     binaries: z.tuple([
       z.literal('/usr/local/bin/node'),
-      z.literal('/usr/local/bin/openkit-codex-shim'),
+      z.literal('/usr/local/bin/openkit-worker-shim'),
     ]),
     host: z.string().min(1),
     id: z.literal('openkit-worker-control'),
@@ -60,10 +60,7 @@ const TRUSTED_WORKER_CONTROL_NETWORK_RULE_SCHEMA = z
 const TRUSTED_WORKER_INFERENCE_NETWORK_RULE_SCHEMA = z
   .object({
     action: z.literal('allow'),
-    binaries: z.tuple([
-      z.literal('/usr/local/bin/codex'),
-      z.literal('/usr/local/lib/codex/bin/codex'),
-    ]),
+    binaries: z.array(z.string().min(1).startsWith('/')).min(1),
     host: z.string().min(1),
     id: z.literal('openkit-worker-inference'),
     port: z.number().int().min(1).max(65535),
@@ -169,21 +166,10 @@ export const AgentEnvironmentScopeSchema = z
     turnId: z.string().min(1),
     itemId: z.string().min(1).nullable().optional(),
     agentSessionId: z.string().min(1),
-    userId: z.string().min(1).nullable().optional(),
-    organizationId: z.string().min(1).nullable().optional(),
-    automationId: z.string().min(1).nullable().optional(),
+    triggerActor: ActorRefSchema,
     requestId: z.string().min(1).nullable().optional(),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    if (!value.userId && !value.automationId) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Agent environment package scope requires userId or automationId.',
-        path: ['userId'],
-      });
-    }
-  });
+  .strict();
 
 /**
  * Agent instruction file made visible to the worker.
@@ -219,6 +205,16 @@ export const AgentEnvironmentAgentSchema = z
   .strict();
 
 /**
+ * Worker runtime binary declared by the selected manifest.
+ */
+export const AgentEnvironmentBinarySchema = z
+  .object({
+    id: z.string().min(1),
+    path: z.string().min(1).startsWith('/'),
+  })
+  .strict();
+
+/**
  * Worker runtime image declaration.
  */
 export const AgentEnvironmentRuntimeImageSchema = z
@@ -226,7 +222,7 @@ export const AgentEnvironmentRuntimeImageSchema = z
     kind: z.enum(['container-image', 'vm-image', 'remote-template', 'managed-sandbox-template']),
     ref: z.string().min(1),
     digest: z.string().min(1).nullable().optional(),
-    pullPolicy: z.enum(['always', 'if-not-present', 'never']).optional(),
+    pullPolicy: z.enum(['always', 'if-not-present', 'never']),
   })
   .strict();
 
@@ -235,7 +231,11 @@ export const AgentEnvironmentRuntimeImageSchema = z
  */
 export const AgentEnvironmentRuntimeCommandSchema = z
   .object({
-    argv: z.array(z.string().min(1)).min(1),
+    argv: z.tuple([
+      z.literal('openkit-worker-shim'),
+      z.literal('--package'),
+      z.literal('/openkit/config/package.json'),
+    ]),
     workingDirectory: z.string().min(1),
     stdin: z.enum(['pipe', 'inherit', 'ignore']).optional(),
     stdout: z.enum(['pipe', 'inherit', 'ignore']).optional(),
@@ -271,6 +271,7 @@ export const AgentEnvironmentRuntimeSessionSchema = z
 export const AgentEnvironmentRuntimeSchema = z
   .object({
     image: AgentEnvironmentRuntimeImageSchema,
+    binaries: z.array(AgentEnvironmentBinarySchema).min(1),
     command: AgentEnvironmentRuntimeCommandSchema,
     process: AgentEnvironmentRuntimeProcessSchema.optional(),
     session: AgentEnvironmentRuntimeSessionSchema.optional(),
@@ -361,18 +362,6 @@ export const AgentEnvironmentWorkspaceSchema = z
   });
 
 /**
- * Worker binary supplied by the package.
- */
-export const AgentEnvironmentBinarySchema = z
-  .object({
-    id: z.string().min(1),
-    path: z.string().min(1),
-    required: z.boolean().default(false),
-    allowedProviderIds: z.array(z.string().min(1)).default([]),
-  })
-  .strict();
-
-/**
  * Digest attached to catalog-resolved worker supply.
  */
 export const AgentEnvironmentSupplyIntegritySchema = z
@@ -433,9 +422,6 @@ export const AgentEnvironmentMcpServerSchema = z
     id: z.string().min(1),
     version: z.string().min(1).optional(),
     sourceRef: z.string().min(1).optional(),
-    transport: z.enum(['stdio', 'http', 'websocket']),
-    command: z.array(z.string().min(1)).optional(),
-    url: z.string().url().optional(),
     allowedTools: z.array(z.string().min(1)).default([]),
     approvalRequiredTools: z.array(z.string().min(1)).default([]),
     toolSchemas: z.array(AgentEnvironmentMcpToolSchema).default([]),
@@ -443,11 +429,6 @@ export const AgentEnvironmentMcpServerSchema = z
     allowedRuntimeAdapters: z.array(z.string().min(1)).default([]),
     allowedWorkspaceScopes: z.array(z.string().min(1)).default([]),
     integrity: AgentEnvironmentSupplyIntegritySchema.optional(),
-    materialization: AgentEnvironmentSupplyMaterializationSchema.optional(),
-    networkPolicyHints: z.array(z.string().min(1)).default([]),
-    providerInstanceIds: z.array(z.string().min(1)).default([]),
-    vaultGrantIds: z.array(z.string().min(1)).default([]),
-    secretRefIds: z.array(z.string().min(1)).default([]),
     reviewStatus: AgentEnvironmentSupplyReviewStatusSchema.optional(),
   })
   .strict();
@@ -469,14 +450,12 @@ export const AgentEnvironmentServiceSchema = z
  */
 export const AgentEnvironmentSupplySchema = z
   .object({
-    binaries: z.array(AgentEnvironmentBinarySchema).default([]),
     skills: z.array(AgentEnvironmentSkillSchema).default([]),
     mcpServers: z.array(AgentEnvironmentMcpServerSchema).default([]),
     services: z.array(AgentEnvironmentServiceSchema).default([]),
   })
   .strict()
   .superRefine((value, ctx) => {
-    addDuplicateIdIssues(value.binaries, ctx, ['binaries']);
     addDuplicateIdIssues(value.skills, ctx, ['skills']);
     addDuplicateIdIssues(value.mcpServers, ctx, ['mcpServers']);
     addDuplicateIdIssues(value.services, ctx, ['services']);
@@ -548,7 +527,7 @@ export const AgentEnvironmentControlChannelsSchema = z
  */
 export const AgentEnvironmentControlAdapterSchema = z
   .object({
-    kind: z.string().min(1),
+    kind: z.literal('openkit-worker-shim'),
     targetRuntime: z.string().min(1),
     targetTransport: z.string().min(1),
   })
@@ -741,7 +720,7 @@ export const WorkerSandboxNetworkGrantSchema = z
     protocol: z.enum(['rest', 'http', 'https']).default('rest'),
     access: z.enum(['read-only', 'read-write']).default('read-only'),
     purpose: z.string().min(1),
-    binaries: z.array(z.string().min(1).startsWith('/')).optional(),
+    binaries: z.array(z.string().min(1).startsWith('/')).min(1),
     scope: z.enum(['session', 'reusable']).default('session'),
   })
   .strict()
@@ -879,23 +858,31 @@ export const AgentEnvironmentLlmRouteSchema = z
  */
 export const AgentEnvironmentLlmSchema = z
   .object({
-    mode: z.enum(['gateway', 'backend-local', 'direct', 'disabled']),
-    routes: z.array(AgentEnvironmentLlmRouteSchema).default([]),
+    mode: z.enum(['gateway', 'backend-local', 'direct-external']),
+    routes: z.array(AgentEnvironmentLlmRouteSchema).length(1),
   })
   .strict()
   .superRefine((value, ctx) => {
-    for (const [index, route] of value.routes.entries()) {
-      if (
-        value.mode === 'gateway' &&
-        route.endpoint.workerBaseUrl?.startsWith('https://inference.local') &&
-        route.endpoint.upstream?.kind !== 'nanocore-gateway'
-      ) {
-        ctx.addIssue({
-          code: 'custom',
-          message: 'Gateway-mode inference.local routes must forward to NanoCore gateway.',
-          path: ['routes', index, 'endpoint', 'upstream'],
-        });
-      }
+    const route = value.routes[0];
+    const expected =
+      value.mode === 'gateway'
+        ? (['placeholder', 'openai-compatible', 'nanocore-gateway', true] as const)
+        : value.mode === 'direct-external'
+          ? (['environment', 'provider-compatible', 'direct-provider', false] as const)
+          : (['none', 'backend-local', 'backend-local', false] as const);
+
+    if (
+      route &&
+      (route.credentialVisibility !== expected[0] ||
+        route.endpoint.kind !== expected[1] ||
+        route.endpoint.upstream?.kind !== expected[2] ||
+        Boolean(route.endpoint.workerBaseUrl) !== expected[3])
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `LLM ${value.mode} mode requires its matching credential, endpoint, upstream, and worker base URL authority.`,
+        path: ['routes', 0],
+      });
     }
   });
 
@@ -944,7 +931,7 @@ export const AgentEnvironmentBackendRequirementsSchema = z
  */
 export const AgentEnvironmentPackageSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     packageId: z.string().min(1),
     snapshotId: z.string().min(1),
     createdAt: z.string().datetime(),
@@ -972,6 +959,26 @@ export const AgentEnvironmentPackageSchema = z
   .strict()
   .superRefine((value, ctx) => {
     addRawSecretIssues(value, ctx, []);
+
+    const runtimeBinaryPaths = new Set(value.runtime.binaries.map((binary) => binary.path));
+    for (const [ruleIndex, rule] of (value.policy.network?.rules ?? []).entries()) {
+      if (!rule || typeof rule !== 'object' || Array.isArray(rule)) {
+        continue;
+      }
+      const binaries = (rule as { binaries?: unknown }).binaries;
+      if (!Array.isArray(binaries)) {
+        continue;
+      }
+      for (const [binaryIndex, binary] of binaries.entries()) {
+        if (typeof binary !== 'string' || !runtimeBinaryPaths.has(binary)) {
+          ctx.addIssue({
+            code: 'custom',
+            message: `Policy network binary is not declared by the runtime: ${String(binary)}`,
+            path: ['policy', 'network', 'rules', ruleIndex, 'binaries', binaryIndex],
+          });
+        }
+      }
+    }
 
     const runtimeProvenanceRequired = value.backend.requiredCapabilities.includes(
       WORKER_RUNTIME_PROVENANCE_FEATURE
@@ -1019,15 +1026,6 @@ export const AgentEnvironmentPackageSchema = z
         path: ['llm', 'mode'],
       });
     }
-    if (value.llm.routes.length !== 1) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Trusted worker inference requires exactly one authoritative route.',
-        path: ['llm', 'routes'],
-      });
-      return;
-    }
-
     const route = value.llm.routes[0];
 
     if (route?.endpoint.kind !== 'openai-compatible') {
@@ -1125,21 +1123,6 @@ export const AgentEnvironmentPackageSchema = z
         code: 'custom',
         message: 'Trusted worker inference does not allow direct vault material.',
         path: ['vault'],
-      });
-    }
-
-    const providerBackedMcpIndex = value.supply.mcpServers.findIndex(
-      (server) =>
-        server.providerInstanceIds.length > 0 ||
-        server.vaultGrantIds.length > 0 ||
-        server.secretRefIds.length > 0
-    );
-
-    if (providerBackedMcpIndex >= 0) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Trusted worker inference does not allow provider-backed MCP supply.',
-        path: ['supply', 'mcpServers', providerBackedMcpIndex],
       });
     }
 

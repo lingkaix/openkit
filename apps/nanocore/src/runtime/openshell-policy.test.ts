@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { renderOpenShellWorkerPolicy } from './openshell-policy.js';
 
+const CONTROL_BINARIES = ['/usr/local/bin/node', '/usr/local/bin/openkit-worker-shim'];
+
 describe('renderOpenShellWorkerPolicy', () => {
   it('renders the real OpenShell policy schema for the direct NanoCore control endpoint', () => {
     const policy = renderOpenShellWorkerPolicy({
+      binaries: CONTROL_BINARIES,
       controlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
     });
 
@@ -19,14 +22,14 @@ describe('renderOpenShellWorkerPolicy', () => {
     expect(policy).not.toContain('relay');
     expect(policy).toContain('binaries:');
     expect(policy).toContain('path: /usr/local/bin/node');
-    expect(policy).toContain('path: /usr/local/bin/openkit-codex-shim');
+    expect(policy).toContain('path: /usr/local/bin/openkit-worker-shim');
     expect(policy).not.toContain('openkit-worker-sidecar');
     expect(policy).toContain('host: host.openshell.internal');
     expect(policy).toContain('port: 3000');
     expect(policy).toContain('protocol: rest');
     expect(policy).toContain('enforcement: enforce');
     expect(policy).not.toContain('access: read-write');
-    expect(policy.match(/method: POST/g)).toHaveLength(9);
+    expect(policy.match(/method: POST/g)).toHaveLength(8);
     for (const path of [
       '/api/worker-control/heartbeat',
       '/api/worker-control/artifacts',
@@ -36,10 +39,10 @@ describe('renderOpenShellWorkerPolicy', () => {
       '/api/worker-control/final-status',
       '/api/worker-control/supply-refresh-ack',
       '/api/worker-control/capability-summary',
-      '/api/worker-control/knowledge-proposal-summary',
     ]) {
       expect(policy).toContain(`path: ${path}`);
     }
+    expect(policy).not.toContain('path: /api/worker-control/knowledge-proposal-summary');
     expect(policy).not.toContain('/api/worker-inference/');
   });
 
@@ -65,6 +68,7 @@ describe('renderOpenShellWorkerPolicy', () => {
           protocol: 'rest',
         },
       ],
+      binaries: CONTROL_BINARIES,
       controlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
     });
 
@@ -94,6 +98,7 @@ describe('renderOpenShellWorkerPolicy', () => {
           ],
         },
       ],
+      binaries: CONTROL_BINARIES,
       controlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
     });
     const inferencePolicy = policy.split('  openkit_worker_inference:')[1] ?? '';
@@ -111,6 +116,7 @@ describe('renderOpenShellWorkerPolicy', () => {
         additionalNetworkEndpoints: [
           {
             access: 'read-write',
+            binaries: ['/usr/local/bin/codex'],
             host: 'host.openshell.internal',
             name: 'openkit_worker_inference',
             port: 3000,
@@ -118,6 +124,7 @@ describe('renderOpenShellWorkerPolicy', () => {
             rules: [{ method: 'POST', path: '/api/worker-inference/v1/responses' }],
           },
         ],
+        binaries: CONTROL_BINARIES,
         controlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
       })
     ).toThrow('cannot combine access with exact REST rules');
@@ -135,6 +142,7 @@ describe('renderOpenShellWorkerPolicy', () => {
           path: '/sandbox/.cache/npm',
         },
       ],
+      binaries: CONTROL_BINARIES,
       controlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
     });
 
@@ -150,6 +158,7 @@ describe('renderOpenShellWorkerPolicy', () => {
           path: '/workspace/vendor-sdk',
         },
       ],
+      binaries: CONTROL_BINARIES,
       controlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
     });
     const readWriteSection = policy.split('  read_write:')[1] ?? '';
@@ -159,34 +168,43 @@ describe('renderOpenShellWorkerPolicy', () => {
     expect(readWriteSection).not.toContain('    - /workspace/vendor-sdk');
   });
 
-  it('allows both the Codex wrapper and bundled Codex binary by default for extra endpoints', () => {
+  it('uses only AEP-authorized binaries for extra endpoints', () => {
     const policy = renderOpenShellWorkerPolicy({
       additionalNetworkEndpoints: [
         {
+          binaries: ['/usr/local/bin/opencode'],
           host: 'chatgpt.com',
           name: 'chatgpt_account',
           port: 443,
         },
       ],
+      binaries: CONTROL_BINARIES,
       controlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
     });
 
-    expect(policy).toContain('path: /usr/local/bin/codex');
-    expect(policy).toContain('path: /usr/local/lib/codex/bin/codex');
+    expect(policy).toContain('path: /usr/local/bin/opencode');
+    expect(policy).not.toContain('path: /usr/local/bin/codex');
   });
 
   it('uses default ports for HTTP and HTTPS control endpoints', () => {
-    expect(renderOpenShellWorkerPolicy({ controlBaseUrl: 'https://nanocore.local/api' })).toContain(
-      'port: 443'
-    );
-    expect(renderOpenShellWorkerPolicy({ controlBaseUrl: 'http://nanocore.local/api' })).toContain(
-      'port: 80'
-    );
+    expect(
+      renderOpenShellWorkerPolicy({
+        binaries: CONTROL_BINARIES,
+        controlBaseUrl: 'https://nanocore.local/api',
+      })
+    ).toContain('port: 443');
+    expect(
+      renderOpenShellWorkerPolicy({
+        binaries: CONTROL_BINARIES,
+        controlBaseUrl: 'http://nanocore.local/api',
+      })
+    ).toContain('port: 80');
   });
 
   it('rejects control endpoints that OpenShell cannot authorize as HTTP endpoints', () => {
     expect(() =>
       renderOpenShellWorkerPolicy({
+        binaries: CONTROL_BINARIES,
         controlBaseUrl: 'unix:///tmp/openkit-control.sock',
       })
     ).toThrow('OpenShell worker control endpoint must be an HTTP or HTTPS URL.');
@@ -197,11 +215,13 @@ describe('renderOpenShellWorkerPolicy', () => {
       renderOpenShellWorkerPolicy({
         additionalNetworkEndpoints: [
           {
+            binaries: ['/usr/bin/git'],
             host: 'github.com',
             name: 'github/source',
             port: 443,
           },
         ],
+        binaries: CONTROL_BINARIES,
         controlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
       })
     ).toThrow('OpenShell additional network endpoint name must be an identifier.');
@@ -212,12 +232,14 @@ describe('renderOpenShellWorkerPolicy', () => {
       renderOpenShellWorkerPolicy({
         additionalNetworkEndpoints: [
           {
+            binaries: ['/usr/bin/git'],
             host: 'github.com',
             name: 'github_source',
             port: 443,
             protocol: 'grpc',
           },
         ],
+        binaries: CONTROL_BINARIES,
         controlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
       })
     ).toThrow('Unsupported OpenShell policy protocol');

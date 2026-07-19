@@ -1,5 +1,3 @@
-import type { FsStore } from '../lib/store.js';
-import { LOCAL_USER_ID } from '../storage/fs-layout.js';
 import {
   type RunSchedulerDispatchLoopInput,
   runSchedulerDispatchLoop,
@@ -7,11 +5,10 @@ import {
 } from './scheduler-dispatch-loop.js';
 
 /** Input for one background scheduler dispatch retry. */
-export interface RunSchedulerDispatchRetryOnceInput
-  extends Omit<RunSchedulerDispatchLoopInput, 'store' | 'storeForEntry'> {
-  /** Opens the product store for one admission owner. */
-  readonly storeForUserId: (userId: string) => FsStore;
-}
+export type RunSchedulerDispatchRetryOnceInput = Omit<
+  RunSchedulerDispatchLoopInput,
+  'storeForEntry'
+>;
 
 /** Timer hooks used by the dispatch retry service. */
 export interface SchedulerDispatchRetryTimerHooks {
@@ -40,7 +37,7 @@ export interface SchedulerDispatchRetryService {
 }
 
 /**
- * Runs one background dispatch retry using the queued admission owner as the store selector.
+ * Runs one background dispatch retry through the shared Workspace store.
  *
  * @param input Dispatch retry dependencies.
  * @returns Dispatch loop result.
@@ -48,11 +45,7 @@ export interface SchedulerDispatchRetryService {
 export function runSchedulerDispatchRetryOnce(
   input: RunSchedulerDispatchRetryOnceInput
 ): Promise<SchedulerDispatchLoopResult> {
-  return runSchedulerDispatchLoop({
-    ...input,
-    store: input.storeForUserId(LOCAL_USER_ID),
-    storeForEntry: (entry) => input.storeForUserId(entry.userId),
-  });
+  return runSchedulerDispatchLoop(input);
 }
 
 /**

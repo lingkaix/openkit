@@ -39,10 +39,10 @@ export interface GatewayUsageSummary {
   readonly completionTokens: number;
   /** Total tokens observed for this bucket. */
   readonly totalTokens: number;
-  /** Total cached input tokens observed for this bucket. */
-  readonly cachedInputTokens: number;
-  /** Cached input token ratio for this bucket. */
-  readonly cacheHitRate: number;
+  /** Total cache-read tokens observed for this bucket when reported by the provider. */
+  readonly cacheReadTokens?: number;
+  /** Total cache-write tokens observed for this bucket when reported by the provider. */
+  readonly cacheWriteTokens?: number;
   /** ISO timestamp for the latest observation. */
   readonly lastObservedAt: string;
 }
@@ -88,15 +88,16 @@ export class GatewayUsageTracker {
     const parsed = parseUsage(input.usage);
     const rawInputTokens = readNumber(readRecord(input.usage).input);
     const trackedInputTokens =
-      rawInputTokens === undefined ? parsed.inputTokens : rawInputTokens + parsed.cachedInputTokens;
+      rawInputTokens === undefined
+        ? parsed.inputTokens
+        : rawInputTokens + (parsed.cacheReadTokens ?? 0);
     const trackedTotalTokens =
       rawInputTokens === undefined
         ? parsed.totalTokens
         : trackedInputTokens + parsed.completionTokens;
     const key = usageBucketKey(input);
     const existing = this.buckets.get(key);
-    const next = existing ?? {
-      cachedInputTokens: 0,
+    const next: MutableGatewayUsageSummary = existing ?? {
       completionTokens: 0,
       endpoint: input.endpoint,
       inputTokens: 0,
@@ -107,7 +108,12 @@ export class GatewayUsageTracker {
       totalTokens: 0,
     };
 
-    next.cachedInputTokens += parsed.cachedInputTokens;
+    if (parsed.cacheReadTokens !== undefined) {
+      next.cacheReadTokens = (next.cacheReadTokens ?? 0) + parsed.cacheReadTokens;
+    }
+    if (parsed.cacheWriteTokens !== undefined) {
+      next.cacheWriteTokens = (next.cacheWriteTokens ?? 0) + parsed.cacheWriteTokens;
+    }
     next.completionTokens += parsed.completionTokens;
     next.inputTokens += trackedInputTokens;
     next.totalTokens += trackedTotalTokens;
@@ -197,8 +203,12 @@ export class GatewayUsageTracker {
   public snapshot(): GatewayUsageSnapshot {
     return {
       summaries: [...this.buckets.values()].map((bucket) => ({
-        cachedInputTokens: bucket.cachedInputTokens,
-        cacheHitRate: bucket.inputTokens > 0 ? bucket.cachedInputTokens / bucket.inputTokens : 0,
+        ...(bucket.cacheReadTokens === undefined
+          ? {}
+          : { cacheReadTokens: bucket.cacheReadTokens }),
+        ...(bucket.cacheWriteTokens === undefined
+          ? {}
+          : { cacheWriteTokens: bucket.cacheWriteTokens }),
         completionTokens: bucket.completionTokens,
         endpoint: bucket.endpoint,
         inputTokens: bucket.inputTokens,
@@ -228,7 +238,8 @@ interface MutableGatewayUsageSummary {
   inputTokens: number;
   completionTokens: number;
   totalTokens: number;
-  cachedInputTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
   lastObservedAt: string;
 }
 
@@ -236,8 +247,8 @@ interface ParsedUsage {
   inputTokens: number;
   completionTokens: number;
   totalTokens: number;
-  cachedInputTokens: number;
-  cacheWriteTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
   costEstimateUsd: number;
 }
 
@@ -252,16 +263,17 @@ export function parseUsage(usage: unknown): ParsedUsage {
   const cost = readRecord(record.cost);
   const promptDetails = readRecord(record.prompt_tokens_details);
   const inputDetails = readRecord(record.input_tokens_details);
+  const cacheReadTokens =
+    readNumber(record.cacheRead) ??
+    readNumber(record.cache_read) ??
+    readNumber(promptDetails.cached_tokens) ??
+    readNumber(inputDetails.cached_tokens) ??
+    readNumber(record.cached_tokens);
+  const cacheWriteTokens = readNumber(record.cacheWrite) ?? readNumber(record.cache_write);
 
   return {
-    cachedInputTokens:
-      readNumber(record.cacheRead) ??
-      readNumber(record.cache_read) ??
-      readNumber(promptDetails.cached_tokens) ??
-      readNumber(inputDetails.cached_tokens) ??
-      readNumber(record.cached_tokens) ??
-      0,
-    cacheWriteTokens: readNumber(record.cacheWrite) ?? readNumber(record.cache_write) ?? 0,
+    ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+    ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
     completionTokens:
       readNumber(record.output) ??
       readNumber(record.completion_tokens) ??

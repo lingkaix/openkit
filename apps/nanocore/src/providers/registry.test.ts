@@ -43,12 +43,20 @@ describe('ProviderRegistry', () => {
         readiness: { status: 'ready' },
         secretRef: 'env:SECRET_VALUE',
       },
+      {
+        displayName: 'Codex OAuth',
+        extensions: { openkit: { codexOAuth: { accountSlotId: 'default' } } },
+        id: 'openai_codex',
+        kind: 'oauth',
+        models: ['openai-codex/gpt-5.6-sol'],
+      },
     ]);
 
     const summary = registry.summarize();
 
     expect(summary).toEqual([
       {
+        dispatchFamily: 'provider-api',
         baseUrl: 'https://example.com/v1',
         defaultModel: 'gpt-5.1',
         displayName: 'Redacted Provider',
@@ -57,6 +65,14 @@ describe('ProviderRegistry', () => {
         kind: 'direct',
         models: ['gpt-5.1'],
         readiness: { status: 'ready' },
+      },
+      {
+        dispatchFamily: 'codex-oauth',
+        displayName: 'Codex OAuth',
+        gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+        id: 'openai_codex',
+        kind: 'oauth',
+        models: ['openai-codex/gpt-5.6-sol'],
       },
     ]);
     expect(JSON.stringify(summary)).not.toContain('SECRET_VALUE');

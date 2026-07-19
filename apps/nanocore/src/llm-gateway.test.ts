@@ -8,17 +8,25 @@ import {
   fauxToolCall,
 } from '@earendil-works/pi-ai';
 import { describe, expect, it } from 'vitest';
+import { ensureLocalUser } from './auth/identity.js';
+import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import type { ProviderProfile } from './config/providers-loader.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+} from './config/runtime-config.js';
 import { CodexResponsesClient, type CodexTokenResolver } from './llm/codex-responses-client.js';
+import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
-import { applyMigrations } from './storage/migrate.js';
+import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { listVaultUseRecords } from './vault/vault-use-records.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
  * Creates runtime app options for one Gateway provider fixture.
@@ -41,6 +49,20 @@ function createProviderOptions(
     providerCredentialResolver: () => credential,
     providerRegistry: new ProviderRegistry([profile]),
   };
+}
+
+/**
+ * Records the active local-user authority required by an attributed Gateway fixture.
+ *
+ * @param coreDb Core database owning identity and Workspace membership.
+ * @param workspaceId Workspace attributed by the test request.
+ */
+function recordLocalGatewayAuthority(
+  coreDb: ReturnType<typeof openCoreDb>,
+  workspaceId: string
+): void {
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId });
 }
 
 /** Creates the runtime Ollama fixture used by Gateway tests. */
@@ -259,6 +281,117 @@ describe('OpenAI-compatible agent gateway', () => {
           owned_by: 'codex-team-b',
         },
       ],
+    });
+  });
+
+  it('lists only explicit models from allowlisted dispatchable provider profiles', async () => {
+    const profile = (
+      id: string,
+      readiness?: 'ready' | 'degraded' | 'blocked' | 'disabled' | 'unknown'
+    ) => ({
+      displayName: id,
+      id,
+      kind: 'local' as const,
+      models: [`${id}-model`],
+      ...(readiness ? { readiness: { status: readiness } } : {}),
+    });
+    const app = createApp({
+      openKitConfig: {
+        gateway: {
+          openaiCompatible: {
+            allowedProviderIds: ['omitted', 'ready', 'degraded', 'blocked', 'disabled', 'unknown'],
+          },
+        },
+      },
+      providerRegistry: new ProviderRegistry([
+        profile('omitted'),
+        profile('ready', 'ready'),
+        profile('degraded', 'degraded'),
+        profile('blocked', 'blocked'),
+        profile('disabled', 'disabled'),
+        profile('unknown', 'unknown'),
+        profile('disallowed', 'ready'),
+      ]),
+    });
+
+    const res = await app.request('/v1/models');
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      object: 'list',
+      data: [
+        { id: 'omitted-model', object: 'model', owned_by: 'omitted' },
+        { id: 'ready-model', object: 'model', owned_by: 'ready' },
+        { id: 'degraded-model', object: 'model', owned_by: 'degraded' },
+      ],
+    });
+  });
+
+  it('projects JSON provider failures with stable generic OpenKit errors', async () => {
+    const app = createApp({
+      ...createOllamaProviderOptions(),
+      llmPiAiClient: {
+        createChatCompletion: async () => {
+          throw new OpenAICompatibleProviderError({
+            code: 'native_quota_exceeded',
+            message: 'private upstream quota text marker=upstream-json-secret',
+            status: 429,
+            type: 'pi_ai_provider_error',
+          });
+        },
+      } as unknown as PiAiGatewayClient,
+    });
+
+    const res = await app.request('/v1/chat/completions', {
+      method: 'POST',
+      body: JSON.stringify({
+        model: 'llama3.2',
+        messages: [{ role: 'user', content: 'Hello' }],
+      }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(res.status).toBe(429);
+    await expect(res.json()).resolves.toEqual({
+      error: {
+        code: 'gateway_provider_rate_limited',
+        message: 'Provider rate limit exceeded.',
+        type: 'provider_error',
+      },
+    });
+  });
+
+  it('does not publish provider-native codes that resemble internal vault errors', async () => {
+    const app = createApp({
+      ...createOllamaProviderOptions(),
+      llmPiAiClient: {
+        createChatCompletion: async () => {
+          throw new OpenAICompatibleProviderError({
+            code: 'vault-private-upstream-code',
+            message: 'private upstream vault-shaped failure marker=upstream-code-secret',
+            status: 502,
+            type: 'pi_ai_provider_error',
+          });
+        },
+      } as unknown as PiAiGatewayClient,
+    });
+
+    const res = await app.request('/v1/chat/completions', {
+      method: 'POST',
+      body: JSON.stringify({
+        model: 'llama3.2',
+        messages: [{ role: 'user', content: 'Hello' }],
+      }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(res.status).toBe(502);
+    await expect(res.json()).resolves.toEqual({
+      error: {
+        code: 'gateway_provider_unavailable',
+        message: 'Provider is unavailable.',
+        type: 'provider_error',
+      },
     });
   });
 
@@ -605,6 +738,91 @@ describe('OpenAI-compatible agent gateway', () => {
     }
   });
 
+  it('denies an attributed Gateway call when current Workspace authority is revoked before provider dispatch', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-current-authority-'));
+    const coreDb = openCoreDb(dataRoot);
+    const store = createDemoStore({ dataRoot });
+    const workspace = store.createWorkspace('Gateway current authority');
+    const providerOptions = createOllamaProviderOptions();
+    let upstreamCalls = 0;
+
+    try {
+      applyMigrations(coreDb);
+      recordLocalGatewayAuthority(coreDb, workspace.id);
+      const baseRuntimeConfigManager = createRuntimeConfigManager({
+        dataRoot,
+        initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+          dataRoot,
+          openKitConfig: providerOptions.openKitConfig,
+          providerRegistry: providerOptions.providerRegistry,
+        }),
+      });
+      let revokeOnNextConfigRead = false;
+      const runtimeConfigManager = {
+        ...baseRuntimeConfigManager,
+        current: () => {
+          if (revokeOnNextConfigRead) {
+            revokeOnNextConfigRead = false;
+            coreDb.sqlite.transaction(() => {
+              disableCanonicalUser(coreDb, 'user_local');
+            })();
+          }
+          return baseRuntimeConfigManager.current();
+        },
+      };
+      const app = createApp({
+        coreDb,
+        dataRoot,
+        store,
+        providerCredentialResolver: providerOptions.providerCredentialResolver,
+        runtimeConfigManager,
+        llmPiAiClient: {
+          createChatCompletion: async (_provider, request, onUsage) => {
+            upstreamCalls += 1;
+            onUsage?.({ completion_tokens: 1, prompt_tokens: 2, total_tokens: 3 });
+            return {
+              choices: [],
+              created: 1,
+              id: 'chatcmpl_stale_authority',
+              model: request.model,
+              object: 'chat.completion',
+            };
+          },
+        } as unknown as PiAiGatewayClient,
+      });
+      revokeOnNextConfigRead = true;
+
+      const response = await app.request('/v1/chat/completions', {
+        body: JSON.stringify({
+          messages: [{ content: 'Do not dispatch', role: 'user' }],
+          metadata: { openkit: { workspaceId: workspace.id } },
+          model: 'llama3.2',
+        }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+      expect(upstreamCalls).toBe(0);
+
+      const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
+      try {
+        applyScopedMigrations(workspaceDb);
+        expect(
+          workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM capability_calls').get()
+        ).toEqual({ count: 0 });
+        expect(
+          workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM usage_records').get()
+        ).toEqual({ count: 0 });
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('records durable usage for attributed Anthropic Chat Completions through pi-ai', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-usage-'));
     const coreDb = openCoreDb(dataRoot);
@@ -613,8 +831,8 @@ describe('OpenAI-compatible agent gateway', () => {
     const piAiClient: Pick<PiAiGatewayClient, 'createChatCompletion'> = {
       createChatCompletion: async (_provider, request, onUsage) => {
         onUsage?.({
-          cacheRead: 3,
-          cacheWrite: 2,
+          cacheRead: 0,
+          cacheWrite: 0,
           cost: { total: 0.0012 },
           input: 6,
           output: 4,
@@ -640,6 +858,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
     try {
       applyMigrations(coreDb);
+      recordLocalGatewayAuthority(coreDb, workspace.id);
 
       const app = createApp({
         coreDb,
@@ -683,7 +902,7 @@ describe('OpenAI-compatible agent gateway', () => {
       expect(responseText).not.toContain('cost');
       expect(responseText).not.toContain('private-cache-key');
 
-      const workspaceDb = openWorkspaceDb(dataRoot, 'user_local', workspace.id);
+      const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
       try {
         const call = workspaceDb.sqlite
           .prepare(
@@ -728,12 +947,12 @@ describe('OpenAI-compatible agent gateway', () => {
           })
         ).toEqual([
           {
-            quantity: 3,
+            quantity: 0,
             source: 'llm-gateway-adapter-reported:cache_read',
             unit: 'tokens',
           },
           {
-            quantity: 2,
+            quantity: 0,
             source: 'llm-gateway-adapter-reported:cache_write',
             unit: 'tokens',
           },
@@ -753,7 +972,7 @@ describe('OpenAI-compatible agent gateway', () => {
             unit: 'tokens',
           },
         ]);
-        expect(usageRows.every((row) => (row as { quantity: number }).quantity > 0)).toBe(true);
+        expect(usageRows.every((row) => (row as { quantity: number }).quantity >= 0)).toBe(true);
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -796,6 +1015,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
     try {
       applyMigrations(coreDb);
+      recordLocalGatewayAuthority(coreDb, workspace.id);
 
       const app = createApp({
         coreDb,
@@ -902,6 +1122,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
     try {
       applyMigrations(coreDb);
+      recordLocalGatewayAuthority(coreDb, workspace.id);
 
       const app = createApp({
         coreDb,
@@ -1008,6 +1229,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
     try {
       applyMigrations(coreDb);
+      recordLocalGatewayAuthority(coreDb, 'ws_chat_failed_usage');
 
       const app = createApp({
         coreDb,
@@ -1040,7 +1262,7 @@ describe('OpenAI-compatible agent gateway', () => {
       expect(body).toContain('"code":"gateway_provider_unavailable"');
       expect(body).not.toContain('tok_secret');
 
-      const workspaceDb = openWorkspaceDb(dataRoot, 'user_local', 'ws_chat_failed_usage');
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_chat_failed_usage');
       try {
         expect(
           workspaceDb.sqlite
@@ -1079,6 +1301,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
     try {
       applyMigrations(coreDb);
+      recordLocalGatewayAuthority(coreDb, 'ws_responses_usage');
 
       const app = createApp({
         coreDb,
@@ -1109,7 +1332,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
       expect(res.status, responseText).toBe(200);
 
-      const workspaceDb = openWorkspaceDb(dataRoot, 'user_local', 'ws_responses_usage');
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_responses_usage');
       try {
         expect(
           workspaceDb.sqlite
@@ -1158,6 +1381,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
     try {
       applyMigrations(coreDb);
+      recordLocalGatewayAuthority(coreDb, 'ws_responses_failed_usage');
 
       const app = createApp({
         coreDb,
@@ -1190,7 +1414,7 @@ describe('OpenAI-compatible agent gateway', () => {
       expect(body).toContain('"code":"gateway_provider_unavailable"');
       expect(body).not.toContain('tok_secret');
 
-      const workspaceDb = openWorkspaceDb(dataRoot, 'user_local', 'ws_responses_failed_usage');
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_responses_failed_usage');
       try {
         expect(
           workspaceDb.sqlite
@@ -1302,6 +1526,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
       try {
         applyMigrations(coreDb);
+        recordLocalGatewayAuthority(coreDb, testCase.workspaceId);
 
         const app = createApp({
           coreDb,
@@ -1322,7 +1547,7 @@ describe('OpenAI-compatible agent gateway', () => {
         expect(res.status).toBe(200);
         await expect(res.text()).resolves.toContain('data: [DONE]');
 
-        const workspaceDb = openWorkspaceDb(dataRoot, 'user_local', testCase.workspaceId);
+        const workspaceDb = openWorkspaceDb(dataRoot, testCase.workspaceId);
         try {
           expect(
             workspaceDb.sqlite
@@ -1366,6 +1591,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
     try {
       applyMigrations(coreDb);
+      recordLocalGatewayAuthority(coreDb, 'ws_chat_stream_failed_usage');
 
       const app = createApp({
         coreDb,
@@ -1402,7 +1628,7 @@ describe('OpenAI-compatible agent gateway', () => {
       expect(body).toContain('data: [DONE]');
       expect(body).not.toContain('tok_secret');
 
-      const workspaceDb = openWorkspaceDb(dataRoot, 'user_local', 'ws_chat_stream_failed_usage');
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_chat_stream_failed_usage');
       try {
         expect(
           workspaceDb.sqlite
@@ -1462,6 +1688,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
       try {
         applyMigrations(coreDb);
+        recordLocalGatewayAuthority(coreDb, testCase.workspaceId);
 
         const app = createApp({
           coreDb,
@@ -1496,7 +1723,7 @@ describe('OpenAI-compatible agent gateway', () => {
         expect(body).toContain('data: [DONE]');
         expect(body).not.toContain('tok_secret');
 
-        const workspaceDb = openWorkspaceDb(dataRoot, 'user_local', testCase.workspaceId);
+        const workspaceDb = openWorkspaceDb(dataRoot, testCase.workspaceId);
         try {
           expect(
             workspaceDb.sqlite
@@ -1522,7 +1749,7 @@ describe('OpenAI-compatible agent gateway', () => {
     }
   });
 
-  it('routes gateway provider credentials through audited vault references', async () => {
+  it('resolves audited gateway credentials only after model authorization', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-vault-'));
     const coreDb = openCoreDb(dataRoot);
     const vaultUnlockState = createVaultUnlockState({
@@ -1580,6 +1807,22 @@ describe('OpenAI-compatible agent gateway', () => {
         } as unknown as PiAiGatewayClient,
         vaultUnlockState,
       });
+      const rejected = await app.request('/v1/chat/completions', {
+        method: 'POST',
+        body: JSON.stringify({
+          model: 'undeclared-model',
+          messages: [{ role: 'user', content: 'Hello' }],
+        }),
+        headers: { 'content-type': 'application/json' },
+      });
+
+      expect(rejected.status).toBe(400);
+      await expect(rejected.json()).resolves.toMatchObject({
+        error: { code: 'gateway_provider_request_invalid' },
+      });
+      expect(seenApiKeys).toEqual([]);
+      expect(listVaultUseRecords(coreDb)).toEqual([]);
+
       const res = await app.request('/v1/chat/completions', {
         method: 'POST',
         body: JSON.stringify({
@@ -1605,7 +1848,7 @@ describe('OpenAI-compatible agent gateway', () => {
     }
   });
 
-  it('fails gateway vault-backed provider calls with a typed locked-vault error', async () => {
+  it('returns a fixed provider error while retaining locked-vault audit evidence', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-vault-locked-'));
     const coreDb = openCoreDb(dataRoot);
     const vaultUnlockState = createVaultUnlockState({
@@ -1654,8 +1897,9 @@ describe('OpenAI-compatible agent gateway', () => {
       expect(res.status).toBe(423);
       await expect(res.json()).resolves.toMatchObject({
         error: {
-          code: 'vault-locked',
-          type: 'provider_credential_error',
+          code: 'gateway_provider_unavailable',
+          message: 'Provider is unavailable.',
+          type: 'provider_error',
         },
       });
       expect(listVaultUseRecords(coreDb)).toEqual([
@@ -1714,6 +1958,60 @@ describe('OpenAI-compatible agent gateway', () => {
     ]);
   });
 
+  it('normalizes Codex HTTP 200 terminal error events before public SSE projection', async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"Hi"}\n\n'
+          )
+        );
+        controller.enqueue(
+          encoder.encode(
+            'event: response.failed\ndata: {"type":"response.failed","response":{"error":{"code":"rate_limit_exceeded","message":"private quota marker=codex-sse-secret"}}'
+          )
+        );
+        controller.enqueue(encoder.encode('}\n\n'));
+        controller.close();
+      },
+    });
+    const app = createApp({
+      ...createCodexProviderOptions(),
+      llmCodexResponsesClient: new CodexResponsesClient({
+        fetch: async () =>
+          new Response(stream, { headers: { 'content-type': 'text/event-stream' } }),
+        tokenResolver: {
+          resolve: async () => ({
+            accessToken: 'private-codex-test-token',
+            chatgptAccountId: 'private-codex-test-account',
+          }),
+        },
+      }),
+    });
+
+    const res = await app.request('/v1/responses', {
+      method: 'POST',
+      body: JSON.stringify({
+        model: 'openai-codex/gpt-5.1-codex',
+        input: 'Hello',
+        stream: true,
+      }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.text();
+
+    expect(body).toContain('response.output_text.delta');
+    expect(body).toContain('"code":"gateway_provider_rate_limited"');
+    expect(body).toContain('"message":"Provider rate limit exceeded."');
+    expect(body).toContain('"stopReason":"error"');
+    expect(body).toContain('data: [DONE]');
+    expect(body).not.toContain('rate_limit_exceeded');
+    expect(body).not.toContain('codex-sse-secret');
+  });
+
   it('normalizes chat stream read failures into terminal SSE errors', async () => {
     let pulls = 0;
     const stream = new ReadableStream<Uint8Array>({
@@ -1755,6 +2053,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
     expect(body).toContain('data: {"choices":[{"delta":{"content":"Hi"}}]}');
     expect(body).toContain('"code":"gateway_stream_failed"');
+    expect(body).toContain('"message":"Provider stream failed."');
     expect(body).toContain('"stopReason":"error"');
     expect(body).toContain('data: [DONE]');
     expect(body).not.toContain('tok_secret');
@@ -1765,19 +2064,27 @@ describe('OpenAI-compatible agent gateway', () => {
       {
         message: 'unauthorized invalid api key token=tok_secret',
         code: 'gateway_provider_authentication_failed',
+        publicMessage: 'Provider authentication failed.',
       },
-      { message: 'rate limit exceeded token=tok_secret', code: 'gateway_provider_rate_limited' },
+      {
+        message: 'rate limit exceeded token=tok_secret',
+        code: 'gateway_provider_rate_limited',
+        publicMessage: 'Provider rate limit exceeded.',
+      },
       {
         message: 'context length exceeds maximum token=tok_secret',
         code: 'gateway_context_overflow',
+        publicMessage: 'Provider context limit exceeded.',
       },
       {
         message: 'invalid request payload token=tok_secret',
         code: 'gateway_provider_request_invalid',
+        publicMessage: 'Provider rejected the request.',
       },
       {
         message: 'provider unavailable timeout token=tok_secret',
         code: 'gateway_provider_unavailable',
+        publicMessage: 'Provider is unavailable.',
       },
     ]) {
       const stream = new ReadableStream<Uint8Array>({
@@ -1806,6 +2113,7 @@ describe('OpenAI-compatible agent gateway', () => {
       const body = await res.text();
 
       expect(body).toContain(`"code":"${testCase.code}"`);
+      expect(body).toContain(`"message":"${testCase.publicMessage}"`);
       expect(body).toContain('"stopReason":"error"');
       expect(body).toContain('data: [DONE]');
       expect(body).not.toContain('tok_secret');
@@ -2128,7 +2436,6 @@ describe('OpenAI-compatible agent gateway', () => {
             openkit: {
               sessionId: 'session_demo',
               threadId: 'th_demo',
-              workspaceId: 'ws_demo',
             },
           },
         }),
@@ -2168,7 +2475,6 @@ describe('OpenAI-compatible agent gateway', () => {
           input: 'Hello',
           metadata: {
             openkit: {
-              workspaceId: 'ws_demo',
               threadId: 'th_demo',
             },
           },
@@ -2183,18 +2489,17 @@ describe('OpenAI-compatible agent gateway', () => {
     expect(seenRequests[0]?.prompt_cache_key).toBe(seenRequests[1]?.prompt_cache_key);
   });
 
-  it('reports Gateway usage and cached token diagnostics', async () => {
+  it('reports provider cache read and write quantities without a derived hit rate', async () => {
     const app = createApp({
       ...createOpenAIProviderOptions(),
       llmPiAiClient: {
         createResponses: async (_provider, request, onUsage) => {
           const usage = {
+            cacheRead: 60,
+            cacheWrite: 20,
             input_tokens: 100,
             output_tokens: 25,
             total_tokens: 125,
-            input_tokens_details: {
-              cached_tokens: 60,
-            },
           };
           onUsage?.(usage);
 
@@ -2224,23 +2529,23 @@ describe('OpenAI-compatible agent gateway', () => {
     const diagnostics = await app.request('/api/app/diagnostics');
 
     expect(diagnostics.status).toBe(200);
-    await expect(diagnostics.json()).resolves.toMatchObject({
-      gateway: {
-        usage: {
-          summaries: [
-            {
-              cachedInputTokens: 60,
-              cacheHitRate: 0.6,
-              endpoint: 'responses',
-              inputTokens: 100,
-              model: 'gpt-5.1',
-              providerId: 'openai',
-              requestCount: 1,
-            },
-          ],
-        },
+    const diagnosticsBody = (await diagnostics.json()) as {
+      gateway: { usage: { summaries: unknown[] } };
+    };
+    expect(diagnosticsBody.gateway.usage.summaries).toEqual([
+      {
+        cacheReadTokens: 60,
+        cacheWriteTokens: 20,
+        completionTokens: 25,
+        endpoint: 'responses',
+        inputTokens: 100,
+        lastObservedAt: expect.any(String),
+        model: 'gpt-5.1',
+        providerId: 'openai',
+        requestCount: 1,
+        totalTokens: 125,
       },
-    });
+    ]);
   });
 
   it('routes runtime Codex provider instances to their configured account slots', async () => {

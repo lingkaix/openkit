@@ -11,17 +11,34 @@ const READY_CODEX = {
   agentId: 'agent_codex',
   displayName: 'Codex',
   readiness: 'ready' as const,
-  runtime: 'codex' as const,
 };
 
 const READY_OPENCODE = {
   agentId: 'agent_opencode',
   displayName: 'OpenCode',
   readiness: 'ready' as const,
-  runtime: 'opencode' as const,
 };
 
 describe('WorkerCoordinatorAgent routing decisions', () => {
+  it.each([
+    { agentId: 'agent_pi', displayName: 'Pi Agent' },
+    { agentId: 'agent_fourth_runtime', displayName: 'Fourth Runtime Agent' },
+  ])('selects opaque ready agent $agentId without runtime-name routing', (candidate) => {
+    const readyCandidate = { ...candidate, readiness: 'ready' as const };
+    const decision = createWorkerCoordinatorDecision({
+      prompt: 'Use Codex naming in this prompt, but implement the focused fix.',
+      readiness: [readyCandidate],
+      threadState: { status: 'idle', threadId: 'th_demo' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+    });
+
+    expect(decision.selectedWorkerCandidate).toEqual(readyCandidate);
+    expect(decision.delegationDraft?.target).toEqual({
+      agentId: candidate.agentId,
+      displayName: candidate.displayName,
+    });
+  });
+
   it('selects Codex for ordinary coding worker tasks', () => {
     const decision = createWorkerCoordinatorDecision({
       prompt: 'Implement the failing quick chat test and run the focused suite.',
@@ -35,7 +52,6 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       requiredUserAction: 'none',
       selectedWorkerCandidate: {
         agentId: 'agent_codex',
-        runtime: 'codex',
       },
     });
     expect(decision.confidence).toBeGreaterThan(0.7);
@@ -54,7 +70,6 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       requiredUserAction: 'none',
       selectedWorkerCandidate: {
         agentId: 'agent_codex',
-        runtime: 'codex',
       },
     });
   });
@@ -76,7 +91,6 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       threadId: 'th_demo',
       target: {
         agentId: 'agent_codex',
-        runtime: 'codex',
       },
       constraints: {
         maxWorkerIterations: 1,
@@ -174,7 +188,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
     expect(projectWorkerCoordinatorGoalPlanDraft(input, storedPlan).plan).toBe(storedPlan);
   });
 
-  it('selects OpenCode when the user explicitly asks for OpenCode', () => {
+  it('keeps candidate order when the prompt names a runtime', () => {
     const decision = createWorkerCoordinatorDecision({
       prompt: 'Use OpenCode to inspect the project and propose the smallest fix.',
       readiness: [READY_CODEX, READY_OPENCODE],
@@ -186,8 +200,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       decision: 'worker_turn',
       requiredUserAction: 'none',
       selectedWorkerCandidate: {
-        agentId: 'agent_opencode',
-        runtime: 'opencode',
+        agentId: 'agent_codex',
       },
     });
   });
@@ -308,7 +321,6 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       decision: 'worker_turn',
       selectedWorkerCandidate: {
         agentId: 'agent_codex',
-        runtime: 'codex',
       },
     });
     expect(decision.workerRequest?.objective).toBe(prompt);

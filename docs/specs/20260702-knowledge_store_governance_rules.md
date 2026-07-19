@@ -3,74 +3,65 @@
 Status: Accepted
 Implementation: Partial
 
-Implementation note: the accepted V1 governance slice is implemented; the Provisional Auto-Promotion contract below is not yet implemented.
+Implementation note: the accepted V1 validation, source, maintenance-record, retrieval, proposal-review, and standalone context-selection slices exist, but exact create-only proposal-to-page application and bounded unchanged-page reversal remain unimplemented.
 
 ## Summary
 
-This spec defines the rules that make OpenKit knowledge stores enforceable, maintainable, and user-friendly.
+This specification defines the concrete governance rules that make the canonical Knowledge model enforceable in portable files, schemas, validation, proposals, human review, content lineage, retrieval, and bounded maintenance.
 
-The core decision is that OpenKit should use OKF-compatible Markdown files as the portable knowledge format, then add an OpenKit Knowledge Profile and a workspace-specific schema layer on top.
+OpenKit uses OKF-compatible Markdown as the portable envelope, an OpenKit Knowledge Profile for system-wide governance, and one Workspace Schema for workspace-specific constraints.
 
-Programmatic validation and the Knowledge Manager agent jointly maintain the store. The program enforces mandatory structure. The Knowledge Manager is the primary maintainer for judgment-heavy work such as ingest, naming, summarization, lint, deduplication, conflict detection, stale detection, source-reference repair, and proposal drafting.
+Programmatic validation protects structural correctness, the Knowledge Manager supports semantic maintenance through separately owned explicit operations, and authorized human Knowledge Review preserves authority.
 
-Program validation protects structural correctness. Knowledge Manager protects semantic health. User review protects authority.
-
-The target user experience is an agent-maintained compiled notebook: sources and rough inputs are ingested, the Knowledge Manager incrementally compiles them into linked Markdown knowledge pages and indexes, users inspect the result through OpenKit Web and App product surfaces, and useful generated outputs can become direct knowledge proposals or artifacts depending on what they are.
-
-The target agent experience is a unified context reserve: worker agents should be able to receive task-relevant material through NanoCore context packages without separately rediscovering whether the material began as a note, source file, PDF, meeting record, imported wiki page, source summary, or reviewed knowledge page.
-
-`docs/core/knowledge.md` owns the canonical knowledge model. This spec owns the concrete governance rules that make that model enforceable in files, schemas, validation, proposals, review, and maintenance workflows.
+Generated learning may become a source-linked pending Knowledge Proposal, but it never self-promotes, self-confirms, or bypasses human review.
 
 ## Owns
 
-- OKF-compatible Markdown as the portable file envelope for OpenKit knowledge stores.
-- The OpenKit Knowledge Profile layered over portable files.
+- OKF-compatible Markdown as the portable knowledge envelope.
+- The OpenKit Knowledge Profile and Workspace Schema governance layers.
 - Workspace schema lifecycle, validation, migration, conformance levels, and failure behavior.
-- Save-time enforcement rules for governed knowledge records.
-- Source identity, immutability expectations, derived representations, and source-reference health.
-- Observation, claim, conflict, proposal, health-check, and Knowledge Manager maintenance rules.
-- Context package trace requirements for explaining how knowledge material was selected, excluded, and projected.
-- The current implementation projection from the existing `memory` slice to the target Knowledge Store model.
+- Save-time enforcement for governed knowledge records.
+- Source identity, source immutability expectations, derived-representation lineage, and source-reference health.
+- Observation, claim, conflict, proposal, human-review, create-only proposal-application, content-lineage, and unchanged-page reversal governance.
+- Knowledge-selection trace requirements contributed to a separately owned Context Package.
 
 ## Does Not Own
 
-- The canonical definition of knowledge, notebook, Knowledge Manager, source, proposal, review, retrieval, or context package.
-- Final API routes, protocol field names, database tables, storage paths, or UI components.
-- Worker prompt assembly, Workflow Coordinator responsibilities, or agent-session lifecycle.
-- Worker capability routing, LLM/tool gateways, or metering.
-- Vault secret storage, permission policy semantics, audit record schemas, or workspace synchronization.
-- Domain-specific schemas for HR, marketing, finance, analytics, engineering, or other verticals.
-- Raw source-of-truth records owned by external systems.
+- Canonical Knowledge semantics, which `docs/core/knowledge.md` owns.
+- Concrete file paths, record encodings, content-digest encoding, database tables, routes, protocol fields, or migration implementation, which the Knowledge Store implementation contract owns.
+- Knowledge Manager operation names, callers, typed outputs, or request lifecycle, which the Knowledge Manager service contract owns.
+- Context Package identity, files, delivery trace, replay, worker materialization, or final prompt composition, which their owning workflow and Context Package contracts own.
+- Permission-policy semantics, audit record schemas, Vault storage, worker capability transport, workspace synchronization, or UI design.
+- Domain-specific schemas or raw source-of-truth records owned by external systems.
 
 ## Core References
 
 - `docs/core/knowledge.md`
-- `docs/core/agent-capability.md`
-- `docs/core/agent-workflow.md`
+- `docs/core/permissions.md`
+- `docs/core/audit.md`
 - `docs/core/storage.md`
-- `docs/specs/20260703-worker_context_package.md`
-- `docs/specs/20260703-worker_agent_capability.md`
 
-## Goals
+## Goals / Non-goals
 
-- Keep knowledge user-readable as a notebook while making the store machine-checkable.
-- Prevent a knowledge store from drifting into a pile of inconsistent Markdown files.
-- Allow workspace-specific schemas without losing OpenKit-wide interoperability.
-- Keep observations and low-level agent signals out of the primary notebook until they are reviewed or summarized.
-- Define governance for the explicit Knowledge Manager operations that exist in V1.
-- Make it practical for users to provide rough notes, files, links, meetings, and integrations without manually curating every page.
+Goals:
 
-## Non-goals
+- Keep knowledge user-readable and portable while making active records machine-checkable.
+- Keep invalid, stale, conflicting, sensitive, or unreviewed material from silently influencing workers.
+- Preserve human authority and exact source, proposal, review, page-content, actor, request, and audit lineage.
+- Make accepted proposal application and reversal bounded, idempotent, restart-safe, and fail-closed without another workflow.
+- Keep Knowledge selection explainable without duplicating Context Package delivery ownership.
 
-- Do not define final API routes, database tables, storage paths, or UI components.
-- Do not redefine core knowledge semantics.
-- Do not define domain-specific HR, marketing, finance, analytics, or engineering schemas as core concepts.
-- Do not require a particular editor, markdown renderer, search engine, vector store, or graph database.
-- Do not treat the Knowledge Manager as the only enforcement mechanism.
+Non-goals:
 
-## Layered Format
+- Do not define concrete routes, tables, paths, protocol payloads, UI components, or worker prompt assembly.
+- Do not create a persistent Knowledge Manager agent, hook system, maintenance runner, retry queue, settlement workflow, or rollback service.
+- Do not auto-promote generated learning or use citations, elapsed time, schedules, or absence of rejection as review authority.
+- Do not require a specific editor, renderer, search engine, vector store, or graph database.
+- Do not define domain-specific HR, marketing, finance, analytics, or engineering schemas.
 
-OpenKit knowledge stores should use a layered contract:
+## Decision
+
+The governed Knowledge Store has three layers:
 
 ```text
 OKF-compatible files
@@ -78,95 +69,53 @@ OKF-compatible files
     -> Workspace Schema
 ```
 
-OKF-compatible files provide the portable envelope: Markdown, YAML frontmatter, concept-like documents, links, citations, index files, and log files.
+Only active `Workspace-schema-valid` pages that pass authorization, sensitivity, freshness, conflict, and retrieval policy may enter default worker Knowledge selection.
 
-The OpenKit Knowledge Profile defines OpenKit-wide governance rules that every workspace must preserve.
+Every generated Knowledge change remains pending until an authorized human Knowledge Review accepts it.
 
-The Workspace Schema defines domain-specific source types, knowledge page types, observation types, views, templates, review rules, and lint rules for one workspace.
+An accepted review authorizes one Knowledge Store application, but active knowledge changes only when the exact fixed proposal-created page and its complete lineage become durable.
 
-## Schema Files
+V1 reversal is an explicit authorized Knowledge command that removes only the unchanged page created by that accepted proposal while retaining the proposal, review, request, actor, source, and audit evidence.
 
-Each workspace should have a formal schema file stored as YAML or JSON.
+## Format And Schema Contract
 
-The schema file should be the machine-checkable contract for:
+OKF-compatible files provide Markdown, YAML frontmatter, links, citations, index files, and log files as the portable envelope.
 
-- allowed source types
-- allowed knowledge page types
-- allowed observation types
-- required frontmatter fields
-- optional frontmatter fields
-- field value constraints
-- source reference shape
-- page templates
-- notebook views or tabs
-- proposal rules
-- review requirements
-- lint and maintenance rules
+The OpenKit Knowledge Profile defines mandatory governance fields and base rules that every workspace preserves.
 
-Prose instructions may explain the schema, but prose instructions are not enough.
+The Workspace Schema defines allowed page, source, observation, and claim types plus field constraints, views, proposal rules, review rules, and lint rules for one workspace.
 
-## Schema Lifecycle
+Each workspace MUST have one active machine-checkable Workspace Schema in YAML or JSON.
 
-Workspace schemas are long-lived knowledge governance assets.
+The schema MUST identify its version, owner or maintainer, active status, timestamps, allowed extension points, validation rules, and review requirements.
 
-Each workspace schema should have:
+Workspace schemas MAY strengthen OpenKit rules but MUST NOT remove or weaken required governance fields.
 
-- `schema_version`
-- owner or maintainer metadata
-- active status
-- created and updated timestamps
-- allowed extension points
-- migration notes
-- validation rules
-- review requirements for schema changes
+Schema changes MUST use a reviewable migration flow:
 
-Schema changes should be proposed, reviewed, and applied deliberately because they can affect every active knowledge page, observation, claim, proposal, index, and context package.
+1. Draft and validate the schema change.
+2. Dry-run it against existing pages, sources, maintenance records, proposals, indexes, and trace references.
+3. Produce a validation report identifying valid, migrated, invalid-draft, and needs-review records.
+4. Require human review when active retrieval, required fields, sensitivity, source-reference shape, or review rules change.
+5. Apply the change only after authorization and preserve the previous valid schema plus the report.
 
-A schema change may require:
+If migration cannot repair a record safely, that record becomes an invalid or needs-review draft excluded from active retrieval.
 
-- validating all existing records against the new schema
-- rewriting frontmatter fields
-- reclassifying page types
-- migrating observations or claims
-- rebuilding indexes
-- marking invalid records as drafts
-- creating maintenance tasks for records that need human review
+If schema migration cannot prove a complete valid result, OpenKit MUST retain the previous valid schema and MUST NOT publish a partially migrated active schema.
 
-Schema migration should produce a validation report.
+## Conformance And Required Fields
 
-If a schema migration fails, OpenKit should preserve the previous valid schema and prevent invalid records from entering active retrieval.
+OpenKit distinguishes portable format compatibility from active Knowledge validity.
 
-First-slice schema changes should use a reviewable migration flow:
-
-1. Draft a workspace schema change proposal.
-2. Validate the schema syntax and compatibility with OpenKit required fields.
-3. Run a dry-run migration against existing knowledge, observations, claims, proposals, indexes, and context-package trace references.
-4. Produce a validation report with valid, migrated, invalid-draft, and needs-review counts.
-5. Require review for changes that affect active retrieval, required fields, sensitivity, source-reference shape, or review rules.
-6. Apply the schema change only after approval or policy authorization.
-7. Preserve the previous valid schema and migration report for replay and rollback analysis.
-
-If migration cannot repair a record safely, the record should become an invalid draft or needs-review record excluded from active retrieval.
-
-## Conformance Levels
-
-OpenKit should distinguish format compatibility from active knowledge validity.
-
-| Level | Meaning | Usage |
+| Level | Meaning | Permitted use |
 | --- | --- | --- |
-| `OKF-compatible` | The bundle or document follows the portable OKF-style Markdown and frontmatter shape. | May be imported, inspected, indexed lightly, or held as source material. |
-| `OpenKit-profile-valid` | The record satisfies OpenKit-required governance fields and base type rules. | May participate in OpenKit knowledge workflows, proposals, and generic tooling. |
-| `Workspace-schema-valid` | The record satisfies the active workspace schema. | May enter active retrieval and be used as trusted workspace knowledge. |
+| `OKF-compatible` | The material follows the pinned portable Markdown and frontmatter envelope. | Import, inspection, source retention, or transformation. |
+| `OpenKit-profile-valid` | The record satisfies OpenKit-required fields and base rules. | Drafts, proposals, generic tooling, and validation workflows. |
+| `Workspace-schema-valid` | The record satisfies the active Workspace Schema. | Active Knowledge after review and policy eligibility. |
 
-External OKF bundles should not be rejected only because they do not satisfy a workspace schema.
+External material MAY remain a source or lower-conformance draft until transformed and reviewed; format compatibility alone never authorizes active retrieval.
 
-They may be imported as sources, invalid drafts, or lower-conformance material until transformed or reviewed.
-
-Active knowledge used in context packages should satisfy `Workspace-schema-valid` unless an explicit policy permits a lower-conformance source snippet.
-
-## OpenKit Required Fields
-
-The OpenKit Knowledge Profile should require fields or equivalent structured metadata for governed records:
+Every active Knowledge Page and every draft Knowledge Page validated for possible activation MUST carry these fields or equivalent structured metadata. Proposals, reviews, source-registry rows, maintenance ledgers, retrieval traces, indexes, audit records, and usage records use their separately owned exact schemas and are not active Knowledge Pages:
 
 - `type`
 - `title`
@@ -180,498 +129,254 @@ The OpenKit Knowledge Profile should require fields or equivalent structured met
 - `created_at`
 - `updated_at`
 
-Workspace schemas may add fields, but they must not remove or weaken OpenKit-required governance fields.
+Field behavior:
 
-## First-Slice Required Fields
+- `type` MUST be an OpenKit base type or an allowed Workspace Schema extension.
+- `title` MUST be human-readable and non-empty.
+- `schema_version` MUST identify the validating Workspace Schema.
+- `status` MUST distinguish draft, active, archived, superseded, invalid, and deleted records.
+- `scope` MUST identify the Workspace and any narrower authorized scope.
+- `source_refs` MUST exist even when empty; empty references are allowed only for direct user-authored notes, indexes, or policy-approved seed pages.
+- `review_state` MUST distinguish unreviewed, user-authored, accepted, rejected, deferred, and needs-review records; there is no provisional active state.
+- `sensitivity` MUST be explicit even when material is public or internal.
+- `freshness` MUST distinguish evergreen, time-bound, stale, expired, and unknown material.
+- `created_at` and `updated_at` MUST be machine-readable timestamps.
 
-Every governed Knowledge Store record in the first implementation should carry the OpenKit required fields listed above.
+Reusable base types are `SourceSummary`, `KnowledgePage`, `Entity`, `Topic`, `Observation`, `Claim`, `Procedure`, `Decision`, `Lesson`, `Proposal`, `Index`, and `Log`.
 
-First-slice field behavior:
-
-- `type` must be one of the OpenKit base types or a workspace-schema extension.
-- `title` must be human-readable and non-empty.
-- `schema_version` must identify the workspace schema used to validate the record.
-- `status` must distinguish draft, active, archived, superseded, invalid, and deleted states.
-- `scope` must identify workspace scope and any narrower project, personal, thread-derived, or source-derived scope.
-- `source_refs` must exist even when empty; empty source references are allowed only for direct user-authored notes, indexes, or policy-approved seed pages.
-- `review_state` must distinguish unreviewed, user-authored, accepted, rejected, deferred, needs-review, and provisional states. Provisional is reserved for auto-promoted records under the Provisional Auto-Promotion rules.
-- `sensitivity` must be present even when the value is public or internal.
-- `freshness` must record whether the record is evergreen, time-bound, stale, expired, or unknown.
-- `created_at` and `updated_at` must be machine-readable timestamps.
-
-Workspace schemas may require stronger fields, but they must not weaken or omit these fields.
-
-## Type Governance
-
-OpenKit should define stable base types that all workspaces can reuse:
-
-- `SourceSummary`
-- `KnowledgePage`
-- `Entity`
-- `Topic`
-- `Observation`
-- `Claim`
-- `Procedure`
-- `Decision`
-- `Lesson`
-- `Proposal`
-- `Index`
-- `Log`
-
-Workspace schemas may extend these types with domain-specific types.
-
-Examples:
-
-- A marketing workspace may add `BrandVoice`, `CreativeReference`, and `CampaignLearning`.
-- An HR workspace may add `RoleRubric`, `HiringPrinciple`, and `InterviewLesson`.
-- A technical workspace may add `ArchitectureDecision`, `RepoConvention`, and `Runbook`.
-
-Consumers should understand the OpenKit base types even when they do not understand a workspace extension.
+Workspace Schemas MAY add domain types, but consumers MUST preserve the base governance fields even when they do not understand an extension.
 
 ## Save-Time Enforcement
 
-Mandatory schema rules must be enforced by code.
+All governed writes MUST pass through the Knowledge Store validation boundary.
 
-If a user, worker, integration, or Knowledge Manager tries to save an invalid governed document, NanoCore should reject the write, block the save, or save it only as an invalid draft that is excluded from active retrieval.
+Code MUST reject an invalid active write or retain it only as an invalid draft excluded from active retrieval.
 
-Save-time enforcement should cover:
+Validation MUST cover malformed frontmatter, missing fields, disallowed types, invalid status or review state, invalid source references, forbidden secret-like fields, missing sensitivity, invalid freshness or expiration metadata, and attempts to weaken OpenKit-required fields.
 
-- invalid YAML frontmatter
-- missing required fields
-- unknown type values when the workspace schema does not permit them
-- invalid status or review state
-- invalid source references
-- forbidden secret-like fields
-- missing sensitivity labels where policy requires them
-- invalid freshness or expiration metadata
-- attempts to weaken OpenKit-required governance fields
+An invalid edit MUST NOT overwrite the latest valid active page.
 
-The Knowledge Manager may propose repairs for invalid records, but invalid active knowledge must not silently enter retrieval.
+Imports, rough notes, integrations, and drafts MAY be retained as invalid drafts when preserving the material is useful, and their validation errors MUST remain inspectable.
 
-Invalid edits should not overwrite the latest valid active record.
+Repairing an invalid draft creates a valid draft or pending proposal according to Workspace policy; it does not silently activate knowledge.
 
-First-slice behavior:
+## Source Identity And Lineage
 
-- Direct active updates that fail validation are blocked.
-- Imports, rough notes, integrations, and Knowledge Manager drafts may be saved as invalid drafts when preserving the material is useful.
-- Invalid drafts are excluded from active retrieval, worker capability search, and default context package selection.
-- Validation errors should be attached to the draft or failed save result so the user or Knowledge Manager can repair them.
-- Repairing an invalid draft creates a valid draft, proposal, or active record according to workspace policy.
+Every Knowledge Source MUST have stable identity across changes to derived representations, summaries, or Knowledge Pages.
 
-## Source Identity And Immutability
+Source metadata SHOULD record source identity, type, original location when available, capture time, producer, integrity digest when practical, access and sensitivity, derived-representation links, and retention policy when relevant.
 
-Sources provide evidence and should have stable identity.
+Captured source evidence is immutable by default.
 
-Each source should have a source identifier that remains stable even when derived representations, summaries, or knowledge pages change.
+Replacing or recapturing evidence creates a new Knowledge Source id and registry record rather than silently mutating old captured evidence.
 
-Source metadata should record:
+Every Derived Representation MUST retain lineage to the exact Knowledge Source id and content digest from which it was produced.
 
-- source id
-- source type
-- original location when available
-- captured or imported timestamp
-- producer or integration
-- content hash or equivalent integrity marker where practical
-- access and sensitivity metadata
-- derived representation links
-- retention policy when relevant
+An external locator without captured identity MAY support review, but it MUST NOT be presented as immutable captured evidence.
 
-Raw sources should be treated as immutable evidence by default.
+## Maintenance Records
 
-If a source must be replaced or recaptured, OpenKit should create a new source version or capture record instead of silently mutating the old evidence.
+Observations, candidate claims, conflicts, stale signals, lint findings, and health reports belong to the maintenance layer rather than the default notebook view.
 
-Derived representations should preserve lineage back to the source version they came from.
+Observation capture MUST be selective and Workspace policy SHOULD bound allowed types, producers, required sources, retention, expiration, aggregation, promotion criteria, and high-impact review requirements.
 
-This identity and lineage make source references, claim validation, stale checks, and context-package traces debuggable.
+An Observation MAY be ignored, retained, summarized, aggregated, attached to a pending proposal, or expired; repetition does not promote it automatically.
 
-## Notebook Versus Maintenance Layer
+A Claim is a reusable assertion that may influence future work and therefore MUST carry sources, confidence, freshness, scope, review state, and conflict status.
 
-The user-facing notebook should stay readable and editable.
+Accepted claims MAY support a pending Knowledge Proposal, but they MUST NOT become active page content without human Knowledge Review.
 
-The notebook should primarily show:
+Conflict states SHOULD distinguish conflicting, needs-review, weak-evidence, stale, resolved, superseded, and partially superseded material.
 
-- knowledge pages
-- source summaries
-- decisions
-- procedures
-- lessons
-- project notes
-- indexes
-- reviewable proposals
+Knowledge selection MUST surface unresolved conflicts and MUST NOT present one side as uncontested truth when the Workspace intentionally preserves competing views.
 
-The maintenance layer may contain:
+Maintenance records SHOULD use bounded append-only ledgers or equivalent history-preserving records; they MUST NOT create another Knowledge source of truth.
 
-- observations
-- candidate claims
-- conflicts
-- stale signals
-- duplicate-topic reports
-- broken-link reports
-- lint findings
-- maintenance tasks
+## Proposal And Human Review Rules
 
-Observations and other low-level signals should not appear as ordinary notebook pages by default. They should be visible through maintenance views, digests, or proposal flows.
+A V1 generated Knowledge Proposal MUST request creation of one absent Knowledge Page. Generated update, replacement, merge, split, patch, supersede, archive, and delete operations are not authorized by this contract and remain deferred.
 
-## Compiled Notebook Outputs
+Before review, the proposal MUST fix its exact target Knowledge Page id, complete canonical page bytes, content digest, source references, rationale, confidence, freshness, sensitivity, scope, producer, creation time, and whether it was generated from completed work history. S61 encodes proposal creation time and the server-owned producer directly, derives freshness, sensitivity and scope from the digested candidate page bytes, and derives the completed-work fact from the closed immutable Turn, Item and S39 source-reference tuple, so it does not persist duplicate fields that could disagree. Review input or response-only content cannot replace those durable candidate bytes.
 
-The notebook is not only an input surface. It is also an output destination.
+Every generated proposal begins pending and remains excluded from active retrieval.
 
-Worker tasks may generate:
+Only an authorized human Knowledge Review may accept, reject, or defer a generated proposal. Changing the fixed candidate requires a new proposal in V1; there is no combined edit-and-accept transition.
 
-- answer pages
-- research reports
-- slide decks
-- charts and visualizations
-- generated diagrams
-- source summaries
-- comparison tables
-- candidate concept pages
-- index pages
-- health reports
+Policy MAY validate, route, batch, or prioritize proposals, but it MUST NOT substitute for human acceptance.
 
-Generated outputs should not always be forced through an artifact-first path.
+An authorized human MAY create or edit knowledge directly with `review_state: user-authored`; that write MUST pass current validation and creates no synthetic proposal or review identifier. G07 does not expand the existing direct-mutation concurrency, command, or Audit contract and does not create a historical-content record family.
 
-If a generated output is a task deliverable such as a report, chart, slide deck, exported document, design asset, or standalone file, it should be stored as an artifact first. After user review or policy approval, useful conclusions from it may be proposed into the Knowledge Store as knowledge pages, source summaries, claims, lessons, or source-linked artifact references.
+Rejecting a proposal closes it without an active Knowledge mutation.
 
-If a generated output is already a knowledge page, source summary, index page, candidate claim, or page update, the Knowledge Manager may propose it directly as a Knowledge Store update without first creating an artifact.
+Deferring a proposal keeps it non-active and reviewable without authorizing application. A later review decision appends to the same proposal's review history.
 
-Filing or direct proposal should preserve lineage back to the worker turn, prompt or task, source references, generated output or artifact when one exists, reviewer, and decision.
+Accepting a proposal creates durable application authorization; it does not itself prove that the fixed page was published. Acceptance and rejection are terminal, while one or more deferred decisions may precede the terminal decision.
 
-The Knowledge Manager may propose filing actions, but high-impact or opinionated output should not silently become active knowledge without review.
+## Accepted Proposal Application
 
-## Observations
+The existing Knowledge Store mutation owner applies an accepted create-only proposal exactly once; this specification introduces no application runner, queue, application record, settlement record, or recovery workflow.
 
-An observation is an agent-recorded signal, not final knowledge.
+The application MUST validate the accepted proposal, human review, target absence, fixed bytes and digest, sources, Workspace scope, authorization, schema, sensitivity, freshness, and conflict state immediately before publication.
 
-An observation should include:
+The existing proposal, review, page, command-idempotency, and audit owners MUST make the business activation tuple and separate command-completion evidence verifiable without a new record family:
 
-- the observed event or pattern
+- proposal identifier
+- accepting review identifier
+- target Knowledge Page identifier
+- an accepted review row whose `targetAbsentAtDecision` is true after the exact safe target path was checked
+- created page content digest
 - source references
-- scope
-- timestamp
-- producer
-- confidence
-- freshness
-- possible interpretations when useful
-- current status
+- producer and authorized reviewer actor references
+- decision request identifier and application time as command-completion evidence
 
-An observation may support a claim, proposal, or knowledge page update.
+The exact proposal, accepted human review, fixed proposal-created page and digest, sources, producer, reviewer, and Workspace form the business activation tuple. The active read projection MUST expose those exact authorized bytes or no applied page; it MUST NOT expose different, unreviewed, unlineaged, or partially validated bytes. Audit and receipt evidence gate the decision command's success and replay projection, not activation of an otherwise complete business tuple.
 
-An observation may expire without becoming knowledge.
+Application uses the existing request-idempotency owner:
 
-Repeated observations may be aggregated into a candidate claim.
+- An exact replay with a completed command receipt returns the same page identity, content digest, and current projection.
+- Reusing a request identifier with changed input returns `409 idempotency_key_conflict`.
+- If the exact accepted review is durable and the fixed target page is absent, the same authorized decision request MAY complete that one deterministic page write from the proposal's fixed bytes and digest.
+- If the complete business activation tuple exists but Audit or the completed receipt is absent, the page remains active, while the operation returns `409 recovery_required` and does not synthesize the missing command evidence or reconstruct success.
+- If the target already existed before the authorized effect, carries different bytes, or any required proposal, review, page, digest, source, producer, reviewer, or Workspace lineage is missing or contradictory, the operation returns `409 conflict` or `409 recovery_required` as specified by S61 and performs no inference, reconstruction, second application, or repair.
 
-## Observation Retention And Promotion
+After restart, replay and inspection use only the durable proposal, review, page, request-idempotency, and audit owners.
 
-Observation capture should be selective.
+Process memory, current page content, a generated summary, or an S61 retrieval trace MUST NOT reconstruct missing application authority.
 
-OpenKit should avoid turning every worker action into an observation.
+## Bounded Reversal
 
-Workspace schemas or policies should define:
+V1 reversal is an explicit authorized Knowledge command naming the original proposal, accepting review, fixed Knowledge Page id, expected content digest, and reversal request id. The original decision request id resolves through the named immutable review row rather than being duplicated in the reversal request.
 
-- which observation types may be recorded
-- which producers may record them
-- required source references
-- default retention period
-- expiration rules
-- aggregation thresholds
-- promotion criteria
-- review requirements for high-impact promotion
+Exact replay with matching completed reversal command and audit evidence returns the same completed reversal without another page effect. Otherwise, the command MAY remove only the page created by that proposal and only while its current bytes still match the fixed digest. A changed target returns `409 conflict` with zero mutation; a missing page without matching completed reversal evidence, or contradictory proposal, review, page, command, source, actor, digest, or audit authority, returns `409 recovery_required`.
 
-An observation may be:
+The original proposal, review, decision request, sources, actors, created-page digest, reversal request, and audit evidence remain durable.
 
-- ignored as noise
-- retained in the observation ledger
-- summarized into a digest
-- aggregated with related observations
-- promoted into a candidate claim
-- attached to a knowledge proposal
-- expired or archived
+Reversal creates no second proposal, review, revision, tombstone, rollback record, recovery state, or workflow and does not claim to undo worker or external effects that occurred before reversal.
 
-Promotion should consider evidence count, source diversity, recency, confidence, user feedback, and potential impact on future worker behavior.
+## Generated Learning Governance
 
-High-impact observations should not become active knowledge without review.
+V1 permits only an explicit agent-driven composition of existing work-history reads and the existing Knowledge Proposal draft operation; it creates no reflection operation or private lifecycle.
 
-First-slice observations should be stored as workspace maintenance records, not ordinary notebook pages.
+A V1 generated-learning proposal may cite only the closed exact source-reference forms defined by S61. A proposal derived from completed worker work MUST cite one terminal same-Workspace direct-Task worker Turn, the final completed `assistant-message` Item projected by that Turn, and that Turn's exact accepted S39 Context Package trace and digest. Other Artifacts, reviews, evidence, audit, usage, or external material may guide agent or human judgment, but they become proposal evidence in V1 only after explicit capture through the existing registered Knowledge Source owner.
 
-Recommended first-slice storage:
+The Context Package contract exclusively decides whether a trace proves worker delivery; this specification consumes that proof and does not redefine it.
 
-- JSONL observation ledgers for low-level observations and repeated signals.
-- Periodic digest pages or health reports for human inspection.
-- Knowledge proposals when an observation or group of observations should influence future worker context.
+Workspace-only work, imported history, replay reconstruction, standalone Knowledge selection or materialization, and records without accepted delivery proof MUST NOT be labelled as worker output.
 
-Observation ledgers should be file-backed, scoped to the workspace, and excluded from default notebook views. Promoted claims or accepted conclusions may become governed OKF-compatible knowledge records after review.
+Generated learning always remains pending until human Knowledge Review accepts it.
 
-## Claims
+There is no provisional active state, auto-promotion, TTL confirmation, citation counter, citation-based acceptance, expiry sweep, or scheduled confirmation path.
 
-A claim is a reusable assertion that may influence future work.
+Later citations MAY be observations about usefulness, but they are never review authority.
 
-Claims need stronger governance than observations because workers may use them in context packages.
+Passive, event-triggered, or scheduled learning generation remains deferred until real usage proves a need and a separately accepted trigger scope exists; any future automation may draft pending proposals only.
 
-A claim should have:
+## Knowledge Manager Boundary
 
-- evidence through source references
-- confidence
-- freshness or expiration metadata
-- scope
-- review state
-- conflict status when applicable
+The Knowledge Manager service specification exclusively owns V1 operation names, callers, typed outputs, errors, and request lifecycle.
 
-Claims may live inside knowledge pages, as structured frontmatter-backed blocks, or as separate records depending on the workspace schema.
+This governance contract requires only that Knowledge Manager writes create pending proposals through the existing Knowledge Store owner and never apply repairs, promote learning, schedule maintenance, or create private lifecycle state.
 
-## Conflict Model
+## Health And Repair
 
-Knowledge systems should preserve uncertainty instead of forcing premature resolution.
+The Knowledge Manager service contract exclusively owns the V1 health operation and report shape.
 
-A record, claim, source summary, or page may be marked with conflict-related states such as:
+This governance contract requires that health inspection remain explicit and report-only.
 
-- `conflicting`
-- `needs_review`
-- `weak_evidence`
-- `stale`
-- `resolved`
-- `superseded`
-- `partially_superseded`
+It MUST NOT apply repairs, draft proposals, schedule work, or mutate knowledge.
 
-Conflicts may come from newer sources, user corrections, changed workspace schema, external data freshness, contradictory observations, or disagreement between reviewed pages.
+Future repair application requires separately accepted scope and MUST use the same proposal and human-review path whenever meaning, authority, sensitivity, scope, freshness, retrieval eligibility, or future worker behavior may change.
 
-The Knowledge Manager should surface conflicts with source references and suggested actions.
+## Knowledge Selection Trace Boundary
 
-A conflict may be resolved by editing, merging, splitting, superseding, archiving, adding scope limits, lowering confidence, or asking the user a clarifying question.
+Knowledge retrieval MUST produce a deterministic selection result for identical authoritative inputs, index state, and policy state.
 
-Some domains may intentionally preserve multiple competing viewpoints. In that case, the conflict relationship should stay explicit and context packages should avoid presenting one side as uncontested truth.
+Its trace contribution MUST identify selected Knowledge Page ids and content digests, selected source or derived-representation references, excluded candidate identifiers and reasons, and applicable freshness, sensitivity, conflict, policy, and budget decisions.
 
-## Proposal Rules
+The concrete Context Package owner decides package identity, trace shape, file inventory, delivery proof, replay, materialization, and product-versus-audit visibility.
 
-Knowledge changes that affect future worker context should go through proposals unless policy explicitly allows direct edits.
+The governed Knowledge retrieval trace proves only that selection ran; it does not prove worker delivery or use.
 
-Proposals may request:
+Only the owning worker-Turn delivery trace may prove which selected Knowledge reached a worker.
 
-- create
-- update
-- merge
-- split
-- supersede
-- archive
-- delete
-- promote observation to claim
-- promote claim to knowledge page content
+Restricted trace evidence MUST remain redacted or access-controlled under the owning policy and audit contracts.
 
-Each proposal should identify sources, rationale, affected pages, confidence, freshness, and whether user review is required.
+## Capability Conformance
 
-## Provisional Auto-Promotion
-
-Some proposal producers — most importantly the Reflector's rubric and lesson distillation under `docs/specs/20260710-self_improvement_evaluation_loop.md` — generate a steady stream of small additive proposals. Requiring human review for every one of them makes the lightweight tier heavier than the mechanism it feeds. This section defines the only path by which a proposal may become active knowledge without a human decision.
-
-Auto-promotion is disabled by default and enabled per workspace by explicit policy. When enabled:
-
-**Eligibility.** A proposal is eligible for auto-promotion only when all of the following hold:
-
-- The diff is strictly additive: it creates new records (or appends new self-contained entries to designated append-target pages) and does not modify, remove, reorder, supersede, or archive any existing record or entry.
-- The proposed records are limited to workspace-schema-designated auto-promotable types. The default eligible set is `Lesson` and rubric-typed records; workspace schemas MAY narrow this set and MUST NOT widen it beyond additive-safe types (`Decision`, `Procedure`, and schema changes are never eligible).
-- Knowledge Manager conflict detection finds no conflict between the proposed content and any existing active record, user-authored record, or user-stated preference.
-- The proposal passes normal save-time validation at `Workspace-schema-valid`.
-
-Any proposal that fails any condition escalates to the normal review path unchanged. Escalation is silent success, not an error.
-
-**Provisional state.** An auto-promoted record enters active retrieval with `review_state: provisional` and MUST carry:
-
-- a TTL expiry timestamp (workspace-configurable; default 30 days)
-- a citation counter target (workspace-configurable; default 3) and current count
-- the producing proposal reference and its evidence links
-
-Provisional records participate in retrieval, worker knowledge capabilities, and context package selection like accepted records, but context package traces MUST label them as provisional so downstream consumers (including the Judge rubric snapshot) can weigh them.
-
-**Confirmation and expiry.** A provisional record becomes `accepted` when a human confirms it through any review surface, or when it has been cited by at least the configured number of distinct subsequent task runs (citation means appearing as a used entry in a context package trace whose turn completed without a redo or rejection outcome). A provisional record that reaches its TTL without confirmation is archived with an `expired-provisional` reason and leaves active retrieval. Expiry is recorded; it is signal for the producing loop, not silent deletion.
-
-**Visibility and rollback.** Every auto-promotion MUST be visible in proposal history and produce an audit event. A one-step rollback (archive the record, reopen the proposal as needs-review) MUST be available to the user for any provisional or provisionally-confirmed record.
-
-**Invariant.** The worst-case outcome of auto-promotion is a temporarily useless provisional suggestion that expires; it can never durably corrupt the workspace preference profile, mutate existing knowledge, or bypass conflict detection.
-
-TTL expiry and citation-count evaluation remain policy requirements, not authorization for a scheduler or hook. Their execution requires a separately accepted maintenance-trigger design and change plan; the recurring-schedule mechanism in `docs/specs/20260711-scheduler_recurring_event_triggers.md` is only a possible existing substrate.
-
-## Knowledge Manager Actions
-
-V1 Knowledge Manager actions are explicit requests to answer a bounded question, prepare source-traceable context material, draft a governed proposal, suggest duplicate-title repairs, or inspect knowledge health.
-
-No worker completion, ingest event, user edit, source update, review decision, clock, or scheduler event implicitly invokes Knowledge Manager. A future passive or scheduled trigger requires separately accepted scope and must reuse the deterministic service without introducing hooks, private lifecycle state, or another proposal owner.
-
-## Health Checks
-
-A health check should produce a prioritized report, not an unbounded rewrite.
-
-The accepted V1 report is limited to whether knowledge exists and whether duplicate normalized titles need attention, as defined by the Knowledge Manager service spec. The broader categories below are a non-authorizing governance checklist for a separately scoped future health operation.
-
-It should identify:
-
-- invalid records
-- stale records
-- duplicate topics
-- orphan pages
-- broken links
-- missing citations
-- unreviewed high-impact observations
-- claims with weak evidence
-- conflicting pages or claims
-- schema drift
-
-The V1 health check is report-only and MUST NOT apply repairs, draft proposals, or mutate knowledge.
-
-A future explicit governed repair-apply operation may be separately authorized to apply low-risk repairs without review only when they do not change meaning, authority, sensitivity, scope, freshness, retrieval eligibility, or future worker behavior. The following list is an eligibility boundary, not current execution authority.
-
-Potential low-risk repair eligibility:
-
-- normalize frontmatter ordering and formatting
-- add missing non-semantic derived metadata that can be computed deterministically
-- repair internal links when the target move or rename is unambiguous
-- update generated indexes from already-valid records
-- remove duplicate whitespace or renderer-only formatting noise
-- attach a missing source-reference backlink when both sides already identify each other
-
-Any future repair that changes claims, conclusions, source interpretation, sensitivity, scope, review state, schema type, freshness, retrieval eligibility, or future worker behavior must become a proposal or needs-review record.
-
-## Context Package Trace
-
-Every context package should be explainable after the worker turn.
-
-The trace is the audit counterpart of agent-near context. It preserves source diversity and policy decisions even when the worker saw a coherent projected package.
-
-The trace should record:
-
-- selected knowledge pages
-- selected claims
-- selected source snippets or derived representations
-- selected artifacts or work-history records
-- selection rationale where practical
-- excluded candidates and exclusion reasons when useful
-- policy, sensitivity, freshness, or token-budget exclusions
-- package timestamp
-- target worker turn
-- package digest or equivalent identity
-
-The trace does not need to expose unsafe or sensitive content to every product surface.
-
-It may be split between item-visible records, audit records, and internal diagnostics.
-
-The minimum requirement is that Core can later answer what the worker saw, what it did not see, and why.
-
-Minimal context package trace visibility should follow the context package spec.
-
-Item-visible trace projection should include:
-
-- context package id or digest
-- selected high-level source categories
-- citations used by worker-visible outputs when available
-- package freshness or sensitivity warning when user-relevant
-- short explanation when important context was excluded for policy, sensitivity, or missing source reasons
-
-Audit-only trace detail should include:
-
-- selected and excluded candidate ids
-- exact exclusion reasons
-- policy decision ids
-- sensitivity and freshness decisions
-- budget fitting decisions
-- package assembly timestamp
-- package digest inputs
-- source, derived representation, knowledge page, claim, artifact, and work-history references
-
-Restricted trace evidence may hold redacted snippets, raw candidate summaries, or sensitive source locators under the evidence and audit retention rules. Product APIs must not expose restricted trace evidence by default.
-
-## Capability Conformance Requirements
-
-Current first-slice Knowledge APIs and future worker capabilities should enforce conformance levels consistently.
-
-| Surface | Minimum conformance |
+| Surface | Minimum governance |
 | --- | --- |
-| Import or capture source material | `OKF-compatible` when importing OKF material; otherwise source material may be retained as raw source pending transformation. |
-| Draft create or rough note save | OpenKit required fields when the record is governed; invalid material may be saved as invalid draft. |
-| Proposal creation | `OpenKit-profile-valid` for the proposed target shape, or an invalid draft with validation errors attached. |
-| Active knowledge save | `Workspace-schema-valid`. |
-| User notebook default view | Active `Workspace-schema-valid` records plus reviewable proposals and user-selected maintenance views. |
-| Knowledge search for default worker context | Active `Workspace-schema-valid` records. |
-| Worker `knowledge.search` and `knowledge.read` capability routes | Active `Workspace-schema-valid` records unless an explicit policy permits lower-conformance source snippets. |
-| Context package selected knowledge | Active `Workspace-schema-valid` records unless the trace records why a lower-conformance source or snippet was permitted. |
-| Knowledge Manager health and repair | Any conformance level, but repairs must not promote invalid material into active retrieval without validation and review where required. |
+| Import or capture | Portable source material or lower-conformance draft. |
+| Draft create or rough note | OpenKit required fields when governed; invalid material may remain an invalid draft. |
+| Proposal creation | `OpenKit-profile-valid` target shape or an invalid draft with attached errors. |
+| Active Knowledge save | Human-authored or human-reviewed, policy-eligible, `Workspace-schema-valid` page with complete content and actor lineage. |
+| Default notebook view | Active valid pages plus pending proposals and user-selected maintenance views. |
+| Default worker Knowledge selection | Active, authorized, non-expired, policy-eligible `Workspace-schema-valid` pages. |
+| Lower-conformance source snippet | Explicit policy authorization plus traceable source identity and exclusion reasoning. |
+| Health inspection | Any conformance level, report only. |
 
 ## Current Implementation Projection
 
-The current implementation is the accepted V1 projection of the target Knowledge Store:
+The current V1 implements portable governed page projection, the default Workspace Schema, validation and secret-like-field rejection, source identity and first text-derived metadata, observation and claim ledgers, conflict recording and resolution, derived indexes, deterministic retrieval traces, proposal review, and explicit Knowledge context preparation.
 
-The removed `@openkit/mcp` facade must not be restored through compatibility or replacement work. The current Knowledge interface is the transport-neutral operation catalog exposed through the unified `openkit` Skill and its bundled CLI.
+The transport-neutral operation catalog, bundled CLI, and public App API project those existing owners; no user-facing MCP facade remains.
 
-- `packages/protocol` defines `KnowledgeEntrySchema` with `preference`, `project-context`, and `task-summary` kinds. This is a minimal workspace knowledge record, not the target governed Knowledge Store schema.
-- `packages/protocol/src/models/item.ts` and event schemas expose `knowledge-injection` item projection for product-visible bounded context injection.
-- `packages/protocol/src/requests/workspace.ts` exposes knowledge create, update, delete, and list request shapes.
-- `apps/nanocore/src/lib/store.ts` stores workspace knowledge entries and app-local knowledge proposals in the current file-backed store snapshot, then projects accepted knowledge entries into governed Markdown pages with a default workspace schema file.
-- `apps/nanocore/src/app.ts` exposes `/api/workspaces/:workspaceId/knowledge` create, update, delete, and list routes with idempotent command handling.
-- NanoCore currently exposes no worker Knowledge capability routes because Agent Environment Packages declare the capability plane disabled. The conformance table above remains the accepted requirement for future `knowledge.search` and `knowledge.read` routes.
-- `apps/nanocore/src/action-center.ts` projects pending knowledge proposals into human-attention rows for accept, edit, reject, or defer review actions.
-- No generic internal-role tool executor or `knowledge-manager` runner is wired; direct deterministic Knowledge Manager operations are exposed through governed App API routes for answer, context preparation, proposal draft, repair suggestion, and health inspection, including the context-package path below.
-- `apps/nanocore/src/storage/fs-layout.ts` creates workspace `knowledge/` and `sources/` directories.
-- `apps/nanocore/src/knowledge/okf.ts` implements the first-slice OKF parser, OpenKit Knowledge Profile validator, default workspace schema parser, workspace schema validator, conformance computation, and secret-like field rejection.
-- First-slice observations are stored as workspace maintenance records in monthly JSONL ledgers under `knowledge/observations/<YYYYMM>.jsonl`. NanoCore, `@openkit/core-client`, and the unified `openkit` Skill's bundled CLI expose append/list surfaces for observation records with kind, summary, source references, scope, producer, confidence, freshness, status, observed timestamp, and creation timestamp; the records remain outside the user-facing notebook and default derived indexes.
-- First-slice claims are stored as workspace maintenance records in monthly JSONL ledgers under `knowledge/claims/<YYYYMM>.jsonl`. NanoCore, `@openkit/core-client`, and the unified `openkit` Skill's bundled CLI expose append/list surfaces for claim records with statement, source references, scope, producer, confidence, freshness, review state, conflict status, and timestamps; the records remain outside the user-facing notebook and default derived indexes. Accepted, current, non-conflicting claims can be promoted into pending Knowledge Proposals through the existing review lifecycle, and accepted claim-derived proposals create source-linked `project-context` knowledge entries.
-- First-slice conflicts are stored as workspace maintenance records in monthly JSONL ledgers under `knowledge/conflicts/<YYYYMM>.jsonl`. NanoCore, `@openkit/core-client`, and the unified `openkit` Skill's bundled CLI expose append/list/resolve surfaces for conflict records with subject references, source references, status, summary, suggested actions, producer, optional resolution metadata, and timestamps; the records remain outside the user-facing notebook and default derived indexes. Resolution is append-only: the ledger keeps prior rows while list/read surfaces project the latest row per conflict id.
-- Current derived indexes file-backed knowledge pages only after they validate as active `Workspace-schema-valid` records, local `source:<sourceId>` or `knowledge:<knowledgeEntryId>` references resolve to registered workspace source or knowledge records, and external source references pass the V1 HTTP(S) URL syntax gate. The same rebuild pass writes `indexes/knowledge-links.json`, a directed Markdown concept-link graph for active valid pages with broken local links recorded as unresolved edges and external URLs excluded from the concept graph, `indexes/knowledge-validation.json`, a per-page validation report for conformance, active/indexed state, profile/schema errors, and local or external reference errors, `indexes/knowledge-source-refs.json`, a source-reference index that classifies page references as registered sources, workspace knowledge references, or external references with local resolution or external syntax status, and `indexes/knowledge-fts.json`, a portable full-text term index over active valid knowledge page titles and bodies. Registered text source material writes derived representation metadata under `sources/derived/<sourceId>/text.json`; source register/read responses expose that metadata without returning captured content, and workspace export/import preserves it. NanoCore and `@openkit/core-client` expose a read-only derived-index surface for those four knowledge indexes, and the unified `openkit` Skill projects it through its bundled CLI. NanoCore also exposes deterministic retrieval that ranks active valid pages from the portable full-text index, returns selected and excluded candidates with reasons, and persists the same trace to `knowledge/traces/<YYYYMM>.jsonl`. Knowledge Manager context material preparation selects accepted, current, non-conflicting claims related to selected knowledge material, carries unresolved conflicts related to selected knowledge or selected claims, returns selected claim ids, selected conflict ids, selected explicit artifact ids, selected artifact records, and the compact context policy summary in the package trace, persists the returned response snapshot under `knowledge/context-packages/<YYYYMM>.jsonl`, exposes a read operation through the bundled CLI for one persisted trace by context package id, writes a worker-visible `/openkit/context` snapshot with captured text snippets for registered sources referenced by selected knowledge material and files for explicitly selected inline artifacts, workspace files, and materialized workspace-root text files, and exposes digest-checked readback for that stored snapshot. The manifest carries byte/file/token-estimate budget metadata, package-relative paths, `normal` or `redacted` entry sensitivity labels, and source entry provenance fields; worker-visible files apply raw-secret-shaped material redaction before write; unavailable referenced sources are recorded as `source_unavailable` decisions. Broader OKF serialization, richer source conversion, semantic retrieval, external reference fetching, scheduled maintenance, and richer merge/edit proposal mechanics remain deferred future work.
+Worker-facing Knowledge capability routes remain disabled and are not current product behavior.
 
-## User Control
+The current accepted-proposal path does not freeze exact create-only page bytes and digest, preserve complete proposal-to-review-to-page lineage, provide bounded unchanged-page reversal, or enforce the fail-closed partial-application contract above, so this specification remains `Implementation: Partial`.
 
-The user or team remains the editor-in-chief.
+The existing standalone Knowledge context trace and materialization are duplicate implementation projections scheduled for deletion by G07. Context preparation must reference the single governed retrieval trace, and only S39 may materialize or prove worker delivery.
 
-The Knowledge Manager can maintain, propose, and repair. It should not silently rewrite active high-impact knowledge when schema or policy requires review.
+No provisional auto-promotion, citation confirmation, TTL expiry, scheduled Knowledge maintenance, or passive Knowledge Manager trigger is implemented or accepted.
 
-Users should be able to inspect and edit the notebook without understanding every maintenance record.
+Concrete implementation detail remains in the Knowledge Store implementation, Knowledge Manager service, and Context Package specifications rather than being duplicated here.
 
-## Consequences
+## Testing Strategy / Acceptance Criteria
 
-- OpenKit can use OKF without treating OKF's minimal rules as the full governance model.
-- Workspaces can customize their schemas while preserving OpenKit-wide base types and required governance fields.
-- Programmatic validation prevents schema drift before it becomes a knowledge quality problem.
-- Knowledge Manager maintenance prevents the notebook from accumulating stale, duplicate, or unreviewed material.
-- Observations can accumulate evidence without cluttering the user-facing notebook.
-- Schema lifecycle rules protect existing knowledge when a workspace schema evolves.
-- Conformance levels let OpenKit import open OKF material without allowing invalid records into active retrieval.
-- Source identity and context package traces make knowledge use debuggable after worker execution.
+Use existing package and NanoCore suites; this specification authorizes no new runner, harness, or fixture framework.
+
+- L1 governance tests cover active-write validation, secret rejection, source identity, generated-pending and human-review authority, direct-mutation lineage, create-only application, bounded reversal, and fail-closed partial evidence.
+- L2 contract tests prove proposal, review, page, command, actor, source, digest, and audit lineage remains resolvable without exposing restricted evidence or adding another lifecycle owner.
+- S61 owns implementation and interruption tests, S17 owns caller and error tests, S39 owns direct-Task delivery tests, and S18 owns the single real L6 composition; this governance spec does not duplicate them.
+
+Acceptance requires all of these predicates:
+
+- Generated learning never becomes active without human Knowledge Review.
+- One accepted V1 generated proposal creates at most one exact active page.
+- Every active proposal-created page has the complete business activation tuple; every claimed successful or replayed application additionally has its request, Audit, and receipt evidence.
+- Missing or contradictory application evidence fails `recovery_required` without inference or repair.
+- Workspace-only, imported, reconstructed, or standalone Knowledge provenance cannot claim worker output.
+- Only the owning worker delivery trace proves later Knowledge use.
+
+## Risks & Mitigations
+
+- Risk: human review becomes noisy before real proposal volume exists. Mitigation: allow bounded batching and prioritization without changing acceptance authority; automate only after real-use evidence.
+- Risk: separate review and page writes leave a bounded interrupted state. Mitigation: report success only after both verify, allow only the same authorized command to complete its one deterministic missing page effect, and return `recovery_required` for every contradictory state.
+- Risk: reversal is mistaken for undoing downstream effects. Mitigation: reversal changes future active Knowledge only and preserves prior use evidence.
+- Risk: Knowledge selection trace duplicates Context Package authority. Mitigation: retain only the Knowledge contribution and defer package identity, delivery, and replay to the owning contract.
 
 ## Resolved Decisions
 
-- Knowledge Store is the canonical target concept; the older `memory` implementation naming has been removed.
-- OKF-compatible Markdown is the portable envelope, but OpenKit Knowledge Profile and Workspace Schema decide active OpenKit validity.
-- Programmatic validation enforces mandatory structure. Knowledge Manager maintains semantic health. User or team review preserves authority.
-- Invalid active knowledge must not silently enter retrieval. Invalid material may be rejected, blocked, or saved as an invalid draft excluded from active retrieval.
-- Raw sources are evidence and should be immutable by default. Source replacement creates a new version or capture record.
-- Observations are low-friction signals, not notebook pages by default.
-- Claims need stronger governance than observations because workers may reuse them through context packages.
-- High-impact generated output, observations, claims, and Knowledge Manager repairs require review unless policy explicitly allows direct application.
-- Artifacts are not a required middle step for ordinary ingest-to-knowledge updates.
-- Context package traces must make worker-visible knowledge selection explainable after execution.
-- All governed records require the OpenKit required fields in the first slice. Workspace schemas may strengthen but not weaken them.
-- Invalid active edits are blocked. Invalid imported, rough, or drafted material may be saved as invalid drafts excluded from active retrieval.
-- Workspace schema changes use a reviewed dry-run migration flow with validation reports and previous-schema preservation.
-- First-slice observations live in workspace maintenance JSONL ledgers, with digests or proposals used to surface important patterns.
-- V1 Knowledge Manager may only report or suggest repairs. A future separately accepted repair-apply operation may auto-apply an eligible non-semantic low-risk repair; meaning-changing or retrieval-affecting repairs require proposals or review.
-- Default worker knowledge search, read, and context package selection require active `Workspace-schema-valid` records unless explicit policy permits lower-conformance source snippets.
-- Minimal context package trace visibility is split into item-visible package and citation summaries, audit-only selected or excluded detail, and restricted evidence for sensitive trace material.
-- Auto-promotion without review exists only through the Provisional Auto-Promotion path: strictly additive diffs of designated types, no conflict-detection hits, provisional review state with TTL and citation-based confirmation, per-workspace opt-in, visible history, and one-step rollback.
+- OKF-compatible Markdown is the portable envelope; the OpenKit Knowledge Profile and Workspace Schema decide active validity.
+- Programmatic validation enforces structure, Knowledge Manager operations support bounded maintenance, and authorized humans own Knowledge Review.
+- Invalid material may remain a draft but never silently enters active retrieval.
+- Raw captured sources are immutable by default and Derived Representations retain exact source-version lineage.
+- Observations and claims remain maintenance evidence until human-reviewed proposals promote reusable interpretation.
+- Generated learning is always a pending source-linked proposal; provisional auto-promotion and self-confirmation do not exist.
+- Accepted generated-proposal application is one idempotent create-only Knowledge Store mutation with exact page-content lineage and fail-closed partial-state handling.
+- Reversal names the original accepted proposal and review, removes only their unchanged created page through one authorized command, retains command and audit evidence, and never creates another proposal, review, content-history family, or claim of undoing prior external effects.
+- Knowledge selection contributes traceable page ids, content digests, and exclusions, while the separately owned worker delivery trace alone proves worker receipt.
 
 ## Deferred / Future Work
 
-- Add full YAML-compatible OKF serializer and lint rules.
-- Extend OpenKit Knowledge Profile and workspace schema files beyond the first-slice validator.
-- Extend the implemented source identity registry with binary byte-copy materialization, richer derived representation records, and source-reference validation beyond local source and knowledge ids.
-- Extend observation, claim, conflict, proposal, review, and health-check records beyond the first implemented slices.
-- Extend context package traces with complete audit-only exclusion, sensitivity, freshness, and replay detail beyond the V1 readable trace and digest-checked materialization.
-- Consider a separately accepted maintenance-trigger design only after the on-demand V1 health-check and repair-suggestion paths have real usage evidence.
-- Add richer migration and repair tools for legacy or imported external notebook bundles that cannot be projected through the current governed page and proposal surfaces.
+- Richer source conversion, binary capture, semantic retrieval, and broader source-reference validation remain deferred until current retrieval evidence justifies them.
+- Broader health and repair classes remain deferred; meaning-changing repair always requires a proposal and human review.
+- Passive, event-triggered, or scheduled proposal drafting requires real-use evidence plus a separately accepted trigger contract and may never authorize promotion.
+- Richer imported notebook migration tools remain deferred until real incompatible bundles require them.
 
 ## Links
 
 - `docs/core/knowledge.md`
+- `docs/specs/20260703-knowledge_store_implementation.md`
+- `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md`
 - `docs/specs/20260703-worker_context_package.md`
-- `docs/core/storage.md`
-- `docs/core/agent-capability.md`
-- `docs/specs/20260703-worker_agent_capability.md`
 - `docs/specs/20260710-self_improvement_evaluation_loop.md`
-- `docs/specs/20260711-scheduler_recurring_event_triggers.md`
-- `docs/specs/superseded/agent-workflow/20260526-nano_core_lightweight_agents.md`

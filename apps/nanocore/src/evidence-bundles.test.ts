@@ -15,7 +15,7 @@ import { applyScopedMigrations } from './storage/migrate.js';
 describe('evidence bundles', () => {
   it('accepts exact stable-id replays and rejects divergent content', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-bundle-replay-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
     const record = {
       id: 'evb_runtime_provenance_replay',
       workspaceId: 'ws_demo',
@@ -66,7 +66,7 @@ describe('evidence bundles', () => {
 
   it('hides runtime provenance raw refs without changing other restricted projections', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-bundle-projection-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -130,7 +130,7 @@ describe('evidence bundles', () => {
 
   it('expires old ephemeral diagnostic evidence without deleting governed records', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-bundle-compaction-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -240,10 +240,28 @@ describe('evidence bundles', () => {
     }
   });
 
+  it('rejects compaction outside the open Workspace database lineage', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-bundle-lineage-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      expect(() =>
+        compactWorkspaceEvidenceBundles({
+          workspaceDb,
+          workspaceId: 'ws_other',
+          olderThan: '2026-07-02T00:00:00.000Z',
+        })
+      ).toThrow('Evidence bundle compaction has different Workspace lineage.');
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
   it('expires restricted runtime provenance without removing its normalized index', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-expiry-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
-    const workspaceRoot = join(dataRoot, 'users', 'local-user', 'workspaces', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
     const rawBundleId = 'evb_runtime_provenance_raw_expired';
     const indexBundleId = 'evb_runtime_provenance_index_retained';
     const rawRoot = join(workspaceRoot, 'evidence', 'backend', rawBundleId);
@@ -328,7 +346,7 @@ describe('evidence bundles', () => {
 
   it('quarantines imported evidence bundles with unknown evidence kinds', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-bundle-kind-quarantine-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -404,7 +422,7 @@ describe('evidence bundles', () => {
 
   it('strips unknown optional fields from imported evidence bundles', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-bundle-unknown-fields-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);

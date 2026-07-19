@@ -82,7 +82,7 @@ The missing contract is a workspace kind that hosts that lightweight entry point
 
 OpenKit will add a `quick-chat` workspace kind.
 
-NanoCore will seed one Quick Chat Workspace, and no Demo Workspace, for each local or server user when that user has no Workspace state.
+NanoCore ensures one Quick Chat Workspace, and no Demo Workspace, for every active local or server user. Local boot ensures the local user's owner relationship, and Better Auth ensures a server user's Workspace and owner relationship before recording each new active session; both paths are idempotent, so a pre-existing project Workspace never suppresses the personal Quick Chat Workspace and an interrupted first attempt can retry on the next sign-in without a repair workflow.
 
 Quick Chat will be the default workspace by being the only fresh workspace, not by a separate `defaultWorkspaceId` record.
 
@@ -160,9 +160,9 @@ Keep Chat Mode and Knowledge Store routes available in Quick Chat, and convert a
 
 `packages/protocol/src/models/workspace.ts` owns `WorkspaceKindSchema` and `WorkspaceRecordSchema`.
 
-`apps/nanocore/src/lib/store.ts` owns the fresh data-root seed state and the Demo Workspace fixture helper.
+`apps/nanocore/src/lib/store.ts` owns the explicit idempotent Quick Chat Workspace record constructor and the Demo Workspace fixture helper. Local app composition and the server active-session hook own provisioning; the generic shared-store constructor creates no mode-specific or authority-free Workspace.
 
-Current Workspace creation records the canonical owner in `workspace_registry` and an active owner membership, while user-scoped stores keep each user's Quick Chat data independent. The centralized Quick Chat guard is applied to repository setup, Task Mode, Goal Mode, Git push, and direct worker-Turn entry, with focused route tests. The specification remains Partial because the accepted top-level owner-independent Workspace root and the complete owner-only rejection across invitation, membership, role, transfer, and portable sharing lifecycles are not yet implemented; existing registry, membership, and project-operation guards are current evidence, not future gaps.
+Each active local or server user receives one deterministic top-level Quick Chat Workspace and canonical owner membership before product use; the shared process store no longer uses user-scoped physical ownership. The complete sharing lifecycle rejects invitation, role change, removal, leave, transfer, administrator recovery, and portable source-authority reuse for Quick Chat, while the centralized guard rejects repository setup, Task Mode, Goal Mode, Git push, and direct worker-Turn entry. The specification remains Partial only because the rebuilt Web must still project Quick Chat's project-only affordance boundary under S10; the kernel and App API ownership contract is implemented.
 
 `apps/nanocore/src/app.ts` owns repository setup, Task Mode, Goal Mode, Chat Mode, and worker-turn routes.
 
@@ -204,6 +204,7 @@ The implementation adds a domain-specific special case, but it is centralized as
 
 - Protocol schema tests accept `kind: "quick-chat"` and reject unknown workspace kinds.
 - NanoCore store tests prove a fresh store lists only Quick Chat and keeps it worker-default-free.
+- Server auth flow tests prove sign-up establishes the actor-derived Quick Chat Workspace and canonical owner membership before the session can list Workspaces.
 - NanoCore route tests prove Quick Chat rejects repository setup with a stable error code.
 - NanoCore route tests prove Quick Chat rejects Task Mode, Goal Mode, and direct worker-turn startup before worker execution.
 - Multi-user route tests prove every invitation, membership, and owner-transfer operation rejects Quick Chat before mutation.

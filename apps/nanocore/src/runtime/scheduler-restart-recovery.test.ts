@@ -3,6 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
+import type { ActorRef } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -14,7 +15,6 @@ import {
   dispatchNextSchedulerEntry,
   markSchedulerSessionLeaseReleasing,
   requireSchedulerSessionLease,
-  requireSchedulerSessionLeaseAdmissionContext,
   upsertSchedulerCapacityRecord,
   upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
@@ -22,7 +22,7 @@ import {
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { LOCAL_USER_ID } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
+import { recordTestAgentEnvironmentPackage as recordBaseTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from './aep-snapshot-ledger.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
@@ -57,6 +57,22 @@ function createMigratedCoreDb() {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-scheduler-restart-')));
   applyMigrations(coreDb);
   return coreDb;
+}
+
+/** Records one scheduler-recovery package with an explicit or default trigger actor. */
+function recordTestAgentEnvironmentPackage(
+  workspaceDb: ReturnType<typeof openWorkspaceDb>,
+  input: {
+    readonly suffix: string;
+    readonly triggerActor?: ActorRef;
+    readonly workspaceInputIds: readonly string[];
+  }
+): AgentEnvironmentPackage {
+  return recordBaseTestAgentEnvironmentPackage(workspaceDb, {
+    suffix: input.suffix,
+    triggerActor: input.triggerActor ?? { kind: 'user', id: LOCAL_USER_ID },
+    workspaceInputIds: input.workspaceInputIds,
+  });
 }
 
 /** Seeds one dispatchable scheduler target. */
@@ -100,10 +116,11 @@ function seedTarget(coreDb: ReturnType<typeof createMigratedCoreDb>, suffix: str
 function dispatchLease(
   coreDb: ReturnType<typeof createMigratedCoreDb>,
   suffix: string,
-  userId = LOCAL_USER_ID
+  triggerActor: ActorRef = { kind: 'user', id: LOCAL_USER_ID }
 ): void {
   seedTarget(coreDb, suffix);
   createSchedulerAdmissionEntry(coreDb, {
+    triggerActor,
     priorityClass: 'interactive',
     profileRef: 'profile_worker',
     queueEntryId: `queue_${suffix}`,
@@ -113,7 +130,6 @@ function dispatchLease(
     threadId: `thread_${suffix}`,
     turnId: `turn_${suffix}`,
     turnInput: `Run ${suffix}`,
-    userId,
     workspaceId: 'ws_demo',
     now: () => '2026-07-05T00:00:01.000Z',
   });
@@ -200,8 +216,7 @@ function recordBackendSession(
   suffix: string,
   state: WorkerBackendSessionState = 'materializing'
 ): void {
-  const { userId } = requireSchedulerSessionLeaseAdmissionContext(coreDb, `lease_${suffix}`);
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, userId, 'ws_demo');
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
   try {
     applyScopedMigrations(workspaceDb);
     if (
@@ -444,7 +459,7 @@ describe('scheduler restart recovery', () => {
     ['restart_zero_input', []],
   ] as const)('projects %s cleanup into one package-level teardown record', async (suffix, workspaceInputIds) => {
     const coreDb = createMigratedCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -497,7 +512,7 @@ describe('scheduler restart recovery', () => {
 
   it('repairs a pending exact handoff without changing physical cleanup evidence time', async () => {
     const coreDb = createMigratedCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
     const suffix = 'restart_handoff_marker_repair';
     const clocks = [
       '2026-07-05T00:01:00.000Z',
@@ -556,7 +571,7 @@ describe('scheduler restart recovery', () => {
 
   it('holds capacity when Core claims a complete handoff but its workspace rows are missing', async () => {
     const coreDb = createMigratedCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
     const suffix = 'restart_missing_workspace_handle';
     let cleanupCalls = 0;
 
@@ -622,7 +637,7 @@ describe('scheduler restart recovery', () => {
 
   it('rejects a workspace handle owned by a different physical backend session', async () => {
     const coreDb = createMigratedCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
     const suffix = 'restart_mismatched_workspace_handle';
 
     try {
@@ -768,7 +783,7 @@ describe('scheduler restart recovery', () => {
 
   it('fails critical restart without releasing admission when backend cleanup fails, then retries', async () => {
     const coreDb = createMigratedCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
     const suffix = 'restart_cleanup_retry';
     let cleanupAttempts = 0;
 
@@ -1096,7 +1111,7 @@ describe('scheduler restart recovery', () => {
 
   it('replays a cleaned zero-input teardown at a later time without duplicating evidence', async () => {
     const coreDb = createMigratedCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
     const suffix = 'restart_cleaned_evidence_replay';
     let cleanupCalls = 0;
 
@@ -1162,7 +1177,14 @@ describe('scheduler restart recovery', () => {
     const store = createDemoStore({ dataRoot });
     const turnId = 'turn_restart_product_projection';
     const agentSessionId = 'as_restart_product_projection';
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Recover this turn', null, { turnId });
+    const turn = store.createTurn(
+      'ws_demo',
+      'th_demo',
+      'Recover this turn',
+      { kind: 'user', id: 'user_local' },
+      null,
+      { turnId }
+    );
     store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: turn.startedAt ?? '2026-07-05T00:00:01.000Z',
@@ -1175,6 +1197,7 @@ describe('scheduler restart recovery', () => {
     });
     seedTarget(coreDb, 'product_projection');
     createSchedulerAdmissionEntry(coreDb, {
+      triggerActor: { kind: 'user', id: 'user_local' },
       priorityClass: 'interactive',
       profileRef: 'profile_worker',
       queueEntryId: 'queue_product_projection',
@@ -1291,7 +1314,7 @@ describe('scheduler restart recovery', () => {
         providerRegistry: new ProviderRegistry([]),
         schedulerEpoch: 9,
         startupTimeoutMs: 120_000,
-        storeForUserId: () => restartedStore,
+        store: restartedStore,
         turnExecutor,
       });
       expect(retry.startedTurns).toEqual([]);
@@ -1474,18 +1497,24 @@ describe('scheduler restart recovery', () => {
     }
   });
 
-  it('projects recovery into the admission owner workspace instead of the local user', async () => {
+  it('projects recovery into the owner-independent workspace for a non-local admission user', async () => {
     const coreDb = createMigratedCoreDb();
-    const userId = 'user_recovery_owner';
-    const ownerWorkspaceDb = openWorkspaceDb(coreDb.dataRoot, userId, 'ws_demo');
-    const localWorkspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
     const suffix = 'restart_owner_workspace';
+    const triggerActor = {
+      kind: 'automation',
+      id: 'automation_recovery_owner',
+      responsibleUserId: 'user_recovery_owner',
+    } as const;
 
     try {
-      applyScopedMigrations(ownerWorkspaceDb);
-      applyScopedMigrations(localWorkspaceDb);
-      dispatchLease(coreDb, suffix, userId);
-      recordTestAgentEnvironmentPackage(ownerWorkspaceDb, { suffix, workspaceInputIds: [] });
+      applyScopedMigrations(workspaceDb);
+      dispatchLease(coreDb, suffix, triggerActor);
+      recordTestAgentEnvironmentPackage(workspaceDb, {
+        suffix,
+        triggerActor,
+        workspaceInputIds: [],
+      });
       recordBackendSession(coreDb, suffix, 'launching');
 
       await runSchedulerRestartRecovery(coreDb, {
@@ -1495,18 +1524,56 @@ describe('scheduler restart recovery', () => {
       });
 
       expect(
-        listWorkspaceRuntimeEvidence(ownerWorkspaceDb, 'ws_demo').filter(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo').filter(
           (record) => record.phase === 'teardown'
         )
       ).toHaveLength(1);
-      expect(
-        listWorkspaceRuntimeEvidence(localWorkspaceDb, 'ws_demo').filter(
-          (record) => record.phase === 'teardown'
-        )
-      ).toEqual([]);
     } finally {
-      localWorkspaceDb.sqlite.close();
-      ownerWorkspaceDb.sqlite.close();
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects restart recovery when the package trigger actor differs from admission', async () => {
+    const coreDb = createMigratedCoreDb();
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    const suffix = 'restart_actor_mismatch';
+    let cleanupCalls = 0;
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      dispatchLease(coreDb, suffix, {
+        kind: 'automation',
+        id: 'automation_admission',
+        responsibleUserId: 'user_recovery_owner',
+      });
+      recordTestAgentEnvironmentPackage(workspaceDb, {
+        suffix,
+        triggerActor: {
+          kind: 'automation',
+          id: 'automation_package',
+          responsibleUserId: 'user_recovery_owner',
+        },
+        workspaceInputIds: [],
+      });
+      recordBackendSession(coreDb, suffix, 'launching');
+
+      await expect(
+        runSchedulerRestartRecovery(coreDb, {
+          cleanupBackendSession: async () => {
+            cleanupCalls += 1;
+          },
+          now: () => '2026-07-05T00:01:00.000Z',
+          projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+        })
+      ).rejects.toThrow('does not match scheduler trigger actor');
+
+      expect(cleanupCalls).toBe(1);
+      expect(getWorkerBackendSession(coreDb, `lease_${suffix}`)).toMatchObject({
+        state: 'physical-cleaned',
+      });
+    } finally {
+      workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
   });

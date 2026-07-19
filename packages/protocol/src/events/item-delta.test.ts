@@ -270,6 +270,7 @@ describe('item delta validation', () => {
       type: 'artifact-reference',
       artifactId: 'ar_demo',
       artifactVersion: 1,
+      lastMutationRequestId: 'req_artifact_demo',
       title: 'Artifact',
       summary: null,
     });

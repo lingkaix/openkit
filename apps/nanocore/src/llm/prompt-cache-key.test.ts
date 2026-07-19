@@ -21,10 +21,9 @@ function providerConfig(
     backend: 'pi-ai',
     baseUrl: 'https://api.example.test/v1',
     displayName: 'OpenAI',
-    extraBody: {},
-    extraHeaders: {},
     gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
     id: 'openai',
+    models: ['gpt-test'],
     requiresApiKey: true,
     ...overrides,
   };

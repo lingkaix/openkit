@@ -7,6 +7,7 @@ default_tool: core_client
 timeout_seconds: 3600
 requires_real_provider: true
 requires_real_codex: true
+contracts: docs/specs/20260704-task_mode_worker_delegation.md, docs/specs/20260711-worker_runtime_subagent_provenance.md, docs/specs/20260616-agent_environment_package.md
 ---
 
 # Verify Real OpenShell Codex Runtime Provenance
@@ -67,7 +68,6 @@ Verify that a release owner can use the public OpenKit App API through Core Clie
 
 ## Deterministic Assertions
 
-- The selected story metadata requires real provider and real Codex execution.
 - NanoCore status and runtime diagnostics are readable before mutation, and runtime diagnostics report that the target accepts product work.
 - A dedicated acceptance workspace is created through the public App API before thread creation and repository linking.
 - Repository linking succeeds for the provided repository path.

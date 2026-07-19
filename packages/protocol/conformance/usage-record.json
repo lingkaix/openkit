@@ -1,9 +1,10 @@
 {
-  "protocolVersion": "0.3.0",
+  "protocolVersion": "0.4.0",
   "schema": "usage-record",
   "data": {
     "id": "0190f4c8-0013-7abc-8def-000000000013",
     "workspaceId": "0190f4c8-0001-7abc-8def-000000000001",
+    "responsibleUserId": "0190f4c8-0000-7abc-8def-000000000000",
     "threadId": "0190f4c8-0002-7abc-8def-000000000002",
     "turnId": "0190f4c8-0003-7abc-8def-000000000003",
     "itemId": "0190f4c8-0004-7abc-8def-000000000004",

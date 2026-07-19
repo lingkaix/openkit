@@ -367,8 +367,9 @@ export class PiAiGatewayClient {
         auth: {
           apiKey: {
             name: `${provider.displayName} API key`,
-            resolve: async () =>
-              provider.apiKey ? { auth: { apiKey: provider.apiKey } } : undefined,
+            resolve: async () => ({
+              auth: { apiKey: provider.apiKey ?? 'openkit-keyless' },
+            }),
           },
         },
         models: [model],

@@ -7,6 +7,7 @@ default_tool: playwright
 timeout_seconds: 300
 requires_real_provider: false
 requires_real_codex: false
+contracts: docs/specs/20260628-web_product_surface_projection.md, docs/core/vault.md
 ---
 
 # Inspect A Local Workspace From The Web UI

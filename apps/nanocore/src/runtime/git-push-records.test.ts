@@ -29,7 +29,7 @@ const baseGitConfig: WorkspaceRepositoryGitConfig = {
 describe('Git push records', () => {
   it('records one linked audit event when a Git push record is stored', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-git-push-record-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -122,7 +122,7 @@ describe('Git push records', () => {
 
   it('records preflight refusals before a remote push is attempted', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-git-push-attempt-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -193,7 +193,7 @@ describe('Git push records', () => {
 
   it('returns linked review ids for push attempts that pass preflight', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-git-push-attempt-ready-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);

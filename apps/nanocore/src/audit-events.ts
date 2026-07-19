@@ -9,6 +9,8 @@ export interface RecordServerAuditEventInput {
   coreDb: CoreDb;
   /** Stable audit event id for deterministic tests. */
   auditEventId?: string;
+  /** Workspace affected by one Core-owned lifecycle event. */
+  workspaceId?: string | null;
   /** Protocol version when the producer records one. */
   protocolVersion?: string;
   /** Thread lineage when available. */
@@ -25,6 +27,10 @@ export interface RecordServerAuditEventInput {
   vaultGrantId?: string | null;
   /** Request id when available. */
   requestId?: string | null;
+  /** Exact authenticated actor reference when available. */
+  actor?: AuditEvent['actor'];
+  /** Exact affected subject reference when available. */
+  subject?: AuditEvent['subject'];
   /** Agent lineage when available. */
   agentId?: string | null;
   /** Agent session lineage when available. */
@@ -35,6 +41,8 @@ export interface RecordServerAuditEventInput {
   action: string;
   /** Redacted resource reference. */
   resource?: string | null;
+  /** Positive authority revision after the mutation when applicable. */
+  resourceRevision?: number | null;
   /** Event outcome. */
   outcome: AuditEvent['outcome'];
   /** Event severity. */
@@ -73,6 +81,10 @@ export interface RecordWorkspaceAuditEventInput {
   vaultGrantId?: string | null;
   /** Request id when available. */
   requestId?: string | null;
+  /** Exact authenticated actor reference when available. */
+  actor?: AuditEvent['actor'];
+  /** Exact affected subject reference when available. */
+  subject?: AuditEvent['subject'];
   /** Agent lineage when available. */
   agentId?: string | null;
   /** Agent session lineage when available. */
@@ -83,6 +95,8 @@ export interface RecordWorkspaceAuditEventInput {
   action: string;
   /** Redacted resource reference. */
   resource?: string | null;
+  /** Positive authority revision after the mutation when applicable. */
+  resourceRevision?: number | null;
   /** Event outcome. */
   outcome: AuditEvent['outcome'];
   /** Event severity. */
@@ -125,7 +139,7 @@ export function recordServerAuditEvent(input: RecordServerAuditEventInput): Audi
 
   return recordAuditEvent(input.coreDb.sqlite, {
     ...input,
-    workspaceId: null,
+    workspaceId: input.workspaceId ?? null,
   });
 }
 
@@ -153,11 +167,14 @@ export function listWorkspaceAuditEvents(
         permission_decision_id,
         vault_grant_id,
         request_id,
+        actor_json,
+        subject_json,
         agent_id,
         agent_session_id,
         category,
         action,
         resource,
+        resource_revision,
         outcome,
         severity,
         summary,
@@ -192,11 +209,14 @@ export function listServerAuditEvents(coreDb: CoreDb): AuditEvent[] {
         permission_decision_id,
         vault_grant_id,
         request_id,
+        actor_json,
+        subject_json,
         agent_id,
         agent_session_id,
         category,
         action,
         resource,
+        resource_revision,
         outcome,
         severity,
         summary,
@@ -204,7 +224,6 @@ export function listServerAuditEvents(coreDb: CoreDb): AuditEvent[] {
         created_at,
         occurred_at
       FROM audit_events
-      WHERE workspace_id IS NULL
       ORDER BY created_at, audit_event_id`
     )
     .all()
@@ -263,11 +282,14 @@ function recordAuditEvent(
     permissionDecisionId: input.permissionDecisionId ?? null,
     vaultGrantId: input.vaultGrantId ?? null,
     requestId: protocolRequestIdOrNull(input.requestId),
+    actor: input.actor ?? null,
+    subject: input.subject ?? null,
     agentId: input.agentId ?? null,
     agentSessionId: input.agentSessionId ?? null,
     category: input.category ?? 'system',
     action: input.action,
     resource: input.resource ?? null,
+    resourceRevision: input.resourceRevision ?? null,
     outcome: input.outcome,
     severity: input.severity ?? 'info',
     summary: input.summary,
@@ -301,18 +323,21 @@ function insertAuditEvent(sqlite: CoreDb['sqlite'], event: AuditEvent): void {
         permission_decision_id,
         vault_grant_id,
         request_id,
+        actor_json,
+        subject_json,
         agent_id,
         agent_session_id,
         category,
         action,
         resource,
+        resource_revision,
         outcome,
         severity,
         summary,
         error_code,
         created_at,
         occurred_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       event.id,
@@ -325,11 +350,14 @@ function insertAuditEvent(sqlite: CoreDb['sqlite'], event: AuditEvent): void {
       event.permissionDecisionId,
       event.vaultGrantId,
       event.requestId,
+      event.actor === null ? null : JSON.stringify(event.actor),
+      event.subject === null ? null : JSON.stringify(event.subject),
       event.agentId,
       event.agentSessionId,
       event.category,
       event.action,
       event.resource,
+      event.resourceRevision,
       event.outcome,
       event.severity,
       event.summary,
@@ -354,11 +382,14 @@ function auditEventFromRow(row: unknown): AuditEvent {
     permissionDecisionId: event.permission_decision_id,
     vaultGrantId: event.vault_grant_id,
     requestId: event.request_id,
+    actor: event.actor_json ? JSON.parse(String(event.actor_json)) : null,
+    subject: event.subject_json ? JSON.parse(String(event.subject_json)) : null,
     agentId: event.agent_id,
     agentSessionId: event.agent_session_id,
     category: event.category,
     action: event.action,
     resource: event.resource,
+    resourceRevision: event.resource_revision ?? null,
     outcome: event.outcome,
     severity: event.severity,
     summary: event.summary,

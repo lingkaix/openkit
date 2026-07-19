@@ -1,28 +1,30 @@
 # Worker Shim
 
-`@openkit/worker-shim` provides the sandbox-local OpenKit Codex worker entrypoint.
+`@openkit/worker-shim` provides the generic sandbox-local OpenKit worker supervisor. Its single binary, `openkit-worker-shim`, consumes the fixed Agent Execution Package, selects one adapter from a literal static registry, and preserves one shared worker-control, process-group, transcript, workspace-publication, and lineage lifecycle.
 
-The package supplies one binary:
+Each adapter owns exactly two operations: `prepare` builds a native launch plan from the already resolved package, and `collect` normalizes the bounded native result. Runtime-specific command, environment, image, package, result-path, or protocol overrides are not accepted. The package does not materialize executable MCP configuration; declared Skill metadata remains inert package metadata.
 
-- `openkit-codex-shim`: supervises the Codex process, talks directly to NanoCore worker-control routes, and writes OpenKit transcript records.
+## Supported Adapters
 
-The implementation covers the durable transcript contract under `/openkit/session` and direct heartbeat and command handling.
+- `codex`: Codex 0.144.1 through the trusted NanoCore Responses relay only. The adapter owns the fixed launch arguments, isolated `CODEX_HOME`, race-safe final-message file, and optional pinned Codex runtime-provenance capture.
+- `opencode`: OpenCode 1.18.1 through the trusted NanoCore OpenAI-compatible relay only. The adapter supplies an isolated home, inline non-secret provider configuration, and fail-closed JSON-event collection.
+- `pi`: Pi 0.80.7 through the exact direct `anthropic/claude-sonnet-4-5` route only. The adapter disables optional native discovery surfaces and requires correlated terminal provider and model evidence.
 
-After the Codex child starts, the shim tolerates a bounded NanoCore outage. One memory-only 256-bit process key is committed by hash on heartbeat sequence zero; after a NanoCore restart, the same shim presents that key with the exact next heartbeat sequence before replaying the blocked request. Restarting the shim creates a new key and therefore fails closed instead of claiming the old lease.
+Every package must contain exactly one resolved LLM route. Codex and OpenCode reject direct-provider routes, while Pi rejects relay routes and every provider/model pair other than its one accepted direct pair.
 
-The image launcher transfers `OPENKIT_CONTROL_TOKEN` to the shim through an anonymous file descriptor and starts the supervisor with a clean allowlisted environment. The Codex child process never receives that token or undeclared parent-process values; it receives only the OpenShell `OPENKIT_WORKER_INFERENCE_TOKEN` placeholder in addition to the shared non-secret runtime allowlist.
+## Shared Supervision
 
-For one clean read-write Git workspace input, the Codex shim also captures worker changes through an isolated index and publishes `workspace.patch` followed by `workspace-changes.json` under the session directory. The shim rejects ambiguous inputs, hidden or pre-existing workspace changes, Git filters, unsupported file modes, and incomplete output publication so NanoCore receives one reviewable snapshot with explicit worker lineage.
+The supervisor emits `worker.ready` only after the native process starts and does not expose native argv or private turn input in that event. It retains adapter collection stdout exactly up to 16 MiB and drains native stdout and stderr while retaining diagnostic prefixes of at most 16 KiB. A bound violation fails the turn and terminates the process group.
 
-## Runtime Provenance
+The image launcher transfers `OPENKIT_CONTROL_TOKEN` through an anonymous file descriptor and starts the supervisor with an allowlisted environment. The native process never receives that control token or undeclared parent-process values. Turn-scoped native state is isolated below the session and removed after success, failure, or interruption.
 
-Runtime provenance is opt-in through the AEP `control.transcript.runtimeProvenance` declaration. The NanoCore projection fixes the restricted outputs at `/openkit/session/runtime/raw`, `/openkit/session/runtime/raw-streams.json`, and `/openkit/session/runtime/native-origin-index.jsonl` and supplies the declared 256 MiB total-byte and 64-stream limits.
+For one clean read-write Git workspace input, the shared supervisor captures worker changes through an isolated index and publishes `workspace.patch` followed by `workspace-changes.json`. Before publication, it inspects every non-deleted changed path's exact stage-zero blob bytes from that index, rejects any blob containing an exact non-empty credential value already injected into the native child environment, and removes transient and review outputs. This is literal-value protection, not generic DLP or encoded-secret detection. It also rejects ambiguous inputs, hidden or pre-existing changes, Git filters, unsupported file modes, and incomplete publication.
 
-When declared, the Codex shim streams primary `codex exec --json` stdout to `raw/stream-0000.jsonl` with backpressure, retains only bounded stdout and stderr diagnostic prefixes, and incrementally copies the stable Codex 0.144.1 rollout forest reachable from the primary thread. It writes synthetic stream names, exact byte and frame digests, native-origin coordinates, and capture status without exposing native ids through ordinary transcript files or filenames.
+## Codex Runtime Provenance
 
-Missing root evidence is retained as `failed`; missing, contradictory, or changing reachable evidence is `unstable`; and partial or limit-bounded evidence is `truncated`. Malformed physical frames remain explicitly indexed as `malformed` instead of being silently attributed. Without the AEP declaration, no runtime provenance files are created and the existing final assistant message, worker lifecycle transcript, and workspace publication behavior remain unchanged.
+Runtime provenance is opt-in through `control.transcript.runtimeProvenance`. The Codex adapter streams primary `codex exec --json` output with backpressure and incrementally copies the stable Codex 0.144.1 rollout forest reachable from the primary thread. It writes only the fixed package-declared outputs under `/openkit/session/runtime`, subject to the declared byte and stream limits and the adapter's pinned discovery guards.
 
-The Codex adapter also applies implementation hard limits of 256 rollout candidates, 2,048 scanned directory entries, 4,096 retained physical frames, 512 bytes per repeated native index value, and 128 bytes per event kind. Reaching a discovery or frame guard stops further work, and an oversized repeated value becomes unattributed; either condition marks the capture incomplete while preserving a one-to-one index entry for every retained frame. A new capture removes any prior manifest commit marker before touching raw files, and provenance-enabled failures never copy runtime-native process output into ordinary transcript diagnostics.
+Missing root evidence is `failed`; missing, contradictory, or changing reachable evidence is `unstable`; and partial or limit-bounded evidence is `truncated`. Malformed physical frames remain explicitly indexed instead of being silently attributed. A new capture removes any prior manifest commit marker before touching raw files, and provenance-enabled failures do not copy native output into ordinary transcript diagnostics.
 
 ## Commands
 
@@ -33,5 +35,8 @@ The Codex adapter also applies implementation hard limits of 256 rollout candida
 
 ## File Map
 
-- `src/`: worker shim, direct worker-control client, and tests.
+- `src/cli.ts`: shared AEP validation, worker control, process supervision, transcript, and workspace lifecycle.
+- `src/adapter-registry.ts`: literal production registry and the two-operation adapter contract.
+- `src/adapters/`: pinned Codex, OpenCode, and Pi adapters with adapter-local tests.
+- `src/fourth-runtime.fixture.test.ts`: proof that one fixture registry entry crosses the unchanged shared supervisor.
 - `snapshots/codex-0.144.1/`: minimized primary-exec and rollout JSONL fixtures pinned to Codex `rust-v0.144.1`.

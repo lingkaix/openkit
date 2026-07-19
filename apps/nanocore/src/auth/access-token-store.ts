@@ -10,6 +10,7 @@ import {
   type OpenKitAccessTokenStatus,
   verifyOpenKitAccessTokenSecret,
 } from './access-token.js';
+import { isCanonicalUserActive } from './user-lifecycle.js';
 
 /** Input for creating one durable OpenKit access-token record. */
 export interface CreateOpenKitAccessTokenRecordInput {
@@ -177,6 +178,10 @@ export function verifyOpenKitAccessTokenRecord(
     .get(expectedHash) as OpenKitAccessTokenRow | undefined;
 
   if (!row || !verifyOpenKitAccessTokenSecret(secret, row.token_hash)) {
+    return null;
+  }
+
+  if (!isCanonicalUserActive(coreDb, row.owner_user_id)) {
     return null;
   }
 

@@ -96,7 +96,7 @@ At a minimum, the template should provide:
 - shared build, test, lint, and format entry points
 - curated change tracking through `docs/changes/`
 - design/spec tracking through `docs/specs/`
-- long-run release archives through `docs/working_logs/`
+- dated observation records through `docs/audits/`
 - reusable setup and operational guidance in `docs/cookbooks/`
 - documentation that lets a new user understand the repository quickly
 
@@ -176,10 +176,11 @@ The documentation should be easy to scan and each document should have a clear r
 - `docs/cookbooks/`: setup and operational recipes used by agents
 - `AGENTS.md`: concise execution rules for AI agents
 - `CONTRIBUTING.md`: workflow and review rules for human contributors
-- `docs/change-tracking.md`: repository policy for specs, change records, and working logs
+- `docs/documentation-model.md`: the documentation type system, precedence rules, and index contract
+- `docs/change-tracking.md`: repository policy for change records
 - `docs/changes/`: curated records for material PR, standalone, or release-level context
 - `docs/specs/`: design documents for non-trivial decisions
-- `docs/working_logs/`: archived release PRDs, task lists, and progress logs
+- `docs/audits/`: dated, rule-generated observation records with no design authority
 
 Inside each app and package:
 
@@ -230,7 +231,7 @@ When multiple agents work at the same time, the repository should reduce collisi
 
 ### For day-to-day development
 
-1. Follow `docs/change-tracking.md` before adding specs, change records, or working logs.
+1. Follow `docs/documentation-model.md` and `docs/change-tracking.md` before adding documentation.
 2. Write or update a spec in `docs/specs/` when the change is non-trivial.
 3. Keep a curated change record in `docs/changes/` when material context should survive beyond the diff.
 4. Keep local `README.md` current for affected apps/packages, and keep local `AGENTS.md` current when one exists.

@@ -3,12 +3,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { WorkerCanonicalEventRecord, WorkerLineage } from '@openkit/worker-protocol';
 import { describe, expect, it, vi } from 'vitest';
+import {
+  createSchedulerAdmissionEntry,
+  createSchedulerPlacementPlan,
+  createSchedulerSessionLease,
+  markSchedulerSessionLeaseReleasing,
+} from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
   canonicalStopReasonForAcceptedWorkerFinalStatus,
   listWorkerControlAcceptedEvents,
   recordWorkerControlAcceptedRecord,
+  resolveWorkerControlFinalStatusTokenBinding,
   waitForWorkerControlFinalStatus,
 } from './worker-control-records.js';
 
@@ -89,6 +96,132 @@ function insertWorkerLease(
       'anchored'
     );
 }
+
+/**
+ * Creates one admission-backed scheduler lease for final-status binding tests.
+ *
+ * @param coreDb Open Core database handle.
+ */
+function createFinalStatusLease(coreDb: ReturnType<typeof openCoreDb>): void {
+  createSchedulerAdmissionEntry(coreDb, {
+    now: () => '2026-07-15T00:00:00.000Z',
+    priorityClass: 'interactive',
+    profileRef: 'profile_worker',
+    queueEntryId: 'queue_events_final_status',
+    requestId: lineage.requestId,
+    requestedAgentId: 'agent_worker',
+    requiredPoolConstraints: ['openshell.local'],
+    threadId: lineage.threadId,
+    triggerActor: { kind: 'automation', id: 'automation_events', responsibleUserId: null },
+    turnId: lineage.turnId,
+    turnInput: 'Run final-status binding test',
+    workspaceId: lineage.workspaceId,
+  });
+  createSchedulerPlacementPlan(coreDb, {
+    capacitySnapshotRef: 'target_events:1',
+    degradedOptionalFeatures: [],
+    expectedControlMode: 'poll',
+    expectedDataPlaneMode: 'openshell-files',
+    heartbeatIntervalMs: 10_000,
+    heartbeatTimeoutMs: 30_000,
+    now: () => '2026-07-15T00:00:01.000Z',
+    planId: 'plan_events_final_status',
+    plannedLeaseDurationMs: 900_000,
+    policyDecisionIds: [],
+    queueEntryId: 'queue_events_final_status',
+    schedulerEpoch: 1,
+    selectedPoolId: 'pool_events',
+    selectedTargetId: 'target_events',
+  });
+  createSchedulerSessionLease(coreDb, {
+    agentSessionId: lineage.agentSessionId,
+    expiresAt: '2099-07-15T00:15:00.000Z',
+    heartbeatDeadline: '2099-07-15T00:15:00.000Z',
+    leaseId: 'lease_events_final_status',
+    now: () => '2026-07-15T00:00:02.000Z',
+    packageSnapshotId: lineage.packageSnapshotId,
+    planId: 'plan_events_final_status',
+    sandboxTokenBindingRef: 'lease-binding:events-final-status',
+    startupDeadline: '2099-07-15T00:15:00.000Z',
+  });
+}
+
+describe('worker final-status token binding', () => {
+  it('accepts exact live request lineage without projecting a physical owner', () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-binding-live-')));
+    applyMigrations(coreDb);
+    createFinalStatusLease(coreDb);
+
+    try {
+      expect(
+        resolveWorkerControlFinalStatusTokenBinding(coreDb, {
+          lineage,
+          sandboxBindingRef: 'lease-binding:events-final-status',
+        })
+      ).toEqual({ replayOnly: false, status: 'accepted' });
+      expect(
+        resolveWorkerControlFinalStatusTokenBinding(coreDb, {
+          lineage: { ...lineage, requestId: 'req_events_other' },
+          sandboxBindingRef: 'lease-binding:events-final-status',
+        })
+      ).toEqual({ reason: 'lineage-mismatch', status: 'rejected' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('admits release-grace replay only for an exact durable request id', () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-binding-replay-')));
+    applyMigrations(coreDb);
+    createFinalStatusLease(coreDb);
+    recordWorkerControlAcceptedRecord(coreDb, {
+      acceptedAt: '2026-07-15T00:00:03.000Z',
+      lineage: { ...lineage, requestId: 'req_events_other' },
+      operation: 'final_status',
+      record: { sequence: 8, status: 'completed', stopReason: 'completed' },
+      recordKey: '8',
+      sequence: 8,
+    });
+    markSchedulerSessionLeaseReleasing(coreDb, {
+      leaseId: 'lease_events_final_status',
+      now: () => '2099-07-15T00:00:04.000Z',
+      releaseReason: 'worker-final-status',
+    });
+
+    try {
+      expect(
+        resolveWorkerControlFinalStatusTokenBinding(coreDb, {
+          lineage: { ...lineage, requestId: 'req_events_other' },
+          sandboxBindingRef: 'lease-binding:events-final-status',
+        })
+      ).toEqual({ reason: 'lineage-mismatch', status: 'rejected' });
+      expect(
+        resolveWorkerControlFinalStatusTokenBinding(coreDb, {
+          lineage,
+          sandboxBindingRef: 'lease-binding:events-final-status',
+        })
+      ).toEqual({ reason: 'lease-not-live', status: 'rejected' });
+
+      recordWorkerControlAcceptedRecord(coreDb, {
+        acceptedAt: '2026-07-15T00:00:05.000Z',
+        lineage,
+        operation: 'final_status',
+        record: { sequence: 9, status: 'completed', stopReason: 'completed' },
+        recordKey: '9',
+        sequence: 9,
+      });
+
+      expect(
+        resolveWorkerControlFinalStatusTokenBinding(coreDb, {
+          lineage,
+          sandboxBindingRef: 'lease-binding:events-final-status',
+        })
+      ).toEqual({ replayOnly: true, status: 'accepted' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+});
 
 describe('worker control accepted event records', () => {
   it('reads canonical events only from the complete package lineage in sequence order', () => {

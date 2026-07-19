@@ -18,6 +18,10 @@ export const users = sqliteTable('users', {
     .default('human')
     .notNull(),
   lastSeenAt: text('last_seen_at'),
+  status: text('status', { enum: ['active', 'disabled'] })
+    .default('active')
+    .notNull(),
+  disabledAt: text('disabled_at'),
 });
 
 export const user = users;

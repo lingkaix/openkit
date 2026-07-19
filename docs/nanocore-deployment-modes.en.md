@@ -29,7 +29,7 @@ OpenKit-owned container images are cataloged in `containers/images.json`.
 The normal release images are:
 
 - `app`: the product app image with NanoCore, the public HTTP entrypoint, Web assets, migrations, and data-root templates.
-- `worker-codex`: the governed Codex worker image with the OpenKit Codex shim.
+- runtime-specific `worker-*` entries: governed images selected by authored AgentManifests, each containing the generic `openkit-worker-shim`, one static adapter, and one pinned native runtime.
 
 `dev-e2e` is a local and CI diagnostic image. It is not published as a normal release artifact.
 
@@ -107,7 +107,7 @@ The Cell is a single-slot runtime boundary owned by NanoCore. Each epoch contain
 
 The owning lifecycle and failure contract is [OpenShell Disposable Cell Lifecycle](./specs/20260715-openshell_disposable_cell_lifecycle.md).
 
-On A1, build and smoke the worker image directly from the synchronized repository checkout, then save it into the Cell image cache. Building on A1 avoids transferring a large image archive to the runtime host:
+On A1, build and smoke each manifest-selected worker image directly from the synchronized repository checkout, then save it into the Cell image cache. Building on A1 avoids transferring a large image archive to the runtime host. The following block is the Codex manifest example:
 
 ```bash
 docker build --network host \
@@ -226,19 +226,12 @@ Select a co-located Cell with:
 OPENKIT_WORKER_RUNTIME=container
 OPENKIT_CONTAINER_PLACEMENT=local
 OPENKIT_CONTAINER_BACKEND=openshell
-OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev
 OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:3000/api/worker-control
 ```
 
 NanoCore invokes the installed Cell helper with non-interactive `sudo`, and the stock Gateway binds to the fixed loopback endpoint `http://127.0.0.1:17670` with health at `http://127.0.0.1:17671/readyz`. Do not start a shared Gateway separately and do not configure an external Gateway URL.
 
-For a release deployment, replace `OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev` with the published version or digest reference.
-
-If the OpenShell worker uses Codex subscription credentials, bootstrap `auth.json` into the NanoCore vault through `POST /api/app/vault/bootstrap/codex-auth-json` and pass only the Codex config file explicitly:
-
-```bash
-OPENKIT_OPENSHELL_CODEX_CONFIG_TOML="$HOME/.codex/config.toml"
-```
+The selected authored AgentManifest supplies the exact worker image reference, pull policy, native runtime binaries, adapter id, provider requirements, and sandbox authority. NanoCore has no deployment environment override for those fields; a release deployment updates the manifest to a published version or digest reference.
 
 The immutable AEP is the complete network authority. NanoCore has no environment variable or backend default that can append endpoints; direct provider endpoints must be authorized by the selected authored manifest and recorded in that launch's AEP.
 
@@ -253,7 +246,6 @@ OPENKIT_CONTAINER_BACKEND=openshell
 OPENKIT_OPENSHELL_CELL_SSH_TARGET=ubuntu@a1
 OPENKIT_OPENSHELL_GATEWAY=openshell
 OPENKIT_OPENSHELL_GATEWAY_URL=http://127.0.0.1:27670
-OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev
 OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=https://nanocore.example.com/api/worker-control
 ```
 
@@ -299,7 +291,6 @@ OPENKIT_CORE_MODE=local \
 OPENKIT_WORKER_RUNTIME=container \
 OPENKIT_CONTAINER_PLACEMENT=local \
 OPENKIT_CONTAINER_BACKEND=openshell \
-OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev \
 OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:3000/api/worker-control \
 OPENKIT_DATA_ROOT="$HOME/nano-data/local-container" \
 pnpm --filter @openkit/nanocore dev
@@ -314,7 +305,6 @@ OPENKIT_CONTAINER_PLACEMENT=remote \
 OPENKIT_CONTAINER_BACKEND=openshell \
 OPENKIT_OPENSHELL_CELL_SSH_TARGET=ubuntu@a1 \
 OPENKIT_OPENSHELL_GATEWAY_URL=http://127.0.0.1:27670 \
-OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev \
 OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=https://nanocore.example.com/api/worker-control \
 OPENKIT_DATA_ROOT="$HOME/nano-data/local-remote-cell" \
 pnpm --filter @openkit/nanocore dev
@@ -327,7 +317,6 @@ OPENKIT_CORE_MODE=server \
 OPENKIT_WORKER_RUNTIME=container \
 OPENKIT_CONTAINER_PLACEMENT=local \
 OPENKIT_CONTAINER_BACKEND=openshell \
-OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev \
 OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:3000/api/worker-control \
 OPENKIT_BIND_HOST=0.0.0.0 \
 PORT=3000 \
@@ -344,7 +333,6 @@ OPENKIT_CONTAINER_PLACEMENT=remote \
 OPENKIT_CONTAINER_BACKEND=openshell \
 OPENKIT_OPENSHELL_CELL_SSH_TARGET=ubuntu@a1 \
 OPENKIT_OPENSHELL_GATEWAY_URL=http://127.0.0.1:27670 \
-OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev \
 OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=https://nanocore.example.com/api/worker-control \
 OPENKIT_BIND_HOST=0.0.0.0 \
 PORT=3000 \
@@ -411,5 +399,5 @@ Use [skills/README.md](../skills/README.md), [the Agent Skill Interface spec](./
 - Keep the first OpenShell scheduler pool and target at one slot; capacity returns only after whole-Cell recycle and replacement readiness succeed.
 - Bind every remote Gateway origin to the same fixed SSH lifecycle target; never use a naked shared Gateway.
 - Do not expose generic shell execution through the Agent Skill Interface, App API, or Web UI.
-- Treat Codex auth JSON bootstrap content, `OPENKIT_OPENSHELL_CODEX_CONFIG_TOML`, NanoCore tokens, and provider keys as secrets. Do not write them into repository files.
+- Treat vault bootstrap material, NanoCore tokens, and provider keys as secrets. Do not write them into repository files.
 - Use a fresh `OPENKIT_DATA_ROOT` for every deployment of the disposable Cell lifecycle.

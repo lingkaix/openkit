@@ -5,11 +5,13 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createApp } from './app.js';
+import { ensureLocalUser } from './auth/identity.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { createPolicyApprovalGate } from './policy/approval-gates.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
  * Creates one policy-gated approval route fixture.
@@ -19,9 +21,18 @@ import { createDemoStore } from './test-support/demo-store.js';
 function createPolicyApprovalFixture() {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-approval-route-')));
   applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
   const store = createDemoStore();
-  const turn = store.createTurn('ws_demo', 'th_demo', 'Approve repo.push');
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, store.getUserId(), 'ws_demo');
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'user_local',
+    workspaceId: 'ws_demo',
+  });
+  const turn = store.createTurn('ws_demo', 'th_demo', 'Approve repo.push', {
+    kind: 'user',
+    id: 'user_local',
+  });
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
   applyScopedMigrations(workspaceDb);
   const gate = createPolicyApprovalGate({
     approvalId: 'ap_repo_push',
@@ -79,7 +90,7 @@ afterEach(() => {
 });
 
 describe('approval response routes', () => {
-  it('keeps a policy approval in recovery_required when its response receipt is missing', async () => {
+  it('finishes deterministic policy approval projections when the winning receipt is missing', async () => {
     const fixture = createPolicyApprovalFixture();
     const requestId = '00000000-0000-4000-8000-000000000101';
 
@@ -92,15 +103,61 @@ describe('approval response routes', () => {
       expect(failed.status).toBe(409);
       await expect(failed.json()).resolves.toMatchObject({ code: 'recovery_required' });
 
+      const changed = await respondToPolicyApproval(fixture, requestId, 'denied');
+      expect(changed.status).toBe(409);
+      await expect(changed.json()).resolves.toMatchObject({ code: 'idempotency_key_conflict' });
+
+      const corruptedWorkspaceDb = openWorkspaceDb(
+        fixture.coreDb.dataRoot,
+        fixture.turn.workspaceId
+      );
+      try {
+        corruptedWorkspaceDb.sqlite
+          .prepare(
+            `UPDATE audit_events
+             SET turn_id = 'turn_wrong'
+             WHERE permission_decision_id = ?`
+          )
+          .run(`pd_repo_push_granted_${fixture.gate.approvalId}`);
+      } finally {
+        corruptedWorkspaceDb.sqlite.close();
+      }
+      const mismatchedAudit = await respondToPolicyApproval(fixture, requestId);
+      expect(mismatchedAudit.status).toBe(409);
+      await expect(mismatchedAudit.json()).resolves.toMatchObject({ code: 'recovery_required' });
+
+      const repairedWorkspaceDb = openWorkspaceDb(
+        fixture.coreDb.dataRoot,
+        fixture.turn.workspaceId
+      );
+      try {
+        repairedWorkspaceDb.sqlite
+          .prepare(
+            `UPDATE audit_events
+             SET turn_id = ?
+             WHERE permission_decision_id = ?`
+          )
+          .run(fixture.turn.id, `pd_repo_push_granted_${fixture.gate.approvalId}`);
+      } finally {
+        repairedWorkspaceDb.sqlite.close();
+      }
       const retried = await respondToPolicyApproval(fixture, requestId);
-      expect(retried.status).toBe(409);
-      await expect(retried.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(retried.status).toBe(200);
+      await expect(retried.json()).resolves.toMatchObject({ status: 'granted' });
       expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('granted');
       expect(
         fixture.store
           .listThreadItems(fixture.turn.workspaceId, fixture.turn.threadId)
           .filter((item) => item.id === `it_approval_decision_${fixture.gate.approvalId}`)
       ).toHaveLength(1);
+      expect(
+        fixture.store
+          .listThreadItems(fixture.turn.workspaceId, fixture.turn.threadId)
+          .find((item) => item.id === `it_approval_decision_${fixture.gate.approvalId}`)
+      ).toMatchObject({
+        actor: { id: 'user_local', kind: 'user' },
+        causationId: requestId,
+      });
       expect(
         fixture.store.getTurn(fixture.turn.workspaceId, fixture.turn.threadId, fixture.turn.id)
       ).toMatchObject({ status: 'completed', humanGate: null, completedAt: expect.any(String) });
@@ -113,25 +170,31 @@ describe('approval response routes', () => {
           data: expect.objectContaining({ stopReason: 'completed' }),
         }),
       ]);
-      expect(fixture.store.listCommandRequests()).toEqual([]);
+      expect(fixture.store.listCommandRequests()).toHaveLength(1);
 
-      const workspaceDb = openWorkspaceDb(
-        fixture.coreDb.dataRoot,
-        fixture.store.getUserId(),
-        fixture.turn.workspaceId
-      );
+      const workspaceDb = openWorkspaceDb(fixture.coreDb.dataRoot, fixture.turn.workspaceId);
       try {
         expect(
           workspaceDb.sqlite
             .prepare(
-              `SELECT decision_id AS decisionId, result
-                 FROM permission_decisions
-                 WHERE approval_id = ? AND result IN ('allow', 'deny')`
+              `SELECT
+                 decision.decision_id AS decisionId,
+                 decision.result,
+                 audit.actor_json AS actorJson,
+                 audit.request_id AS requestId
+               FROM permission_decisions AS decision
+               JOIN audit_events AS audit
+                 ON audit.audit_event_id = decision.audit_event_id
+                AND audit.permission_decision_id = decision.decision_id
+               WHERE decision.approval_id = ?
+                 AND decision.result IN ('allow', 'deny')`
             )
             .all(fixture.gate.approvalId)
         ).toEqual([
           {
+            actorJson: JSON.stringify({ kind: 'user', id: 'user_local' }),
             decisionId: `pd_repo_push_granted_${fixture.gate.approvalId}`,
+            requestId,
             result: 'allow',
           },
         ]);
@@ -169,11 +232,7 @@ describe('approval response routes', () => {
         }),
       ]);
 
-      const workspaceDb = openWorkspaceDb(
-        fixture.coreDb.dataRoot,
-        fixture.store.getUserId(),
-        fixture.turn.workspaceId
-      );
+      const workspaceDb = openWorkspaceDb(fixture.coreDb.dataRoot, fixture.turn.workspaceId);
       try {
         expect(
           workspaceDb.sqlite
@@ -221,11 +280,118 @@ describe('approval response routes', () => {
     }
   });
 
+  it('lets one contrary policy approval request win and reports the other as stale', async () => {
+    const fixture = createPolicyApprovalFixture();
+    const grantedRequestId = '00000000-0000-4000-8000-000000000111';
+    const deniedRequestId = '00000000-0000-4000-8000-000000000112';
+
+    try {
+      const responses = await Promise.all([
+        respondToPolicyApproval(fixture, grantedRequestId, 'granted'),
+        respondToPolicyApproval(fixture, deniedRequestId, 'denied'),
+      ]);
+      const payloads = await Promise.all(responses.map((response) => response.json()));
+
+      expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+      expect(payloads).toContainEqual(expect.objectContaining({ code: 'stale' }));
+
+      const workspaceDb = openWorkspaceDb(fixture.coreDb.dataRoot, fixture.turn.workspaceId);
+      try {
+        const winners = workspaceDb.sqlite
+          .prepare(
+            `SELECT
+               decision.result,
+               audit.actor_json AS actorJson,
+               audit.request_id AS requestId
+             FROM permission_decisions AS decision
+             JOIN audit_events AS audit
+               ON audit.audit_event_id = decision.audit_event_id
+              AND audit.permission_decision_id = decision.decision_id
+             WHERE decision.approval_id = ?
+               AND decision.result IN ('allow', 'deny')`
+          )
+          .all(fixture.gate.approvalId);
+        expect(winners).toHaveLength(1);
+        expect(winners[0]).toMatchObject({
+          actorJson: JSON.stringify({ kind: 'user', id: 'user_local' }),
+          requestId: expect.stringMatching(/^00000000-0000-4000-8000-00000000011[12]$/),
+        });
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+      expect(
+        fixture.store
+          .listThreadItems(fixture.turn.workspaceId, fixture.turn.threadId)
+          .filter((item) => item.type === 'approval-decision')
+      ).toHaveLength(1);
+      expect(
+        fixture.store
+          .getTurnEvents(fixture.turn.id)
+          .filter((event) => event.event === 'turn.completed')
+      ).toHaveLength(1);
+      expect(fixture.store.listCommandRequests()).toHaveLength(1);
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('fails closed when the originating policy approval tuple is contradictory', async () => {
+    const fixture = createPolicyApprovalFixture();
+    const workspaceDb = openWorkspaceDb(fixture.coreDb.dataRoot, fixture.turn.workspaceId);
+
+    try {
+      workspaceDb.sqlite
+        .prepare(
+          `UPDATE permission_decisions
+           SET context_summary_json = ?
+           WHERE decision_id = ?`
+        )
+        .run(
+          JSON.stringify({
+            threadId: fixture.turn.threadId,
+            turnId: 'turn_wrong',
+            workspaceId: fixture.turn.workspaceId,
+          }),
+          fixture.gate.decisionId
+        );
+      workspaceDb.sqlite.close();
+
+      const response = await respondToPolicyApproval(
+        fixture,
+        '00000000-0000-4000-8000-000000000113'
+      );
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('pending');
+      expect(
+        fixture.store
+          .listThreadItems(fixture.turn.workspaceId, fixture.turn.threadId)
+          .filter((item) => item.type === 'approval-decision')
+      ).toEqual([]);
+      expect(fixture.store.listCommandRequests()).toEqual([]);
+    } finally {
+      if (workspaceDb.sqlite.open) {
+        workspaceDb.sqlite.close();
+      }
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
   it('rejects runtime approval scope mismatches before calling the executor', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-runtime-approval-scope-')));
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Approve runtime action');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: 'ws_demo',
+    });
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Approve runtime action', {
+      kind: 'user',
+      id: 'user_local',
+    });
     store.createApproval({
       id: 'ap_runtime_scope',
       workspaceId: turn.workspaceId,
@@ -275,28 +441,37 @@ describe('approval response routes', () => {
     }
   });
 
-  it('replays a resolved runtime approval after approval capability becomes unavailable', async () => {
+  it('fails closed for a non-policy runtime approval without calling the executor', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-runtime-approval-unsupported-')));
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Replay resolved runtime approval');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: 'ws_demo',
+    });
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Reject non-policy runtime approval', {
+      kind: 'user',
+      id: 'user_local',
+    });
     store.createApproval({
-      id: 'ap_runtime_replay',
+      id: 'ap_runtime_unsupported',
       workspaceId: turn.workspaceId,
       threadId: turn.threadId,
       turnId: turn.id,
       kind: 'permission',
-      status: 'granted',
-      title: 'Resolved runtime approval',
-      description: 'Already resolved before runtime replacement.',
+      status: 'pending',
+      title: 'Unsupported runtime approval',
+      description: 'No durable policy claim owns this approval.',
       createdAt: '2026-07-12T00:00:00.000Z',
-      resolvedAt: '2026-07-12T00:00:01.000Z',
+      resolvedAt: null,
     });
     const executor = new SimulatedTurnExecutor();
-    Object.defineProperty(executor, 'capabilities', {
-      value: { ...executor.capabilities, approvals: false },
-    });
-    const app = createApp({ store, turnExecutor: executor });
+    const respondApproval = vi.spyOn(executor, 'respondApproval');
+    const app = createApp({ coreDb, store, turnExecutor: executor });
 
-    const replayed = await app.request('/api/approvals/ap_runtime_replay/respond', {
+    const response = await app.request('/api/approvals/ap_runtime_unsupported/respond', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -308,10 +483,14 @@ describe('approval response routes', () => {
       }),
     });
 
-    expect(replayed.status).toBe(200);
-    await expect(replayed.json()).resolves.toMatchObject({
-      id: 'ap_runtime_replay',
-      status: 'granted',
-    });
+    try {
+      expect(response.status).toBe(501);
+      await expect(response.json()).resolves.toMatchObject({ code: 'approvals_not_supported' });
+      expect(respondApproval).not.toHaveBeenCalled();
+      expect(store.getApproval('ap_runtime_unsupported').status).toBe('pending');
+      expect(store.listCommandRequests()).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
   });
 });

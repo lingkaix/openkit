@@ -181,4 +181,76 @@ describe('createBetterAuth', () => {
       coreDb.sqlite.close();
     }
   });
+
+  it('keeps lifecycle fields server-owned and blocks new sessions for disabled users', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-better-auth-disabled-user-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      const auth = createBetterAuth(coreDb);
+      const rejectedOverride = await auth.handler(
+        new Request('http://127.0.0.1:3000/api/auth/sign-up/email', {
+          body: JSON.stringify({
+            disabledAt: 'caller-owned',
+            email: 'lifecycle@example.com',
+            name: 'Lifecycle User',
+            password: 'password123456',
+            status: 'disabled',
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        })
+      );
+      const signUp = await auth.handler(
+        new Request('http://127.0.0.1:3000/api/auth/sign-up/email', {
+          body: JSON.stringify({
+            email: 'lifecycle@example.com',
+            name: 'Lifecycle User',
+            password: 'password123456',
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        })
+      );
+      const user = coreDb.sqlite
+        .prepare('SELECT id, status, disabled_at AS disabledAt FROM users WHERE email = ?')
+        .get('lifecycle@example.com') as {
+        id: string;
+        status: string;
+        disabledAt: string | null;
+      };
+
+      expect(rejectedOverride.status).toBe(400);
+      expect(signUp.status).toBe(200);
+      expect(user).toMatchObject({ disabledAt: null, status: 'active' });
+      expect(auth.options.user?.additionalFields?.status?.input).toBe(false);
+      expect(auth.options.user?.additionalFields?.disabledAt?.input).toBe(false);
+
+      coreDb.sqlite.prepare('DELETE FROM session WHERE user_id = ?').run(user.id);
+      coreDb.sqlite
+        .prepare("UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = ?")
+        .run('2026-07-19T01:02:03.000Z', user.id);
+
+      const signIn = await auth.handler(
+        new Request('http://127.0.0.1:3000/api/auth/sign-in/email', {
+          body: JSON.stringify({
+            email: 'lifecycle@example.com',
+            password: 'password123456',
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        })
+      );
+
+      expect(signIn.status).toBe(403);
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT COUNT(*) AS count FROM session WHERE user_id = ?')
+          .get(user.id)
+      ).toEqual({ count: 0 });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
 });

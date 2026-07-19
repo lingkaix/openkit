@@ -98,10 +98,14 @@ export function importWorkspaceEvidenceBundles(
  *
  * @param input Workspace database, owner workspace id, and exclusive cutoff timestamp.
  * @returns Number of compacted evidence bundle rows.
+ * @throws Error when the requested Workspace does not match the open database lineage.
  */
 export function compactWorkspaceEvidenceBundles(
   input: CompactWorkspaceEvidenceBundlesInput
 ): CompactWorkspaceEvidenceBundlesResult {
+  if (input.workspaceId !== input.workspaceDb.workspaceId) {
+    throw new Error('Evidence bundle compaction has different Workspace lineage.');
+  }
   const restrictedRows = input.workspaceDb.sqlite
     .prepare(
       `SELECT evidence_bundle_id
@@ -117,8 +121,6 @@ export function compactWorkspaceEvidenceBundles(
     rmSync(
       join(
         input.workspaceDb.dataRoot,
-        'users',
-        input.workspaceDb.userId,
         'workspaces',
         input.workspaceId,
         'evidence',

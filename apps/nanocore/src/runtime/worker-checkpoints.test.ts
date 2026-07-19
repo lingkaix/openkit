@@ -28,7 +28,7 @@ import {
  */
 function createWorkspaceDb(): WorkspaceDb {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-checkpoints-'));
-  const workspaceDb = openWorkspaceDb(dataRoot, 'user_demo', 'ws_demo');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }
@@ -106,6 +106,7 @@ describe('worker checkpoint storage', () => {
       });
 
       const updated = updateWorkerCheckpoint(workspaceDb, {
+        authorityActor: { kind: 'user', id: 'user_1' },
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         turnId: 'turn_demo',
@@ -160,6 +161,7 @@ describe('worker checkpoint storage', () => {
       ).toEqual({ count: 0 });
 
       updateWorkerCheckpoint(workspaceDb, {
+        authorityActor: { kind: 'agent', id: 'agent_runtime_demo', responsibleUserId: 'user_1' },
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         turnId: 'turn_terminal',
@@ -168,6 +170,7 @@ describe('worker checkpoint storage', () => {
         now: () => '2026-05-31T00:10:00.000Z',
       });
       updateWorkerCheckpoint(workspaceDb, {
+        authorityActor: { kind: 'agent', id: 'agent_runtime_demo', responsibleUserId: 'user_1' },
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         turnId: 'turn_terminal',
@@ -225,6 +228,7 @@ describe('worker checkpoint storage', () => {
       });
 
       updateWorkerCheckpoint(workspaceDb, {
+        authorityActor: { kind: 'agent', id: 'agent_runtime_demo', responsibleUserId: 'user_1' },
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         turnId: 'turn_runtime_evidence',
@@ -234,6 +238,7 @@ describe('worker checkpoint storage', () => {
         now: () => '2026-05-31T00:10:00.000Z',
       });
       updateWorkerCheckpoint(workspaceDb, {
+        authorityActor: { kind: 'agent', id: 'agent_runtime_demo', responsibleUserId: 'user_1' },
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         turnId: 'turn_runtime_evidence',
@@ -285,6 +290,7 @@ describe('worker checkpoint storage', () => {
           threadId: 'th_demo',
           turnId: 'turn_runtime_evidence',
           agentSessionId: 'session_demo',
+          responsibleUserId: 'user_1',
           category: 'runtime',
           unit: 'sandbox_sessions',
           quantity: 1,
@@ -330,6 +336,7 @@ describe('worker checkpoint storage', () => {
       });
 
       updateWorkerCheckpoint(workspaceDb, {
+        authorityActor: { kind: 'user', id: 'user_1' },
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         turnId: 'turn_backend_evidence',
@@ -379,6 +386,7 @@ describe('worker checkpoint storage', () => {
         now: () => '2026-05-31T00:00:00.000Z',
       });
       updateWorkerCheckpoint(workspaceDb, {
+        authorityActor: { kind: 'user', id: 'user_1' },
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         turnId: 'turn_backend_failure',

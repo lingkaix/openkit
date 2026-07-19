@@ -78,6 +78,37 @@ export interface VerifiedDataRootBackupManifest {
   checkedFiles: string[];
 }
 
+/** One regular file in a verified tree inventory. */
+export interface RegularFileInventoryEntry {
+  /** File size in bytes. */
+  readonly bytes: number;
+  /** SHA-256 digest over the exact file bytes. */
+  readonly digest: string;
+  /** Slash-separated path relative to the inventory root. */
+  readonly path: string;
+}
+
+/**
+ * Inventories every regular file under one real directory without following links.
+ *
+ * @param root Directory whose regular files should be inventoried.
+ * @returns Stable path, size, and digest entries.
+ * @throws Error when the root or a descendant is linked or unsupported.
+ */
+export function inventoryRegularFiles(root: string): RegularFileInventoryEntry[] {
+  const metadata = lstatSync(root);
+  if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+    throw new Error(`Inventory root must be a real directory: ${root}`);
+  }
+
+  return listRegularBackupFiles(root)
+    .map((path) => {
+      const filePath = join(root, path);
+      return { bytes: statSync(filePath).size, digest: digestFile(filePath), path };
+    })
+    .sort((left, right) => left.path.localeCompare(right.path));
+}
+
 /**
  * Writes a cold backup manifest for an already copied data root and verifies the result.
  *
@@ -158,18 +189,9 @@ interface WriteDataRootBackupManifestInput extends WriteColdDataRootBackupManife
 function writeDataRootBackupManifest(
   input: WriteDataRootBackupManifestInput
 ): VerifiedDataRootBackupManifest {
-  const contentInventory = listRegularBackupFiles(input.backupRoot)
-    .filter((path) => path !== DATA_ROOT_BACKUP_MANIFEST_FILE)
-    .map((path) => {
-      const filePath = join(input.backupRoot, path);
-
-      return {
-        path,
-        digest: digestFile(filePath),
-        bytes: statSync(filePath).size,
-      };
-    })
-    .sort((left, right) => left.path.localeCompare(right.path));
+  const contentInventory = inventoryRegularFiles(input.backupRoot).filter(
+    (entry) => entry.path !== DATA_ROOT_BACKUP_MANIFEST_FILE
+  );
   const manifest: DataRootBackupManifest = {
     schemaVersion: 1,
     recordType: 'data-root-backup',

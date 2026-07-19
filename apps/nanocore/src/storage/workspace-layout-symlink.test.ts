@@ -11,7 +11,7 @@ describe('workspace layout symbolic-link boundaries', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-linked-workspace-load-'));
     new FsStore({ dataRoot });
     const outsideRoot = mkdtempSync(join(tmpdir(), 'openkit-linked-workspace-outside-'));
-    const workspacesRoot = join(dataRoot, 'users', 'user_local', 'workspaces');
+    const workspacesRoot = join(dataRoot, 'workspaces');
 
     writeFileSync(join(outsideRoot, 'store.json'), '{"external":true}\n');
     symlinkSync(outsideRoot, join(workspacesRoot, 'ws_linked'), 'dir');
@@ -27,7 +27,7 @@ describe('workspace layout symbolic-link boundaries', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-linked-workspace-write-'));
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Linked workspace write');
-    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', workspace.id);
+    const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
     const outsideRoot = mkdtempSync(join(tmpdir(), 'openkit-linked-layout-outside-'));
 
     writeFileSync(join(outsideRoot, 'sentinel.txt'), 'untouched');

@@ -16,6 +16,10 @@ function packageFixture(overrides: Record<string, unknown> = {}) {
   return {
     packageId: 'aepkg_demo',
     snapshotId: 'aepsnap_demo',
+    scope: {
+      threadId: 'th_demo',
+      turnId: 'turn_demo',
+    },
     agent: {
       agentId: 'agent_codex',
       profileId: 'coder',
@@ -135,6 +139,136 @@ describe('session workspace layout schema', () => {
 });
 
 describe('session workspace planner', () => {
+  it('routes the dedicated generated Context Package input to the existing context slot', () => {
+    const planned = planSessionWorkspaceMaterialization({
+      environmentPackage: packageFixture({
+        workspace: {
+          root: '/workspace',
+          inputs: [
+            {
+              access: 'read-only',
+              id: 'context_turn_demo',
+              kind: 'generated',
+              materialization: {
+                strategy: 'filesystem',
+                contentDigest: `sha256:${'a'.repeat(64)}`,
+                slotId: 'context',
+              },
+              source: {
+                kind: 'generated',
+                pathRef: 'threads/th_demo/turns/turn_demo/context-package',
+              },
+              target: '/openkit/context',
+            },
+          ],
+          outputs: [],
+        },
+      }),
+    });
+
+    expect(planned.materialization.inputs).toEqual([
+      expect.objectContaining({
+        access: 'read-only',
+        inputId: 'context_turn_demo',
+        mode: 'copy',
+        slotId: 'context',
+      }),
+    ]);
+  });
+
+  it.each([
+    ['wrong target', { target: '/openkit/not-context' }],
+    ['wrong id', { id: 'context_other_turn' }],
+    [
+      'wrong lineage',
+      {
+        source: {
+          kind: 'generated',
+          pathRef: 'threads/th_demo/turns/other_turn/context-package',
+        },
+      },
+    ],
+    [
+      'wrong thread lineage',
+      {
+        source: {
+          kind: 'generated',
+          pathRef: 'threads/th_other/turns/turn_demo/context-package',
+        },
+      },
+    ],
+    [
+      'extra source field',
+      {
+        source: {
+          extra: true,
+          kind: 'generated',
+          pathRef: 'threads/th_demo/turns/turn_demo/context-package',
+        },
+      },
+    ],
+    [
+      'source id',
+      {
+        source: {
+          kind: 'generated',
+          pathRef: 'threads/th_demo/turns/turn_demo/context-package',
+          sourceId: 'source_context',
+        },
+      },
+    ],
+    ['mount', { mount: { type: 'bind' } }],
+    [
+      'invalid digest',
+      {
+        materialization: {
+          contentDigest: 'sha256:not-a-digest',
+          slotId: 'context',
+          strategy: 'filesystem',
+        },
+      },
+    ],
+    [
+      'extra materialization field',
+      {
+        materialization: {
+          contentDigest: `sha256:${'a'.repeat(64)}`,
+          extra: true,
+          slotId: 'context',
+          strategy: 'filesystem',
+        },
+      },
+    ],
+  ])('keeps a generated Context Package near-miss in turn inputs: %s', (_label, change) => {
+    const contextInput = {
+      access: 'read-only' as const,
+      id: 'context_turn_demo',
+      kind: 'generated',
+      materialization: {
+        strategy: 'filesystem',
+        contentDigest: `sha256:${'a'.repeat(64)}`,
+        slotId: 'context',
+      },
+      source: {
+        kind: 'generated',
+        pathRef: 'threads/th_demo/turns/turn_demo/context-package',
+      },
+      target: '/openkit/context',
+      ...change,
+    };
+    const planned = planSessionWorkspaceMaterialization({
+      environmentPackage: packageFixture({
+        workspace: {
+          root: '/workspace',
+          inputs: [contextInput],
+          outputs: [],
+        },
+      }),
+    });
+
+    expect(planned.materialization.inputs[0]?.slotId).toBe('turn-inputs');
+  });
+
   it('maps turn inputs into declared slots and keeps payload refs out of the compatibility key', () => {
     const first = planSessionWorkspaceMaterialization({ environmentPackage: packageFixture() });
     const second = planSessionWorkspaceMaterialization({

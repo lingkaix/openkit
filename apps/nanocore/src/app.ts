@@ -5,17 +5,15 @@ import {
   type BootReadinessSnapshot,
   SetupDiagnosticsResponseSchema,
 } from '@openkit/app-api-schemas';
-import type {
-  AgentEnvironmentPackage,
-  MaterializedWorkspaceRoot as ConfigMaterializedWorkspaceRoot,
-} from '@openkit/config-schema';
-import type { TurnSchema, WorkspaceRecordSchema } from '@openkit/protocol';
+import type { MaterializedWorkspaceRoot as ConfigMaterializedWorkspaceRoot } from '@openkit/config-schema';
+import type { ActorRef, TurnSchema, WorkspaceRecordSchema } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { z } from 'zod';
 import { registerActionCenterRoutes } from './action-center.js';
 import { registerAgentCatalogRoutes } from './agents/catalog-routes.js';
-import type { AgentManifest, AuthoredAgentConfig } from './agents/manifest.js';
+import type { AgentManifest } from './agents/manifest.js';
+import { computeReadiness, isAgentLaunchable } from './agents/readiness.js';
 import { asApiError } from './api-errors.js';
 import { registerDashboardRoutes } from './app-dashboard.js';
 import { registerApprovalRoutes } from './approval-routes.js';
@@ -23,13 +21,15 @@ import { registerArtifactRoutes } from './artifact-routes.js';
 import { recordWorkspaceAuditEvent } from './audit-events.js';
 import { registerAccessTokenRoutes } from './auth/access-token-routes.js';
 import { verifyOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { isDeploymentAdminActor } from './auth/identity.js';
+import { ensureLocalUser, isDeploymentAdminActor } from './auth/identity.js';
 import {
   type AuthVariables,
   type BetterAuthServer,
   createAuthMiddleware,
   isLoopbackHost,
 } from './auth/middleware.js';
+import { registerOperationAccessGuards } from './auth/operation-authorizer.js';
+import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import { registerAutomationRoutes } from './automation-routes.js';
 import { createBootReadinessSnapshot } from './bootstrap/readiness.js';
 import type { CoreMode } from './config/mode.js';
@@ -49,7 +49,7 @@ import { registerGovernanceRoutes } from './governance-routes.js';
 import type { WorkerCoordinatorCandidate } from './internal-agents/worker-coordinator.js';
 import { registerKnowledgeRoutes } from './knowledge-routes.js';
 import { AutomationStore } from './lib/automation-store.js';
-import { FsStore } from './lib/store.js';
+import { FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
 import type { CodexOAuthStore } from './llm/codex-oauth.js';
 import { CodexOAuthAccountManager } from './llm/codex-oauth-accounts.js';
 import {
@@ -59,14 +59,19 @@ import {
 import { CodexAuthTokenResolver, CodexResponsesClient } from './llm/codex-responses-client.js';
 import { registerLlmGatewayRoutes, registerWorkerInferenceRoutes } from './llm/gateway-routes.js';
 import { GatewayUsageTracker } from './llm/gateway-usage.js';
+import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
+import { registerMaterialRoutes } from './material-routes.js';
 import { registerQuickAndChatModeRoutes, registerTaskModeRoute } from './mode-entry-routes.js';
 import { APP_OPENAPI_DOCUMENT, registerAppApiRoute } from './openapi.js';
 import { readCodexOAuthAccountSlotId } from './providers/codex-oauth-profile.js';
 import { resolveDefaultProviderStates } from './providers/default-provider.js';
 import type { ProviderDiagnosticsSnapshot } from './providers/diagnostics.js';
-import { resolveProviderProfileToLLMConfig } from './providers/llm-config.js';
+import {
+  isProviderProfileDispatchable,
+  resolveProviderProfileToLLMConfig,
+} from './providers/llm-config.js';
 import {
   type ProviderCredentialResolver,
   type ProviderRegistry,
@@ -79,7 +84,7 @@ import { registerAgentEnvironmentRoutes } from './runtime/agent-environment-rout
 import { registerAgentHealthRoutes } from './runtime/agent-health-routes.js';
 import { listStaleRuntimeConfigSessions } from './runtime/agent-session-read-model.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
-import { DEFAULT_AGENT_MANIFESTS, TurnStartValidationError } from './runtime/orchestrator.js';
+import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { startProductTurn } from './runtime/product-turn-start.js';
 import { registerSchedulerAdmissionRoutes } from './runtime/scheduler-admission-routes.js';
 import {
@@ -96,7 +101,6 @@ import {
   type WorkerControlFinalStatusAcceptedHook,
   WorkerControlGateway,
   WorkerControlGatewayError,
-  type WorkerControlLineage,
 } from './runtime/worker-control-gateway.js';
 import { rebuildWorkerControlGatewaySessions } from './runtime/worker-control-rebuild.js';
 import {
@@ -120,6 +124,7 @@ import { registerSearchRoutes } from './search-routes.js';
 import { mapRuntimeCapabilitiesToFlags, registerServiceRoutes } from './service-routes.js';
 import { registerDataRootAdminRoutes } from './storage/data-root-admin-routes.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
+import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import { registerWorkspaceTransferRoutes } from './storage/workspace-transfer-routes.js';
 import { registerThreadRoutes } from './thread-routes.js';
@@ -130,7 +135,9 @@ import type { OsKeychainVaultAdapter } from './vault/vault-os-keychain-backend.j
 import { createVaultUnlockState, type VaultUnlockState } from './vault/vault-unlock-state.js';
 import { backfillRepositoryDataSourceCatalogs } from './workspace/repository-data-source-catalog.js';
 import type { WorkspaceRepositoryResourceRecord } from './workspace/repository-store.js';
+import { ensureUserQuickChatWorkspace, resolveWorkspaceRole } from './workspace-membership.js';
 import { registerWorkspaceRoutes } from './workspace-routes.js';
+import { registerWorkspaceSharingRoutes } from './workspace-sharing-routes.js';
 
 type WorkspaceRecord = z.infer<typeof WorkspaceRecordSchema>;
 
@@ -233,53 +240,47 @@ function assertProjectWorkspace(workspace: WorkspaceRecord, action: string): voi
 }
 
 /**
- * Projects enabled workspace agents into the Worker Coordinator candidate shape.
+ * Projects manifest-owned worker readiness into the Worker Coordinator candidate shape.
  *
  * @param store Store that owns workspace resources.
  * @param workspaceId Workspace whose agents should be projected.
+ * @param agentManifests Current file-backed agent manifests.
+ * @param providerRegistry Current provider registry.
+ * @param providerCredentialResolver Resolver used to prove provider credentials.
  * @returns Coordinator-visible worker candidates.
  */
 function workerCoordinatorCandidates(
   store: FsStore,
-  workspaceId: string
+  workspaceId: string,
+  agentManifests: readonly AgentManifest[],
+  providerRegistry: ProviderRegistry,
+  providerCredentialResolver: ProviderCredentialResolver
 ): WorkerCoordinatorCandidate[] {
-  return store
-    .getWorkspaceResources(workspaceId)
-    .agents.filter((agent) => agent.status === 'enabled')
-    .flatMap((agent) => {
-      const runtime = workerRuntimeForAgent(agent.id, agent.name);
+  const workspace = store.getWorkspace(workspaceId);
 
-      return runtime
-        ? [
-            {
-              agentId: agent.id,
-              displayName: agent.name,
-              readiness: 'ready' as const,
-              runtime,
-            },
-          ]
-        : [];
+  return [...agentManifests]
+    .sort((left, right) => {
+      const defaultOrder =
+        Number(right.id === workspace.defaults?.defaultAgentId) -
+        Number(left.id === workspace.defaults?.defaultAgentId);
+      return defaultOrder || left.id.localeCompare(right.id);
+    })
+    .map((manifest) => {
+      const dependencies = { providerCredentialResolver };
+      const readiness = computeReadiness(manifest, providerRegistry, dependencies);
+      const launchable = isAgentLaunchable(readiness, manifest, providerRegistry, dependencies);
+
+      return {
+        agentId: manifest.id,
+        displayName: manifest.displayName,
+        readiness: launchable
+          ? ('ready' as const)
+          : readiness.status === 'unknown'
+            ? ('unknown' as const)
+            : ('blocked' as const),
+        ...(readiness.reasons.length > 0 ? { reasons: readiness.reasons } : {}),
+      };
     });
-}
-
-/**
- * Infers the V1 worker runtime family from the current agent catalog naming convention.
- *
- * @param agentId Product agent id.
- * @param agentName Product agent display name.
- * @returns Supported worker runtime family, or null for non-worker/internal agents.
- */
-function workerRuntimeForAgent(agentId: string, agentName: string): 'codex' | 'opencode' | null {
-  const value = `${agentId} ${agentName}`.toLowerCase();
-
-  if (value.includes('opencode')) {
-    return 'opencode';
-  }
-  if (value.includes('codex')) {
-    return 'codex';
-  }
-
-  return null;
 }
 
 /**
@@ -291,7 +292,6 @@ export interface CreateAppOptions {
   coreDb?: CoreDb;
   dataRoot?: string;
   store?: FsStore;
-  storeFactory?: (userId: string) => FsStore;
   turnExecutor?: TurnExecutor;
   /** Optional Pi AI client override for tests and embedded deployments. */
   llmPiAiClient?: PiAiGatewayClient;
@@ -314,7 +314,6 @@ export interface CreateAppOptions {
   schedulerEpoch?: number;
   /** Configured disposable Cell placement used for scheduler admission. */
   workerPlacement?: 'local' | 'remote';
-  agentConfigs?: AuthoredAgentConfig[];
   agentManifests?: AgentManifest[];
   /** Boot readiness snapshot for this process. */
   bootReadiness?: BootReadinessSnapshot;
@@ -383,11 +382,7 @@ export function createDefaultWorkerControlGateway(
       });
     },
     onFinalStatusCommitted: (input) => {
-      const workspaceDb = openWorkspaceDb(
-        coreDb.dataRoot,
-        input.ownerUserId,
-        input.lineage.workspaceId
-      );
+      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, input.lineage.workspaceId);
       try {
         applyScopedMigrations(workspaceDb);
         updateBackendWorkspaceHandleCleanupStatus(
@@ -482,6 +477,20 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const mode = options.mode ?? 'local';
   const auth = options.auth;
   const dataRoot = options.dataRoot ?? null;
+  const sharedStore =
+    options.store ?? new FsStore(options.dataRoot ? { dataRoot: options.dataRoot } : {});
+  if (mode === 'local') {
+    if (options.coreDb) {
+      ensureLocalUser(options.coreDb);
+      ensureUserQuickChatWorkspace({
+        coreDb: options.coreDb,
+        store: sharedStore,
+        userId: LOCAL_USER_ID,
+      });
+    } else {
+      sharedStore.ensureQuickChatWorkspace(LOCAL_USER_ID);
+    }
+  }
   const startupOpenKitConfig =
     options.runtimeConfigManager?.current().openKitConfig ??
     options.openKitConfig ??
@@ -537,22 +546,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           : null;
       }
     : undefined;
-  const workspaceMembershipVerifier = options.coreDb
-    ? (actor: AuthVariables['actor'], workspaceId: string) => {
-        if (actor.kind === 'session') {
-          try {
-            storeForUserId(actor.userId).getWorkspace(workspaceId);
-          } catch {
-            return false;
-          }
-        }
-
-        return isActiveWorkspaceMember(actor.userId, workspaceId);
-      }
-    : undefined;
   const authMiddlewareOptions = {
     ...(accessTokenVerifier ? { accessTokenVerifier } : {}),
-    ...(workspaceMembershipVerifier ? { workspaceMembershipVerifier } : {}),
+    ...(options.coreDb
+      ? { canonicalUserActive: (userId: string) => isCanonicalUserActive(options.coreDb!, userId) }
+      : {}),
   };
 
   /**
@@ -593,14 +591,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
     return label.slice(0, 80);
   }
-  const localStore =
-    options.store ??
-    options.storeFactory?.('user_local') ??
-    new FsStore(options.dataRoot ? { dataRoot: options.dataRoot } : {});
   if (options.coreDb) {
     backfillRepositoryDataSourceCatalogs(options.coreDb);
   }
-  const storesByUserId = new Map<string, FsStore>();
   const inflightCommands = new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>();
   const llmPiAiClient = options.llmPiAiClient ?? new PiAiGatewayClient();
   const gatewayUsageTracker = options.gatewayUsageTracker ?? new GatewayUsageTracker();
@@ -632,7 +625,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     options.openKitConfig ??
       options.providerRegistry ??
       options.providerDiagnostics ??
-      options.agentConfigs ??
       options.agentManifests
   );
   const runtimeConfigManager =
@@ -648,8 +640,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
               ...(options.providerDiagnostics
                 ? { providerDiagnostics: options.providerDiagnostics }
                 : {}),
-              agentConfigs: options.agentConfigs ?? [],
-              agentManifests: options.agentManifests ?? DEFAULT_AGENT_MANIFESTS,
+              agentManifests: options.agentManifests ?? [],
             }),
           }
         : {}),
@@ -689,44 +680,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   /**
-   * Returns the store owned by one authenticated user.
-   *
-   * @param userId Authenticated store owner.
-   * @returns Store scoped to the owner.
-   */
-  function storeForUserId(userId: string): FsStore {
-    if (mode === 'local' || options.store) {
-      return localStore;
-    }
-
-    const cachedStore = storesByUserId.get(userId);
-
-    if (cachedStore) {
-      return cachedStore;
-    }
-
-    const nextStore =
-      options.storeFactory?.(userId) ??
-      new FsStore(options.dataRoot ? { dataRoot: options.dataRoot, userId } : { userId });
-
-    if (nextStore.getUserId() !== userId) {
-      throw new WorkerControlGatewayError(
-        'worker_control_package_owner_mismatch',
-        'Worker session package owner does not match the resolved store owner.',
-        409
-      );
-    }
-
-    storesByUserId.set(userId, nextStore);
-
-    return nextStore;
-  }
-
-  /**
-   * Returns the store scoped to the current request actor.
+   * Returns the process-local shared Workspace store for the current request.
    *
    * @param c Hono context carrying the actor variable after auth middleware.
-   * @returns Actor-scoped store.
+   * @returns Shared Workspace store.
    * @throws Error when server-mode routing reaches storage without an authenticated actor.
    */
   function requestStore(c: { get: (key: 'actor') => AuthVariables['actor'] | undefined }): FsStore {
@@ -736,79 +693,34 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       throw new Error('Authenticated actor is unavailable for the request store.');
     }
 
-    return storeForUserId(actor?.userId ?? 'user_local');
+    return sharedStore;
   }
 
   /**
-   * Authenticates one worker package request and resolves its owner-scoped store.
+   * Returns the Workspace candidates already admitted by the central operation guard.
    *
-   * @param input Sandbox authorization and package lineage.
-   * @returns Authenticated package and owner-scoped store.
-   * @throws WorkerControlGatewayError when package supply or user ownership is unavailable.
+   * @param c Request context carrying one central authorization result.
+   * @returns Authorized Workspace ids without physical Workspace discovery.
+   * @throws Error when a Core-backed request reaches a Workspace route without authorization.
    */
-  function authenticateWorkerPackageOwner(input: {
-    readonly authorization: string | null;
-    readonly lineage: WorkerControlLineage;
-  }): { readonly environmentPackage: AgentEnvironmentPackage; readonly store: FsStore } {
-    const environmentPackage = workerControlGateway.authenticatePackageRequest(input);
-    const userId = environmentPackage.scope.userId;
-
-    if (!userId) {
-      throw new WorkerControlGatewayError(
-        'worker_control_package_owner_unavailable',
-        'Worker session package has no user store owner.',
-        409
-      );
+  function authorizedWorkspaceIds(c: {
+    get: (key: 'workspaceAccess') => AuthVariables['workspaceAccess'];
+  }): readonly string[] {
+    const access = c.get('workspaceAccess');
+    if (access?.kind === 'workspace') {
+      return [access.workspaceId];
     }
-
-    const store = storeForUserId(userId);
-
-    if (store.getUserId() !== userId) {
-      throw new WorkerControlGatewayError(
-        'worker_control_package_owner_mismatch',
-        'Worker session package owner does not match the resolved store owner.',
-        409
-      );
+    if (access?.kind === 'workspace-set') {
+      return access.workspaceIds;
     }
-
-    return { environmentPackage, store };
+    if (!options.coreDb && mode === 'local') {
+      return sharedStore.listWorkspaces().map((workspace) => workspace.id);
+    }
+    throw new Error('Central Workspace authorization is unavailable for this request.');
   }
 
   /**
-   * Filters workspace collection reads by active membership and token binding.
-   *
-   * @param actor Authenticated actor.
-   * @param items Workspace records from the actor-scoped store.
-   * @returns Workspace records visible to the actor.
-   */
-  function visibleWorkspacesForActor(
-    actor: AuthVariables['actor'] | undefined,
-    items: ReturnType<FsStore['listWorkspaces']>
-  ): ReturnType<FsStore['listWorkspaces']> {
-    if (
-      mode === 'local' ||
-      actor?.kind === 'local' ||
-      (actor?.kind === 'token' && actor.tokenScope === 'server-admin')
-    ) {
-      return items;
-    }
-
-    if (!actor) {
-      return [];
-    }
-
-    const active = items.filter((workspace) => isActiveWorkspaceMember(actor.userId, workspace.id));
-
-    if (actor.kind === 'session') {
-      return active;
-    }
-
-    const allowed = new Set(actor.tokenWorkspaceIds ?? []);
-    return active.filter((workspace) => allowed.has(workspace.id));
-  }
-
-  /**
-   * Checks the minimal server-side workspace membership fact.
+   * Checks the internally consistent active Workspace role required by membership-gated callers.
    *
    * @param userId Canonical user id.
    * @param workspaceId Workspace id.
@@ -818,17 +730,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     if (!options.coreDb) {
       return false;
     }
-
-    return Boolean(
-      options.coreDb.sqlite
-        .prepare(
-          `SELECT 1
-           FROM workspace_members
-           WHERE workspace_id = ? AND user_id = ? AND status = 'active'
-           LIMIT 1`
-        )
-        .get(workspaceId, userId)
-    );
+    return resolveWorkspaceRole(options.coreDb, workspaceId, userId) !== null;
   }
 
   /**
@@ -848,13 +750,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   /**
    * Opens the workspace-owned repository database for one request.
    *
-   * @param store Request store that owns the current actor identity.
    * @param workspaceId Workspace id that owns repository resources.
    * @returns Migrated workspace database handle.
    */
-  function repositoryWorkspaceDb(store: FsStore, workspaceId: string): WorkspaceDb {
+  function repositoryWorkspaceDb(workspaceId: string): WorkspaceDb {
     const coreDb = repositoryCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, store.getUserId(), workspaceId);
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
     applyScopedMigrations(workspaceDb);
     return workspaceDb;
   }
@@ -864,6 +765,27 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
    */
   function runtimeConfig(): RuntimeConfigSnapshot {
     return runtimeConfigManager.current();
+  }
+
+  /**
+   * Projects current file-backed manifests into request-scoped worker candidates.
+   *
+   * @param store Store that owns the workspace read models.
+   * @param workspaceId Workspace whose worker candidates should be projected.
+   * @returns Deterministically ordered opaque worker candidates.
+   */
+  function currentWorkerCoordinatorCandidates(
+    store: FsStore,
+    workspaceId: string
+  ): WorkerCoordinatorCandidate[] {
+    const snapshot = runtimeConfig();
+    return workerCoordinatorCandidates(
+      store,
+      workspaceId,
+      snapshot.agentManifests,
+      snapshot.providerRegistry,
+      providerCredentialResolver
+    );
   }
 
   /**
@@ -880,11 +802,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     let repository: WorkspaceRepositoryResourceRecord | null = null;
 
     try {
-      repository = resolveWorkspaceRepositoryForTurn(
-        options.coreDb,
-        workspaceId,
-        store.getUserId()
-      );
+      repository = resolveWorkspaceRepositoryForTurn(options.coreDb, workspaceId);
     } catch {
       repository = null;
     }
@@ -900,6 +818,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
    */
   async function startModeWorkerTurn(input: {
     readonly store: FsStore;
+    readonly triggerActor: ActorRef;
     readonly workspaceId: string;
     readonly threadId: string;
     readonly prompt: string;
@@ -918,11 +837,13 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         workspaceId: input.workspaceId,
       },
       cancelDeferredAdmission: true,
+      providerCredentialResolver,
       requestedAgentId: input.requestedAgentId,
       ...(input.reservedTurnId ? { reservedTurnId: input.reservedTurnId } : {}),
       schedulerEpoch,
       snapshot,
       store: input.store,
+      triggerActor: input.triggerActor,
       turnExecutor,
       workerPlacement,
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
@@ -945,7 +866,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
     return new RuntimeConfigFileService({
       dataRoot,
-      userId: store.getUserId(),
       workspaceIds: store.listWorkspaces().map((workspace) => workspace.id),
       runtimeConfigManager,
       readRuntimeConfigStatus: () =>
@@ -960,7 +880,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       ...(options.coreDb
         ? {
             onDataSourceAuthorityChange: (change) => {
-              const workspaceDb = repositoryWorkspaceDb(store, change.workspaceId);
+              const workspaceDb = repositoryWorkspaceDb(change.workspaceId);
               try {
                 recordWorkspaceAuditEvent({
                   workspaceDb,
@@ -979,6 +899,24 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           }
         : {}),
     });
+  }
+
+  /**
+   * Resolves the Internal Core Role default provider id from runtime config.
+   *
+   * @returns Core provider id or null.
+   */
+  function coreDefaultProviderId(): string | null {
+    return runtimeConfig().openKitConfig.defaults?.coreProviderId ?? null;
+  }
+
+  /**
+   * Resolves the Internal Core Role default model from runtime config.
+   *
+   * @returns Core model or null.
+   */
+  function coreDefaultModel(): string | null {
+    return runtimeConfig().openKitConfig.defaults?.coreModel ?? null;
   }
 
   /**
@@ -1048,13 +986,36 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
    * Resolves a provider config for Gateway dispatch.
    *
    * @param providerId Provider id selected by Gateway defaults.
+   * @param model Model selected for the pending dispatch.
    * @returns Secret-bearing provider config.
+   * @throws OpenAICompatibleProviderError when the provider or model cannot be dispatched.
    */
-  function resolveGatewayProvider(providerId: string) {
+  function resolveGatewayProvider(providerId: string, model: string) {
     const profile = runtimeConfig().providerRegistry.get(providerId);
 
     if (!profile) {
-      throw new Error(`LLM provider is not configured: ${providerId}`);
+      throw new OpenAICompatibleProviderError({
+        code: 'provider_not_configured',
+        message: 'Configured provider is unavailable.',
+        status: 400,
+        type: 'provider_error',
+      });
+    }
+    if (!isProviderProfileDispatchable(profile)) {
+      throw new OpenAICompatibleProviderError({
+        code: 'provider_not_dispatchable',
+        message: 'Configured provider is not dispatchable.',
+        status: 503,
+        type: 'provider_error',
+      });
+    }
+    if (!profile.models.includes(model)) {
+      throw new OpenAICompatibleProviderError({
+        code: 'model_not_configured',
+        message: 'Requested model is not configured for this provider.',
+        status: 400,
+        type: 'invalid_request_error',
+      });
     }
 
     return resolveProviderProfileToLLMConfig(profile, providerCredentialResolver);
@@ -1068,8 +1029,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   function diagnosticsProviderDefaults() {
     return {
       quickChat: {
-        providerId: gatewayDefaultProviderId(),
-        model: gatewayDefaultModel(),
+        providerId: coreDefaultProviderId(),
+        model: coreDefaultModel(),
       },
       gateway: {
         providerId: gatewayDefaultProviderId(),
@@ -1081,7 +1042,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   app.use('/api/worker-control/*', browserCors);
   registerWorkerControlRoutes({
     app,
-    authenticateWorkerPackageOwner,
     coreDb: options.coreDb,
     workerControlGateway,
   });
@@ -1100,6 +1060,16 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   app.use('/v1/*', browserCors);
   app.use('/v1/*', createAuthMiddleware(mode, auth, authMiddlewareOptions));
 
+  if (options.coreDb) {
+    registerOperationAccessGuards({
+      app,
+      automationStore,
+      coreDb: options.coreDb,
+      quickChatWorkspaceIdForUser,
+      store: sharedStore,
+    });
+  }
+
   if (auth) {
     app.all('/api/auth/*', (c) => auth.handler(c.req.raw));
   }
@@ -1117,7 +1087,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     app,
     coreDb: options.coreDb,
     repositoryWorkspaceDb,
-    requestStore,
     vaultUnlockState,
   });
   registerCodexOAuthAccountRoutes(app, codexOAuthAccountManager);
@@ -1200,7 +1169,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           openKitConfig: runtimeConfig().openKitConfig,
           providerRegistry: runtimeConfig().providerRegistry,
           providerCredentialResolver,
-          agentConfigs: runtimeConfig().agentConfigs,
           agentManifests: runtimeConfig().agentManifests,
           runtimeConfig: runtimeConfigManager.status(
             listStaleRuntimeConfigSessions(
@@ -1224,7 +1192,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     app,
     coreDb: options.coreDb,
     dataRoot,
-    ...(mode === 'server' ? { isActiveWorkspaceMember } : {}),
     repositoryWorkspaceDb,
     requestStore,
   });
@@ -1242,7 +1209,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     gatewayDefaultProviderId,
     llmGatewayDispatcher,
-    requestStore,
     resolveGatewayProvider,
     runtimeConfig,
   });
@@ -1251,8 +1217,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     app,
     assertProjectWorkspace,
     coreDb: options.coreDb,
-    gatewayDefaultModel,
-    gatewayDefaultProviderId,
+    coreDefaultModel,
+    coreDefaultProviderId,
     inflightCommands,
     llmGatewayDispatcher,
     repositoryWorkspaceDb,
@@ -1260,16 +1226,24 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     resolveGatewayProvider,
     runtimeConfig,
     startModeWorkerTurn,
-    workerCoordinatorCandidates,
+    workerCoordinatorCandidates: currentWorkerCoordinatorCandidates,
   });
 
   registerThreadRoutes({ app, inflightCommands, requestStore });
 
-  registerAutomationRoutes({ app, automationStore, requestStore, visibleWorkspacesForActor });
+  registerMaterialRoutes({
+    app,
+    coreDb: options.coreDb,
+    inflightCommands,
+    openWorkspaceDb: repositoryWorkspaceDb,
+    requestStore,
+  });
 
-  registerSearchRoutes({ app, requestStore, visibleWorkspacesForActor });
+  registerAutomationRoutes({ app, authorizedWorkspaceIds, automationStore, requestStore });
 
-  registerAgentCatalogRoutes({ app, requestStore, visibleWorkspacesForActor });
+  registerSearchRoutes({ app, authorizedWorkspaceIds, requestStore });
+
+  registerAgentCatalogRoutes({ app, authorizedWorkspaceIds, requestStore });
 
   registerRepositoryRoutes({
     app,
@@ -1303,6 +1277,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
   registerDashboardRoutes({
     app,
+    coreDb: options.coreDb,
     requestStore,
     runtimeConfigManager,
     turnExecutor,
@@ -1317,7 +1292,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     repositoryWorkspaceDb,
     requestStore,
     startModeWorkerTurn,
-    workerCoordinatorCandidates,
+    workerCoordinatorCandidates: currentWorkerCoordinatorCandidates,
   });
 
   registerGoalRoutes({
@@ -1330,7 +1305,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     requestStore,
     startModeWorkerTurn,
     turnExecutor,
-    workerCoordinatorCandidates,
+    workerCoordinatorCandidates: currentWorkerCoordinatorCandidates,
   });
 
   registerWorkerRecoveryRoutes({
@@ -1338,7 +1313,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     coreDb: options.coreDb,
     repositoryWorkspaceDb,
     requestStore,
-    visibleWorkspacesForActor,
+    authorizedWorkspaceIds,
   });
 
   registerAgentHealthRoutes({
@@ -1353,7 +1328,14 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     coreDb: options.coreDb,
     inflightCommands,
     requestStore,
-    visibleWorkspacesForActor,
+    authorizedWorkspaceIds,
+  });
+
+  registerWorkspaceSharingRoutes({
+    app,
+    coreDb: options.coreDb,
+    inflightCommands,
+    requestStore,
   });
 
   registerKnowledgeRoutes({
@@ -1367,6 +1349,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     app,
     coreDb: options.coreDb,
     inflightCommands,
+    providerCredentialResolver,
     requestStore,
     repositoryWorkspaceDb,
     runtimeConfig,
@@ -1381,14 +1364,26 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     inflightCommands,
     repositoryWorkspaceDb,
     requestStore,
-    turnExecutor,
   });
 
-  registerArtifactRoutes({ app, requestStore });
+  registerArtifactRoutes({
+    app,
+    coreDb: options.coreDb,
+    inflightCommands,
+    openWorkspaceDb: repositoryWorkspaceDb,
+    requestStore,
+    startModeWorkerTurn,
+  });
 
-  registerWorkspaceSyncRoutes({ app, inflightCommands, repositoryWorkspaceDb, requestStore });
+  registerWorkspaceSyncRoutes({
+    app,
+    coreDb: options.coreDb,
+    inflightCommands,
+    repositoryWorkspaceDb,
+    requestStore,
+  });
 
-  registerAgentEnvironmentRoutes({ app, repositoryWorkspaceDb, requestStore });
+  registerAgentEnvironmentRoutes({ app, repositoryWorkspaceDb });
 
   registerReviewDecisionRoutes({
     app,

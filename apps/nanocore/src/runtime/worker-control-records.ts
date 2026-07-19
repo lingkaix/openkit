@@ -336,7 +336,7 @@ export function resolveWorkerControlFinalStatusTokenBinding(
       return { reason: 'lineage-mismatch', status: 'rejected' };
     }
 
-    return { ownerUserId: admission.userId, replayOnly: false, status: 'accepted' };
+    return { replayOnly: false, status: 'accepted' };
   }
 
   if (live.reason !== 'lease-not-live') {
@@ -362,6 +362,7 @@ export function resolveWorkerControlFinalStatusTokenBinding(
                AND worker_control_records.turn_id = scheduler_session_leases.turn_id
                AND worker_control_records.agent_session_id = scheduler_session_leases.agent_session_id
                AND worker_control_records.package_snapshot_id = scheduler_session_leases.package_snapshot_id
+               AND worker_control_records.request_id IS ?
                AND worker_control_records.operation = 'final_status'
           )`
     )
@@ -371,7 +372,8 @@ export function resolveWorkerControlFinalStatusTokenBinding(
       input.lineage.threadId,
       input.lineage.turnId,
       input.lineage.agentSessionId,
-      input.lineage.packageSnapshotId
+      input.lineage.packageSnapshotId,
+      input.lineage.requestId ?? null
     ) as { expiresAt: string; leaseId: string } | undefined;
 
   if (!row || row.expiresAt <= new Date().toISOString()) {
@@ -384,5 +386,5 @@ export function resolveWorkerControlFinalStatusTokenBinding(
     return { reason: 'lineage-mismatch', status: 'rejected' };
   }
 
-  return { ownerUserId: admission.userId, replayOnly: true, status: 'accepted' };
+  return { replayOnly: true, status: 'accepted' };
 }

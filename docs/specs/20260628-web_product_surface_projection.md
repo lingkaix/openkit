@@ -80,6 +80,7 @@ The current Web implementation is a contract projection surface:
 - Current Web and protocol surfaces use Knowledge Store terminology for the minimal existing knowledge slice.
 - The current Web app is useful as a validation surface, but it should not be treated as the canonical source for core semantics.
 - Goal plan approval, rejection, and revision now reach Core. Reject is persisted as an explicit replacement-plan revision request, Request changes submits the user's bounded revision text, Web clears the review only after NanoCore returns the authoritative planning Goal, and a failed mutation leaves the current plan visible. Focused Web coverage proves that neither control creates browser-local workflow truth.
+- The Web package compiles and its focused tests remain aligned with the same-release protocol, App API schema, and Core Client changes used by the current NanoCore slice. It does not yet project the rebuilt multi-user Workspace membership, invitation, role, ownership-transfer, user-disable, or access-recovery surfaces; those remain deferred Web work rather than inferred UI behavior.
 - Full Web navigation, information architecture, and richer settings/diagnostics UX are deferred product work over the same NanoCore contracts, not blockers for this spec.
 
 ## Resolved Decisions

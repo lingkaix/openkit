@@ -14,6 +14,7 @@ import {
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { PUBLIC_OPERATION_ACCESS } from './auth/operation-access.js';
 import {
   APP_OPENAPI_ROUTE_COVERAGE_EXCLUSIONS,
   APP_OPENAPI_ROUTE_METHODS,
@@ -80,12 +81,85 @@ const DEPLOYMENT_ADMIN_ROUTES = new Set([
   'POST /api/app/vault/lock',
   'POST /api/app/vault/bootstrap/codex-auth-json',
   'GET /api/app/vault/use-records',
+  'GET /api/app/workspaces/{workspaceId}/access-recovery',
+  'POST /api/app/workspaces/{workspaceId}/access-recovery',
+  'POST /api/app/users/{userId}/disable',
+]);
+const SESSION_COOKIE_ONLY_ROUTES = new Set([
+  'GET /api/app/workspace-invitations',
+  'POST /api/app/workspace-invitations/{invitationId}/accept',
+  'POST /api/app/workspace-invitations/{invitationId}/decline',
+  'POST /api/app/workspaces/{workspaceId}/leave',
 ]);
 const FIRST_PARTY_CONSUMER_ROOTS = [
   '../../../apps/web/src/',
   '../../../packages/core-client/src/',
   '../../../skills/',
 ];
+const DIRECT_CORE_GATEWAY_OPERATION_KEYS = [
+  'GET /api/workspaces',
+  'POST /api/workspaces',
+  'GET /api/workspaces/:workspaceId',
+  'GET /api/workspaces/:workspaceId/resources',
+  'PATCH /api/workspaces/:workspaceId',
+  'GET /api/workspaces/:workspaceId/threads',
+  'POST /api/workspaces/:workspaceId/threads',
+  'GET /api/workspaces/:workspaceId/threads/:threadId',
+  'PATCH /api/workspaces/:workspaceId/threads/:threadId',
+  'POST /api/workspaces/:workspaceId/threads/:threadId/archive',
+  'GET /api/workspaces/:workspaceId/knowledge',
+  'POST /api/workspaces/:workspaceId/knowledge',
+  'PATCH /api/workspaces/:workspaceId/knowledge/:knowledgeEntryId',
+  'DELETE /api/workspaces/:workspaceId/knowledge/:knowledgeEntryId',
+  'GET /api/workspaces/:workspaceId/artifacts',
+  'GET /api/workspaces/:workspaceId/artifacts/:artifactId',
+  'GET /api/workspaces/:workspaceId/artifacts/:artifactId/content',
+  'GET /api/workspaces/:workspaceId/threads/:threadId/events',
+  'GET /api/workspaces/:workspaceId/threads/:threadId/turns/:turnId',
+  'POST /api/workspaces/:workspaceId/threads/:threadId/turns/:turnId/interrupt',
+  'POST /api/approvals/:approvalRequestId/respond',
+  'POST /api/turns',
+  'POST /v1/chat/completions',
+  'POST /v1/responses',
+] as const;
+const PRODUCT_POLICY_OPERATIONS = new Set([
+  'api.call',
+  'workspace.read',
+  'workspace.write',
+  'thread.read',
+  'turn.run',
+  'artifact.read',
+  'artifact.write',
+  'review.apply',
+  'approval.respond',
+  'knowledge.read',
+  'knowledge.write',
+  'knowledge.propose',
+  'audit.read',
+  'workspace.configure',
+  'workspace.export',
+  'workspace.lifecycle',
+  'membership.manage',
+  'invitation.respond',
+  'workspace.leave',
+  'deployment.recover',
+  'vault.use',
+  'vault.admin',
+  'tool.use',
+  'tool.grant',
+  'runtime.launch',
+  'network.egress',
+  'llm.gateway.use',
+  'repo.push',
+]);
+const WORKSPACE_OPERATION_RESOLVERS = new Set([
+  'actor-quick-chat-workspace',
+  'authorized-workspace-set',
+  'body-workspace',
+  'opaque-child-workspace',
+  'path-workspace',
+  'workspace-child-lineage',
+]);
 
 function normalizeHonoRoutePath(path: string): string {
   return path.replace(/:([A-Za-z0-9_]+)/g, '{$1}');
@@ -125,6 +199,16 @@ describe('app api openapi projection', () => {
     expect(serialized).not.toContain('terminalResultCount');
   });
 
+  it('does not publish caller provider or model authority for Internal Core Role requests', () => {
+    const schemas = createAppOpenApiDocument().components.schemas;
+
+    for (const name of ['QuickChatRequest', 'StartChatModeRequest'] as const) {
+      expect(schemas[name]).toMatchObject({ additionalProperties: false });
+      expect(schemas[name]).not.toHaveProperty('properties.providerId');
+      expect(schemas[name]).not.toHaveProperty('properties.model');
+    }
+  });
+
   it('projects the storage layout report route from shared schemas', () => {
     const document = createAppOpenApiDocument();
 
@@ -137,7 +221,7 @@ describe('app api openapi projection', () => {
     expect(document['x-openkit-source-digest']).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(document.components.schemas.StorageLayoutReportResponse).toMatchObject({
       type: 'object',
-      required: ['dataRoot', 'serverDb', 'users', 'quarantineEntries'],
+      required: ['dataRoot', 'serverDb', 'users', 'workspaces', 'quarantineEntries'],
     });
     expect(document.paths['/api/app/storage/layout-report']?.get).toMatchObject({
       operationId: 'getStorageLayoutReport',
@@ -864,7 +948,7 @@ describe('app api openapi projection', () => {
         },
       },
       responses: {
-        '200': {
+        '202': {
           content: {
             'application/json': {
               schema: {
@@ -1205,38 +1289,9 @@ describe('app api openapi projection', () => {
         },
       },
     });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/knowledge/claims/{claimId}/promotion']
-    ).toMatchObject({
-      post: {
-        operationId: 'promoteKnowledgeClaim',
-        tags: ['knowledge'],
-        parameters: [
-          expect.objectContaining({ name: 'workspaceId', in: 'path', required: true }),
-          expect.objectContaining({ name: 'claimId', in: 'path', required: true }),
-        ],
-        requestBody: {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/PromoteKnowledgeClaimRequest',
-              },
-            },
-          },
-        },
-        responses: {
-          '201': {
-            content: {
-              'application/json': {
-                schema: {
-                  $ref: '#/components/schemas/PromoteKnowledgeClaimResponse',
-                },
-              },
-            },
-          },
-        },
-      },
-    });
+    expect(document.paths).not.toHaveProperty(
+      '/api/app/workspaces/{workspaceId}/knowledge/claims/{claimId}/promotion'
+    );
     expect(document.paths['/api/app/workspaces/{workspaceId}/knowledge/conflicts']).toMatchObject({
       get: {
         operationId: 'listKnowledgeConflicts',
@@ -1723,8 +1778,6 @@ describe('app api openapi projection', () => {
     expect(
       document.paths['/api/app/workspaces/{workspaceId}/artifacts/{artifactId}/review']?.post
     ).toBeUndefined();
-    expect(document.components.schemas.SubmitArtifactReviewDecisionRequest).toBeUndefined();
-    expect(document.components.schemas.SubmitArtifactReviewDecisionResponse).toBeUndefined();
     expect(
       document.paths['/api/app/workspaces/{workspaceId}/knowledge/proposals/{proposalId}/decision']
         ?.post
@@ -2351,6 +2404,434 @@ describe('app api openapi projection', () => {
     });
   });
 
+  it('projects the exact Stage 3 Goal steering terminal commands', () => {
+    const document = createAppOpenApiDocument();
+    const operations = [
+      [
+        '/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/steering/{pendingTurnId}/follow-up',
+        'convertGoalSteeringToFollowUp',
+        'ConvertGoalSteeringToFollowUpRequest',
+        'ConvertGoalSteeringToFollowUpResponse',
+      ],
+      [
+        '/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/steering/{pendingTurnId}/cancel',
+        'cancelGoalSteering',
+        'CancelGoalSteeringRequest',
+        'CancelGoalSteeringResponse',
+      ],
+    ] as const;
+
+    for (const [path, operationId, requestSchema, responseSchema] of operations) {
+      expect(document.paths[path]?.post, path).toMatchObject({
+        operationId,
+        parameters: [
+          { name: 'workspaceId', in: 'path', required: true },
+          { name: 'threadId', in: 'path', required: true },
+          { name: 'pendingTurnId', in: 'path', required: true },
+        ],
+        requestBody: {
+          content: {
+            'application/json': {
+              schema: { $ref: `#/components/schemas/${requestSchema}` },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            content: {
+              'application/json': {
+                schema: { $ref: `#/components/schemas/${responseSchema}` },
+              },
+            },
+          },
+          default: {
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ApiError' },
+              },
+            },
+          },
+        },
+      });
+    }
+  });
+
+  it('projects the Stage 2 Artifact and Material operations from shared schemas', () => {
+    const document = createAppOpenApiDocument();
+    const operations = [
+      [
+        'post',
+        '/api/app/workspaces/{workspaceId}/artifacts/imports',
+        'importWorkspaceArtifact',
+        'ImportWorkspaceArtifactRequest',
+        '201',
+        'ImportWorkspaceArtifactResponse',
+      ],
+      [
+        'post',
+        '/api/app/workspaces/{workspaceId}/threads/{threadId}/artifacts/{artifactId}/introductions',
+        'introduceWorkspaceArtifact',
+        'IntroduceWorkspaceArtifactRequest',
+        '201',
+        'IntroduceWorkspaceArtifactResponse',
+      ],
+      [
+        'get',
+        '/api/app/workspaces/{workspaceId}/materials',
+        'listWorkspaceMaterials',
+        null,
+        '200',
+        'ListWorkspaceMaterialsResponse',
+      ],
+      [
+        'post',
+        '/api/app/workspaces/{workspaceId}/materials',
+        'createWorkspaceMaterial',
+        'CreateWorkspaceMaterialRequest',
+        '201',
+        'CreateWorkspaceMaterialResponse',
+      ],
+      [
+        'get',
+        '/api/app/workspaces/{workspaceId}/materials/{materialId}',
+        'getWorkspaceMaterial',
+        null,
+        '200',
+        'GetWorkspaceMaterialResponse',
+      ],
+      [
+        'get',
+        '/api/app/workspaces/{workspaceId}/materials/{materialId}/revisions',
+        'listWorkspaceMaterialRevisions',
+        null,
+        '200',
+        'ListWorkspaceMaterialRevisionsResponse',
+      ],
+      [
+        'post',
+        '/api/app/workspaces/{workspaceId}/materials/{materialId}/revisions',
+        'saveWorkspaceMaterialRevision',
+        'SaveWorkspaceMaterialRevisionRequest',
+        '201',
+        'SaveWorkspaceMaterialRevisionResponse',
+      ],
+      [
+        'get',
+        '/api/app/workspaces/{workspaceId}/materials/{materialId}/revisions/{revisionId}',
+        'getWorkspaceMaterialRevision',
+        null,
+        '200',
+        'GetWorkspaceMaterialRevisionResponse',
+      ],
+      [
+        'get',
+        '/api/app/workspaces/{workspaceId}/threads/{threadId}/material',
+        'getThreadMaterial',
+        null,
+        '200',
+        'GetThreadMaterialResponse',
+      ],
+      [
+        'post',
+        '/api/app/workspaces/{workspaceId}/threads/{threadId}/materials/{materialId}/bind',
+        'bindThreadMaterial',
+        'BindThreadMaterialRequest',
+        '200',
+        'BindThreadMaterialResponse',
+      ],
+      [
+        'post',
+        '/api/app/workspaces/{workspaceId}/threads/{threadId}/materials/{materialId}/unbind',
+        'unbindThreadMaterial',
+        'UnbindThreadMaterialRequest',
+        '200',
+        'UnbindThreadMaterialResponse',
+      ],
+      [
+        'post',
+        '/api/app/workspaces/{workspaceId}/threads/{threadId}/materials/{materialId}/exclude',
+        'excludeThreadMaterial',
+        'ExcludeThreadMaterialRequest',
+        '200',
+        'ExcludeThreadMaterialResponse',
+      ],
+      [
+        'post',
+        '/api/app/workspaces/{workspaceId}/threads/{threadId}/materials/{materialId}/restore',
+        'restoreThreadMaterial',
+        'RestoreThreadMaterialRequest',
+        '200',
+        'RestoreThreadMaterialResponse',
+      ],
+    ] as const;
+
+    for (const [method, path, operationId, requestSchema, status, responseSchema] of operations) {
+      const operation = document.paths[path]?.[method];
+
+      expect(operation, `${method.toUpperCase()} ${path}`).toMatchObject({
+        operationId,
+        responses: {
+          [status]: {
+            content: {
+              'application/json': {
+                schema: { $ref: `#/components/schemas/${responseSchema}` },
+              },
+            },
+          },
+          default: {
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ApiError' },
+              },
+            },
+          },
+        },
+      });
+
+      if (requestSchema === null) {
+        expect(operation).not.toHaveProperty('requestBody');
+      } else {
+        expect(operation).toMatchObject({
+          requestBody: {
+            content: {
+              'application/json': {
+                schema: { $ref: `#/components/schemas/${requestSchema}` },
+              },
+            },
+          },
+        });
+      }
+    }
+  });
+
+  it('projects the Stage 4 Artifact Review operations from shared schemas', () => {
+    const document = createAppOpenApiDocument();
+
+    expect(
+      document.paths['/api/app/workspaces/{workspaceId}/artifacts/{artifactId}/reviews']?.get
+    ).toMatchObject({
+      operationId: 'listArtifactReviews',
+      tags: ['reviews'],
+      parameters: [
+        { name: 'workspaceId', in: 'path', required: true },
+        { name: 'artifactId', in: 'path', required: true },
+      ],
+      responses: {
+        '200': {
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ListArtifactReviewsResponse' },
+            },
+          },
+        },
+        default: {
+          content: {
+            'application/json': { schema: { $ref: '#/components/schemas/ApiError' } },
+          },
+        },
+      },
+    });
+    expect(
+      document.paths[
+        '/api/app/workspaces/{workspaceId}/artifacts/{artifactId}/versions/{artifactVersion}/review/decision'
+      ]?.post
+    ).toMatchObject({
+      operationId: 'submitArtifactReviewDecision',
+      tags: ['reviews'],
+      parameters: [
+        { name: 'workspaceId', in: 'path', required: true },
+        { name: 'artifactId', in: 'path', required: true },
+        {
+          name: 'artifactVersion',
+          in: 'path',
+          required: true,
+          schema: { type: 'integer', minimum: 1 },
+        },
+      ],
+      requestBody: {
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/SubmitArtifactReviewDecisionRequest' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/SubmitArtifactReviewDecisionResponse' },
+            },
+          },
+        },
+        default: {
+          content: {
+            'application/json': { schema: { $ref: '#/components/schemas/ApiError' } },
+          },
+        },
+      },
+    });
+    expect(document.components.schemas.ListArtifactReviewsResponse).toBeDefined();
+    expect(document.components.schemas.SubmitArtifactReviewDecisionRequest).toBeDefined();
+    expect(document.components.schemas.SubmitArtifactReviewDecisionResponse).toBeDefined();
+  });
+
+  it('projects the closed Workspace sharing and lifecycle surface from shared schemas', () => {
+    const document = createAppOpenApiDocument();
+    const operations = [
+      [
+        'get',
+        '/api/app/workspaces',
+        'listAuthorizedWorkspaces',
+        undefined,
+        'ListAuthorizedWorkspacesResponse',
+      ],
+      [
+        'get',
+        '/api/app/workspaces/{workspaceId}/members',
+        'listWorkspaceMembers',
+        undefined,
+        'ListWorkspaceMembersResponse',
+      ],
+      [
+        'get',
+        '/api/app/workspaces/{workspaceId}/invitations',
+        'listWorkspaceInvitations',
+        undefined,
+        'ListWorkspaceInvitationsResponse',
+      ],
+      [
+        'post',
+        '/api/app/workspaces/{workspaceId}/invitations',
+        'createWorkspaceInvitation',
+        'CreateWorkspaceInvitationRequest',
+        'WorkspaceInvitationMutationResponse',
+      ],
+      [
+        'get',
+        '/api/app/workspace-invitations',
+        'listMyWorkspaceInvitations',
+        undefined,
+        'ListWorkspaceInvitationsResponse',
+      ],
+      [
+        'post',
+        '/api/app/workspace-invitations/{invitationId}/accept',
+        'acceptWorkspaceInvitation',
+        'AcceptWorkspaceInvitationRequest',
+        'WorkspaceInvitationMutationResponse',
+      ],
+      [
+        'post',
+        '/api/app/workspace-invitations/{invitationId}/decline',
+        'declineWorkspaceInvitation',
+        'DeclineWorkspaceInvitationRequest',
+        'WorkspaceInvitationMutationResponse',
+      ],
+      [
+        'post',
+        '/api/app/workspaces/{workspaceId}/invitations/{invitationId}/revoke',
+        'revokeWorkspaceInvitation',
+        'RevokeWorkspaceInvitationRequest',
+        'WorkspaceInvitationMutationResponse',
+      ],
+      [
+        'patch',
+        '/api/app/workspaces/{workspaceId}/members/{userId}',
+        'changeWorkspaceMemberAccess',
+        'ChangeWorkspaceMemberAccessRequest',
+        'WorkspaceMemberMutationResponse',
+      ],
+      [
+        'post',
+        '/api/app/workspaces/{workspaceId}/members/{userId}/remove',
+        'removeWorkspaceMember',
+        'RemoveWorkspaceMemberRequest',
+        'WorkspaceMemberMutationResponse',
+      ],
+      [
+        'post',
+        '/api/app/workspaces/{workspaceId}/leave',
+        'leaveWorkspace',
+        'LeaveWorkspaceRequest',
+        'WorkspaceMemberMutationResponse',
+      ],
+      [
+        'post',
+        '/api/app/workspaces/{workspaceId}/ownership/transfer',
+        'transferWorkspaceOwnership',
+        'TransferWorkspaceOwnershipRequest',
+        'WorkspaceOwnershipMutationResponse',
+      ],
+      [
+        'get',
+        '/api/app/workspaces/{workspaceId}/access-recovery',
+        'getWorkspaceAccessRecoveryState',
+        undefined,
+        'WorkspaceAccessRecoveryResponse',
+      ],
+      [
+        'post',
+        '/api/app/workspaces/{workspaceId}/access-recovery',
+        'recoverWorkspaceAccess',
+        'RecoverWorkspaceAccessRequest',
+        'WorkspaceAccessRecoveryResponse',
+      ],
+      [
+        'post',
+        '/api/app/users/{userId}/disable',
+        'disableUser',
+        'DisableUserRequest',
+        'DisableUserResponse',
+      ],
+    ] as const;
+
+    for (const [method, path, operationId, requestSchema, responseSchema] of operations) {
+      const operation = document.paths[path]?.[method];
+
+      expect(operation).toMatchObject({
+        operationId,
+        ...(requestSchema
+          ? {
+              requestBody: {
+                content: {
+                  'application/json': {
+                    schema: { $ref: `#/components/schemas/${requestSchema}` },
+                  },
+                },
+              },
+            }
+          : {}),
+        responses: {
+          [operationId === 'createWorkspaceInvitation' ? '201' : '200']: {
+            content: {
+              'application/json': {
+                schema: { $ref: `#/components/schemas/${responseSchema}` },
+              },
+            },
+          },
+        },
+      });
+    }
+
+    expect(
+      Object.fromEntries(
+        operations.map(([method, path, operationId]) => [
+          operationId,
+          document.paths[path]?.[method]?.security,
+        ])
+      )
+    ).toMatchObject({
+      listMyWorkspaceInvitations: [{ sessionCookie: [] }],
+      acceptWorkspaceInvitation: [{ sessionCookie: [] }],
+      declineWorkspaceInvitation: [{ sessionCookie: [] }],
+      leaveWorkspace: [{ sessionCookie: [] }],
+      getWorkspaceAccessRecoveryState: [{ bearerAuth: [] }],
+      recoverWorkspaceAccess: [{ bearerAuth: [] }],
+      disableUser: [{ bearerAuth: [] }],
+      listAuthorizedWorkspaces: [{ bearerAuth: [] }, { sessionCookie: [] }],
+    });
+  });
+
   it('keeps live public app api routes and openapi operations aligned', () => {
     const app = createApp();
     const unsupportedMethodRoutes = app.routes
@@ -2405,6 +2886,179 @@ describe('app api openapi projection', () => {
     expect(duplicateLiveOperations).toEqual([]);
     expect(staleExclusions).toEqual([]);
     expect(projectedLiveOperations).toEqual(documentedOperations);
+  });
+
+  it('keeps the direct Core and Gateway access inventory aligned with live routes', () => {
+    const liveOperationKeys = createApp()
+      .routes.filter(
+        ({ method, path }) =>
+          OPENAPI_ROUTE_METHOD_SET.has(method) &&
+          (path === '/api/workspaces' ||
+            path.startsWith('/api/workspaces/') ||
+            (method === 'POST' && path === '/api/approvals/:approvalRequestId/respond') ||
+            (method === 'POST' && path === '/api/turns') ||
+            (method === 'POST' && path === '/v1/chat/completions') ||
+            (method === 'POST' && path === '/v1/responses'))
+      )
+      .map(({ method, path }) => `${method} ${path}`)
+      .sort();
+
+    expect(liveOperationKeys).toEqual([...DIRECT_CORE_GATEWAY_OPERATION_KEYS].sort());
+  });
+
+  it('requires one canonical access classification for every public operation', () => {
+    const document = createAppOpenApiDocument();
+    const appOperationIds = Object.entries(document.paths).flatMap(([, pathItem]) =>
+      APP_OPENAPI_ROUTE_METHODS.flatMap((method) => {
+        const operation = (pathItem as Readonly<Record<string, unknown>>)[method];
+
+        if (!operation || typeof operation !== 'object' || Array.isArray(operation)) {
+          return [];
+        }
+
+        const operationId = (operation as Readonly<Record<string, unknown>>).operationId;
+        return typeof operationId === 'string' ? [operationId] : [];
+      })
+    );
+    const operationKeys = [...appOperationIds, ...DIRECT_CORE_GATEWAY_OPERATION_KEYS];
+    const knownKeys = new Set(operationKeys);
+    const duplicateOperationKeys = operationKeys.filter(
+      (operationKey, index) => operationKeys.indexOf(operationKey) !== index
+    );
+    const missingMetadata = operationKeys.filter(
+      (operationKey) => !Object.hasOwn(PUBLIC_OPERATION_ACCESS, operationKey)
+    );
+    const staleMetadata = Object.keys(PUBLIC_OPERATION_ACCESS).filter(
+      (operationKey) => !knownKeys.has(operationKey)
+    );
+    const invalidMetadata = Object.entries(PUBLIC_OPERATION_ACCESS).flatMap(
+      ([operationKey, value]) => {
+        const metadata = value as unknown as Readonly<Record<string, unknown>>;
+        const scope = metadata.scope;
+        const resolver = metadata.resolver;
+        const workspaceResolver = metadata.workspaceResolver;
+        const authentication = metadata.authentication;
+        const scopeIsValid = scope === 'server' || scope === 'user' || scope === 'workspace';
+        const resolverIsValid =
+          scope === 'workspace'
+            ? typeof resolver === 'string' && WORKSPACE_OPERATION_RESOLVERS.has(resolver)
+            : !Object.hasOwn(metadata, 'resolver');
+        const workspaceResolverIsValid =
+          scope === 'user'
+            ? !Object.hasOwn(metadata, 'workspaceResolver') ||
+              workspaceResolver === 'gateway-metadata-workspace'
+            : !Object.hasOwn(metadata, 'workspaceResolver');
+        const authenticationIsValid =
+          scope === 'server'
+            ? authentication === 'bootstrap-secret' || authentication === 'deployment-admin'
+            : scope === 'user'
+              ? authentication === 'canonical-user' || authentication === 'gateway-actor'
+              : !Object.hasOwn(metadata, 'authentication');
+        const gatewayAuthenticationIsConsistent =
+          authentication === 'gateway-actor'
+            ? workspaceResolver === 'gateway-metadata-workspace'
+            : !Object.hasOwn(metadata, 'workspaceResolver');
+
+        return scopeIsValid &&
+          resolverIsValid &&
+          workspaceResolverIsValid &&
+          authenticationIsValid &&
+          gatewayAuthenticationIsConsistent &&
+          typeof metadata.mutating === 'boolean' &&
+          typeof metadata.policyOperation === 'string' &&
+          PRODUCT_POLICY_OPERATIONS.has(metadata.policyOperation)
+          ? []
+          : [operationKey];
+      }
+    );
+
+    expect({ duplicateOperationKeys, invalidMetadata, missingMetadata, staleMetadata }).toEqual({
+      duplicateOperationKeys: [],
+      invalidMetadata: [],
+      missingMetadata: [],
+      staleMetadata: [],
+    });
+  });
+
+  it('pins one representative for every Workspace resolver and each non-Workspace exception', () => {
+    expect(PUBLIC_OPERATION_ACCESS.quickChat).toMatchObject({
+      mutating: true,
+      policyOperation: 'turn.run',
+      resolver: 'actor-quick-chat-workspace',
+      scope: 'workspace',
+    });
+    expect(PUBLIC_OPERATION_ACCESS['GET /api/workspaces']).toMatchObject({
+      mutating: false,
+      policyOperation: 'workspace.read',
+      resolver: 'authorized-workspace-set',
+      scope: 'workspace',
+    });
+    expect(PUBLIC_OPERATION_ACCESS['POST /api/turns']).toMatchObject({
+      mutating: true,
+      policyOperation: 'turn.run',
+      resolver: 'body-workspace',
+      scope: 'workspace',
+    });
+    for (const operationKey of ['POST /v1/chat/completions', 'POST /v1/responses'] as const) {
+      expect(PUBLIC_OPERATION_ACCESS[operationKey]).toMatchObject({
+        authentication: 'gateway-actor',
+        mutating: true,
+        policyOperation: 'llm.gateway.use',
+        scope: 'user',
+        workspaceResolver: 'gateway-metadata-workspace',
+      });
+    }
+    expect(PUBLIC_OPERATION_ACCESS['POST /api/approvals/:approvalRequestId/respond']).toMatchObject(
+      {
+        mutating: true,
+        policyOperation: 'approval.respond',
+        resolver: 'opaque-child-workspace',
+        scope: 'workspace',
+      }
+    );
+    expect(PUBLIC_OPERATION_ACCESS['GET /api/workspaces/:workspaceId']).toMatchObject({
+      mutating: false,
+      policyOperation: 'workspace.read',
+      resolver: 'path-workspace',
+      scope: 'workspace',
+    });
+    expect(
+      PUBLIC_OPERATION_ACCESS['GET /api/workspaces/:workspaceId/threads/:threadId']
+    ).toMatchObject({
+      mutating: false,
+      policyOperation: 'thread.read',
+      resolver: 'workspace-child-lineage',
+      scope: 'workspace',
+    });
+    expect(PUBLIC_OPERATION_ACCESS['POST /api/workspaces']).toMatchObject({
+      authentication: 'canonical-user',
+      mutating: true,
+      policyOperation: 'workspace.write',
+      scope: 'user',
+    });
+    expect(PUBLIC_OPERATION_ACCESS.dryRunWorkspaceImport).toMatchObject({
+      authentication: 'canonical-user',
+      mutating: false,
+      policyOperation: 'workspace.write',
+      scope: 'user',
+    });
+    expect(PUBLIC_OPERATION_ACCESS.importWorkspace).toMatchObject({
+      authentication: 'canonical-user',
+      mutating: true,
+      policyOperation: 'workspace.write',
+      scope: 'user',
+    });
+    expect(PUBLIC_OPERATION_ACCESS.consumeOpenKitBootstrapToken).toMatchObject({
+      authentication: 'bootstrap-secret',
+      mutating: true,
+      policyOperation: 'api.call',
+      scope: 'server',
+    });
+
+    expect(PUBLIC_OPERATION_ACCESS.retrieveKnowledge?.mutating).toBe(true);
+    expect(PUBLIC_OPERATION_ACCESS.answerKnowledgeManager?.mutating).toBe(false);
+    expect(PUBLIC_OPERATION_ACCESS.suggestKnowledgeRepairs?.mutating).toBe(false);
+    expect(PUBLIC_OPERATION_ACCESS.checkKnowledgeHealth?.mutating).toBe(false);
   });
 
   it('enforces semantic invariants for every documented operation', () => {
@@ -2462,7 +3116,9 @@ describe('app api openapi projection', () => {
             ? []
             : DEPLOYMENT_ADMIN_ROUTES.has(route)
               ? [{ bearerAuth: [] }]
-              : [{ bearerAuth: [] }, { sessionCookie: [] }];
+              : SESSION_COOKIE_ONLY_ROUTES.has(route)
+                ? [{ sessionCookie: [] }]
+                : [{ bearerAuth: [] }, { sessionCookie: [] }];
         return JSON.stringify(operation.security) !== JSON.stringify(expected);
       })
       .map(({ route }) => route);
@@ -2646,6 +3302,17 @@ describe('app api openapi projection', () => {
       'quickChat',
       'startChatMode',
       'listThreadItems',
+      'listWorkspaceMaterials',
+      'createWorkspaceMaterial',
+      'getWorkspaceMaterial',
+      'listWorkspaceMaterialRevisions',
+      'saveWorkspaceMaterialRevision',
+      'getWorkspaceMaterialRevision',
+      'getThreadMaterial',
+      'bindThreadMaterial',
+      'unbindThreadMaterial',
+      'excludeThreadMaterial',
+      'restoreThreadMaterial',
       'listAutomations',
       'createAutomation',
       'updateAutomation',
@@ -2680,6 +3347,8 @@ describe('app api openapi projection', () => {
       'getThreadGoalSummary',
       'startThreadGoal',
       'submitThreadGoalSteering',
+      'convertGoalSteeringToFollowUp',
+      'cancelGoalSteering',
       'createThreadGoalPlan',
       'approveThreadGoalPlan',
       'reviseThreadGoalPlan',
@@ -2689,13 +3358,27 @@ describe('app api openapi projection', () => {
       'listInterruptedWorkers',
       'retryInterruptedWorkerCheckpoint',
       'refreshAgentHealth',
+      'listAuthorizedWorkspaces',
+      'listWorkspaceMembers',
+      'listWorkspaceInvitations',
+      'createWorkspaceInvitation',
+      'listMyWorkspaceInvitations',
+      'acceptWorkspaceInvitation',
+      'declineWorkspaceInvitation',
+      'revokeWorkspaceInvitation',
+      'changeWorkspaceMemberAccess',
+      'removeWorkspaceMember',
+      'leaveWorkspace',
+      'transferWorkspaceOwnership',
+      'getWorkspaceAccessRecoveryState',
+      'recoverWorkspaceAccess',
+      'disableUser',
       'registerKnowledgeSource',
       'listKnowledgeSources',
       'recordKnowledgeObservation',
       'listKnowledgeObservations',
       'recordKnowledgeClaim',
       'listKnowledgeClaims',
-      'promoteKnowledgeClaim',
       'recordKnowledgeConflict',
       'listKnowledgeConflicts',
       'resolveKnowledgeConflict',
@@ -2711,6 +3394,10 @@ describe('app api openapi projection', () => {
       'suggestKnowledgeRepairs',
       'checkKnowledgeHealth',
       'submitTurnFeedback',
+      'listArtifactReviews',
+      'submitArtifactReviewDecision',
+      'importWorkspaceArtifact',
+      'introduceWorkspaceArtifact',
       'listWorkspaceSyncReviews',
       'getWorkspaceSyncReview',
       'submitWorkspaceSyncReviewDecision',

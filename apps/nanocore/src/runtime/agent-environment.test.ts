@@ -2,11 +2,19 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
+import {
+  type AgentEnvironmentCredentialDeclaration,
+  AgentEnvironmentPackageSchema,
+  type WorkerSandboxAccess,
+} from '@openkit/config-schema';
+import type { ActorRef } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
+import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
+import { resolveAgentSetup } from '../agents/setup-resolver.js';
+import { ensureLocalUser } from '../auth/identity.js';
 import { listInjectionPlans } from '../injection-plans.js';
 import { listInjectionReceipts } from '../injection-receipts.js';
-import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
+import { ProviderRegistry } from '../providers/registry.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -14,580 +22,642 @@ import { createVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 import { listVaultUseRecords } from '../vault/vault-use-records.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
+import { TurnStartValidationError } from './orchestrator.js';
+
+const USER_TRIGGER_ACTOR = { kind: 'user', id: 'user_local' } as const satisfies ActorRef;
+const AUTOMATION_TRIGGER_ACTOR = {
+  kind: 'automation',
+  id: 'automation_release',
+  responsibleUserId: 'user_local',
+} as const satisfies ActorRef;
+
+/**
+ * Creates one complete resolved setup for AEP contract tests.
+ *
+ * @param options Explicit manifest changes relevant to the test.
+ * @returns Complete manifest and resolved provider snapshot.
+ */
+function createTestSetup(
+  options: {
+    readonly adapter?: string;
+    readonly credentialDeclarations?: AgentEnvironmentCredentialDeclaration[];
+    readonly mcpIds?: string[];
+    readonly network?: WorkerSandboxAccess['network'];
+    readonly provider?: ResolvedAgentSetup['provider'];
+    readonly requiredCapabilities?: Array<
+      'backend-local-inference' | 'trusted-worker-inference-relay' | 'worker.runtime-provenance.v1'
+    >;
+    readonly skillIds?: string[];
+  } = {}
+): ResolvedAgentSetup {
+  const adapter = options.adapter ?? 'codex';
+
+  return {
+    manifest: {
+      defaultProfileId: 'default',
+      displayName: 'Test Worker',
+      id: 'agent_codex_host',
+      mcp: (options.mcpIds ?? []).map((id) => ({ id })),
+      provider: {
+        model: options.provider?.model ?? 'openai/gpt-5.2',
+        ref: options.provider?.providerId ?? 'agent-openrouter',
+      },
+      requiredFeatures: [],
+      profiles: [{ id: 'default', instructionsRef: adapter, skills: [] }],
+      runtime: {
+        adapter,
+        binaries: [
+          { id: 'openkit-worker-shim', path: '/usr/local/bin/openkit-worker-shim' },
+          { id: 'node', path: '/usr/local/bin/node' },
+          { id: adapter, path: `/usr/local/bin/${adapter}` },
+        ],
+        image: {
+          pullPolicy: 'never',
+          ref: `registry.example.com/openkit/worker-${adapter}:test`,
+        },
+        kind: `${adapter}-runtime`,
+        version: '1.0.0',
+      },
+      sandbox: {
+        backend: {
+          allowedKinds: ['openshell'],
+          preferred: 'openshell',
+          requiredCapabilities: options.requiredCapabilities ?? ['trusted-worker-inference-relay'],
+        },
+        credentialDeclarations: options.credentialDeclarations ?? [],
+        filesystem: [],
+        network: options.network ?? [],
+      },
+      schemaVersion: 1,
+      skills: (options.skillIds ?? []).map((id) => ({ id })),
+    },
+    provider:
+      options.provider === undefined
+        ? {
+            model: 'openai/gpt-5.2',
+            origin: 'server-providers',
+            providerId: 'agent-openrouter',
+            secretRef: null,
+          }
+        : options.provider,
+  };
+}
+
+/**
+ * Creates one product turn for AEP tests.
+ *
+ * @param input User-visible turn input.
+ * @returns Accepted turn.
+ */
+function createTurnFixture(input: string) {
+  const store = createDemoStore();
+  return store.createTurn('ws_demo', 'th_demo', input, { kind: 'user', id: 'user_local' });
+}
 
 describe('agent environment package resolver', () => {
-  it('rejects package resolution without an explicit container backend', () => {
-    const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Use the repository');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+  it('requires one explicit container backend', () => {
+    const turn = createTurnFixture('Use the repository');
+    const common = {
+      agentSetup: createTestSetup(),
+      agentSessionId: 'session_1',
+      createdAt: '2026-07-18T00:00:00.000Z',
+      requestId: 'req_1',
+      turn,
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceCwd: '/workspace/repo',
+      workspaceRoots: [],
+    };
 
+    expect(() => resolveAgentEnvironmentPackage(common)).toThrow(
+      'Agent Environment Package resolution requires a container backend.'
+    );
     expect(() =>
-      resolveAgentEnvironmentPackage({
-        agent,
-        agentSessionId: 'session_1',
-        userId: 'user_local',
-        createdAt: '2026-06-16T00:00:00.000Z',
-        requestId: 'req_1',
-        turn,
-        workspaceCwd: '/workspace/repo',
-        workspaceRoots: [],
-      })
-    ).toThrow('Agent Environment Package resolution requires a container backend.');
-  });
-
-  it('rejects host backend targets even when explicitly requested', () => {
-    const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Reject host backend');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
-
-    expect(() =>
-      resolveAgentEnvironmentPackage({
-        agent,
-        agentSessionId: 'session_1',
-        userId: 'user_local',
-        backend: { kind: 'host' } as never,
-        createdAt: '2026-06-16T00:00:00.000Z',
-        requestId: null,
-        turn,
-        workspaceCwd: null,
-        workspaceRoots: [],
-      })
+      resolveAgentEnvironmentPackage({ ...common, backend: { kind: 'host' } as never })
     ).toThrow('Host Agent Environment Package backends are not supported.');
   });
 
-  it('resolves an OpenShell package with direct NanoCore control and sandbox-local inference routing', () => {
-    const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Run OpenShell mode');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
-    const resolved = AgentEnvironmentPackageSchema.parse(
-      resolveAgentEnvironmentPackage({
-        agent,
-        agentSessionId: 'session_openshell_1',
-        userId: 'user_local',
-        backend: {
-          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
-          kind: 'openshell',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
-        },
-        createdAt: '2026-06-16T00:00:00.000Z',
-        requestId: 'req_openshell_1',
-        turn,
-        turnInput: 'Run OpenShell mode',
-        workspaceCwd: null,
-        workspaceRoots: [
-          {
-            access: 'read-write',
-            id: 'repo',
-            sourceKind: 'host-dir',
-            sourcePath: '/Users/m5pro/Documents/AI/openkit',
-            workerPath: '/workspace/openkit',
-          },
-        ],
-      })
-    );
-    const serialized = JSON.stringify(resolved);
+  it('projects the exact trigger actor into V2 scope without legacy identity fields', () => {
+    const resolved = resolveAgentEnvironmentPackage({
+      agentSetup: createTestSetup({ requiredCapabilities: ['backend-local-inference'] }),
+      agentSessionId: 'session_actor_1',
+      backend: {
+        kind: 'openshell',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+      },
+      createdAt: '2026-07-18T00:00:00.000Z',
+      requestId: 'req_actor_1',
+      triggerActor: AUTOMATION_TRIGGER_ACTOR,
+      turn: createTurnFixture('Project exact actor'),
+      workspaceCwd: '/workspace/repo',
+      workspaceRoots: [],
+    });
 
-    expect(resolved.runtime.image).toMatchObject({
-      kind: 'container-image',
-      ref: 'ghcr.io/openkit/codex-worker:test',
-    });
-    expect(resolved.runtime.command).toMatchObject({
-      argv: ['openkit-codex-shim', '--package', '/openkit/config/package.json'],
-      workingDirectory: '/workspace/openkit',
-    });
-    expect(resolved.workspace.inputs[0]?.materialization).toEqual({
-      changeSetManifestPath: '/openkit/session/workspace-changes.json',
-      strategy: 'git',
-    });
-    expect(resolved.workspace.inputs[0]?.target).toBe('/workspace/openkit/worktrees/main');
-    expect(resolved.extensions.openkit).toMatchObject({
-      turnInput: 'Run OpenShell mode',
-      resultMessagePath: '/openkit/session/final-message.txt',
-      codexCommand: [
-        'codex',
-        'exec',
-        '--json',
-        '--output-last-message',
-        '/openkit/session/final-message.txt',
-        '--cd',
-        '/workspace/openkit/worktrees/main',
-        '--dangerously-bypass-approvals-and-sandbox',
-        'Run OpenShell mode',
-      ],
-    });
-    const sessionWorkspace = (
-      resolved.extensions.openkit as {
-        sessionWorkspace?: {
-          compatibilityKey: { digest: string };
-          decision: { kind: string };
-          layout: { root: string; slots: Array<{ id: string; path: string }> };
-          materialization: { inputs: Array<{ inputId: string; slotId: string }> };
-        };
-      }
-    ).sessionWorkspace;
-    expect(sessionWorkspace).toMatchObject({
-      compatibilityKey: {
-        digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-      },
-      decision: { kind: 'create' },
-      layout: {
-        root: '/workspace/openkit',
-        slots: expect.arrayContaining([
-          expect.objectContaining({
-            id: 'main-worktree',
-            path: '/workspace/openkit/worktrees/main',
-          }),
-          expect.objectContaining({ id: 'turn-inputs', path: '/workspace/openkit/inputs' }),
-          expect.objectContaining({ id: 'session', path: '/openkit/session' }),
-          expect.objectContaining({ id: 'context', path: '/openkit/context' }),
-          expect.objectContaining({ id: 'instructions', path: '/openkit/instructions' }),
-        ]),
-      },
-      materialization: {
-        inputs: [expect.objectContaining({ inputId: 'repo', slotId: 'main-worktree' })],
-      },
-    });
-    expect(resolved.control).toMatchObject({
-      adapter: {
-        targetTransport: 'outbound-https',
-      },
-      mode: 'direct-nanocore',
-      endpoint: {
-        baseUrl: 'https://nanocore.local/api/worker-control',
-        implementation: 'direct-nanocore',
-        kind: 'direct-url',
-        required: true,
-      },
-      channels: {
-        artifacts: 'batch',
-        events: 'batch',
-      },
-      commands: ['interrupt'],
-      events: expect.arrayContaining(['turn.failed']),
-    });
-    expect(resolved.control.relay).toBeUndefined();
-    expect(resolved.control.commands).not.toContain('approval-result');
-    expect(resolved.control.auth).toMatchObject({
-      credentialVisibility: 'environment',
-      kind: 'sandbox-session-token',
-      tokenRef: 'runtime://openkit/control-token',
-    });
-    expect(resolved.capabilities).toEqual({
-      mode: 'disabled',
-      protocol: 'openkit-worker-capability-v1',
-      routes: [],
-    });
-    expect(resolved.llm.routes[0]?.endpoint).toMatchObject({
-      upstream: {
-        kind: 'nanocore-gateway',
-      },
-      workerBaseUrl: 'https://inference.local/v1',
-    });
-    expect(resolved.providers).toMatchObject({
-      providerProfiles: [
-        {
-          id: 'codex',
-          kind: 'oauth',
-          displayName: 'Codex',
-        },
-      ],
-      providerInstances: [
-        {
-          id: 'codex',
-          profileId: 'codex',
-          vendor: 'codex',
-          displayName: 'Codex',
-          kind: 'oauth',
-        },
-      ],
-      attachments: [
-        {
-          id: 'attach_codex',
-          providerInstanceId: 'codex',
-          binaryIds: ['codex'],
-        },
-      ],
-    });
-    expect(resolved.policy.filesystem).toMatchObject({
-      default: 'deny',
-      enforcement: 'openshell',
-    });
-    expect(resolved.policy.snapshotId).toBe(WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID);
-    expect(resolved.backend).toMatchObject({
-      allowedKinds: ['openshell'],
-      preferred: 'openshell',
-      requiredCapabilities: expect.arrayContaining([
-        'container',
-        'transcript-sink',
-        'worker-control',
-        'nanocore-inference-upstream',
-      ]),
-    });
-    expect(resolved.backend.requiredCapabilities).not.toContain('control-relay');
-    expect(resolved.backend.requiredCapabilities).not.toContain('sidecar-control-endpoint');
-    expect(resolved.backend.requiredCapabilities).not.toContain('sidecar-capability-endpoint');
-    expect(serialized).not.toContain('/Users/m5pro');
+    expect(resolved.schemaVersion).toBe(2);
+    expect(resolved.scope.triggerActor).toEqual(AUTOMATION_TRIGGER_ACTOR);
+    expect(resolved.scope).not.toHaveProperty('userId');
+    expect(resolved.scope).not.toHaveProperty('automationId');
+    expect(resolved.scope).not.toHaveProperty('organizationId');
   });
 
-  it('resolves a relay-required package from the trusted provider selection', () => {
-    const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Run trusted worker inference');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+  it('projects one resolved opaque manifest into the generic relay launch contract', () => {
+    const turn = createTurnFixture('Run the opaque worker');
+    const setupResult = resolveAgentSetup(createTestSetup({ adapter: 'future-adapter' }).manifest, {
+      providerRegistry: new ProviderRegistry([
+        {
+          displayName: 'Agent OpenRouter',
+          id: 'agent-openrouter',
+          kind: 'gateway',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+    });
+
+    expect(setupResult.diagnostics).toEqual([]);
+    if (!setupResult.setup) {
+      throw new Error('Expected the opaque agent setup to resolve.');
+    }
+
     const resolved = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
-        agent,
-        agentSessionId: 'session_relay_1',
+        agentSetup: setupResult.setup,
+        agentSessionId: 'session_future_1',
         backend: {
-          workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
           kind: 'openshell',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
+          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         },
-        backendRequirements: {
-          allowedKinds: ['openshell'],
-          preferred: 'openshell',
-          requiredCapabilities: ['trusted-worker-inference-relay'],
-        },
-        createdAt: '2026-07-13T00:00:00.000Z',
-        providerSelection: {
-          model: 'openai/gpt-5.2',
-          providerId: 'agent-openrouter',
-        },
-        requestId: 'req_relay_1',
+        createdAt: '2026-07-18T00:00:00.000Z',
+        requestId: 'req_future_1',
         turn,
-        turnInput: 'Run trusted worker inference',
-        userId: 'user_local',
+        turnInput: 'Run the opaque worker',
+        triggerActor: USER_TRIGGER_ACTOR,
         workspaceCwd: '/workspace/repo',
         workspaceRoots: [],
       })
     );
-    const serialized = JSON.stringify(resolved);
-    const codexCommand = (resolved.extensions.openkit as { codexCommand: string[] }).codexCommand;
 
+    expect(resolved.runtime).toMatchObject({
+      binaries: setupResult.setup.manifest.runtime.binaries,
+      command: { argv: ['openkit-worker-shim', '--package', '/openkit/config/package.json'] },
+      image: {
+        kind: 'container-image',
+        pullPolicy: 'never',
+        ref: 'registry.example.com/openkit/worker-future-adapter:test',
+      },
+    });
+    expect(resolved.control.adapter).toEqual({
+      kind: 'openkit-worker-shim',
+      targetRuntime: 'future-adapter',
+      targetTransport: 'outbound-https',
+    });
     expect(resolved.llm).toEqual({
       mode: 'gateway',
       routes: [
         expect.objectContaining({
           credentialVisibility: 'placeholder',
-          endpoint: expect.objectContaining({
-            workerBaseUrl: 'http://host.openshell.internal:3000/api/worker-inference/v1',
-            upstream: expect.objectContaining({ kind: 'nanocore-gateway' }),
-          }),
           model: 'openai/gpt-5.2',
           providerInstanceId: 'agent-openrouter',
         }),
       ],
     });
-    expect(resolved.providers.providerInstances).toEqual([
-      expect.objectContaining({ id: 'agent-openrouter', models: ['openai/gpt-5.2'] }),
-    ]);
-    expect(resolved.providers.attachments).toEqual([]);
-    expect(resolved.policy.network?.rules).toEqual(
-      expect.arrayContaining([
-        {
-          action: 'allow',
-          binaries: ['/usr/local/bin/node', '/usr/local/bin/openkit-codex-shim'],
-          host: 'host.openshell.internal',
-          id: 'openkit-worker-control',
-          port: 3000,
-          protocol: 'rest',
-          rules: [
-            { method: 'POST', path: '/api/worker-control/heartbeat' },
-            { method: 'POST', path: '/api/worker-control/artifacts' },
-            { method: 'POST', path: '/api/worker-control/commands/poll' },
-            { method: 'POST', path: '/api/worker-control/commands/ack' },
-            { method: 'POST', path: '/api/worker-control/events/append' },
-            { method: 'POST', path: '/api/worker-control/final-status' },
-            { method: 'POST', path: '/api/worker-control/supply-refresh-ack' },
-            { method: 'POST', path: '/api/worker-control/capability-summary' },
-            { method: 'POST', path: '/api/worker-control/knowledge-proposal-summary' },
-          ],
-        },
-        expect.objectContaining({
-          binaries: ['/usr/local/bin/codex', '/usr/local/lib/codex/bin/codex'],
-          host: 'host.openshell.internal',
-          id: 'openkit-worker-inference',
-          port: 3000,
-          protocol: 'rest',
-          rules: [
-            { method: 'POST', path: '/api/worker-inference/v1/chat/completions' },
-            { method: 'POST', path: '/api/worker-inference/v1/responses' },
-          ],
-        }),
-      ])
-    );
-    expect(codexCommand).toEqual(
-      expect.arrayContaining([
-        '--ignore-user-config',
-        '--strict-config',
-        '--model',
-        'openai/gpt-5.2',
-        'model_provider="openkit-worker-inference"',
-        'web_search="disabled"',
-        'model_providers.openkit-worker-inference.base_url="http://host.openshell.internal:3000/api/worker-inference/v1"',
-        'model_providers.openkit-worker-inference.env_key="OPENKIT_WORKER_INFERENCE_TOKEN"',
-        'model_providers.openkit-worker-inference.wire_api="responses"',
-        'model_providers.openkit-worker-inference.requires_openai_auth=false',
-      ])
-    );
-    expect(resolved.backend.requiredCapabilities).toContain('trusted-worker-inference-relay');
-    expect(resolved.control.adapter?.targetTransport).toBe('outbound-http');
-    expect(resolved.control.events).toContain('turn.failed');
-    expect(resolved.control.transcript?.runtimeProvenance).toBeUndefined();
-    expect(serialized).not.toContain('inference.local');
-    expect(serialized).not.toContain('/sandbox/.codex/auth.json');
+    expect(resolved.supply).not.toHaveProperty('binaries');
+    expect(resolved.extensions.openkit).not.toHaveProperty('codexCommand');
+    expect(resolved.extensions.openkit).not.toHaveProperty('resultMessagePath');
   });
 
-  it('projects bounded runtime provenance outputs only when explicitly required', () => {
-    const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Capture runtime provenance');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
-    const resolved = AgentEnvironmentPackageSchema.parse(
-      resolveAgentEnvironmentPackage({
-        agent,
-        agentSessionId: 'session_runtime_provenance_1',
-        backend: {
-          workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
-          kind: 'openshell',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
-        },
-        backendRequirements: {
-          allowedKinds: ['openshell'],
-          preferred: 'openshell',
-          requiredCapabilities: ['trusted-worker-inference-relay', 'worker.runtime-provenance.v1'],
-        },
-        createdAt: '2026-07-13T00:00:00.000Z',
-        providerSelection: {
-          model: 'openai/gpt-5.2',
-          providerId: 'agent-openrouter',
-        },
-        requestId: 'req_runtime_provenance_1',
-        turn,
-        turnInput: 'Capture runtime provenance',
-        userId: 'user_local',
-        workspaceCwd: '/workspace/repo',
-        workspaceRoots: [],
-      })
-    );
-
-    expect(resolved.control.transcript?.runtimeProvenance).toEqual({
-      maxStreamCount: 64,
-      maxTotalBytes: 268_435_456,
-      nativeOriginIndexPath: '/openkit/session/runtime/native-origin-index.jsonl',
-      rawStreamsRoot: '/openkit/session/runtime/raw',
-      streamManifestPath: '/openkit/session/runtime/raw-streams.json',
+  it('keeps remote Gateway topology backend-owned while projecting remote requirements', () => {
+    const turn = createTurnFixture('Run remotely');
+    const resolved = resolveAgentEnvironmentPackage({
+      agentSetup: createTestSetup({
+        requiredCapabilities: ['trusted-worker-inference-relay', 'worker.runtime-provenance.v1'],
+      }),
+      agentSessionId: 'session_remote_1',
+      backend: {
+        gatewayUrl: 'https://gateway.example.test',
+        kind: 'openshell',
+        placement: 'remote',
+        workerControlBaseUrl: 'https://nanocore.example.test/api/worker-control',
+      },
+      createdAt: '2026-07-18T00:00:00.000Z',
+      requestId: 'req_remote_1',
+      turn,
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceCwd: '/workspace/repo',
+      workspaceRoots: [],
     });
-    expect(resolved.backend.requiredCapabilities).toContain('worker.runtime-provenance.v1');
+
+    expect(resolved.backend.requiredCapabilities).toEqual(
+      expect.arrayContaining(['remote-gateway', 'worker.runtime-provenance.v1'])
+    );
+    expect(resolved.backend.extensions?.openshell).toEqual({
+      gatewayUrlRef: 'runtime://openshell/gateway-url',
+      placement: 'remote',
+    });
+    expect(JSON.stringify(resolved)).not.toContain('gateway.example.test');
+    expect(resolved.control.transcript.runtimeProvenance).toBeDefined();
   });
 
-  it('rejects runtime provenance without the trusted worker inference relay', () => {
-    const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Reject incomplete provenance binding');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+  it('rejects relay authority conflicts and incomplete provenance before launch', () => {
+    const turn = createTurnFixture('Reject authority conflict');
+    const common = {
+      agentSessionId: 'session_reject_1',
+      backend: {
+        kind: 'openshell' as const,
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+      },
+      createdAt: '2026-07-18T00:00:00.000Z',
+      requestId: 'req_reject_1',
+      turn,
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceCwd: '/workspace/repo',
+      workspaceRoots: [],
+    };
 
     expect(() =>
       resolveAgentEnvironmentPackage({
-        agent,
-        agentSessionId: 'session_runtime_provenance_untrusted_1',
-        backend: {
-          workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
-          kind: 'openshell',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
-        },
-        backendRequirements: {
-          allowedKinds: ['openshell'],
-          preferred: 'openshell',
+        ...common,
+        agentSetup: createTestSetup({
+          network: [
+            {
+              access: 'read-write',
+              binaries: ['/usr/local/bin/codex'],
+              host: 'api.openai.com',
+              id: 'direct-provider',
+              port: 443,
+              protocol: 'rest',
+            },
+          ],
+        }),
+      })
+    ).toThrow('Trusted worker inference does not allow direct sandbox network or credentials.');
+    expect(() =>
+      resolveAgentEnvironmentPackage({
+        ...common,
+        agentSetup: createTestSetup({
           requiredCapabilities: ['worker.runtime-provenance.v1'],
-        },
-        createdAt: '2026-07-13T00:00:00.000Z',
-        turn,
-        turnInput: 'Reject incomplete provenance binding',
-        userId: 'user_local',
-        workspaceCwd: '/workspace/repo',
-        workspaceRoots: [],
+        }),
       })
     ).toThrow('Runtime provenance requires the trusted worker inference relay.');
   });
 
-  it('rejects an explicit inference override for a relay-required package', () => {
-    const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Reject relay URL override');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+  it('keeps approved Skill and MCP supply static and non-executable', () => {
+    const turn = createTurnFixture('Use static supply');
+    const resolved = resolveAgentEnvironmentPackage({
+      agentSetup: createTestSetup({
+        mcpIds: ['github'],
+        skillIds: ['repo-guidelines'],
+      }),
+      agentSessionId: 'session_supply_1',
+      backend: {
+        kind: 'openshell',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+      },
+      createdAt: '2026-07-18T00:00:00.000Z',
+      requestId: 'req_supply_1',
+      turn,
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceCwd: '/workspace/repo',
+      workspaceRoots: [],
+    });
 
-    expect(() =>
-      resolveAgentEnvironmentPackage({
-        agent,
-        agentSessionId: 'session_relay_override_1',
-        backend: {
-          workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
-          inferenceBaseUrl: 'https://attacker.example/api/worker-inference/v1',
-          kind: 'openshell',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
-        },
-        backendRequirements: {
-          allowedKinds: ['openshell'],
-          preferred: 'openshell',
-          requiredCapabilities: ['trusted-worker-inference-relay'],
-        },
-        createdAt: '2026-07-13T00:00:00.000Z',
-        providerSelection: {
-          model: 'openai/gpt-5.2',
-          providerId: 'agent-openrouter',
-        },
-        requestId: 'req_relay_override_1',
-        turn,
-        userId: 'user_local',
-        workspaceCwd: '/workspace/repo',
-        workspaceRoots: [],
-      })
-    ).toThrow('Trusted worker inference derives its base URL from the worker-control origin.');
+    expect(resolved.supply.skills).toEqual([expect.objectContaining({ id: 'repo-guidelines' })]);
+    expect(resolved.supply.mcpServers).toEqual([expect.objectContaining({ id: 'github' })]);
+    expect(resolved.supply.mcpServers[0]).not.toHaveProperty('command');
+    expect(resolved.supply.mcpServers[0]).not.toHaveProperty('transport');
+    expect(resolved.supply.mcpServers[0]).not.toHaveProperty('materialization');
+    expect(resolved.supply.mcpServers[0]).not.toHaveProperty('providerInstanceIds');
+    expect(resolved.providers.attachments).toEqual([]);
   });
 
-  it('rejects a non-HTTP worker-control endpoint for a relay-required package', () => {
-    const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Reject relay protocol');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+  it('projects one prepared worker Context Package through the existing generated context slot', () => {
+    const turn = createTurnFixture('Use the prepared Context Package');
+    const contentDigest = `sha256:${'a'.repeat(64)}`;
+    const resolved = resolveAgentEnvironmentPackage({
+      agentSetup: createTestSetup(),
+      agentSessionId: 'session_context_1',
+      backend: {
+        kind: 'openshell',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+      },
+      createdAt: '2026-07-18T00:00:00.000Z',
+      preparedContextPackage: {
+        contentDigest,
+        workspaceRoot: {
+          access: 'read-only',
+          id: `context_${turn.id}`,
+          sourceKind: 'materialized-dir',
+          sourcePath: '/private/context-package',
+          workerPath: '/openkit/context',
+        },
+      },
+      requestId: 'req_context_1',
+      turn,
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceCwd: '/workspace/repo',
+      workspaceRoots: [],
+    });
 
-    expect(() =>
-      resolveAgentEnvironmentPackage({
-        agent,
-        agentSessionId: 'session_relay_protocol_1',
-        backend: {
-          workerControlBaseUrl: 'ftp://nanocore.internal/api/worker-control',
-          kind: 'openshell',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
+    expect(resolved.workspace.inputs).toEqual([
+      {
+        access: 'read-only',
+        id: `context_${turn.id}`,
+        kind: 'generated',
+        materialization: {
+          contentDigest,
+          slotId: 'context',
+          strategy: 'filesystem',
         },
-        backendRequirements: {
-          allowedKinds: ['openshell'],
-          preferred: 'openshell',
-          requiredCapabilities: ['trusted-worker-inference-relay'],
+        source: {
+          kind: 'generated',
+          pathRef: `threads/${turn.threadId}/turns/${turn.id}/context-package`,
         },
-        createdAt: '2026-07-13T00:00:00.000Z',
-        providerSelection: {
-          model: 'openai/gpt-5.2',
-          providerId: 'agent-openrouter',
-        },
-        requestId: 'req_relay_protocol_1',
-        turn,
-        userId: 'user_local',
-        workspaceCwd: '/workspace/repo',
-        workspaceRoots: [],
-      })
-    ).toThrow('Trusted worker inference requires an HTTP(S) worker-control endpoint.');
+        target: '/openkit/context',
+      },
+    ]);
   });
 
-  it('fails relay-required package resolution without a trusted provider and model', () => {
-    const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Reject missing provider selection');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+  it('records catalog-resolved workspace lineage without inventing provider attachments', () => {
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-aep-source-'));
+    execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'openkit@example.invalid'], {
+      cwd: repositoryPath,
+    });
+    execFileSync('git', ['config', 'user.name', 'OpenKit'], { cwd: repositoryPath });
+    writeFileSync(join(repositoryPath, 'README.md'), '# AEP source\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repositoryPath });
+    execFileSync('git', ['commit', '-m', 'initial'], { cwd: repositoryPath, stdio: 'ignore' });
+    const baseCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: repositoryPath,
+      encoding: 'utf8',
+    }).trim();
+    const turn = createTurnFixture('Use catalog source');
 
-    expect(() =>
-      resolveAgentEnvironmentPackage({
-        agent,
-        agentSessionId: 'session_relay_missing_provider_1',
-        backend: {
-          workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
-          kind: 'openshell',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
+    const resolved = resolveAgentEnvironmentPackage({
+      agentSetup: createTestSetup(),
+      agentSessionId: 'session_source_1',
+      backend: {
+        kind: 'openshell',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+      },
+      createdAt: '2026-07-18T00:00:00.000Z',
+      requestId: 'req_source_1',
+      turn,
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceCwd: null,
+      workspaceDataSourceCatalog: {
+        schemaVersion: 1,
+        sources: [
+          {
+            access: 'read-write',
+            allowedSlotKinds: ['worktree'],
+            displayName: 'Main repository',
+            id: 'main-repo',
+            kind: 'git',
+            locator: { defaultRef: 'main', url: 'https://github.com/openkit/openkit.git' },
+            sensitivity: 'internal',
+            status: 'active',
+            vaultGrantRef: 'grant_github_read',
+          },
+        ],
+      },
+      workspaceRoots: [
+        {
+          access: 'read-write',
+          id: 'repo',
+          sourceKind: 'host-dir',
+          sourcePath: repositoryPath,
+          workerPath: '/workspace/openkit',
         },
-        backendRequirements: {
-          allowedKinds: ['openshell'],
-          preferred: 'openshell',
-          requiredCapabilities: ['trusted-worker-inference-relay'],
-        },
-        createdAt: '2026-07-13T00:00:00.000Z',
-        requestId: 'req_relay_missing_provider_1',
-        turn,
-        userId: 'user_local',
-        workspaceCwd: '/workspace/repo',
-        workspaceRoots: [],
-      })
-    ).toThrow('Trusted worker inference requires a resolved provider and model.');
+      ],
+      workspaceSourceRefs: { repo: 'main-repo' },
+    });
+
+    expect(resolved.workspace.inputs[0]?.source).toMatchObject({
+      catalogEntryDigest: expect.stringMatching(/^sha256:/),
+      commit: baseCommit,
+      sourceId: 'main-repo',
+      sourceRef: 'main-repo',
+      vaultGrantRef: 'grant_github_read',
+    });
+    expect(resolved.providers.attachments).toEqual([]);
   });
 
-  it('rejects relay-required credentials before recording injection state', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-relay-credential-'));
+  it('does not apply responsible-user identity to server-scoped Vault authority', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-direct-'));
     const coreDb = openCoreDb(dataRoot);
     const vaultUnlockState = createVaultUnlockState({
       backendKind: 'encrypted-file',
       storeDir: join(dataRoot, 'server', 'vault'),
     });
-    const now = '2026-07-13T00:00:00.000Z';
+    const now = '2026-07-18T00:00:00.000Z';
+    const declaration: AgentEnvironmentCredentialDeclaration = {
+      id: 'anthropic_api_key',
+      targetEnvVarName: 'ANTHROPIC_API_KEY',
+      vaultGrantId: 'grant_anthropic_api_key',
+      visibility: 'runtime-env',
+    };
     const runtimeEnvCredentials: Array<{
       credentialValue: string;
       targetEnvVarName: string;
     }> = [];
 
     applyMigrations(coreDb);
-    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 16) });
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      now: new Date(now),
+      ownerUserId: 'user_local',
+      workspaceId: 'ws_demo',
+    });
+    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 21) });
     vaultUnlockState.backend().store({
-      material: 'forbidden_relay_secret',
+      material: 'direct_secret_value',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_relay_runtime_env',
+      referenceId: 'vault_anthropic_api_key',
     });
     createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://server/vault/vault_relay_runtime_env',
-      displayName: 'Relay runtime environment',
-      ownerScope: 'server',
-      referenceId: 'vault_relay_runtime_env',
-      secretKind: 'worker-credential',
+      backendLocator: 'encrypted-file://server/vault/vault_anthropic_api_key',
+      displayName: 'Anthropic API key',
       now: () => now,
+      ownerScope: 'server',
+      referenceId: 'vault_anthropic_api_key',
+      secretKind: 'provider-api-key',
     });
     createVaultGrant(coreDb, {
       allowedInjectionPaths: ['runtime-env'],
-      grantId: 'grant_relay_runtime_env',
+      grantId: 'grant_anthropic_api_key',
       lifetime: 'agent-session',
-      ownerScope: 'server',
-      targetAgentSessionId: 'session_relay_credential_1',
-      vaultReferenceId: 'vault_relay_runtime_env',
       now: () => now,
+      ownerScope: 'server',
+      targetAgentSessionId: 'session_direct_1',
+      vaultReferenceId: 'vault_anthropic_api_key',
     });
 
     try {
-      const store = createDemoStore();
-      const turn = store.createTurn('ws_demo', 'th_demo', 'Reject relay credential');
-      const agent = store.getAgent('ws_demo', 'agent_codex_host');
-
-      expect(() =>
-        resolveAgentEnvironmentPackage({
-          agent,
-          agentSessionId: 'session_relay_credential_1',
-          backend: {
-            workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
-            kind: 'openshell',
-            sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
+      const turn = createTurnFixture('Run Pi directly');
+      const resolved = resolveAgentEnvironmentPackage({
+        agentSetup: createTestSetup({
+          adapter: 'pi',
+          credentialDeclarations: [declaration],
+          network: [
+            {
+              access: 'read-write',
+              binaries: ['/usr/local/bin/node'],
+              host: 'api.anthropic.com',
+              id: 'anthropic-api',
+              port: 443,
+              protocol: 'rest',
+            },
+          ],
+          provider: {
+            model: 'claude-sonnet-4-5',
+            origin: 'server-providers',
+            providerId: 'anthropic',
+            secretRef: null,
           },
-          backendRequirements: {
-            allowedKinds: ['openshell'],
-            preferred: 'openshell',
-            requiredCapabilities: ['trusted-worker-inference-relay'],
+          requiredCapabilities: [],
+        }),
+        agentSessionId: 'session_direct_1',
+        backend: {
+          kind: 'openshell',
+          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+        },
+        coreDb,
+        createdAt: now,
+        requestId: 'req_direct_1',
+        runtimeEnvCredentialSink: (credential) => runtimeEnvCredentials.push(credential),
+        turn,
+        triggerActor: AUTOMATION_TRIGGER_ACTOR,
+        vaultBackend: () => vaultUnlockState.backend(),
+        workspaceCwd: '/workspace/repo',
+        workspaceRoots: [],
+      });
+
+      expect(resolved.llm).toEqual({
+        mode: 'direct-external',
+        routes: [
+          expect.objectContaining({
+            credentialVisibility: 'environment',
+            model: 'claude-sonnet-4-5',
+            providerInstanceId: 'anthropic',
+          }),
+        ],
+      });
+      expect(resolved.policy.network?.rules).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            binaries: ['/usr/local/bin/node'],
+            id: 'anthropic-api',
+          }),
+        ])
+      );
+      expect(resolved.vault.references[0]).not.toHaveProperty('providerInstanceId');
+      expect(resolved.scope.triggerActor).toEqual(AUTOMATION_TRIGGER_ACTOR);
+      expect(runtimeEnvCredentials).toEqual([
+        {
+          credentialValue: 'direct_secret_value',
+          targetEnvVarName: 'ANTHROPIC_API_KEY',
+        },
+      ]);
+      expect(JSON.stringify(resolved)).not.toContain('direct_secret_value');
+      expect(listInjectionPlans(coreDb)).toHaveLength(1);
+      expect(listInjectionReceipts(coreDb)).toHaveLength(1);
+      expect(listVaultUseRecords(coreDb)).toHaveLength(1);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('denies stale AEP authority before Vault resolution or injection side effects', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-vault-authority-'));
+    const coreDb = openCoreDb(dataRoot);
+    const now = '2026-07-18T00:00:00.000Z';
+    let backendCalls = 0;
+    const runtimeEnvCredentials: string[] = [];
+
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      now: new Date(now),
+      ownerUserId: 'user_local',
+      workspaceId: 'ws_demo',
+    });
+    createVaultReference(coreDb, {
+      backendKind: 'encrypted-file',
+      backendLocator: 'encrypted-file://server/vault/vault_stale_authority',
+      displayName: 'Stale authority credential',
+      now: () => now,
+      ownerScope: 'server',
+      referenceId: 'vault_stale_authority',
+      secretKind: 'provider-api-key',
+    });
+    createVaultGrant(coreDb, {
+      allowedInjectionPaths: ['runtime-env'],
+      grantId: 'grant_stale_authority',
+      lifetime: 'agent-session',
+      now: () => now,
+      ownerScope: 'server',
+      targetAgentSessionId: 'session_stale_authority',
+      vaultReferenceId: 'vault_stale_authority',
+    });
+    coreDb.sqlite
+      .prepare("UPDATE users SET status = 'disabled', updated_at = ? WHERE id = ?")
+      .run(Date.parse(now), 'user_local');
+
+    try {
+      let error: unknown;
+      try {
+        resolveAgentEnvironmentPackage({
+          agentSetup: createTestSetup({
+            credentialDeclarations: [
+              {
+                id: 'stale_authority',
+                targetEnvVarName: 'STALE_AUTHORITY_SECRET',
+                vaultGrantId: 'grant_stale_authority',
+                visibility: 'runtime-env',
+              },
+            ],
+            network: [
+              {
+                access: 'read-write',
+                binaries: ['/usr/local/bin/codex'],
+                host: 'api.example.test',
+                id: 'stale-authority-api',
+                port: 443,
+                protocol: 'rest',
+              },
+            ],
+            requiredCapabilities: [],
+          }),
+          agentSessionId: 'session_stale_authority',
+          backend: {
+            kind: 'openshell',
+            workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           },
           coreDb,
           createdAt: now,
-          credentialDeclarations: [
-            {
-              id: 'relay_runtime_env',
-              targetEnvVarName: 'RELAY_RUNTIME_ENV_SECRET',
-              vaultGrantId: 'grant_relay_runtime_env',
-              visibility: 'runtime-env',
-            },
-          ],
-          providerSelection: {
-            model: 'openai/gpt-5.2',
-            providerId: 'agent-openrouter',
+          requestId: 'req_stale_authority',
+          runtimeEnvCredentialSink: (credential) =>
+            runtimeEnvCredentials.push(credential.credentialValue),
+          turn: createTurnFixture('Reject stale Vault authority'),
+          triggerActor: USER_TRIGGER_ACTOR,
+          vaultBackend: () => {
+            backendCalls += 1;
+            throw new Error('Vault backend must not be resolved after authority loss.');
           },
-          requestId: 'req_relay_credential_1',
-          runtimeEnvCredentialSink: (credential) => runtimeEnvCredentials.push(credential),
-          turn,
-          userId: 'user_local',
-          vaultBackend: () => vaultUnlockState.backend(),
           workspaceCwd: '/workspace/repo',
           workspaceRoots: [],
-        })
-      ).toThrow(
-        'Trusted worker inference does not allow direct sandbox network, credentials, or provider attachments.'
-      );
+        });
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error).toBeInstanceOf(TurnStartValidationError);
+      expect(error).toMatchObject({ code: 'workspace_access_denied', status: 403 });
+      expect(backendCalls).toBe(0);
       expect(runtimeEnvCredentials).toEqual([]);
       expect(listInjectionPlans(coreDb)).toEqual([]);
       expect(listInjectionReceipts(coreDb)).toEqual([]);
@@ -597,132 +667,123 @@ describe('agent environment package resolver', () => {
     }
   });
 
-  it('rejects relay-required sandbox network access before package projection', () => {
-    const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Reject relay network');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
-
-    expect(() =>
-      resolveAgentEnvironmentPackage({
-        agent,
-        agentSessionId: 'session_relay_network_1',
-        backend: {
-          workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
-          kind: 'openshell',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
-        },
-        backendRequirements: {
-          allowedKinds: ['openshell'],
-          preferred: 'openshell',
-          requiredCapabilities: ['trusted-worker-inference-relay'],
-        },
-        createdAt: '2026-07-13T00:00:00.000Z',
-        providerSelection: {
-          model: 'openai/gpt-5.2',
-          providerId: 'agent-openrouter',
-        },
-        requestId: 'req_relay_network_1',
-        sandboxAccess: {
-          network: [
-            {
-              access: 'read-write',
-              binaries: ['/usr/local/bin/codex'],
-              host: 'api.openai.com',
-              id: 'direct_provider',
-              port: 443,
-              protocol: 'rest',
-              purpose: 'Bypass the relay',
-              scope: 'session',
-            },
-          ],
-        },
-        turn,
-        userId: 'user_local',
-        workspaceCwd: '/workspace/repo',
-        workspaceRoots: [],
-      })
-    ).toThrow(
-      'Trusted worker inference does not allow direct sandbox network, credentials, or provider attachments.'
-    );
-  });
-
-  it('rejects relay-required provider-backed MCP before recording injection state', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-relay-mcp-'));
+  it.each([
+    {
+      expectedError: 'Vault grant targets a different responsible user: scope_user',
+      grantTarget: {},
+      name: 'user',
+      referenceScope: { ownerScope: 'user' as const, userId: 'user_other' },
+      triggerActor: AUTOMATION_TRIGGER_ACTOR,
+    },
+    {
+      expectedError: 'Vault grant targets a different workspace: scope_workspace',
+      grantTarget: {},
+      name: 'workspace',
+      referenceScope: { ownerScope: 'workspace' as const, workspaceId: 'ws_other' },
+      triggerActor: USER_TRIGGER_ACTOR,
+    },
+    {
+      expectedError: 'Vault grant targets a different agent: scope_agent',
+      grantTarget: { targetAgentId: 'agent_other' },
+      name: 'agent',
+      referenceScope: { ownerScope: 'server' as const },
+      triggerActor: USER_TRIGGER_ACTOR,
+    },
+    {
+      expectedError: 'Vault grant targets an unproven capability: scope_capability',
+      grantTarget: { targetCapabilityId: 'mcp.github.call_tool' },
+      name: 'capability',
+      referenceScope: { ownerScope: 'server' as const },
+      triggerActor: USER_TRIGGER_ACTOR,
+    },
+  ])('rejects a mismatched $name credential grant before sinks or injection records', ({
+    expectedError,
+    grantTarget,
+    name,
+    referenceScope,
+    triggerActor,
+  }) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), `openkit-aep-scope-${name}-`));
     const coreDb = openCoreDb(dataRoot);
     const vaultUnlockState = createVaultUnlockState({
       backendKind: 'encrypted-file',
       storeDir: join(dataRoot, 'server', 'vault'),
     });
-    const now = '2026-07-13T00:00:00.000Z';
-    const providerCredentials: Array<{ credentialValue: string }> = [];
+    const now = '2026-07-18T00:00:00.000Z';
+    const declarationId = `scope_${name}`;
+    const referenceId = `vault_${declarationId}`;
+    const grantId = `grant_${declarationId}`;
+    const runtimeEnvCredentials: string[] = [];
 
     applyMigrations(coreDb);
-    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 17) });
+    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 23) });
     vaultUnlockState.backend().store({
-      material: 'forbidden_github_token',
-      metadata: { ownerScope: 'server' },
-      referenceId: 'vault_github_read',
+      material: `secret_${name}`,
+      metadata: referenceScope,
+      referenceId,
     });
     createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://server/vault/vault_github_read',
-      displayName: 'GitHub read token',
-      ownerScope: 'server',
-      referenceId: 'vault_github_read',
-      secretKind: 'github-token',
+      backendLocator: `encrypted-file://server/vault/${referenceId}`,
+      displayName: `${name} scope credential`,
       now: () => now,
+      ...referenceScope,
+      referenceId,
+      secretKind: 'provider-api-key',
     });
     createVaultGrant(coreDb, {
-      allowedInjectionPaths: ['backend-provider'],
-      grantId: 'grant_github_read',
-      lifetime: 'turn',
-      ownerScope: 'server',
-      targetAgentSessionId: 'session_relay_mcp_1',
-      vaultReferenceId: 'vault_github_read',
+      allowedInjectionPaths: ['runtime-env'],
+      grantId,
+      lifetime: 'agent-session',
       now: () => now,
+      ...referenceScope,
+      ...grantTarget,
+      targetAgentSessionId: 'session_scope_1',
+      vaultReferenceId: referenceId,
     });
 
     try {
-      const store = createDemoStore();
-      const turn = store.createTurn('ws_demo', 'th_demo', 'Reject relay MCP provider');
-      const baseAgent = store.getAgent('ws_demo', 'agent_codex_host');
-      const agent = {
-        ...baseAgent,
-        config: { ...baseAgent.config, mcpServerIds: ['github'] },
-      } as typeof baseAgent;
-
       expect(() =>
         resolveAgentEnvironmentPackage({
-          agent,
-          agentSessionId: 'session_relay_mcp_1',
+          agentSetup: createTestSetup({
+            credentialDeclarations: [
+              {
+                id: declarationId,
+                targetEnvVarName: 'SCOPE_SECRET',
+                vaultGrantId: grantId,
+                visibility: 'runtime-env',
+              },
+            ],
+            network: [
+              {
+                access: 'read-write',
+                binaries: ['/usr/local/bin/codex'],
+                host: 'api.example.test',
+                id: 'scope-api',
+                port: 443,
+                protocol: 'rest',
+              },
+            ],
+            requiredCapabilities: [],
+          }),
+          agentSessionId: 'session_scope_1',
           backend: {
-            workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
             kind: 'openshell',
-            sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
-          },
-          backendRequirements: {
-            allowedKinds: ['openshell'],
-            preferred: 'openshell',
-            requiredCapabilities: ['trusted-worker-inference-relay'],
+            workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           },
           coreDb,
           createdAt: now,
-          providerCredentialSink: (credential) => providerCredentials.push(credential),
-          providerSelection: {
-            model: 'openai/gpt-5.2',
-            providerId: 'agent-openrouter',
-          },
-          requestId: 'req_relay_mcp_1',
-          turn,
-          userId: 'user_local',
+          requestId: `req_scope_${name}`,
+          runtimeEnvCredentialSink: (credential) =>
+            runtimeEnvCredentials.push(credential.credentialValue),
+          turn: createTurnFixture(`Reject ${name} scope`),
+          triggerActor,
           vaultBackend: () => vaultUnlockState.backend(),
           workspaceCwd: '/workspace/repo',
           workspaceRoots: [],
         })
-      ).toThrow(
-        'Trusted worker inference does not allow direct sandbox network, credentials, or provider attachments.'
-      );
-      expect(providerCredentials).toEqual([]);
+      ).toThrow(expectedError);
+      expect(runtimeEnvCredentials).toEqual([]);
       expect(listInjectionPlans(coreDb)).toEqual([]);
       expect(listInjectionReceipts(coreDb)).toEqual([]);
       expect(listVaultUseRecords(coreDb)).toEqual([]);
@@ -731,941 +792,17 @@ describe('agent environment package resolver', () => {
     }
   });
 
-  it('records catalog-resolved workspace source lineage in the AEP snapshot', () => {
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-aep-source-base-'));
-    execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
-    execFileSync('git', ['config', 'user.email', 'openkit@example.invalid'], {
-      cwd: repositoryPath,
-    });
-    execFileSync('git', ['config', 'user.name', 'OpenKit'], { cwd: repositoryPath });
-    writeFileSync(join(repositoryPath, 'README.md'), '# AEP source base\n');
-    execFileSync('git', ['add', 'README.md'], { cwd: repositoryPath });
-    execFileSync('git', ['commit', '-m', 'initial'], { cwd: repositoryPath, stdio: 'ignore' });
-    const baseCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: repositoryPath,
-      encoding: 'utf8',
-    }).trim();
-    const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Use catalog source');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
-    const resolved = AgentEnvironmentPackageSchema.parse(
-      resolveAgentEnvironmentPackage({
-        agent,
-        agentSessionId: 'session_catalog_source_1',
-        userId: 'user_local',
-        backend: {
-          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
-          kind: 'openshell',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
-        },
-        createdAt: '2026-06-16T00:00:00.000Z',
-        requestId: 'req_catalog_source_1',
-        turn,
-        workspaceCwd: null,
-        workspaceDataSourceCatalog: {
-          schemaVersion: 1,
-          sources: [
-            {
-              access: 'read-write',
-              allowedSlotKinds: ['worktree'],
-              displayName: 'Main repository',
-              id: 'main-repo',
-              kind: 'git',
-              locator: { defaultRef: 'main', url: 'https://github.com/openkit/openkit.git' },
-              sensitivity: 'internal',
-              status: 'active',
-              vaultGrantRef: 'grant_github_read',
-            },
-          ],
-        },
-        workspaceRoots: [
-          {
-            access: 'read-write',
-            id: 'repo',
-            sourceKind: 'host-dir',
-            sourcePath: repositoryPath,
-            workerPath: '/workspace/openkit',
-          },
-        ],
-        workspaceSourceRefs: { repo: 'main-repo' },
-      })
-    );
-
-    expect(resolved.workspace.inputs[0]?.source).toMatchObject({
-      catalogEntryDigest: expect.stringMatching(/^sha256:/),
-      commit: baseCommit,
-      kind: 'git',
-      locator: { defaultRef: 'main', url: 'https://github.com/openkit/openkit.git' },
-      sourceId: 'main-repo',
-      sourceRef: 'main-repo',
-      vaultGrantRef: 'grant_github_read',
-    });
-  });
-
-  it('normalizes user-declared sandbox filesystem and network access into policy intent', () => {
-    const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Run sandbox policy');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
-
-    const resolved = resolveAgentEnvironmentPackage({
-      agent,
-      agentSessionId: 'session_sandbox_policy_1',
-      userId: 'user_local',
-      backend: {
-        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
-        kind: 'openshell',
-        sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
-      },
-      createdAt: '2026-07-05T00:00:00.000Z',
-      requestId: 'req_sandbox_policy_1',
-      sandboxAccess: {
-        filesystem: [
-          {
-            access: 'read-write',
-            id: 'build_cache',
-            purpose: 'Build cache',
-            scope: 'session',
-            targetPath: '/sandbox/.cache/build',
-          },
-        ],
-        network: [
-          {
-            access: 'read-write',
-            binaries: ['/usr/bin/npm'],
-            host: 'registry.npmjs.org',
-            id: 'npm_registry',
-            port: 443,
-            protocol: 'rest',
-            purpose: 'Install package dependencies',
-          },
-        ],
-      },
-      turn,
-      workspaceCwd: '/workspace/repo',
-      workspaceRoots: [],
-    });
-
-    expect(resolved.policy.process).toMatchObject({
-      default: 'allow',
-      enforcement: 'openshell',
-    });
-    expect(resolved.policy.filesystem?.rules).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          access: 'read-write',
-          id: 'openkit-working-directory',
-          workerPath: '/workspace/repo',
-        }),
-        expect.objectContaining({
-          access: 'read-write',
-          id: 'build_cache',
-          purpose: 'Build cache',
-          scope: 'session',
-          workerPath: '/sandbox/.cache/build',
-        }),
-      ])
-    );
-    expect(resolved.policy.network?.rules).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          access: 'read-write',
-          binaries: ['/usr/bin/npm'],
-          host: 'registry.npmjs.org',
-          id: 'npm_registry',
-          port: 443,
-          protocol: 'rest',
-          purpose: 'Install package dependencies',
-        }),
-      ])
-    );
-  });
-
-  it('resolves worker Skill and MCP supply through the NanoCore catalog', () => {
-    const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Run catalog supply');
-    const baseAgent = store.getAgent('ws_demo', 'agent_codex_host');
-    const agent = {
-      ...baseAgent,
-      skillIds: ['repo-guidelines'],
-      config: {
-        ...baseAgent.config,
-        mcpServerIds: ['github'],
-      },
-    } as typeof baseAgent;
-    const resolved = AgentEnvironmentPackageSchema.parse(
-      resolveAgentEnvironmentPackage({
-        agent,
-        agentSessionId: 'session_supply_catalog_1',
-        userId: 'user_local',
-        backend: {
-          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
-          kind: 'openshell',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
-        },
-        createdAt: '2026-06-16T00:00:00.000Z',
-        requestId: 'req_supply_catalog_1',
-        turn,
-        workspaceCwd: '/workspace/repo',
-        workspaceRoots: [],
-      })
-    );
-
-    expect(resolved.supply.skills).toEqual([
-      expect.objectContaining({
-        allowedRuntimeAdapters: ['codex'],
-        id: 'repo-guidelines',
-        integrity: { sha256: 'sha256-repo-guidelines-v1' },
-        materialization: expect.objectContaining({ kind: 'filesystem-copy' }),
-        reviewStatus: 'approved',
-        sourceRef: 'server:skills/repo-guidelines',
-      }),
-    ]);
-    expect(resolved.supply.mcpServers).toEqual([
-      expect.objectContaining({
-        allowedTools: ['repos.get', 'issues.list'],
-        approvalRequiredTools: ['issues.list'],
-        id: 'github',
-        providerInstanceIds: ['provider_github_read'],
-        materialization: expect.objectContaining({ kind: 'generated-config' }),
-        reviewStatus: 'approved',
-        secretRefIds: ['vault_github_read'],
-        transport: 'stdio',
-        vaultGrantIds: ['grant_github_read'],
-        toolSchemas: [
-          expect.objectContaining({
-            inputSchema: expect.objectContaining({
-              required: ['owner', 'repo'],
-            }),
-            name: 'repos.get',
-          }),
-          expect.objectContaining({
-            inputSchema: expect.objectContaining({
-              required: ['owner', 'repo'],
-            }),
-            name: 'issues.list',
-          }),
-        ],
-      }),
-    ]);
-    expect(resolved.providers.providerInstances).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: 'provider_github_read',
-          profileId: 'github_mcp',
-          vaultRefIds: ['vault_github_read'],
-        }),
-      ])
-    );
-    expect(resolved.providers.attachments).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: 'attach_github_mcp',
-          providerInstanceId: 'provider_github_read',
-          vaultGrantIds: ['grant_github_read'],
-        }),
-      ])
-    );
-    expect(resolved.vault).toMatchObject({
-      references: [
-        {
-          id: 'vault_github_read',
-          kind: 'secret-ref',
-          providerInstanceId: 'provider_github_read',
-        },
-      ],
-      grants: [
-        {
-          id: 'grant_github_read',
-          scope: 'turn',
-          vaultRefId: 'vault_github_read',
-        },
-      ],
-    });
-    expect(JSON.stringify(resolved.supply)).not.toContain('GITHUB_TOKEN');
-    expect(JSON.stringify(resolved.vault)).not.toContain('GITHUB_TOKEN');
-  });
-
-  it('derives OpenShell MCP provider attachment from durable vault grants', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-vault-grant-'));
+  it('fails direct credential resolution before durable writes when no sink exists', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-direct-sink-'));
     const coreDb = openCoreDb(dataRoot);
     const vaultUnlockState = createVaultUnlockState({
       backendKind: 'encrypted-file',
       storeDir: join(dataRoot, 'server', 'vault'),
     });
-    const now = '2026-07-05T00:00:00.000Z';
-    const providerCredentials: Array<{
-      credentialExpiresAt: string | undefined;
-      credentialKey: string;
-      providerInstanceId: string;
-      providerType: string;
-    }> = [];
+    const now = '2026-07-18T00:00:00.000Z';
 
     applyMigrations(coreDb);
-    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 7) });
-    vaultUnlockState.backend().store({
-      material: 'ghp_vault_token',
-      metadata: { ownerScope: 'server' },
-      referenceId: 'vault_github_read',
-    });
-    createVaultReference(coreDb, {
-      backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://server/vault/vault_github_read',
-      displayName: 'GitHub read token',
-      ownerScope: 'server',
-      referenceId: 'vault_github_read',
-      secretKind: 'github-token',
-      now: () => now,
-    });
-    createVaultGrant(coreDb, {
-      allowedInjectionPaths: ['backend-provider'],
-      expiresAt: '2026-07-05T01:00:00.000Z',
-      grantId: 'grant_github_read',
-      lifetime: 'turn',
-      ownerScope: 'server',
-      policyDecisionId: 'pd_repo_read_1',
-      targetAgentSessionId: 'session_supply_catalog_1',
-      vaultReferenceId: 'vault_github_read',
-      now: () => now,
-    });
-
-    try {
-      const store = createDemoStore();
-      const turn = store.createTurn('ws_demo', 'th_demo', 'Run catalog supply');
-      const baseAgent = store.getAgent('ws_demo', 'agent_codex_host');
-      const agent = {
-        ...baseAgent,
-        config: {
-          ...baseAgent.config,
-          mcpServerIds: ['github'],
-        },
-      } as typeof baseAgent;
-      const resolved = AgentEnvironmentPackageSchema.parse(
-        resolveAgentEnvironmentPackage({
-          agent,
-          agentSessionId: 'session_supply_catalog_1',
-          userId: 'user_local',
-          backend: {
-            workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
-            kind: 'openshell',
-            sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
-          },
-          coreDb,
-          createdAt: now,
-          providerCredentialSink: (credential) => {
-            providerCredentials.push({
-              credentialExpiresAt: credential.credentialExpiresAt,
-              credentialKey: credential.credentialKey,
-              providerInstanceId: credential.providerInstanceId,
-              providerType: credential.providerType,
-            });
-          },
-          requestId: 'req_supply_catalog_1',
-          turn,
-          vaultBackend: () => vaultUnlockState.backend(),
-          workspaceCwd: '/workspace/repo',
-          workspaceRoots: [],
-        })
-      );
-      const serialized = JSON.stringify(resolved);
-
-      expect(resolved.vault.grants).toEqual([
-        expect.objectContaining({
-          expiresAt: '2026-07-05T01:00:00.000Z',
-          id: 'grant_github_read',
-          scope: 'turn',
-          vaultRefId: 'vault_github_read',
-        }),
-      ]);
-      expect(resolved.vault.references).toEqual([
-        expect.objectContaining({
-          id: 'vault_github_read',
-          secretRef: 'vault://vault_github_read',
-        }),
-      ]);
-      expect(resolved.providers.providerProfiles).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            id: 'okp-local-github-mcp-v1',
-            displayName: 'GitHub MCP',
-          }),
-        ])
-      );
-      expect(resolved.providers.providerInstances).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            id: 'provider_github_read',
-            profileId: 'okp-local-github-mcp-v1',
-          }),
-        ])
-      );
-      expect(providerCredentials).toEqual([
-        {
-          credentialExpiresAt: '2026-07-05T01:00:00.000Z',
-          credentialKey: 'GITHUB_TOKEN',
-          providerInstanceId: 'provider_github_read',
-          providerType: 'okp-local-github-mcp-v1',
-        },
-      ]);
-      expect(resolved.providers.providerProfiles).not.toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            id: 'github_mcp',
-          }),
-        ])
-      );
-      expect(listInjectionPlans(coreDb)).toEqual([
-        expect.objectContaining({
-          grantId: 'grant_github_read',
-          backendCapabilityRequirement: 'sandbox-provider:okp-local-github-mcp-v1',
-          injectionVisibility: 'backend-provider',
-          packageSnapshotId: resolved.snapshotId,
-        }),
-      ]);
-      expect(listInjectionReceipts(coreDb)).toEqual([
-        expect.objectContaining({
-          agentSessionId: 'session_supply_catalog_1',
-          expiresAt: '2026-07-05T01:00:00.000Z',
-          grantId: 'grant_github_read',
-        }),
-      ]);
-      expect(listVaultUseRecords(coreDb)).toEqual([
-        expect.objectContaining({
-          grantId: 'grant_github_read',
-          outcome: 'succeeded',
-          receiptId: expect.stringContaining('receipt_'),
-          resolvingPath: 'grant',
-          vaultReferenceId: 'vault_github_read',
-        }),
-      ]);
-      expect(serialized).not.toContain('ghp_vault_token');
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('requires policy and session binding for durable GitHub read providers', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-github-read-policy-'));
-    const coreDb = openCoreDb(dataRoot);
-    const vaultUnlockState = createVaultUnlockState({
-      backendKind: 'encrypted-file',
-      storeDir: join(dataRoot, 'server', 'vault'),
-    });
-    const now = '2026-07-05T00:00:00.000Z';
-    const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Run catalog supply');
-    const baseAgent = store.getAgent('ws_demo', 'agent_codex_host');
-    const agent = {
-      ...baseAgent,
-      config: {
-        ...baseAgent.config,
-        mcpServerIds: ['github'],
-      },
-    } as typeof baseAgent;
-
-    applyMigrations(coreDb);
-    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 11) });
-    vaultUnlockState.backend().store({
-      material: 'ghp_vault_token',
-      metadata: { ownerScope: 'server' },
-      referenceId: 'vault_github_read',
-    });
-    createVaultReference(coreDb, {
-      backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://server/vault/vault_github_read',
-      displayName: 'GitHub read token',
-      ownerScope: 'server',
-      referenceId: 'vault_github_read',
-      secretKind: 'github-token',
-      now: () => now,
-    });
-    createVaultGrant(coreDb, {
-      allowedInjectionPaths: ['backend-provider'],
-      expiresAt: '2026-07-05T01:00:00.000Z',
-      grantId: 'grant_github_read',
-      lifetime: 'turn',
-      ownerScope: 'server',
-      targetAgentSessionId: 'other_session',
-      vaultReferenceId: 'vault_github_read',
-      now: () => now,
-    });
-
-    try {
-      expect(() =>
-        resolveAgentEnvironmentPackage({
-          agent,
-          agentSessionId: 'session_supply_catalog_1',
-          userId: 'user_local',
-          backend: {
-            workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
-            kind: 'openshell',
-            sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
-          },
-          coreDb,
-          createdAt: now,
-          providerCredentialSink: () => {},
-          requestId: 'req_supply_catalog_1',
-          turn,
-          vaultBackend: () => vaultUnlockState.backend(),
-          workspaceCwd: '/workspace/repo',
-          workspaceRoots: [],
-        })
-      ).toThrow('Vault grant targets a different agent session: github_mcp_read');
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('requires backend-provider permission for durable GitHub read providers', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-github-read-decision-'));
-    const coreDb = openCoreDb(dataRoot);
-    const vaultUnlockState = createVaultUnlockState({
-      backendKind: 'encrypted-file',
-      storeDir: join(dataRoot, 'server', 'vault'),
-    });
-    const now = '2026-07-05T00:00:00.000Z';
-    const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Run catalog supply');
-    const baseAgent = store.getAgent('ws_demo', 'agent_codex_host');
-    const agent = {
-      ...baseAgent,
-      config: {
-        ...baseAgent.config,
-        mcpServerIds: ['github'],
-      },
-    } as typeof baseAgent;
-
-    applyMigrations(coreDb);
-    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 12) });
-    vaultUnlockState.backend().store({
-      material: 'ghp_vault_token',
-      metadata: { ownerScope: 'server' },
-      referenceId: 'vault_github_read',
-    });
-    createVaultReference(coreDb, {
-      backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://server/vault/vault_github_read',
-      displayName: 'GitHub read token',
-      ownerScope: 'server',
-      referenceId: 'vault_github_read',
-      secretKind: 'github-token',
-      now: () => now,
-    });
-    createVaultGrant(coreDb, {
-      allowedInjectionPaths: ['runtime-file'],
-      expiresAt: '2026-07-05T01:00:00.000Z',
-      grantId: 'grant_github_read',
-      lifetime: 'turn',
-      ownerScope: 'server',
-      targetAgentSessionId: 'session_supply_catalog_1',
-      vaultReferenceId: 'vault_github_read',
-      now: () => now,
-    });
-
-    try {
-      expect(() =>
-        resolveAgentEnvironmentPackage({
-          agent,
-          agentSessionId: 'session_supply_catalog_1',
-          userId: 'user_local',
-          backend: {
-            workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
-            kind: 'openshell',
-            sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
-          },
-          coreDb,
-          createdAt: now,
-          providerCredentialSink: () => {},
-          requestId: 'req_supply_catalog_1',
-          turn,
-          vaultBackend: () => vaultUnlockState.backend(),
-          workspaceCwd: '/workspace/repo',
-          workspaceRoots: [],
-        })
-      ).toThrow('Vault grant must allow backend-provider injection: github_mcp_read');
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('attaches GitHub read provider for read-only Git data sources without GitHub MCP', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-github-read-source-'));
-    const coreDb = openCoreDb(dataRoot);
-    const vaultUnlockState = createVaultUnlockState({
-      backendKind: 'encrypted-file',
-      storeDir: join(dataRoot, 'server', 'vault'),
-    });
-    const now = '2026-07-05T00:00:00.000Z';
-    const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Read private repository');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
-
-    applyMigrations(coreDb);
-    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 13) });
-    vaultUnlockState.backend().store({
-      material: 'ghp_read_only_source_token',
-      metadata: { ownerScope: 'server' },
-      referenceId: 'vault_github_read',
-    });
-    createVaultReference(coreDb, {
-      backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://server/vault/vault_github_read',
-      displayName: 'GitHub read token',
-      ownerScope: 'server',
-      referenceId: 'vault_github_read',
-      secretKind: 'github-token',
-      now: () => now,
-    });
-    createVaultGrant(coreDb, {
-      allowedInjectionPaths: ['backend-provider'],
-      expiresAt: '2026-07-05T01:00:00.000Z',
-      grantId: 'grant_github_read',
-      lifetime: 'turn',
-      ownerScope: 'server',
-      policyDecisionId: 'pd_repo_read_1',
-      targetAgentSessionId: 'session_private_repo_1',
-      vaultReferenceId: 'vault_github_read',
-      now: () => now,
-    });
-
-    try {
-      const resolved = resolveAgentEnvironmentPackage({
-        agent,
-        agentSessionId: 'session_private_repo_1',
-        userId: 'user_local',
-        backend: {
-          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
-          kind: 'openshell',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
-        },
-        coreDb,
-        createdAt: now,
-        providerCredentialSink: () => {},
-        requestId: 'req_private_repo_1',
-        turn,
-        vaultBackend: () => vaultUnlockState.backend(),
-        workspaceCwd: '/workspace/repo',
-        workspaceDataSourceCatalog: {
-          schemaVersion: 1,
-          sources: [
-            {
-              access: 'read-only',
-              allowedSlotKinds: ['input'],
-              displayName: 'Private repository',
-              id: 'private-repo',
-              kind: 'git',
-              locator: { defaultRef: 'main', url: 'https://github.com/openkit/private.git' },
-              sensitivity: 'confidential',
-              status: 'active',
-              vaultGrantRef: 'grant_github_read',
-            },
-          ],
-        },
-        workspaceRoots: [
-          {
-            access: 'read-only',
-            id: 'repo',
-            sourceKind: 'host-dir',
-            sourcePath: '/Users/m5pro/private',
-            workerPath: '/workspace/private',
-          },
-        ],
-        workspaceSourceRefs: { repo: 'private-repo' },
-      });
-      const serialized = JSON.stringify(resolved);
-
-      expect(resolved.workspace.inputs[0]?.source).toMatchObject({
-        sourceRef: 'private-repo',
-        vaultGrantRef: 'grant_github_read',
-      });
-      expect(resolved.providers.attachments).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            providerInstanceId: 'provider_github_read',
-            vaultGrantIds: ['grant_github_read'],
-          }),
-        ])
-      );
-      expect(serialized).not.toContain('ghp_read_only_source_token');
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('derives Codex auth runtime-file injection from durable vault grants', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-runtime-file-'));
-    const coreDb = openCoreDb(dataRoot);
-    const vaultUnlockState = createVaultUnlockState({
-      backendKind: 'encrypted-file',
-      storeDir: join(dataRoot, 'server', 'vault'),
-    });
-    const now = '2026-07-05T00:00:00.000Z';
-    const runtimeFileCredentials: Array<{ credentialValue: string; targetPath: string }> = [];
-
-    applyMigrations(coreDb);
-    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 9) });
-    vaultUnlockState.backend().store({
-      material: '{"tokens":{"openai":"codex_runtime_file_secret"}}',
-      metadata: { ownerScope: 'server' },
-      referenceId: 'vault_codex_auth_json',
-    });
-    createVaultReference(coreDb, {
-      backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://server/vault/vault_codex_auth_json',
-      displayName: 'Codex auth JSON',
-      ownerScope: 'server',
-      referenceId: 'vault_codex_auth_json',
-      secretKind: 'codex-auth-json',
-      now: () => now,
-    });
-    createVaultGrant(coreDb, {
-      allowedInjectionPaths: ['runtime-file'],
-      expiresAt: '2026-07-05T01:00:00.000Z',
-      grantId: 'grant_codex_auth_json',
-      lifetime: 'agent-session',
-      ownerScope: 'server',
-      targetAgentSessionId: 'session_runtime_file_1',
-      vaultReferenceId: 'vault_codex_auth_json',
-      now: () => now,
-    });
-
-    try {
-      const store = createDemoStore();
-      const turn = store.createTurn('ws_demo', 'th_demo', 'Run Codex with auth file');
-      const agent = store.getAgent('ws_demo', 'agent_codex_host');
-      const resolved = AgentEnvironmentPackageSchema.parse(
-        resolveAgentEnvironmentPackage({
-          agent,
-          agentSessionId: 'session_runtime_file_1',
-          userId: 'user_local',
-          backend: {
-            workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
-            kind: 'openshell',
-            sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
-          },
-          coreDb,
-          createdAt: now,
-          requestId: 'req_runtime_file_1',
-          runtimeFileCredentialSink: (credential) => runtimeFileCredentials.push(credential),
-          turn,
-          vaultBackend: () => vaultUnlockState.backend(),
-          workspaceCwd: '/workspace/repo',
-          workspaceRoots: [],
-        })
-      );
-      const serialized = JSON.stringify(resolved);
-
-      expect(resolved.vault.references).toEqual([
-        expect.objectContaining({
-          id: 'vault_codex_auth_json',
-          secretRef: 'vault://vault_codex_auth_json',
-        }),
-      ]);
-      expect(resolved.vault.grants).toEqual([
-        expect.objectContaining({
-          expiresAt: '2026-07-05T01:00:00.000Z',
-          id: 'grant_codex_auth_json',
-          scope: 'agent-session',
-          vaultRefId: 'vault_codex_auth_json',
-        }),
-      ]);
-      expect(listInjectionPlans(coreDb)).toEqual([
-        expect.objectContaining({
-          grantId: 'grant_codex_auth_json',
-          injectionVisibility: 'runtime-file',
-          packageSnapshotId: resolved.snapshotId,
-          targetPath: '/sandbox/.codex/auth.json',
-        }),
-      ]);
-      expect(listInjectionReceipts(coreDb)).toEqual([
-        expect.objectContaining({
-          agentSessionId: 'session_runtime_file_1',
-          grantId: 'grant_codex_auth_json',
-        }),
-      ]);
-      expect(listVaultUseRecords(coreDb)).toEqual([
-        expect.objectContaining({
-          grantId: 'grant_codex_auth_json',
-          outcome: 'succeeded',
-          resolvingPath: 'grant',
-          vaultReferenceId: 'vault_codex_auth_json',
-        }),
-      ]);
-      expect(runtimeFileCredentials).toEqual([
-        {
-          credentialValue: '{"tokens":{"openai":"codex_runtime_file_secret"}}',
-          targetPath: '/sandbox/.codex/auth.json',
-        },
-      ]);
-      expect(serialized).not.toContain('codex_runtime_file_secret');
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('resolves generic worker credential declarations without serializing secret values', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-generic-credentials-'));
-    const coreDb = openCoreDb(dataRoot);
-    const vaultUnlockState = createVaultUnlockState({
-      backendKind: 'encrypted-file',
-      storeDir: join(dataRoot, 'server', 'vault'),
-    });
-    const now = '2026-07-05T00:00:00.000Z';
-    const providerCredentials: Array<{ credentialKey: string; credentialValue: string }> = [];
-    const runtimeFileCredentials: Array<{ credentialValue: string; targetPath: string }> = [];
-    const runtimeEnvCredentials: Array<{ credentialValue: string; targetEnvVarName: string }> = [];
-
-    applyMigrations(coreDb);
-    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 14) });
-    for (const [referenceId, material] of [
-      ['vault_foo_api', 'foo_provider_secret'],
-      ['vault_bar_file', '{"bar":"file_secret"}'],
-      ['vault_legacy_env', 'legacy_env_secret'],
-    ] as const) {
-      vaultUnlockState.backend().store({
-        material,
-        metadata: { ownerScope: 'server' },
-        referenceId,
-      });
-      createVaultReference(coreDb, {
-        backendKind: 'encrypted-file',
-        backendLocator: `encrypted-file://server/vault/${referenceId}`,
-        displayName: referenceId,
-        ownerScope: 'server',
-        referenceId,
-        secretKind: 'worker-credential',
-        now: () => now,
-      });
-      createVaultGrant(coreDb, {
-        allowedInjectionPaths:
-          referenceId === 'vault_foo_api'
-            ? ['backend-provider']
-            : referenceId === 'vault_bar_file'
-              ? ['runtime-file']
-              : ['runtime-env'],
-        grantId: referenceId.replace('vault_', 'grant_'),
-        lifetime: 'agent-session',
-        ownerScope: 'server',
-        targetAgentSessionId: 'session_generic_credentials_1',
-        vaultReferenceId: referenceId,
-        now: () => now,
-      });
-    }
-
-    try {
-      const store = createDemoStore();
-      const turn = store.createTurn('ws_demo', 'th_demo', 'Run generic credentials');
-      const agent = store.getAgent('ws_demo', 'agent_codex_host');
-      const resolved = AgentEnvironmentPackageSchema.parse(
-        resolveAgentEnvironmentPackage({
-          agent,
-          agentSessionId: 'session_generic_credentials_1',
-          userId: 'user_local',
-          backend: {
-            workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
-            kind: 'openshell',
-            sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
-          },
-          coreDb,
-          createdAt: now,
-          credentialDeclarations: [
-            {
-              id: 'foo_api',
-              provider: {
-                credentialKey: 'FOO_API_KEY',
-                instanceId: 'provider_foo_api',
-                profileId: 'okp-local-foo-api-v1',
-                type: 'generic',
-              },
-              vaultGrantId: 'grant_foo_api',
-              visibility: 'sandbox-provider',
-            },
-            {
-              id: 'bar_file',
-              targetPath: '/sandbox/.config/bar/credentials.json',
-              vaultGrantId: 'grant_bar_file',
-              visibility: 'runtime-file',
-            },
-            {
-              id: 'legacy_env',
-              targetEnvVarName: 'LEGACY_API_KEY',
-              vaultGrantId: 'grant_legacy_env',
-              visibility: 'runtime-env',
-            },
-          ],
-          providerCredentialSink: (credential) => {
-            providerCredentials.push({
-              credentialKey: credential.credentialKey,
-              credentialValue: credential.credentialValue,
-            });
-          },
-          requestId: 'req_generic_credentials_1',
-          runtimeEnvCredentialSink: (credential) => runtimeEnvCredentials.push(credential),
-          runtimeFileCredentialSink: (credential) => runtimeFileCredentials.push(credential),
-          turn,
-          vaultBackend: () => vaultUnlockState.backend(),
-          workspaceCwd: '/workspace/repo',
-          workspaceRoots: [],
-        })
-      );
-      const serialized = JSON.stringify(resolved);
-
-      expect(resolved.credentials.declarations.map((declaration) => declaration.id)).toEqual([
-        'foo_api',
-        'bar_file',
-        'legacy_env',
-      ]);
-      expect(providerCredentials).toEqual([
-        { credentialKey: 'FOO_API_KEY', credentialValue: 'foo_provider_secret' },
-      ]);
-      expect(runtimeFileCredentials).toEqual([
-        {
-          credentialValue: '{"bar":"file_secret"}',
-          targetPath: '/sandbox/.config/bar/credentials.json',
-        },
-      ]);
-      expect(runtimeEnvCredentials).toEqual([
-        { credentialValue: 'legacy_env_secret', targetEnvVarName: 'LEGACY_API_KEY' },
-      ]);
-      expect(listInjectionPlans(coreDb)).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            grantId: 'grant_foo_api',
-            injectionVisibility: 'backend-provider',
-            targetEnvVarName: 'FOO_API_KEY',
-          }),
-          expect.objectContaining({
-            grantId: 'grant_bar_file',
-            injectionVisibility: 'runtime-file',
-            targetPath: '/sandbox/.config/bar/credentials.json',
-          }),
-          expect.objectContaining({
-            grantId: 'grant_legacy_env',
-            injectionVisibility: 'runtime-env',
-            targetEnvVarName: 'LEGACY_API_KEY',
-          }),
-        ])
-      );
-      expect(listInjectionReceipts(coreDb)).toHaveLength(3);
-      expect(listVaultUseRecords(coreDb)).toHaveLength(3);
-      expect(serialized).not.toContain('foo_provider_secret');
-      expect(serialized).not.toContain('file_secret');
-      expect(serialized).not.toContain('legacy_env_secret');
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('fails credential declaration resolution before recording injection state when a sink is missing', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-missing-sink-'));
-    const coreDb = openCoreDb(dataRoot);
-    const vaultUnlockState = createVaultUnlockState({
-      backendKind: 'encrypted-file',
-      storeDir: join(dataRoot, 'server', 'vault'),
-    });
-    const now = '2026-07-05T00:00:00.000Z';
-
-    applyMigrations(coreDb);
-    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 15) });
+    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 22) });
     vaultUnlockState.backend().store({
       material: 'missing_sink_secret',
       metadata: { ownerScope: 'server' },
@@ -1674,54 +811,69 @@ describe('agent environment package resolver', () => {
     createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: 'encrypted-file://server/vault/vault_missing_sink',
-      displayName: 'Missing sink',
+      displayName: 'Missing sink credential',
+      now: () => now,
       ownerScope: 'server',
       referenceId: 'vault_missing_sink',
-      secretKind: 'worker-credential',
-      now: () => now,
+      secretKind: 'provider-api-key',
     });
     createVaultGrant(coreDb, {
       allowedInjectionPaths: ['runtime-env'],
       grantId: 'grant_missing_sink',
       lifetime: 'agent-session',
-      ownerScope: 'server',
-      targetAgentSessionId: 'session_missing_sink_1',
-      vaultReferenceId: 'vault_missing_sink',
       now: () => now,
+      ownerScope: 'server',
+      targetAgentSessionId: 'session_missing_sink',
+      vaultReferenceId: 'vault_missing_sink',
     });
 
     try {
-      const store = createDemoStore();
-      const turn = store.createTurn('ws_demo', 'th_demo', 'Run missing sink');
-      const agent = store.getAgent('ws_demo', 'agent_codex_host');
-
+      const turn = createTurnFixture('Reject missing sink');
       expect(() =>
         resolveAgentEnvironmentPackage({
-          agent,
-          agentSessionId: 'session_missing_sink_1',
-          userId: 'user_local',
+          agentSetup: createTestSetup({
+            adapter: 'pi',
+            credentialDeclarations: [
+              {
+                id: 'missing_sink',
+                targetEnvVarName: 'ANTHROPIC_API_KEY',
+                vaultGrantId: 'grant_missing_sink',
+                visibility: 'runtime-env',
+              },
+            ],
+            network: [
+              {
+                access: 'read-write',
+                binaries: ['/usr/local/bin/node'],
+                host: 'api.anthropic.com',
+                id: 'anthropic-api',
+                port: 443,
+                protocol: 'rest',
+              },
+            ],
+            provider: {
+              model: 'claude-sonnet-4-5',
+              origin: 'server-providers',
+              providerId: 'anthropic',
+              secretRef: null,
+            },
+            requiredCapabilities: [],
+          }),
+          agentSessionId: 'session_missing_sink',
           backend: {
-            workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
             kind: 'openshell',
-            sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
+            workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           },
           coreDb,
           createdAt: now,
-          credentialDeclarations: [
-            {
-              id: 'missing_env_sink',
-              targetEnvVarName: 'MISSING_ENV_SECRET',
-              vaultGrantId: 'grant_missing_sink',
-              visibility: 'runtime-env',
-            },
-          ],
-          requestId: 'req_missing_sink_1',
+          requestId: 'req_missing_sink',
           turn,
+          triggerActor: USER_TRIGGER_ACTOR,
           vaultBackend: () => vaultUnlockState.backend(),
           workspaceCwd: '/workspace/repo',
           workspaceRoots: [],
         })
-      ).toThrow('Runtime-env credential sink is required for declaration: missing_env_sink');
+      ).toThrow('Runtime-env credential sink is required for declaration: missing_sink');
       expect(listInjectionPlans(coreDb)).toEqual([]);
       expect(listInjectionReceipts(coreDb)).toEqual([]);
       expect(listVaultUseRecords(coreDb)).toEqual([]);
@@ -1730,167 +882,80 @@ describe('agent environment package resolver', () => {
     }
   });
 
-  it('rejects worker Skill and MCP supply outside the NanoCore catalog', () => {
-    const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Reject catalog bypass');
-    const baseAgent = store.getAgent('ws_demo', 'agent_codex_host');
-    const agent = {
-      ...baseAgent,
-      skillIds: ['unknown-skill'],
-      config: {
-        ...baseAgent.config,
-        mcpServerIds: ['unknown-mcp'],
-      },
-    } as typeof baseAgent;
+  it('requires explicit backend-local inference authority', () => {
+    const turn = createTurnFixture('Use backend-local inference');
+    const common = {
+      agentSessionId: 'session_backend_local_1',
+      createdAt: '2026-07-18T00:00:00.000Z',
+      requestId: 'req_backend_local_1',
+      turn,
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceCwd: '/workspace/repo',
+      workspaceRoots: [],
+    };
 
     expect(() =>
       resolveAgentEnvironmentPackage({
-        agent,
-        agentSessionId: 'session_supply_catalog_reject_1',
-        userId: 'user_local',
+        ...common,
+        agentSetup: createTestSetup({ requiredCapabilities: [] }),
         backend: {
+          kind: 'openshell',
           workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
-          kind: 'openshell',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
         },
-        createdAt: '2026-06-16T00:00:00.000Z',
-        requestId: 'req_supply_catalog_reject_1',
-        turn,
-        workspaceCwd: '/workspace/repo',
-        workspaceRoots: [],
       })
-    ).toThrow('Worker supply catalog entry not found: skill:unknown-skill');
-  });
+    ).toThrow('Backend-local inference requires explicit manifest capability.');
 
-  it('adds a configured OpenShell Codex model to the one-shot worker command', () => {
-    const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Run OpenShell mode');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
-    const resolved = AgentEnvironmentPackageSchema.parse(
-      resolveAgentEnvironmentPackage({
-        agent,
-        agentSessionId: 'session_openshell_model_1',
-        userId: 'user_local',
-        backend: {
-          codexModel: 'gpt-5-codex',
-          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
-          kind: 'openshell',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
-        },
-        createdAt: '2026-06-16T00:00:00.000Z',
-        requestId: 'req_openshell_model_1',
-        turn,
-        turnInput: 'Run OpenShell mode',
-        workspaceCwd: null,
-        workspaceRoots: [],
-      })
-    );
-
-    expect(resolved.extensions.openkit).toMatchObject({
-      codexCommand: [
-        'codex',
-        'exec',
-        '--json',
-        '--output-last-message',
-        '/openkit/session/final-message.txt',
-        '--cd',
-        agent.config.workspaceRoot,
-        '--model',
-        'gpt-5-codex',
-        '--dangerously-bypass-approvals-and-sandbox',
-        'Run OpenShell mode',
-      ],
-    });
-  });
-
-  it('resolves a remote OpenShell package with remote placement metadata and transport capabilities', () => {
-    const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Run remote OpenShell mode');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
-    const resolved = AgentEnvironmentPackageSchema.parse(
-      resolveAgentEnvironmentPackage({
-        agent,
-        agentSessionId: 'session_remote_openshell_1',
-        userId: 'user_local',
-        backend: {
-          workerControlBaseUrl: 'https://nanocore.example.com/api/worker-control',
-          gatewayUrl: 'https://a1.example.com:17670',
-          kind: 'openshell',
-          placement: 'remote',
-          sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
-        },
-        createdAt: '2026-06-16T00:00:00.000Z',
-        requestId: 'req_remote_openshell_1',
-        turn,
-        turnInput: 'Run remote OpenShell mode',
-        workspaceCwd: '/Users/m5pro/Documents/AI/openkit',
-        workspaceRoots: [
-          {
-            access: 'read-write',
-            id: 'repo',
-            sourceKind: 'host-dir',
-            sourcePath: '/Users/m5pro/Documents/AI/openkit',
-            workerPath: '/workspace/openkit',
-          },
-        ],
-      })
-    );
-    const serialized = JSON.stringify(resolved);
-
-    expect(resolved.runtime.command.workingDirectory).toBe('/workspace/openkit');
-    expect(resolved.control.endpoint?.baseUrl).toBe(
-      'https://nanocore.example.com/api/worker-control'
-    );
-    expect(resolved.control.relay).toBeUndefined();
-    expect(resolved.backend.requiredCapabilities).toEqual(
-      expect.arrayContaining([
-        'remote-gateway',
-        'backend-service-readiness',
-        'file-upload-download',
-        'git-materialization',
-        'change-set-collection',
-      ])
-    );
-    expect(resolved.backend.extensions?.openshell).toMatchObject({
-      gatewayUrlRef: 'runtime://openshell/gateway-url',
-      placement: 'remote',
-      sandboxSource: 'ghcr.io/openkit/codex-worker:test',
-    });
-    expect(serialized).not.toContain('https://a1.example.com:17670');
-    expect(serialized).not.toContain('/Users/m5pro');
-  });
-
-  it('merges authored backend capability requirements into the package backend envelope', () => {
-    const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Run with authored backend requirements');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
     const resolved = resolveAgentEnvironmentPackage({
-      agent,
-      agentSessionId: 'as_backend_requirements',
-      userId: 'user_local',
+      ...common,
+      agentSetup: createTestSetup({ requiredCapabilities: ['backend-local-inference'] }),
       backend: {
-        workerControlBaseUrl: 'https://nanocore.example.com/api/worker-control',
+        inferenceBaseUrl: 'https://inference.local/v1',
         kind: 'openshell',
-        placement: 'remote',
-        sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
       },
-      backendRequirements: {
-        allowedKinds: ['openshell'],
-        preferred: 'openshell',
-        requiredCapabilities: ['dynamic-network-policy', 'dynamic-provider-attach'],
+    });
+
+    expect(resolved.llm.mode).toBe('backend-local');
+    expect(resolved.llm.routes[0]?.endpoint.upstream?.kind).toBe('backend-local');
+    expect(resolved.llm.routes[0]?.endpoint).not.toHaveProperty('workerBaseUrl');
+  });
+
+  it('preserves the manifest network grant exact binary scope', () => {
+    const turn = createTurnFixture('Use a declared public endpoint');
+    const setup = createTestSetup({
+      network: [
+        {
+          host: 'docs.example.com',
+          id: 'public-docs',
+          port: 443,
+          purpose: 'Read public documentation',
+          binaries: ['/usr/local/bin/codex'],
+        },
+      ],
+      requiredCapabilities: ['backend-local-inference'],
+    });
+    const resolved = resolveAgentEnvironmentPackage({
+      agentSessionId: 'session_network_defaults_1',
+      agentSetup: setup,
+      backend: {
+        kind: 'openshell',
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
       },
-      createdAt: '2026-06-16T00:00:00.000Z',
-      requestId: 'req_backend_requirements',
+      createdAt: '2026-07-18T00:00:00.000Z',
+      requestId: 'req_network_defaults_1',
       turn,
-      turnInput: 'Run with authored backend requirements',
-      workspaceCwd: '/Users/m5pro/Documents/AI/openkit',
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceCwd: '/workspace/repo',
       workspaceRoots: [],
     });
 
-    expect(resolved.backend.requiredCapabilities).toEqual(
-      expect.arrayContaining(['dynamic-network-policy', 'dynamic-provider-attach'])
+    expect(resolved.policy.network?.rules).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          binaries: ['/usr/local/bin/codex'],
+          id: 'public-docs',
+        }),
+      ])
     );
-    expect(resolved.backend.preferred).toBe('openshell');
-    expect(resolved.backend.allowedKinds).toEqual(['openshell']);
   });
 });

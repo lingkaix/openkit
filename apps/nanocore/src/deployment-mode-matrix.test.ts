@@ -13,12 +13,12 @@ import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import type { FsStore } from './lib/store.js';
+import { ProviderRegistry } from './providers/registry.js';
 import { createGoalRecord, createGoalTask, updateGoalStatus } from './runtime/goal-store.js';
 import { createConfiguredTurnExecutor } from './runtime/turn-executor-factory.js';
 import type { TurnExecutor } from './runtime/types.js';
 import { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import type {
-  WorkerGovernanceArtifactRecord,
   WorkerGovernanceBackend,
   WorkerGovernanceEvidenceRecord,
   WorkerGovernanceMaterializationContext,
@@ -30,6 +30,7 @@ import type { WorkerTranscriptPayload } from './runtime/worker-transcript.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { upsertWorkspaceRepositoryResource } from './workspace/repository-store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -105,7 +106,7 @@ describe('NanoCore deployment mode matrix', () => {
     runtimePlacement,
   }) => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const thread = store.createThread('ws_demo', `Loop matrix ${coreMode} ${runtimePlacement}`);
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-goal-matrix-repo-'));
     execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
@@ -123,18 +124,26 @@ describe('NanoCore deployment mode matrix', () => {
     try {
       seedRepositoryAndGoal(coreDb, thread.id, repositoryPath, runtimePlacement);
       seedThreadContext(store, thread.id, runtimePlacement);
-      if (coreMode === 'server') {
-        ensureLocalUser(coreDb);
-        recordWorkspaceOwnerMembership({
-          coreDb,
-          ownerUserId: LOCAL_USER_ID,
-          workspaceId: 'ws_demo',
-        });
-      }
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: LOCAL_USER_ID,
+        workspaceId: 'ws_demo',
+      });
       const turnExecutor = createMatrixLoopTurnExecutor(runtimePlacement, coreDb);
       const app = createApp({
         ...(coreMode === 'server' ? { auth: createSignedInAuthStub(), mode: 'server' } : {}),
+        agentManifests: [createTestAgentSetup().manifest],
         coreDb,
+        providerRegistry: new ProviderRegistry([
+          {
+            defaultModel: 'openai/gpt-5.2',
+            displayName: 'Matrix backend inference',
+            id: 'agent-openrouter',
+            kind: 'local',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
         store,
         turnExecutor,
       });
@@ -150,7 +159,7 @@ describe('NanoCore deployment mode matrix', () => {
       );
       const payload = await response.json();
 
-      expect(response.status).toBe(200);
+      expect(response.status, JSON.stringify(payload)).toBe(200);
       expect(payload).toMatchObject({
         goal: {
           status: 'reviewing',
@@ -207,7 +216,6 @@ function createMatrixTurnExecutor(placement: AgentRuntimePlacement, coreDb: Core
         placement === 'remote-container'
           ? 'https://nanocore.example.com/api/worker-control'
           : 'http://host.openshell.internal:3000/api/worker-control',
-      OPENKIT_OPENSHELL_WORKER_IMAGE: 'openkit/worker-codex:dev',
       OPENKIT_WORKER_RUNTIME: 'container',
       ...remoteEnv,
     },
@@ -293,7 +301,7 @@ function seedRepositoryAndGoal(
   repositoryPath: string,
   runtimePlacement: AgentRuntimePlacement
 ): void {
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, 'ws_demo');
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
   try {
     applyScopedMigrations(workspaceDb);
     upsertWorkspaceRepositoryResource(workspaceDb, {
@@ -362,7 +370,10 @@ function seedThreadContext(
   threadId: string,
   runtimePlacement: AgentRuntimePlacement
 ): void {
-  const turn = store.createTurn('ws_demo', threadId, `Context for ${runtimePlacement}`);
+  const turn = store.createTurn('ws_demo', threadId, `Context for ${runtimePlacement}`, {
+    kind: 'user',
+    id: 'user_local',
+  });
   const timestamp = turn.startedAt ?? '2026-06-28T00:00:00.000Z';
 
   store.createItem({
@@ -372,6 +383,7 @@ function seedThreadContext(
     turnId: turn.id,
     type: 'user-message',
     status: 'completed',
+    actor: { kind: 'user', id: 'user_local' },
     text: `Use this context for the ${runtimePlacement} loop matrix step.`,
     createdAt: timestamp,
     completedAt: timestamp,
@@ -392,6 +404,7 @@ function seedThreadContext(
 function runtimeCapabilities(placement: AgentRuntimePlacement): string[] {
   if (placement === 'remote-container') {
     return [
+      'backend-local-inference',
       'container',
       'transcript-sink',
       'remote-gateway',
@@ -401,7 +414,7 @@ function runtimeCapabilities(placement: AgentRuntimePlacement): string[] {
       'change-set-collection',
     ];
   }
-  return ['container', 'transcript-sink'];
+  return ['backend-local-inference', 'container', 'transcript-sink'];
 }
 
 /**
@@ -553,6 +566,12 @@ class MatrixWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
 
     return {
+      artifactFiles: [
+        {
+          bytes: Buffer.from('# Container loop matrix result\n', 'utf8'),
+          sequence: 2,
+        },
+      ],
       artifactsJsonl: `${JSON.stringify({
         schemaVersion: 1,
         kind: 'artifact',
@@ -599,15 +618,6 @@ class MatrixWorkerGovernanceBackend implements WorkerGovernanceBackend {
    * @returns Empty workspace change list.
    */
   public async collectWorkspaceChanges(): Promise<WorkerGovernanceWorkspaceChangeRecord[]> {
-    return [];
-  }
-
-  /**
-   * Returns no backend-native artifact records.
-   *
-   * @returns Empty artifact list.
-   */
-  public async collectArtifacts(): Promise<WorkerGovernanceArtifactRecord[]> {
     return [];
   }
 }

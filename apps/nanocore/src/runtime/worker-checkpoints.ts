@@ -1,4 +1,4 @@
-import type { StopReason } from '@openkit/protocol';
+import type { ActorRef, StopReason } from '@openkit/protocol';
 
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import {
@@ -109,6 +109,8 @@ export interface UpsertWorkerCheckpointInput {
  * Input used to update an existing worker checkpoint.
  */
 export interface UpdateWorkerCheckpointInput {
+  /** Exact actor responsible for the worker effect; used only for process-local usage attribution. */
+  readonly authorityActor: ActorRef;
   /** Workspace that owns the worker turn. */
   readonly workspaceId: string;
   /** Thread that owns the worker turn. */
@@ -260,12 +262,6 @@ export function upsertWorkerCheckpoint(
   input: UpsertWorkerCheckpointInput
 ): WorkerCheckpointRecord {
   const checkpointId = createWorkerCheckpointId(input.workspaceId, input.threadId, input.turnId);
-  const existing = getWorkerCheckpoint(
-    workspaceDb,
-    input.workspaceId,
-    input.threadId,
-    input.turnId
-  );
   const timestamp = input.now?.() ?? new Date().toISOString();
 
   workspaceDb.sqlite
@@ -327,7 +323,6 @@ export function upsertWorkerCheckpoint(
     input.threadId,
     input.turnId
   );
-  recordTerminalCheckpointEvidence(workspaceDb, existing, checkpoint);
   return checkpoint;
 }
 
@@ -383,7 +378,7 @@ export function updateWorkerCheckpoint(
     input.threadId,
     input.turnId
   );
-  recordTerminalCheckpointEvidence(workspaceDb, existing, checkpoint);
+  recordTerminalCheckpointEvidence(workspaceDb, existing, checkpoint, input.authorityActor);
   return checkpoint;
 }
 
@@ -577,11 +572,13 @@ function createWorkerCheckpointId(workspaceId: string, threadId: string, turnId:
  * @param workspaceDb Open workspace-scope database handle.
  * @param previous Previous checkpoint record, or null for new rows.
  * @param checkpoint Current checkpoint record.
+ * @param authorityActor Exact actor responsible for the worker effect.
  */
 function recordTerminalCheckpointEvidence(
   workspaceDb: WorkspaceDb,
   previous: WorkerCheckpointRecord | null,
-  checkpoint: WorkerCheckpointRecord
+  checkpoint: WorkerCheckpointRecord,
+  authorityActor: ActorRef
 ): void {
   if (
     !previous ||
@@ -592,7 +589,7 @@ function recordTerminalCheckpointEvidence(
   }
 
   recordWorkerCheckpointRuntimeEvidence(workspaceDb, checkpoint);
-  recordTerminalCheckpointRuntimeUsage(workspaceDb, checkpoint);
+  recordTerminalCheckpointRuntimeUsage(workspaceDb, checkpoint, authorityActor);
   recordWorkspaceAuditEvent({
     action: 'worker.checkpoint.terminal',
     category: 'system',
@@ -613,14 +610,17 @@ function recordTerminalCheckpointEvidence(
  *
  * @param workspaceDb Open workspace-scope database handle.
  * @param checkpoint Current terminal checkpoint.
+ * @param authorityActor Exact actor responsible for the worker effect.
  */
 function recordTerminalCheckpointRuntimeUsage(
   workspaceDb: WorkspaceDb,
-  checkpoint: WorkerCheckpointRecord
+  checkpoint: WorkerCheckpointRecord,
+  authorityActor: ActorRef
 ): void {
   const now = new Date(checkpoint.updatedAt);
   const call = startCapabilityCall({
     agentSessionId: checkpoint.workerSessionId,
+    authorityActor,
     callId: `cap_runtime_${checkpoint.checkpointId}`,
     capabilityId: 'runtime.worker_turn',
     family: 'runtime',

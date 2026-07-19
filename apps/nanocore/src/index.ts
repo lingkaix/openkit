@@ -34,6 +34,8 @@ import { classifyGoalStepCheckpointAfterSchedulerRecovery } from './goal-routes.
 import { FsStore } from './lib/store.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import { recordBootPolicySelfCheckDecisions } from './policy/permission-decisions.js';
+import { resolveEnvSecretRef } from './providers/registry.js';
+import { createVaultProviderCredentialResolver } from './providers/vault-credential-resolver.js';
 import {
   type OpenShellRefreshStatusCollector,
   type OpenShellRefreshStatusPollingService,
@@ -73,9 +75,9 @@ import {
 import {
   type CoreDb,
   listExistingWorkspaceDatabaseScopes,
-  openCoreDbWithIntegrityRecovery,
+  openCoreDbWithIntegrityCheck,
   openWorkspaceDb,
-  recoverExistingScopedDatabases,
+  verifyAndMigrateExistingScopedDatabases,
 } from './storage/db.js';
 import {
   ensureConfigTemplateSurface,
@@ -85,6 +87,7 @@ import {
 import { rebuildExistingWorkspaceDerivedIndexes } from './storage/index-rebuild.js';
 import { applyMigrations, listAppliedMigrationIds } from './storage/migrate.js';
 import type { VaultUnlockState } from './vault/vault-unlock-state.js';
+import { ensureUserQuickChatWorkspace } from './workspace-membership.js';
 
 const dataRoot = resolveDataRoot(process.env);
 const bootId = createBootId();
@@ -114,8 +117,8 @@ let vaultUnlockState: VaultUnlockState | undefined;
 let bootWorkerControlGateway: ReturnType<typeof createDefaultWorkerControlGateway> | undefined;
 let workerLifecycleRuntime: ConfiguredWorkerLifecycleRuntime | undefined;
 let cleanupExpiredReconnects: (() => Promise<void>) | undefined;
+let sharedStore: FsStore | undefined;
 const restartCloseoutPackageSnapshots = new Set<string>();
-const schedulerStoresByUserId = new Map<string, FsStore>();
 
 process.once('exit', releaseProcessResources);
 
@@ -164,13 +167,9 @@ const bootResult = await runBootPhases({
       subsystem: 'storage',
       critical: true,
       run: () => {
-        const opened = openCoreDbWithIntegrityRecovery(dataRoot);
-        coreDb = opened.coreDb;
+        coreDb = openCoreDbWithIntegrityCheck(dataRoot);
         applyMigrations(coreDb);
-        const storageRecoveryEvents = [
-          ...opened.recoveryEvents,
-          ...recoverExistingScopedDatabases(dataRoot),
-        ];
+        verifyAndMigrateExistingScopedDatabases(dataRoot);
         const indexRebuildEvents = rebuildExistingWorkspaceDerivedIndexes(dataRoot);
         recordBootStartAudit({
           coreDb,
@@ -179,19 +178,7 @@ const bootResult = await runBootPhases({
             .acquisition,
           migrationIds: listAppliedMigrationIds(coreDb),
           indexRebuildEvents,
-          storageRecoveryEvents,
         });
-
-        if (storageRecoveryEvents.length > 0) {
-          return {
-            status: 'degraded',
-            reason: {
-              code: 'storage.quarantined',
-              message: `Quarantined ${storageRecoveryEvents.length} corrupt storage file(s).`,
-              blocks: [],
-            },
-          };
-        }
 
         if (indexRebuildEvents.length > 0) {
           return {
@@ -264,15 +251,17 @@ const bootResult = await runBootPhases({
       critical: true,
       run: async () => {
         const recoveryCoreDb = requireBootValue(coreDb, 'Core database was not initialized.');
+        sharedStore ??= new FsStore({ dataRoot });
+        const recoveryStore = sharedStore;
         bootWorkerControlGateway = createDefaultWorkerControlGateway(
           recoveryCoreDb,
           scheduleCommittedFinalStatusCloseout
         );
         workerLifecycleRuntime = createConfiguredWorkerLifecycleRuntime({
           coreDb: recoveryCoreDb,
+          store: recoveryStore,
           vaultBackend: () =>
             requireBootValue(vaultUnlockState, 'Vault unlock state was not initialized.').backend(),
-          storeForUserId: schedulerStoreForUserId,
           workerControlGateway: bootWorkerControlGateway,
         });
         const recoveryRuntime = workerLifecycleRuntime;
@@ -293,7 +282,7 @@ const bootResult = await runBootPhases({
                 : 'Worker execution stopped during NanoCore restart recovery.',
               outcome: anchored ? 'interrupted' : 'failed',
               requestId: admission.requestId,
-              store: schedulerStoreForUserId(admission.userId),
+              store: recoveryStore,
               turnId: subject.turnId,
             });
 
@@ -373,10 +362,16 @@ if (criticalBootFailure || !bootReadiness.acceptingProductWork) {
 runtimeConfigSnapshot = requireBootValue(runtimeConfigSnapshot, 'Runtime config was not loaded.');
 mode = requireBootValue(mode, 'Core mode was not resolved.');
 coreDb = requireBootValue(coreDb, 'Core database was not initialized.');
+const activeCoreDb = coreDb;
 const activeVaultUnlockState = requireBootValue(
   vaultUnlockState,
   'Vault unlock state was not initialized.'
 );
+const schedulerProviderCredentialResolver = createVaultProviderCredentialResolver({
+  coreDb,
+  fallback: resolveEnvSecretRef,
+  vaultBackend: () => activeVaultUnlockState.backend(),
+});
 
 const runtimeConfigManager = createRuntimeConfigManager({
   dataRoot,
@@ -408,10 +403,22 @@ const workerPlacement = requireBootValue(
   'Worker lifecycle runtime was not initialized.'
 ).placement;
 const refreshStatusCollector = maybeOpenShellRefreshStatusCollector(turnExecutor);
+const store = requireBootValue(sharedStore, 'Shared Workspace store was not initialized.');
+
+/**
+ * Ensures the personal Quick Chat Workspace before Better Auth records a new active session.
+ *
+ * @param userId Active canonical user starting the session.
+ */
+function onActiveUserSession(userId: string): void {
+  ensureUserQuickChatWorkspace({ coreDb: activeCoreDb, store, userId });
+}
+
 const auth =
   mode === 'server'
     ? createBetterAuth(coreDb, {
         mode,
+        onActiveUserSession,
         openKitConfig: runtimeConfigSnapshot.openKitConfig,
       })
     : undefined;
@@ -425,7 +432,7 @@ const app = createApp({
   mode,
   runtimeConfigManager,
   schedulerEpoch,
-  storeFactory: schedulerStoreForUserId,
+  store,
   turnExecutor,
   vaultUnlockState: activeVaultUnlockState,
   workerControlGateway,
@@ -446,10 +453,10 @@ const server = serve(
 );
 
 schedulerDispatchRetry = startSchedulerDispatchRetryService({
-  agentConfigs: runtimeConfigManager.current().agentConfigs,
   agentManifests: runtimeConfigManager.current().agentManifests,
   configVersion: runtimeConfigManager.current().version,
   coreDb,
+  dependencies: { providerCredentialResolver: schedulerProviderCredentialResolver },
   expectedControlMode: 'poll',
   expectedDataPlaneMode: 'openshell-files',
   heartbeatIntervalMs: 10_000,
@@ -460,7 +467,7 @@ schedulerDispatchRetry = startSchedulerDispatchRetryService({
   providerRegistry: runtimeConfigManager.current().providerRegistry,
   schedulerEpoch,
   startupTimeoutMs: CONFIGURED_WORKER_STARTUP_TIMEOUT_MS,
-  storeForUserId: schedulerStoreForUserId,
+  store,
   turnExecutor,
   onError: (error) => {
     console.warn(
@@ -605,24 +612,6 @@ function requireBootValue<T>(value: T | null | undefined, message: string): T {
 }
 
 /**
- * Returns the cached product store for one scheduler admission owner.
- *
- * @param userId Store owner user id recorded on the scheduler admission row.
- * @returns User-scoped product store.
- */
-function schedulerStoreForUserId(userId: string): FsStore {
-  const cached = schedulerStoresByUserId.get(userId);
-
-  if (cached) {
-    return cached;
-  }
-
-  const store = new FsStore({ dataRoot, userId });
-  schedulerStoresByUserId.set(userId, store);
-  return store;
-}
-
-/**
  * Classifies every persisted worker checkpoint after scheduler fencing has completed.
  *
  * @param recoveryCoreDb Fenced Core database containing scheduler authority.
@@ -632,12 +621,12 @@ async function classifyWorkerCheckpointsAfterSchedulerRecovery(
   recoveryCoreDb: CoreDb
 ): Promise<number> {
   let failures = 0;
+  const store = requireBootValue(sharedStore, 'Shared Workspace store was not initialized.');
 
-  for (const { userId, workspaceId } of listExistingWorkspaceDatabaseScopes(dataRoot)) {
+  for (const { workspaceId } of listExistingWorkspaceDatabaseScopes(dataRoot)) {
     let workspaceDb: ReturnType<typeof openWorkspaceDb> | null = null;
     try {
-      workspaceDb = openWorkspaceDb(dataRoot, userId, workspaceId);
-      const store = schedulerStoreForUserId(userId);
+      workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
       for (const checkpoint of listExportableWorkerCheckpoints(workspaceDb, workspaceId)) {
         try {
           if (checkpoint.goalId === null && checkpoint.taskId === null) {
@@ -667,7 +656,7 @@ async function classifyWorkerCheckpointsAfterSchedulerRecovery(
     } catch (error) {
       failures += 1;
       console.warn(
-        `Workspace checkpoint scan recovery_required for ${userId}/${workspaceId}: ${error instanceof Error ? error.message : String(error)}`
+        `Workspace checkpoint scan recovery_required for ${workspaceId}: ${error instanceof Error ? error.message : String(error)}`
       );
     } finally {
       workspaceDb?.sqlite.close();
@@ -741,7 +730,6 @@ function recordBootStartAudit(input: {
   lockAcquisition: DataRootLock['acquisition'];
   migrationIds: string[];
   indexRebuildEvents: unknown[];
-  storageRecoveryEvents: unknown[];
 }): void {
   try {
     recordBootStartAuditEvent({
@@ -751,7 +739,6 @@ function recordBootStartAudit(input: {
       lockAcquisition: input.lockAcquisition,
       migrationIds: input.migrationIds,
       indexRebuildEvents: input.indexRebuildEvents,
-      storageRecoveryEvents: input.storageRecoveryEvents,
     });
   } catch (error) {
     console.warn(

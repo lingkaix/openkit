@@ -7,6 +7,10 @@ import {
   type WorkspaceSyncReviewItem,
 } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
+import { createArtifactReview, decideArtifactReview } from './artifact-reviews.js';
+import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import { ensureLocalUser } from './auth/identity.js';
+import { createPendingUserTurnRecord } from './goal-steering-authority.js';
 import { createGoalReviewRecord, resolveGoalReviewRecord } from './runtime/goal-review-records.js';
 import { createGoalRecord, createGoalTask, updateGoalStatus } from './runtime/goal-store.js';
 import { upsertWorkerCheckpoint } from './runtime/worker-checkpoints.js';
@@ -17,11 +21,11 @@ import {
 } from './runtime/workspace-sync-records.js';
 import { createSchedulerAdmissionEntry, denySchedulerAdmissionEntry } from './scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
-import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const timestamp = '2026-05-31T00:00:00.000Z';
 
@@ -38,6 +42,28 @@ function createCoreDb(): CoreDb {
 }
 
 /**
+ * Creates a Core-backed test app with the local actor authorized for every fixture Workspace.
+ *
+ * @param coreDb Core database that owns authorization facts.
+ * @param store Test store whose Workspaces need canonical owner membership.
+ * @returns NanoCore test app with local Workspace access.
+ */
+function createAuthorizedCoreApp(
+  coreDb: CoreDb,
+  store: ReturnType<typeof createDemoStore>
+): ReturnType<typeof createApp> {
+  ensureLocalUser(coreDb);
+  for (const workspace of store.listWorkspaces()) {
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: workspace.id,
+    });
+  }
+  return createApp({ coreDb, store });
+}
+
+/**
  * Opens a migrated workspace database for action center tests.
  *
  * @param coreDb Core database whose data root owns the workspace database.
@@ -45,7 +71,7 @@ function createCoreDb(): CoreDb {
  * @returns Migrated workspace database handle.
  */
 function openTestWorkspaceDb(coreDb: CoreDb, workspaceId: string): WorkspaceDb {
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, workspaceId);
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }
@@ -68,14 +94,14 @@ describe('action center app API', () => {
   it('rejects a missing workspace without creating its canonical directory', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
-    const workspaceRoot = join(coreDb.dataRoot, 'users', LOCAL_USER_ID, 'workspaces', 'ws_missing');
+    const workspaceRoot = join(coreDb.dataRoot, 'workspaces', 'ws_missing');
 
     try {
-      const response = await createApp({ coreDb, store }).request(
+      const response = await createAuthorizedCoreApp(coreDb, store).request(
         '/api/app/workspaces/ws_missing/action-center'
       );
 
-      expect(response.status).toBe(404);
+      expect(response.status).toBe(403);
       expect(existsSync(workspaceRoot)).toBe(false);
     } finally {
       coreDb.sqlite.close();
@@ -85,8 +111,14 @@ describe('action center app API', () => {
   it('returns unified human attention rows for pending approval and question gates', async () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Needs human input');
-    const approvalTurn = store.createTurn('ws_demo', thread.id, 'Run guarded work');
-    const questionTurn = store.createTurn('ws_demo', thread.id, 'Request a secret');
+    const approvalTurn = store.createTurn('ws_demo', thread.id, 'Run guarded work', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    const questionTurn = store.createTurn('ws_demo', thread.id, 'Request a secret', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const approval = store.createApproval({
       id: 'ap_action_center',
       workspaceId: 'ws_demo',
@@ -128,6 +160,7 @@ describe('action center app API', () => {
       turnId: questionTurn.id,
       type: 'user-input-request',
       status: 'completed',
+      responsibleUserId: 'user_local',
       userInputRequestId: 'ui_action_center',
       prompt: 'Choose a path.',
       questions: [
@@ -196,11 +229,395 @@ describe('action center app API', () => {
     );
   });
 
+  it('projects actionable rows only to the currently eligible actor', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Actor-scoped attention');
+    const approvalTurn = store.createTurn('ws_demo', thread.id, 'Request approval', {
+      kind: 'user',
+      id: 'user_owner',
+    });
+    const questionTurn = store.createTurn('ws_demo', thread.id, 'Request responsible input', {
+      kind: 'user',
+      id: 'user_responsible',
+    });
+    const approval = store.createApproval({
+      id: 'ap_actor_scoped',
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      turnId: approvalTurn.id,
+      kind: 'permission',
+      status: 'pending',
+      title: 'Approve actor-scoped work',
+      description: 'Only a current decision authority may see this row.',
+      createdAt: timestamp,
+      resolvedAt: null,
+    });
+    const approvalItem = store.createItem({
+      id: 'it_actor_scoped_approval',
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      turnId: approvalTurn.id,
+      type: 'approval-request',
+      status: 'completed',
+      approvalRequestId: approval.id,
+      title: approval.title,
+      description: approval.description,
+      kind: approval.kind,
+      createdAt: timestamp,
+      completedAt: timestamp,
+    });
+    store.updateTurn(approvalTurn.id, {
+      status: 'awaiting_human',
+      humanGate: {
+        kind: 'approval',
+        approvalRequestId: approval.id,
+        itemId: approvalItem.id,
+      },
+    });
+    const questionItem = store.createItem({
+      id: 'it_actor_scoped_question',
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      turnId: questionTurn.id,
+      type: 'user-input-request',
+      status: 'completed',
+      responsibleUserId: 'user_responsible',
+      userInputRequestId: 'ui_actor_scoped',
+      prompt: 'Provide the responsible user input.',
+      questions: [
+        {
+          id: 'choice',
+          header: 'Choice',
+          question: 'Which option should the worker use?',
+          options: null,
+          isOther: true,
+          isSecret: false,
+        },
+      ],
+      createdAt: timestamp,
+      completedAt: timestamp,
+    });
+    store.updateTurn(questionTurn.id, {
+      status: 'awaiting_human',
+      humanGate: {
+        kind: 'user-input',
+        userInputRequestId: questionItem.userInputRequestId,
+        itemId: questionItem.id,
+      },
+    });
+    store.createKnowledgeProposal({
+      id: 'knowledge_actor_scoped',
+      workspaceId: 'ws_demo',
+      title: 'Review actor-scoped knowledge',
+      summary: 'Only current review authority may see this row.',
+      status: 'pending',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    store.upsertAgent('ws_demo', {
+      id: 'agent_codex_host',
+      name: 'Codex Host Agent',
+      kind: 'coder',
+      status: 'enabled',
+      modelId: null,
+      skillIds: [],
+      profiles: [],
+      defaultProfileId: null,
+      capabilities: [],
+      sandboxSummary: null,
+      health: { status: 'unknown', message: null, checkedAt: null },
+    });
+    store.updateAgentHealth('ws_demo', 'agent_codex_host', {
+      status: 'failed',
+      message: 'Shared runtime status remains visible.',
+      checkedAt: timestamp,
+    });
+
+    const now = Date.now();
+    coreDb.sqlite
+      .prepare(
+        `INSERT INTO users (
+          id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at
+        ) VALUES
+          ('user_owner', 'Owner', 'owner@example.com', false, ?, ?, 'human', 'active', NULL),
+          ('user_responsible', 'Responsible', 'responsible@example.com', false, ?, ?, 'human', 'active', NULL),
+          ('user_editor', 'Editor', 'editor@example.com', false, ?, ?, 'human', 'active', NULL),
+          ('user_viewer', 'Viewer', 'viewer@example.com', false, ?, ?, 'human', 'active', NULL),
+          ('user_removed', 'Removed', 'removed@example.com', false, ?, ?, 'human', 'active', NULL)`
+      )
+      .run(now, now, now, now, now, now, now, now, now, now);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_owner',
+      workspaceId: 'ws_demo',
+    });
+    coreDb.sqlite
+      .prepare(
+        `INSERT INTO workspace_members (
+          workspace_id, user_id, status, access_level, invitation_id,
+          joined_at, removed_at, revision, created_at, updated_at
+        ) VALUES
+          ('ws_demo', 'user_responsible', 'active', 'editor', NULL, ?, NULL, 1, ?, ?),
+          ('ws_demo', 'user_editor', 'active', 'editor', NULL, ?, NULL, 1, ?, ?),
+          ('ws_demo', 'user_viewer', 'active', 'viewer', NULL, ?, NULL, 1, ?, ?),
+          ('ws_demo', 'user_removed', 'removed', 'editor', NULL, ?, ?, 2, ?, ?)`
+      )
+      .run(
+        timestamp,
+        timestamp,
+        timestamp,
+        timestamp,
+        timestamp,
+        timestamp,
+        timestamp,
+        timestamp,
+        timestamp,
+        timestamp,
+        timestamp,
+        timestamp,
+        timestamp
+      );
+
+    /** Issues one Workspace-bound token for the table actor. */
+    const issueToken = (ownerUserId: string, scope: 'workspace' | 'workspace-readonly') =>
+      createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerUserId,
+        scope,
+        workspaceIds: ['ws_demo'],
+      }).secret;
+    const app = createApp({
+      auth: {
+        api: { getSession: async () => null },
+        handler: async () => new Response(null, { status: 404 }),
+      },
+      coreDb,
+      dataRoot: coreDb.dataRoot,
+      mode: 'server',
+      store,
+    });
+    const cases = [
+      {
+        name: 'owner',
+        secret: issueToken('user_owner', 'workspace'),
+        status: 200,
+        visibleIds: [
+          'agent-readiness:agent_codex_host',
+          `approval:${approval.id}`,
+          'knowledge:knowledge_actor_scoped',
+        ],
+      },
+      {
+        name: 'responsible editor',
+        secret: issueToken('user_responsible', 'workspace'),
+        status: 200,
+        visibleIds: [
+          'agent-readiness:agent_codex_host',
+          `approval:${approval.id}`,
+          'knowledge:knowledge_actor_scoped',
+          `question:${questionItem.id}`,
+        ],
+      },
+      {
+        name: 'nonresponsible editor',
+        secret: issueToken('user_editor', 'workspace'),
+        status: 200,
+        visibleIds: [
+          'agent-readiness:agent_codex_host',
+          `approval:${approval.id}`,
+          'knowledge:knowledge_actor_scoped',
+        ],
+      },
+      {
+        name: 'readonly responsible editor',
+        secret: issueToken('user_responsible', 'workspace-readonly'),
+        status: 200,
+        visibleIds: ['agent-readiness:agent_codex_host'],
+      },
+      {
+        name: 'viewer',
+        secret: issueToken('user_viewer', 'workspace'),
+        status: 403,
+        visibleIds: [],
+      },
+      {
+        name: 'removed editor',
+        secret: issueToken('user_removed', 'workspace'),
+        status: 403,
+        visibleIds: [],
+      },
+    ];
+    const scopedRowIds = new Set([
+      'agent-readiness:agent_codex_host',
+      `approval:${approval.id}`,
+      `question:${questionItem.id}`,
+      'knowledge:knowledge_actor_scoped',
+    ]);
+
+    try {
+      for (const testCase of cases) {
+        const response = await app.request('/api/app/workspaces/ws_demo/action-center', {
+          headers: { authorization: `Bearer ${testCase.secret}` },
+        });
+        expect(response.status, testCase.name).toBe(testCase.status);
+        if (response.status === 200) {
+          const visibleIds = ListHumanAttentionResponseSchema.parse(await response.json())
+            .items.map((row) => row.id)
+            .filter((rowId) => scopedRowIds.has(rowId));
+          expect(visibleIds, testCase.name).toEqual(testCase.visibleIds);
+        }
+      }
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('projects only the exact unresolved current ready turn-output Artifact Review', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore();
+    const workspace = store.createWorkspace('Versioned Artifact Review');
+    const thread = store.createThread(workspace.id, 'Review worker output');
+    const turn = store.createTurn(
+      workspace.id,
+      thread.id,
+      'Produce reviewable output',
+      { kind: 'user', id: 'user_local' },
+      null,
+      {
+        turnId: 'turn_artifact_review',
+      }
+    );
+    store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
+    const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
+    const content = '# Current output';
+    const contentDigest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
+    const artifact = store.createArtifact({
+      id: 'artifact_versioned_review',
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      kind: 'report',
+      title: 'Current output',
+      status: 'ready',
+      summary: 'Review the current Artifact version.',
+      version: 1,
+      content: { format: 'markdown', body: content },
+      contentDigest,
+      lastMutationRequestId: 'artifact-version-1',
+      origin: {
+        kind: 'turn-output',
+        threadId: thread.id,
+        turnId: turn.id,
+        requestId: 'artifact-version-1',
+      },
+      createdAt: timestamp,
+      updatedAt: '2026-05-31T00:01:00.000Z',
+    });
+    try {
+      const reviewInput = {
+        artifactId: artifact.id,
+        contentDigest: artifact.contentDigest,
+        sourceThreadId: thread.id,
+        sourceTurnId: turn.id,
+        sourceAgentId: 'agent_codex_host',
+        materialProposal: null,
+      } as const;
+      createArtifactReview(workspaceDb, {
+        ...reviewInput,
+        artifactVersion: 2,
+        contentDigest: `sha256:${createHash('sha256').update('# Unavailable version').digest('hex')}`,
+        createdAt: '2026-05-31T00:02:00.000Z',
+      });
+      const currentReview = createArtifactReview(workspaceDb, {
+        ...reviewInput,
+        artifactVersion: artifact.version,
+        createdAt: '2026-05-31T00:01:00.000Z',
+      });
+      const app = createAuthorizedCoreApp(coreDb, store);
+      const response = await app.request(`/api/app/workspaces/${workspace.id}/action-center`);
+      const responsePayload = await response.json();
+      expect(response.status, JSON.stringify(responsePayload)).toBe(200);
+      const rows = ListHumanAttentionResponseSchema.parse(responsePayload).items.filter(
+        (row) => row.source.type === 'artifact_review'
+      );
+      expect(rows).toEqual([
+        expect.objectContaining({
+          id: `artifact-review:${currentReview.reviewId}`,
+          kind: 'artifact_review',
+          workspaceId: workspace.id,
+          threadId: thread.id,
+          turnId: turn.id,
+          reviewId: currentReview.reviewId,
+          artifactId: artifact.id,
+          artifactVersion: artifact.version,
+          source: {
+            type: 'artifact_review',
+            reviewId: currentReview.reviewId,
+            artifactId: artifact.id,
+            artifactVersion: artifact.version,
+            workspaceId: workspace.id,
+            threadId: thread.id,
+            turnId: turn.id,
+          },
+        }),
+      ]);
+      expect(rows[0]?.actions).toEqual([
+        {
+          kind: 'open_artifact',
+          label: 'Open artifact',
+          method: 'GET',
+          href: `/api/workspaces/${workspace.id}/artifacts/${artifact.id}`,
+        },
+      ]);
+
+      store.updateTurn(turn.id, { agentId: null });
+      const contradictoryResponse = await app.request(
+        `/api/app/workspaces/${workspace.id}/action-center`
+      );
+      expect(
+        ListHumanAttentionResponseSchema.parse(await contradictoryResponse.json()).items.some(
+          (row) => row.id === `artifact-review:${currentReview.reviewId}`
+        )
+      ).toBe(false);
+      store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
+
+      decideArtifactReview(workspaceDb, {
+        actorId: 'user_local',
+        artifactId: artifact.id,
+        artifactVersion: artifact.version,
+        decision: 'deferred',
+        feedback: null,
+        requestId: 'defer-current-review',
+        artifactContent: content,
+        artifactMediaType: 'text/markdown',
+        decidedAt: '2026-05-31T00:02:00.000Z',
+      });
+      const decidedResponse = await app.request(
+        `/api/app/workspaces/${workspace.id}/action-center`
+      );
+      expect(
+        ListHumanAttentionResponseSchema.parse(await decidedResponse.json()).items.some(
+          (row) => row.source.type === 'artifact_review'
+        )
+      ).toBe(false);
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('omits approval and question requests without an exact completed Gate tuple', async () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Invalid human input gates');
-    const approvalTurn = store.createTurn('ws_demo', thread.id, 'Incomplete approval request');
-    const questionTurn = store.createTurn('ws_demo', thread.id, 'Ungated question request');
+    const approvalTurn = store.createTurn('ws_demo', thread.id, 'Incomplete approval request', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    const questionTurn = store.createTurn('ws_demo', thread.id, 'Ungated question request', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const approval = store.createApproval({
       id: 'ap_incomplete_gate',
       workspaceId: 'ws_demo',
@@ -242,6 +659,7 @@ describe('action center app API', () => {
       turnId: questionTurn.id,
       type: 'user-input-request',
       status: 'completed',
+      responsibleUserId: 'user_local',
       userInputRequestId: 'ui_ungated_question',
       prompt: 'Choose a path.',
       questions: [
@@ -267,7 +685,10 @@ describe('action center app API', () => {
   it('omits approval and question rows after matching decisions and answers exist', async () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Resolved human input');
-    const turn = store.createTurn('ws_demo', thread.id, 'Run guarded work');
+    const turn = store.createTurn('ws_demo', thread.id, 'Run guarded work', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const approval = store.createApproval({
       id: 'ap_resolved',
       workspaceId: 'ws_demo',
@@ -301,6 +722,8 @@ describe('action center app API', () => {
       turnId: turn.id,
       type: 'approval-decision',
       status: 'completed',
+      actor: { kind: 'user', id: 'user_local' },
+      causationId: 'it_resolved_approval',
       approvalRequestId: approval.id,
       decision: 'granted',
       createdAt: timestamp,
@@ -313,6 +736,7 @@ describe('action center app API', () => {
       turnId: turn.id,
       type: 'user-input-request',
       status: 'completed',
+      responsibleUserId: 'user_local',
       userInputRequestId: 'ui_resolved',
       prompt: 'Choose a path.',
       questions: [
@@ -335,6 +759,8 @@ describe('action center app API', () => {
       turnId: turn.id,
       type: 'user-input-response',
       status: 'completed',
+      actor: { kind: 'user', id: 'user_local' },
+      causationId: 'it_resolved_question',
       userInputRequestId: 'ui_resolved',
       answers: { path: ['Use path A'] },
       createdAt: timestamp,
@@ -352,7 +778,23 @@ describe('action center app API', () => {
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Runtime attention');
-    const turn = store.createTurn('ws_demo', thread.id, 'Run goal worker');
+    const turn = store.createTurn('ws_demo', thread.id, 'Run goal worker', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    store.upsertAgent('ws_demo', {
+      id: 'agent_codex_host',
+      name: 'Codex Host Agent',
+      kind: 'coder',
+      status: 'enabled',
+      modelId: null,
+      skillIds: [],
+      profiles: [],
+      defaultProfileId: null,
+      capabilities: [],
+      sandboxSummary: null,
+      health: { status: 'unknown', message: null, checkedAt: null },
+    });
 
     try {
       upsertWorkerCheckpoint(workspaceDb, {
@@ -426,6 +868,14 @@ describe('action center app API', () => {
         summary: 'Review this artifact.',
         version: 1,
         content: { format: 'markdown', body: '# Report' },
+        contentDigest: `sha256:${createHash('sha256').update('# Report', 'utf8').digest('hex')}`,
+        lastMutationRequestId: 'action-center-artifact-demo-1',
+        origin: {
+          kind: 'turn-output',
+          threadId: thread.id,
+          turnId: turn.id,
+          requestId: 'action-center-artifact-demo-1',
+        },
         createdAt: timestamp,
         updatedAt: timestamp,
       });
@@ -440,34 +890,18 @@ describe('action center app API', () => {
         summary: '1 changed paths staged for human review.',
         version: 1,
         content: { format: 'json', body: '{"changeSet":{"id":"wcs_1"}}' },
+        contentDigest: `sha256:${createHash('sha256')
+          .update('{"changeSet":{"id":"wcs_1"}}', 'utf8')
+          .digest('hex')}`,
+        lastMutationRequestId: 'action-center-workspace-changes-1',
+        origin: {
+          kind: 'turn-output',
+          threadId: thread.id,
+          turnId: turn.id,
+          requestId: 'action-center-workspace-changes-1',
+        },
         createdAt: timestamp,
         updatedAt: timestamp,
-      });
-      store.createArtifact({
-        id: 'artifact_deferred',
-        workspaceId: 'ws_demo',
-        threadId: thread.id,
-        turnId: turn.id,
-        kind: 'report',
-        title: 'Deferred report',
-        status: 'ready',
-        summary: 'Already deferred.',
-        version: 1,
-        content: { format: 'markdown', body: '# Deferred' },
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      });
-      store.recordArtifactReviewDecision({
-        artifactId: 'artifact_deferred',
-        workspaceId: 'ws_demo',
-        threadId: thread.id,
-        turnId: turn.id,
-        status: 'deferred',
-        requestId: 'artifact-deferred-review',
-        message: 'Review later.',
-        decidedAt: timestamp,
-        followUpTurnId: null,
-        lifecycle: 'completed',
       });
       store.createKnowledgeProposal({
         id: 'knowledge_proposal_demo',
@@ -478,7 +912,7 @@ describe('action center app API', () => {
         createdAt: timestamp,
         updatedAt: timestamp,
       });
-      const app = createApp({ coreDb, store });
+      const app = createAuthorizedCoreApp(coreDb, store);
 
       const res = await app.request('/api/app/workspaces/ws_demo/action-center');
       const payload = ListHumanAttentionResponseSchema.parse(await res.json());
@@ -496,7 +930,6 @@ describe('action center app API', () => {
       });
       expect(byId.get('artifact:artifact_demo')).toBeUndefined();
       expect(byId.get('artifact:ar_workspace_changes_turn_1_swr_1')).toBeUndefined();
-      expect(byId.has('artifact:artifact_deferred')).toBe(false);
       expect(byId.get('knowledge:knowledge_proposal_demo')).toMatchObject({
         kind: 'knowledge_review',
         severity: 'needs_input',
@@ -514,6 +947,126 @@ describe('action center app API', () => {
           }),
         ]),
       });
+      expect(
+        byId.get('knowledge:knowledge_proposal_demo')?.actions.map((action) => action.kind)
+      ).toEqual(['accept_knowledge', 'reject_knowledge', 'defer']);
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('projects verified pending Goal input without exposing its content', async () => {
+    const coreDb = createCoreDb();
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Pending Goal input');
+    const activeTurnId = 'tu_action_center_steering';
+    const goalId = 'goal_action_center_steering';
+    const requestId = 'goal-steering-action-center';
+
+    try {
+      createGoalRecord(workspaceDb, {
+        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
+        goalId,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        title: 'Apply pending input',
+        objective: 'Keep the exact pending input private.',
+        status: 'running',
+        now: () => timestamp,
+      });
+      store.createTurn(
+        'ws_demo',
+        thread.id,
+        'Run the Goal.',
+        { kind: 'user', id: 'user_local' },
+        null,
+        {
+          turnId: activeTurnId,
+          startedAt: timestamp,
+        }
+      );
+      const pending = createPendingUserTurnRecord(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId,
+        activeTurnId,
+        requestId,
+        input: { kind: 'message' },
+        receivedAt: timestamp,
+      });
+      store.createItem({
+        id: pending.contentItemId,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        turnId: activeTurnId,
+        type: 'user-message',
+        status: 'completed',
+        actor: { kind: 'user', id: 'user_local' },
+        text: 'Private steering content.',
+        parentItemId: null,
+        causationId: requestId,
+        createdAt: timestamp,
+        completedAt: timestamp,
+      });
+      store.updateTurn(activeTurnId, {
+        status: 'completed',
+        completedAt: timestamp,
+        durationMs: 0,
+      });
+      updateGoalStatus(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId,
+        status: 'completed',
+        currentTaskId: null,
+        terminalStopReason: 'completed',
+        now: () => timestamp,
+      });
+      store.recordCommandRequest(
+        {
+          command: 'goal.steering.send',
+          requestId,
+          scope: { workspaceId: 'ws_demo', threadId: thread.id },
+          inputHash: `sha256:${'a'.repeat(64)}`,
+          response: { kind: 'pending_user_turn', id: pending.pendingTurnId },
+          createdAt: timestamp,
+        },
+        workspaceDb
+      );
+
+      const response = await createAuthorizedCoreApp(coreDb, store).request(
+        '/api/app/workspaces/ws_demo/action-center'
+      );
+      const row = ListHumanAttentionResponseSchema.parse(await response.json()).items.find(
+        (candidate) => candidate.id === `pending-input:${pending.pendingTurnId}`
+      );
+
+      expect(response.status).toBe(200);
+      expect(row).toMatchObject({
+        kind: 'pending_input',
+        itemId: pending.contentItemId,
+        goalId,
+        source: {
+          type: 'pending_input',
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          pendingTurnId: pending.pendingTurnId,
+          requestId,
+          contentItemId: pending.contentItemId,
+          goalId,
+          activeTurnId,
+          state: 'queued',
+        },
+        actions: [
+          expect.objectContaining({ kind: 'open_thread' }),
+          expect.objectContaining({ kind: 'run_follow_up' }),
+          expect.objectContaining({ kind: 'abort' }),
+        ],
+      });
+      expect(row?.source).not.toHaveProperty('message');
+      expect(row?.source).not.toHaveProperty('materialId');
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -528,6 +1081,7 @@ describe('action center app API', () => {
 
     try {
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_action_center',
         workspaceId: 'ws_demo',
         threadId: queuedThread.id,
@@ -540,6 +1094,7 @@ describe('action center app API', () => {
         now: () => timestamp,
       });
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_denied_action_center',
         workspaceId: 'ws_demo',
         threadId: deniedThread.id,
@@ -556,7 +1111,7 @@ describe('action center app API', () => {
         denialReason: 'no-healthy-target',
       });
 
-      const app = createApp({ coreDb, store });
+      const app = createAuthorizedCoreApp(coreDb, store);
       const res = await app.request('/api/app/workspaces/ws_demo/action-center');
       const byId = new Map(
         ListHumanAttentionResponseSchema.parse(await res.json()).items.map((row) => [row.id, row])
@@ -614,18 +1169,18 @@ describe('action center app API', () => {
     }
   });
 
-  it('omits another user scheduler admissions when workspace ids collide', async () => {
+  it('projects Workspace admissions across authenticated trigger actors', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
 
     try {
       createSchedulerAdmissionEntry(coreDb, {
         queueEntryId: 'queue_other_user_action_center',
-        userId: 'user_victim',
+        triggerActor: { kind: 'user', id: 'user_victim' },
         workspaceId: 'ws_demo',
         threadId: 'thread_victim',
         turnId: 'turn_victim',
-        turnInput: 'Keep another user scheduler row out of Action Center.',
+        turnInput: 'Show the Workspace admission to current authorized editors.',
         requestedAgentId: 'agent_codex_host',
         profileRef: 'agent_codex_host',
         priorityClass: 'interactive',
@@ -633,12 +1188,12 @@ describe('action center app API', () => {
         now: () => timestamp,
       });
 
-      const app = createApp({ coreDb, store });
+      const app = createAuthorizedCoreApp(coreDb, store);
       const res = await app.request('/api/app/workspaces/ws_demo/action-center');
       const items = ListHumanAttentionResponseSchema.parse(await res.json()).items;
 
       expect(res.status).toBe(200);
-      expect(items.map((row) => row.id)).not.toContain(
+      expect(items.map((row) => row.id)).toContain(
         'scheduler-admission:queue_other_user_action_center'
       );
     } finally {
@@ -650,7 +1205,10 @@ describe('action center app API', () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Recovery evidence');
-    const turn = store.createTurn('ws_demo', thread.id, 'Recover worker');
+    const turn = store.createTurn('ws_demo', thread.id, 'Recover worker', {
+      kind: 'user',
+      id: 'user_local',
+    });
 
     try {
       coreDb.sqlite
@@ -728,7 +1286,7 @@ describe('action center app API', () => {
           timestamp
         );
 
-      const app = createApp({ coreDb, store });
+      const app = createAuthorizedCoreApp(coreDb, store);
       const res = await app.request('/api/app/workspaces/ws_demo/action-center');
       const byId = new Map(
         ListHumanAttentionResponseSchema.parse(await res.json()).items.map((row) => [row.id, row])
@@ -771,7 +1329,10 @@ describe('action center app API', () => {
   it('advertises the actual turn input route for question actions', async () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Question route metadata');
-    const turn = store.createTurn('ws_demo', thread.id, 'Ask before continuing');
+    const turn = store.createTurn('ws_demo', thread.id, 'Ask before continuing', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const questionItem = store.createItem({
       id: 'it_question_route',
       workspaceId: 'ws_demo',
@@ -779,6 +1340,7 @@ describe('action center app API', () => {
       turnId: turn.id,
       type: 'user-input-request',
       status: 'completed',
+      responsibleUserId: 'user_local',
       userInputRequestId: 'ui_question_route',
       prompt: 'Choose the next action.',
       questions: [
@@ -824,7 +1386,10 @@ describe('action center app API', () => {
 
     try {
       for (const thread of [firstThread, secondThread]) {
-        const turn = store.createTurn('ws_demo', thread.id, 'Review duplicated ids');
+        const turn = store.createTurn('ws_demo', thread.id, 'Review duplicated ids', {
+          kind: 'user',
+          id: 'user_local',
+        });
 
         createGoalRecord(workspaceDb, {
           workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
@@ -882,7 +1447,7 @@ describe('action center app API', () => {
         });
       }
 
-      const app = createApp({ coreDb, store });
+      const app = createAuthorizedCoreApp(coreDb, store);
       const res = await app.request('/api/app/workspaces/ws_demo/action-center');
       const rowIds = ListHumanAttentionResponseSchema.parse(await res.json()).items.map(
         (row) => row.id
@@ -933,7 +1498,8 @@ describe('action center app API', () => {
         const turn = store.createTurn(
           'ws_demo',
           scenario.thread.id,
-          `Review ${scenario.id} Goal output`
+          `Review ${scenario.id} Goal output`,
+          { kind: 'user', id: 'user_local' }
         );
         createGoalRecord(workspaceDb, {
           workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
@@ -993,7 +1559,7 @@ describe('action center app API', () => {
         });
       }
 
-      const app = createApp({ coreDb, store });
+      const app = createAuthorizedCoreApp(coreDb, store);
       const res = await app.request('/api/app/workspaces/ws_demo/action-center');
       const reviewRows = ListHumanAttentionResponseSchema.parse(await res.json()).items.filter(
         (row) => row.source.type === 'goal_review'
@@ -1046,7 +1612,10 @@ describe('action center app API', () => {
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Resolved goal review');
-    const turn = store.createTurn('ws_demo', thread.id, 'Review then resolve');
+    const turn = store.createTurn('ws_demo', thread.id, 'Review then resolve', {
+      kind: 'user',
+      id: 'user_local',
+    });
 
     try {
       const goal = createGoalRecord(workspaceDb, {
@@ -1126,7 +1695,7 @@ describe('action center app API', () => {
         now: () => timestamp,
       });
 
-      const app = createApp({ coreDb, store });
+      const app = createAuthorizedCoreApp(coreDb, store);
       const res = await app.request('/api/app/workspaces/ws_demo/action-center');
       const rowIds = ListHumanAttentionResponseSchema.parse(await res.json()).items.map(
         (row) => row.id
@@ -1204,7 +1773,7 @@ describe('action center app API', () => {
         workspaceDb.sqlite.close();
       }
 
-      const app = createApp({ coreDb, store });
+      const app = createAuthorizedCoreApp(coreDb, store);
       const res = await app.request(`/api/app/workspaces/${workspace.id}/action-center`);
       const row = ListHumanAttentionResponseSchema.parse(await res.json()).items.find(
         (item) => item.id === 'workspace-review:swr_durable_review'
@@ -1236,29 +1805,63 @@ describe('action center app API', () => {
     }
   });
 
-  it('omits backing artifact rows after a durable workspace review is resolved', async () => {
+  it('keeps contradictory Review owners inspect-only after the workspace review is resolved', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
     const workspace = store.createWorkspace('Resolved durable workspace review');
+    const thread = store.createThread(workspace.id, 'Resolved workspace review worker');
+    const turn = store.createTurn(
+      workspace.id,
+      thread.id,
+      'Produce resolved workspace changes',
+      { kind: 'user', id: 'user_local' },
+      null,
+      {
+        turnId: 'turn_resolved',
+      }
+    );
     const artifactId = 'ar_workspace_changes_turn_resolved_swr_resolved';
     const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
+    const artifactBody = '{}';
+    const artifactRequestId = 'action-center-resolved-workspace-review-output-1';
+    const artifactContentDigest = `sha256:${createHash('sha256')
+      .update(artifactBody, 'utf8')
+      .digest('hex')}`;
     const patchText = 'diff --git a/docs/resolved.md b/docs/resolved.md\n';
     const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
 
     try {
-      store.createArtifact({
+      const artifact = store.createArtifact({
         id: artifactId,
         workspaceId: workspace.id,
-        threadId: null,
-        turnId: null,
+        threadId: thread.id,
+        turnId: turn.id,
         kind: 'diff',
         title: 'Workspace changes ready for review',
         status: 'ready',
         summary: 'Resolved workspace changes.',
         version: 1,
-        content: { format: 'json', body: '{}' },
+        content: { format: 'json', body: artifactBody },
+        contentDigest: artifactContentDigest,
+        lastMutationRequestId: artifactRequestId,
+        origin: {
+          kind: 'turn-output',
+          threadId: thread.id,
+          turnId: turn.id,
+          requestId: artifactRequestId,
+        },
         createdAt: timestamp,
         updatedAt: timestamp,
+      });
+      const genericReview = createArtifactReview(workspaceDb, {
+        artifactId: artifact.id,
+        artifactVersion: artifact.version,
+        contentDigest: artifact.contentDigest,
+        sourceThreadId: thread.id,
+        sourceTurnId: turn.id,
+        sourceAgentId: 'agent_codex_host',
+        materialProposal: null,
+        createdAt: timestamp,
       });
       recordTestWorkspaceSyncReview(workspaceDb, {
         item: {
@@ -1309,6 +1912,29 @@ describe('action center app API', () => {
           },
         },
       });
+      const app = createAuthorizedCoreApp(coreDb, store);
+      const pendingResponse = await app.request(
+        `/api/app/workspaces/${workspace.id}/action-center`
+      );
+      const pendingRows = ListHumanAttentionResponseSchema.parse(
+        await pendingResponse.json()
+      ).items;
+      const pendingWorkspaceReview = pendingRows.find(
+        (row) => row.id === 'workspace-review:swr_resolved'
+      );
+
+      expect(pendingRows.map((row) => row.id)).not.toContain(
+        `artifact-review:${genericReview.reviewId}`
+      );
+      expect(pendingWorkspaceReview?.actions[0]).toMatchObject({ kind: 'open_artifact' });
+      expect(pendingWorkspaceReview?.actions[0]?.disabled).not.toBe(true);
+      expect(
+        pendingWorkspaceReview?.actions
+          .slice(1)
+          .every(
+            (action) => action.disabled === true && action.reason?.includes('recovery_required')
+          )
+      ).toBe(true);
       updateWorkspaceSyncReviewDecision(workspaceDb, {
         requestId: 'resolve-backing-artifact',
         reviewId: 'swr_resolved',
@@ -1317,14 +1943,21 @@ describe('action center app API', () => {
         workspaceId: workspace.id,
       });
 
-      const app = createApp({ coreDb, store });
       const response = await app.request(`/api/app/workspaces/${workspace.id}/action-center`);
-      const rowIds = ListHumanAttentionResponseSchema.parse(await response.json()).items.map(
-        (row) => row.id
+      const resolvedRows = ListHumanAttentionResponseSchema.parse(await response.json()).items;
+      const rowIds = resolvedRows.map((row) => row.id);
+      const resolvedWorkspaceReview = resolvedRows.find(
+        (row) => row.id === 'workspace-review:swr_resolved'
       );
 
-      expect(rowIds).not.toContain(`artifact:${artifactId}`);
-      expect(rowIds).not.toContain('workspace-review:swr_resolved');
+      expect(rowIds).not.toContain(`artifact-review:${genericReview.reviewId}`);
+      expect(resolvedWorkspaceReview).toMatchObject({
+        severity: 'risk',
+        source: { type: 'workspace_review', status: 'rejected' },
+      });
+      expect(resolvedWorkspaceReview?.actions).toEqual([
+        expect.objectContaining({ kind: 'open_artifact', method: 'GET' }),
+      ]);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -1382,7 +2015,7 @@ describe('action center app API', () => {
         workspaceDb.sqlite.close();
       }
 
-      const app = createApp({ coreDb, store });
+      const app = createAuthorizedCoreApp(coreDb, store);
       const res = await app.request(`/api/app/workspaces/${workspace.id}/action-center`);
       const rows = ListHumanAttentionResponseSchema.parse(await res.json()).items;
       const row = rows.find((item) => item.id === 'workspace-recovery:wrr_requires_human');

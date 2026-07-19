@@ -18,8 +18,6 @@ import { validateRepositoryPath } from './repository-validation.js';
 export interface SyncRepositoryDataSourceCatalogInput {
   /** Data root that owns the workspace tree. */
   readonly dataRoot: string;
-  /** User id that owns the workspace. */
-  readonly userId: string;
   /** Workspace id that owns the repository resource. */
   readonly workspaceId: string;
   /** Repository resource to mirror as a catalog source. */
@@ -29,11 +27,11 @@ export interface SyncRepositoryDataSourceCatalogInput {
 /**
  * Mirrors one repository resource into the workspace data source catalog without exposing host paths.
  *
- * @param input Data root, owner ids, and repository record to mirror.
+ * @param input Data root, Workspace id, and repository record to mirror.
  * @returns Parsed catalog after the repository source has been written.
  */
 export function syncRepositoryDataSourceCatalog(input: SyncRepositoryDataSourceCatalogInput) {
-  const catalogPath = dataSourceCatalogPath(input.dataRoot, input.userId, input.workspaceId);
+  const catalogPath = dataSourceCatalogPath(input.dataRoot, input.workspaceId);
   const existing = existsSync(catalogPath)
     ? parseWorkspaceDataSourceCatalog(
         parseJsoncObject(readFileSync(catalogPath, 'utf8'), catalogPath)
@@ -72,12 +70,11 @@ export function syncRepositoryDataSourceCatalog(input: SyncRepositoryDataSourceC
  * @param coreDb Server-scope database whose data root owns the workspace tree.
  */
 export function backfillRepositoryDataSourceCatalogs(coreDb: CoreDb): void {
-  for (const userId of listChildDirectories(join(coreDb.dataRoot, 'users'))) {
-    for (const workspaceId of listChildDirectories(
-      join(coreDb.dataRoot, 'users', userId, 'workspaces')
-    )) {
-      syncWorkspaceRepositorySources(coreDb.dataRoot, userId, workspaceId);
+  for (const workspaceId of listChildDirectories(join(coreDb.dataRoot, 'workspaces'))) {
+    if (workspaceId === '.staging') {
+      continue;
     }
+    syncWorkspaceRepositorySources(coreDb.dataRoot, workspaceId);
   }
 }
 
@@ -85,15 +82,10 @@ export function backfillRepositoryDataSourceCatalogs(coreDb: CoreDb): void {
  * Mirrors repository resources from one workspace database into its source catalog.
  *
  * @param dataRoot Data root that owns the workspace tree.
- * @param userId User id that owns the workspace.
  * @param workspaceId Workspace id to inspect.
  */
-function syncWorkspaceRepositorySources(
-  dataRoot: string,
-  userId: string,
-  workspaceId: string
-): void {
-  const workspaceDb = openWorkspaceDb(dataRoot, userId, workspaceId);
+function syncWorkspaceRepositorySources(dataRoot: string, workspaceId: string): void {
+  const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
 
   try {
     applyScopedMigrations(workspaceDb);
@@ -114,7 +106,6 @@ function syncRepositoryRowsFromWorkspaceDb(workspaceDb: WorkspaceDb): void {
   for (const record of records) {
     syncRepositoryDataSourceCatalog({
       dataRoot: workspaceDb.dataRoot,
-      userId: workspaceDb.userId,
       workspaceId: workspaceDb.workspaceId,
       record,
     });
@@ -125,12 +116,11 @@ function syncRepositoryRowsFromWorkspaceDb(workspaceDb: WorkspaceDb): void {
  * Returns the canonical data-source catalog path for one workspace.
  *
  * @param dataRoot Data root that owns the workspace tree.
- * @param userId User id that owns the workspace.
  * @param workspaceId Workspace id to resolve.
  * @returns Absolute catalog path.
  */
-function dataSourceCatalogPath(dataRoot: string, userId: string, workspaceId: string): string {
-  return join(dataRoot, 'users', userId, 'workspaces', workspaceId, 'config', 'data-sources.jsonc');
+function dataSourceCatalogPath(dataRoot: string, workspaceId: string): string {
+  return join(dataRoot, 'workspaces', workspaceId, 'config', 'data-sources.jsonc');
 }
 
 /**

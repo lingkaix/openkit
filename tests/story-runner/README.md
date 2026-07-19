@@ -84,8 +84,8 @@ If the local sandbox cannot bind localhost or launch Chromium, rerun the affecte
 
 ## Files
 
-- `story-metadata.mjs`: scalar front matter parser and metadata validator.
-- `story-metadata.test.mjs`: parser and validator tests.
+- `story-metadata.mjs`: scalar front matter parser, metadata validator with a closed field set, the owning `parseStoryContracts` helper for the comma-separated contracts convention, and the normative body section validator. `scripts/validate-story-schema.mjs` imports these rules for the repository-level check.
+- `story-metadata.test.mjs`: parser, validator, contracts helper, and body section tests.
 - `real-codex-support.mjs`: shared credential streaming, strict runtime-config, deadline, owner-only evidence, build, and redaction guards used by the surviving real-worker runners.
 - `real-codex-support.test.mjs`: focused security, runtime-config, and process-deadline coverage for the shared support.
 - `pi-ai-real-provider-runner.mjs`: opt-in real provider gateway L6 runner for public Chat Completions, streaming, capability usage evidence, and redaction checks against an existing NanoCore deployment.

@@ -1,7 +1,7 @@
 # Worker Agent Adapter Boundary Change Plan
 
 Type: change-plan
-Status: in-progress
+Status: verified
 Date: 2026-07-16
 
 ## Intent
@@ -60,7 +60,7 @@ The shared supervisor retains AEP loading, direct worker-control readiness, hear
 
 ## Exact Declarative Inputs
 
-S22 owns these authored `runtime` fields: opaque `kind`, opaque `adapter`, optional pinned `version`, governed `image.ref` with pull policy, and a non-empty list of runtime binary ids and absolute worker-local paths used for supply and policy. Nested `profiles` remain behavior selections and are not runtime records.
+S22 owns these authored `runtime` fields: opaque `kind`, opaque `adapter`, optional pinned `version`, governed `image.ref` with pull policy, and a non-empty list of runtime binary ids and absolute worker-local paths used for supply and policy. Nested `profiles` remain behavior selections and are not runtime records. `mode`, `deployment`, `transport`, and unstructured `runtimeConfig` are not AgentManifest fields: scheduler and backend configuration own concrete placement and remote OpenShell Gateway topology, while native configuration remains adapter-local and bounded by the no-file contract.
 
 The authored sandbox section may declare exact network grants, credential declarations, and backend requirements. Every network binary path must match a declared runtime binary. NanoCore resolves those declarations into the AEP; a backend environment variable or built-in endpoint must not expand the effective allowlist.
 
@@ -93,6 +93,20 @@ Codex provenance remains adapter-local capture plus the separately owned S33 Nan
 
 Native server, RPC, live steering, follow-up, approvals, questions, live token projection, and session continuation are not implemented or advertised.
 
+## Provider Route Support
+
+There is no universal native projection for an AEP LLM route. Each adapter must prove that its pinned runtime can represent the exact route without a generated native config file, secret-bearing argv, ambient authority, provider fallback, or model fallback; otherwise launch fails closed as unsupported.
+
+| Runtime | Trusted NanoCore relay | Direct provider-compatible route |
+| --- | --- | --- |
+| Codex `0.144.1` | Supported only through the fixed adapter-owned `openkit-worker-inference` provider projected by `-c`, with `OPENKIT_WORKER_INFERENCE_TOKEN`, and only for the Responses API. | Unsupported in this change. The current AEP route does not carry the exact direct wire protocol and credential target needed for a truthful projection. |
+| OpenCode `1.18.1` | Supported through non-secret `OPENCODE_CONFIG_CONTENT` containing one fixed adapter-owned provider and one model; the image must prove `/etc/opencode` is absent. | Unsupported in this change. The adapter does not infer a native provider, SDK, wire protocol, or credential target from an AEP provider id. |
+| Pi `0.80.7` | Unsupported and deferred because the pinned runtime requires `models.json`, while the accepted adapter contract has no generated-file envelope. | Supported only for the pinned `anthropic` / `claude-sonnet-4-5` catalog pair with the manifest-declared `ANTHROPIC_API_KEY` credential binding. |
+
+Trusted-relay authority and direct-provider authority are mutually exclusive. A relay package receives only the relay placeholder and relay egress; the current Pi direct package receives only its declared provider credential and exact direct endpoint egress. No adapter may substitute one route for the other. Broader direct-provider support requires a later owning design rather than new generic route fields in this change.
+
+Pi `collect` must also prove that the final correlated terminal message reports the exact provider/model requested by the launch plan. A missing or different pair fails closed rather than accepting Pi's fuzzy or synthetic model resolution.
+
 ## Frozen Scope
 
 In scope:
@@ -122,10 +136,10 @@ Out of scope:
 
 ## Verification
 
-- Config-schema and NanoCore tests prove one manifest resolves adapter, image, binaries, network policy, and provider/model inputs into one AEP without a supported-runtime switch.
+- Config-schema and NanoCore tests prove one manifest resolves adapter, image, binaries, network policy, and provider/model inputs into one AEP without a supported-runtime switch; top-level `mode`, `deployment`, `transport`, and unstructured `runtimeConfig` are rejected, while remote OpenShell Gateway topology still resolves from server and backend configuration.
 - Worker-shim tests run shared supervisor invariants once and native command/result fixtures only in each adapter.
 - Security tests prove no backend-added endpoint remains and no App API schema or route, gateway method, durable command shape, rebuild path, or worker shim accepts or executes arbitrary worker commands.
-- Image catalog and smoke tests prove one native runtime, the generic shim, non-root execution, pinned versions, and bounded machine-readable mode for each image.
+- Image catalog and smoke tests prove one native runtime, the generic shim, non-root execution, pinned versions, and bounded machine-readable mode for each image, including absence of `/etc/opencode` and exact Pi manifest-advertised provider/model catalog pairs.
 - The fourth-runtime fixture changes no NanoCore, canonical protocol, governance, or shared-supervisor behavior.
 - Existing worker-control, exact reconnect, whole-Cell recycle, workspace capture, and Codex provenance suites remain green without expanded matrices.
 
@@ -140,6 +154,7 @@ When a native runtime cannot satisfy the bounded contract, report it unsupported
 - 2026-07-16: The change plan and three adapter specifications were accepted under a docs-only decision.
 - 2026-07-18: The bounded G03 preamble completed. S21 was superseded into C13/S20/S22/S23/S25; two security gaps and the frozen adapter/AEP/image defects are in scope; unrelated scheduler, continuity, and credential-helper findings were dispatched rather than absorbed.
 - 2026-07-18: The focused adapter contract was narrowed before implementation: current adapters return no generated files, exactly one NanoCore-resolved LLM route reaches each launch, and the pinned Pi result is accepted only after its final settled lifecycle correlation. No config-artifact envelope, route selector, or fallback enters the shared harness.
+- 2026-07-18: Pinned upstream route research found no universal projection. Codex and OpenCode can consume the trusted relay through adapter-local non-secret configuration, Pi cannot under the no-generated-file contract, and direct-provider authority remains mutually exclusive with relay authority. Legacy manifest `mode`, `deployment`, and `transport` ownership is rejected; remote OpenShell Gateway selection remains backend topology.
 
 ### 2026-07-18: Security Blocker Closeout
 
@@ -149,10 +164,26 @@ When a native runtime cannot satisfy the bounded contract, report it unsupported
 - Verification: focused App API, Core Client, Skill, worker-shim, NanoCore, OpenAPI, rebuild, network, provider, typecheck, lint, build, and remnant scans passed; the final provider slice passed 131 focused tests.
 - Remaining: focused manifest/AEP, generic shim, adapter, fourth-runtime, image, stock OpenShell, and A1 work in Steps 3-6.
 
+### 2026-07-18: Adapter And A1 Evidence
+
+- Result: strict AgentManifest input now resolves through `ResolvedAgentSetup` into one immutable AEP; closed runtime compatibility, inferred selectors, and duplicate catalog launch branches are deleted.
+- Worker boundary: the existing supervisor launches one generic shim with a static Codex, OpenCode, or Pi adapter; focused conformance, bounded-output, route, redaction, cancellation, fourth-runtime, and image tests cover the accepted contract.
+- Images: the three pinned non-root arm64 worker images built and passed their own smoke checks on A1.
+- Stock OpenShell: unmodified OpenShell `0.0.80` created a disposable sandbox, uploaded the package, ran the generic shim dry-run, and removed the sandbox with `--no-keep` for all three images.
+- Evidence boundary: the A1 check proves image contents, adapter preparation, stock containment, upload, and cleanup only; it does not prove worker-control readiness, heartbeat, interrupt, reconnect, recovery, or a real provider call.
+- Remaining: rerun the affected-package and repository exit gates, including the existing worker-control, reconnect, recovery, recycle, workspace-capture, and provenance suites; G04/WP-3 owns real-provider evidence.
+
+### 2026-07-18: WP-2 Closeout
+
+- Local verification: the full NanoCore suite passed outside the restricted sandbox with 200 files passed and 1 skipped, and 1,973 tests passed and 3 skipped; NanoCore typecheck and build also passed.
+- Package verification: worker-shim passed 159 tests, config-schema 117 tests, App API schemas 62 tests, and Docker contracts 13 tests.
+- Repository verification: `check:repo` and `git diff --check` passed; the existing control, reconnect, recovery, recycle, workspace-capture, and provenance coverage remained green without a new runner or matrix.
+- Result: every frozen WP-2/G03 exit criterion is satisfied. Real-provider acceptance was not part of this evidence and remains G04/WP-3 work.
+
 ## Implementation Summary
 
-In progress. The G03 preamble, both deletion-first security blockers, and focused adapter-contract precision are complete; test-first manifest/AEP and generic-shim implementation is next. Adapter, image, fourth-runtime, stock OpenShell, and A1 exit evidence remain open.
+Complete and verified. One strict manifest-to-setup-to-AEP path, the generic shim and static adapter registry, three adapters, three governed images, and the fourth-runtime proof are landed without a replacement runtime, control plane, recovery workflow, plugin system, or test platform. The existing control, reconnect, recovery, recycle, workspace-capture, and provenance suites remain green; real-provider evidence remains G04/WP-3 work.
 
 ## Final Verification
 
-Pending.
+Passed. A1 built and smoked all three arm64 images, and stock OpenShell `0.0.80` passed create, upload, generic-shim dry-run, and `--no-keep` cleanup for each image. The full NanoCore suite passed outside the restricted sandbox with 200 files passed and 1 skipped, and 1,973 tests passed and 3 skipped; NanoCore typecheck/build, worker-shim 159, config-schema 117, App API schemas 62, Docker contracts 13, `check:repo`, and `git diff --check` also passed. The A1 evidence does not claim worker-control lifecycle, recovery, or real-provider acceptance.

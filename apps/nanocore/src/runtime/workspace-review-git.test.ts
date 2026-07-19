@@ -100,7 +100,10 @@ function createFixture(
   const store = new FsStore();
   const workspace = store.createWorkspace('Git review fixture');
   const thread = store.createThread(workspace.id, 'Review changes');
-  const turn = store.createTurn(workspace.id, thread.id, 'Prepare a patch');
+  const turn = store.createTurn(workspace.id, thread.id, 'Prepare a patch', {
+    kind: 'user',
+    id: 'user_local',
+  });
   const timestamp = '2026-07-11T00:00:00.000Z';
   const review = WorkspaceSyncReviewItemSchema.parse({
     artifactId: 'ar_git_review_1',
@@ -635,6 +638,9 @@ describe('workspace review Git operations', () => {
     expect(result.commitIds).toHaveLength(1);
     expect(persistedResult).toEqual(result);
     expect(git(fixture.repositoryPath, ['rev-parse', 'HEAD'])).toBe(result.commitIds[0]);
+    expect(
+      git(fixture.repositoryPath, ['show', '-s', '--format=%aI', result.commitIds[0] ?? ''])
+    ).toBe('2026-07-11T00:02:30Z');
     expect(git(fixture.repositoryPath, ['diff', '--cached', '--name-only'])).toBe('unrelated.txt');
     expect(readFileSync(join(fixture.repositoryPath, 'README.md'), 'utf8')).toBe(
       '# Demo\n\nReviewed.\n'
@@ -1305,7 +1311,8 @@ describe('workspace review Git declared metadata integrity', () => {
       const foreignTurn = fixture.store.createTurn(
         foreignWorkspace.id,
         foreignThread.id,
-        'Foreign turn'
+        'Foreign turn',
+        { kind: 'user', id: 'user_local' }
       );
       evidenceRefs = [{ kind: 'worker', ref: foreignTurn.id }];
     }

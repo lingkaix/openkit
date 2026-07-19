@@ -30,6 +30,36 @@
       "localTag": "openkit/worker-codex:dev"
     },
     {
+      "id": "worker-opencode",
+      "repository": "openkit-worker-opencode",
+      "dockerfile": "containers/worker-opencode/Dockerfile",
+      "context": ".",
+      "kind": "worker",
+      "runtime": "opencode",
+      "release": true,
+      "workerContract": "openkit-worker-v1",
+      "baseImage": "node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5",
+      "platforms": ["linux/amd64", "linux/arm64"],
+      "smoke": "containers/worker-opencode/smoke.sh",
+      "smokeCommand": "openkit-worker-opencode-smoke",
+      "localTag": "openkit/worker-opencode:dev"
+    },
+    {
+      "id": "worker-pi",
+      "repository": "openkit-worker-pi",
+      "dockerfile": "containers/worker-pi/Dockerfile",
+      "context": ".",
+      "kind": "worker",
+      "runtime": "pi",
+      "release": true,
+      "workerContract": "openkit-worker-v1",
+      "baseImage": "node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5",
+      "platforms": ["linux/amd64", "linux/arm64"],
+      "smoke": "containers/worker-pi/smoke.sh",
+      "smokeCommand": "openkit-worker-pi-smoke",
+      "localTag": "openkit/worker-pi:dev"
+    },
+    {
       "id": "dev-e2e",
       "repository": "openkit-dev-e2e",
       "dockerfile": "containers/dev-e2e/Dockerfile",

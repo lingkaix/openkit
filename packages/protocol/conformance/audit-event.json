@@ -1,10 +1,10 @@
 {
-  "protocolVersion": "0.3.0",
+  "protocolVersion": "0.4.0",
   "schema": "audit-event",
   "data": {
     "id": "0190f4c8-0014-7abc-8def-000000000014",
     "workspaceId": "0190f4c8-0001-7abc-8def-000000000001",
-    "protocolVersion": "0.3.0",
+    "protocolVersion": "0.4.0",
     "threadId": "0190f4c8-0002-7abc-8def-000000000002",
     "turnId": "0190f4c8-0003-7abc-8def-000000000003",
     "itemId": "0190f4c8-0004-7abc-8def-000000000004",
@@ -12,11 +12,21 @@
     "permissionDecisionId": "pd_0190f4c8",
     "vaultGrantId": "grant_0190f4c8",
     "requestId": "0190f4c8-0011-7abc-8def-000000000011",
+    "actor": {
+      "kind": "user",
+      "id": "user_owner"
+    },
+    "subject": {
+      "kind": "automation",
+      "id": "automation_turn_start",
+      "responsibleUserId": "user_owner"
+    },
     "agentId": "0190f4c8-0008-7abc-8def-000000000008",
     "agentSessionId": "0190f4c8-0007-7abc-8def-000000000007",
     "category": "command",
     "action": "turn.start",
     "resource": "turn",
+    "resourceRevision": 2,
     "outcome": "succeeded",
     "severity": "info",
     "summary": "Turn start command accepted.",

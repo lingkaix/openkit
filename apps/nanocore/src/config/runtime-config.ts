@@ -18,7 +18,7 @@ import {
   type WorkspaceDataSourceCatalog,
 } from '@openkit/config-schema';
 import { z } from 'zod';
-import type { AgentManifest, AuthoredAgentConfig } from '../agents/manifest.js';
+import type { AgentManifest } from '../agents/manifest.js';
 
 import { loadProviderRegistryFromDataRoot } from '../providers/data-root.js';
 import type { ProviderDiagnosticsSnapshot } from '../providers/diagnostics.js';
@@ -48,7 +48,6 @@ interface RuntimeConfigSnapshotConstructionInput {
   openKitConfig: OpenKitConfig;
   providerRegistry: ProviderRegistry;
   providerDiagnostics: ProviderDiagnosticsSnapshot;
-  agentConfigs: AuthoredAgentConfig[];
   agentManifests: AgentManifest[];
   workspaceConfigs: LoadedWorkspaceConfig[];
   workspaceDataSourceCatalogs: LoadedWorkspaceDataSourceCatalog[];
@@ -71,11 +70,9 @@ interface RuntimeConfigSource {
 }
 
 /**
- * Parsed workspace config loaded from a user-owned workspace path.
+ * Parsed workspace config loaded from its canonical Workspace path.
  */
 interface LoadedWorkspaceConfig {
-  /** User id that owns this workspace tree. */
-  userId: string;
   /** Workspace id that owns this config. */
   workspaceId: string;
   /** Absolute source path loaded from disk. */
@@ -85,11 +82,9 @@ interface LoadedWorkspaceConfig {
 }
 
 /**
- * Parsed workspace data source catalog loaded from a user-owned workspace path.
+ * Parsed workspace data source catalog loaded from its canonical Workspace path.
  */
 interface LoadedWorkspaceDataSourceCatalog {
-  /** User id that owns this workspace tree. */
-  userId: string;
   /** Workspace id that owns this catalog. */
   workspaceId: string;
   /** Absolute source path loaded from disk. */
@@ -130,13 +125,11 @@ export interface RuntimeConfigSnapshot {
   providerRegistry: ProviderRegistry;
   /** Redacted provider diagnostics. */
   providerDiagnostics: ProviderDiagnosticsSnapshot;
-  /** Authored agent configs. */
-  agentConfigs: AuthoredAgentConfig[];
-  /** Runtime agent manifests. */
+  /** Authored agent manifests. */
   agentManifests: AgentManifest[];
-  /** Parsed workspace configs discovered under DATA_ROOT/users. */
+  /** Parsed workspace configs discovered under DATA_ROOT/workspaces. */
   workspaceConfigs: LoadedWorkspaceConfig[];
-  /** Parsed workspace data source catalogs discovered under DATA_ROOT/users. */
+  /** Parsed workspace data source catalogs discovered under DATA_ROOT/workspaces. */
   workspaceDataSourceCatalogs: LoadedWorkspaceDataSourceCatalog[];
   /** Runtime config diagnostics. */
   diagnostics: RuntimeConfigDiagnostic[];
@@ -174,9 +167,7 @@ interface RuntimeConfigSnapshotInput {
   providerRegistry?: ProviderRegistry;
   /** Provider diagnostics. */
   providerDiagnostics?: ProviderDiagnosticsSnapshot;
-  /** Authored agent configs. */
-  agentConfigs?: AuthoredAgentConfig[];
-  /** Runtime agent manifests. */
+  /** Authored agent manifests. */
   agentManifests?: AgentManifest[];
   /** Parsed workspace configs. */
   workspaceConfigs?: LoadedWorkspaceConfig[];
@@ -242,7 +233,6 @@ export function loadRuntimeConfig(
     openKitConfig: configLoadResult.config,
     providerRegistry: providerLoadResult.providerRegistry,
     providerDiagnostics: providerLoadResult.providerDiagnostics,
-    agentConfigs: agentLoadResult.configs,
     agentManifests: agentLoadResult.manifests,
     workspaceConfigs,
     workspaceDataSourceCatalogs,
@@ -255,10 +245,10 @@ export function loadRuntimeConfig(
       },
       { kind: 'provider-profiles', path: 'DATA_ROOT/config/providers/*.provider.jsonc' },
       { kind: 'agent-configs', path: 'DATA_ROOT/config/agents/*.agent.jsonc' },
-      { kind: 'workspace-configs', path: 'DATA_ROOT/users/*/workspaces/*/config/workspace.jsonc' },
+      { kind: 'workspace-configs', path: 'DATA_ROOT/workspaces/*/config/workspace.jsonc' },
       {
         kind: 'workspace-data-source-catalogs',
-        path: 'DATA_ROOT/users/*/workspaces/*/config/data-sources.jsonc',
+        path: 'DATA_ROOT/workspaces/*/config/data-sources.jsonc',
       },
     ],
     ...(options.loadedAt ? { loadedAt: options.loadedAt } : {}),
@@ -427,7 +417,6 @@ function applySafeRuntimeConfigReload(
       providerDiagnostics: restartPaths.has('providers')
         ? previous.providerDiagnostics
         : next.providerDiagnostics,
-      agentConfigs: restartPaths.has('agents') ? previous.agentConfigs : next.agentConfigs,
       agentManifests: restartPaths.has('agents') ? previous.agentManifests : next.agentManifests,
       workspaceConfigs: next.workspaceConfigs,
       workspaceDataSourceCatalogs: next.workspaceDataSourceCatalogs,
@@ -557,9 +546,7 @@ export function createInMemoryRuntimeConfigSnapshot(
       ? null
       : loadProviderRegistryFromDataRoot(input.dataRoot, input.openKitConfig ?? {});
   const agentState =
-    (input.agentConfigs && input.agentManifests) || !input.dataRoot
-      ? null
-      : loadAgentManifests(input.dataRoot);
+    input.agentManifests || !input.dataRoot ? null : loadAgentManifests(input.dataRoot);
 
   return createRuntimeConfigSnapshot({
     dataRoot: input.dataRoot,
@@ -570,7 +557,6 @@ export function createInMemoryRuntimeConfigSnapshot(
       input.providerDiagnostics ??
       providerState?.providerDiagnostics ??
       createProviderDiagnostics({ profiles: [], diagnostics: [] }),
-    agentConfigs: input.agentConfigs ?? agentState?.configs ?? [],
     agentManifests: input.agentManifests ?? agentState?.manifests ?? [],
     workspaceConfigs: input.workspaceConfigs ?? [],
     workspaceDataSourceCatalogs: input.workspaceDataSourceCatalogs ?? [],
@@ -691,20 +677,14 @@ export function diffRuntimeConfig(
  * Finds a parsed workspace config in one runtime snapshot.
  *
  * @param snapshot Runtime config snapshot to search.
- * @param userId User id that owns the workspace tree.
  * @param workspaceId Workspace id to find.
  * @returns Loaded workspace config, or null when no file exists.
  */
 export function findWorkspaceConfig(
   snapshot: RuntimeConfigSnapshot,
-  userId: string,
   workspaceId: string
 ): LoadedWorkspaceConfig | null {
-  return (
-    snapshot.workspaceConfigs.find(
-      (config) => config.userId === userId && config.workspaceId === workspaceId
-    ) ?? null
-  );
+  return snapshot.workspaceConfigs.find((config) => config.workspaceId === workspaceId) ?? null;
 }
 
 /**
@@ -892,10 +872,7 @@ function providerSummary(snapshot: RuntimeConfigSnapshot): unknown {
  * Returns authored agent config semantics.
  */
 function agentSummary(snapshot: RuntimeConfigSnapshot): unknown {
-  return {
-    configs: snapshot.agentConfigs,
-    manifests: snapshot.agentManifests,
-  };
+  return snapshot.agentManifests;
 }
 
 /**
@@ -916,7 +893,6 @@ function snapshotSemanticSummary(snapshot: Omit<RuntimeConfigSnapshot, 'contentH
   return {
     openKitConfig: redactSemanticSecrets(snapshot.openKitConfig),
     providers: providerSummary(snapshot as RuntimeConfigSnapshot),
-    agentConfigs: snapshot.agentConfigs,
     agentManifests: snapshot.agentManifests,
     workspaceConfigs: workspaceConfigSummary(snapshot as RuntimeConfigSnapshot),
     workspaceDataSourceCatalogs: workspaceDataSourceCatalogSummary(
@@ -926,115 +902,85 @@ function snapshotSemanticSummary(snapshot: Omit<RuntimeConfigSnapshot, 'contentH
 }
 
 /**
- * Loads every workspace config under DATA_ROOT/users.
+ * Loads every workspace config under DATA_ROOT/workspaces.
  *
  * @param dataRoot Data root to scan.
  * @returns Parsed workspace configs.
  */
 function loadWorkspaceConfigs(dataRoot: string): LoadedWorkspaceConfig[] {
-  const usersRoot = join(dataRoot, 'users');
+  const workspacesRoot = join(dataRoot, 'workspaces');
 
-  if (!existsSync(usersRoot)) {
+  if (!existsSync(workspacesRoot)) {
     return [];
   }
 
   const configs: LoadedWorkspaceConfig[] = [];
 
-  for (const userEntry of readdirSync(usersRoot, { withFileTypes: true }).sort((left, right) =>
-    left.name.localeCompare(right.name)
+  for (const workspaceEntry of readdirSync(workspacesRoot, { withFileTypes: true }).sort(
+    (left, right) => left.name.localeCompare(right.name)
   )) {
-    if (!userEntry.isDirectory()) {
+    if (!workspaceEntry.isDirectory()) {
       continue;
     }
 
-    const workspacesRoot = join(usersRoot, userEntry.name, 'workspaces');
+    const configPath = join(workspacesRoot, workspaceEntry.name, 'config', 'workspace.jsonc');
 
-    if (!existsSync(workspacesRoot)) {
+    if (!existsSync(configPath)) {
       continue;
     }
 
-    for (const workspaceEntry of readdirSync(workspacesRoot, { withFileTypes: true }).sort(
-      (left, right) => left.name.localeCompare(right.name)
-    )) {
-      if (!workspaceEntry.isDirectory()) {
-        continue;
-      }
+    const parsed = parseJsoncObject(readFileSync(configPath, 'utf8'), configPath);
+    const result = WorkspaceConfigSchema.safeParse(parsed);
 
-      const configPath = join(workspacesRoot, workspaceEntry.name, 'config', 'workspace.jsonc');
-
-      if (!existsSync(configPath)) {
-        continue;
-      }
-
-      const parsed = parseJsoncObject(readFileSync(configPath, 'utf8'), configPath);
-      const result = WorkspaceConfigSchema.safeParse(parsed);
-
-      if (!result.success) {
-        throw new Error(`Invalid workspace config ${configPath}: ${z.prettifyError(result.error)}`);
-      }
-
-      configs.push({
-        userId: userEntry.name,
-        workspaceId: workspaceEntry.name,
-        path: configPath,
-        config: result.data,
-      });
+    if (!result.success) {
+      throw new Error(`Invalid workspace config ${configPath}: ${z.prettifyError(result.error)}`);
     }
+
+    configs.push({
+      workspaceId: workspaceEntry.name,
+      path: configPath,
+      config: result.data,
+    });
   }
 
   return configs;
 }
 
 /**
- * Loads every workspace data source catalog under DATA_ROOT/users.
+ * Loads every workspace data source catalog under DATA_ROOT/workspaces.
  *
  * @param dataRoot Data root to scan.
  * @returns Parsed workspace data source catalogs.
  */
 function loadWorkspaceDataSourceCatalogs(dataRoot: string): LoadedWorkspaceDataSourceCatalog[] {
-  const usersRoot = join(dataRoot, 'users');
+  const workspacesRoot = join(dataRoot, 'workspaces');
 
-  if (!existsSync(usersRoot)) {
+  if (!existsSync(workspacesRoot)) {
     return [];
   }
 
   const catalogs: LoadedWorkspaceDataSourceCatalog[] = [];
 
-  for (const userEntry of readdirSync(usersRoot, { withFileTypes: true }).sort((left, right) =>
-    left.name.localeCompare(right.name)
+  for (const workspaceEntry of readdirSync(workspacesRoot, { withFileTypes: true }).sort(
+    (left, right) => left.name.localeCompare(right.name)
   )) {
-    if (!userEntry.isDirectory()) {
+    if (!workspaceEntry.isDirectory()) {
       continue;
     }
 
-    const workspacesRoot = join(usersRoot, userEntry.name, 'workspaces');
+    const catalogPath = join(workspacesRoot, workspaceEntry.name, 'config', 'data-sources.jsonc');
 
-    if (!existsSync(workspacesRoot)) {
+    if (!existsSync(catalogPath)) {
       continue;
     }
 
-    for (const workspaceEntry of readdirSync(workspacesRoot, { withFileTypes: true }).sort(
-      (left, right) => left.name.localeCompare(right.name)
-    )) {
-      if (!workspaceEntry.isDirectory()) {
-        continue;
-      }
+    const parsed = parseJsoncObject(readFileSync(catalogPath, 'utf8'), catalogPath);
 
-      const catalogPath = join(workspacesRoot, workspaceEntry.name, 'config', 'data-sources.jsonc');
-
-      if (!existsSync(catalogPath)) {
-        continue;
-      }
-
-      const parsed = parseJsoncObject(readFileSync(catalogPath, 'utf8'), catalogPath);
-
-      catalogs.push({
-        userId: userEntry.name,
-        workspaceId: workspaceEntry.name,
-        path: catalogPath,
-        catalog: parseWorkspaceDataSourceCatalog(parsed),
-      });
-    }
+    catalogs.push({
+      workspaceId: workspaceEntry.name,
+      path: catalogPath,
+      catalog: parseWorkspaceDataSourceCatalog(parsed),
+    });
   }
 
   return catalogs;
@@ -1045,7 +991,6 @@ function loadWorkspaceDataSourceCatalogs(dataRoot: string): LoadedWorkspaceDataS
  */
 function workspaceConfigSummary(snapshot: RuntimeConfigSnapshot): unknown {
   return snapshot.workspaceConfigs.map((entry) => ({
-    userId: entry.userId,
     workspaceId: entry.workspaceId,
     config: entry.config,
   }));
@@ -1056,7 +1001,6 @@ function workspaceConfigSummary(snapshot: RuntimeConfigSnapshot): unknown {
  */
 function workspaceDataSourceCatalogSummary(snapshot: RuntimeConfigSnapshot): unknown {
   return snapshot.workspaceDataSourceCatalogs.map((entry) => ({
-    userId: entry.userId,
     workspaceId: entry.workspaceId,
     catalog: entry.catalog,
   }));

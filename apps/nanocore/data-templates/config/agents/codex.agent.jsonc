@@ -1,19 +1,22 @@
 {
   "schemaVersion": 1,
+  "requiredFeatures": [],
   "id": "agent_codex_host",
   "displayName": "Codex Agent",
-  "mode": "local",
   "runtime": {
     "kind": "codex",
-    "adapter": "codex-app-server",
-    "version": "0.0.2"
-  },
-  "deployment": {
-    "local": {
-      "command": "codex",
-      "args": ["app-server", "--listen", "stdio://"],
-      "cwdPolicy": "workspace"
-    }
+    "adapter": "codex",
+    "version": "0.144.1",
+    "image": {
+      "ref": "openkit/worker-codex:dev",
+      "pullPolicy": "if-not-present"
+    },
+    "binaries": [
+      { "id": "openkit-worker-shim", "path": "/usr/local/bin/openkit-worker-shim" },
+      { "id": "node", "path": "/usr/local/bin/node" },
+      { "id": "codex", "path": "/usr/local/bin/codex" },
+      { "id": "codex-native", "path": "/usr/local/lib/codex/bin/codex" }
+    ]
   },
   "provider": {
     "ref": "openai",
@@ -28,17 +31,19 @@
   ],
   "defaultProfileId": "default",
   "skills": [],
+  "mcp": [],
   "workspace": {
     "root": "."
   },
   "sandbox": {
+    "filesystem": [],
+    "network": [],
+    "credentialDeclarations": [],
     "backend": {
+      "allowedKinds": ["openshell"],
+      "preferred": "openshell",
       "requiredCapabilities": ["trusted-worker-inference-relay", "worker.runtime-provenance.v1"]
     }
-  },
-  "readiness": {
-    "status": "unknown",
-    "message": "Codex binary and login state are checked at runtime."
   },
   "extensions": {}
 }

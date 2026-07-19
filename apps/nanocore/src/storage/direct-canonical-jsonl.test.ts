@@ -34,7 +34,7 @@ function createFixture() {
   return {
     store,
     workspaceId: workspace.id,
-    workspaceRoot: join(dataRoot, 'users', 'user_local', 'workspaces', workspace.id),
+    workspaceRoot: join(dataRoot, 'workspaces', workspace.id),
   };
 }
 

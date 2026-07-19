@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { cleanup, render, screen } from '@solidjs/testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -13,6 +14,13 @@ const baseArtifact = {
   status: 'ready' as const,
   summary: 'Artifact summary',
   version: 1,
+  lastMutationRequestId: 'req_artifact_demo',
+  origin: {
+    kind: 'turn-output' as const,
+    requestId: 'req_artifact_demo',
+    threadId: 'th_demo',
+    turnId: 'tu_demo',
+  },
   createdAt: '2026-04-15T09:00:00.000Z',
   updatedAt: '2026-04-15T09:00:00.000Z',
 };
@@ -23,10 +31,12 @@ afterEach(() => {
 
 describe('ArtifactView', () => {
   it('renders text content', () => {
+    const body = 'Plain text artifact body.';
     const artifact: Artifact = {
       ...baseArtifact,
       kind: 'summary',
-      content: { format: 'text', body: 'Plain text artifact body.' },
+      content: { format: 'text', body },
+      contentDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
     };
 
     render(() => <ArtifactView artifact={artifact} onBack={() => undefined} />);
@@ -36,10 +46,12 @@ describe('ArtifactView', () => {
   });
 
   it('renders formatted JSON content', () => {
+    const body = '{"ok":true,"items":[1,2]}';
     const artifact: Artifact = {
       ...baseArtifact,
       kind: 'report',
-      content: { format: 'json', body: '{"ok":true,"items":[1,2]}' },
+      content: { format: 'json', body },
+      contentDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
     };
 
     render(() => <ArtifactView artifact={artifact} onBack={() => undefined} />);
@@ -49,10 +61,12 @@ describe('ArtifactView', () => {
   });
 
   it('renders diff artifacts as preformatted content', () => {
+    const body = '- old line\n+ new line';
     const artifact: Artifact = {
       ...baseArtifact,
       kind: 'diff',
-      content: { format: 'text', body: '- old line\n+ new line' },
+      content: { format: 'text', body },
+      contentDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
     };
 
     render(() => <ArtifactView artifact={artifact} onBack={() => undefined} />);

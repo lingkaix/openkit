@@ -1,5 +1,6 @@
 import type { CoreDb } from './storage/db.js';
 import type { InjectionPlanStatus, InjectionVisibility } from './storage/schema/index.js';
+import { isTargetIssuedEffectAuthority } from './storage/workspace-import-authority.js';
 import { getVaultGrant } from './vault/vault-grants.js';
 
 /** Durable non-secret injection plan record. */
@@ -83,13 +84,17 @@ export interface CreateInjectionPlanInput {
  * @param coreDb Open Core database handle.
  * @param input Plan metadata to store.
  * @returns Stored injection plan record.
- * @throws Error when the referenced grant is missing or target fields are inconsistent.
+ * @throws Error when the referenced grant is imported, missing, or has inconsistent target fields.
  */
 export function createInjectionPlan(
   coreDb: CoreDb,
   input: CreateInjectionPlanInput
 ): InjectionPlanRecord {
   assertInjectionPlanTargets(input);
+
+  if (!isTargetIssuedEffectAuthority(input.grantId)) {
+    throw new Error('Vault grant is portable-import history and cannot authorize effects.');
+  }
 
   if (!getVaultGrant(coreDb, input.grantId)) {
     throw new Error(`Vault grant not found: ${input.grantId}`);

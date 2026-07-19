@@ -65,6 +65,8 @@ Existing placement-plan, pool, capacity, target-health, priority, and related ro
 
 ## Admission And Launch
 
+- Admission resolves the immutable Turn/AEP `triggerActor` through the existing product lineage and applies the shared `runtime.launch` current-authority predicate before writing a new admission. Scheduler rows link the Turn, Agent Session, and package snapshot and must not copy another runtime `ActorRef` or use the derived responsible user as storage or capacity scope.
+- Dispatch applies the same predicate again immediately before minting a sandbox token or requesting worker launch. Authority lost after admission uses the scheduler's existing denied or terminal admission outcome and launches nothing; it adds no lease state, retry, replacement, or recovery owner.
 - Admission MUST validate product lineage, requested Agent, configured target compatibility, and the one-slot bound before launch.
 - The accepted worker input and admission identity MUST be durable before any sandbox token is minted or worker launch is requested.
 - The lease MUST be durable and uniquely own the configured slot before launch.

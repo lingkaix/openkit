@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import {
   ApprovalRequestSchema,
   RespondToApprovalRequestSchema,
@@ -10,7 +12,10 @@ import type { AuthVariables } from './auth/middleware.js';
 import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
 import type { FsStore } from './lib/store.js';
 import {
-  readPolicyApprovalDecision,
+  listPolicyApprovalSourceDecisions,
+  type PolicyApprovalSourceDecision,
+  type PolicyApprovalTerminalWinner,
+  readPolicyApprovalTerminalWinner,
   recordProductPermissionDecision,
 } from './policy/permission-decisions.js';
 import {
@@ -26,7 +31,6 @@ import {
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
-import type { TurnExecutor } from './runtime/types.js';
 import {
   createWorkerCheckpointEvidenceDiagnostics,
   getWorkerCheckpoint,
@@ -40,6 +44,7 @@ import {
   clearWorkerCheckpointAfterTerminalState,
   hasExactActiveHumanGate,
   recoverWorkerCheckpointStopReason,
+  requireWorkerCheckpointHumanCommandScope,
 } from './runtime/worker-recovery.js';
 import {
   completeSchedulerLeaseForTerminalTurn,
@@ -58,14 +63,12 @@ export function registerApprovalRoutes({
   inflightCommands,
   repositoryWorkspaceDb,
   requestStore,
-  turnExecutor,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
-  readonly repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb;
+  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
-  readonly turnExecutor: TurnExecutor;
 }): void {
   app.post('/api/approvals/:approvalRequestId/respond', async (c) => {
     const parsed = RespondToApprovalRequestSchema.safeParse({
@@ -81,6 +84,7 @@ export function registerApprovalRoutes({
       const input = parsed.data;
       const store = requestStore(c);
       const storedApproval = store.getApproval(input.approvalRequestId);
+      const actor = { kind: 'user' as const, id: c.get('actor').userId };
 
       if (
         storedApproval.workspaceId !== input.workspaceId ||
@@ -110,7 +114,7 @@ export function registerApprovalRoutes({
       );
 
       if (coreDb) {
-        const workspaceDb = repositoryWorkspaceDb(store, input.workspaceId);
+        const workspaceDb = repositoryWorkspaceDb(input.workspaceId);
         try {
           const workerCheckpoint = getWorkerCheckpoint(
             workspaceDb,
@@ -118,15 +122,51 @@ export function registerApprovalRoutes({
             input.threadId,
             input.turnId
           );
-          const policyApproval = readPolicyApprovalDecision(
-            workspaceDb,
-            input.workspaceId,
-            input.approvalRequestId
-          );
+          let policySources: ReturnType<typeof listPolicyApprovalSourceDecisions>;
+          try {
+            policySources = listPolicyApprovalSourceDecisions(
+              workspaceDb,
+              input.workspaceId,
+              input.approvalRequestId
+            );
+          } catch {
+            throw taskGateRecoveryError('The policy approval source tuple is invalid.');
+          }
+          if (policySources.length > 1 || workerLeases.length > 1) {
+            throw taskGateRecoveryError('The policy approval owner tuple is not unique.');
+          }
+          const policyApproval = policySources[0] ?? null;
+          if (!policyApproval) {
+            let orphanWinner: PolicyApprovalTerminalWinner | null;
+            try {
+              orphanWinner = readPolicyApprovalTerminalWinner(
+                workspaceDb,
+                input.workspaceId,
+                input.approvalRequestId,
+                input.threadId,
+                input.turnId
+              );
+            } catch {
+              throw taskGateRecoveryError('The policy approval terminal claim is invalid.');
+            }
+            if (orphanWinner) {
+              throw taskGateRecoveryError('The policy approval winner has no exact source.');
+            }
+          }
           if (policyApproval && policyApproval.action !== 'repo.push') {
             throw taskGateRecoveryError('The policy approval action is not supported.');
           }
-          if (policyApproval && !workerCheckpoint && workerLeases.length === 0) {
+          const closedWorkerGate =
+            workerLeases.length === 1
+              ? classifyClosedWorkerApprovalGate(
+                  store,
+                  store.getTurn(input.workspaceId, input.threadId, input.turnId)
+                )
+              : null;
+          if (policyApproval && (!workerCheckpoint || closedWorkerGate)) {
+            const decisionItemId = `it_approval_decision_${
+              workerLeases.length === 1 ? input.turnId : input.approvalRequestId
+            }`;
             let approval: ReturnType<FsStore['getApproval']>;
             try {
               approval = await runIdempotentCommand({
@@ -138,87 +178,92 @@ export function registerApprovalRoutes({
                 input,
                 responseKind: 'approval',
                 execute: () => {
-                  if (hasPolicyApprovalResponseEffect(store, workspaceDb, input)) {
+                  if (workerLeases.length === 1) {
+                    if (!closedWorkerGate) {
+                      throw taskGateRecoveryError(
+                        'The worker approval Gate has no supported exact checkpoint.'
+                      );
+                    }
+                    claimPolicyApprovalOutcome(workspaceDb, store, policyApproval, input, actor);
                     throw taskGateRecoveryError(
-                      'The policy approval response exists without its command receipt.'
+                      'The closed worker approval has no command receipt.'
                     );
                   }
-                  const currentApproval = store.getApproval(input.approvalRequestId);
-                  const currentTurn = store.getTurn(
-                    input.workspaceId,
-                    input.threadId,
-                    input.turnId
+                  return finishPolicyApprovalProjection(
+                    store,
+                    claimPolicyApprovalOutcome(workspaceDb, store, policyApproval, input, actor),
+                    input,
+                    decisionItemId
                   );
-
+                },
+                replay: (record) => {
                   if (
-                    currentApproval.status !== 'pending' ||
-                    !hasExactActiveHumanGate(store, currentTurn) ||
-                    currentTurn.humanGate.kind !== 'approval' ||
-                    currentTurn.humanGate.approvalRequestId !== input.approvalRequestId
+                    record.response.kind !== 'approval' ||
+                    record.response.id !== input.approvalRequestId
                   ) {
                     throw taskGateRecoveryError(
-                      'The policy approval Gate is not exact and active.'
+                      'The policy approval receipt has no exact Approval owner.'
                     );
                   }
-
-                  recordPolicyApprovalOutcome(workspaceDb, policyApproval, input);
-
-                  const timestamp = new Date().toISOString();
-                  const updatedApproval = store.updateApproval(input.approvalRequestId, {
-                    status: input.decision,
-                    resolvedAt: timestamp,
-                  });
-                  store.createItem({
-                    id: `it_approval_decision_${input.approvalRequestId}`,
-                    workspaceId: input.workspaceId,
-                    threadId: input.threadId,
-                    turnId: input.turnId,
-                    type: 'approval-decision',
-                    status: 'completed',
-                    approvalRequestId: input.approvalRequestId,
-                    decision: input.decision,
-                    createdAt: timestamp,
-                    completedAt: timestamp,
-                  });
-                  const stopReason = input.decision === 'denied' ? 'aborted' : 'completed';
-                  const closedTurn = store.updateTurn(input.turnId, {
-                    status: input.decision === 'denied' ? 'cancelled' : 'completed',
-                    humanGate: null,
-                    completedAt: timestamp,
-                  });
-                  store.emitTurnEvent(input.turnId, {
-                    event: 'turn.completed',
-                    requestId: input.requestId,
-                    workspaceId: input.workspaceId,
-                    threadId: input.threadId,
-                    turnId: input.turnId,
-                    data: { type: 'turn-completed', stopReason, turn: closedTurn },
-                  });
-
-                  return ApprovalRequestSchema.parse(updatedApproval);
+                  if (workerLeases.length === 1 && !closedWorkerGate) {
+                    throw taskGateRecoveryError(
+                      'The closed worker approval projection is incomplete.'
+                    );
+                  }
+                  return finishPolicyApprovalProjection(
+                    store,
+                    claimPolicyApprovalOutcome(workspaceDb, store, policyApproval, input, actor),
+                    input,
+                    decisionItemId
+                  );
                 },
-                replay: (record) =>
-                  ApprovalRequestSchema.parse(store.getApproval(record.response.id)),
                 responseId: (result) => result.id,
               });
             } catch (error) {
+              if (error instanceof IdempotencyKeyConflictError) {
+                throw error;
+              }
               const receipt = store.getCommandRequest(
                 'approval.respond',
                 input.requestId,
                 commandScope
               );
-              if (!receipt && hasPolicyApprovalResponseEffect(store, workspaceDb, input)) {
+              let winner: PolicyApprovalTerminalWinner | null = null;
+              try {
+                winner = readPolicyApprovalTerminalWinner(
+                  workspaceDb,
+                  input.workspaceId,
+                  input.approvalRequestId,
+                  input.threadId,
+                  input.turnId
+                );
+              } catch {
                 throw taskGateRecoveryError(
-                  'The policy approval response exists without its command receipt.'
+                  'The policy approval terminal claim is incomplete or contradictory.'
+                );
+              }
+              if (!receipt && winner?.requestId === input.requestId) {
+                throw taskGateRecoveryError(
+                  'The policy approval winner exists without its command receipt.'
                 );
               }
               throw error;
             }
 
+            if (workerCheckpoint && closedWorkerGate) {
+              await clearWorkerApprovalGateCheckpoint(coreDb, store, workspaceDb, input);
+            }
             return c.json(approval);
           }
 
           if (workerCheckpoint) {
+            if (!policyApproval) {
+              throw new TurnStartValidationError(
+                'approvals_not_supported',
+                'The Approval has no supported durable policy claim.',
+                501
+              );
+            }
             let approval: ReturnType<FsStore['getApproval']>;
             try {
               approval = await runIdempotentCommand({
@@ -230,12 +275,15 @@ export function registerApprovalRoutes({
                 input,
                 responseKind: 'approval',
                 execute: () =>
-                  closeWorkerApprovalGate(coreDb, store, workspaceDb, input, policyApproval),
+                  closeWorkerApprovalGate(coreDb, store, workspaceDb, policyApproval, input, actor),
                 replay: (record) =>
                   ApprovalRequestSchema.parse(store.getApproval(record.response.id)),
                 responseId: (result) => result.id,
               });
             } catch (error) {
+              if (error instanceof IdempotencyKeyConflictError) {
+                throw error;
+              }
               const currentCheckpoint = getWorkerCheckpoint(
                 workspaceDb,
                 input.workspaceId,
@@ -260,58 +308,13 @@ export function registerApprovalRoutes({
         }
       }
 
-      if (storedApproval.status === 'pending' && !turnExecutor.capabilities.approvals) {
-        return c.json(
-          apiErrorPayload({
-            code: 'approvals_not_supported',
-            message: 'The active agent runtime does not support approvals.',
-          }),
-          501
-        );
-      }
-
-      const approval = await runIdempotentCommand({
-        store,
-        inflightCommands,
-        command: 'approval.respond',
-        requestId: input.requestId,
-        scope: commandScope,
-        input,
-        responseKind: 'approval',
-        execute: async () => {
-          const currentApproval = store.getApproval(input.approvalRequestId);
-
-          if (currentApproval.status !== 'pending') {
-            if (currentApproval.status !== input.decision) {
-              throw new IdempotencyKeyConflictError();
-            }
-
-            return ApprovalRequestSchema.parse(currentApproval);
-          }
-
-          const updatedApproval = await turnExecutor.respondApproval?.(
-            store,
-            input.approvalRequestId,
-            input.decision,
-            { requestId: input.requestId }
-          );
-
-          if (!updatedApproval) {
-            throw new Error('The active agent runtime cannot respond to approvals.');
-          }
-
-          return ApprovalRequestSchema.parse(updatedApproval);
-        },
-        replay: (record) => ApprovalRequestSchema.parse(store.getApproval(record.response.id)),
-        responseId: (result) => result.id,
-      });
-
-      completeSchedulerLeaseForTerminalTurn(
-        coreDb,
-        TurnSchema.parse(store.getTurn(input.workspaceId, input.threadId, input.turnId))
+      return c.json(
+        apiErrorPayload({
+          code: 'approvals_not_supported',
+          message: 'The Approval has no supported durable policy claim.',
+        }),
+        501
       );
-
-      return c.json(approval);
     } catch (error) {
       return asCommandError(error, 'approval_response_failed');
     }
@@ -319,112 +322,269 @@ export function registerApprovalRoutes({
 }
 
 /**
- * Records the exact policy result owned by one Approval response.
+ * Claims or reuses the complete terminal PermissionDecision for one policy Approval.
  *
- * @param workspaceDb Workspace database containing policy decisions.
- * @param policyApproval Existing require-approval decision that owns the Gate.
+ * @param workspaceDb Workspace database containing the source decision and terminal winner.
+ * @param store Product store containing the exact Approval Gate.
+ * @param source Sole exact policy decision that opened the Approval.
  * @param input Exact Approval response command.
- * @throws TurnStartValidationError when any policy outcome already exists.
+ * @param actor Authenticated human actor used only when creating the first winner.
+ * @returns Complete terminal winner and its linked Audit attribution.
+ * @throws A typed conflict, stale, or recovery error when this request is not the winner.
  */
-function recordPolicyApprovalOutcome(
+function claimPolicyApprovalOutcome(
   workspaceDb: WorkspaceDb,
-  policyApproval: NonNullable<ReturnType<typeof readPolicyApprovalDecision>>,
+  store: FsStore,
+  source: PolicyApprovalSourceDecision,
   input: {
     readonly approvalRequestId: string;
     readonly decision: 'granted' | 'denied';
     readonly requestId: string;
-    readonly workspaceId: string;
-  }
-): void {
-  const result = input.decision === 'granted' ? 'allow' : 'deny';
-  if (
-    readPolicyApprovalDecision(
-      workspaceDb,
-      input.workspaceId,
-      input.approvalRequestId,
-      'repo.push',
-      'allow'
-    ) ||
-    readPolicyApprovalDecision(
-      workspaceDb,
-      input.workspaceId,
-      input.approvalRequestId,
-      'repo.push',
-      'deny'
-    )
-  ) {
-    throw taskGateRecoveryError('The policy approval already has a durable outcome.');
-  }
-  recordProductPermissionDecision({
-    workspaceDb,
-    decisionId: `pd_repo_push_${input.decision}_${input.approvalRequestId}`,
-    ownerScope: 'workspace',
-    workspaceId: input.workspaceId,
-    policyEngineVersion: 'nanocore-approval-policy:v1',
-    policySnapshotId: 'policy_snapshot_runtime',
-    subjectSummary: policyApproval.subjectSummary,
-    action: 'repo.push',
-    resourceSummary: policyApproval.resourceSummary,
-    contextSummary: {
-      ...((policyApproval.contextSummary ?? {}) as Record<string, unknown>),
-      requestId: input.requestId,
-    },
-    result,
-    reasonCode: input.decision === 'granted' ? 'repo_push_approved' : 'repo_push_denied',
-    enforcementPoint: 'repo.push.approval_response',
-    approvalId: input.approvalRequestId,
-  });
-}
-
-/**
- * Detects whether a policy approval response has any durable effect without a receipt.
- *
- * @param store Product store containing the Approval, Turn, Items, and command ledger.
- * @param workspaceDb Workspace database containing policy outcomes.
- * @param input Exact policy approval response command.
- * @returns True when retry must fail closed instead of repairing or replaying.
- */
-function hasPolicyApprovalResponseEffect(
-  store: FsStore,
-  workspaceDb: WorkspaceDb,
-  input: {
-    readonly approvalRequestId: string;
     readonly threadId: string;
     readonly turnId: string;
     readonly workspaceId: string;
-  }
-): boolean {
-  const approval = store.getApproval(input.approvalRequestId);
-  const turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
-  const decisionItem = store
-    .listThreadItems(input.workspaceId, input.threadId)
-    .find(
-      (item) =>
-        item.type === 'approval-decision' && item.approvalRequestId === input.approvalRequestId
+  },
+  actor: { readonly id: string; readonly kind: 'user' }
+): PolicyApprovalTerminalWinner {
+  let winner: PolicyApprovalTerminalWinner | null;
+  try {
+    winner = readPolicyApprovalTerminalWinner(
+      workspaceDb,
+      input.workspaceId,
+      input.approvalRequestId,
+      input.threadId,
+      input.turnId
     );
+  } catch {
+    throw taskGateRecoveryError(
+      'The policy approval source or terminal claim is incomplete or contradictory.'
+    );
+  }
 
-  return (
-    approval.status !== 'pending' ||
-    approval.resolvedAt !== null ||
-    decisionItem !== undefined ||
-    readPolicyApprovalDecision(
-      workspaceDb,
-      input.workspaceId,
-      input.approvalRequestId,
-      'repo.push',
-      'allow'
-    ) !== null ||
-    readPolicyApprovalDecision(
-      workspaceDb,
-      input.workspaceId,
-      input.approvalRequestId,
-      'repo.push',
-      'deny'
-    ) !== null ||
-    !hasExactActiveHumanGate(store, turn) ||
-    turn.humanGate.kind !== 'approval' ||
-    turn.humanGate.approvalRequestId !== input.approvalRequestId
-  );
+  const approval = store.getApproval(input.approvalRequestId);
+  if (source.action !== 'repo.push' || source.requiredApprovalKind !== approval.kind) {
+    throw taskGateRecoveryError('The policy approval source tuple is not exact.');
+  }
+  const sourceContext = source.contextSummary;
+  if (
+    !sourceContext ||
+    typeof sourceContext !== 'object' ||
+    Array.isArray(sourceContext) ||
+    !('workspaceId' in sourceContext) ||
+    sourceContext.workspaceId !== input.workspaceId ||
+    !('threadId' in sourceContext) ||
+    sourceContext.threadId !== input.threadId ||
+    !('turnId' in sourceContext) ||
+    sourceContext.turnId !== input.turnId
+  ) {
+    throw taskGateRecoveryError('The policy approval source context is not exact.');
+  }
+
+  if (!winner) {
+    const turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
+    if (
+      approval.status !== 'pending' ||
+      approval.resolvedAt !== null ||
+      !hasExactActiveHumanGate(store, turn) ||
+      turn.humanGate.kind !== 'approval' ||
+      turn.humanGate.approvalRequestId !== input.approvalRequestId
+    ) {
+      throw taskGateRecoveryError('The policy approval Gate is not exact and active.');
+    }
+    try {
+      recordProductPermissionDecision({
+        workspaceDb,
+        decisionId: `pd_repo_push_${input.decision}_${input.approvalRequestId}`,
+        ownerScope: 'workspace',
+        workspaceId: input.workspaceId,
+        policyEngineVersion: 'nanocore-approval-policy:v1',
+        policySnapshotId: 'policy_snapshot_runtime',
+        subjectSummary: source.subjectSummary,
+        action: source.action,
+        resourceSummary: source.resourceSummary,
+        contextSummary: {
+          ...sourceContext,
+          requestId: input.requestId,
+        },
+        result: input.decision === 'granted' ? 'allow' : 'deny',
+        reasonCode: input.decision === 'granted' ? 'repo_push_approved' : 'repo_push_denied',
+        enforcementPoint: 'repo.push.approval_response',
+        requiredApprovalKind: source.requiredApprovalKind,
+        approvalId: input.approvalRequestId,
+        auditActor: actor,
+      });
+    } catch {
+      // The terminal unique index may have selected a concurrent request. Read and classify it.
+    }
+
+    try {
+      winner = readPolicyApprovalTerminalWinner(
+        workspaceDb,
+        input.workspaceId,
+        input.approvalRequestId,
+        input.threadId,
+        input.turnId
+      );
+    } catch {
+      throw taskGateRecoveryError('The policy approval terminal claim is incomplete.');
+    }
+  }
+
+  if (
+    !winner ||
+    winner.action !== source.action ||
+    winner.requiredApprovalKind !== source.requiredApprovalKind ||
+    !isDeepStrictEqual(winner.resourceSummary, source.resourceSummary) ||
+    !isDeepStrictEqual(winner.subjectSummary, source.subjectSummary)
+  ) {
+    throw taskGateRecoveryError('The policy approval terminal claim does not match its source.');
+  }
+
+  if (winner.requestId !== input.requestId) {
+    throw new TurnStartValidationError(
+      'stale',
+      'Another request already resolved the policy Approval.',
+      409
+    );
+  }
+  if ((winner.result === 'allow' ? 'granted' : 'denied') !== input.decision) {
+    throw new IdempotencyKeyConflictError();
+  }
+
+  return winner;
+}
+
+/**
+ * Completes only deterministic product projections from a proven policy Approval winner.
+ *
+ * @param store Product store containing the Approval, Item, Turn, event, and receipt projection.
+ * @param winner Complete terminal PermissionDecision and linked AuditEvent.
+ * @param input Exact Approval response command.
+ * @param decisionItemId Deterministic decision Item identity for this Gate family.
+ * @returns Current resolved Approval projection.
+ * @throws A recovery error when any existing projection contradicts the winner.
+ */
+function finishPolicyApprovalProjection(
+  store: FsStore,
+  winner: PolicyApprovalTerminalWinner,
+  input: {
+    readonly approvalRequestId: string;
+    readonly decision: 'granted' | 'denied';
+    readonly requestId: string;
+    readonly threadId: string;
+    readonly turnId: string;
+    readonly workspaceId: string;
+  },
+  decisionItemId: string
+): ReturnType<FsStore['getApproval']> {
+  let approval = store.getApproval(input.approvalRequestId);
+  if (
+    approval.workspaceId !== input.workspaceId ||
+    approval.threadId !== input.threadId ||
+    approval.turnId !== input.turnId ||
+    approval.kind !== winner.requiredApprovalKind
+  ) {
+    throw taskGateRecoveryError('The policy approval projection has invalid lineage.');
+  }
+
+  const decisionItems = store
+    .listThreadItems(input.workspaceId, input.threadId)
+    .filter((item) => item.type === 'approval-decision')
+    .filter((item) => item.approvalRequestId === input.approvalRequestId);
+  if (decisionItems.length > 1) {
+    throw taskGateRecoveryError('The policy approval has multiple decision Items.');
+  }
+  const decisionItem = decisionItems[0];
+  if (decisionItem) {
+    if (
+      decisionItem.id !== decisionItemId ||
+      decisionItem.workspaceId !== input.workspaceId ||
+      decisionItem.threadId !== input.threadId ||
+      decisionItem.turnId !== input.turnId ||
+      decisionItem.decision !== input.decision ||
+      decisionItem.causationId !== winner.requestId ||
+      decisionItem.createdAt !== winner.decidedAt ||
+      decisionItem.completedAt !== winner.decidedAt ||
+      !isDeepStrictEqual(decisionItem.actor, winner.actor)
+    ) {
+      throw taskGateRecoveryError('The policy approval decision Item contradicts its winner.');
+    }
+  } else {
+    store.createItem({
+      id: decisionItemId,
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      turnId: input.turnId,
+      type: 'approval-decision',
+      status: 'completed',
+      actor: winner.actor,
+      causationId: winner.requestId,
+      approvalRequestId: input.approvalRequestId,
+      decision: input.decision,
+      createdAt: winner.decidedAt,
+      completedAt: winner.decidedAt,
+    });
+  }
+
+  if (approval.status === 'pending' && approval.resolvedAt === null) {
+    approval = store.updateApproval(input.approvalRequestId, {
+      status: input.decision,
+      resolvedAt: winner.decidedAt,
+    });
+  } else if (approval.status !== input.decision || approval.resolvedAt !== winner.decidedAt) {
+    throw taskGateRecoveryError('The policy Approval projection contradicts its winner.');
+  }
+
+  const stopReason = input.decision === 'denied' ? 'aborted' : 'completed';
+  const terminalStatus = input.decision === 'denied' ? 'cancelled' : 'completed';
+  let turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
+  const exactActiveGate =
+    turn.status === 'awaiting_human' &&
+    turn.humanGate.kind === 'approval' &&
+    turn.humanGate.approvalRequestId === input.approvalRequestId;
+  const exactTerminalTurn =
+    turn.status === terminalStatus &&
+    turn.humanGate === null &&
+    turn.completedAt === winner.decidedAt;
+  if (!exactTerminalTurn) {
+    if (!exactActiveGate) {
+      throw taskGateRecoveryError('The policy Approval Turn contradicts its winner.');
+    }
+    turn = store.updateTurn(input.turnId, {
+      status: terminalStatus,
+      humanGate: null,
+      completedAt: winner.decidedAt,
+    });
+  }
+
+  const completedEvents = store
+    .getTurnEvents(input.turnId)
+    .filter((event) => event.event === 'turn.completed');
+  if (completedEvents.length > 1) {
+    throw taskGateRecoveryError('The policy Approval Turn has duplicate completion events.');
+  }
+  if (completedEvents.length === 1) {
+    const event = completedEvents[0]!;
+    if (
+      event.requestId !== winner.requestId ||
+      event.data.type !== 'turn-completed' ||
+      event.data.stopReason !== stopReason ||
+      !isDeepStrictEqual(event.data.turn, turn)
+    ) {
+      throw taskGateRecoveryError('The policy Approval completion event contradicts its winner.');
+    }
+  } else {
+    store.emitTurnEvent(input.turnId, {
+      event: 'turn.completed',
+      requestId: winner.requestId,
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      turnId: input.turnId,
+      data: { type: 'turn-completed', stopReason, turn },
+    });
+  }
+
+  return ApprovalRequestSchema.parse(approval);
 }
 
 /**
@@ -445,8 +605,9 @@ function isDirectTaskCheckpoint(
  * @param coreDb Core database containing scheduler and worker lineage.
  * @param store Product store containing the Approval, Turn, Session, Items, and receipts.
  * @param workspaceDb Workspace database containing the worker checkpoint.
+ * @param source Sole exact policy decision that opened the Approval.
  * @param input Exact approval command input.
- * @param policyApproval Optional policy owner for a policy-backed Gate.
+ * @param actor Authenticated human actor used only when creating the first winner.
  * @returns Resolved Approval owner.
  * @throws TurnStartValidationError when the Gate tuple is absent or contradictory.
  */
@@ -454,6 +615,7 @@ function closeWorkerApprovalGate(
   coreDb: CoreDb,
   store: FsStore,
   workspaceDb: WorkspaceDb,
+  source: PolicyApprovalSourceDecision,
   input: {
     readonly approvalRequestId: string;
     readonly decision: 'granted' | 'denied';
@@ -462,7 +624,7 @@ function closeWorkerApprovalGate(
     readonly turnId: string;
     readonly workspaceId: string;
   },
-  policyApproval: NonNullable<ReturnType<typeof readPolicyApprovalDecision>> | null
+  actor: { readonly id: string; readonly kind: 'user' }
 ): ReturnType<FsStore['getApproval']> {
   const checkpoint = getWorkerCheckpoint(
     workspaceDb,
@@ -533,13 +695,16 @@ function closeWorkerApprovalGate(
     throw taskGateRecoveryError('The worker approval has no authoritative worker input.');
   }
   const evidence = parseWorkerCheckpointEvidence(checkpoint.diagnosticsSummary);
+  let ownerScope: ReturnType<typeof requireWorkerCheckpointHumanCommandScope>;
+  try {
+    ownerScope = requireWorkerCheckpointHumanCommandScope(coreDb, checkpoint);
+  } catch {
+    throw taskGateRecoveryError('The worker approval has no exact human command identity.');
+  }
   const ownerReceipt = store.getCommandRequest(
     goalTaskCheckpoint ? 'goal.step' : 'task.start',
     checkpoint.requestId,
-    {
-      workspaceId: input.workspaceId,
-      threadId: input.threadId,
-    },
+    ownerScope,
     goalTaskCheckpoint ? workspaceDb : undefined
   );
   if (
@@ -573,10 +738,8 @@ function closeWorkerApprovalGate(
   if (currentApproval.status !== 'pending') {
     throw taskGateRecoveryError('The worker approval is no longer pending.');
   }
-  if (policyApproval) {
-    recordPolicyApprovalOutcome(workspaceDb, policyApproval, input);
-  }
-  const timestamp = new Date().toISOString();
+  const winner = claimPolicyApprovalOutcome(workspaceDb, store, source, input, actor);
+  const timestamp = winner.decidedAt;
   const decisionItemId = `it_approval_decision_${input.turnId}`;
   store.createItem({
     id: decisionItemId,
@@ -585,6 +748,8 @@ function closeWorkerApprovalGate(
     turnId: input.turnId,
     type: 'approval-decision',
     status: 'completed',
+    actor: winner.actor,
+    causationId: winner.requestId,
     approvalRequestId: input.approvalRequestId,
     decision: input.decision,
     createdAt: timestamp,
@@ -609,6 +774,7 @@ function closeWorkerApprovalGate(
     data: { type: 'turn-completed', stopReason: expectedStopReason, turn: closedTurn },
   });
   const terminalCheckpoint = updateWorkerCheckpoint(workspaceDb, {
+    authorityActor: turn.triggerActor,
     workspaceId: input.workspaceId,
     threadId: input.threadId,
     turnId: input.turnId,
@@ -698,10 +864,7 @@ async function clearWorkerApprovalGateCheckpoint(
     ? store.getCommandRequest(
         checkpoint.goalId && checkpoint.taskId ? 'goal.step' : 'task.start',
         checkpoint.requestId,
-        {
-          workspaceId: input.workspaceId,
-          threadId: input.threadId,
-        },
+        requireWorkerCheckpointHumanCommandScope(coreDb, checkpoint),
         checkpoint.goalId && checkpoint.taskId ? workspaceDb : undefined
       )
     : null;

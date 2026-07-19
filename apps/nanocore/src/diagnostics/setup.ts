@@ -1,5 +1,5 @@
 import type { RuntimeConfigStatus, SetupDiagnosticsResponse } from '@openkit/app-api-schemas';
-import type { AgentManifest, AuthoredAgentConfig } from '../agents/manifest.js';
+import type { AgentManifest } from '../agents/manifest.js';
 import { type AgentReadinessStatus, computeReadiness } from '../agents/readiness.js';
 import { resolveAgentSetup } from '../agents/setup-resolver.js';
 import type { CoreMode } from '../config/mode.js';
@@ -27,9 +27,7 @@ interface CreateSetupDiagnosticsInput {
   providerCredentialResolver?: ProviderCredentialResolver;
   /** Provider registry. */
   providerRegistry: ProviderRegistry;
-  /** Authored agent configs available for setup resolution. */
-  agentConfigs: AuthoredAgentConfig[];
-  /** Agent manifests available for readiness checks. */
+  /** Agent manifests available for setup and readiness checks. */
   agentManifests: AgentManifest[];
   /** Runtime config reload status. */
   runtimeConfig: RuntimeConfigStatus;
@@ -69,12 +67,7 @@ export function createSetupDiagnostics(
       vendor: typeof provider.vendor === 'string' ? provider.vendor : provider.kind,
     })),
     agents: input.agentManifests.map((manifest) =>
-      summarizeAgentSetup(
-        manifest,
-        input.agentConfigs,
-        input.providerRegistry,
-        readinessDependencies
-      )
+      summarizeAgentSetup(manifest, input.providerRegistry, readinessDependencies)
     ),
     runtimeConfig: input.runtimeConfig,
   };
@@ -167,25 +160,18 @@ function providerRole(providerId: string, config: OpenKitConfig): SetupDiagnosti
  * Summarizes one agent setup.
  *
  * @param manifest Agent manifest.
- * @param agentConfigs Authored agent configs.
  * @param providerRegistry Provider registry.
  * @param dependencies Readiness dependencies.
  * @returns Agent setup diagnostics summary.
  */
 function summarizeAgentSetup(
   manifest: AgentManifest,
-  agentConfigs: AuthoredAgentConfig[],
   providerRegistry: ProviderRegistry,
   dependencies: { providerCredentialResolver?: ProviderCredentialResolver }
 ): SetupDiagnosticsAgent {
   const readiness = computeReadiness(manifest, providerRegistry, dependencies);
-  const config = agentConfigs.find((candidate) => candidate.id === manifest.id);
-  const setupResult = config ? resolveAgentSetup(config, { providerRegistry }) : null;
-  const setupStatus = setupResult
-    ? setupResult.diagnostics.length > 0
-      ? 'blocked'
-      : 'ready'
-    : 'degraded';
+  const setupResult = resolveAgentSetup(manifest, { providerRegistry });
+  const setupStatus = setupResult.diagnostics.length > 0 ? 'blocked' : 'ready';
   const readinessStatus =
     setupStatus === 'blocked' ? 'blocked' : normalizeReadinessStatus(readiness.status);
   const readinessReasons = [
@@ -203,9 +189,9 @@ function summarizeAgentSetup(
       status: readinessStatus,
     },
     setup: {
-      deploymentMode: setupResult?.setup?.deployment.mode ?? null,
-      diagnostics: setupResult?.diagnostics ?? [],
-      providerId: setupResult?.setup?.provider?.providerId ?? manifest.providerRef ?? null,
+      deploymentMode: null,
+      diagnostics: setupResult.diagnostics,
+      providerId: setupResult.setup?.provider?.providerId ?? manifest.provider?.ref ?? null,
       status: setupStatus,
     },
   };

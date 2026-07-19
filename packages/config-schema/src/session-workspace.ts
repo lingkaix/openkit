@@ -192,6 +192,11 @@ export interface SessionWorkspacePlanningPackage {
   packageId?: string;
   /** Package snapshot id used for deterministic record ids. */
   snapshotId?: string;
+  /** Durable Thread and Turn lineage for turn-scoped inputs. */
+  scope?: {
+    threadId?: string;
+    turnId?: string;
+  };
   /** Selected agent summary. */
   agent?: unknown;
   /** Runtime-static package section. */
@@ -204,6 +209,8 @@ export interface SessionWorkspacePlanningPackage {
       kind: string;
       access: 'read-only' | 'read-write';
       source?: { kind?: string } & Record<string, unknown>;
+      materialization?: Record<string, unknown> | undefined;
+      target?: string | undefined;
     }>;
     outputs?: Array<{ id: string } & Record<string, unknown>>;
   };
@@ -264,7 +271,7 @@ export function planSessionWorkspaceMaterialization(
     layoutId: layout.layoutId,
     selectedSlotIds: layout.slots.map((slot) => slot.id),
     inputs: (input.environmentPackage.workspace?.inputs ?? []).map((workspaceInput) => {
-      const slot = selectSlotForInput(layout, workspaceInput);
+      const slot = selectSlotForInput(layout, workspaceInput, input.environmentPackage.scope);
 
       return {
         inputId: workspaceInput.id,
@@ -487,12 +494,25 @@ function slot(
  *
  * @param layout Session workspace layout.
  * @param workspaceInput Workspace input declaration.
+ * @param scope Durable package lineage used to validate turn-scoped inputs.
  * @returns Compatible slot.
  */
 function selectSlotForInput(
   layout: SessionWorkspaceLayout,
-  workspaceInput: SessionWorkspacePlanningInput
+  workspaceInput: SessionWorkspacePlanningInput,
+  scope: SessionWorkspacePlanningPackage['scope']
 ): WorkspaceSlot {
+  const requestedSlotId = workspaceInput.materialization?.slotId;
+  if (requestedSlotId === 'context' && isDedicatedContextPackageInput(workspaceInput, scope)) {
+    const contextSlot = layout.slots.find((candidate) => candidate.id === 'context');
+    if (!contextSlot) {
+      throw new Error(`No context workspace slot found for input ${workspaceInput.id}.`);
+    }
+    return contextSlot;
+  }
+  if (requestedSlotId !== undefined && requestedSlotId !== 'context') {
+    throw new Error(`Unsupported explicit workspace slot for input ${workspaceInput.id}.`);
+  }
   const slotId =
     workspaceInput.kind === 'repository' ||
     (workspaceInput.kind === 'directory' && workspaceInput.access === 'read-write')
@@ -509,6 +529,39 @@ function selectSlotForInput(
   }
 
   return slot;
+}
+
+/**
+ * Returns whether one generated input is the exact immutable S39 Context Package tuple.
+ *
+ * @param workspaceInput Workspace input considered by the session planner.
+ * @param scope Durable package lineage that the input must match exactly.
+ * @returns True only for the dedicated Context Package input.
+ */
+function isDedicatedContextPackageInput(
+  workspaceInput: SessionWorkspacePlanningInput,
+  scope: SessionWorkspacePlanningPackage['scope']
+): boolean {
+  const materialization = workspaceInput.materialization;
+  const source = workspaceInput.source;
+
+  return (
+    typeof scope?.threadId === 'string' &&
+    typeof scope.turnId === 'string' &&
+    workspaceInput.kind === 'generated' &&
+    workspaceInput.access === 'read-only' &&
+    workspaceInput.target === '/openkit/context' &&
+    !('mount' in workspaceInput) &&
+    source?.kind === 'generated' &&
+    source.pathRef === `threads/${scope.threadId}/turns/${scope.turnId}/context-package` &&
+    Object.keys(source).sort().join(',') === 'kind,pathRef' &&
+    workspaceInput.id === `context_${scope.turnId}` &&
+    materialization?.strategy === 'filesystem' &&
+    typeof materialization.contentDigest === 'string' &&
+    /^sha256:[0-9a-f]{64}$/.test(materialization.contentDigest) &&
+    materialization.slotId === 'context' &&
+    Object.keys(materialization).sort().join(',') === 'contentDigest,slotId,strategy'
+  );
 }
 
 /**

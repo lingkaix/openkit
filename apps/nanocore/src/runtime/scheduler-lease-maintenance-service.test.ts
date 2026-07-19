@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
+import type { ActorRef } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import {
   acceptSchedulerLeaseHeartbeat,
@@ -45,7 +46,11 @@ function createMigratedCoreDb() {
 /** Records one production-shaped AEP after preparing its writable Git inputs. */
 function recordTestAgentEnvironmentPackage(
   workspaceDb: ReturnType<typeof openWorkspaceDb>,
-  input: { readonly suffix: string; readonly workspaceInputIds: readonly string[] }
+  input: {
+    readonly suffix: string;
+    readonly triggerActor?: ActorRef;
+    readonly workspaceInputIds: readonly string[];
+  }
 ): AgentEnvironmentPackage {
   const workspaceInputIds = input.workspaceInputIds.map(
     (inputId) => `maintenance_${input.suffix}_${inputId}`
@@ -73,6 +78,7 @@ function recordTestAgentEnvironmentPackage(
 
   return recordBaseTestAgentEnvironmentPackage(workspaceDb, {
     suffix: input.suffix,
+    triggerActor: input.triggerActor ?? { kind: 'user', id: LOCAL_USER_ID },
     workspaceInputIds,
   });
 }
@@ -165,10 +171,11 @@ function seedLocalTarget(coreDb: ReturnType<typeof createMigratedCoreDb>, suffix
 function dispatchLease(
   coreDb: ReturnType<typeof createMigratedCoreDb>,
   suffix: string,
-  userId = LOCAL_USER_ID
+  triggerActor: ActorRef = { kind: 'user', id: LOCAL_USER_ID }
 ): void {
   seedLocalTarget(coreDb, suffix);
   createSchedulerAdmissionEntry(coreDb, {
+    triggerActor,
     priorityClass: 'interactive',
     profileRef: 'profile_worker',
     queueEntryId: `queue_${suffix}`,
@@ -177,7 +184,6 @@ function dispatchLease(
     threadId: `thread_${suffix}`,
     turnId: `turn_${suffix}`,
     turnInput: `Run ${suffix}`,
-    userId,
     workspaceId: 'ws_demo',
     now: () => '2026-07-05T00:00:01.000Z',
   });
@@ -306,7 +312,7 @@ describe('scheduler lease maintenance service', () => {
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
-      const brokenWorkspaceDbPath = workspaceDbPath(coreDb.dataRoot, LOCAL_USER_ID, 'ws_demo');
+      const brokenWorkspaceDbPath = workspaceDbPath(coreDb.dataRoot, 'ws_demo');
       mkdirSync(dirname(brokenWorkspaceDbPath), { recursive: true });
       mkdirSync(brokenWorkspaceDbPath);
 
@@ -348,7 +354,7 @@ describe('scheduler lease maintenance service', () => {
 
   it('records workspace reconciliation triggers for stale leases with pending backend handles', () => {
     const coreDb = createMigratedCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -393,13 +399,18 @@ describe('scheduler lease maintenance service', () => {
     }
   });
 
-  it('opens the workspace database owned by the scheduler admission user', () => {
+  it('opens the owner-independent workspace for a non-local scheduler admission', () => {
     const coreDb = createMigratedCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'user_server', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    const triggerActor = {
+      kind: 'automation',
+      id: 'automation_server_user',
+      responsibleUserId: 'user_server',
+    } as const;
 
     try {
       applyScopedMigrations(workspaceDb);
-      dispatchLease(coreDb, 'server_user', 'user_server');
+      dispatchLease(coreDb, 'server_user', triggerActor);
       acceptSchedulerLeaseHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         leaseId: 'lease_server_user',
@@ -408,6 +419,7 @@ describe('scheduler lease maintenance service', () => {
       });
       const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix: 'server_user',
+        triggerActor,
         workspaceInputIds: ['repo'],
       });
       recordCanonicalWorkspaceHandoff(workspaceDb, environmentPackage);
@@ -431,9 +443,56 @@ describe('scheduler lease maintenance service', () => {
     }
   });
 
+  it('rejects workspace recovery when the package trigger actor differs from admission', () => {
+    const coreDb = createMigratedCoreDb();
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    const errors: unknown[] = [];
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      dispatchLease(coreDb, 'actor_mismatch', {
+        kind: 'automation',
+        id: 'automation_admission',
+        responsibleUserId: 'user_server',
+      });
+      acceptSchedulerLeaseHeartbeat(coreDb, {
+        heartbeatTimeoutMs: 30_000,
+        leaseId: 'lease_actor_mismatch',
+        now: () => '2026-07-05T00:00:10.000Z',
+        workerSequence: 1,
+      });
+      const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+        suffix: 'actor_mismatch',
+        triggerActor: {
+          kind: 'automation',
+          id: 'automation_package',
+          responsibleUserId: 'user_server',
+        },
+        workspaceInputIds: ['repo'],
+      });
+      recordCanonicalWorkspaceHandoff(workspaceDb, environmentPackage);
+
+      runSchedulerLeaseMaintenanceOnce(coreDb, {
+        maxTotalLeaseMs: 7_200_000,
+        now: () => '2026-07-05T00:03:00.000Z',
+        onError: (error) => errors.push(error),
+        renewalDurationMs: 1_800_000,
+        renewalLeadMs: 300_000,
+      });
+
+      expect(errors).toEqual([
+        expect.objectContaining({ message: expect.stringContaining('trigger actor') }),
+      ]);
+      expect(listWorkspaceReconciliationRecords(workspaceDb, 'ws_demo')).toEqual([]);
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('retains capacity while an anchored releasing backend still owns cleanup', () => {
     const coreDb = createMigratedCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -495,7 +554,7 @@ describe('scheduler lease maintenance service', () => {
 
   it('converges recovery explicitly for an AEP with no workspace inputs', () => {
     const coreDb = createMigratedCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -535,7 +594,7 @@ describe('scheduler lease maintenance service', () => {
 
   it('keeps recovery retryable until every AEP workspace input has a handle', () => {
     const coreDb = createMigratedCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -590,7 +649,7 @@ describe('scheduler lease maintenance service', () => {
 
   it('does not reinterpret retained handles as pending scheduler cleanup', () => {
     const coreDb = createMigratedCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -650,7 +709,7 @@ describe('scheduler lease maintenance service', () => {
 
   it('retains capacity when finalization times out before backend cleanup', () => {
     const coreDb = createMigratedCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);

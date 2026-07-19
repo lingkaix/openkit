@@ -14,8 +14,8 @@ test('seeds demo workspaces through canonical file records', async () => {
     seedDemoWorkspaceDataRoot(dataRoot);
     seedDemoWorkspaceDataRoot(dataRoot);
 
-    const demoRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo');
-    const quickChatRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_quick_chat');
+    const demoRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const quickChatRoot = join(dataRoot, 'workspaces', 'ws_quick_chat');
 
     assert.equal(existsSync(join(demoRoot, 'store.json')), false);
     assert.equal(JSON.parse(readFileSync(join(demoRoot, 'workspace.json'), 'utf8')).id, 'ws_demo');

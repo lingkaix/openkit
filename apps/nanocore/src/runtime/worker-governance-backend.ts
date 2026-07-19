@@ -1,7 +1,8 @@
+import { isUtf8 } from 'node:buffer';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { chmod, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type {
   MaterializedWorkspaceRoot,
@@ -81,9 +82,13 @@ type OpenShellWorkerControlGateway = Pick<
   'registerSession' | 'unregisterSession'
 >;
 
-const CODEX_NETWORK_BINARIES = ['/usr/local/bin/codex', '/usr/local/lib/codex/bin/codex'] as const;
 const OPEN_SHELL_WORKER_INFERENCE_CREDENTIAL_KEY = 'OPENKIT_WORKER_INFERENCE_TOKEN';
 const MAX_RUNTIME_PROVENANCE_MANIFEST_BYTES = 1024 * 1024;
+const MAX_WORKER_ARTIFACT_BYTES = 16 * 1024 * 1024;
+/** Internal code translated by the existing Turn validation boundary. */
+export const WORKER_ARTIFACT_COLLECTION_INVALID = 'worker_artifact_collection_invalid';
+/** Internal error code requiring restored-session cleanup before returning recovery_required. */
+export const WORKER_ARTIFACT_RECOVERY_REQUIRED = 'worker_artifact_recovery_required';
 
 /**
  * Files and sandbox identity retained for one materialized OpenShell session.
@@ -101,6 +106,8 @@ interface OpenShellSessionState {
   sessionDirectory: string;
   /** Provider instance ids attached to the sandbox. */
   providerInstanceIds: string[];
+  /** Exact injected values retained only for live Artifact collection, or null after restore. */
+  sensitiveValueBytes: Buffer[] | null;
 }
 
 /** Deterministic physical backend identity planned without external effects. */
@@ -182,12 +189,26 @@ export interface WorkerGovernanceRuntimeEnvCredential {
  * File upload generated for a backend-private workspace bundle.
  */
 interface OpenShellWorkspaceBundleUpload {
+  /** Exact source inventory required for a prepared Context Package. */
+  expectedFileInventory?: OpenShellWorkspaceBundleFileInventoryEntry[];
+  /** Package-root digest required for a prepared Context Package. */
+  expectedRootDigest?: string;
   /** Host-local tar file path. */
   sourcePath: string;
   /** Sandbox destination for the tar file. */
   targetPath: string;
   /** Worker-visible target directory that should receive extracted content. */
   workerPath: string;
+}
+
+/** One exact worker-visible file in a verified workspace bundle. */
+interface OpenShellWorkspaceBundleFileInventoryEntry {
+  /** Exact file byte length. */
+  byteLength: number;
+  /** SHA-256 digest over the exact file bytes. */
+  contentDigest: string;
+  /** Slash-separated path relative to the worker-visible bundle root. */
+  path: string;
 }
 
 /**
@@ -254,18 +275,6 @@ export interface WorkerGovernanceEvidenceRecord {
   timestamp: string;
   /** Redacted evidence payload. */
   data: Record<string, unknown>;
-}
-
-/**
- * Artifact collection record returned by a worker governance backend.
- */
-export interface WorkerGovernanceArtifactRecord {
-  /** Artifact candidate id. */
-  id: string;
-  /** Artifact candidate path. */
-  path: string;
-  /** Artifact media type. */
-  mediaType: string | null;
 }
 
 /**
@@ -388,14 +397,6 @@ export interface WorkerGovernanceBackend {
   collectWorkspaceChanges(
     packageSnapshotId: string
   ): Promise<WorkerGovernanceWorkspaceChangeRecord[]>;
-
-  /**
-   * Collects declared artifacts from the materialized worker session.
-   *
-   * @param packageSnapshotId Package snapshot id whose artifacts should be collected.
-   * @returns Artifact candidate records.
-   */
-  collectArtifacts(packageSnapshotId: string): Promise<WorkerGovernanceArtifactRecord[]>;
 }
 
 /**
@@ -500,8 +501,6 @@ export interface OpenShellWorkerGovernanceClient {
 export interface OpenShellWorkerGovernanceBackendOptions {
   /** Disposable OpenShell Cell lifecycle that owns physical runtime teardown. */
   cellLifecycle: OpenShellCellLifecycle;
-  /** Optional host Codex config file uploaded into the sandbox when explicitly configured. */
-  codexConfigTomlPath?: string | undefined;
   /** NanoCore data root containing deterministic private session staging. */
   dataRoot: string;
   /** Stable data-root deployment id used to namespace every gateway artifact. */
@@ -524,7 +523,6 @@ export interface OpenShellWorkerGovernanceBackendOptions {
 export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend {
   private readonly cellLifecycle: OpenShellCellLifecycle;
   private readonly cli: OpenShellWorkerGovernanceClient;
-  private readonly codexConfigTomlPath: string | null;
   private readonly dataRoot: string;
   private readonly deploymentId: string;
   private readonly gatewayName: string;
@@ -541,7 +539,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
    */
   public constructor(options: OpenShellWorkerGovernanceBackendOptions) {
     this.cellLifecycle = options.cellLifecycle;
-    this.codexConfigTomlPath = options.codexConfigTomlPath ?? null;
     this.cli = options.cli;
     this.dataRoot = options.dataRoot;
     this.deploymentId = options.deploymentId;
@@ -746,9 +743,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
         context.runtimeFileCredentials ?? [],
         sessionFiles.sessionDirectory
       );
-      const runtimeFileUploadTargets = new Set(
-        runtimeFileUploads.flatMap((upload) => (upload.targetPath ? [upload.targetPath] : []))
-      );
       const providerInstanceIds = transientProviderInstanceIds;
       const relayProfileFile = trustedRelay
         ? await writeOpenShellWorkerInferenceProfile(
@@ -792,7 +786,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
 
       await this.upsertProviders(relayProviderCredentials);
       await this.cli.createSandbox({
-        command: ['openkit-codex-shim', '--package', '/openkit/config/package.json', '--dry-run'],
+        command: ['openkit-worker-shim', '--package', '/openkit/config/package.json', '--dry-run'],
         env: openShellSandboxEnvironment(
           environmentPackage,
           controlRegistration,
@@ -824,16 +818,32 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
             targetPath: bundle.targetPath,
           })),
           ...runtimeFileUploads,
-          ...(trustedRelay ? [] : this.codexConfigUploads(runtimeFileUploadTargets)),
         ],
       });
+
+      if (workspaceBundles.length > 0) {
+        await this.cli.execSandbox({
+          command: openShellWorkspaceBundleMaterializationCommand(workspaceBundles),
+          gateway: identity.backendTarget.gatewayName,
+          ...(identity.backendTarget.gatewayEndpoint
+            ? { gatewayEndpoint: identity.backendTarget.gatewayEndpoint }
+            : {}),
+          name: identity.backendSessionId,
+        });
+      }
 
       this.materializedSessions.set(environmentPackage.snapshotId, {
         environmentPackage,
         identity,
-        launchCommand: openShellSandboxCommand(environmentPackage, workspaceBundles),
+        launchCommand: environmentPackage.runtime.command.argv,
         providerInstanceIds,
         sandboxName,
+        sensitiveValueBytes: uniqueSensitiveValueBytes([
+          ...(context.runtimeEnvCredentials ?? []).map((credential) => credential.credentialValue),
+          ...(context.runtimeFileCredentials ?? []).map((credential) => credential.credentialValue),
+          context.sandboxBindingRef ?? '',
+          controlRegistration?.token ?? '',
+        ]),
         sessionDirectory: sessionFiles.sessionDirectory,
       });
 
@@ -945,6 +955,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
         ? [identity.transientProviderInstanceId]
         : [],
       sandboxName: identity.backendSessionId,
+      sensitiveValueBytes: null,
       sessionDirectory,
     });
   }
@@ -1107,21 +1118,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
   }
 
   /**
-   * Collects OpenShell artifacts through the downloaded artifact transcript.
-   *
-   * @param packageSnapshotId Package snapshot id.
-   * @returns Empty artifact list until transcript download is wired.
-   */
-  public async collectArtifacts(
-    packageSnapshotId: string
-  ): Promise<WorkerGovernanceArtifactRecord[]> {
-    const session = this.requireMaterializedSession(packageSnapshotId);
-    const transcript = await this.downloadTranscript(session);
-
-    return parseOpenShellArtifactRecords(packageSnapshotId, transcript.artifactsJsonl);
-  }
-
-  /**
    * Collects worker-written OpenKit transcript files for canonical turn-end import.
    *
    * @param packageSnapshotId Package snapshot id.
@@ -1130,6 +1126,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
   public async collectTranscript(packageSnapshotId: string): Promise<WorkerTranscriptPayload> {
     const session = this.requireMaterializedSession(packageSnapshotId);
     const transcript = await this.downloadTranscript(session);
+    const artifactFiles = await this.downloadArtifactFiles(session, transcript.artifactsJsonl);
     const runtimeProvenance = session.environmentPackage.control.transcript?.runtimeProvenance
       ? await this.downloadRuntimeProvenance(session)
       : null;
@@ -1138,6 +1135,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
       artifactsJsonl: transcript.artifactsJsonl,
       eventsJsonl: transcript.eventsJsonl,
       itemsJsonl: transcript.itemsJsonl,
+      ...(artifactFiles.length > 0 ? { artifactFiles } : {}),
       ...(runtimeProvenance ? { runtimeProvenance } : {}),
     };
   }
@@ -1203,6 +1201,7 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
         'worker-control',
         'credential-placeholder',
         'nanocore-inference-upstream',
+        'backend-local-inference',
         'trusted-worker-inference-relay',
         WORKER_RUNTIME_PROVENANCE_FEATURE,
         'audit-export',
@@ -1462,6 +1461,102 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
   }
 
   /**
+   * Collects every declared Artifact through the retained session's bounded copy boundary.
+   *
+   * @param session Materialized session that owns the declarations and injected values.
+   * @param artifactsJsonl Canonical worker declaration stream.
+   * @returns Exact payload bytes keyed by declaration sequence.
+   * @throws A redacted invalid-collection or recovery error before canonical writes.
+   */
+  private async downloadArtifactFiles(
+    session: OpenShellSessionState,
+    artifactsJsonl: string
+  ): Promise<Array<{ bytes: Buffer; sequence: number }>> {
+    if (!artifactsJsonl.trim()) {
+      return [];
+    }
+    if (session.sensitiveValueBytes === null) {
+      throw Object.assign(
+        new Error('Restored Worker Artifact collection requires operator recovery.'),
+        { code: WORKER_ARTIFACT_RECOVERY_REQUIRED }
+      );
+    }
+    const declarations = parseWorkerArtifactDeclarations(
+      session.environmentPackage,
+      artifactsJsonl
+    );
+
+    let remainingBytes = MAX_WORKER_ARTIFACT_BYTES;
+    const artifactFiles: Array<{ bytes: Buffer; sequence: number }> = [];
+
+    for (const declaration of declarations) {
+      const workerTemporaryPath = `/openkit/session/artifact-collection/${declaration.sequence}.bin`;
+      const localPath = join(
+        session.sessionDirectory,
+        `downloaded-artifact-${declaration.sequence}.bin`
+      );
+      let bytes: Buffer;
+      try {
+        await this.cli.execSandbox({
+          command: [
+            '/bin/sh',
+            '-c',
+            'set -eu; umask 077; mkdir -p /openkit/session/artifact-collection; test -f "$1"; head -c "$2" -- "$1" > "$3"',
+            'openkit-artifact-copy',
+            declaration.artifact.path,
+            String(remainingBytes + 1),
+            workerTemporaryPath,
+          ],
+          gateway: session.identity.backendTarget.gatewayName,
+          ...(session.identity.backendTarget.gatewayEndpoint
+            ? { gatewayEndpoint: session.identity.backendTarget.gatewayEndpoint }
+            : {}),
+          name: session.sandboxName,
+        });
+        await this.cli.downloadFile({
+          destinationPath: localPath,
+          gateway: this.gatewayName,
+          ...(this.gatewayUrl ? { gatewayEndpoint: this.gatewayUrl } : {}),
+          name: session.sandboxName,
+          sandboxPath: `/sandbox${workerTemporaryPath}`,
+        });
+        bytes = await readFile(localPath);
+      } catch {
+        throw invalidWorkerArtifactCollection('Worker Artifact source could not be collected.');
+      }
+
+      if (bytes.length > remainingBytes) {
+        throw invalidWorkerArtifactCollection(
+          'Worker Artifact payload exceeds the 16 MiB Turn limit.'
+        );
+      }
+      if (bytes.length === 0) {
+        throw invalidWorkerArtifactCollection('Worker Artifact payload must not be empty.');
+      }
+      if (!isUtf8(bytes)) {
+        throw invalidWorkerArtifactCollection('Worker Artifact payload must be valid UTF-8.');
+      }
+      if (session.sensitiveValueBytes.some((sensitiveValue) => bytes.includes(sensitiveValue))) {
+        throw invalidWorkerArtifactCollection(
+          'Worker Artifact collection rejected a sensitive value.'
+        );
+      }
+      if (declaration.artifact.mediaType === 'application/json') {
+        try {
+          JSON.parse(bytes.toString('utf8'));
+        } catch {
+          throw invalidWorkerArtifactCollection('Worker Artifact JSON payload is invalid.');
+        }
+      }
+
+      remainingBytes -= bytes.length;
+      artifactFiles.push({ bytes, sequence: declaration.sequence });
+    }
+
+    return artifactFiles;
+  }
+
+  /**
    * Downloads one optional transcript file, returning empty content when it is absent.
    *
    * @param session Materialized session state.
@@ -1690,26 +1785,6 @@ export class OpenShellWorkerGovernanceBackend implements WorkerGovernanceBackend
       text,
     };
   }
-
-  /**
-   * Builds optional Codex config uploads for OpenShell workers.
-   *
-   * @returns Upload declarations for explicitly configured Codex config.
-   */
-  private codexConfigUploads(
-    excludedTargetPaths: ReadonlySet<string> = new Set()
-  ): OpenShellSandboxUploadInput[] {
-    const uploads: OpenShellSandboxUploadInput[] = [];
-
-    if (this.codexConfigTomlPath && !excludedTargetPaths.has('/sandbox/.codex/config.toml')) {
-      uploads.push({
-        sourcePath: this.codexConfigTomlPath,
-        targetPath: '/sandbox/.codex/config.toml',
-      });
-    }
-
-    return uploads;
-  }
 }
 
 /**
@@ -1783,9 +1858,36 @@ async function createOpenShellWorkspaceBundles(
     const workerPath = sessionWorkspaceInputTarget(environmentPackage, workspaceInput.id);
     const bundleName = `workspace-${sanitizeOpenShellPathComponent(workspaceInput.id)}.tar`;
     const sourcePath = join(bundlesDirectory, bundleName);
+    const expectedRootDigest = openShellContextPackageRootDigest(workspaceInput, workerPath);
+    let expectedFileInventory: OpenShellWorkspaceBundleFileInventoryEntry[] | null = null;
 
-    await createWorkspaceTarBundle(root.sourcePath, sourcePath);
+    if (expectedRootDigest) {
+      try {
+        expectedFileInventory = await createWorkspaceBundleFileInventory(root.sourcePath);
+      } catch {
+        throw openShellContextPackageSourceUnavailableError();
+      }
+    }
+
+    if (
+      expectedFileInventory &&
+      workspaceBundleFileInventoryDigest(expectedFileInventory) !== expectedRootDigest
+    ) {
+      throw new Error('OpenShell Context Package root digest does not match its file inventory.');
+    }
+
+    try {
+      await createWorkspaceTarBundle(root.sourcePath, sourcePath);
+    } catch (error) {
+      if (expectedRootDigest) {
+        throw openShellContextPackageSourceUnavailableError();
+      }
+      throw error;
+    }
     uploads.push({
+      ...(expectedFileInventory && expectedRootDigest
+        ? { expectedFileInventory, expectedRootDigest }
+        : {}),
       sourcePath,
       targetPath: `/openkit/config/workspaces/${sanitizeOpenShellPathComponent(
         workspaceInput.id
@@ -1795,6 +1897,98 @@ async function createOpenShellWorkspaceBundles(
   }
 
   return uploads;
+}
+
+/**
+ * Reads the package-root digest from the exact generated Context Package input.
+ *
+ * @param input Workspace input being transported.
+ * @param workerPath Session slot selected for the input.
+ * @returns Required package-root digest, or null for ordinary workspace bundles.
+ * @throws Error when the Context Package input omits its canonical digest.
+ */
+function openShellContextPackageRootDigest(
+  input: AgentEnvironmentPackage['workspace']['inputs'][number],
+  workerPath: string
+): string | null {
+  const materialization = input.materialization;
+
+  if (
+    workerPath !== '/openkit/context' ||
+    !isRecord(materialization) ||
+    materialization.slotId !== 'context'
+  ) {
+    return null;
+  }
+
+  const contentDigest = materialization.contentDigest;
+  if (typeof contentDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(contentDigest)) {
+    throw new Error('OpenShell Context Package requires one canonical package-root digest.');
+  }
+
+  return contentDigest;
+}
+
+/**
+ * Inventories every regular file under one prepared workspace bundle root.
+ *
+ * @param root Bundle root whose exact bytes will be uploaded.
+ * @param directory Current directory during recursive traversal.
+ * @returns Sorted worker-relative file inventory.
+ * @throws Error when the prepared bundle contains a symlink or special file.
+ */
+async function createWorkspaceBundleFileInventory(
+  root: string,
+  directory: string = root
+): Promise<OpenShellWorkspaceBundleFileInventoryEntry[]> {
+  const inventory: OpenShellWorkspaceBundleFileInventoryEntry[] = [];
+
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    const relativePath = relative(root, path).split(sep).join('/');
+
+    if (entry.isDirectory()) {
+      inventory.push(...(await createWorkspaceBundleFileInventory(root, path)));
+      continue;
+    }
+    if (!entry.isFile()) {
+      throw new Error(`OpenShell Context Package contains an unsupported file: ${relativePath}`);
+    }
+
+    const content = await readFile(path);
+    inventory.push({
+      byteLength: content.byteLength,
+      contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+      path: relativePath,
+    });
+  }
+
+  return inventory.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+/**
+ * Computes the S39 package-root digest over one sorted exact file inventory.
+ *
+ * @param inventory Complete sorted package file inventory.
+ * @returns Canonical SHA-256 package-root digest.
+ */
+function workspaceBundleFileInventoryDigest(
+  inventory: readonly OpenShellWorkspaceBundleFileInventoryEntry[]
+): string {
+  return `sha256:${createHash('sha256').update(JSON.stringify(inventory)).digest('hex')}`;
+}
+
+/**
+ * Creates the product-safe failure for unavailable prepared Context Package bytes.
+ *
+ * @returns Typed error without backend-private source details.
+ */
+function openShellContextPackageSourceUnavailableError(): Error & {
+  code: 'source_unavailable';
+} {
+  return Object.assign(new Error('OpenShell Context Package source is unavailable.'), {
+    code: 'source_unavailable' as const,
+  });
 }
 
 /**
@@ -1930,31 +2124,71 @@ async function createWorkspaceTarBundle(
 }
 
 /**
- * Builds the OpenShell command, optionally extracting workspace bundles before worker startup.
+ * Builds one sandbox-side extraction command for already uploaded workspace bundles.
  *
- * @param environmentPackage Package whose command should run in the sandbox.
- * @param workspaceBundles Workspace bundles uploaded beside the package.
- * @returns OpenShell sandbox command argv.
+ * @param workspaceBundles Uploaded bundles and optional exact Context Package proof.
+ * @returns Node argv that extracts every bundle and verifies any exact package inventory.
  */
-function openShellSandboxCommand(
-  environmentPackage: AgentEnvironmentPackage,
-  workspaceBundles: OpenShellWorkspaceBundleUpload[]
+function openShellWorkspaceBundleMaterializationCommand(
+  workspaceBundles: readonly OpenShellWorkspaceBundleUpload[]
 ): string[] {
-  if (workspaceBundles.length === 0) {
-    return environmentPackage.runtime.command.argv;
+  const plan = workspaceBundles.map((bundle) => ({
+    ...(bundle.expectedFileInventory
+      ? {
+          expectedFileInventory: bundle.expectedFileInventory,
+          expectedRootDigest: bundle.expectedRootDigest,
+        }
+      : {}),
+    targetPath: bundle.targetPath,
+    workerPath: bundle.workerPath,
+  }));
+  const script = `
+const { execFileSync } = require('node:child_process');
+const { createHash } = require('node:crypto');
+const { mkdirSync, readFileSync, readdirSync } = require('node:fs');
+const { join, relative, sep } = require('node:path');
+const plan = JSON.parse(Buffer.from(process.argv[1], 'base64url').toString('utf8'));
+function inventory(root, directory = root) {
+  const files = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    const relativePath = relative(root, path).split(sep).join('/');
+    if (entry.isDirectory()) {
+      files.push(...inventory(root, path));
+    } else if (entry.isFile()) {
+      const content = readFileSync(path);
+      files.push({
+        byteLength: content.byteLength,
+        contentDigest: 'sha256:' + createHash('sha256').update(content).digest('hex'),
+        path: relativePath,
+      });
+    } else {
+      throw new Error('Unsupported workspace bundle file: ' + relativePath);
+    }
   }
+  return files.sort((left, right) => left.path.localeCompare(right.path));
+}
+for (const bundle of plan) {
+  mkdirSync(bundle.workerPath, { recursive: true });
+  execFileSync('tar', ['-xf', bundle.targetPath, '-C', bundle.workerPath]);
+  if (!bundle.expectedFileInventory) continue;
+  const actual = inventory(bundle.workerPath);
+  if (JSON.stringify(actual) !== JSON.stringify(bundle.expectedFileInventory)) {
+    throw new Error('Workspace bundle file inventory mismatch.');
+  }
+  const digest = 'sha256:' + createHash('sha256').update(JSON.stringify(actual)).digest('hex');
+  if (digest !== bundle.expectedRootDigest) {
+    throw new Error('Workspace bundle root digest mismatch.');
+  }
+}
+`;
 
-  const extractionCommands = workspaceBundles.flatMap((bundle) => [
-    `mkdir -p ${shellQuote(bundle.workerPath)}`,
-    `tar -xf ${shellQuote(bundle.targetPath)} -C ${shellQuote(bundle.workerPath)}`,
-  ]);
-  const command = [
-    'set -e',
-    ...extractionCommands,
-    `exec ${environmentPackage.runtime.command.argv.map((arg) => shellQuote(arg)).join(' ')}`,
-  ].join('; ');
-
-  return ['bash', '-lc', command];
+  return [
+    'node',
+    '-e',
+    script.replace(/[\r\n]/g, ''),
+    Buffer.from(JSON.stringify(plan)).toString('base64url'),
+  ];
 }
 
 /**
@@ -2002,16 +2236,6 @@ async function runCommand(
 }
 
 /**
- * Quotes one shell argument for the generated OpenShell bootstrap command.
- *
- * @param value Argument value.
- * @returns POSIX shell-quoted argument.
- */
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-/**
  * Sanitizes a workspace id for use in generated OpenShell file names.
  *
  * @param value Workspace input id.
@@ -2051,6 +2275,7 @@ async function writeOpenShellSessionFiles(
       renderOpenShellWorkerPolicy({
         additionalFilesystemGrants: openShellFilesystemGrantsFromPackagePolicy(environmentPackage),
         additionalNetworkEndpoints: openShellNetworkEndpointsFromPackagePolicy(environmentPackage),
+        binaries: requireOpenShellNetworkRuleBinaries(environmentPackage, 'openkit-worker-control'),
         controlBaseUrl: requireControlBaseUrl(environmentPackage),
       }),
       { encoding: 'utf8', mode: 0o600 }
@@ -2097,7 +2322,7 @@ async function writeOpenShellWorkerInferenceProfile(
   }
 
   const profileContent: Omit<OpenShellProviderProfileArtifact, 'id'> = {
-    binaries: [...CODEX_NETWORK_BINARIES],
+    binaries: requireOpenShellNetworkRuleBinaries(environmentPackage, 'openkit-worker-inference'),
     category: 'inference',
     credentials: [
       {
@@ -2185,7 +2410,14 @@ function openShellNetworkEndpointsFromPackagePolicy(
     ) {
       return [];
     }
-    if (!isRecord(rule) || rule.action !== 'allow' || typeof rule.port !== 'number') {
+    if (
+      !isRecord(rule) ||
+      rule.action !== 'allow' ||
+      typeof rule.port !== 'number' ||
+      !Array.isArray(rule.binaries) ||
+      !rule.binaries.every((binary) => typeof binary === 'string') ||
+      rule.binaries.length === 0
+    ) {
       return [];
     }
     if (typeof rule.id !== 'string' || typeof rule.host !== 'string') {
@@ -2222,10 +2454,7 @@ function openShellNetworkEndpointsFromPackagePolicy(
         ...(rule.access === 'read-only' || rule.access === 'read-write'
           ? { access: rule.access }
           : {}),
-        ...(Array.isArray(rule.binaries) &&
-        rule.binaries.every((binary) => typeof binary === 'string')
-          ? { binaries: rule.binaries }
-          : {}),
+        binaries: rule.binaries,
         host: rule.host,
         name: rule.id.replaceAll('-', '_'),
         port: rule.port,
@@ -2234,6 +2463,34 @@ function openShellNetworkEndpointsFromPackagePolicy(
       },
     ];
   });
+}
+
+/**
+ * Reads the exact executable allowlist from one resolved AEP network rule.
+ *
+ * @param environmentPackage Package whose network authority is being materialized.
+ * @param ruleId Stable AEP network rule identifier.
+ * @returns Non-empty runtime binary paths authorized by the rule.
+ * @throws Error when the resolved package omits an exact binary allowlist.
+ */
+function requireOpenShellNetworkRuleBinaries(
+  environmentPackage: AgentEnvironmentPackage,
+  ruleId: string
+): string[] {
+  const rule = (environmentPackage.policy.network?.rules ?? []).find(
+    (candidate) => isRecord(candidate) && candidate.id === ruleId
+  );
+  const binaries = isRecord(rule) ? rule.binaries : null;
+
+  if (
+    !Array.isArray(binaries) ||
+    binaries.length === 0 ||
+    !binaries.every((binary) => typeof binary === 'string')
+  ) {
+    throw new Error(`OpenShell network rule requires exact runtime binaries: ${ruleId}`);
+  }
+
+  return binaries;
 }
 
 /**
@@ -2290,6 +2547,113 @@ function summarizeJsonl(jsonl: string): { bytes: number; records: number } {
 }
 
 /**
+ * Parses and validates the complete worker Artifact declaration set before payload transfer.
+ *
+ * @param environmentPackage Package that owns exact lineage and output roots.
+ * @param artifactsJsonl Serialized Artifact declarations.
+ * @returns Strict declarations ordered by unique sequence.
+ * @throws A redacted collection error for malformed or ambiguous declarations.
+ */
+function parseWorkerArtifactDeclarations(
+  environmentPackage: AgentEnvironmentPackage,
+  artifactsJsonl: string
+): Array<ReturnType<typeof WorkerTranscriptArtifactRecordSchema.parse>> {
+  const declarations: Array<ReturnType<typeof WorkerTranscriptArtifactRecordSchema.parse>> = [];
+  const sequences = new Set<number>();
+  const paths = new Set<string>();
+  const outputRoots = environmentPackage.workspace.outputs.filter(
+    (output) => output.registerAsArtifacts && output.retention === 'sync-on-turn-end'
+  );
+
+  for (const line of artifactsJsonl.split('\n')) {
+    if (!line.trim()) {
+      continue;
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      throw invalidWorkerArtifactCollection('Worker Artifact declaration JSON is invalid.');
+    }
+    const parsed = WorkerTranscriptArtifactRecordSchema.safeParse(value);
+    if (!parsed.success) {
+      throw invalidWorkerArtifactCollection('Worker Artifact declaration is invalid.');
+    }
+    const declaration = parsed.data;
+    const lineage = declaration.lineage;
+    if (
+      lineage.workspaceId !== environmentPackage.scope.workspaceId ||
+      lineage.threadId !== environmentPackage.scope.threadId ||
+      lineage.turnId !== environmentPackage.scope.turnId ||
+      lineage.agentSessionId !== environmentPackage.scope.agentSessionId ||
+      lineage.packageSnapshotId !== environmentPackage.snapshotId ||
+      (lineage.requestId ?? null) !== (environmentPackage.scope.requestId ?? null)
+    ) {
+      throw invalidWorkerArtifactCollection('Worker Artifact declaration lineage is invalid.');
+    }
+    const artifactPath = declaration.artifact.path;
+    if (!posix.isAbsolute(artifactPath) || posix.normalize(artifactPath) !== artifactPath) {
+      throw invalidWorkerArtifactCollection('Worker Artifact path is not canonical.');
+    }
+    const matchingRoots = outputRoots.filter((output) => {
+      if (!posix.isAbsolute(output.path) || posix.normalize(output.path) !== output.path) {
+        return false;
+      }
+      const childPath = posix.relative(output.path, artifactPath);
+      return (
+        childPath.length > 0 &&
+        childPath !== '..' &&
+        !childPath.startsWith('../') &&
+        !posix.isAbsolute(childPath)
+      );
+    });
+    if (matchingRoots.length !== 1) {
+      throw invalidWorkerArtifactCollection(
+        'Worker Artifact path does not belong to one eligible output root.'
+      );
+    }
+    if (sequences.has(declaration.sequence) || paths.has(artifactPath)) {
+      throw invalidWorkerArtifactCollection('Worker Artifact declaration is duplicated.');
+    }
+    sequences.add(declaration.sequence);
+    paths.add(artifactPath);
+    declarations.push(declaration);
+  }
+
+  return declarations.sort((left, right) => left.sequence - right.sequence);
+}
+
+/**
+ * Encodes exact injected values once and removes byte-identical duplicates.
+ *
+ * @param values Exact live values injected into the worker materialization.
+ * @returns Non-empty unique UTF-8 byte sequences.
+ */
+function uniqueSensitiveValueBytes(values: readonly string[]): Buffer[] {
+  const unique = new Map<string, Buffer>();
+  for (const value of values) {
+    if (value.length === 0) {
+      continue;
+    }
+    const bytes = Buffer.from(value, 'utf8');
+    unique.set(bytes.toString('hex'), bytes);
+  }
+  return [...unique.values()];
+}
+
+/**
+ * Creates one redacted fail-closed Artifact collection error.
+ *
+ * @param message Product-safe failure summary.
+ * @returns Structural error consumed by the existing turn failure boundary.
+ */
+function invalidWorkerArtifactCollection(
+  message: string
+): Error & { readonly code: typeof WORKER_ARTIFACT_COLLECTION_INVALID } {
+  return Object.assign(new Error(message), { code: 'worker_artifact_collection_invalid' as const });
+}
+
+/**
  * Summarizes provider inspection text for audit evidence.
  *
  * @param value Product-safe provider inspection text.
@@ -2339,66 +2703,6 @@ function redactProviderEvidenceText(value: string): string {
     )
     .replace(/gh[pousr]_[A-Za-z0-9_]+/g, '[redacted]')
     .replace(/sk-[A-Za-z0-9_-]+/g, '[redacted]');
-}
-
-/**
- * Parses worker artifact candidates from an OpenShell transcript file.
- *
- * @param packageSnapshotId Expected package snapshot id.
- * @param jsonl Artifact JSONL transcript.
- * @returns Product-safe artifact candidates.
- */
-function parseOpenShellArtifactRecords(
-  packageSnapshotId: string,
-  jsonl: string
-): WorkerGovernanceArtifactRecord[] {
-  const artifacts: WorkerGovernanceArtifactRecord[] = [];
-
-  for (const line of jsonl.split('\n')) {
-    if (!line.trim()) {
-      continue;
-    }
-
-    const parsed = WorkerTranscriptArtifactRecordSchema.safeParse(parseJsonObject(line));
-
-    if (!parsed.success || parsed.data.lineage.packageSnapshotId !== packageSnapshotId) {
-      continue;
-    }
-
-    artifacts.push({
-      id: `worker-artifact-${packageSnapshotId}-${parsed.data.sequence}`,
-      mediaType: parsed.data.artifact.mediaType ?? null,
-      path: parsed.data.artifact.path,
-    });
-  }
-
-  return artifacts;
-}
-
-/**
- * Parses one JSON object safely.
- *
- * @param text Serialized JSON.
- * @returns Parsed object, or null.
- */
-function parseJsonObject(text: string): Record<string, unknown> | null {
-  try {
-    return readObject(JSON.parse(text) as unknown);
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Narrows a candidate value to a plain record.
- *
- * @param value Candidate value.
- * @returns Plain object, or an empty object for non-objects.
- */
-function readObject(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
 }
 
 /**

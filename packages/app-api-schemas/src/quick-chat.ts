@@ -1,13 +1,12 @@
 import { z } from 'zod';
 
 /** Quick chat request body for a completed non-streaming response. */
-export const QuickChatRequestSchema = z.object({
-  input: z.string().min(1),
-  workspaceId: z.string().min(1).optional(),
-  providerId: z.string().min(1).optional(),
-  model: z.string().min(1).optional(),
-  stream: z.literal(false).optional(),
-});
+export const QuickChatRequestSchema = z
+  .object({
+    input: z.string().min(1),
+    stream: z.literal(false).optional(),
+  })
+  .strict();
 
 /** Quick chat response payload. */
 export const QuickChatResponseSchema = z.object({

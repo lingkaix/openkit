@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
 
@@ -8,11 +9,12 @@ import {
   isActiveOpenKitKnowledgePage,
   type KnowledgeConformance,
   type KnowledgeValidationError,
+  knowledgeReferenceErrors,
   type OkfDocument,
   parseOkfDocument,
   parseWorkspaceKnowledgeSchema,
   stringFrontmatterField,
-  validateWorkspaceKnowledgeSchema,
+  validateKnowledgePageCandidate,
   type WorkspaceKnowledgeSchema,
 } from '../knowledge/okf.js';
 import { resolveDataRootPath } from './fs-layout.js';
@@ -88,6 +90,8 @@ export interface WorkspaceKnowledgeValidationRecord {
   conceptId: string;
   /** Knowledge page path relative to the workspace root. */
   path: string;
+  /** SHA-256 digest of the exact authoritative page bytes. */
+  contentDigest: string;
   /** Human-readable title when parseable. */
   title?: string;
   /** Highest conformance level reached by the page. */
@@ -187,8 +191,6 @@ export interface WorkspaceKnowledgeFullTextIndex {
 export interface RebuildWorkspaceDerivedIndexesInput {
   /** Data root that owns the workspace. */
   dataRoot: string;
-  /** User that owns the workspace. */
-  userId: string;
   /** Workspace to rebuild. */
   workspaceId: string;
   /** Optional timestamp source for deterministic tests. */
@@ -215,8 +217,6 @@ export interface RebuildWorkspaceDerivedIndexesResult {
 export interface ReadWorkspaceKnowledgeDerivedIndexesInput {
   /** Data root that owns the workspace. */
   dataRoot: string;
-  /** User that owns the workspace. */
-  userId: string;
   /** Workspace to read. */
   workspaceId: string;
 }
@@ -237,6 +237,8 @@ export interface WorkspaceKnowledgeDerivedIndexes {
 
 /** Input for deterministic Knowledge Store retrieval. */
 export interface RetrieveWorkspaceKnowledgeInput extends ReadWorkspaceKnowledgeDerivedIndexesInput {
+  /** Server-owned product surface requesting retrieval. */
+  caller: 'assistant' | 'task-mode' | 'app-api';
   /** User query used to rank active Knowledge Store pages. */
   query: string;
   /** Maximum number of selected candidates. */
@@ -251,32 +253,30 @@ export interface RetrieveWorkspaceKnowledgeInput extends ReadWorkspaceKnowledgeD
 
 /** Selected Knowledge Store retrieval candidate. */
 export interface WorkspaceKnowledgeRetrievalCandidate {
-  /** Selected concept id. */
-  conceptId: string;
-  /** Human-readable title. */
-  title: string;
-  /** Knowledge page path relative to the workspace root. */
-  path: string;
+  /** Selected Knowledge Page id. */
+  knowledgePageId: string;
+  /** SHA-256 digest of the exact authoritative page bytes. */
+  contentDigest: string;
   /** Deterministic retrieval score. */
   score: number;
-  /** Query terms matched by this page. */
-  matchedTerms: string[];
   /** Source references declared by this page. */
   sourceReferences: string[];
 }
 
 /** Retrieval candidate excluded from the selected context budget. */
 export interface WorkspaceKnowledgeRetrievalExclusion {
-  /** Excluded concept id. */
-  conceptId: string;
-  /** Human-readable title. */
-  title: string;
-  /** Knowledge page path relative to the workspace root. */
-  path: string;
+  /** Excluded Knowledge Page id. */
+  knowledgePageId: string;
+  /** Exact page digest, or null when content may not be exposed. */
+  contentDigest: string | null;
   /** Deterministic exclusion reason. */
-  reason: 'relevance_too_low' | 'budget_exceeded';
-  /** Human-readable exclusion detail. */
-  detail: string;
+  reason:
+    | 'sensitive_content'
+    | 'lower_conformance'
+    | 'policy_excluded'
+    | 'freshness_expired'
+    | 'budget_exceeded'
+    | 'source_unavailable';
 }
 
 /** Persisted Knowledge Store retrieval trace. */
@@ -285,14 +285,23 @@ export interface WorkspaceKnowledgeRetrievalTrace {
   traceId: string;
   /** Workspace that owns the retrieval. */
   workspaceId: string;
-  /** Query used to rank candidates. */
-  query: string;
-  /** Trace creation timestamp. */
-  createdAt: string;
+  /** Server-owned product surface that requested retrieval. */
+  caller: RetrieveWorkspaceKnowledgeInput['caller'];
+  /** Digest of the normalized governed request and caller. */
+  requestDigest: string;
+  /** Non-sensitive parameters retained for replay inspection. */
+  retrievalParameters: {
+    /** Maximum selected candidate count. */
+    limit: number;
+    /** Bytewise-sorted duplicate-free pinned page ids. */
+    pinnedConceptIds: string[];
+  };
   /** Selected candidates in deterministic ranking order. */
   selected: WorkspaceKnowledgeRetrievalCandidate[];
   /** Excluded candidates with deterministic reasons. */
   excluded: WorkspaceKnowledgeRetrievalExclusion[];
+  /** Trace creation timestamp. */
+  createdAt: string;
 }
 
 /** Options for boot-time derived index rebuild scans. */
@@ -311,13 +320,7 @@ export interface RebuildExistingWorkspaceDerivedIndexesOptions {
 export function rebuildWorkspaceDerivedIndexes(
   input: RebuildWorkspaceDerivedIndexesInput
 ): RebuildWorkspaceDerivedIndexesResult {
-  const workspaceRoot = resolveDataRootPath(
-    input.dataRoot,
-    'users',
-    input.userId,
-    'workspaces',
-    input.workspaceId
-  );
+  const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
   const workspacePath = join(workspaceRoot, 'workspace.json');
 
   if (!existsSync(workspacePath)) {
@@ -400,25 +403,20 @@ export function rebuildExistingWorkspaceDerivedIndexes(
   options: RebuildExistingWorkspaceDerivedIndexesOptions = {}
 ): RebuildWorkspaceDerivedIndexesResult[] {
   const results: RebuildWorkspaceDerivedIndexesResult[] = [];
-  const usersRoot = resolveDataRootPath(dataRoot, 'users');
+  const workspacesRoot = resolveDataRootPath(dataRoot, 'workspaces');
 
-  for (const userId of listDirectories(usersRoot)) {
-    const workspacesRoot = resolveDataRootPath(dataRoot, 'users', userId, 'workspaces');
-
-    for (const workspaceId of listDirectories(workspacesRoot)) {
-      if (!existsSync(join(workspacesRoot, workspaceId, 'workspace.json'))) {
-        continue;
-      }
-
-      results.push(
-        rebuildWorkspaceDerivedIndexes({
-          dataRoot,
-          userId,
-          workspaceId,
-          ...(options.now ? { now: options.now } : {}),
-        })
-      );
+  for (const workspaceId of listDirectories(workspacesRoot)) {
+    if (!existsSync(join(workspacesRoot, workspaceId, 'workspace.json'))) {
+      continue;
     }
+
+    results.push(
+      rebuildWorkspaceDerivedIndexes({
+        dataRoot,
+        workspaceId,
+        ...(options.now ? { now: options.now } : {}),
+      })
+    );
   }
 
   return results;
@@ -437,8 +435,6 @@ export function readWorkspaceKnowledgeDerivedIndexes(
 
   const indexesRoot = resolveDataRootPath(
     input.dataRoot,
-    'users',
-    input.userId,
     'workspaces',
     input.workspaceId,
     'indexes'
@@ -471,14 +467,21 @@ export function retrieveWorkspaceKnowledge(
   input: RetrieveWorkspaceKnowledgeInput
 ): WorkspaceKnowledgeRetrievalTrace {
   const indexes = readWorkspaceKnowledgeDerivedIndexes(input);
-  const queryTerms = [...new Set(tokenizeKnowledgeText(input.query))].sort();
-  const pinnedConceptIds = new Set(input.pinnedConceptIds ?? []);
+  const queryTerms = [...new Set(tokenizeKnowledgeText(input.query))].sort(compareBytewise);
+  const normalizedPinnedConceptIds = [...new Set(input.pinnedConceptIds ?? [])].sort(
+    compareBytewise
+  );
+  const pinnedConceptIds = new Set(normalizedPinnedConceptIds);
   const limit = input.limit ?? 5;
   const createdAt = input.now?.() ?? new Date().toISOString();
-  const traceId = input.traceId ?? `krt_${createdAt.replaceAll(/\D/g, '')}`;
+  const traceId = input.traceId ?? `krt_${randomUUID()}`;
+  const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
+  const workspaceSchemaText = readWorkspaceKnowledgeSchemaText(workspaceRoot);
+  const registeredSourceIds = readRegisteredSourceIds(workspaceRoot, input.workspaceId);
+  const knowledgeIds = readKnowledgePageIds(join(workspaceRoot, 'knowledge', 'pages'));
   const sourceReferencesByConcept = new Map<string, string[]>();
   const scores = new Map<string, number>();
-  const matchedTerms = new Map<string, Set<string>>();
+  const addressedIds = new Set(normalizedPinnedConceptIds);
 
   for (const reference of indexes.sourceReferences.references) {
     const references = sourceReferencesByConcept.get(reference.conceptId) ?? [];
@@ -493,69 +496,185 @@ export function retrieveWorkspaceKnowledge(
     }
 
     for (const posting of term.postings) {
+      addressedIds.add(posting.conceptId);
       const fieldScore = posting.fields.includes('title') ? 2 : 0;
       scores.set(
         posting.conceptId,
         (scores.get(posting.conceptId) ?? 0) + posting.occurrences + fieldScore
       );
-
-      const terms = matchedTerms.get(posting.conceptId) ?? new Set<string>();
-
-      terms.add(term.term);
-      matchedTerms.set(posting.conceptId, terms);
     }
   }
 
-  const candidates = indexes.validation.records
-    .filter((record) => record.indexed)
-    .map<WorkspaceKnowledgeRetrievalCandidate>((record) => {
-      const pinnedScore = pinnedConceptIds.has(record.conceptId) ? 1000 : 0;
-
-      return {
-        conceptId: record.conceptId,
-        title: record.title ?? record.conceptId,
-        path: record.path,
-        score: (scores.get(record.conceptId) ?? 0) + pinnedScore,
-        matchedTerms: [...(matchedTerms.get(record.conceptId) ?? new Set<string>())].sort(),
-        sourceReferences: [
-          ...new Set(sourceReferencesByConcept.get(record.conceptId) ?? []),
-        ].sort(),
-      };
-    })
-    .sort(compareKnowledgeRetrievalCandidates);
-  const selectedIds = new Set(
-    candidates
-      .filter((candidate) => candidate.score > 0 || pinnedConceptIds.has(candidate.conceptId))
-      .slice(0, limit)
-      .map((candidate) => candidate.conceptId)
+  const validationByConcept = new Map(
+    indexes.validation.records.map((record) => [record.conceptId, record] as const)
   );
+  const candidates = [...addressedIds]
+    .map((knowledgePageId) => ({
+      knowledgePageId,
+      pinned: pinnedConceptIds.has(knowledgePageId),
+      score: scores.get(knowledgePageId) ?? 0,
+    }))
+    .sort(compareKnowledgeRetrievalCandidates);
+  const selected: WorkspaceKnowledgeRetrievalCandidate[] = [];
+  const excluded: WorkspaceKnowledgeRetrievalExclusion[] = [];
+
+  for (const candidate of candidates) {
+    const record = validationByConcept.get(candidate.knowledgePageId);
+
+    if (!record) {
+      excluded.push({
+        knowledgePageId: candidate.knowledgePageId,
+        contentDigest: null,
+        reason: 'source_unavailable',
+      });
+      continue;
+    }
+
+    const expectedPath = `knowledge/pages/${candidate.knowledgePageId}.md`;
+
+    if (record.path !== expectedPath) {
+      throw new Error('Knowledge retrieval requires an index rebuild.');
+    }
+
+    let content: string;
+
+    try {
+      content = readCanonicalTextFile(join(workspaceRoot, expectedPath));
+    } catch {
+      excluded.push({
+        knowledgePageId: candidate.knowledgePageId,
+        contentDigest: null,
+        reason: 'source_unavailable',
+      });
+      continue;
+    }
+
+    const contentDigest = sha256Digest(content);
+    const parsed = parseOkfDocument({ path: expectedPath, content });
+    const document = parsed.document;
+    const validation = validateKnowledgePageCandidate({
+      path: expectedPath,
+      content,
+      ...(workspaceSchemaText ? { workspaceSchemaText } : {}),
+      registeredSourceIds,
+      knowledgeIds,
+    });
+    const sourceReferences =
+      document && Array.isArray(document.frontmatter.source_refs)
+        ? [...new Set(document.frontmatter.source_refs)].sort(compareBytewise)
+        : [];
+    const projectedSourceReferences = [
+      ...new Set(sourceReferencesByConcept.get(candidate.knowledgePageId) ?? []),
+    ].sort(compareBytewise);
+    const active = document?.frontmatter.status === 'active';
+    const indexed =
+      active &&
+      validation.conformance === 'Workspace-schema-valid' &&
+      validation.errors.length === 0;
+    const title = document ? stringFrontmatterField(document, 'title') : null;
+
+    if (
+      record.contentDigest !== contentDigest ||
+      record.conformance !== validation.conformance ||
+      record.active !== active ||
+      record.indexed !== indexed ||
+      (record.title ?? null) !== title ||
+      canonicalJson(record.errors) !== canonicalJson(validation.errors) ||
+      (document &&
+        (document.conceptId !== candidate.knowledgePageId ||
+          !sameStrings(sourceReferences, projectedSourceReferences))) ||
+      (!document && projectedSourceReferences.length > 0)
+    ) {
+      throw new Error('Knowledge retrieval requires an index rebuild.');
+    }
+
+    const sensitivity = document ? stringFrontmatterField(document, 'sensitivity') : null;
+
+    if (sensitivity === 'restricted' || sensitivity === 'confidential') {
+      excluded.push({
+        knowledgePageId: candidate.knowledgePageId,
+        contentDigest: null,
+        reason: 'sensitive_content',
+      });
+      continue;
+    }
+
+    if (!parsed.ok || !document || validation.conformance !== 'Workspace-schema-valid' || !active) {
+      excluded.push({
+        knowledgePageId: candidate.knowledgePageId,
+        contentDigest,
+        reason: 'lower_conformance',
+      });
+      continue;
+    }
+
+    const reviewState = stringFrontmatterField(document, 'review_state');
+
+    if (!indexed || (reviewState !== 'accepted' && reviewState !== 'user-authored')) {
+      excluded.push({
+        knowledgePageId: candidate.knowledgePageId,
+        contentDigest,
+        reason: 'lower_conformance',
+      });
+      continue;
+    }
+
+    const exactScore = knowledgeTermScore(document, queryTerms);
+
+    if (exactScore !== candidate.score) {
+      throw new Error('Knowledge retrieval requires an index rebuild.');
+    }
+
+    const freshness = stringFrontmatterField(document, 'freshness');
+
+    if (freshness === 'stale' || freshness === 'expired') {
+      excluded.push({
+        knowledgePageId: candidate.knowledgePageId,
+        contentDigest,
+        reason: 'freshness_expired',
+      });
+      continue;
+    }
+
+    if (selected.length >= limit) {
+      excluded.push({
+        knowledgePageId: candidate.knowledgePageId,
+        contentDigest,
+        reason: 'budget_exceeded',
+      });
+      continue;
+    }
+
+    selected.push({
+      knowledgePageId: candidate.knowledgePageId,
+      contentDigest,
+      score: candidate.score,
+      sourceReferences,
+    });
+  }
+
+  const request = {
+    query: input.query,
+    limit,
+    pinnedConceptIds: normalizedPinnedConceptIds,
+  };
   const trace: WorkspaceKnowledgeRetrievalTrace = {
     traceId,
     workspaceId: input.workspaceId,
-    query: input.query,
+    caller: input.caller,
+    requestDigest: sha256Digest(
+      canonicalJson({ workspaceId: input.workspaceId, caller: input.caller, request })
+    ),
+    retrievalParameters: {
+      limit,
+      pinnedConceptIds: normalizedPinnedConceptIds,
+    },
+    selected,
+    excluded,
     createdAt,
-    selected: candidates.filter((candidate) => selectedIds.has(candidate.conceptId)),
-    excluded: candidates
-      .filter((candidate) => !selectedIds.has(candidate.conceptId))
-      .map((candidate) => ({
-        conceptId: candidate.conceptId,
-        title: candidate.title,
-        path: candidate.path,
-        reason:
-          candidate.score <= 0 && !pinnedConceptIds.has(candidate.conceptId)
-            ? 'relevance_too_low'
-            : 'budget_exceeded',
-        detail:
-          candidate.score <= 0 && !pinnedConceptIds.has(candidate.conceptId)
-            ? 'No query terms matched this candidate.'
-            : 'Candidate exceeded the retrieval selection limit.',
-      })),
   };
 
-  appendWorkspaceKnowledgeRetrievalTrace(
-    resolveDataRootPath(input.dataRoot, 'users', input.userId, 'workspaces', input.workspaceId),
-    trace
-  );
+  appendWorkspaceKnowledgeRetrievalTrace(workspaceRoot, trace);
 
   return trace;
 }
@@ -568,14 +687,61 @@ export function retrieveWorkspaceKnowledge(
  * @returns Sort comparator result.
  */
 function compareKnowledgeRetrievalCandidates(
-  left: WorkspaceKnowledgeRetrievalCandidate,
-  right: WorkspaceKnowledgeRetrievalCandidate
+  left: { readonly knowledgePageId: string; readonly pinned: boolean; readonly score: number },
+  right: { readonly knowledgePageId: string; readonly pinned: boolean; readonly score: number }
 ): number {
   return (
+    Number(right.pinned) - Number(left.pinned) ||
     right.score - left.score ||
-    left.title.localeCompare(right.title) ||
-    left.conceptId.localeCompare(right.conceptId)
+    compareBytewise(left.knowledgePageId, right.knowledgePageId)
   );
+}
+
+/** Computes the governed query score again from exact authoritative page bytes. */
+function knowledgeTermScore(document: OkfDocument, queryTerms: readonly string[]): number {
+  const titleTerms = tokenizeKnowledgeText(stringFrontmatterField(document, 'title') ?? '');
+  const bodyTerms = tokenizeKnowledgeText(document.body);
+
+  return queryTerms.reduce((score, term) => {
+    const titleOccurrences = titleTerms.filter((candidate) => candidate === term).length;
+    const bodyOccurrences = bodyTerms.filter((candidate) => candidate === term).length;
+    return score + titleOccurrences + bodyOccurrences + (titleOccurrences > 0 ? 2 : 0);
+  }, 0);
+}
+
+/** Serializes JSON with recursively bytewise-sorted object keys. */
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(sortCanonicalValue(value));
+}
+
+/** Recursively sorts object keys while preserving array order. */
+function sortCanonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortCanonicalValue);
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => compareBytewise(left, right))
+        .map(([key, entry]) => [key, sortCanonicalValue(entry)])
+    );
+  }
+  return value;
+}
+
+/** Computes a prefixed lowercase SHA-256 digest over exact UTF-8 text. */
+function sha256Digest(content: string): string {
+  return `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`;
+}
+
+/** Compares two strings by their exact UTF-8 byte order. */
+function compareBytewise(left: string, right: string): number {
+  return Buffer.compare(Buffer.from(left, 'utf8'), Buffer.from(right, 'utf8'));
+}
+
+/** Returns whether two already-normalized string arrays are identical. */
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((entry, index) => entry === right[index]);
 }
 
 /**
@@ -797,7 +963,7 @@ function buildKnowledgeValidationRecords(
   workspaceId: string
 ): WorkspaceKnowledgeValidationRecord[] {
   const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
-  const schema = readWorkspaceKnowledgeSchema(workspaceRoot);
+  const workspaceSchemaText = readWorkspaceKnowledgeSchemaText(workspaceRoot);
   const registeredSourceIds = readRegisteredSourceIds(workspaceRoot, workspaceId);
   const knowledgeIds = readKnowledgePageIds(pagesRoot);
   const records: WorkspaceKnowledgeValidationRecord[] = [];
@@ -809,67 +975,30 @@ function buildKnowledgeValidationRecords(
 
     const path = join(pagesRoot, fileName);
     const workspacePath = `knowledge/pages/${fileName}`;
-    const parsed = parseOkfDocument({ path, content: readCanonicalTextFile(path) });
+    const content = readCanonicalTextFile(path);
+    const contentDigest = sha256Digest(content);
+    const parsed = parseOkfDocument({ path, content });
 
-    if (!parsed.document) {
-      records.push({
-        conceptId: fileName.slice(0, -'.md'.length),
-        path: workspacePath,
-        conformance: 'invalid',
-        active: false,
-        indexed: false,
-        errors: parsed.errors,
-      });
-      continue;
-    }
-
-    if (!parsed.ok) {
-      const title = stringFrontmatterField(parsed.document, 'title');
-
-      records.push({
-        conceptId: parsed.document.conceptId,
-        path: workspacePath,
-        ...(title ? { title } : {}),
-        conformance: 'invalid',
-        active: parsed.document.frontmatter.status === 'active',
-        indexed: false,
-        errors: parsed.errors,
-      });
-      continue;
-    }
-
-    const report = validateWorkspaceKnowledgeSchema(
-      parsed.document,
-      schema ?? DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA
-    );
-    const schemaErrors: KnowledgeValidationError[] = schema
-      ? []
-      : [
-          {
-            code: 'workspace_schema.unavailable',
-            message: 'Workspace knowledge schema is missing or invalid.',
-          },
-        ];
-    const conformance: KnowledgeConformance =
-      !schema && report.conformance === 'Workspace-schema-valid'
-        ? 'OpenKit-profile-valid'
-        : report.conformance;
-    const referenceErrors = knowledgeReferenceErrors(
-      parsed.document,
+    const report = validateKnowledgePageCandidate({
+      path,
+      content,
+      ...(workspaceSchemaText ? { workspaceSchemaText } : {}),
       registeredSourceIds,
-      knowledgeIds
-    );
-    const active = parsed.document.frontmatter.status === 'active';
-    const title = stringFrontmatterField(parsed.document, 'title');
+      knowledgeIds,
+    });
+    const active = parsed.document?.frontmatter.status === 'active';
+    const title = parsed.document ? stringFrontmatterField(parsed.document, 'title') : null;
 
     records.push({
-      conceptId: parsed.document.conceptId,
+      conceptId: parsed.document?.conceptId ?? fileName.slice(0, -'.md'.length),
       path: workspacePath,
+      contentDigest,
       ...(title ? { title } : {}),
-      conformance,
+      conformance: report.conformance,
       active,
-      indexed: active && conformance === 'Workspace-schema-valid' && referenceErrors.length === 0,
-      errors: [...report.errors, ...schemaErrors, ...referenceErrors],
+      indexed:
+        active && report.conformance === 'Workspace-schema-valid' && report.errors.length === 0,
+      errors: report.errors,
     });
   }
 
@@ -947,6 +1076,19 @@ function classifyKnowledgeSourceReference(input: {
   /** File-backed workspace knowledge ids. */
   knowledgeIds: ReadonlySet<string>;
 }): WorkspaceKnowledgeSourceReference {
+  const resolved =
+    knowledgeReferenceErrors(
+      {
+        path: input.path,
+        conceptId: input.conceptId,
+        frontmatter: { source_refs: [input.reference] },
+        body: '',
+        reserved: false,
+      },
+      input.registeredSourceIds,
+      input.knowledgeIds
+    ).length === 0;
+
   if (input.reference.startsWith('source:')) {
     const targetId = input.reference.slice('source:'.length);
 
@@ -956,7 +1098,7 @@ function classifyKnowledgeSourceReference(input: {
       reference: input.reference,
       kind: 'registered-source',
       targetId,
-      resolved: input.registeredSourceIds.has(targetId),
+      resolved,
     };
   }
 
@@ -969,7 +1111,7 @@ function classifyKnowledgeSourceReference(input: {
       reference: input.reference,
       kind: 'workspace-knowledge',
       targetId,
-      resolved: input.knowledgeIds.has(targetId),
+      resolved,
     };
   }
 
@@ -979,7 +1121,7 @@ function classifyKnowledgeSourceReference(input: {
     reference: input.reference,
     kind: 'external-reference',
     targetId: null,
-    resolved: isValidExternalKnowledgeReference(input.reference),
+    resolved,
   };
 }
 
@@ -1091,80 +1233,6 @@ function addKnowledgeFullTextTerms(
  */
 function tokenizeKnowledgeText(text: string): string[] {
   return [...text.toLowerCase().matchAll(/[\p{L}\p{N}]+/gu)].map((match) => match[0]);
-}
-
-/**
- * Validates local source and knowledge references in one OKF document.
- *
- * @param document Parsed OKF document.
- * @param registeredSourceIds Registered source ids for the workspace.
- * @param knowledgeIds Knowledge ids available for knowledge-prefixed references.
- * @returns Local reference validation errors.
- */
-function knowledgeReferenceErrors(
-  document: OkfDocument,
-  registeredSourceIds: ReadonlySet<string>,
-  knowledgeIds: ReadonlySet<string>
-): KnowledgeValidationError[] {
-  const sourceRefs = document.frontmatter.source_refs;
-
-  if (!Array.isArray(sourceRefs)) {
-    return [];
-  }
-
-  return sourceRefs.flatMap((reference) => {
-    if (reference.startsWith('source:')) {
-      return registeredSourceIds.has(reference.slice('source:'.length))
-        ? []
-        : [
-            {
-              code: 'reference.unresolved_source',
-              field: 'source_refs',
-              message: `Knowledge source reference ${reference} does not resolve.`,
-            },
-          ];
-    }
-
-    if (reference.startsWith('knowledge:')) {
-      return knowledgeIds.has(reference.slice('knowledge:'.length))
-        ? []
-        : [
-            {
-              code: 'reference.unresolved_knowledge',
-              field: 'source_refs',
-              message: `Knowledge reference ${reference} does not resolve.`,
-            },
-          ];
-    }
-
-    if (!isValidExternalKnowledgeReference(reference)) {
-      return [
-        {
-          code: 'reference.invalid_external',
-          field: 'source_refs',
-          message: `External knowledge source reference ${reference} must be an http or https URL.`,
-        },
-      ];
-    }
-
-    return [];
-  });
-}
-
-/**
- * Returns whether an external knowledge source reference is syntactically valid.
- *
- * @param reference External source reference.
- * @returns True when the reference is an HTTP(S) URL.
- */
-function isValidExternalKnowledgeReference(reference: string): boolean {
-  try {
-    const url = new URL(reference);
-
-    return url.protocol === 'http:' || url.protocol === 'https:';
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -1315,15 +1383,21 @@ function normalizeKnowledgeLinkTarget(fromConceptId: string, target: string): st
  * @returns Parsed schema, default schema when absent, or null for invalid schema files.
  */
 function readWorkspaceKnowledgeSchema(workspaceRoot: string): WorkspaceKnowledgeSchema | null {
-  const schemaPath = join(workspaceRoot, 'knowledge', 'schema', 'workspace-schema.yaml');
+  const content = readWorkspaceKnowledgeSchemaText(workspaceRoot);
 
-  if (!existsSync(schemaPath)) {
+  if (!content) {
     return DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA;
   }
 
-  const parsed = parseWorkspaceKnowledgeSchema(readCanonicalTextFile(schemaPath));
+  const parsed = parseWorkspaceKnowledgeSchema(content);
 
   return parsed.ok ? parsed.schema : null;
+}
+
+/** Reads the exact workspace Knowledge schema text when present. */
+function readWorkspaceKnowledgeSchemaText(workspaceRoot: string): string | undefined {
+  const schemaPath = join(workspaceRoot, 'knowledge', 'schema', 'workspace-schema.yaml');
+  return existsSync(schemaPath) ? readCanonicalTextFile(schemaPath) : undefined;
 }
 
 /**

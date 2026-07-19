@@ -7,6 +7,7 @@ default_tool: playwright
 timeout_seconds: 600
 requires_real_provider: false
 requires_real_codex: false
+contracts: docs/specs/20260704-worker_mcp_tool_supply.md, docs/specs/20260629-openkit_policy_model.md
 ---
 
 # Complete Governed Worker MCP Tool Use

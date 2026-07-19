@@ -15,6 +15,8 @@ import {
   updateGoalStatus,
 } from './goal-store.js';
 
+const USER_ACTOR = { kind: 'user', id: 'user_demo' } as const;
+
 /**
  * Opens a migrated workspace database for goal plan approval tests.
  *
@@ -22,7 +24,7 @@ import {
  */
 function createWorkspaceDb(): WorkspaceDb {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-goal-plan-approval-'));
-  const workspaceDb = openWorkspaceDb(dataRoot, 'user_demo', 'ws_demo');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }
@@ -57,7 +59,7 @@ describe('goal plan approval flow', () => {
           },
         ],
       };
-      const planTurn = store.createTurn('ws_demo', 'th_demo', 'Approve plan');
+      const planTurn = store.createTurn('ws_demo', 'th_demo', 'Approve plan', USER_ACTOR);
       store.createItem({
         id: 'it_goal_plan_goal_approval',
         workspaceId: 'ws_demo',
@@ -158,7 +160,7 @@ describe('goal plan approval flow', () => {
         goalTitle: 'Reject plan',
         objective: 'Reject an invalid stored plan.',
       });
-      const planTurn = store.createTurn('ws_demo', 'th_demo', 'Reject plan');
+      const planTurn = store.createTurn('ws_demo', 'th_demo', 'Reject plan', USER_ACTOR);
       store.createItem({
         id: 'it_goal_plan_invalid',
         workspaceId: 'ws_demo',
@@ -280,7 +282,12 @@ describe('goal plan approval flow', () => {
         expect.objectContaining({ code: 'recovery_required' })
       );
 
-      const wrongTypeTurn = store.createTurn('ws_demo', 'th_demo', 'Wrong Plan Item type');
+      const wrongTypeTurn = store.createTurn(
+        'ws_demo',
+        'th_demo',
+        'Wrong Plan Item type',
+        USER_ACTOR
+      );
       store.createItem({
         id: 'it_goal_plan_missing',
         workspaceId: 'ws_demo',

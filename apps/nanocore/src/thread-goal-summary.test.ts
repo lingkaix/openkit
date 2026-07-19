@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,13 +7,29 @@ import { describe, expect, it, vi } from 'vitest';
 import { createApp } from './app.js';
 import { ensureLocalUser } from './auth/identity.js';
 import type { BetterAuthServer } from './auth/middleware.js';
-import { classifyGoalStepCheckpointAfterSchedulerRecovery } from './goal-routes.js';
+import {
+  classifyGoalStepCheckpointAfterSchedulerRecovery,
+  goalStartOwnerIds,
+} from './goal-routes.js';
+import {
+  claimPendingUserTurnRecord,
+  createPendingUserTurnRecord,
+  derivePendingUserTurnIds,
+  deriveSteeringTerminalIds,
+  getPendingUserTurnRecord,
+  getSteeringTerminalOutcome,
+  type PendingUserTurnInput,
+  type PendingUserTurnRecord,
+} from './goal-steering-authority.js';
 import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
-import { listGoalReviewRecordsForTask } from './runtime/goal-review-records.js';
+import {
+  createGoalReviewRecord,
+  listGoalReviewRecordsForTask,
+} from './runtime/goal-review-records.js';
 import {
   createGoalRecord,
   createGoalTask,
@@ -22,6 +39,7 @@ import {
   updateGoalStatus,
 } from './runtime/goal-store.js';
 import { createGoalVerificationRecord } from './runtime/goal-verification-records.js';
+import { commandInputHash } from './runtime/idempotent-command.js';
 import type { TurnExecutor, TurnStartRuntimeContext } from './runtime/types.js';
 import {
   markWorkerBackendWorkspaceHandoffComplete,
@@ -29,6 +47,7 @@ import {
   transitionWorkerBackendSessionState,
 } from './runtime/worker-backend-sessions.js';
 import {
+  clearWorkerCheckpoint,
   getWorkerCheckpoint,
   updateWorkerCheckpoint,
   upsertWorkerCheckpoint,
@@ -44,8 +63,10 @@ import {
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { upsertWorkspaceRepositoryResource } from './workspace/repository-store.js';
+import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const GOAL_TASK_EXECUTION_FIELDS = {
@@ -74,6 +95,108 @@ const GOAL_TASK_EXECUTION_FIELDS = {
   escalationConditions: ['Escalate if the approved Task cannot be completed as specified.'],
 };
 
+describe('Goal review decision lineage', () => {
+  it('denies a Goal Review whose scoped owner is outside the authorized path Workspace', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const authorizedThread = store.createThread('ws_demo', 'Authorized review Thread');
+    const foreignWorkspace = store.createWorkspace('Foreign Goal Workspace');
+    const foreignThread = store.createThread(foreignWorkspace.id, 'Foreign Goal Thread');
+    const foreignTurn = store.createTurn(
+      foreignWorkspace.id,
+      foreignThread.id,
+      'Foreign reviewed work',
+      { kind: 'user', id: 'user_local' }
+    );
+    const foreignDb = openWorkspaceDb(coreDb.dataRoot, foreignWorkspace.id);
+    applyScopedMigrations(foreignDb);
+    createGoalRecord(foreignDb, {
+      goalId: 'goal_foreign_lineage',
+      objective: 'Remain in the foreign Workspace.',
+      status: 'reviewing',
+      threadId: foreignThread.id,
+      title: 'Foreign Goal',
+      workspaceExists: (workspaceId) => workspaceId === foreignWorkspace.id,
+      workspaceId: foreignWorkspace.id,
+    });
+    createGoalTask(foreignDb, {
+      ...GOAL_TASK_EXECUTION_FIELDS,
+      acceptanceCriteria: ['The foreign Task remains isolated.'],
+      contextBudgetTokens: 1024,
+      dependsOnTaskIds: [],
+      goalId: 'goal_foreign_lineage',
+      objective: 'Review foreign work.',
+      orderIndex: 0,
+      status: 'reviewing',
+      taskId: 'task_foreign_lineage',
+      threadId: foreignThread.id,
+      title: 'Foreign Task',
+      workspaceId: foreignWorkspace.id,
+    });
+    updateGoalStatus(foreignDb, {
+      currentTaskId: 'task_foreign_lineage',
+      goalId: 'goal_foreign_lineage',
+      planItemId: GOAL_TASK_EXECUTION_FIELDS.planItemId,
+      status: 'reviewing',
+      threadId: foreignThread.id,
+      workspaceId: foreignWorkspace.id,
+    });
+    createGoalReviewRecord(foreignDb, {
+      createdByRequestId: 'goal-review-foreign-create',
+      goalId: 'goal_foreign_lineage',
+      prompt: 'Review foreign work.',
+      reviewId: 'review_foreign_lineage',
+      taskId: 'task_foreign_lineage',
+      threadId: foreignThread.id,
+      turnId: foreignTurn.id,
+      workspaceId: foreignWorkspace.id,
+    });
+    foreignDb.sqlite.close();
+    const app = createApp({ coreDb, dataRoot: coreDb.dataRoot, store });
+
+    try {
+      const response = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${authorizedThread.id}/goals/goal_foreign_lineage/reviews/review_foreign_lineage/decision`,
+        {
+          body: JSON.stringify({ requestId: 'goal-review-foreign-decision', verdict: 'accept' }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+
+      expect(response.status, await response.clone().text()).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+});
+
+describe('Goal command actor identity', () => {
+  it('derives Goal start owners from the explicit authenticated actor', () => {
+    const command = {
+      owningCommand: 'goal.start' as const,
+      requestId: 'goal-start-actor-scope',
+      threadId: 'th_actor_scope',
+      workspaceId: 'ws_demo',
+    };
+
+    expect(goalStartOwnerIds({ ...command, actorId: 'user_1' })).not.toEqual(
+      goalStartOwnerIds({ ...command, actorId: 'user_2' })
+    );
+  });
+});
+
+/**
+ * Computes the canonical S16 digest for exact UTF-8 Artifact content.
+ *
+ * @param content Exact Artifact body.
+ * @returns Lowercase SHA-256 digest with the required prefix.
+ */
+function artifactDigest(content: string): string {
+  return `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`;
+}
+
 /** Simulator variant that reaches its user-input Gate during the original worker attempt. */
 class UserInputGateTurnExecutor extends SimulatedTurnExecutor {
   /**
@@ -95,7 +218,13 @@ class UserInputGateTurnExecutor extends SimulatedTurnExecutor {
     if (turn.humanGate?.kind !== 'approval') {
       throw new Error('Simulator did not produce its approval Gate.');
     }
-    await super.respondApproval(store, turn.humanGate.approvalRequestId, 'granted', context);
+    if (turn.triggerActor.kind !== 'user') {
+      throw new Error('User-input Gate fixture requires a human trigger actor.');
+    }
+    await super.respondApproval(store, turn.humanGate.approvalRequestId, 'granted', {
+      actor: turn.triggerActor,
+      requestId: context?.requestId ?? null,
+    });
   }
 }
 
@@ -108,6 +237,12 @@ function createCoreDb(): CoreDb {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-goal-summary-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: LOCAL_USER_ID,
+    workspaceId: 'ws_demo',
+  });
   return coreDb;
 }
 
@@ -118,7 +253,7 @@ function createCoreDb(): CoreDb {
  * @param repositoryPath Host-local repository path to link.
  */
 function seedReadyRepository(coreDb: CoreDb, repositoryPath: string): void {
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, 'ws_demo');
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
   try {
     applyScopedMigrations(workspaceDb);
     upsertWorkspaceRepositoryResource(workspaceDb, {
@@ -140,7 +275,7 @@ function seedReadyRepository(coreDb: CoreDb, repositoryPath: string): void {
  * @returns Migrated workspace database handle.
  */
 function createWorkspaceDb(coreDb: CoreDb): WorkspaceDb {
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, 'ws_demo');
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }
@@ -190,6 +325,154 @@ function postGoalLifecycle(
 }
 
 /**
+ * Posts one terminal Goal steering command through the public App API.
+ *
+ * @param app NanoCore app under test.
+ * @param threadId Thread that owns the pending input.
+ * @param pendingTurnId Exact pending owner identity.
+ * @param command Terminal command path.
+ * @param requestId Terminal command request identity.
+ * @returns Public App API response.
+ */
+function postGoalSteeringTerminal(
+  app: ReturnType<typeof createApp>,
+  threadId: string,
+  pendingTurnId: string,
+  command: 'follow-up' | 'cancel',
+  requestId: string
+): Promise<Response> {
+  return app.request(
+    `/api/app/workspaces/ws_demo/threads/${threadId}/goal/steering/${pendingTurnId}/${command}`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ requestId }),
+    }
+  );
+}
+
+/** Human actor whose exact identity must survive terminal steering follow-up conversion. */
+const TERMINAL_STEERING_SOURCE_ACTOR = {
+  kind: 'user',
+  id: 'user_steering_source',
+} as const;
+
+/** Seeded terminal Goal steering owner used by public route tests. */
+interface TerminalGoalSteeringFixture {
+  /** Original terminal Goal id. */
+  readonly goalId: string;
+  /** Exact pending steering owner. */
+  readonly pending: PendingUserTurnRecord;
+  /** Original input text copied by follow-up conversion. */
+  readonly text: string;
+}
+
+/**
+ * Seeds one complete accepted send tuple whose original Goal and Turn are terminal.
+ *
+ * @param store App-local durable store.
+ * @param workspaceDb Open Workspace database.
+ * @param threadId Thread that owns the steering input.
+ * @param suffix Stable fixture identity suffix.
+ * @param terminal Whether the original Goal and Turn should be terminalized.
+ * @param input Exact pending input identity.
+ * @returns Complete pending owner and original input.
+ */
+function seedTerminalGoalSteering(
+  store: ReturnType<typeof createDemoStore>,
+  workspaceDb: WorkspaceDb,
+  threadId: string,
+  suffix: string,
+  terminal = true,
+  input: PendingUserTurnInput = { kind: 'message' }
+): TerminalGoalSteeringFixture {
+  const goalId = `goal_steering_${suffix}`;
+  const activeTurnId = `tu_steering_${suffix}`;
+  const requestId = `steering-send-${suffix}`;
+  const receivedAt = '2026-07-18T02:00:00.000Z';
+  const text =
+    input.kind === 'message'
+      ? `Preserve steering input ${suffix}.`
+      : `Use Workspace Material ${input.materialId} revision ${input.revisionId}.`;
+
+  createGoalRecord(workspaceDb, {
+    workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
+    goalId,
+    workspaceId: 'ws_demo',
+    threadId,
+    title: `Terminal steering ${suffix}`,
+    objective: text,
+    status: 'running',
+    now: () => receivedAt,
+  });
+  store.createTurn('ws_demo', threadId, text, TERMINAL_STEERING_SOURCE_ACTOR, null, {
+    turnId: activeTurnId,
+    startedAt: receivedAt,
+  });
+  const pending = createPendingUserTurnRecord(workspaceDb, {
+    workspaceId: 'ws_demo',
+    threadId,
+    goalId,
+    activeTurnId,
+    requestId,
+    input,
+    receivedAt,
+  });
+  store.createItem({
+    id: pending.contentItemId,
+    workspaceId: 'ws_demo',
+    threadId,
+    turnId: activeTurnId,
+    type: 'user-message',
+    status: 'completed',
+    actor: TERMINAL_STEERING_SOURCE_ACTOR,
+    text,
+    parentItemId: null,
+    causationId: requestId,
+    createdAt: receivedAt,
+    completedAt: receivedAt,
+  });
+  if (terminal) {
+    store.updateTurn(activeTurnId, {
+      status: 'completed',
+      completedAt: receivedAt,
+      durationMs: 0,
+    });
+    updateGoalStatus(workspaceDb, {
+      workspaceId: 'ws_demo',
+      threadId,
+      goalId,
+      status: 'completed',
+      currentTaskId: null,
+      terminalStopReason: 'completed',
+      now: () => receivedAt,
+    });
+  }
+  store.recordCommandRequest(
+    {
+      command: 'goal.steering.send',
+      requestId,
+      scope: { workspaceId: 'ws_demo', threadId },
+      inputHash: commandInputHash(
+        input.kind === 'message'
+          ? { message: text }
+          : {
+              materialId: input.materialId,
+              revisionId: input.revisionId,
+              contentDigest: input.contentDigest,
+              note: text,
+            }
+      ),
+      response: { kind: 'pending_user_turn', id: pending.pendingTurnId },
+      createdAt: receivedAt,
+    },
+    workspaceDb
+  );
+
+  return { goalId, pending, text };
+}
+
+/**
  * Seeds the exact non-terminal Turn and checkpoint pair owned by one active Goal.
  *
  * @param store App-local durable store.
@@ -206,9 +489,16 @@ function seedActiveGoalWorkerTurn(
   goalId: string,
   turnId: string
 ) {
-  const turn = store.createTurn('ws_demo', threadId, 'Continue the active Goal task.', null, {
-    turnId,
-  });
+  const turn = store.createTurn(
+    'ws_demo',
+    threadId,
+    'Continue the active Goal task.',
+    { kind: 'user', id: 'user_local' },
+    null,
+    {
+      turnId,
+    }
+  );
   const runningTurn = store.updateTurn(turn.id, { status: 'running' });
   upsertWorkerCheckpoint(workspaceDb, {
     workspaceId: 'ws_demo',
@@ -269,6 +559,14 @@ function createCompletingGoalTurnExecutor(
         summary: 'Worker evidence ready.',
         version: 1,
         content: { format: 'markdown', body: input },
+        contentDigest: artifactDigest(input),
+        lastMutationRequestId: context.requestId!,
+        origin: {
+          kind: 'turn-output',
+          threadId: turn.threadId,
+          turnId,
+          requestId: context.requestId!,
+        },
         createdAt: timestamp,
         updatedAt: timestamp,
       });
@@ -713,6 +1011,11 @@ describe('thread goal summary app API', () => {
     const firstThread = store.createThread('ws_demo', 'First workspace goal');
     const secondWorkspace = store.createWorkspace('Second goal workspace');
     const secondThread = store.createThread(secondWorkspace.id, 'Second workspace goal');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: secondWorkspace.id,
+    });
     const app = createApp({ coreDb, store });
 
     try {
@@ -891,11 +1194,13 @@ describe('thread goal summary app API', () => {
     }
   });
 
-  it('fails Goal steering closed when the worker cannot prove delivery', async () => {
+  it('accepts exact Goal steering and replays its raw caller input after the active Turn ends', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-18T02:30:00.000Z'));
     const coreDb = createCoreDb();
     const workspaceDb = createWorkspaceDb(coreDb);
     const store = createDemoStore();
-    const thread = store.createThread('ws_demo', 'Unavailable steering delivery');
+    const thread = store.createThread('ws_demo', 'Accepted steering delivery');
 
     try {
       createGoalRecord(workspaceDb, {
@@ -903,11 +1208,48 @@ describe('thread goal summary app API', () => {
         goalId: 'goal_running',
         workspaceId: 'ws_demo',
         threadId: thread.id,
-        title: 'Goal without delivery proof',
-        objective: 'Reject input until the real worker can receive it.',
+        title: 'Goal with delivery proof',
+        objective: 'Accept input for the active worker.',
         status: 'running',
       });
-      seedActiveGoalWorkerTurn(store, workspaceDb, thread.id, 'goal_running', 'turn_goal_running');
+      const activeTurn = seedActiveGoalWorkerTurn(
+        store,
+        workspaceDb,
+        thread.id,
+        'goal_running',
+        'turn_goal_running'
+      );
+      const material = createWorkspaceMaterial(workspaceDb, {
+        actorId: LOCAL_USER_ID,
+        requestId: 'material-for-steering',
+        title: 'Steering material',
+        kind: 'markdown',
+        sensitivity: 'internal',
+        acceptedAt: '2026-07-18T02:00:00.000Z',
+      });
+      const content = '# Exact steering input';
+      const contentDigest = artifactDigest(content);
+      const revision = saveWorkspaceMaterialRevision(workspaceDb, {
+        actorId: LOCAL_USER_ID,
+        materialId: material.materialId,
+        requestId: 'revision-for-steering',
+        expectedRevisionId: null,
+        content,
+        contentDigest,
+        acceptedAt: '2026-07-18T02:01:00.000Z',
+      });
+      const requestId = 'req_accepted_steering';
+      const input = {
+        requestId,
+        materialId: material.materialId,
+        revisionId: revision.revisionId,
+        contentDigest,
+      };
+      const ids = derivePendingUserTurnIds({
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        requestId,
+      });
 
       const app = createApp({ coreDb, store });
       const response = await app.request(
@@ -915,19 +1257,713 @@ describe('thread goal summary app API', () => {
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: 'req_unavailable',
-            message: 'Do not acknowledge input that the worker cannot receive.',
-          }),
+          body: JSON.stringify(input),
         }
       );
 
-      expect(response.status).toBe(503);
-      await expect(response.json()).resolves.toMatchObject({
+      const payload = {
+        state: 'queued',
+        pendingTurnId: ids.pendingTurnId,
+        requestId,
+        contentItemId: ids.contentItemId,
+        goalId: 'goal_running',
+        activeTurnId: activeTurn.id,
+      } as const;
+      expect(response.status).toBe(202);
+      await expect(response.json()).resolves.toEqual(payload);
+      expect(getPendingUserTurnRecord(workspaceDb, 'ws_demo', thread.id)).toEqual({
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        pendingTurnId: ids.pendingTurnId,
+        goalId: 'goal_running',
+        activeTurnId: activeTurn.id,
+        requestId,
+        contentItemId: ids.contentItemId,
+        inputKind: 'material',
+        materialId: material.materialId,
+        revisionId: revision.revisionId,
+        contentDigest,
+        queueMode: 'safe_point_steering',
+        receivedAt: '2026-07-18T02:30:00.000Z',
+        terminalClaimKind: null,
+        terminalClaimId: null,
+        terminalClaimedAt: null,
+      });
+      expect(store.listThreadItems('ws_demo', thread.id)).toContainEqual(
+        expect.objectContaining({
+          id: ids.contentItemId,
+          turnId: activeTurn.id,
+          type: 'user-message',
+          status: 'completed',
+          text: `Use Workspace Material ${material.materialId} revision ${revision.revisionId}.`,
+          parentItemId: null,
+          causationId: requestId,
+          createdAt: '2026-07-18T02:30:00.000Z',
+          completedAt: '2026-07-18T02:30:00.000Z',
+        })
+      );
+      expect(
+        store.getCommandRequest(
+          'goal.steering.send',
+          requestId,
+          { workspaceId: 'ws_demo', threadId: thread.id },
+          workspaceDb
+        )
+      ).toEqual(
+        expect.objectContaining({
+          inputHash: commandInputHash({
+            materialId: material.materialId,
+            revisionId: revision.revisionId,
+            contentDigest,
+          }),
+          response: { kind: 'pending_user_turn', id: ids.pendingTurnId },
+        })
+      );
+
+      store.updateTurn(activeTurn.id, {
+        status: 'completed',
+        completedAt: '2026-07-18T02:31:00.000Z',
+        durationMs: 60_000,
+      });
+      const replay = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/steering`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(input),
+        }
+      );
+      expect(replay.status).toBe(202);
+      await expect(replay.json()).resolves.toEqual(payload);
+
+      const changedRawInput = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/steering`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            ...input,
+            note: `Use Workspace Material ${material.materialId} revision ${revision.revisionId}.`,
+          }),
+        }
+      );
+      expect(changedRawInput.status).toBe(409);
+      await expect(changedRawInput.json()).resolves.toMatchObject({
+        code: 'idempotency_key_conflict',
+      });
+      expect(
+        store.listThreadItems('ws_demo', thread.id).filter((item) => item.id === ids.contentItemId)
+      ).toHaveLength(1);
+
+      expect(clearWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, activeTurn.id)).toBe(true);
+      updateGoalStatus(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_running',
+        status: 'running',
+        planItemId: GOAL_TASK_EXECUTION_FIELDS.planItemId,
+      });
+      createGoalTask(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_running',
+        taskId: 'task_budget_guard',
+        title: 'Reject oversized steering',
+        objective: 'Prove the steering budget guard.',
+        orderIndex: 0,
+        dependsOnTaskIds: [],
+        acceptanceCriteria: ['No worker effect is accepted.'],
+        contextBudgetTokens: 1,
+        ...GOAL_TASK_EXECUTION_FIELDS,
+        verificationChecks: [{ kind: 'manual', description: 'Inspect the unchanged owners.' }],
+        status: 'ready',
+        now: () => '2026-07-18T02:32:00.000Z',
+      });
+      const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-steering-budget-'));
+      mkdirSync(join(repositoryPath, '.git'));
+      seedReadyRepository(coreDb, repositoryPath);
+      const turnsBeforeBudgetRejection = store.listThreadTurns('ws_demo', thread.id).length;
+      const budgetApp = createApp({
+        agentManifests: [createTestAgentSetup({ provider: null }).manifest],
+        coreDb,
+        store,
+        turnExecutor: createCompletingGoalTurnExecutor(),
+      });
+      const budgetRejection = await budgetApp.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: 'req_steering_budget_guard' }),
+        }
+      );
+      const budgetPayload = await budgetRejection.json();
+      expect(budgetRejection.status, JSON.stringify(budgetPayload)).toBe(503);
+      expect(budgetPayload).toMatchObject({
         code: 'goal_steering_delivery_unavailable',
       });
-      expect(store.listThreadItems('ws_demo', thread.id)).toEqual([]);
-      expect(store.listCommandRequests()).toEqual([]);
+      expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(turnsBeforeBudgetRejection);
+      expect(getPendingUserTurnRecord(workspaceDb, 'ws_demo', thread.id)).toMatchObject({
+        pendingTurnId: ids.pendingTurnId,
+        terminalClaimKind: null,
+        terminalClaimId: null,
+      });
+      expect(
+        workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_turn_checkpoints').get()
+      ).toEqual({ count: 0 });
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_admission_entries').get()
+      ).toEqual({ count: 0 });
+    } finally {
+      vi.useRealTimers();
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('fails closed when the steering Item outlives its transactional pending owner', async () => {
+    const coreDb = createCoreDb();
+    const workspaceDb = createWorkspaceDb(coreDb);
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Steering Item half-state');
+
+    try {
+      createGoalRecord(workspaceDb, {
+        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
+        goalId: 'goal_steering_half_state',
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        title: 'Goal with interrupted steering acceptance',
+        objective: 'Keep partial steering proof fail-closed.',
+        status: 'running',
+      });
+      seedActiveGoalWorkerTurn(
+        store,
+        workspaceDb,
+        thread.id,
+        'goal_steering_half_state',
+        'turn_steering_half_state'
+      );
+      const request = {
+        requestId: 'req_steering_half_state',
+        message: 'Do not repair this partial steering acceptance.',
+      };
+      const ids = derivePendingUserTurnIds({
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        requestId: request.requestId,
+      });
+      const app = createApp({ coreDb, store });
+      const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
+        throw new Error('simulated steering receipt failure');
+      });
+
+      const failed = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/steering`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(request),
+        }
+      );
+      receiptWrite.mockRestore();
+
+      expect(failed.status).toBe(409);
+      await expect(failed.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(getPendingUserTurnRecord(workspaceDb, 'ws_demo', thread.id)).toBeNull();
+      expect(
+        store.listThreadItems('ws_demo', thread.id).filter((item) => item.id === ids.contentItemId)
+      ).toHaveLength(1);
+
+      const retry = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/steering`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(request),
+        }
+      );
+      expect(retry.status).toBe(409);
+      await expect(retry.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(getPendingUserTurnRecord(workspaceDb, 'ws_demo', thread.id)).toBeNull();
+      expect(
+        store.listThreadItems('ws_demo', thread.id).filter((item) => item.id === ids.contentItemId)
+      ).toHaveLength(1);
+    } finally {
+      vi.restoreAllMocks();
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('converts terminal Goal steering into one deterministic completed follow-up and replays its outcome', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-18T03:00:00.000Z'));
+    const coreDb = createCoreDb();
+    const workspaceDb = createWorkspaceDb(coreDb);
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Terminal steering follow-up');
+    const fixture = seedTerminalGoalSteering(store, workspaceDb, thread.id, 'follow-up');
+    const terminalRequestId = 'steering-follow-up-1';
+    const ids = deriveSteeringTerminalIds({
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      pendingTurnId: fixture.pending.pendingTurnId,
+      terminalRequestId,
+    });
+    const app = createApp({ coreDb, store });
+
+    try {
+      const receiptFailure = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
+        throw new Error('simulated follow-up receipt failure');
+      });
+      const failed = await postGoalSteeringTerminal(
+        app,
+        thread.id,
+        fixture.pending.pendingTurnId,
+        'follow-up',
+        terminalRequestId
+      );
+      receiptFailure.mockRestore();
+      expect(failed.status).toBe(400);
+      expect(getPendingUserTurnRecord(workspaceDb, 'ws_demo', thread.id)).toEqual(
+        expect.objectContaining({
+          terminalClaimKind: 'follow-up',
+          terminalClaimId: ids.followUpTurnId,
+          terminalClaimedAt: '2026-07-18T03:00:00.000Z',
+        })
+      );
+      expect(
+        getSteeringTerminalOutcome(workspaceDb, 'ws_demo', thread.id, fixture.pending.pendingTurnId)
+      ).toBeNull();
+      expect(store.getTurn('ws_demo', thread.id, ids.followUpTurnId).status).toBe('completed');
+
+      const response = await postGoalSteeringTerminal(
+        app,
+        thread.id,
+        fixture.pending.pendingTurnId,
+        'follow-up',
+        terminalRequestId
+      );
+      const payload = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(payload).toEqual({
+        state: 'follow-up',
+        pendingTurnId: fixture.pending.pendingTurnId,
+        requestId: terminalRequestId,
+        sourceRequestId: fixture.pending.requestId,
+        contentItemId: fixture.pending.contentItemId,
+        goalId: fixture.goalId,
+        activeTurnId: fixture.pending.activeTurnId,
+        followUpTurnId: ids.followUpTurnId,
+        followUpItemId: ids.followUpItemId,
+      });
+      expect(getPendingUserTurnRecord(workspaceDb, 'ws_demo', thread.id)).toBeNull();
+      expect(
+        getSteeringTerminalOutcome(workspaceDb, 'ws_demo', thread.id, fixture.pending.pendingTurnId)
+      ).toEqual({
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        pendingTurnId: fixture.pending.pendingTurnId,
+        outcomeId: ids.outcomeId,
+        state: 'follow-up',
+        sendRequestId: fixture.pending.requestId,
+        terminalRequestId,
+        contentItemId: fixture.pending.contentItemId,
+        goalId: fixture.goalId,
+        activeTurnId: fixture.pending.activeTurnId,
+        inputKind: 'message',
+        materialId: null,
+        revisionId: null,
+        contentDigest: null,
+        followUpTurnId: ids.followUpTurnId,
+        followUpItemId: ids.followUpItemId,
+        acceptedAt: '2026-07-18T03:00:00.000Z',
+      });
+      expect(store.getTurn('ws_demo', thread.id, ids.followUpTurnId)).toEqual(
+        expect.objectContaining({
+          id: ids.followUpTurnId,
+          triggerActor: TERMINAL_STEERING_SOURCE_ACTOR,
+          status: 'completed',
+          humanGate: null,
+          error: null,
+          configVersion: null,
+          startedAt: '2026-07-18T03:00:00.000Z',
+          completedAt: '2026-07-18T03:00:00.000Z',
+          durationMs: 0,
+          items: [
+            expect.objectContaining({
+              id: ids.followUpItemId,
+              type: 'user-message',
+              status: 'completed',
+              actor: TERMINAL_STEERING_SOURCE_ACTOR,
+              text: fixture.text,
+              parentItemId: fixture.pending.contentItemId,
+              causationId: terminalRequestId,
+              createdAt: '2026-07-18T03:00:00.000Z',
+              completedAt: '2026-07-18T03:00:00.000Z',
+            }),
+          ],
+        })
+      );
+      expect(
+        store.getCommandRequest(
+          'goal.steering.follow_up',
+          terminalRequestId,
+          {
+            workspaceId: 'ws_demo',
+            threadId: thread.id,
+            pendingTurnId: fixture.pending.pendingTurnId,
+          },
+          workspaceDb
+        )?.response
+      ).toEqual({ kind: 'steering_terminal_outcome', id: ids.outcomeId });
+
+      const second = seedTerminalGoalSteering(
+        store,
+        workspaceDb,
+        thread.id,
+        'follow-up-reused-request'
+      );
+      const turnsBeforeReuse = store.listThreadTurns('ws_demo', thread.id).map((turn) => turn.id);
+      const itemsBeforeReuse = store.listThreadItems('ws_demo', thread.id).map((item) => item.id);
+      const reusedRequest = await postGoalSteeringTerminal(
+        app,
+        thread.id,
+        second.pending.pendingTurnId,
+        'follow-up',
+        terminalRequestId
+      );
+      expect(reusedRequest.status).toBe(409);
+      await expect(reusedRequest.json()).resolves.toMatchObject({
+        code: 'idempotency_key_conflict',
+      });
+      expect(getPendingUserTurnRecord(workspaceDb, 'ws_demo', thread.id)).toEqual(second.pending);
+      expect(
+        getSteeringTerminalOutcome(workspaceDb, 'ws_demo', thread.id, second.pending.pendingTurnId)
+      ).toBeNull();
+      expect(store.listThreadTurns('ws_demo', thread.id).map((turn) => turn.id)).toEqual(
+        turnsBeforeReuse
+      );
+      expect(store.listThreadItems('ws_demo', thread.id).map((item) => item.id)).toEqual(
+        itemsBeforeReuse
+      );
+      expect(
+        store.getCommandRequest(
+          'goal.steering.follow_up',
+          terminalRequestId,
+          {
+            workspaceId: 'ws_demo',
+            threadId: thread.id,
+            pendingTurnId: second.pending.pendingTurnId,
+          },
+          workspaceDb
+        )
+      ).toBeNull();
+      createGoalRecord(workspaceDb, {
+        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
+        goalId: 'goal_newer_after_follow_up',
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        title: 'Newer Goal',
+        objective: 'Replay must not retarget this Goal.',
+        status: 'running',
+      });
+      store.createTurn('ws_demo', thread.id, 'Keep the newer Goal active.', {
+        kind: 'user',
+        id: 'user_local',
+      });
+      const replay = await postGoalSteeringTerminal(
+        app,
+        thread.id,
+        fixture.pending.pendingTurnId,
+        'follow-up',
+        terminalRequestId
+      );
+      expect(replay.status).toBe(200);
+      await expect(replay.json()).resolves.toEqual(payload);
+      expect(
+        store.listThreadTurns('ws_demo', thread.id).filter((turn) => turn.id === ids.followUpTurnId)
+      ).toHaveLength(1);
+
+      const competingCancel = await postGoalSteeringTerminal(
+        app,
+        thread.id,
+        fixture.pending.pendingTurnId,
+        'cancel',
+        'steering-cancel-after-follow-up'
+      );
+      expect(competingCancel.status).toBe(409);
+      await expect(competingCancel.json()).resolves.toMatchObject({ code: 'conflict' });
+
+      store.updateItem(ids.followUpItemId, { text: 'Contradict the immutable copied input.' });
+      const mismatchedReplay = await postGoalSteeringTerminal(
+        app,
+        thread.id,
+        fixture.pending.pendingTurnId,
+        'follow-up',
+        terminalRequestId
+      );
+      expect(mismatchedReplay.status).toBe(409);
+      await expect(mismatchedReplay.json()).resolves.toMatchObject({
+        code: 'recovery_required',
+      });
+    } finally {
+      vi.useRealTimers();
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('cancels terminal Goal steering atomically without requiring an idle Thread', async () => {
+    const coreDb = createCoreDb();
+    const workspaceDb = createWorkspaceDb(coreDb);
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Terminal steering cancellation');
+    const fixture = seedTerminalGoalSteering(store, workspaceDb, thread.id, 'cancel', true, {
+      kind: 'material',
+      materialId: 'material_cancel',
+      revisionId: 'revision_cancel',
+      contentDigest: `sha256:${'a'.repeat(64)}`,
+    });
+    const app = createApp({ coreDb, store });
+    const terminalRequestId = 'steering-cancel-1';
+    const ids = deriveSteeringTerminalIds({
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      pendingTurnId: fixture.pending.pendingTurnId,
+      terminalRequestId,
+    });
+    store.createTurn('ws_demo', thread.id, 'New work may remain active during cancellation.', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    const turnsBefore = store.listThreadTurns('ws_demo', thread.id).map((turn) => turn.id);
+    const itemsBefore = store.listThreadItems('ws_demo', thread.id).map((item) => item.id);
+
+    try {
+      const receiptFailure = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
+        throw new Error('simulated terminal receipt failure');
+      });
+      const failed = await postGoalSteeringTerminal(
+        app,
+        thread.id,
+        fixture.pending.pendingTurnId,
+        'cancel',
+        terminalRequestId
+      );
+      receiptFailure.mockRestore();
+      expect(failed.status).toBe(400);
+      expect(getPendingUserTurnRecord(workspaceDb, 'ws_demo', thread.id)).toEqual(
+        expect.objectContaining({ terminalClaimKind: null, terminalClaimId: null })
+      );
+      expect(
+        getSteeringTerminalOutcome(workspaceDb, 'ws_demo', thread.id, fixture.pending.pendingTurnId)
+      ).toBeNull();
+
+      const response = await postGoalSteeringTerminal(
+        app,
+        thread.id,
+        fixture.pending.pendingTurnId,
+        'cancel',
+        terminalRequestId
+      );
+      const payload = await response.json();
+      expect(response.status).toBe(200);
+      expect(payload).toEqual({
+        state: 'cancelled',
+        pendingTurnId: fixture.pending.pendingTurnId,
+        requestId: terminalRequestId,
+        sourceRequestId: fixture.pending.requestId,
+        contentItemId: fixture.pending.contentItemId,
+        goalId: fixture.goalId,
+        activeTurnId: fixture.pending.activeTurnId,
+      });
+      expect(getPendingUserTurnRecord(workspaceDb, 'ws_demo', thread.id)).toBeNull();
+      expect(
+        getSteeringTerminalOutcome(workspaceDb, 'ws_demo', thread.id, fixture.pending.pendingTurnId)
+      ).toEqual(
+        expect.objectContaining({
+          outcomeId: ids.outcomeId,
+          state: 'cancelled',
+          inputKind: 'material',
+          materialId: 'material_cancel',
+          revisionId: 'revision_cancel',
+          contentDigest: `sha256:${'a'.repeat(64)}`,
+        })
+      );
+      expect(store.listThreadTurns('ws_demo', thread.id).map((turn) => turn.id)).toEqual(
+        turnsBefore
+      );
+      expect(store.listThreadItems('ws_demo', thread.id).map((item) => item.id)).toEqual(
+        itemsBefore
+      );
+      expect(
+        store.getCommandRequest(
+          'goal.steering.cancel',
+          terminalRequestId,
+          {
+            workspaceId: 'ws_demo',
+            threadId: thread.id,
+            pendingTurnId: fixture.pending.pendingTurnId,
+          },
+          workspaceDb
+        )?.response
+      ).toEqual({ kind: 'steering_terminal_outcome', id: ids.outcomeId });
+
+      const replay = await postGoalSteeringTerminal(
+        app,
+        thread.id,
+        fixture.pending.pendingTurnId,
+        'cancel',
+        terminalRequestId
+      );
+      expect(replay.status).toBe(200);
+      await expect(replay.json()).resolves.toEqual(payload);
+    } finally {
+      vi.restoreAllMocks();
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('requires a terminal original Goal and an idle Thread only for follow-up conversion', async () => {
+    const coreDb = createCoreDb();
+    const workspaceDb = createWorkspaceDb(coreDb);
+    const store = createDemoStore();
+    const nonterminalThread = store.createThread('ws_demo', 'Nonterminal steering Goal');
+    const nonterminal = seedTerminalGoalSteering(
+      store,
+      workspaceDb,
+      nonterminalThread.id,
+      'nonterminal',
+      false
+    );
+    const busyThread = store.createThread('ws_demo', 'Busy terminal steering Thread');
+    const busy = seedTerminalGoalSteering(store, workspaceDb, busyThread.id, 'busy');
+    store.createTurn('ws_demo', busyThread.id, 'Keep this Thread busy.', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    const sameRequestThread = store.createThread('ws_demo', 'Reused steering identity');
+    const sameRequest = seedTerminalGoalSteering(
+      store,
+      workspaceDb,
+      sameRequestThread.id,
+      'same-request'
+    );
+    const app = createApp({ coreDb, store });
+
+    try {
+      const nonterminalResponse = await postGoalSteeringTerminal(
+        app,
+        nonterminalThread.id,
+        nonterminal.pending.pendingTurnId,
+        'cancel',
+        'steering-cancel-nonterminal'
+      );
+      expect(nonterminalResponse.status).toBe(409);
+      await expect(nonterminalResponse.json()).resolves.toMatchObject({ code: 'conflict' });
+
+      const busyResponse = await postGoalSteeringTerminal(
+        app,
+        busyThread.id,
+        busy.pending.pendingTurnId,
+        'follow-up',
+        'steering-follow-up-busy'
+      );
+      expect(busyResponse.status).toBe(409);
+      await expect(busyResponse.json()).resolves.toMatchObject({ code: 'thread_busy' });
+
+      const sameRequestResponse = await postGoalSteeringTerminal(
+        app,
+        sameRequestThread.id,
+        sameRequest.pending.pendingTurnId,
+        'cancel',
+        sameRequest.pending.requestId
+      );
+      expect(sameRequestResponse.status).toBe(409);
+      await expect(sameRequestResponse.json()).resolves.toMatchObject({
+        code: 'idempotency_key_conflict',
+      });
+      expect(getPendingUserTurnRecord(workspaceDb, 'ws_demo', nonterminalThread.id)).toEqual(
+        expect.objectContaining({ terminalClaimKind: null })
+      );
+      expect(getPendingUserTurnRecord(workspaceDb, 'ws_demo', busyThread.id)).toEqual(
+        expect.objectContaining({ terminalClaimKind: null })
+      );
+      expect(getPendingUserTurnRecord(workspaceDb, 'ws_demo', sameRequestThread.id)).toEqual(
+        expect.objectContaining({ terminalClaimKind: null })
+      );
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('retains a winning follow-up claim and fails closed on half proof', async () => {
+    const coreDb = createCoreDb();
+    const workspaceDb = createWorkspaceDb(coreDb);
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Half follow-up proof');
+    const fixture = seedTerminalGoalSteering(store, workspaceDb, thread.id, 'half-proof');
+    const terminalRequestId = 'steering-follow-up-half-proof';
+    const ids = deriveSteeringTerminalIds({
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      pendingTurnId: fixture.pending.pendingTurnId,
+      terminalRequestId,
+    });
+    const acceptedAt = '2026-07-18T03:10:00.000Z';
+    claimPendingUserTurnRecord(workspaceDb, {
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      pendingTurnId: fixture.pending.pendingTurnId,
+      terminalClaimKind: 'follow-up',
+      terminalClaimId: ids.followUpTurnId,
+      terminalClaimedAt: acceptedAt,
+    });
+    store.createTurn('ws_demo', thread.id, fixture.text, { kind: 'user', id: 'user_local' }, null, {
+      turnId: ids.followUpTurnId,
+      startedAt: acceptedAt,
+    });
+    store.updateTurn(ids.followUpTurnId, {
+      status: 'completed',
+      completedAt: acceptedAt,
+      durationMs: 0,
+    });
+    const app = createApp({ coreDb, store });
+
+    try {
+      const response = await postGoalSteeringTerminal(
+        app,
+        thread.id,
+        fixture.pending.pendingTurnId,
+        'follow-up',
+        terminalRequestId
+      );
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(getPendingUserTurnRecord(workspaceDb, 'ws_demo', thread.id)).toEqual(
+        expect.objectContaining({
+          terminalClaimKind: 'follow-up',
+          terminalClaimId: ids.followUpTurnId,
+          terminalClaimedAt: acceptedAt,
+        })
+      );
+      expect(
+        store.getCommandRequest(
+          'goal.steering.follow_up',
+          terminalRequestId,
+          {
+            workspaceId: 'ws_demo',
+            threadId: thread.id,
+            pendingTurnId: fixture.pending.pendingTurnId,
+          },
+          workspaceDb
+        )
+      ).toBeNull();
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -1002,6 +2038,7 @@ describe('thread goal summary app API', () => {
       };
       expect(
         store.getCommandRequest('goal.plan', 'goal-plan-create-1', {
+          actorId: LOCAL_USER_ID,
           workspaceId: 'ws_demo',
           threadId: thread.id,
         })
@@ -1059,6 +2096,7 @@ describe('thread goal summary app API', () => {
       expect(planPayload.planner.plan).toEqual(planPayload.plan);
       expect(
         store.getCommandRequest('goal.plan', 'goal-plan-create-1', {
+          actorId: LOCAL_USER_ID,
           workspaceId: 'ws_demo',
           threadId: thread.id,
         })?.response
@@ -1109,9 +2147,9 @@ describe('thread goal summary app API', () => {
         }
       );
 
-      expect(mismatchedApproveRes.status).toBe(409);
+      expect(mismatchedApproveRes.status).toBe(403);
       await expect(mismatchedApproveRes.json()).resolves.toMatchObject({
-        code: 'stale',
+        code: 'workspace_access_denied',
       });
 
       const approveRes = await app.request(
@@ -1213,7 +2251,7 @@ describe('thread goal summary app API', () => {
           store.getCommandRequest(
             'goal.pause',
             'goal-pause-rollback',
-            { workspaceId: 'ws_demo', threadId: thread.id },
+            { actorId: LOCAL_USER_ID, workspaceId: 'ws_demo', threadId: thread.id },
             boundaryDb
           )
         ).toBeNull();
@@ -1226,7 +2264,8 @@ describe('thread goal summary app API', () => {
         const pendingTurn = store.createTurn(
           'ws_demo',
           thread.id,
-          'Pending Goal worker admission.'
+          'Pending Goal worker admission.',
+          { kind: 'user', id: 'user_local' }
         );
         store.updateTurn(pendingTurn.id, { status: 'pending' });
         const pendingPauseRes = await postGoalLifecycle(
@@ -1307,7 +2346,7 @@ describe('thread goal summary app API', () => {
           store.getCommandRequest(
             'goal.pause',
             'goal-pause-1',
-            { workspaceId: 'ws_demo', threadId: thread.id },
+            { actorId: LOCAL_USER_ID, workspaceId: 'ws_demo', threadId: thread.id },
             receiptDb
           )?.response
         ).toEqual({ kind: 'goal', id: planPayload.goal.goalId });
@@ -1861,7 +2900,10 @@ describe('thread goal summary app API', () => {
 
     try {
       seedReadyRepository(coreDb, repositoryPath);
-      const contextTurn = store.createTurn('ws_demo', thread.id, 'Provide context');
+      const contextTurn = store.createTurn('ws_demo', thread.id, 'Provide context', {
+        kind: 'user',
+        id: 'user_local',
+      });
       store.createItem({
         id: `it_context_${thread.id}`,
         workspaceId: 'ws_demo',
@@ -1869,14 +2911,10 @@ describe('thread goal summary app API', () => {
         turnId: contextTurn.id,
         type: 'user-message',
         status: 'completed',
+        actor: contextTurn.triggerActor,
         text: 'Use the linked repository and produce evidence.',
         createdAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
         completedAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
-      });
-      store.updateTurn(contextTurn.id, {
-        status: 'completed',
-        completedAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
-        durationMs: 0,
       });
       createGoalRecord(workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
@@ -1914,7 +2952,47 @@ describe('thread goal summary app API', () => {
 
       const startContexts: TurnStartRuntimeContext[] = [];
       const turnExecutor = createCompletingGoalTurnExecutor(startContexts);
-      const app = createApp({ coreDb, store, turnExecutor });
+      const app = createApp({
+        agentManifests: [createTestAgentSetup({ provider: null }).manifest],
+        coreDb,
+        store,
+        turnExecutor,
+      });
+      upsertWorkerCheckpoint(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        turnId: contextTurn.id,
+        goalId: 'goal_real_step',
+        taskId: 'task_real_step',
+        requestId: 'req_prior_goal_turn',
+        requestInputHash: commandInputHash({}),
+        stage: 'running_worker',
+        iteration: 0,
+      });
+      const steeringRequest = {
+        requestId: 'req_goal_step_steering',
+        message: 'Carry this accepted steering input into the next Goal step.',
+      };
+      const steeringIds = derivePendingUserTurnIds({
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        requestId: steeringRequest.requestId,
+      });
+      const steeringRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/steering`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(steeringRequest),
+        }
+      );
+      expect(steeringRes.status).toBe(202);
+      store.updateTurn(contextTurn.id, {
+        status: 'completed',
+        completedAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
+        durationMs: 0,
+      });
+      expect(clearWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, contextTurn.id)).toBe(true);
       workspaceDb.sqlite.exec(`
         CREATE TRIGGER fail_goal_launch_checkpoint
         BEFORE INSERT ON worker_turn_checkpoints
@@ -1947,6 +3025,9 @@ describe('thread goal summary app API', () => {
       expect(
         workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_turn_checkpoints').get()
       ).toEqual({ count: 0 });
+      expect(getPendingUserTurnRecord(workspaceDb, 'ws_demo', thread.id)).toEqual(
+        expect.objectContaining({ terminalClaimKind: null, terminalClaimId: null })
+      );
       workspaceDb.sqlite.exec('DROP TRIGGER fail_goal_launch_checkpoint');
       const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
         throw new Error('simulated Goal receipt write failure');
@@ -1965,9 +3046,41 @@ describe('thread goal summary app API', () => {
       await expect(interruptedStepRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
       const workerTurnId = store.listThreadTurns('ws_demo', thread.id).at(-1)?.id;
       expect(workerTurnId).toBeDefined();
+      expect(getPendingUserTurnRecord(workspaceDb, 'ws_demo', thread.id)).toEqual(
+        expect.objectContaining({
+          terminalClaimKind: 'applied',
+          terminalClaimId: `ctxpkg_${workerTurnId}`,
+        })
+      );
+      const steeringReplay = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/steering`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(steeringRequest),
+        }
+      );
+      expect(steeringReplay.status).toBe(202);
+      await expect(steeringReplay.json()).resolves.toMatchObject({
+        state: 'queued',
+        pendingTurnId: steeringIds.pendingTurnId,
+        contentItemId: steeringIds.contentItemId,
+        goalId: 'goal_real_step',
+        activeTurnId: contextTurn.id,
+      });
+      // This injected executor cannot own S39 cleanup, so remove only its retained fixture row before the unrelated review assertions continue.
+      expect(
+        workspaceDb.sqlite
+          .prepare(
+            `DELETE FROM pending_user_turn_records
+             WHERE workspace_id = ? AND thread_id = ? AND pending_turn_id = ?`
+          )
+          .run('ws_demo', thread.id, steeringIds.pendingTurnId).changes
+      ).toBe(1);
       const workerTurn = store.getTurn('ws_demo', thread.id, workerTurnId!);
       expect(workerTurn.agentSessionId).not.toBeNull();
       updateWorkerCheckpoint(workspaceDb, {
+        authorityActor: workerTurn.triggerActor,
         workspaceId: 'ws_demo',
         threadId: thread.id,
         turnId: workerTurnId!,
@@ -2023,7 +3136,6 @@ describe('thread goal summary app API', () => {
         sandboxBindingRef.slice('lease-binding:'.length)
       );
       const admissions = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-        userId: LOCAL_USER_ID,
         workspaceId: 'ws_demo',
         statuses: ['admitted'],
       });
@@ -2072,6 +3184,7 @@ describe('thread goal summary app API', () => {
           { kind: 'workspace', id: 'ws_demo' },
           { kind: 'thread', id: thread.id },
           { kind: 'item', id: `it_context_${thread.id}` },
+          { kind: 'item', id: steeringIds.contentItemId },
         ],
         resources: GOAL_TASK_EXECUTION_FIELDS.resources,
         expectedArtifacts: [
@@ -2123,7 +3236,7 @@ describe('thread goal summary app API', () => {
       const stepReceipt = store.getCommandRequest(
         'goal.step',
         'req_goal_step',
-        { workspaceId: 'ws_demo', threadId: thread.id },
+        { actorId: LOCAL_USER_ID, workspaceId: 'ws_demo', threadId: thread.id },
         workspaceDb
       );
       expect(stepReceipt).toMatchObject({
@@ -2285,7 +3398,10 @@ describe('thread goal summary app API', () => {
 
     try {
       seedReadyRepository(coreDb, repositoryPath);
-      const contextTurn = store.createTurn('ws_demo', thread.id, 'Provide failure context');
+      const contextTurn = store.createTurn('ws_demo', thread.id, 'Provide failure context', {
+        kind: 'user',
+        id: 'user_local',
+      });
       store.createItem({
         id: `it_context_${thread.id}`,
         workspaceId: 'ws_demo',
@@ -2293,6 +3409,7 @@ describe('thread goal summary app API', () => {
         turnId: contextTurn.id,
         type: 'user-message',
         status: 'completed',
+        actor: contextTurn.triggerActor,
         text: 'Start the worker and preserve failure evidence.',
         createdAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
         completedAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
@@ -2336,6 +3453,7 @@ describe('thread goal summary app API', () => {
 
       const startContexts: TurnStartRuntimeContext[] = [];
       const app = createApp({
+        agentManifests: [createTestAgentSetup({ provider: null }).manifest],
         coreDb,
         store,
         turnExecutor: createFailingGoalTurnExecutor(startContexts),
@@ -2370,7 +3488,6 @@ describe('thread goal summary app API', () => {
       ).toEqual([expect.objectContaining({ taskId: 'task_failing_step', status: 'running' })]);
 
       const admission = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-        userId: LOCAL_USER_ID,
         workspaceId: 'ws_demo',
         statuses: ['admitted'],
       })[0]!;
@@ -2419,7 +3536,6 @@ describe('thread goal summary app API', () => {
       expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(failedTurnCount);
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          userId: LOCAL_USER_ID,
           workspaceId: 'ws_demo',
           statuses: ['admitted'],
         })
@@ -2440,7 +3556,10 @@ describe('thread goal summary app API', () => {
 
     try {
       seedReadyRepository(coreDb, repositoryPath);
-      const contextTurn = store.createTurn('ws_demo', thread.id, 'Provide deferred context');
+      const contextTurn = store.createTurn('ws_demo', thread.id, 'Provide deferred context', {
+        kind: 'user',
+        id: 'user_local',
+      });
       store.createItem({
         id: `it_context_${thread.id}`,
         workspaceId: 'ws_demo',
@@ -2448,6 +3567,7 @@ describe('thread goal summary app API', () => {
         turnId: contextTurn.id,
         type: 'user-message',
         status: 'completed',
+        actor: contextTurn.triggerActor,
         text: 'Do not launch this worker after the synchronous step fails.',
         createdAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
         completedAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
@@ -2502,6 +3622,7 @@ describe('thread goal summary app API', () => {
 
       const startContexts: TurnStartRuntimeContext[] = [];
       const app = createApp({
+        agentManifests: [createTestAgentSetup({ provider: null }).manifest],
         coreDb,
         store,
         turnExecutor: createCompletingGoalTurnExecutor(startContexts),
@@ -2520,14 +3641,12 @@ describe('thread goal summary app API', () => {
       expect(startContexts).toEqual([]);
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          userId: LOCAL_USER_ID,
           workspaceId: 'ws_demo',
           statuses: ['queued'],
         })
       ).toEqual([]);
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          userId: LOCAL_USER_ID,
           workspaceId: 'ws_demo',
           statuses: ['cancelled'],
         })
@@ -2568,7 +3687,10 @@ describe('thread goal summary app API', () => {
 
     try {
       seedReadyRepository(coreDb, repositoryPath);
-      const contextTurn = store.createTurn('ws_demo', thread.id, 'Provide context');
+      const contextTurn = store.createTurn('ws_demo', thread.id, 'Provide context', {
+        kind: 'user',
+        id: 'user_local',
+      });
       store.createItem({
         id: `it_context_${thread.id}`,
         workspaceId: 'ws_demo',
@@ -2576,6 +3698,7 @@ describe('thread goal summary app API', () => {
         turnId: contextTurn.id,
         type: 'user-message',
         status: 'completed',
+        actor: contextTurn.triggerActor,
         text: 'Complete both dependent tasks without review gates.',
         createdAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
         completedAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
@@ -2641,6 +3764,7 @@ describe('thread goal summary app API', () => {
       });
 
       const app = createApp({
+        agentManifests: [createTestAgentSetup({ provider: null }).manifest],
         coreDb,
         store,
         turnExecutor: createCompletingGoalTurnExecutor(),
@@ -2705,7 +3829,7 @@ describe('thread goal summary app API', () => {
       const firstReceipt = store.getCommandRequest(
         'goal.step',
         'req_goal_no_review_1',
-        { workspaceId: 'ws_demo', threadId: thread.id },
+        { actorId: LOCAL_USER_ID, workspaceId: 'ws_demo', threadId: thread.id },
         workspaceDb
       );
       expect(firstReceipt).toMatchObject({
@@ -2790,7 +3914,10 @@ describe('thread goal summary app API', () => {
 
     try {
       seedReadyRepository(coreDb, repositoryPath);
-      const contextTurn = store.createTurn('ws_demo', thread.id, 'Provide context');
+      const contextTurn = store.createTurn('ws_demo', thread.id, 'Provide context', {
+        kind: 'user',
+        id: 'user_local',
+      });
       store.createItem({
         id: `it_context_${thread.id}`,
         workspaceId: 'ws_demo',
@@ -2798,6 +3925,7 @@ describe('thread goal summary app API', () => {
         turnId: contextTurn.id,
         type: 'user-message',
         status: 'completed',
+        actor: contextTurn.triggerActor,
         text: 'Produce reviewable worker evidence.',
         createdAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
         completedAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
@@ -2873,17 +4001,16 @@ describe('thread goal summary app API', () => {
           }
           const turn = workerStore.getTurnById(turnId);
           const environmentPackage = resolveAgentEnvironmentPackage({
-            agent: workerStore.getAgent('ws_demo', 'agent_codex_host'),
+            agentSetup: createTestAgentSetup(),
             agentSessionId: context.agentSessionId,
             backend: {
               workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
               kind: 'openshell',
-              sandboxImageRef: 'openkit/worker-codex:dev',
             },
             requestId: context.requestId,
             turn,
             turnInput: input,
-            userId: workerStore.getUserId(),
+            triggerActor: context.triggerActor,
             workspaceCwd: '/workspace',
             workspaceRoots: [],
           });
@@ -2978,6 +4105,7 @@ describe('thread goal summary app API', () => {
         },
       };
       const app = createApp({
+        agentManifests: [createTestAgentSetup({ provider: null }).manifest],
         coreDb,
         store,
         turnExecutor: acceptedFinalStatusExecutor,
@@ -3034,6 +4162,7 @@ describe('thread goal summary app API', () => {
       workspaceDb.sqlite.exec('DROP TRIGGER fail_goal_checkpoint_terminal');
       const replayStarts: TurnStartRuntimeContext[] = [];
       const restartedApp = createApp({
+        agentManifests: [createTestAgentSetup({ provider: null }).manifest],
         coreDb,
         store,
         turnExecutor: createCompletingGoalTurnExecutor(replayStarts),
@@ -3064,7 +4193,7 @@ describe('thread goal summary app API', () => {
         store.getCommandRequest(
           'goal.step',
           requestId,
-          { workspaceId: 'ws_demo', threadId: thread.id },
+          { actorId: LOCAL_USER_ID, workspaceId: 'ws_demo', threadId: thread.id },
           workspaceDb
         )
       ).toBeNull();
@@ -3088,7 +4217,10 @@ describe('thread goal summary app API', () => {
 
     try {
       seedReadyRepository(coreDb, repositoryPath);
-      const contextTurn = store.createTurn('ws_demo', thread.id, 'Provide context');
+      const contextTurn = store.createTurn('ws_demo', thread.id, 'Provide context', {
+        kind: 'user',
+        id: 'user_local',
+      });
       store.createItem({
         id: `it_context_${thread.id}`,
         workspaceId: 'ws_demo',
@@ -3096,6 +4228,7 @@ describe('thread goal summary app API', () => {
         turnId: contextTurn.id,
         type: 'user-message',
         status: 'completed',
+        actor: contextTurn.triggerActor,
         text: 'Use the linked repository and wait for asynchronous worker completion.',
         createdAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
         completedAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
@@ -3149,7 +4282,12 @@ describe('thread goal summary app API', () => {
           questions: true,
         },
         eventFamilies: ['turn.completed'],
-        async startTurn(workerStore, turnId, input) {
+        async startTurn(
+          workerStore,
+          turnId,
+          input,
+          context = { requestId: null, workspaceRoots: [] }
+        ) {
           queueMicrotask(() => {
             const turn = workerStore.getTurnById(turnId);
             const timestamp = turn.startedAt ?? '2026-05-31T00:00:00.000Z';
@@ -3166,6 +4304,14 @@ describe('thread goal summary app API', () => {
               content: {
                 format: 'markdown',
                 body: input,
+              },
+              contentDigest: artifactDigest(input),
+              lastMutationRequestId: context.requestId!,
+              origin: {
+                kind: 'turn-output',
+                threadId: turn.threadId,
+                turnId,
+                requestId: context.requestId!,
               },
               createdAt: timestamp,
               updatedAt: timestamp,
@@ -3186,7 +4332,12 @@ describe('thread goal summary app API', () => {
           });
         },
       };
-      const app = createApp({ coreDb, store, turnExecutor });
+      const app = createApp({
+        agentManifests: [createTestAgentSetup({ provider: null }).manifest],
+        coreDb,
+        store,
+        turnExecutor,
+      });
       const stepRes = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
         {
@@ -3271,7 +4422,10 @@ describe('thread goal summary app API', () => {
 
     try {
       seedReadyRepository(coreDb, repositoryPath);
-      const contextTurn = store.createTurn('ws_demo', thread.id, 'Provide context');
+      const contextTurn = store.createTurn('ws_demo', thread.id, 'Provide context', {
+        kind: 'user',
+        id: 'user_local',
+      });
       store.createItem({
         id: `it_context_${thread.id}`,
         workspaceId: 'ws_demo',
@@ -3279,6 +4433,7 @@ describe('thread goal summary app API', () => {
         turnId: contextTurn.id,
         type: 'user-message',
         status: 'completed',
+        actor: contextTurn.triggerActor,
         text: 'Use the linked repository and surface any human approval gate.',
         createdAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
         completedAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
@@ -3322,7 +4477,12 @@ describe('thread goal summary app API', () => {
         now: () => '2026-05-31T00:00:00.000Z',
       });
 
-      const app = createApp({ coreDb, store, turnExecutor: executor() });
+      const app = createApp({
+        agentManifests: [createTestAgentSetup({ provider: null }).manifest],
+        coreDb,
+        store,
+        turnExecutor: executor(),
+      });
       const stepRes = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
         {
@@ -3332,7 +4492,7 @@ describe('thread goal summary app API', () => {
         }
       );
 
-      expect(stepRes.status).toBe(200);
+      expect(stepRes.status, await stepRes.clone().text()).toBe(200);
       const stepPayload = await stepRes.json();
       expect(stepPayload).toMatchObject({
         goal: {
@@ -3495,7 +4655,11 @@ describe('thread goal summary app API', () => {
           subjectSummary: { kind: 'test' },
           action: 'repo.push',
           resourceSummary: { turnId: workerTurnId },
-          contextSummary: { threadId: thread.id, turnId: workerTurnId },
+          contextSummary: {
+            workspaceId: 'ws_demo',
+            threadId: thread.id,
+            turnId: workerTurnId,
+          },
           result: 'require_approval',
           reasonCode: 'test_approval_required',
           enforcementPoint: 'test.goal_gate',
@@ -3528,7 +4692,9 @@ describe('thread goal summary app API', () => {
               }),
             });
 
-      expect(response.status).toBe(gate.kind === 'approval' ? 200 : 202);
+      expect(response.status, await response.clone().text()).toBe(
+        gate.kind === 'approval' ? 200 : 202
+      );
       const responseItemId =
         gate.kind === 'approval'
           ? `it_approval_decision_${workerTurnId}`
@@ -3588,6 +4754,22 @@ describe('thread goal summary app API', () => {
       expect(
         store.listThreadItems('ws_demo', thread.id).filter((item) => item.id === responseItemId)
       ).toHaveLength(1);
+
+      if (gate.kind === 'approval') {
+        const stale = await app.request(`/api/approvals/${gate.approvalRequestId}/respond`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000307',
+            workspaceId: 'ws_demo',
+            threadId: thread.id,
+            turnId: workerTurnId,
+            decision: 'granted',
+          }),
+        });
+        expect(stale.status).toBe(409);
+        await expect(stale.json()).resolves.toMatchObject({ code: 'stale' });
+      }
 
       const nextStepRes = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,

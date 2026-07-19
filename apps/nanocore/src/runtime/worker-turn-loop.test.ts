@@ -3,9 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { ensureLocalUser } from '../auth/identity.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { getWorkerCheckpoint } from './worker-checkpoints.js';
 import { runWorkerTurnLoop } from './worker-turn-loop.js';
@@ -19,6 +21,12 @@ function createCoreDb(): CoreDb {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-turn-loop-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'user_local',
+    workspaceId: 'ws_demo',
+  });
   return coreDb;
 }
 
@@ -29,7 +37,7 @@ function createCoreDb(): CoreDb {
  * @returns Migrated workspace database handle.
  */
 function createWorkspaceDb(coreDb: CoreDb): WorkspaceDb {
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'user_demo', 'ws_demo');
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }
@@ -77,6 +85,8 @@ describe('worker turn loop', () => {
     try {
       const prepareCalls: unknown[][] = [];
       const result = await runWorkerTurnLoop({
+        coreDb,
+        triggerActor: { kind: 'user', id: 'user_local' },
         workspaceDb,
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
@@ -143,6 +153,8 @@ describe('worker turn loop', () => {
     try {
       await expect(
         runWorkerTurnLoop({
+          coreDb,
+          triggerActor: { kind: 'user', id: 'user_local' },
           workspaceDb,
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
@@ -181,6 +193,8 @@ describe('worker turn loop', () => {
     try {
       await expect(
         runWorkerTurnLoop({
+          coreDb,
+          triggerActor: { kind: 'user', id: 'user_local' },
           workspaceDb,
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
@@ -209,6 +223,74 @@ describe('worker turn loop', () => {
         stage: 'preparing',
         stopReason: null,
       });
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects removed authority before reservation, decision, checkpoint, or worker effects', async () => {
+    const coreDb = createCoreDb();
+    const workspaceDb = createWorkspaceDb(coreDb);
+    const timestamp = '2026-07-19T00:00:00.000Z';
+    const now = Date.parse(timestamp);
+    coreDb.sqlite
+      .prepare(
+        `INSERT INTO users (
+          id, display_name, email, email_verified, created_at, updated_at, kind
+        ) VALUES ('user_removed_worker', 'Removed Worker', 'removed-worker@example.com', false, ?, ?, 'human')`
+      )
+      .run(now, now);
+    coreDb.sqlite
+      .prepare(
+        `INSERT INTO workspace_members (
+          workspace_id, user_id, status, access_level, invitation_id,
+          joined_at, removed_at, revision, created_at, updated_at
+        ) VALUES ('ws_demo', 'user_removed_worker', 'removed', 'editor', NULL, ?, ?, 2, ?, ?)`
+      )
+      .run(timestamp, timestamp, timestamp, timestamp);
+    let reserveCalls = 0;
+    let workerCalls = 0;
+
+    try {
+      await expect(
+        runWorkerTurnLoop({
+          coreDb,
+          triggerActor: { kind: 'user', id: 'user_removed_worker' },
+          workspaceDb,
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          requestId: 'req_worker_removed_authority',
+          requestInputHash: 'sha256:worker_removed_authority',
+          reviewRequired: false,
+          remainingWorkerIterations: 0,
+          prepare: () => preparedWorkerTurn(false),
+          reserveTurn: () => {
+            reserveCalls += 1;
+            return { turnId: 'turn_worker_removed_authority' };
+          },
+          startWorker: () => {
+            workerCalls += 1;
+            return { workerSessionId: 'session_worker_removed_authority' };
+          },
+          awaitWorker: () => ({ stopReason: 'completed' }),
+        })
+      ).rejects.toMatchObject({ code: 'workspace_access_denied', status: 403 });
+
+      expect(reserveCalls).toBe(0);
+      expect(workerCalls).toBe(0);
+      expect(
+        getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'turn_worker_removed_authority')
+      ).toBeNull();
+      expect(
+        (
+          workspaceDb.sqlite
+            .prepare('SELECT COUNT(*) AS count FROM permission_decisions')
+            .get() as {
+            count: number;
+          }
+        ).count
+      ).toBe(0);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();

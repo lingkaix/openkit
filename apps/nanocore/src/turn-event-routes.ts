@@ -3,6 +3,7 @@ import { streamSSE } from 'hono/streaming';
 
 import { apiErrorPayload, asApiError } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
+import { assertAuthorizedWorkspaceLineage } from './auth/operation-authorizer.js';
 import type { FsStore } from './lib/store.js';
 
 /**
@@ -42,6 +43,18 @@ export function registerTurnEventRoutes({
     const workspaceId = c.req.param('workspaceId');
     const threadId = c.req.param('threadId');
     const store = requestStore(c);
+    let ownerTurn: ReturnType<FsStore['getTurnById']>;
+
+    try {
+      ownerTurn = store.getTurnById(turnId);
+    } catch (error) {
+      return asApiError((error as Error).message);
+    }
+
+    const workspaceAccess = c.get('workspaceAccess');
+    if (workspaceAccess) {
+      assertAuthorizedWorkspaceLineage(workspaceAccess, ownerTurn.workspaceId);
+    }
 
     try {
       store.getTurn(workspaceId, threadId, turnId);

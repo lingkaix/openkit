@@ -567,10 +567,14 @@ Applied image catalog and Dockerfile layout:
 - `containers/images.json`
 - `containers/app/Dockerfile`
 - `containers/worker-codex/Dockerfile`
+- `containers/worker-opencode/Dockerfile`
+- `containers/worker-pi/Dockerfile`
 - `containers/dev-e2e/Dockerfile`
 - `containers/app/entrypoint.sh`
 - `containers/app/smoke.sh`
 - `containers/worker-codex/smoke.sh`
+- `containers/worker-opencode/smoke.sh`
+- `containers/worker-pi/smoke.sh`
 - `containers/dev-e2e/smoke.sh`
 
 Applied Docker helper scripts:
@@ -602,22 +606,30 @@ Release workflow state:
 
 Runtime default state:
 
-- The current Codex-only implementation still reads a global image environment variable; WP-2 removes that implementation defect, and the variable is not accepted image-selection authority.
-- The accepted target is repository-owned `AgentManifest` templates selecting their cataloged local worker images, with NanoCore resolving those references into the AEP generically.
-- Release docs should prefer `ghcr.io/<owner>/openkit-worker-codex:<version-or-digest>`.
+- Repository-owned `AgentManifest` templates select their exact cataloged worker image, runtime adapter, binary paths, pull policy, provider route, credential requirements, and sandbox policy.
+- NanoCore resolves the manifest into the AEP generically. It has no runtime-specific image selector, native command schema, or global worker-image fallback.
+- The AEP launches `openkit-worker-shim`; `control.adapter.targetRuntime` selects one adapter in the shim's static registry.
+- Release docs should prefer exact GHCR version or digest references.
 
-Only `worker-codex` is present in the current catalog. The OpenCode and Pi image definitions, catalog entries, and smoke paths remain WP-2 implementation work.
+The current catalog contains separate Codex, OpenCode, and Pi worker images. Each contains the generic shim and exactly one pinned native runtime: Codex `0.144.1`, OpenCode `1.18.1`, or Pi `0.80.7`.
 
 Release worker base state:
 
-- `containers/images.json` pins `worker-codex.baseImage` to `node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5`.
-- `containers/worker-codex/Dockerfile` uses the same digest-pinned Node base for its builder and runtime stages.
+- `containers/images.json` pins all three worker base images to `node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5`.
+- Each worker Dockerfile uses that digest-pinned Node base for its builder and runtime stages.
 
-Codex worker launcher state:
+Worker runtime state:
 
+- The generic shim uses one static registry and the bounded `prepare`/`collect` contract. Native runtime schemas and commands remain outside NanoCore and canonical worker schemas.
 - The Codex launcher preserves the OpenShell-provided proxy variables and enables Node environment-proxy support with `NODE_USE_ENV_PROXY=1` so Node `fetch` follows the governed egress path.
 - The launcher preserves inherited `NO_PROXY` and `no_proxy` entries but MUST NOT add `host.openshell.internal`; the authenticated NanoCore worker-control origin remains reachable through the OpenShell policy proxy.
 - The image and launcher MUST provide a writable runtime home through `CODEX_HOME` or `HOME` before the optional S33 Codex provenance extension starts. Missing home state is a Codex image or provenance failure, not a shared adapter-contract requirement, and MUST fail closed before inference when that extension is required.
+
+A1 verification state:
+
+- All three arm64 worker images were built directly on A1 and passed their image smoke checks.
+- Stock unpatched OpenShell `0.0.80` created one sandbox from each image, uploaded its AEP package, completed the generic shim dry run, and deleted the sandbox after the Cell's separate same-tag image cache was refreshed.
+- This evidence proves image contents, adapter preparation, stock OpenShell containment, upload, and cleanup only. It does not prove a real-provider turn or the worker-control readiness, heartbeat, interruption, reconnect, and recovery lifecycle.
 
 ## Alternatives Considered
 
@@ -635,7 +647,7 @@ Rejected for now. A universal worker image would be larger, harder to smoke test
 
 ### Create An OpenKit Worker Base Immediately
 
-Rejected for now. OpenShell Community already provides a base sandbox direction, and OpenKit currently has only one live worker image. A custom base image becomes useful only after at least two worker images duplicate meaningful layers.
+Rejected for now. The three current worker images share a pinned Node base, but their native runtime layers remain small and independent. A custom OpenKit worker base becomes useful only when measured duplicated maintenance justifies another release artifact.
 
 ### Publish Images On Every Main Push
 
@@ -725,9 +737,8 @@ Worker image smoke acceptance:
 OpenShell acceptance:
 
 - Each release worker image can be used through `openshell sandbox create --from`.
-- A real OpenShell launch for each release worker image proves the generic shim, worker-control readiness, declared binary policy, and governed egress without bypassing `host.openshell.internal`.
-- The real OpenShell e2e remains opt-in because it requires a gateway and runtime credentials.
-- A release candidate must run the real OpenShell check for each release worker image before the image is treated as supported.
+- The packaging check for each release worker image must prove stock OpenShell sandbox creation, AEP upload, generic shim dry run, and sandbox deletion.
+- That packaging check does not prove a real-provider turn or the worker-control lifecycle. Applicable release-candidate provider and worker stories must execute and pass under their owning specifications; a skipped story does not satisfy that separate release gate.
 
 CI acceptance:
 
@@ -752,7 +763,6 @@ CI acceptance:
 
 ## Open Questions
 
-- `[Non-blocking]` Should release builds publish `linux/arm64` for every release image immediately, or should the first release publish only platforms proven by CI and real worker smoke?
 - `[Non-blocking]` Should GitHub Release creation be automated in the same workflow, or should the first image publish flow only emit digest summaries for a human-created release?
 - `[Non-blocking]` Should `latest` be updated for every stable `v*.*.*` tag, or only for releases marked non-draft in GitHub Releases?
 

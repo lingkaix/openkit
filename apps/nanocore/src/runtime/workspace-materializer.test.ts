@@ -1,4 +1,6 @@
+import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import {
@@ -11,16 +13,18 @@ import {
 describe('workspace materializer records', () => {
   it('builds product-safe input snapshots from an Agent Environment Package', () => {
     const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Update docs');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Update docs', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const environmentPackage = resolveAgentEnvironmentPackage({
-      agent,
+      agentSetup: createTestAgentSetup(),
       agentSessionId: 'session_1',
+      triggerActor: turn.triggerActor,
       userId: 'user_local',
       backend: {
         workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
-        sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
       },
       createdAt: '2026-06-27T00:00:00.000Z',
       requestId: 'req_1',
@@ -62,18 +66,152 @@ describe('workspace materializer records', () => {
     expect(JSON.stringify(snapshots)).not.toContain('/Users/m5pro');
   });
 
-  it('carries catalog source ids into workspace lineage records', () => {
+  it('builds the exact S39 context handoff without changing generated near misses', () => {
     const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Update docs from catalog source');
-    const agent = store.getAgent('ws_demo', 'agent_codex_host');
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Use the accepted context package', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    const packageRootDigest = `sha256:${'a'.repeat(64)}`;
     const environmentPackage = resolveAgentEnvironmentPackage({
-      agent,
-      agentSessionId: 'session_source_1',
+      agentSetup: createTestAgentSetup(),
+      agentSessionId: 'session_context_1',
+      triggerActor: turn.triggerActor,
       userId: 'user_local',
       backend: {
         workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
-        sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
+      },
+      createdAt: '2026-07-18T01:00:00.000Z',
+      requestId: 'req_context_1',
+      turn,
+      turnInput: 'Use the accepted context package',
+      workspaceCwd: null,
+      workspaceRoots: [],
+    });
+    const contextInput: AgentEnvironmentPackage['workspace']['inputs'][number] = {
+      access: 'read-only',
+      id: `context_${turn.id}`,
+      kind: 'generated',
+      materialization: {
+        contentDigest: packageRootDigest,
+        slotId: 'context',
+        strategy: 'filesystem',
+      },
+      source: {
+        kind: 'generated',
+        pathRef: `threads/${turn.threadId}/turns/${turn.id}/context-package`,
+      },
+      target: '/openkit/context',
+    };
+    const nearMissInput: AgentEnvironmentPackage['workspace']['inputs'][number] = {
+      ...contextInput,
+      id: `context_${turn.id}_near_miss`,
+      target: '/openkit/turn-inputs/context',
+    };
+    const withContextInputs: AgentEnvironmentPackage = {
+      ...environmentPackage,
+      workspace: {
+        ...environmentPackage.workspace,
+        generatedFiles: [
+          {
+            access: 'read-only',
+            contentRef: 'inline://worker-request',
+            id: 'worker_request',
+            target: '/openkit/turn-inputs/request.json',
+          },
+        ],
+        inputs: [contextInput, nearMissInput],
+      },
+    };
+    const snapshots = buildWorkspaceInputSnapshots({
+      backendCapabilities: ['filesystem-materialization', 'backend-only-capability'],
+      backendKind: 'openshell',
+      createdAt: '2026-07-18T01:01:00.000Z',
+      environmentPackage: withContextInputs,
+    });
+    const contextSnapshot = snapshots[0];
+    const nearMissSnapshot = snapshots[1];
+
+    expect(contextSnapshot).toEqual({
+      backend: {
+        capabilitySummary: withContextInputs.backend.requiredCapabilities,
+        kind: 'openshell',
+        label: 'openshell worker backend',
+      },
+      base: { commit: null, contentDigest: packageRootDigest },
+      createdAt: '2026-07-18T01:01:00.000Z',
+      generatedFiles: [],
+      id: `wis_${environmentPackage.snapshotId}_context_${turn.id}`,
+      ignoredPaths: [],
+      pathScope: [`context_${turn.id}`],
+      resourceId: `context_${turn.id}`,
+      resourceKind: 'filesystem',
+      strategy: 'filesystem',
+      workspaceId: 'ws_demo',
+      writableRoots: [],
+    });
+    expect(nearMissSnapshot).toMatchObject({
+      backend: {
+        capabilitySummary: ['filesystem-materialization', 'backend-only-capability'],
+        kind: 'openshell',
+        label: 'openshell worker backend',
+      },
+      generatedFiles: [{ id: 'worker_request', target: 'openkit/turn-inputs/request.json' }],
+      resourceKind: 'git_repository',
+      strategy: 'git',
+    });
+
+    const records = buildWorkspaceMaterializationRecords({
+      createdAt: '2026-07-18T01:02:00.000Z',
+      inputSnapshots: snapshots,
+      materialization: {
+        backendKind: 'openshell',
+        backendStatus: { health: 'ready', version: '0.0.80' },
+        packageSnapshotId: environmentPackage.snapshotId,
+        requiredCapabilities: ['filesystem-materialization'],
+        sandbox: { name: 'backend_session_context_1', state: 'created' },
+        workspaceInputs: [
+          { id: contextInput.id, target: contextInput.target },
+          { id: nearMissInput.id, target: nearMissInput.target },
+        ],
+      },
+    });
+
+    expect(records[0]).toMatchObject({
+      backendKind: 'openshell',
+      base: { commit: null, contentDigest: packageRootDigest },
+      createdAt: '2026-07-18T01:01:00.000Z',
+      id: `wmr_${environmentPackage.snapshotId}_context_${turn.id}`,
+      inputSnapshotId: `wis_${environmentPackage.snapshotId}_context_${turn.id}`,
+      materializedRootRef: '/openkit/context',
+      packageSnapshotId: environmentPackage.snapshotId,
+      strategy: 'filesystem',
+      workerSessionId: 'backend_session_context_1',
+      workspaceId: 'ws_demo',
+    });
+    expect(records[0]).not.toHaveProperty('sourceId');
+    expect(records[1]).toMatchObject({
+      createdAt: '2026-07-18T01:02:00.000Z',
+      materializedRootRef: '/openkit/turn-inputs/context',
+      strategy: 'git',
+    });
+  });
+
+  it('carries catalog source ids into workspace lineage records', () => {
+    const store = createDemoStore();
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Update docs from catalog source', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    const environmentPackage = resolveAgentEnvironmentPackage({
+      agentSetup: createTestAgentSetup(),
+      agentSessionId: 'session_source_1',
+      triggerActor: turn.triggerActor,
+      userId: 'user_local',
+      backend: {
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+        kind: 'openshell',
       },
       createdAt: '2026-06-27T00:00:00.000Z',
       requestId: 'req_source_1',

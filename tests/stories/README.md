@@ -22,12 +22,17 @@ default_tool: playwright
 timeout_seconds: 300
 requires_real_provider: false
 requires_real_codex: false
+contracts: docs/specs/20260628-web_product_surface_projection.md, docs/core/vault.md
 ---
 ```
 
-The body should include purpose, preconditions, setup, user-visible steps, expected outcomes, deterministic assertions, evidence to collect, cleanup, and failure triage notes.
+`contracts` is one comma-separated scalar line naming the owning Core and specification documents whose behavior the story accepts.
 
-Long stories should include checkpoints so an executor can collect evidence before the final outcome.
+The front matter is scalar key-value lines with a closed field set, not YAML. The L6 specification owns the one-step switch trigger to a real YAML parser; do not add partial YAML syntax to the scalar parser.
+
+The body section list is normative and owned by `docs/specs/20260529-l6_story_acceptance.md`. Required sections: `Purpose`, `Preconditions`, `User-visible Steps`, `Expected Outcomes`, `Deterministic Assertions`, and `Failure Triage Notes`. Allowed when needed: `Setup`, `Required Opt-in Environment Variables`, `Evidence To Collect`, and `Cleanup`. No other body section is allowed.
+
+Long stories should name intermediate capture points inside `Evidence To Collect` so the orchestrator collects evidence before the final outcome.
 
 ## Execution Model
 
@@ -63,7 +68,7 @@ pnpm -w test:stories:real-provider
 
 The command skips by default and requires explicit real provider plus provider quota opt-in before it calls an existing NanoCore deployment.
 
-For agentic-only story edits, run `pnpm -w check:repo` at minimum and make sure the story metadata still matches the required shape.
+For agentic-only story edits, run `pnpm -w check:repo` at minimum; it validates every story against the normative schema through `scripts/validate-story-schema.mjs`: the closed front matter field set, contract-reference existence, repository-unique ids, and the body section list.
 
 ## Authoring Rules
 
@@ -73,7 +78,9 @@ For agentic-only story edits, run `pnpm -w check:repo` at minimum and make sure 
 - Use fake secret markers only, never real credentials or private account data.
 - Mark real-provider stories with `requires_real_provider: true`.
 - Mark real-Codex or real-subscription stories with `requires_real_codex: true`.
-- Keep deterministic assertions machine-checkable whenever practical.
+- Keep deterministic assertions machine-checkable whenever practical, and make each assertion name the evidence or product record that decides it.
+- Do not write verdict-shaped assertions such as "the run executes and passes"; execution and skip semantics are owned by the L6 specification.
+- Declare the owning contract documents in the `contracts` front matter line.
 - Require every confirmed deterministic L6 defect to be reduced into L1-L5 regression coverage.
 
 ## Current Stories

@@ -72,9 +72,7 @@ export interface RuntimeConfigDataSourceAuthorityChange {
 export interface RuntimeConfigFileServiceOptions {
   /** Data root that owns DATA_ROOT/config. */
   dataRoot: string | null;
-  /** Current user id whose workspace config files are addressable. */
-  userId: string;
-  /** Workspace ids visible to the current user. */
+  /** Workspace ids authorized for the current request. */
   workspaceIds: string[];
   /** Runtime config manager used for current snapshot and status reads. */
   runtimeConfigManager: RuntimeConfigManager;
@@ -126,7 +124,6 @@ export class RuntimeConfigFileServiceError extends Error {
  */
 export class RuntimeConfigFileService {
   private readonly dataRoot: string;
-  private readonly userId: string;
   private readonly workspaceIds: string[];
   private readonly runtimeConfigManager: RuntimeConfigManager;
   private readonly readRuntimeConfigStatus: () => RuntimeConfigStatus;
@@ -149,7 +146,6 @@ export class RuntimeConfigFileService {
     }
 
     this.dataRoot = options.dataRoot;
-    this.userId = options.userId;
     this.workspaceIds = options.workspaceIds;
     this.runtimeConfigManager = options.runtimeConfigManager;
     this.readRuntimeConfigStatus = options.readRuntimeConfigStatus;
@@ -543,15 +539,7 @@ export class RuntimeConfigFileService {
       const sourcePath = this.workspaceConfigPath(workspaceId, 'workspace');
 
       if (existsSync(sourcePath)) {
-        const targetPath = join(
-          tempRoot,
-          'users',
-          this.userId,
-          'workspaces',
-          workspaceId,
-          'config',
-          'workspace.jsonc'
-        );
+        const targetPath = join(tempRoot, 'workspaces', workspaceId, 'config', 'workspace.jsonc');
         mkdirSync(dirname(targetPath), { recursive: true });
         cpSync(sourcePath, targetPath);
       }
@@ -561,8 +549,6 @@ export class RuntimeConfigFileService {
       if (existsSync(catalogSourcePath)) {
         const targetPath = join(
           tempRoot,
-          'users',
-          this.userId,
           'workspaces',
           workspaceId,
           'config',
@@ -578,8 +564,6 @@ export class RuntimeConfigFileService {
       const targetPath = isWorkspaceScopedKind(spec.kind)
         ? join(
             tempRoot,
-            'users',
-            this.userId,
             'workspaces',
             spec.workspaceId ?? '',
             'config',
@@ -692,18 +676,21 @@ export class RuntimeConfigFileService {
   "schemaVersion": 1,
   "id": "${id}",
   "displayName": "${titleFromId(id)}",
-  "mode": "local",
+  "requiredFeatures": [],
   "runtime": {
     "kind": "codex",
-    "adapter": "codex-app-server",
-    "version": "0.0.2"
-  },
-  "deployment": {
-    "local": {
-      "command": "codex",
-      "args": ["app-server", "--listen", "stdio://"],
-      "cwdPolicy": "workspace"
-    }
+    "adapter": "codex",
+    "version": "0.144.1",
+    "image": {
+      "ref": "openkit/worker-codex:dev",
+      "pullPolicy": "if-not-present"
+    },
+    "binaries": [
+      { "id": "openkit-worker-shim", "path": "/usr/local/bin/openkit-worker-shim" },
+      { "id": "node", "path": "/usr/local/bin/node" },
+      { "id": "codex", "path": "/usr/local/bin/codex" },
+      { "id": "codex-native", "path": "/usr/local/lib/codex/bin/codex" }
+    ]
   },
   "provider": {
     "ref": "agent-openrouter",
@@ -712,7 +699,18 @@ export class RuntimeConfigFileService {
   "profiles": [{ "id": "default" }],
   "defaultProfileId": "default",
   "skills": [],
+  "mcp": [],
   "workspace": { "root": "." },
+  "sandbox": {
+    "filesystem": [],
+    "network": [],
+    "credentialDeclarations": [],
+    "backend": {
+      "allowedKinds": ["openshell"],
+      "preferred": "openshell",
+      "requiredCapabilities": ["trusted-worker-inference-relay"]
+    }
+  },
   "readiness": {
     "status": "unknown",
     "message": "Agent availability has not been probed yet."
@@ -732,7 +730,7 @@ export class RuntimeConfigFileService {
   }
 
   /**
-   * Returns the workspace config path for one current-user workspace.
+   * Returns the canonical workspace config path.
    *
    * @param workspaceId Workspace id to resolve.
    * @returns Workspace config path.
@@ -740,8 +738,6 @@ export class RuntimeConfigFileService {
   private workspaceConfigPath(workspaceId: string, kind: 'workspace' | 'data-source'): string {
     return join(
       this.dataRoot,
-      'users',
-      this.userId,
       'workspaces',
       workspaceId,
       'config',
@@ -750,13 +746,13 @@ export class RuntimeConfigFileService {
   }
 
   /**
-   * Returns the workspace config root for one current-user workspace.
+   * Returns the canonical workspace config root.
    *
    * @param workspaceId Workspace id to resolve.
    * @returns Workspace config directory path.
    */
   private workspaceConfigRoot(workspaceId: string): string {
-    return join(this.dataRoot, 'users', this.userId, 'workspaces', workspaceId, 'config');
+    return join(this.dataRoot, 'workspaces', workspaceId, 'config');
   }
 
   /**
@@ -818,7 +814,7 @@ export class RuntimeConfigFileService {
   }
 
   /**
-   * Ensures one path is inside a current-user workspace config root.
+   * Ensures one path is inside a canonical workspace config root.
    *
    * @param workspaceId Workspace id whose config root owns the path.
    * @param path Path to validate.

@@ -7,6 +7,8 @@ import {
 } from '../providers/codex-oauth-profile.js';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
 import {
+  CODEX_OAUTH_ERROR_MESSAGE,
+  CODEX_OAUTH_UNAVAILABLE_MESSAGE,
   type CodexAccountClientFactory,
   type CodexOAuthLoginMode,
   type CodexOAuthStatus,
@@ -606,17 +608,23 @@ function sanitizeMetadata(
   accountSlotId: string,
   now: () => string
 ): CodexOAuthAccountMetadata {
+  const status = readStatus(raw.status);
+
   return {
     schemaVersion: 1,
     accountSlotId,
     ...(typeof raw.displayName === 'string' && raw.displayName.length > 0
       ? { displayName: raw.displayName }
       : {}),
-    status: readStatus(raw.status),
+    status,
     ...(typeof raw.accountLabel === 'string' ? { accountLabel: raw.accountLabel } : {}),
     ...(typeof raw.planType === 'string' ? { planType: raw.planType } : {}),
     lastUpdatedAt: typeof raw.lastUpdatedAt === 'string' ? raw.lastUpdatedAt : now(),
-    ...(typeof raw.lastError === 'string' ? { lastError: raw.lastError } : {}),
+    ...(status === 'unavailable'
+      ? { lastError: CODEX_OAUTH_UNAVAILABLE_MESSAGE }
+      : status === 'error'
+        ? { lastError: CODEX_OAUTH_ERROR_MESSAGE }
+        : {}),
     ...(raw.lastLoginMode === 'browser' || raw.lastLoginMode === 'device_code'
       ? { lastLoginMode: raw.lastLoginMode }
       : {}),

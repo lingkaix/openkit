@@ -22,8 +22,8 @@ export const schedulerAdmissionEntries = sqliteTable(
     queueEntryId: text('queue_entry_id').primaryKey().notNull(),
     /** Original command request id used for event correlation. */
     requestId: text('request_id'),
-    /** Store owner user id used to reopen the correct workspace store. */
-    userId: text('user_id').notNull(),
+    /** Exact JSON-encoded ActorRef that triggered this admission. */
+    triggerActorJson: text('trigger_actor_json').notNull(),
     /** Workspace lineage id. */
     workspaceId: text('workspace_id').notNull(),
     /** Thread lineage id. */

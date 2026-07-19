@@ -1,3 +1,4 @@
+import type { ActorRef } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { updateGoalTask } from './goal-store.js';
@@ -39,6 +40,8 @@ export interface StartGoalTaskWorkerTurnInput {
   readonly workspaceDb: WorkspaceDb;
   /** App-local durable store. */
   readonly store: FsStore;
+  /** Exact actor whose accepted Goal step triggered this Turn. */
+  readonly triggerActor: ActorRef;
   /** Workspace that owns the goal task. */
   readonly workspaceId: string;
   /** Thread that owns the goal task. */
@@ -80,7 +83,8 @@ export async function startGoalTaskWorkerTurn(
   const turn = input.store.createTurn(
     input.workspaceId,
     input.threadId,
-    input.prepared.delegationRequest.objective
+    input.prepared.delegationRequest.objective,
+    input.triggerActor
   );
 
   upsertWorkerCheckpoint(input.workspaceDb, {
@@ -108,6 +112,7 @@ export async function startGoalTaskWorkerTurn(
     const workerSessionId = result.workerSessionId ?? null;
 
     updateWorkerCheckpoint(input.workspaceDb, {
+      authorityActor: input.triggerActor,
       workspaceId: input.workspaceId,
       threadId: input.threadId,
       turnId: turn.id,
@@ -125,6 +130,7 @@ export async function startGoalTaskWorkerTurn(
       status: 'failed',
     });
     updateWorkerCheckpoint(input.workspaceDb, {
+      authorityActor: input.triggerActor,
       workspaceId: input.workspaceId,
       threadId: input.threadId,
       turnId: turn.id,

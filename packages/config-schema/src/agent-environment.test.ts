@@ -2,8 +2,14 @@ import { WORKER_RUNTIME_PROVENANCE_FEATURE as WORKER_PROTOCOL_RUNTIME_PROVENANCE
 import { describe, expect, it } from 'vitest';
 
 import {
+  AgentEnvironmentBinarySchema,
+  AgentEnvironmentControlAdapterSchema,
   AgentEnvironmentCredentialDeclarationSchema,
+  AgentEnvironmentLlmSchema,
   AgentEnvironmentPackageSchema,
+  AgentEnvironmentRuntimeCommandSchema,
+  AgentEnvironmentRuntimeSchema,
+  AgentEnvironmentSupplySchema,
   OPENKIT_WORKER_CONTROL_POST_PATHS,
   redactAgentEnvironmentPackageSnapshot,
   validateAgentEnvironmentPackageForBackend,
@@ -19,7 +25,7 @@ import {
  */
 function openshellPackageFixture(): unknown {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     packageId: 'aepkg_demo',
     snapshotId: 'aepsnap_demo',
     createdAt: '2026-06-16T00:00:00.000Z',
@@ -28,7 +34,7 @@ function openshellPackageFixture(): unknown {
       threadId: 'th_demo',
       turnId: 'turn_demo',
       agentSessionId: 'as_demo',
-      userId: 'user_demo',
+      triggerActor: { kind: 'user', id: 'user_demo' },
       requestId: 'req_demo',
     },
     agent: {
@@ -47,8 +53,15 @@ function openshellPackageFixture(): unknown {
         digest: 'sha256:demo',
         pullPolicy: 'if-not-present',
       },
+      binaries: [
+        { id: 'openkit-worker-shim', path: '/usr/local/bin/openkit-worker-shim' },
+        { id: 'node', path: '/usr/local/bin/node' },
+        { id: 'codex', path: '/usr/local/bin/codex' },
+        { id: 'codex-native', path: '/usr/local/lib/codex/bin/codex' },
+        { id: 'git', path: '/usr/bin/git' },
+      ],
       command: {
-        argv: ['codex', 'app-server', '--listen', 'stdio://'],
+        argv: ['openkit-worker-shim', '--package', '/openkit/config/package.json'],
         workingDirectory: '/workspace/repo',
         stdin: 'pipe',
         stdout: 'pipe',
@@ -90,7 +103,6 @@ function openshellPackageFixture(): unknown {
       ],
     },
     supply: {
-      binaries: [{ id: 'git', path: '/usr/bin/git', required: true, allowedProviderIds: [] }],
       skills: [
         {
           id: 'repo-guidelines',
@@ -114,8 +126,6 @@ function openshellPackageFixture(): unknown {
           id: 'github',
           version: '1.0.0',
           sourceRef: 'server:mcp/github',
-          transport: 'stdio',
-          command: ['github-mcp-server'],
           allowedTools: ['repos.get', 'issues.list'],
           approvalRequiredTools: ['issues.list'],
           toolSchemas: [
@@ -148,14 +158,6 @@ function openshellPackageFixture(): unknown {
           allowedRuntimeAdapters: ['codex'],
           allowedWorkspaceScopes: ['workspace'],
           integrity: { sha256: 'sha256-github-mcp-v1' },
-          materialization: {
-            kind: 'generated-config',
-            targetPath: '/openkit/supply/mcp/github.json',
-          },
-          networkPolicyHints: ['api.github.com'],
-          providerInstanceIds: ['provider_github_read'],
-          vaultGrantIds: ['grant_github_read'],
-          secretRefIds: ['vault_github_read'],
           reviewStatus: 'approved',
         },
       ],
@@ -194,7 +196,7 @@ function openshellPackageFixture(): unknown {
       commands: ['interrupt'],
       events: ['worker.ready', 'turn.started', 'item.created', 'turn.completed'],
       adapter: {
-        kind: 'openkit-codex-shim',
+        kind: 'openkit-worker-shim',
         targetRuntime: 'codex',
         targetTransport: 'outbound-https',
       },
@@ -277,7 +279,7 @@ function openshellPackageFixture(): unknown {
               baseUrlRef: 'runtime://nanocore/v1',
             },
           },
-          credentialVisibility: 'none',
+          credentialVisibility: 'placeholder',
         },
       ],
     },
@@ -361,7 +363,7 @@ function trustedWorkerInferenceRelayPackageFixture(): Record<string, unknown> {
         rules: [
           {
             action: 'allow',
-            binaries: ['/usr/local/bin/node', '/usr/local/bin/openkit-codex-shim'],
+            binaries: ['/usr/local/bin/node', '/usr/local/bin/openkit-worker-shim'],
             host: 'nanocore.local',
             id: 'openkit-worker-control',
             port: 443,
@@ -375,7 +377,6 @@ function trustedWorkerInferenceRelayPackageFixture(): Record<string, unknown> {
               { method: 'POST', path: '/api/worker-control/final-status' },
               { method: 'POST', path: '/api/worker-control/supply-refresh-ack' },
               { method: 'POST', path: '/api/worker-control/capability-summary' },
-              { method: 'POST', path: '/api/worker-control/knowledge-proposal-summary' },
             ],
           },
           {
@@ -458,6 +459,50 @@ function runtimeProvenancePackageFixture(): Record<string, unknown> {
 }
 
 describe('agent environment package schema', () => {
+  it('accepts only V2 package scope with one exact trigger actor', () => {
+    const fixture = openshellPackageFixture() as Record<string, unknown>;
+    const scope = fixture.scope as Record<string, unknown>;
+    const parsed = AgentEnvironmentPackageSchema.parse(fixture);
+
+    expect(parsed.schemaVersion).toBe(2);
+    expect(parsed.scope.triggerActor).toEqual({ kind: 'user', id: 'user_demo' });
+    expect(
+      AgentEnvironmentPackageSchema.parse({
+        ...fixture,
+        scope: {
+          ...scope,
+          triggerActor: {
+            kind: 'automation',
+            id: 'automation_demo',
+            responsibleUserId: 'user_demo',
+          },
+        },
+      }).scope.triggerActor
+    ).toEqual({
+      kind: 'automation',
+      id: 'automation_demo',
+      responsibleUserId: 'user_demo',
+    });
+    expect(AgentEnvironmentPackageSchema.safeParse({ ...fixture, schemaVersion: 1 }).success).toBe(
+      false
+    );
+    expect(
+      AgentEnvironmentPackageSchema.safeParse({
+        ...fixture,
+        scope: { ...scope, triggerActor: undefined },
+      }).success
+    ).toBe(false);
+
+    for (const legacyKey of ['userId', 'automationId', 'organizationId']) {
+      expect(
+        AgentEnvironmentPackageSchema.safeParse({
+          ...fixture,
+          scope: { ...scope, [legacyKey]: `${legacyKey}_legacy` },
+        }).success
+      ).toBe(false);
+    }
+  });
+
   it('accepts explicit worker sandbox access declarations', () => {
     expect(
       WorkerSandboxAccessSchema.parse({
@@ -499,6 +544,7 @@ describe('agent environment package schema', () => {
       WorkerSandboxAccessSchema.parse({
         network: [
           {
+            binaries: ['/usr/bin/curl'],
             host: 'fcdn.example.com',
             id: 'normal_fc_domain',
             port: 443,
@@ -791,6 +837,149 @@ describe('agent environment package schema', () => {
     expect(parsed.policy.snapshotId).toBe('worker_turn_launch_policy');
   });
 
+  it('requires a nonempty runtime-owned list of absolute binaries', () => {
+    const fixture = openshellPackageFixture() as Record<string, unknown>;
+    const runtime = fixture.runtime as Record<string, unknown>;
+    const relayFixture = trustedWorkerInferenceRelayPackageFixture();
+    const relayPolicy = relayFixture.policy as Record<string, unknown>;
+    const relayNetwork = relayPolicy.network as { rules: Record<string, unknown>[] };
+    const [controlRule, inferenceRule] = relayNetwork.rules;
+    if (!controlRule || !inferenceRule) {
+      throw new Error('Expected the relay fixture to declare control and inference rules.');
+    }
+    const runtimeWithoutBinaries = { ...runtime };
+    delete runtimeWithoutBinaries.binaries;
+
+    expect
+      .soft(
+        [runtimeWithoutBinaries, { ...runtime, binaries: [] }].every(
+          (candidate) => !AgentEnvironmentRuntimeSchema.safeParse(candidate).success
+        )
+      )
+      .toBe(true);
+    expect
+      .soft(AgentEnvironmentBinarySchema.safeParse({ id: 'codex', path: 'codex' }).success)
+      .toBe(false);
+    expect
+      .soft(
+        AgentEnvironmentPackageSchema.safeParse({
+          ...relayFixture,
+          policy: {
+            ...relayPolicy,
+            network: {
+              ...relayNetwork,
+              rules: [controlRule, { ...inferenceRule, binaries: ['/usr/bin/undeclared'] }],
+            },
+          },
+        }).success
+      )
+      .toBe(false);
+  });
+
+  it('accepts only the fixed generic shim command', () => {
+    const command = {
+      argv: ['openkit-worker-shim', '--package', '/openkit/config/package.json'],
+      workingDirectory: '/workspace/repo',
+    };
+
+    expect(
+      AgentEnvironmentRuntimeCommandSchema.safeParse({
+        ...command,
+        argv: ['codex', 'exec'],
+      }).success
+    ).toBe(false);
+  });
+
+  it('rejects runtime-specific control adapter kinds', () => {
+    const control = (openshellPackageFixture() as Record<string, unknown>).control as Record<
+      string,
+      unknown
+    >;
+    const adapter = control.adapter as Record<string, unknown>;
+
+    expect(
+      AgentEnvironmentControlAdapterSchema.safeParse({
+        ...adapter,
+        kind: 'openkit-codex-shim',
+      }).success
+    ).toBe(false);
+  });
+
+  it('requires exactly one resolved LLM route for every worker package', () => {
+    const llm = (openshellPackageFixture() as Record<string, unknown>).llm as {
+      routes: unknown[];
+    };
+
+    for (const routes of [[], [llm.routes[0], llm.routes[0]]]) {
+      expect(AgentEnvironmentLlmSchema.safeParse({ ...llm, routes }).success).toBe(false);
+    }
+  });
+
+  it.each([
+    ['gateway', 'placeholder', 'openai-compatible', 'nanocore-gateway', true],
+    ['direct-external', 'environment', 'provider-compatible', 'direct-provider', false],
+    ['backend-local', 'none', 'backend-local', 'backend-local', false],
+  ])('enforces %s LLM route coherence', (mode, credentialVisibility, endpointKind, upstreamKind, includesWorkerBaseUrl) => {
+    const workerBaseUrl = 'https://nanocore.local/api/worker-inference/v1';
+    const endpoint = { kind: endpointKind, upstream: { kind: upstreamKind } };
+    const route = {
+      credentialVisibility,
+      endpoint: includesWorkerBaseUrl ? { ...endpoint, workerBaseUrl } : endpoint,
+      id: 'default',
+      model: 'gpt-5',
+      providerInstanceId: 'provider',
+    };
+
+    expect.soft(AgentEnvironmentLlmSchema.safeParse({ mode, routes: [route] }).success).toBe(true);
+
+    for (const invalidRoute of [
+      {
+        ...route,
+        credentialVisibility: mode === 'backend-local' ? 'environment' : 'none',
+      },
+      {
+        ...route,
+        endpoint: {
+          ...route.endpoint,
+          kind: mode === 'gateway' ? 'provider-compatible' : 'openai-compatible',
+        },
+      },
+      {
+        ...route,
+        endpoint: {
+          ...route.endpoint,
+          upstream: { kind: mode === 'gateway' ? 'direct-provider' : 'nanocore-gateway' },
+        },
+      },
+      {
+        ...route,
+        endpoint: includesWorkerBaseUrl ? endpoint : { ...endpoint, workerBaseUrl },
+      },
+    ]) {
+      expect
+        .soft(AgentEnvironmentLlmSchema.safeParse({ mode, routes: [invalidRoute] }).success)
+        .toBe(false);
+    }
+  });
+
+  it('rejects runtime binary and native argv authority in supply', () => {
+    for (const supply of [
+      {
+        binaries: [{ id: 'git', path: '/usr/bin/git' }],
+        mcpServers: [],
+        services: [],
+        skills: [],
+      },
+      {
+        mcpServers: [{ command: ['github-mcp-server'], id: 'github', transport: 'stdio' }],
+        services: [],
+        skills: [],
+      },
+    ]) {
+      expect.soft(AgentEnvironmentSupplySchema.safeParse(supply).success).toBe(false);
+    }
+  });
+
   it('requires the direct control adapter transport to match the endpoint scheme', () => {
     const fixture = openshellPackageFixture() as Record<string, unknown>;
     const control = fixture.control as Record<string, unknown>;
@@ -921,6 +1110,9 @@ describe('agent environment package schema', () => {
       })
     ).toThrow();
     expect(OPENKIT_WORKER_CONTROL_POST_PATHS).not.toContain('/api/worker-control/terminal-results');
+    expect(OPENKIT_WORKER_CONTROL_POST_PATHS).not.toContain(
+      '/api/worker-control/knowledge-proposal-summary'
+    );
   });
 
   it('rejects false direct NanoCore control declarations', () => {
@@ -1021,7 +1213,7 @@ describe('agent environment package schema', () => {
     ]);
     expect(parsed.policy.network?.rules[0]).toEqual({
       action: 'allow',
-      binaries: ['/usr/local/bin/node', '/usr/local/bin/openkit-codex-shim'],
+      binaries: ['/usr/local/bin/node', '/usr/local/bin/openkit-worker-shim'],
       host: 'nanocore.local',
       id: 'openkit-worker-control',
       port: 443,
@@ -1035,7 +1227,6 @@ describe('agent environment package schema', () => {
         { method: 'POST', path: '/api/worker-control/final-status' },
         { method: 'POST', path: '/api/worker-control/supply-refresh-ack' },
         { method: 'POST', path: '/api/worker-control/capability-summary' },
-        { method: 'POST', path: '/api/worker-control/knowledge-proposal-summary' },
       ],
     });
   });
@@ -1227,9 +1418,6 @@ describe('agent environment package schema', () => {
   it('rejects direct credentials and provider attachments for trusted worker inference', () => {
     const fixture = trustedWorkerInferenceRelayPackageFixture();
     const providers = fixture.providers as Record<string, unknown>;
-    const supply = fixture.supply as Record<string, unknown>;
-    const directMcpServers = (openshellPackageFixture() as { supply: { mcpServers: unknown[] } })
-      .supply.mcpServers;
 
     expect(() =>
       AgentEnvironmentPackageSchema.parse({
@@ -1280,12 +1468,6 @@ describe('agent environment package schema', () => {
             },
           ],
         },
-      })
-    ).toThrow();
-    expect(() =>
-      AgentEnvironmentPackageSchema.parse({
-        ...fixture,
-        supply: { ...supply, mcpServers: directMcpServers },
       })
     ).toThrow();
   });
@@ -1548,7 +1730,7 @@ describe('agent environment package schema', () => {
       runtime: {
         ...(openshellPackageFixture() as { runtime: Record<string, unknown> }).runtime,
         command: {
-          argv: ['codex'],
+          argv: ['openkit-worker-shim', '--package', '/openkit/config/package.json'],
           workingDirectory: '/Users/m5pro/Documents/AI/openkit',
         },
       },

@@ -22,7 +22,11 @@ import { createStore } from 'solid-js/store';
 import './App.css';
 import { AgentStatusBadge } from './components/AgentStatusBadge';
 import { ArtifactView } from './components/ArtifactView';
-import { ChatComposer, type ChatComposerMode } from './components/ChatComposer';
+import {
+  ChatComposer,
+  type ChatComposerMode,
+  type ChatComposerSubmitInput,
+} from './components/ChatComposer';
 import { DiagnosticsPanel } from './components/DiagnosticsPanel';
 import {
   type CreateKnowledgeInput,
@@ -625,20 +629,6 @@ function resolveComposerModelId(
   }
 
   return models.find((model) => model.enabled)?.id ?? null;
-}
-
-/**
- * Maps a workspace model selection to the provider model string used by quick chat.
- */
-function resolveQuickChatModel(
-  modelId: string | null,
-  appDiagnostics: AppState['appDiagnostics']
-): string | null {
-  if (modelId && !modelId.startsWith('model_')) {
-    return modelId;
-  }
-
-  return appDiagnostics?.defaults.quickChat.model ?? modelId;
 }
 
 /**
@@ -2565,15 +2555,11 @@ export default function App(props: AppProps) {
   /**
    * Submits the centered chat starter through agent chat or quick chat.
    */
-  async function submitChatStarter(
-    input: string,
-    mode: ChatComposerMode,
-    workspaceId: string,
-    modelId: string | null
-  ): Promise<void> {
-    const workspace = state.workspaces.find((candidate) => candidate.id === workspaceId) ?? null;
+  async function submitChatStarter(submission: ChatComposerSubmitInput): Promise<void> {
+    const workspace =
+      state.workspaces.find((candidate) => candidate.id === submission.workspaceId) ?? null;
 
-    if (!workspace || !input) {
+    if (!workspace || !submission.input) {
       return;
     }
 
@@ -2581,7 +2567,7 @@ export default function App(props: AppProps) {
       await selectComposerWorkspace(workspace.id);
     }
 
-    if (mode === 'agent') {
+    if (submission.mode === 'agent') {
       if (!selectedWorkspaceHasEnabledAgent()) {
         setState(
           'errorMessage',
@@ -2595,7 +2581,10 @@ export default function App(props: AppProps) {
       setState('errorMessage', null);
 
       try {
-        const thread = await client.core.createThread({ workspaceId: workspace.id, name: input });
+        const thread = await client.core.createThread({
+          workspaceId: workspace.id,
+          name: submission.input,
+        });
 
         setState('threads', (threads) => [...threads, thread]);
         setState('workspaces', (workspaces) =>
@@ -2632,7 +2621,7 @@ export default function App(props: AppProps) {
         setState('threadGoalPlan', null);
         setGoalPlanFeedback(null);
         selectAppPage('thread');
-        await startTurnForThread(workspace, thread, input, modelId);
+        await startTurnForThread(workspace, thread, submission.input, submission.modelId);
         setThreadTitleDraft('');
       } catch (error) {
         setState('errorMessage', formatUserError(error));
@@ -2648,11 +2637,8 @@ export default function App(props: AppProps) {
     setState('quickChatResponse', null);
 
     try {
-      const quickChatModel = resolveQuickChatModel(modelId, state.appDiagnostics);
       const response = await client.app.quickChat({
-        input,
-        workspaceId: workspace.id,
-        ...(quickChatModel ? { model: quickChatModel } : {}),
+        input: submission.input,
       });
       setState('quickChatResponse', response.content);
       setThreadTitleDraft('');
@@ -2795,7 +2781,7 @@ export default function App(props: AppProps) {
   /**
    * Sends a thread-scoped prompt through quick chat without creating an agent turn.
    */
-  async function submitThreadQuickChat(prompt: string, modelId: string | null): Promise<void> {
+  async function submitThreadQuickChat(prompt: string): Promise<void> {
     const workspace = selectedWorkspace();
 
     if (!workspace || !prompt) {
@@ -2807,11 +2793,8 @@ export default function App(props: AppProps) {
     setState('quickChatResponse', null);
 
     try {
-      const quickChatModel = resolveQuickChatModel(modelId, state.appDiagnostics);
       const response = await client.app.quickChat({
         input: prompt,
-        workspaceId: workspace.id,
-        ...(quickChatModel ? { model: quickChatModel } : {}),
       });
       setState('quickChatResponse', response.content);
     } catch (error) {
@@ -3732,14 +3715,7 @@ export default function App(props: AppProps) {
                     onInput={setThreadTitleDraft}
                     onModeChange={setChatComposerMode}
                     onModelChange={setChatModelId}
-                    onSubmit={(input) =>
-                      void submitChatStarter(
-                        input.input,
-                        input.mode,
-                        input.workspaceId,
-                        input.modelId
-                      )
-                    }
+                    onSubmit={(input) => void submitChatStarter(input)}
                     onWorkspaceChange={(workspaceId) => void selectComposerWorkspace(workspaceId)}
                     placeholder="Ask OpenKit anything. @ to use plugins or mention files"
                     quickChatDisabledMessage="Quick chat requires a configured provider and model."

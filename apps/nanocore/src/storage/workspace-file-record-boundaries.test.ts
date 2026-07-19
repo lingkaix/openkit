@@ -1,11 +1,32 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { PROTOCOL_VERSION } from '@openkit/protocol';
+import { ItemSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { FsStore } from '../lib/store.js';
+import { parseCanonicalWorkspaceHistory } from './workspace-file-records.js';
+
+/**
+ * Computes the canonical S16 digest for exact UTF-8 Artifact content.
+ *
+ * @param content Exact Artifact body.
+ * @returns Lowercase SHA-256 digest with the required prefix.
+ */
+function artifactDigest(content: string): string {
+  return `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`;
+}
 
 /**
  * Creates two independent workspace turn lineages under one temporary data root.
@@ -17,10 +38,16 @@ function createBoundaryFixture() {
   const store = new FsStore({ dataRoot });
   const firstWorkspace = store.createWorkspace('First boundary workspace');
   const firstThread = store.createThread(firstWorkspace.id, 'First boundary thread');
-  const firstTurn = store.createTurn(firstWorkspace.id, firstThread.id, 'First boundary turn');
+  const firstTurn = store.createTurn(firstWorkspace.id, firstThread.id, 'First boundary turn', {
+    kind: 'user',
+    id: 'user_local',
+  });
   const secondWorkspace = store.createWorkspace('Second boundary workspace');
   const secondThread = store.createThread(secondWorkspace.id, 'Second boundary thread');
-  const secondTurn = store.createTurn(secondWorkspace.id, secondThread.id, 'Second boundary turn');
+  const secondTurn = store.createTurn(secondWorkspace.id, secondThread.id, 'Second boundary turn', {
+    kind: 'user',
+    id: 'user_local',
+  });
 
   return {
     dataRoot,
@@ -29,24 +56,39 @@ function createBoundaryFixture() {
       workspace: firstWorkspace,
       thread: firstThread,
       turn: firstTurn,
-      root: join(dataRoot, 'users', 'user_local', 'workspaces', firstWorkspace.id),
+      root: join(dataRoot, 'workspaces', firstWorkspace.id),
     },
     second: {
       workspace: secondWorkspace,
       thread: secondThread,
       turn: secondTurn,
-      root: join(dataRoot, 'users', 'user_local', 'workspaces', secondWorkspace.id),
+      root: join(dataRoot, 'workspaces', secondWorkspace.id),
     },
   };
 }
 
 describe('workspace file-record write and load boundaries', () => {
+  it('does not fall back to owner-nested workspace records when the canonical root is absent', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-file-record-no-fallback-'));
+    const seedStore = new FsStore({ dataRoot });
+    const workspace = seedStore.createWorkspace('Legacy nested workspace');
+    const canonicalRoot = join(dataRoot, 'workspaces', workspace.id);
+    const ownerNestedRoot = join(dataRoot, 'users', 'user_local', 'workspaces', workspace.id);
+
+    mkdirSync(join(dataRoot, 'users', 'user_local', 'workspaces'), { recursive: true });
+    renameSync(canonicalRoot, ownerNestedRoot);
+
+    expect(existsSync(canonicalRoot)).toBe(false);
+    expect(existsSync(join(ownerNestedRoot, 'workspace.json'))).toBe(true);
+
+    expect(() => new FsStore({ dataRoot })).toThrow(/owner-nested Workspace tree/);
+  });
+
   it.each([
     'agent session',
     'artifact',
     'knowledge proposal',
     'knowledge source',
-    'artifact review',
   ] as const)('rejects a cross-workspace duplicate %s id without replacing its owner', (family) => {
     const { first, second, store } = createBoundaryFixture();
     const firstTimestamp = first.turn.startedAt ?? new Date().toISOString();
@@ -100,6 +142,14 @@ describe('workspace file-record write and load boundaries', () => {
           summary: 'The first workspace owns this artifact.',
           version: 1,
           content: { format: 'markdown', body: '# Original artifact' },
+          contentDigest: artifactDigest('# Original artifact'),
+          lastMutationRequestId: 'req_ar_cross_workspace_boundary_original',
+          origin: {
+            kind: 'turn-output',
+            threadId: first.thread.id,
+            turnId: first.turn.id,
+            requestId: 'req_ar_cross_workspace_boundary_original',
+          },
           createdAt: firstTimestamp,
           updatedAt: firstTimestamp,
         });
@@ -117,6 +167,14 @@ describe('workspace file-record write and load boundaries', () => {
               summary: 'The second workspace must not replace the owner.',
               version: 1,
               content: { format: 'markdown', body: '# Replacement artifact' },
+              contentDigest: artifactDigest('# Replacement artifact'),
+              lastMutationRequestId: 'req_ar_cross_workspace_boundary_replacement',
+              origin: {
+                kind: 'turn-output',
+                threadId: second.thread.id,
+                turnId: second.turn.id,
+                requestId: 'req_ar_cross_workspace_boundary_replacement',
+              },
               createdAt: secondTimestamp,
               updatedAt: secondTimestamp,
             })
@@ -205,121 +263,7 @@ describe('workspace file-record write and load boundaries', () => {
           .toBe(originalMaterial);
         break;
       }
-
-      case 'artifact review': {
-        const artifact = store.createArtifact({
-          id: 'ar_review_cross_workspace_boundary',
-          workspaceId: first.workspace.id,
-          threadId: first.thread.id,
-          turnId: first.turn.id,
-          kind: 'summary',
-          title: 'Reviewed artifact',
-          status: 'ready',
-          summary: null,
-          version: 1,
-          content: { format: 'text', body: 'Review this artifact.' },
-          createdAt: firstTimestamp,
-          updatedAt: firstTimestamp,
-        });
-        const original = store.recordArtifactReviewDecision({
-          artifactId: artifact.id,
-          workspaceId: first.workspace.id,
-          threadId: first.thread.id,
-          turnId: first.turn.id,
-          status: 'accepted',
-          requestId: 'review_original_owner',
-          message: null,
-          decidedAt: firstTimestamp,
-          followUpTurnId: null,
-          lifecycle: 'completed',
-        });
-
-        expect
-          .soft(() =>
-            store.recordArtifactReviewDecision({
-              artifactId: artifact.id,
-              workspaceId: second.workspace.id,
-              threadId: second.thread.id,
-              turnId: second.turn.id,
-              status: 'rejected',
-              requestId: 'review_replacement_owner',
-              message: 'The second workspace must not claim this review.',
-              decidedAt: secondTimestamp,
-              followUpTurnId: null,
-              lifecycle: 'completed',
-            })
-          )
-          .toThrow();
-        expect.soft(store.getArtifactReviewDecision(artifact.id)).toEqual(original);
-        expect
-          .soft(existsSync(join(first.root, 'reviews', 'artifacts', `${artifact.id}.json`)))
-          .toBe(true);
-        break;
-      }
     }
-  });
-
-  it.each([
-    'missing artifact',
-    'cross-lineage artifact',
-    'missing follow-up turn',
-    'cross-lineage follow-up turn',
-  ] as const)('rejects an artifact review with a %s', (violation) => {
-    const { first, second, store } = createBoundaryFixture();
-    const timestamp = first.turn.startedAt ?? new Date().toISOString();
-    const artifactId =
-      violation === 'missing artifact'
-        ? 'ar_missing_review_boundary'
-        : 'ar_review_lineage_boundary';
-
-    if (violation !== 'missing artifact') {
-      store.createArtifact({
-        id: artifactId,
-        workspaceId: first.workspace.id,
-        threadId: first.thread.id,
-        turnId: first.turn.id,
-        kind: 'summary',
-        title: 'Lineage-bound artifact',
-        status: 'ready',
-        summary: null,
-        version: 1,
-        content: { format: 'text', body: 'Lineage-bound artifact body.' },
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      });
-    }
-
-    const reviewLineage =
-      violation === 'cross-lineage artifact'
-        ? {
-            workspaceId: second.workspace.id,
-            threadId: second.thread.id,
-            turnId: second.turn.id,
-          }
-        : {
-            workspaceId: first.workspace.id,
-            threadId: first.thread.id,
-            turnId: first.turn.id,
-          };
-    const followUpTurnId =
-      violation === 'missing follow-up turn'
-        ? 'tu_missing_review_follow_up'
-        : violation === 'cross-lineage follow-up turn'
-          ? second.turn.id
-          : null;
-
-    expect(() =>
-      store.recordArtifactReviewDecision({
-        artifactId,
-        ...reviewLineage,
-        status: 'accepted',
-        requestId: `review_${violation.replaceAll(' ', '_')}`,
-        message: null,
-        decidedAt: timestamp,
-        followUpTurnId,
-        lifecycle: 'completed',
-      })
-    ).toThrow();
   });
 
   it.each([
@@ -394,6 +338,222 @@ describe('workspace file-record write and load boundaries', () => {
     expect.soft(operation).toThrow();
     expect.soft(store.listThreadItems(first.workspace.id, first.thread.id)).toEqual([original]);
     expect.soft(() => new FsStore({ dataRoot })).not.toThrow();
+  });
+
+  it.each([
+    {
+      name: 'user-message actor',
+      currentResponsibleUserId: 'user_local',
+      original: {
+        type: 'user-message',
+        actor: { kind: 'user', id: 'user_local' },
+        text: 'Original user message.',
+      },
+      changed: { actor: { kind: 'user', id: 'user_other' } },
+    },
+    {
+      name: 'approval-decision actor',
+      currentResponsibleUserId: 'user_local',
+      original: {
+        type: 'approval-decision',
+        actor: { kind: 'user', id: 'user_local' },
+        causationId: 'req_approval_original',
+        approvalRequestId: 'apr_attribution_boundary',
+        decision: 'granted',
+      },
+      changed: { actor: { kind: 'user', id: 'user_other' } },
+    },
+    {
+      name: 'approval-decision causationId',
+      currentResponsibleUserId: 'user_local',
+      original: {
+        type: 'approval-decision',
+        actor: { kind: 'user', id: 'user_local' },
+        causationId: 'req_approval_original',
+        approvalRequestId: 'apr_attribution_boundary',
+        decision: 'granted',
+      },
+      changed: { causationId: 'req_approval_changed' },
+    },
+    {
+      name: 'user-input-request responsibleUserId',
+      currentResponsibleUserId: 'user_other',
+      original: {
+        type: 'user-input-request',
+        responsibleUserId: 'user_local',
+        userInputRequestId: 'uir_attribution_boundary',
+        prompt: 'Confirm the immutable attribution.',
+        questions: [
+          {
+            id: 'question_attribution_boundary',
+            header: 'Attribution',
+            question: 'Continue?',
+            options: null,
+            isOther: true,
+            isSecret: false,
+          },
+        ],
+      },
+      changed: { responsibleUserId: 'user_other' },
+    },
+    {
+      name: 'user-input-response actor',
+      currentResponsibleUserId: 'user_other',
+      original: {
+        type: 'user-input-response',
+        actor: { kind: 'user', id: 'user_local' },
+        causationId: 'req_user_input_original',
+        userInputRequestId: 'uir_attribution_boundary',
+        answers: { question_attribution_boundary: ['Yes'] },
+      },
+      changed: { actor: { kind: 'user', id: 'user_other' } },
+    },
+    {
+      name: 'user-input-response causationId',
+      currentResponsibleUserId: 'user_local',
+      original: {
+        type: 'user-input-response',
+        actor: { kind: 'user', id: 'user_local' },
+        causationId: 'req_user_input_original',
+        userInputRequestId: 'uir_attribution_boundary',
+        answers: { question_attribution_boundary: ['Yes'] },
+      },
+      changed: { causationId: 'req_user_input_changed' },
+    },
+  ])('rejects a valid item revision that changes immutable $name', ({
+    original,
+    changed,
+    currentResponsibleUserId,
+  }) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-item-attribution-boundary-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Item attribution boundary');
+    const thread = store.createThread(workspace.id, 'Item attribution boundary');
+    const triggerActor = { kind: 'user', id: currentResponsibleUserId } as const;
+    const turn = store.createTurn(
+      workspace.id,
+      thread.id,
+      'Protect immutable item attribution',
+      triggerActor
+    );
+    const timestamp = turn.startedAt ?? new Date().toISOString();
+    const item = ItemSchema.parse({
+      id: 'it_attribution_boundary',
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      status: 'completed',
+      createdAt: timestamp,
+      completedAt: timestamp,
+      ...original,
+    });
+    const changedItem = ItemSchema.parse({ ...item, ...changed });
+    const supportingRequest =
+      changedItem.type === 'user-input-response'
+        ? ItemSchema.parse({
+            id: 'it_attribution_supporting_request',
+            workspaceId: workspace.id,
+            threadId: thread.id,
+            turnId: turn.id,
+            type: 'user-input-request',
+            responsibleUserId: currentResponsibleUserId,
+            status: 'completed',
+            userInputRequestId: changedItem.userInputRequestId,
+            prompt: 'Support the response attribution revision.',
+            questions: [
+              {
+                id: 'question_attribution_boundary',
+                header: 'Attribution',
+                question: 'Continue?',
+                options: null,
+                isOther: true,
+                isSecret: false,
+              },
+            ],
+            createdAt: timestamp,
+            completedAt: timestamp,
+          })
+        : null;
+    const currentItems = supportingRequest ? [supportingRequest, changedItem] : [changedItem];
+    const itemRevisions = supportingRequest
+      ? [supportingRequest, item, changedItem]
+      : [item, changedItem];
+
+    expect(() =>
+      parseCanonicalWorkspaceHistory({
+        workspace,
+        threads: [thread],
+        turns: [{ ...turn, items: currentItems }],
+        itemRevisions,
+        artifacts: [],
+        agentSessions: [],
+        turnEvents: [],
+      })
+    ).toThrow(/attribution cannot change/);
+
+    appendFileSync(
+      join(
+        dataRoot,
+        'workspaces',
+        workspace.id,
+        'threads',
+        thread.id,
+        'turns',
+        turn.id,
+        'items.jsonl'
+      ),
+      `${supportingRequest ? `${JSON.stringify(supportingRequest)}\n` : ''}${JSON.stringify(item)}\n${JSON.stringify(changedItem)}\n`
+    );
+    expect(() => new FsStore({ dataRoot })).toThrow(/attribution cannot change/);
+  });
+
+  it('rejects a foreign-user response when reloading canonical Turn items', () => {
+    const { dataRoot, first, store } = createBoundaryFixture();
+    const timestamp = first.turn.startedAt ?? new Date().toISOString();
+    const request = store.createItem({
+      id: 'it_reload_user_input_request',
+      workspaceId: first.workspace.id,
+      threadId: first.thread.id,
+      turnId: first.turn.id,
+      type: 'user-input-request',
+      responsibleUserId: 'user_local',
+      status: 'completed',
+      userInputRequestId: 'uir_reload_foreign_response',
+      prompt: 'Confirm the responsible user.',
+      questions: [
+        {
+          id: 'question_reload_foreign_response',
+          header: 'Responsible user',
+          question: 'Continue?',
+          options: null,
+          isOther: true,
+          isSecret: false,
+        },
+      ],
+      createdAt: timestamp,
+      completedAt: timestamp,
+    });
+    const response = ItemSchema.parse({
+      id: 'it_reload_user_input_response',
+      workspaceId: first.workspace.id,
+      threadId: first.thread.id,
+      turnId: first.turn.id,
+      type: 'user-input-response',
+      actor: { kind: 'user', id: 'user_other' },
+      causationId: 'req_reload_foreign_response',
+      status: 'completed',
+      userInputRequestId: request.userInputRequestId,
+      answers: { question_reload_foreign_response: ['Yes'] },
+      createdAt: timestamp,
+      completedAt: timestamp,
+    });
+
+    appendFileSync(
+      join(first.root, 'threads', first.thread.id, 'turns', first.turn.id, 'items.jsonl'),
+      `${JSON.stringify(response)}\n`
+    );
+
+    expect(() => new FsStore({ dataRoot })).toThrow(/responsible user/);
   });
 
   it('leaves item read models unchanged when the canonical append fails', () => {
@@ -550,17 +710,26 @@ describe('workspace file-record write and load boundaries', () => {
         return;
       }
       if (family === 'artifact') {
+        const artifactTurnId = turnId ?? first.turn.id;
         store.createArtifact({
           id,
           workspaceId: first.workspace.id,
           threadId,
-          turnId,
+          turnId: artifactTurnId,
           kind: 'summary',
           title: 'Invalid create lineage',
           status: 'ready',
           summary: null,
           version: 1,
           content: { format: 'text', body: 'This record must not be retained.' },
+          contentDigest: artifactDigest('This record must not be retained.'),
+          lastMutationRequestId: 'req_ar_invalid_create_lineage_create',
+          origin: {
+            kind: 'turn-output',
+            threadId,
+            turnId: artifactTurnId,
+            requestId: 'req_ar_invalid_create_lineage_create',
+          },
           createdAt: timestamp,
           updatedAt: timestamp,
         });
@@ -637,6 +806,14 @@ describe('workspace file-record write and load boundaries', () => {
           summary: null,
           version: 1,
           content: { format: 'text', body: 'This artifact belongs elsewhere.' },
+          contentDigest: artifactDigest('This artifact belongs elsewhere.'),
+          lastMutationRequestId: 'req_ar_cross_lineage_event_create',
+          origin: {
+            kind: 'turn-output',
+            threadId: second.thread.id,
+            turnId: second.turn.id,
+            requestId: 'req_ar_cross_lineage_event_create',
+          },
           createdAt: timestamp,
           updatedAt: timestamp,
         });
@@ -718,6 +895,14 @@ describe('workspace file-record write and load boundaries', () => {
         summary: null,
         version: 1,
         content: { format: 'text', body: 'Remove the canonical artifact after the event.' },
+        contentDigest: artifactDigest('Remove the canonical artifact after the event.'),
+        lastMutationRequestId: 'req_ar_missing_event_state_create',
+        origin: {
+          kind: 'turn-output',
+          threadId: first.thread.id,
+          turnId: first.turn.id,
+          requestId: 'req_ar_missing_event_state_create',
+        },
         createdAt: timestamp,
         updatedAt: timestamp,
       });
@@ -751,13 +936,13 @@ describe('workspace file-record write and load boundaries', () => {
     }
 
     store.emitTurnEvent(first.turn.id, event);
-    if (family === 'artifact') {
-      store.deleteArtifact(first.workspace.id, 'ar_missing_event_state');
-    } else {
-      rmSync(recordRoot, { recursive: true });
-    }
+    rmSync(recordRoot, { recursive: true });
 
-    expect(() => new FsStore({ dataRoot })).toThrow(/references missing .*state/i);
+    expect(() => new FsStore({ dataRoot })).toThrow(
+      family === 'artifact'
+        ? /Artifact reference .* has invalid lineage/i
+        : /references missing .*state/i
+    );
   });
 
   it.each([
@@ -802,6 +987,14 @@ describe('workspace file-record write and load boundaries', () => {
         summary: null,
         version: 1,
         content: { format: 'markdown', body: '# Canonical body file' },
+        contentDigest: artifactDigest('# Canonical body file'),
+        lastMutationRequestId: 'req_ar_embedded_body_boundary_create',
+        origin: {
+          kind: 'turn-output',
+          threadId: first.thread.id,
+          turnId: first.turn.id,
+          requestId: 'req_ar_embedded_body_boundary_create',
+        },
         createdAt: timestamp,
         updatedAt: timestamp,
       });

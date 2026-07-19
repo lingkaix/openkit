@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+import type { ActorRef } from '@openkit/protocol';
+
 import type { FsStore } from '../lib/store.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { assertValidGoalPlanGraph, selectGoalPlanPayload } from './goal-plan.js';
@@ -58,6 +60,8 @@ export interface ApproveGoalPlanInput {
  * Input for requesting one Goal Mode plan revision.
  */
 export interface ReviseGoalPlanInput {
+  /** Authenticated actor that owns the command identity. */
+  readonly triggerActor: ActorRef;
   /** Open workspace-scope database handle. */
   readonly workspaceDb: WorkspaceDb;
   /** App-local durable store. */
@@ -246,9 +250,14 @@ export function reviseGoalPlan(input: ReviseGoalPlanInput): ReviseGoalPlanResult
   }
 
   const ids = goalPlanRevisionIds(input);
-  const turn = input.store.createTurn(input.workspaceId, input.threadId, 'Revise goal plan', null, {
-    turnId: ids.turnId,
-  });
+  const turn = input.store.createTurn(
+    input.workspaceId,
+    input.threadId,
+    'Revise goal plan',
+    input.triggerActor,
+    null,
+    { turnId: ids.turnId }
+  );
   const timestamp = turn.startedAt ?? new Date().toISOString();
   const revisionItem = input.store.createItem({
     id: ids.itemId,
@@ -257,6 +266,7 @@ export function reviseGoalPlan(input: ReviseGoalPlanInput): ReviseGoalPlanResult
     turnId: turn.id,
     type: 'user-message',
     status: 'completed',
+    actor: input.triggerActor,
     parentItemId: input.planItemId,
     causationId: input.requestId,
     text: input.revision,
@@ -337,9 +347,11 @@ export function readGoalPlanRevision(
     !revisionItem ||
     turn.status !== 'completed' ||
     !turn.completedAt ||
+    JSON.stringify(turn.triggerActor) !== JSON.stringify(input.triggerActor) ||
     revisionItem.turnId !== turn.id ||
     revisionItem.type !== 'user-message' ||
     revisionItem.status !== 'completed' ||
+    JSON.stringify(revisionItem.actor) !== JSON.stringify(input.triggerActor) ||
     !revisionItem.completedAt ||
     revisionItem.causationId !== input.requestId ||
     !revisionItem.parentItemId
@@ -390,7 +402,7 @@ export function readGoalPlanRevision(
 /**
  * Derives collision-resistant Turn and Item ids from one immutable revision command identity.
  *
- * @param input Revision request scope and authenticated store owner.
+ * @param input Revision request scope and authenticated actor.
  * @returns Deterministic revision owner ids.
  */
 function goalPlanRevisionIds(input: ReadGoalPlanRevisionInput): {
@@ -401,7 +413,7 @@ function goalPlanRevisionIds(input: ReadGoalPlanRevisionInput): {
     .update(
       JSON.stringify([
         'goal.plan.revise',
-        input.store.getUserId(),
+        input.triggerActor.id,
         input.workspaceId,
         input.threadId,
         input.requestId,

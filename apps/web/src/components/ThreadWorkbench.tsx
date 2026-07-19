@@ -10,7 +10,12 @@ import type {
   TurnEvent,
 } from '../lib/app-types';
 import { ApprovalCard } from './ApprovalCard';
-import { ChatComposer, type ChatComposerMode, type ChatComposerModelOption } from './ChatComposer';
+import {
+  ChatComposer,
+  type ChatComposerMode,
+  type ChatComposerModelOption,
+  type ChatComposerSubmitInput,
+} from './ChatComposer';
 import { QuestionCard } from './QuestionCard';
 
 type ApprovalRequestItem = Extract<Item, { type: 'approval-request' }>;
@@ -95,7 +100,7 @@ export interface ThreadWorkbenchProps {
   onReviseGoalPlan(revision: string): void;
   onRunGoalStep(): Promise<void>;
   onStartGoal(objective: string): Promise<void>;
-  onSubmitQuickChat(prompt: string, modelId: string | null): Promise<void>;
+  onSubmitQuickChat(prompt: string): Promise<void>;
   onRespondApproval(item: ApprovalRequestItem, decision: ApprovalDecision): Promise<void>;
   onSubmitUserInput(
     item: UserInputRequestItem,
@@ -413,15 +418,15 @@ export function ThreadWorkbench(props: ThreadWorkbenchProps) {
   /**
    * Submits the current prompt through the parent thread runner.
    */
-  async function submitTurn(prompt: string, mode: ChatComposerMode, modelId: string | null) {
-    if (!prompt || !canSubmitTurn()) {
+  async function submitTurn(input: ChatComposerSubmitInput) {
+    if (!input.input || !canSubmitTurn()) {
       return;
     }
 
-    if (mode === 'quick') {
-      await props.onSubmitQuickChat(prompt, modelId);
+    if (input.mode === 'quick') {
+      await props.onSubmitQuickChat(input.input);
     } else {
-      await props.onSubmitTurn(prompt, modelId);
+      await props.onSubmitTurn(input.input, input.modelId);
     }
     setTurnPromptDraft('');
   }
@@ -897,7 +902,7 @@ export function ThreadWorkbench(props: ThreadWorkbenchProps) {
           onInput={setTurnPromptDraft}
           onModeChange={props.onModeChange}
           onModelChange={props.onModelChange}
-          onSubmit={(input) => void submitTurn(input.input, input.mode, input.modelId)}
+          onSubmit={(input) => void submitTurn(input)}
           placeholder="Review the protocol and surface the next approval gate."
           quickChatDisabledMessage={props.quickChatDisabledMessage}
           quickChatEnabled={props.canQuickChat}

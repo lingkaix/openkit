@@ -10,6 +10,14 @@ Ask for explicit user direction before changing runtime configuration, invalidat
 
 Invoke one bounded administration operation at a time. Re-read the owning status, audit, usage, repository, automation, vault, or portability record before reporting success.
 
+## Manage shared Workspace access
+
+For owner-directed sharing, list the current members or invitations before creating or revoking an invitation, changing member access, removing a member, or transferring ownership. Pass an invitee email only through stdin, confirm the exact target and expected revision before each mutation, and re-read the owning collection afterward.
+
+The bearer-only CLI intentionally does not expose the current user's own invitation list, invitation acceptance or decline, or Workspace leave. These operations require a canonical session-capable client or implicit local identity; report the known partial and do not bypass it through raw HTTP, cookie persistence, invitation secrets, or another token mechanism.
+
+Use Workspace access recovery or user disable only with explicit deployment-administrator direction. Recovery exposes no Workspace content and supports only the actions described by the selected operation; user disable preserves durable identity and history.
+
 ## Protect access and vault material
 
 Pass secret input through stdin or a platform credential mechanism, and keep it out of arguments and agent-visible output. Never request raw provider credentials, vault contents, injection payloads, process handles, or private runtime records through the operation catalog.

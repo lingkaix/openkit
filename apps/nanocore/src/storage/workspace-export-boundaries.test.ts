@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   renameSync,
   symlinkSync,
@@ -11,6 +12,9 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
+import type { BetterAuthServer } from '../auth/middleware.js';
+import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { createDemoWorkspaceForUser, FsStore } from '../lib/store.js';
 import { createApp } from '../test-support/app.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -25,6 +29,16 @@ import { loadWorkspaceFileRecords } from './workspace-file-records.js';
 import { readWorkspaceImportSnapshot } from './workspace-import.js';
 
 const timestamp = '2026-07-12T00:00:00.000Z';
+
+/** Returns a Better Auth test double for one signed-in canonical user. */
+function authForUser(userId: string): BetterAuthServer {
+  return {
+    api: {
+      getSession: async () => ({ session: { id: `session_${userId}` }, user: { id: userId } }),
+    },
+    handler: async () => Response.json({ status: 'auth-ok' }),
+  };
+}
 
 /** Returns the smallest complete workspace export input. */
 function minimalExportInput(
@@ -53,6 +67,9 @@ function minimalExportInput(
     itemRevisions: [],
     artifacts: [],
     artifactReviews: [],
+    threadMaterialBindings: [],
+    workspaceMaterialRevisions: [],
+    workspaceMaterials: [],
     agentSessions: [],
     turnEvents: [],
   };
@@ -87,7 +104,6 @@ function createBoundaryStore(dataRoot: string): FsStore {
     turns: [],
     itemRevisions: [],
     artifacts: [],
-    artifactReviews: [],
     agentSessions: [],
     turnEvents: [],
   });
@@ -259,11 +275,40 @@ describe('workspace export filesystem boundaries', () => {
     const marker = join(external, '.staging', 'keep.txt');
     mkdirSync(dirname(marker), { recursive: true });
     writeFileSync(marker, 'keep');
-    mkdirSync(join(dataRoot, 'users', 'user_local'), { recursive: true });
-    symlinkSync(external, join(dataRoot, 'users', 'user_local', 'workspaces'));
+    symlinkSync(external, join(dataRoot, 'workspaces'));
 
     expect(() => loadWorkspaceFileRecords(dataRoot, 'user_local')).toThrow();
     expect(readFileSync(marker, 'utf8')).toBe('keep');
+  });
+});
+
+describe('workspace export route boundaries', () => {
+  it('fails closed when a worker-backed Turn has no S39 trace', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-export-s39-'));
+    const store = createBoundaryStore(dataRoot);
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Export an untraced worker Turn', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    const session = store.createAgentSession({
+      id: 'as_export_missing_trace',
+      agentId: 'agent_codex_host',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      status: 'busy',
+      message: null,
+      createdAt: turn.startedAt ?? timestamp,
+      updatedAt: turn.startedAt ?? timestamp,
+    });
+    store.updateTurn(turn.id, { agentSessionId: session.id });
+    const app = createApp({ dataRoot, store });
+    app.onError((error) => new Response(error.message, { status: 500 }));
+
+    const response = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+
+    expect(response.status).toBe(500);
+    expect(await response.text()).toBe('Worker Context Package coverage is incomplete.');
+    expect(readdirSync(join(dataRoot, 'server', 'exports', 'workspaces', 'ws_demo'))).toEqual([]);
   });
 });
 
@@ -325,7 +370,7 @@ describe('workspace import route handles', () => {
       method: 'POST',
     });
     const exported = (await exportResponse.json()) as { exportId: string };
-    const orphanRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_imported_ws_demo');
+    const orphanRoot = join(dataRoot, 'workspaces', 'ws_imported_ws_demo');
     mkdirSync(orphanRoot, { recursive: true });
     writeFileSync(join(orphanRoot, 'orphan.txt'), 'keep');
 
@@ -366,6 +411,11 @@ describe('workspace import route handles', () => {
         .run(now, now, now, now);
       recordWorkspaceOwnerMembership({
         coreDb,
+        ownerUserId: 'user_local',
+        workspaceId: 'ws_demo',
+      });
+      recordWorkspaceOwnerMembership({
+        coreDb,
         ownerUserId: 'user_other',
         workspaceId: 'ws_imported_ws_demo',
       });
@@ -390,6 +440,208 @@ describe('workspace import route handles', () => {
       ).toEqual({ owner_user_id: 'user_other' });
     } finally {
       coreDb.sqlite.close();
+    }
+  });
+});
+
+describe('workspace portable authority boundaries', () => {
+  it('imports only target ownership while source authority remains non-authorizing history', async () => {
+    const sourceDataRoot = mkdtempSync(join(tmpdir(), 'openkit-portable-authority-source-'));
+    const targetDataRoot = mkdtempSync(join(tmpdir(), 'openkit-portable-authority-target-'));
+    const sourceCoreDb = openCoreDb(sourceDataRoot);
+    const targetCoreDb = openCoreDb(targetDataRoot);
+
+    try {
+      applyMigrations(sourceCoreDb);
+      applyMigrations(targetCoreDb);
+      const now = Date.now();
+      const users = [
+        ['user_source_owner', 'Source owner'],
+        ['user_source_active', 'Source active member'],
+        ['user_source_removed', 'Source removed member'],
+        ['user_target_importer', 'Target importer'],
+      ] as const;
+      for (const coreDb of [sourceCoreDb, targetCoreDb]) {
+        const insertUser = coreDb.sqlite.prepare(
+          `INSERT INTO users (
+            id, display_name, email, email_verified, created_at, updated_at, kind
+          ) VALUES (?, ?, ?, false, ?, ?, 'human')`
+        );
+        for (const [userId, displayName] of users) {
+          insertUser.run(userId, displayName, `${userId}@example.com`, now, now);
+        }
+      }
+
+      const sourceStore = new FsStore({ dataRoot: sourceDataRoot });
+      const sourceWorkspace = sourceStore.createWorkspace('Portable authority source');
+      recordWorkspaceOwnerMembership({
+        coreDb: sourceCoreDb,
+        ownerUserId: 'user_source_owner',
+        workspaceId: sourceWorkspace.id,
+      });
+      const insertMember = sourceCoreDb.sqlite.prepare(
+        `INSERT INTO workspace_members (
+          workspace_id, user_id, status, access_level, invitation_id,
+          joined_at, removed_at, revision, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, NULL, ?, ?, 1, ?, ?)`
+      );
+      insertMember.run(
+        sourceWorkspace.id,
+        'user_source_active',
+        'active',
+        'editor',
+        timestamp,
+        null,
+        timestamp,
+        timestamp
+      );
+      insertMember.run(
+        sourceWorkspace.id,
+        'user_source_removed',
+        'removed',
+        'viewer',
+        timestamp,
+        timestamp,
+        timestamp,
+        timestamp
+      );
+      sourceCoreDb.sqlite
+        .prepare(
+          `INSERT INTO workspace_invitations (
+            invitation_id, workspace_id, invitee_user_id, proposed_access_level,
+            inviter_user_id, status, expires_at, accepted_at, declined_at, revoked_at,
+            revision, created_at, updated_at
+          ) VALUES (?, ?, ?, 'viewer', ?, 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
+        )
+        .run(
+          'inv_source_importer',
+          sourceWorkspace.id,
+          'user_target_importer',
+          'user_source_owner',
+          '2099-01-01T00:00:00.000Z',
+          timestamp,
+          timestamp
+        );
+      sourceCoreDb.sqlite
+        .prepare(
+          `INSERT INTO session (
+            id, expires_at, token, created_at, updated_at, user_id
+          ) VALUES (?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          'session_source_authority',
+          Date.parse('2099-01-01T00:00:00.000Z'),
+          'source-session-token',
+          now,
+          now,
+          'user_source_owner'
+        );
+      createOpenKitAccessTokenRecord(sourceCoreDb, {
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        ownerUserId: 'user_source_owner',
+        scope: 'workspace',
+        tokenId: 'token_source_authority',
+        workspaceIds: [sourceWorkspace.id],
+      });
+      const sourceApp = createApp({
+        auth: authForUser('user_source_owner'),
+        coreDb: sourceCoreDb,
+        dataRoot: sourceDataRoot,
+        mode: 'server',
+        store: sourceStore,
+      });
+      const exportResponse = await sourceApp.request(
+        `/api/app/workspaces/${sourceWorkspace.id}/export`,
+        { method: 'POST' }
+      );
+      expect(exportResponse.status, await exportResponse.clone().text()).toBe(200);
+      const exported = (await exportResponse.json()) as { exportId: string };
+      const sourceExportRoot = join(
+        sourceDataRoot,
+        'server',
+        'exports',
+        'workspaces',
+        sourceWorkspace.id,
+        exported.exportId
+      );
+      const targetExportRoot = join(
+        targetDataRoot,
+        'server',
+        'exports',
+        'workspaces',
+        sourceWorkspace.id,
+        exported.exportId
+      );
+      mkdirSync(dirname(targetExportRoot), { recursive: true });
+      renameSync(sourceExportRoot, targetExportRoot);
+
+      const targetStore = new FsStore({ dataRoot: targetDataRoot });
+      const targetApp = createApp({
+        auth: authForUser('user_target_importer'),
+        coreDb: targetCoreDb,
+        dataRoot: targetDataRoot,
+        mode: 'server',
+        store: targetStore,
+      });
+      const importResponse = await targetApp.request('/api/app/workspace-imports', {
+        body: JSON.stringify({
+          exportId: exported.exportId,
+          requestId: '00000000-0000-4000-8000-000000000008',
+          sourceWorkspaceId: sourceWorkspace.id,
+        }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      expect(importResponse.status, await importResponse.clone().text()).toBe(200);
+      const imported = (await importResponse.json()) as { importedWorkspaceId: string };
+
+      expect(
+        targetCoreDb.sqlite
+          .prepare(
+            `SELECT workspace_id AS workspaceId, user_id AS userId, status,
+                    access_level AS accessLevel
+             FROM workspace_members
+             ORDER BY workspace_id, user_id`
+          )
+          .all()
+      ).toEqual([
+        {
+          accessLevel: 'editor',
+          status: 'active',
+          userId: 'user_target_importer',
+          workspaceId: imported.importedWorkspaceId,
+        },
+      ]);
+      expect(
+        targetCoreDb.sqlite
+          .prepare(
+            `SELECT workspace_id AS workspaceId, owner_user_id AS ownerUserId
+             FROM workspace_registry
+             ORDER BY workspace_id`
+          )
+          .all()
+      ).toEqual([
+        { ownerUserId: 'user_target_importer', workspaceId: imported.importedWorkspaceId },
+      ]);
+      expect(
+        targetCoreDb.sqlite.prepare('SELECT invitation_id FROM workspace_invitations').all()
+      ).toEqual([]);
+      expect(targetCoreDb.sqlite.prepare('SELECT id FROM session').all()).toEqual([]);
+      expect(
+        targetCoreDb.sqlite.prepare('SELECT token_id FROM openkit_access_tokens').all()
+      ).toEqual([]);
+      expect(
+        currentWorkspaceAuthority(
+          targetCoreDb,
+          imported.importedWorkspaceId,
+          { id: 'user_source_owner', kind: 'user' },
+          'workspace.read',
+          true
+        )
+      ).toBeNull();
+    } finally {
+      sourceCoreDb.sqlite.close();
+      targetCoreDb.sqlite.close();
     }
   });
 });

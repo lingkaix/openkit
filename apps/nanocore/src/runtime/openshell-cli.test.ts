@@ -543,7 +543,7 @@ describe('OpenShellCli', () => {
 
     await expect(
       cli.createSandbox({
-        command: ['openkit-codex-shim', '--dry-run'],
+        command: ['openkit-worker-shim', '--dry-run'],
         from: 'openkit/worker-codex:dev',
         name: 'openkit-as-timeout',
       })
@@ -695,7 +695,7 @@ describe('compileOpenShellSandboxCreateArgs', () => {
   it('compiles a single-process OpenKit worker sandbox create command', () => {
     expect(
       compileOpenShellSandboxCreateArgs({
-        command: ['openkit-codex-shim', '--package', '/openkit/config/package.json'],
+        command: ['openkit-worker-shim', '--package', '/openkit/config/package.json'],
         cpu: '2',
         env: {
           OPENKIT_CONTROL_BASE_URL: 'https://nanocore.example/api/worker-control',
@@ -750,7 +750,7 @@ describe('compileOpenShellSandboxCreateArgs', () => {
       '--env',
       'OPENKIT_SESSION_DIR=/openkit/session',
       '--',
-      'openkit-codex-shim',
+      'openkit-worker-shim',
       '--package',
       '/openkit/config/package.json',
     ]);
@@ -761,7 +761,7 @@ describe('OpenShell sandbox exec', () => {
   it('compiles the pinned retained-sandbox execution command', () => {
     expect(
       compileOpenShellSandboxExecArgs({
-        command: ['openkit-codex-shim', '--package', '/openkit/config/package.json'],
+        command: ['openkit-worker-shim', '--package', '/openkit/config/package.json'],
         env: {
           OPENKIT_CONTROL_TOKEN: 'lease-token',
           OPENKIT_SESSION_DIR: '/openkit/session',
@@ -791,7 +791,7 @@ describe('OpenShell sandbox exec', () => {
       '--env',
       'OPENKIT_SESSION_DIR=/openkit/session',
       '--',
-      'openkit-codex-shim',
+      'openkit-worker-shim',
       '--package',
       '/openkit/config/package.json',
     ]);
@@ -804,7 +804,7 @@ describe('OpenShell sandbox exec', () => {
     ]);
     const cli = new OpenShellCli({ runner });
     const input = {
-      command: ['openkit-codex-shim', '--package', '/openkit/config/package.json'],
+      command: ['openkit-worker-shim', '--package', '/openkit/config/package.json'],
       name: 'openkit-as-123',
     };
 

@@ -20,20 +20,18 @@ import type { TurnStartRuntimeContext } from './types.js';
  *
  * @param coreDb Optional repository database handles for workspace repository links.
  * @param workspaceId Workspace id that owns the turn.
- * @param userId User id that owns the workspace.
  * @returns Ready repository resource for internal worker startup, or null when repository storage is disabled.
  * @throws TurnStartValidationError when repository setup is missing or not ready.
  */
 export function resolveWorkspaceRepositoryForTurn(
   coreDb: CoreDb | undefined,
-  workspaceId: string,
-  userId: string
+  workspaceId: string
 ): WorkspaceRepositoryResourceRecord | null {
   if (!coreDb) {
     return null;
   }
 
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, userId, workspaceId);
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
   let repository: WorkspaceRepositoryResourceRecord | null;
   try {
     applyScopedMigrations(workspaceDb);
@@ -65,7 +63,7 @@ export function resolveWorkspaceRepositoryForTurn(
  * Materializes workspace roots for a turn from the current effective runtime snapshot.
  *
  * @param snapshot Runtime config snapshot captured for the turn.
- * @param store Actor-scoped store that owns the workspace.
+ * @param store Shared product store that contains the Workspace.
  * @param workspaceId Workspace id that owns the turn.
  * @param repository Optional ready repository selected for the turn.
  * @returns Worker launch roots for the accepted turn.
@@ -77,7 +75,7 @@ export function materializeWorkspaceRootsForTurn(
   repository: WorkspaceRepositoryResourceRecord | null = null
 ): MaterializedWorkspaceRoot[] {
   const dataRoot = store.getDataRoot();
-  const workspaceConfig = findWorkspaceConfig(snapshot, store.getUserId(), workspaceId);
+  const workspaceConfig = findWorkspaceConfig(snapshot, workspaceId);
   const sourceCommit = repository ? readRepositoryHeadCommit(repository.localPath) : null;
   const repositoryRoot = repository
     ? {
@@ -94,7 +92,7 @@ export function materializeWorkspaceRootsForTurn(
     return repositoryRoot ? [repositoryRoot] : [];
   }
 
-  const layout = ensureWorkspaceLayout(dataRoot, store.getUserId(), workspaceId);
+  const layout = ensureWorkspaceLayout(dataRoot, workspaceId);
   const configuredRoots = materializeWorkspaceRoots({
     config: workspaceConfig.config,
     workspaceRoot: layout.root,
@@ -151,7 +149,6 @@ function readRepositoryHeadCommit(repositoryPath: string): string | null {
  *
  * @param coreDb Optional repository database handles for workspace source synchronization.
  * @param snapshot Runtime config snapshot captured for the turn.
- * @param store Request store that owns the workspace tree.
  * @param workspaceId Workspace id that owns the turn.
  * @param repository Repository selected for the worker, when any.
  * @param workspaceRoots Worker roots captured for the turn.
@@ -161,13 +158,12 @@ function readRepositoryHeadCommit(repositoryPath: string): string | null {
 export function workspaceSourceContextForTurn(
   coreDb: CoreDb | undefined,
   snapshot: RuntimeConfigSnapshot,
-  store: FsStore,
   workspaceId: string,
   repository: WorkspaceRepositoryResourceRecord | null,
   workspaceRoots: MaterializedWorkspaceRoot[]
 ): Pick<TurnStartRuntimeContext, 'workspaceDataSourceCatalog' | 'workspaceSourceRefs'> {
   let workspaceDataSourceCatalog = snapshot.workspaceDataSourceCatalogs.find(
-    (entry) => entry.userId === store.getUserId() && entry.workspaceId === workspaceId
+    (entry) => entry.workspaceId === workspaceId
   )?.catalog;
 
   if (!repository || !workspaceRoots.some((root) => root.id === repository.resourceId)) {
@@ -180,7 +176,6 @@ export function workspaceSourceContextForTurn(
 
   workspaceDataSourceCatalog = syncRepositoryDataSourceCatalog({
     dataRoot: coreDb.dataRoot,
-    userId: store.getUserId(),
     workspaceId,
     record: repository,
   });

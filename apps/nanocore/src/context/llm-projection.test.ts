@@ -37,6 +37,7 @@ describe('convertToLlm', () => {
         ...BASE_ITEM,
         id: 'item_user',
         type: 'user-message',
+        actor: { kind: 'user', id: 'user_local' },
         text: 'Please fix the failing test.',
       },
       {
@@ -137,6 +138,7 @@ describe('convertToLlm', () => {
         ...BASE_ITEM,
         id: 'item_user',
         type: 'user-message',
+        actor: { kind: 'user', id: 'user_local' },
         text: 'Please fix the failing test.',
       },
     ];
@@ -145,6 +147,7 @@ describe('convertToLlm', () => {
         ...BASE_ITEM,
         id: 'item_user',
         type: 'user-message',
+        actor: { kind: 'user', id: 'user_local' },
         text: 'Please fix the failing test and update docs.',
       },
     ];
@@ -165,6 +168,7 @@ describe('convertToLlm', () => {
           ...BASE_ITEM,
           id: 'item_user',
           type: 'user-message',
+          actor: { kind: 'user', id: 'user_local' },
           text: 'Please fix the failing test.',
         },
         {

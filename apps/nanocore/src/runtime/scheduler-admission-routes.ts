@@ -4,16 +4,19 @@ import {
   RetrySchedulerAdmissionResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 
 import { asApiError } from '../api-errors.js';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import type { AuthVariables } from '../auth/middleware.js';
+import { assertAuthorizedWorkspaceLineage } from '../auth/operation-authorizer.js';
 import type { FsStore } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
 import {
   cancelSchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
   listSchedulerAdmissionEntriesForWorkspace,
+  requireSchedulerAdmissionEntry,
   retryDeniedSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
@@ -31,7 +34,7 @@ export function registerSchedulerAdmissionRoutes({
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
-  readonly repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb;
+  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
 }): void {
   registerAppApiRoute(app, 'listSchedulerAdmissions', (c) => {
@@ -52,7 +55,6 @@ export function registerSchedulerAdmissionRoutes({
         ])
       );
       const items = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-        userId: store.getUserId(),
         workspaceId,
         statuses: ['queued', 'denied'],
       }).map((entry) => ({
@@ -96,12 +98,13 @@ export function registerSchedulerAdmissionRoutes({
         );
       }
 
+      const owner = requireSchedulerAdmissionEntry(coreDb, queueEntryId);
+      assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), owner.workspaceId);
       const retried = retryDeniedSchedulerAdmissionEntry(coreDb, {
         queueEntryId,
-        userId: store.getUserId(),
         workspaceId,
       });
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         recordWorkspaceAuditEvent({
           workspaceDb,
@@ -120,6 +123,9 @@ export function registerSchedulerAdmissionRoutes({
 
       return c.json(RetrySchedulerAdmissionResponseSchema.parse({ retried: true }));
     } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       return asApiError((error as Error).message, 'scheduler_admission_retry_failed', 400);
     }
   });
@@ -140,12 +146,13 @@ export function registerSchedulerAdmissionRoutes({
         );
       }
 
+      const owner = requireSchedulerAdmissionEntry(coreDb, queueEntryId);
+      assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), owner.workspaceId);
       const cancelled = cancelSchedulerAdmissionEntry(coreDb, {
         queueEntryId,
-        userId: store.getUserId(),
         workspaceId,
       });
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         recordWorkspaceAuditEvent({
           workspaceDb,
@@ -164,6 +171,9 @@ export function registerSchedulerAdmissionRoutes({
 
       return c.json(CancelSchedulerAdmissionResponseSchema.parse({ cancelled: true }));
     } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       return asApiError((error as Error).message, 'scheduler_admission_cancel_failed', 400);
     }
   });

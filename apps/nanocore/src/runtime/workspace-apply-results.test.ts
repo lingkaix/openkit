@@ -13,7 +13,7 @@ import {
 describe('workspace apply results', () => {
   it('records one linked audit event when an apply result is stored', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-apply-result-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -111,7 +111,7 @@ describe('workspace apply results', () => {
 
   it('rejects a replay when an existing apply result id has any different payload', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-apply-result-conflict-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
     const baseline = {
       requestId: '00000000-0000-4000-8000-000000000021',
       result: {

@@ -12,6 +12,7 @@ import {
   WorkspaceIdSchema,
 } from '../common/ids.js';
 import { TimestampSchema } from '../common/timestamps.js';
+import { ActorRefSchema, responsibleUserIdForActor } from './actor.js';
 import { ItemSchema } from './item.js';
 
 /**
@@ -111,6 +112,7 @@ const TurnBaseSchema = z.object({
   id: TurnIdSchema,
   workspaceId: WorkspaceIdSchema,
   threadId: ThreadIdSchema,
+  triggerActor: ActorRefSchema,
   items: z.array(ItemSchema),
   error: TurnErrorSchema.nullable(),
   agentSessionId: AgentSessionIdSchema.nullable().optional(),
@@ -137,17 +139,55 @@ function nonHumanGatedTurnSchema(status: Exclude<TurnStatus, 'awaiting_human'>) 
 }
 
 /**
- * A user-initiated round of work within a thread.
+ * An attributable round of work within a thread.
  */
-export const TurnSchema = z.union([
-  nonHumanGatedTurnSchema('pending'),
-  nonHumanGatedTurnSchema('running'),
-  TurnBaseSchema.extend({
-    status: z.literal('awaiting_human'),
-    humanGate: TurnHumanGateSchema,
-  }),
-  nonHumanGatedTurnSchema('completed'),
-  nonHumanGatedTurnSchema('interrupted'),
-  nonHumanGatedTurnSchema('cancelled'),
-  nonHumanGatedTurnSchema('failed'),
-]);
+export const TurnSchema = z
+  .union([
+    nonHumanGatedTurnSchema('pending'),
+    nonHumanGatedTurnSchema('running'),
+    TurnBaseSchema.extend({
+      status: z.literal('awaiting_human'),
+      humanGate: TurnHumanGateSchema,
+    }),
+    nonHumanGatedTurnSchema('completed'),
+    nonHumanGatedTurnSchema('interrupted'),
+    nonHumanGatedTurnSchema('cancelled'),
+    nonHumanGatedTurnSchema('failed'),
+  ])
+  .superRefine((turn, context) => {
+    const responsibleUserId = responsibleUserIdForActor(turn.triggerActor);
+
+    for (const [index, item] of turn.items.entries()) {
+      if (item.type === 'user-input-response') {
+        const matchingRequests = turn.items
+          .filter((candidate) => candidate.type === 'user-input-request')
+          .filter((candidate) => candidate.userInputRequestId === item.userInputRequestId);
+
+        if (matchingRequests.length !== 1) {
+          context.addIssue({
+            code: 'custom',
+            message: 'User-input response must match exactly one request in the same Turn.',
+            path: ['items', index, 'userInputRequestId'],
+          });
+        } else if (item.actor.id !== matchingRequests[0]!.responsibleUserId) {
+          context.addIssue({
+            code: 'custom',
+            message: 'User-input response actor must match the request responsible user.',
+            path: ['items', index, 'actor', 'id'],
+          });
+        }
+      }
+
+      if (item.type !== 'user-input-request') {
+        continue;
+      }
+
+      if (item.responsibleUserId !== responsibleUserId) {
+        context.addIssue({
+          code: 'custom',
+          message: 'User-input request responsible user must match the turn trigger actor.',
+          path: ['items', index, 'responsibleUserId'],
+        });
+      }
+    }
+  });

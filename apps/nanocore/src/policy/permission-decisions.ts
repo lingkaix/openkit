@@ -1,5 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { PolicyDecision } from '@openkit/policy-kernel';
+import {
+  type ActorRef,
+  ActorRefSchema,
+  type AuditEvent,
+  RequestIdSchema,
+  TimestampSchema,
+} from '@openkit/protocol';
 
 import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
 import type { BootPolicyKernel } from '../bootstrap/policy.js';
@@ -46,6 +53,8 @@ export interface RecordPermissionDecisionInput {
   approvalId?: string | null;
   /** Linked audit event id when present. */
   auditEventId?: string | null;
+  /** Actor stored on an automatically linked audit event when available. */
+  auditActor?: AuditEvent['actor'];
   /** Creation time. */
   now?: Date;
 }
@@ -86,6 +95,8 @@ export interface RecordProductPermissionDecisionInput {
   approvalId?: string | null;
   /** Linked audit event id when present. */
   auditEventId?: string | null;
+  /** Actor stored on an automatically linked audit event when available. */
+  auditActor?: AuditEvent['actor'];
   /** Creation time. */
   now?: Date;
 }
@@ -195,6 +206,40 @@ interface PolicyApprovalDecisionRow {
   readonly subjectSummary: unknown;
 }
 
+/** Exact policy decision that opened one approval Gate. */
+export interface PolicyApprovalSourceDecision {
+  /** Product action that requires approval. */
+  readonly action: string;
+  /** Redacted context summary. */
+  readonly contextSummary: unknown;
+  /** Required Approval kind. */
+  readonly requiredApprovalKind: string | null;
+  /** Redacted resource summary. */
+  readonly resourceSummary: unknown;
+  /** Redacted subject summary. */
+  readonly subjectSummary: unknown;
+}
+
+/** Complete terminal policy Approval winner and its authoritative Audit projection. */
+export interface PolicyApprovalTerminalWinner {
+  /** Product action decided by the winner. */
+  readonly action: string;
+  /** Human actor stored by the winning AuditEvent. */
+  readonly actor: Extract<ActorRef, { kind: 'user' }>;
+  /** Audit-owned decision time. */
+  readonly decidedAt: string;
+  /** Required Approval kind copied from the source decision. */
+  readonly requiredApprovalKind: string;
+  /** Winning command request id. */
+  readonly requestId: string;
+  /** Redacted resource summary copied from the source decision. */
+  readonly resourceSummary: unknown;
+  /** Terminal result. */
+  readonly result: 'allow' | 'deny';
+  /** Redacted subject summary copied from the source decision. */
+  readonly subjectSummary: unknown;
+}
+
 /**
  * Reads the policy decision that opened one approval gate.
  *
@@ -248,6 +293,162 @@ export function readPolicyApprovalDecision(
         subjectSummary: JSON.parse(row.subject_summary_json),
       }
     : null;
+}
+
+/**
+ * Lists every source decision that claims to open one policy Approval.
+ *
+ * @param workspaceDb Open workspace-scope database handle.
+ * @param workspaceId Workspace that owns the Approval.
+ * @param approvalId Approval request id.
+ * @returns Source decisions in stable creation order.
+ */
+export function listPolicyApprovalSourceDecisions(
+  workspaceDb: WorkspaceDb,
+  workspaceId: string,
+  approvalId: string
+): PolicyApprovalSourceDecision[] {
+  const rows = workspaceDb.sqlite
+    .prepare(
+      `SELECT
+        action,
+        context_summary_json,
+        required_approval_kind,
+        resource_summary_json,
+        subject_summary_json
+      FROM permission_decisions
+      WHERE owner_scope = 'workspace'
+        AND workspace_id = ?
+        AND result = 'require_approval'
+        AND approval_id = ?
+      ORDER BY created_at, decision_id`
+    )
+    .all(workspaceId, approvalId) as Array<{
+    action: string;
+    context_summary_json: string;
+    required_approval_kind: string | null;
+    resource_summary_json: string;
+    subject_summary_json: string;
+  }>;
+
+  return rows.map((row) => ({
+    action: row.action,
+    contextSummary: JSON.parse(row.context_summary_json),
+    requiredApprovalKind: row.required_approval_kind,
+    resourceSummary: JSON.parse(row.resource_summary_json),
+    subjectSummary: JSON.parse(row.subject_summary_json),
+  }));
+}
+
+/**
+ * Reads and validates the sole terminal winner for one policy Approval.
+ *
+ * @param workspaceDb Open workspace-scope database handle.
+ * @param workspaceId Workspace that owns the Approval.
+ * @param approvalId Approval request id.
+ * @param threadId Thread lineage required on the winning AuditEvent.
+ * @param turnId Turn lineage required on the winning AuditEvent.
+ * @returns Complete terminal winner, or null when no terminal row exists.
+ * @throws Error when a terminal row or its linked AuditEvent is incomplete or contradictory.
+ */
+export function readPolicyApprovalTerminalWinner(
+  workspaceDb: WorkspaceDb,
+  workspaceId: string,
+  approvalId: string,
+  threadId: string,
+  turnId: string
+): PolicyApprovalTerminalWinner | null {
+  const rows = workspaceDb.sqlite
+    .prepare(
+      `SELECT
+        decision.action,
+        decision.audit_event_id AS audit_event_id,
+        decision.decision_id,
+        decision.required_approval_kind,
+        decision.resource_summary_json,
+        decision.result,
+        decision.subject_summary_json,
+        audit.action AS audit_action,
+        audit.actor_json,
+        audit.audit_event_id AS linked_audit_event_id,
+        audit.occurred_at,
+        audit.outcome,
+        audit.permission_decision_id,
+        audit.request_id,
+        audit.resource AS audit_resource,
+        audit.thread_id AS audit_thread_id,
+        audit.turn_id AS audit_turn_id,
+        audit.workspace_id AS audit_workspace_id
+      FROM permission_decisions AS decision
+      LEFT JOIN audit_events AS audit
+        ON audit.audit_event_id = decision.audit_event_id
+      WHERE decision.owner_scope = 'workspace'
+        AND decision.workspace_id = ?
+        AND decision.approval_id = ?
+        AND decision.result IN ('allow', 'deny')`
+    )
+    .all(workspaceId, approvalId) as Array<{
+    action: string;
+    actor_json: string | null;
+    audit_action: string | null;
+    audit_event_id: string | null;
+    audit_resource: string | null;
+    audit_thread_id: string | null;
+    audit_turn_id: string | null;
+    audit_workspace_id: string | null;
+    decision_id: string;
+    linked_audit_event_id: string | null;
+    occurred_at: string | null;
+    outcome: string | null;
+    permission_decision_id: string | null;
+    request_id: string | null;
+    required_approval_kind: string | null;
+    resource_summary_json: string;
+    result: 'allow' | 'deny';
+    subject_summary_json: string;
+  }>;
+
+  if (rows.length === 0) {
+    return null;
+  }
+  if (rows.length !== 1) {
+    throw new Error('Policy Approval has multiple terminal permission decisions.');
+  }
+
+  const row = rows[0]!;
+  if (
+    !row.audit_event_id ||
+    row.linked_audit_event_id !== row.audit_event_id ||
+    row.permission_decision_id !== row.decision_id ||
+    row.audit_workspace_id !== workspaceId ||
+    row.audit_thread_id !== threadId ||
+    row.audit_turn_id !== turnId ||
+    row.audit_action !== 'permission.decision' ||
+    row.audit_resource !== `permission:${row.action}` ||
+    row.outcome !== (row.result === 'allow' ? 'succeeded' : 'denied') ||
+    !row.required_approval_kind ||
+    !row.actor_json ||
+    !row.request_id ||
+    !row.occurred_at
+  ) {
+    throw new Error('Policy Approval terminal decision has incomplete Audit linkage.');
+  }
+
+  const actor = ActorRefSchema.parse(JSON.parse(row.actor_json));
+  if (actor.kind !== 'user') {
+    throw new Error('Policy Approval terminal Audit actor must be a user.');
+  }
+
+  return {
+    action: row.action,
+    actor,
+    decidedAt: TimestampSchema.parse(row.occurred_at),
+    requiredApprovalKind: row.required_approval_kind,
+    requestId: RequestIdSchema.parse(row.request_id),
+    resourceSummary: JSON.parse(row.resource_summary_json),
+    result: row.result,
+    subjectSummary: JSON.parse(row.subject_summary_json),
+  };
 }
 
 /** Input for recording one LLM gateway policy decision. */
@@ -340,6 +541,7 @@ export function recordPermissionDecision(input: RecordPermissionDecisionInput): 
     ...(input.requiredApprovalKind ? { requiredApprovalKind: input.requiredApprovalKind } : {}),
     ...(input.approvalId ? { approvalId: input.approvalId } : {}),
     ...(input.auditEventId ? { auditEventId: input.auditEventId } : {}),
+    ...(input.auditActor ? { auditActor: input.auditActor } : {}),
     ...(input.now ? { now: input.now } : {}),
   });
 }
@@ -409,6 +611,7 @@ export function recordProductPermissionDecision(input: RecordProductPermissionDe
     ) {
       recordWorkspaceAuditEvent({
         action: 'permission.decision',
+        actor: input.auditActor ?? null,
         auditEventId,
         category: 'approval',
         errorCode: permissionAuditErrorCode(input),
@@ -429,6 +632,7 @@ export function recordProductPermissionDecision(input: RecordProductPermissionDe
     if (input.ownerScope === 'server' && input.coreDb && auditEventId && !input.auditEventId) {
       recordServerAuditEvent({
         action: 'permission.decision',
+        actor: input.auditActor ?? null,
         auditEventId,
         category: 'approval',
         errorCode: permissionAuditErrorCode(input),

@@ -15,8 +15,6 @@ describe('provider config schema', () => {
       'defaultModel',
       'displayName',
       'extensions',
-      'extraBody',
-      'extraHeaders',
       'id',
       'kind',
       'models',
@@ -126,6 +124,19 @@ describe('provider config schema', () => {
     expect(JSON.stringify(providerSchema)).toContain('accountSlotId');
   });
 
+  it('omits unowned provider fields from generated provider and server schemas', () => {
+    const schemas = getConfigSchemaCatalog().filter(({ kind }) =>
+      ['provider', 'server'].includes(kind)
+    );
+
+    expect(schemas).toHaveLength(2);
+
+    for (const { schema } of schemas) {
+      expect(JSON.stringify(schema)).not.toContain('extraBody');
+      expect(JSON.stringify(schema)).not.toContain('extraHeaders');
+    }
+  });
+
   it('rejects raw inline provider secrets', () => {
     for (const field of ['apiKey', 'clientSecret', 'secret', 'token'] as const) {
       expect(() =>
@@ -151,6 +162,55 @@ describe('provider config schema', () => {
     }
   });
 
+  it('rejects provider credential aliases outside secretRef', () => {
+    const profile = {
+      id: 'direct',
+      displayName: 'Direct Provider',
+      kind: 'direct' as const,
+      models: ['demo'],
+    };
+
+    for (const credentialAlias of [
+      { baseUrl: 'https://user@example.com/v1' },
+      { baseUrl: 'https://:password@example.com/v1' },
+      { extraHeaders: { Authorization: 'Bearer raw-secret' } },
+      { extraHeaders: { aUtHoRiZaTiOn: 'Bearer raw-secret' } },
+      { extraHeaders: { 'Proxy-Authorization': 'Bearer raw-secret' } },
+      { extraHeaders: { Cookie: 'session=raw-secret' } },
+      { extraHeaders: { 'x-api-key': 'raw-secret' } },
+      { extraBody: { apiKey: 'raw-secret' } },
+      { extraBody: { access_token: 'raw-secret' } },
+      { extraBody: { token: 'raw-secret' } },
+      { extraBody: { secret: 'raw-secret' } },
+      { extraBody: { clientSecret: 'raw-secret' } },
+      { extraBody: { CLIENTSECRET: 'raw-secret' } },
+      { extraBody: { password: 'raw-secret' } },
+    ]) {
+      expect(ProviderProfileSchema.safeParse({ ...profile, ...credentialAlias }).success).toBe(
+        false
+      );
+      expect(
+        OpenKitProviderInstanceSchema.safeParse({
+          ...profile,
+          vendor: 'openai',
+          ...credentialAlias,
+        }).success
+      ).toBe(false);
+    }
+  });
+
+  it('reports invalid provider URLs as schema failures', () => {
+    expect(
+      ProviderProfileSchema.safeParse({
+        id: 'invalid-url',
+        displayName: 'Invalid URL',
+        kind: 'custom',
+        models: ['demo'],
+        baseUrl: 'not-a-url',
+      }).success
+    ).toBe(false);
+  });
+
   it('rejects provider fields without a runtime owner', () => {
     const profile = {
       id: 'openai',
@@ -161,6 +221,8 @@ describe('provider config schema', () => {
     const serverProvider = { ...profile, vendor: 'openai' };
 
     for (const field of [
+      { extraBody: { service_tier: 'auto' } },
+      { extraHeaders: { 'x-provider-feature': 'enabled' } },
       { metadata: { region: 'us' } },
       { timeoutMs: 30_000 },
       { retry: { attempts: 3 } },
@@ -168,20 +230,11 @@ describe('provider config schema', () => {
       { unknownProviderField: true },
     ]) {
       expect(() => ProviderProfileSchema.parse({ ...profile, ...field })).toThrow();
+      expect(() => OpenKitProviderInstanceSchema.parse({ ...serverProvider, ...field })).toThrow();
     }
-
-    expect(() =>
-      OpenKitProviderInstanceSchema.parse({
-        ...serverProvider,
-        metadata: { region: 'us' },
-      })
-    ).toThrow();
-    expect(() =>
-      OpenKitProviderInstanceSchema.parse({ ...serverProvider, unknownProviderField: true })
-    ).toThrow();
   });
 
-  it('keeps explicitly owned provider dispatch fields', () => {
+  it('keeps explicitly owned provider fields', () => {
     const parsed = ProviderProfileSchema.parse({
       id: 'openai',
       displayName: 'OpenAI',
@@ -189,14 +242,12 @@ describe('provider config schema', () => {
       models: ['gpt-5'],
       category: 'inference',
       vendor: 'openai',
-      extraBody: { service_tier: 'auto' },
-      extraHeaders: { 'x-provider-feature': 'enabled' },
+      secretRef: 'vault://provider_openai',
     });
 
     expect(parsed.vendor).toBe('openai');
     expect(parsed.category).toBe('inference');
-    expect(parsed.extraBody).toEqual({ service_tier: 'auto' });
-    expect(parsed.extraHeaders).toEqual({ 'x-provider-feature': 'enabled' });
+    expect(parsed.secretRef).toBe('vault://provider_openai');
   });
 
   it('rejects inline agent provider config', () => {

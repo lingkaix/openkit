@@ -11,6 +11,7 @@ const questionItem: Extract<Item, { type: 'user-input-request' }> = {
   turnId: 'tu_demo',
   type: 'user-input-request',
   status: 'completed',
+  responsibleUserId: 'user_demo',
   userInputRequestId: 'question_demo',
   prompt: 'Which summary tone should the simulator use?',
   questions: [

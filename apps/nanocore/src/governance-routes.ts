@@ -62,14 +62,13 @@ export function registerGovernanceRoutes({
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
-  readonly repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb;
+  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
 }): void {
   registerAppApiRoute(app, 'getCapabilityUsage', (c) => {
     try {
-      const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
 
       try {
         return c.json(
@@ -89,9 +88,8 @@ export function registerGovernanceRoutes({
 
   registerAppApiRoute(app, 'listWorkspaceEvidenceBundles', (c) => {
     try {
-      const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
 
       try {
         return c.json(
@@ -110,9 +108,8 @@ export function registerGovernanceRoutes({
 
   registerAppApiRoute(app, 'listWorkspaceRuntimeEvidence', (c) => {
     try {
-      const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
 
       try {
         return c.json(
@@ -131,9 +128,8 @@ export function registerGovernanceRoutes({
 
   registerAppApiRoute(app, 'listWorkspaceAuditEvents', (c) => {
     try {
-      const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
 
       try {
         return c.json(
@@ -177,9 +173,8 @@ export function registerGovernanceRoutes({
 
   registerAppApiRoute(app, 'listWorkspacePermissionDecisions', (c) => {
     try {
-      const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
 
       try {
         return c.json(

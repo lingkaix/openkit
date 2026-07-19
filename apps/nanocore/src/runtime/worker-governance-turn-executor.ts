@@ -12,14 +12,41 @@ import type {
   WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
 import type { StopReason } from '@openkit/protocol';
-import type { FsStore } from '../lib/store.js';
+import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
+import {
+  createWorkerContextPackageFiles,
+  createWorkerContextPackageTrace,
+  projectWorkerContextRequest,
+  readWorkerContextPackageTrace,
+  type WorkerContextPackageFiles,
+  type WorkerContextPackageMaterialExclusion,
+  type WorkerContextPackageMaterialSelectionInput,
+  type WorkerContextPackageTrace,
+  writeWorkerContextPackageFiles,
+  writeWorkerContextPackageTrace,
+} from '../context/worker-context-package.js';
+import {
+  deleteAppliedPendingUserTurnRecord,
+  getPendingUserTurnRecord,
+  type PendingUserTurnRecord,
+} from '../goal-steering-authority.js';
+import { ArtifactAuthorityError, type FsStore } from '../lib/store.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import { getWorkspaceRepositoryResource } from '../workspace/repository-store.js';
+import {
+  consumeQueuedThreadMaterialRevision,
+  getWorkspaceMaterial,
+  getWorkspaceMaterialRevision,
+  type QueuedThreadMaterialSelection,
+  selectQueuedThreadMaterialRevision,
+} from '../workspace-materials.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
+  type PreparedWorkerContextPackage,
   type ResolveAgentEnvironmentBackendInput,
   type ResolvedAgentEnvironmentProviderCredential,
   type ResolvedAgentEnvironmentRuntimeEnvCredential,
@@ -45,6 +72,7 @@ import {
   transitionWorkerBackendSessionState,
   type WorkerBackendSessionRecord,
 } from './worker-backend-sessions.js';
+import { getWorkerCheckpoint, type WorkerCheckpointRecord } from './worker-checkpoints.js';
 import {
   type AcceptedWorkerFinalStatus,
   canonicalStopReasonForAcceptedWorkerFinalStatus,
@@ -52,14 +80,18 @@ import {
   listWorkerControlAcceptedEvents,
   turnStatusForCanonicalWorkerStopReason,
 } from './worker-control-records.js';
-import type {
-  WorkerGovernanceBackend,
-  WorkerGovernanceBackendSessionIdentity,
-  WorkerGovernanceEvidenceRecord,
-  WorkerGovernanceWorkspaceChangeRecord,
+import {
+  WORKER_ARTIFACT_COLLECTION_INVALID,
+  type WorkerGovernanceBackend,
+  type WorkerGovernanceBackendSessionIdentity,
+  type WorkerGovernanceEvidenceRecord,
+  type WorkerGovernanceWorkspaceChangeRecord,
 } from './worker-governance-backend.js';
 import { importWorkerRuntimeProvenance } from './worker-runtime-provenance.js';
-import { importWorkerTranscript } from './worker-transcript.js';
+import {
+  importWorkerTranscript,
+  workerTranscriptHasMaterialProposal,
+} from './worker-transcript.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 import { recordFilesystemWorkspaceStagingRoot } from './workspace-filesystem-staging.js';
 import {
@@ -87,6 +119,267 @@ interface WorkerTurnBackendLifecycle {
   physicalCleanedAt: string | null;
   /** Whether the atomic workspace handoff transaction committed. */
   workspaceHandoffState: 'pending' | 'complete';
+}
+
+/** Prepared S39 package state retained until its accepted trace and queue handoff complete. */
+interface PreparedWorkerTurnContext {
+  /** Exact applied steering claim consumed only after accepted trace verification. */
+  readonly appliedPending: PendingUserTurnRecord | null;
+  /** Exact diagnostic checkpoint whose lineage is frozen into the trace. */
+  readonly checkpoint: WorkerCheckpointRecord;
+  /** Canonical package bytes and immutable identity. */
+  readonly packageFiles: WorkerContextPackageFiles;
+  /** Backend-private generated root projected into the AEP and materializer. */
+  readonly preparedContextPackage: PreparedWorkerContextPackage;
+  /** Canonical Workspace root that owns package files and the accepted trace. */
+  readonly workspaceRoot: string;
+  /** Included automatic Material queue candidate, when eligible. */
+  readonly queuedMaterialSelection: QueuedThreadMaterialSelection | null;
+  /** Addressed automatic Material candidates excluded by the closed S39 rules. */
+  readonly materialExclusions: readonly WorkerContextPackageMaterialExclusion[];
+}
+
+/**
+ * Prepares the one accepted S39 package only when an exact worker checkpoint owns this Turn.
+ *
+ * @param workspaceDb Open Workspace database containing checkpoint and Material authority.
+ * @param store Product store containing canonical Thread Items.
+ * @param checkpoint Exact diagnostic checkpoint that owns this worker Turn.
+ * @param input Exact worker Turn, command, and request bytes.
+ * @returns Prepared immutable package state.
+ * @throws TurnStartValidationError when checkpoint or requested Item authority is contradictory.
+ */
+function prepareWorkerTurnContextPackage(
+  workspaceDb: WorkspaceDb,
+  store: FsStore,
+  checkpoint: WorkerCheckpointRecord,
+  input: {
+    readonly workerRequest: string;
+    readonly requestId: string | null;
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly turnId: string;
+  }
+): PreparedWorkerTurnContext {
+  if (
+    !input.requestId ||
+    checkpoint.requestId !== input.requestId ||
+    (checkpoint.goalId === null) !== (checkpoint.taskId === null)
+  ) {
+    throw new TurnStartValidationError(
+      'recovery_required',
+      'Worker Context Package checkpoint lineage is contradictory.',
+      409
+    );
+  }
+
+  const workerRequest = projectWorkerContextRequest(input.workerRequest);
+  const contextBudgetTokens = workerRequest.contextBudgetTokens;
+  const pending = getPendingUserTurnRecord(workspaceDb, input.workspaceId, input.threadId);
+  let appliedPending: PendingUserTurnRecord | null = null;
+  if (pending?.goalId === checkpoint.goalId && pending.terminalClaimKind !== null) {
+    if (
+      pending.terminalClaimKind !== 'applied' ||
+      pending.terminalClaimId !== `ctxpkg_${input.turnId}` ||
+      pending.terminalClaimedAt === null
+    ) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'Worker Context Package applied steering claim is contradictory.',
+        409
+      );
+    }
+    appliedPending = pending;
+  }
+  const workerRequestItemId = `it_user_${input.turnId}`;
+  const requestedItemIds = new Set(workerRequest.requestedItemIds);
+  requestedItemIds.delete(workerRequestItemId);
+  const includedPriorItems = store
+    .listThreadItems(input.workspaceId, input.threadId)
+    .filter((item) => requestedItemIds.delete(item.id));
+  if (requestedItemIds.size > 0) {
+    throw new TurnStartValidationError(
+      'recovery_required',
+      'Worker Context Package Item authority is unavailable.',
+      409
+    );
+  }
+  if (
+    appliedPending &&
+    !includedPriorItems.some((item) => item.id === appliedPending.contentItemId)
+  ) {
+    throw new TurnStartValidationError(
+      'recovery_required',
+      'Worker Context Package applied steering Item is unavailable.',
+      409
+    );
+  }
+
+  const queuedMaterial = selectQueuedThreadMaterialRevision(workspaceDb, input.threadId);
+  const materialSelections: WorkerContextPackageMaterialSelectionInput[] = [];
+  const materialExclusions: WorkerContextPackageMaterialExclusion[] = [];
+  let selectedContextBytes = Buffer.byteLength(input.workerRequest, 'utf8');
+  let queuedMaterialSelection: QueuedThreadMaterialSelection | null = null;
+  let steeringMaterialId: string | null = null;
+  if (appliedPending?.inputKind === 'material') {
+    if (!appliedPending.materialId || !appliedPending.revisionId || !appliedPending.contentDigest) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'Worker Context Package steering Material tuple is incomplete.',
+        409
+      );
+    }
+    let material: ReturnType<typeof getWorkspaceMaterial>;
+    let revision: ReturnType<typeof getWorkspaceMaterialRevision>;
+    try {
+      material = getWorkspaceMaterial(workspaceDb, appliedPending.materialId);
+      revision = getWorkspaceMaterialRevision(
+        workspaceDb,
+        appliedPending.materialId,
+        appliedPending.revisionId
+      );
+    } catch {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'Worker Context Package steering Material authority is unavailable.',
+        409
+      );
+    }
+    if (revision.contentDigest !== appliedPending.contentDigest) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'Worker Context Package steering Material digest is contradictory.',
+        409
+      );
+    }
+    if (material.sensitivity === 'restricted') {
+      throw new TurnStartValidationError(
+        'sensitive_content',
+        'Restricted Material cannot enter a worker Context Package.',
+        409
+      );
+    }
+    const steeringContentBytes = Buffer.byteLength(revision.content, 'utf8');
+    if (Math.ceil((selectedContextBytes + steeringContentBytes) / 4) > contextBudgetTokens) {
+      throw new TurnStartValidationError(
+        'goal_steering_delivery_unavailable',
+        'Worker Context Package steering Material exceeds the context budget.',
+        503
+      );
+    }
+    selectedContextBytes += steeringContentBytes;
+    const matchingQueuedRevision =
+      queuedMaterial?.materialId === appliedPending.materialId &&
+      queuedMaterial.revisionId === appliedPending.revisionId &&
+      queuedMaterial.inclusionState === 'included';
+    materialSelections.push({
+      bindingMutationRequestId: matchingQueuedRevision
+        ? queuedMaterial.bindingMutationRequestId
+        : null,
+      content: revision.content,
+      contentDigest: revision.contentDigest,
+      inclusionReason: 'goal_steering',
+      materialId: appliedPending.materialId,
+      mediaType: revision.mediaType,
+      parentRevisionId: revision.parentRevisionId,
+      revisionId: appliedPending.revisionId,
+      sensitivity: material.sensitivity,
+    });
+    steeringMaterialId = appliedPending.materialId;
+    queuedMaterialSelection = matchingQueuedRevision ? queuedMaterial : null;
+  } else if (
+    appliedPending &&
+    (appliedPending.materialId !== null ||
+      appliedPending.revisionId !== null ||
+      appliedPending.contentDigest !== null)
+  ) {
+    throw new TurnStartValidationError(
+      'recovery_required',
+      'Worker Context Package message steering tuple is contradictory.',
+      409
+    );
+  }
+
+  const bindingCandidate =
+    queuedMaterial?.materialId === steeringMaterialId ? null : queuedMaterial;
+  if (bindingCandidate?.inclusionState === 'excluded') {
+    materialExclusions.push({
+      materialId: bindingCandidate.materialId,
+      reason: 'explicit_scope_excluded',
+      revisionId: bindingCandidate.revisionId,
+      sensitivity: bindingCandidate.sensitivity,
+    });
+  } else if (bindingCandidate?.sensitivity === 'restricted') {
+    materialExclusions.push({
+      materialId: bindingCandidate.materialId,
+      reason: 'sensitive_content',
+      revisionId: bindingCandidate.revisionId,
+      sensitivity: bindingCandidate.sensitivity,
+    });
+  } else if (bindingCandidate) {
+    const bindingContentBytes = Buffer.byteLength(bindingCandidate.content, 'utf8');
+    if (Math.ceil((selectedContextBytes + bindingContentBytes) / 4) > contextBudgetTokens) {
+      materialExclusions.push({
+        materialId: bindingCandidate.materialId,
+        reason: 'budget_exceeded',
+        revisionId: bindingCandidate.revisionId,
+        sensitivity: bindingCandidate.sensitivity,
+      });
+    } else {
+      materialSelections.push({
+        bindingMutationRequestId: bindingCandidate.bindingMutationRequestId,
+        content: bindingCandidate.content,
+        contentDigest: bindingCandidate.contentDigest,
+        inclusionReason: bindingCandidate.inclusionReason,
+        materialId: bindingCandidate.materialId,
+        mediaType: bindingCandidate.mediaType,
+        parentRevisionId: bindingCandidate.parentRevisionId,
+        revisionId: bindingCandidate.revisionId,
+        sensitivity: bindingCandidate.sensitivity,
+      });
+      queuedMaterialSelection = bindingCandidate;
+    }
+  }
+
+  const includedItemIds = [workerRequestItemId, ...includedPriorItems.map((item) => item.id)];
+  const packageFiles = createWorkerContextPackageFiles({
+    contextBudgetTokens,
+    includedItemIds,
+    materialSelections,
+    threadId: input.threadId,
+    turnId: input.turnId,
+    workerRequestBytes: input.workerRequest,
+    workerRequestItemId,
+    workspaceId: input.workspaceId,
+  });
+  const workspaceRoot = join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId);
+  const packageRoot = join(
+    workspaceRoot,
+    'threads',
+    input.threadId,
+    'turns',
+    input.turnId,
+    'context-package'
+  );
+  writeWorkerContextPackageFiles(workspaceRoot, packageFiles);
+  return {
+    appliedPending,
+    checkpoint,
+    materialExclusions,
+    packageFiles,
+    preparedContextPackage: {
+      contentDigest: packageFiles.packageRootDigest,
+      workspaceRoot: {
+        access: 'read-only',
+        id: `context_${input.turnId}`,
+        sourceKind: 'materialized-dir',
+        sourcePath: packageRoot,
+        workerPath: '/openkit/context',
+      },
+    },
+    queuedMaterialSelection,
+    workspaceRoot,
+  };
 }
 
 /**
@@ -200,8 +493,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     store: FsStore,
     turnId: string,
     input: string,
-    context: TurnStartRuntimeContext = { requestId: null, workspaceRoots: [] }
+    context?: TurnStartRuntimeContext
   ): Promise<void> {
+    if (!context) {
+      throw new Error('Governed worker execution requires exact turn-start runtime context.');
+    }
     const turn = store.getTurnById(turnId);
     const requestId = context.requestId ?? null;
     let agentSessionId: string | null = context.agentSessionId ?? null;
@@ -211,37 +507,79 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     let backendCleanupRequired = false;
     let closeoutAt: string | null = null;
     let environmentPackage: AgentEnvironmentPackage | null = null;
+    let acceptedContextPackageTrace: WorkerContextPackageTrace | undefined;
+    let preparedWorkerContext: PreparedWorkerTurnContext | null = null;
     let workerFinalStatus: AcceptedWorkerFinalStatus | null = null;
     let primaryFailed = false;
     let primaryError: unknown;
 
     try {
+      if (!context.agentSetup) {
+        throw new Error('Governed worker execution requires one resolved agent setup.');
+      }
       if (!turn.agentId) {
         throw new Error(`Worker turn has no assigned agent: ${turn.id}`);
       }
-      const agent = store.getAgent(turn.workspaceId, turn.agentId);
+      const manifest = context.agentSetup.manifest;
+      if (turn.agentId !== manifest.id) {
+        throw new Error(
+          `Worker turn agent ${turn.agentId} does not match resolved agent setup ${manifest.id}.`
+        );
+      }
       const resolvedAgentSessionId = agentSessionId ?? this.createAgentSessionId();
       agentSessionId = resolvedAgentSessionId;
+      workspaceDb = this.openWorkspaceDb(turn.workspaceId);
+      if (workspaceDb) {
+        applyScopedMigrations(workspaceDb);
+      }
+      const checkpoint = workspaceDb
+        ? getWorkerCheckpoint(workspaceDb, turn.workspaceId, turn.threadId, turn.id)
+        : null;
+      if (checkpoint && !context.sandboxBindingRef) {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'Worker Context Package scheduler binding is unavailable.',
+          409
+        );
+      }
+      if (workspaceDb && checkpoint && context.sandboxBindingRef) {
+        preparedWorkerContext = prepareWorkerTurnContextPackage(workspaceDb, store, checkpoint, {
+          requestId,
+          threadId: turn.threadId,
+          turnId: turn.id,
+          workerRequest: input,
+          workspaceId: turn.workspaceId,
+        });
+      }
+      if (preparedWorkerContext && !turn.startedAt) {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'Worker Context Package requires one accepted Turn timestamp.',
+          409
+        );
+      }
+      const timestamp = preparedWorkerContext ? turn.startedAt! : this.now();
       const providerCredentials: ResolvedAgentEnvironmentProviderCredential[] = [];
       const runtimeEnvCredentials: ResolvedAgentEnvironmentRuntimeEnvCredential[] = [];
       const runtimeFileCredentials: ResolvedAgentEnvironmentRuntimeFileCredential[] = [];
-      environmentPackage = resolveAgentEnvironmentPackage({
-        agent,
+      const resolvedEnvironmentPackage = resolveAgentEnvironmentPackage({
+        agentSetup: context.agentSetup,
         agentSessionId: resolvedAgentSessionId,
         backend: this.environmentBackend,
-        ...(context.backendRequirements
-          ? { backendRequirements: context.backendRequirements }
+        ...(preparedWorkerContext
+          ? {
+              createdAt: timestamp,
+              preparedContextPackage: preparedWorkerContext.preparedContextPackage,
+            }
           : {}),
         ...(this.coreDb ? { coreDb: this.coreDb } : {}),
         providerCredentialSink: (credential) => providerCredentials.push(credential),
-        ...(context.providerSelection ? { providerSelection: context.providerSelection } : {}),
         requestId,
         runtimeEnvCredentialSink: (credential) => runtimeEnvCredentials.push(credential),
         runtimeFileCredentialSink: (credential) => runtimeFileCredentials.push(credential),
-        ...(context.sandboxAccess ? { sandboxAccess: context.sandboxAccess } : {}),
         turn,
         turnInput: input,
-        userId: store.getUserId(),
+        triggerActor: context.triggerActor,
         ...(this.vaultBackend ? { vaultBackend: this.vaultBackend } : {}),
         ...(context.workspaceDataSourceCatalog
           ? { workspaceDataSourceCatalog: context.workspaceDataSourceCatalog }
@@ -252,14 +590,22 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           ? { workspaceSourceRefs: context.workspaceSourceRefs }
           : {}),
       });
+      environmentPackage = preparedWorkerContext
+        ? {
+            ...resolvedEnvironmentPackage,
+            scope: {
+              ...resolvedEnvironmentPackage.scope,
+              itemId: `it_user_${turnId}`,
+            },
+          }
+        : resolvedEnvironmentPackage;
       const sessionWorkspace = (
         environmentPackage.extensions.openkit as {
           sessionWorkspace: SessionWorkspaceMaterializationPlan;
         }
       ).sessionWorkspace;
-      const timestamp = this.now();
       const agentSession = store.createAgentSession({
-        agentId: agent.id,
+        agentId: manifest.id,
         configVersion: turn.configVersion,
         createdAt: timestamp,
         environmentPackageSnapshotId: environmentPackage.snapshotId,
@@ -278,6 +624,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         agentSessionId: agentSession.id,
       });
       const userItem = store.createItem({
+        actor: context.triggerActor,
         completedAt: timestamp,
         createdAt: timestamp,
         id: `it_user_${turnId}`,
@@ -293,14 +640,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       this.emitItemCreatedAndCompleted(store, environmentPackage, requestId, userItem);
       this.emitAgentSession(store, environmentPackage, requestId, agentSession);
 
-      workspaceDb = this.openWorkspaceDb(store.getUserId(), turn.workspaceId);
-      if (workspaceDb) {
-        applyScopedMigrations(workspaceDb);
-      }
-
       if (workspaceDb) {
         recordAgentEnvironmentPackageSnapshot(workspaceDb, {
-          createdAt: this.now(),
+          createdAt: preparedWorkerContext ? timestamp : this.now(),
           environmentPackage,
         });
       }
@@ -311,7 +653,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         ? buildWorkspaceInputSnapshots({
             backendCapabilities: backendCapabilities.capabilities,
             backendKind,
-            createdAt: this.now(),
+            createdAt: preparedWorkerContext ? timestamp : this.now(),
             environmentPackage,
           })
         : [];
@@ -321,6 +663,22 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         session: null,
         workspaceHandoffState: 'pending',
       };
+      if (
+        this.coreDb &&
+        !currentWorkspaceAuthority(
+          this.coreDb,
+          turn.workspaceId,
+          environmentPackage.scope.triggerActor,
+          'runtime.launch',
+          true
+        )
+      ) {
+        throw new TurnStartValidationError(
+          'workspace_access_denied',
+          'Workspace access denied.',
+          403
+        );
+      }
       if (this.coreDb && context.sandboxBindingRef) {
         backendLifecycle.session = recordWorkerBackendSessionMaterializing(this.coreDb, {
           backendVersion: backendCapabilities.version ?? null,
@@ -341,7 +699,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         runtimeEnvCredentials,
         runtimeFileCredentials,
         ...(context.sandboxBindingRef ? { sandboxBindingRef: context.sandboxBindingRef } : {}),
-        workspaceRoots: context.workspaceRoots,
+        workspaceRoots: preparedWorkerContext
+          ? [...context.workspaceRoots, preparedWorkerContext.preparedContextPackage.workspaceRoot]
+          : context.workspaceRoots,
       });
       if (backendLifecycle.session) {
         backendLifecycle.session = transitionWorkerBackendSessionState(this.coreDb!, {
@@ -354,7 +714,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
 
       const builtMaterializationRecords = workspaceDb
         ? buildWorkspaceMaterializationRecords({
-            createdAt: this.now(),
+            createdAt: preparedWorkerContext ? timestamp : this.now(),
             inputSnapshots,
             materialization: { ...materialization, backendKind },
           })
@@ -370,6 +730,66 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           now: this.now,
         });
         backendLifecycle.workspaceHandoffState = backendLifecycle.session.workspaceHandoffState;
+      }
+
+      if (preparedWorkerContext) {
+        if (!this.coreDb || !workspaceDb || !backendLifecycle.session) {
+          throw new TurnStartValidationError(
+            'recovery_required',
+            'Worker Context Package authority is unavailable after backend handoff.',
+            409
+          );
+        }
+        const authorities = createWorkerContextPackageAuthorityReader({
+          coreDb: this.coreDb,
+          store,
+          workspaceDb,
+        });
+        const trace = createWorkerContextPackageTrace({
+          agentSessionId: agentSession.id,
+          excludedItems: [],
+          goalId: preparedWorkerContext.checkpoint.goalId,
+          materialExclusions: preparedWorkerContext.materialExclusions,
+          packageFiles: preparedWorkerContext.packageFiles,
+          packageSnapshotId: environmentPackage.snapshotId,
+          requestId: preparedWorkerContext.checkpoint.requestId,
+          taskId: preparedWorkerContext.checkpoint.taskId,
+        });
+        writeWorkerContextPackageTrace({
+          authorities,
+          trace,
+          workspaceRoot: preparedWorkerContext.workspaceRoot,
+        });
+        acceptedContextPackageTrace = readWorkerContextPackageTrace({
+          authorities,
+          threadId: turn.threadId,
+          turnId: turn.id,
+          workspaceId: turn.workspaceId,
+          workspaceRoot: preparedWorkerContext.workspaceRoot,
+        });
+        const acceptedWorkspaceDb = workspaceDb;
+        const acceptedContext = preparedWorkerContext;
+        acceptedWorkspaceDb.sqlite.transaction(() => {
+          const queuedMaterial = acceptedContext.queuedMaterialSelection;
+          if (queuedMaterial) {
+            consumeQueuedThreadMaterialRevision(
+              acceptedWorkspaceDb,
+              turn.threadId,
+              queuedMaterial.materialId,
+              queuedMaterial.revisionId,
+              queuedMaterial.bindingMutationRequestId
+            );
+          }
+          const appliedPending = acceptedContext.appliedPending;
+          if (appliedPending) {
+            deleteAppliedPendingUserTurnRecord(acceptedWorkspaceDb, {
+              contextPackageId: trace.contextPackageId,
+              pendingTurnId: appliedPending.pendingTurnId,
+              threadId: appliedPending.threadId,
+              workspaceId: appliedPending.workspaceId,
+            });
+          }
+        })();
       }
 
       const busySession = store.updateAgentSession(agentSession.id, {
@@ -390,6 +810,22 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       if (this.awaitWorkerCompletion && !completionLeaseId) {
         throw new Error('Detached worker completion requires a durable scheduler lease.');
       }
+      if (
+        this.coreDb &&
+        !currentWorkspaceAuthority(
+          this.coreDb,
+          turn.workspaceId,
+          environmentPackage.scope.triggerActor,
+          'runtime.launch',
+          true
+        )
+      ) {
+        throw new TurnStartValidationError(
+          'workspace_access_denied',
+          'Workspace access denied.',
+          403
+        );
+      }
       await this.backend.launch(materialization);
       if (this.awaitWorkerCompletion && completionLeaseId) {
         workerFinalStatus = await this.awaitWorkerCompletion(environmentPackage, completionLeaseId);
@@ -405,12 +841,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         workspaceDb,
         inputSnapshots,
         materializationRecords,
-        closeoutAt
+        closeoutAt,
+        acceptedContextPackageTrace
       );
       backendCleanupRequired = false;
     } catch (error) {
       primaryFailed = true;
-      primaryError = error;
+      primaryError = asWorkerArtifactTurnError(error);
     }
 
     const errors: unknown[] = primaryFailed ? [primaryError] : [];
@@ -484,7 +921,23 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             );
       if (!terminalObserved) {
         try {
-          this.failTurn(store, turn, agentSessionId, requestId, error);
+          if (
+            primaryError instanceof TurnStartValidationError &&
+            primaryError.code === 'workspace_access_denied'
+          ) {
+            terminalizeGovernedWorkerTurn({
+              agentSessionId,
+              completedAt: this.now(),
+              errorCode: primaryError.code,
+              message: primaryError.message,
+              outcome: 'interrupted',
+              requestId,
+              store,
+              turnId: turn.id,
+            });
+          } else {
+            this.failTurn(store, turn, agentSessionId, requestId, error);
+          }
         } catch (failureError) {
           throw new AggregateError(
             [error, failureError],
@@ -520,8 +973,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     environmentPackage: AgentEnvironmentPackage,
     session: WorkerBackendSessionRecord
   ): Promise<'cancelled' | 'completed' | 'failed' | 'interrupted'> {
-    if (!this.coreDb || store.getUserId() !== environmentPackage.scope.userId) {
-      throw new Error('Restart closeout requires the exact durable Core and store owner.');
+    if (!this.coreDb) {
+      throw new Error('Restart closeout requires the durable Core database.');
     }
     assertRestoredSession(
       environmentPackage,
@@ -545,37 +998,86 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       stopReason === 'ask_user'
         ? 'interrupted'
         : turnStatusForCanonicalWorkerStopReason(stopReason);
-    const workspaceDb = this.openWorkspaceDb(
-      store.getUserId(),
-      environmentPackage.scope.workspaceId
-    );
+    const workspaceDb = this.openWorkspaceDb(environmentPackage.scope.workspaceId);
     if (!workspaceDb) {
       throw new Error('Restart closeout requires durable workspace storage.');
     }
     applyScopedMigrations(workspaceDb);
-    const backendCapabilities = await this.backend.describeCapabilities();
-    const lifecycle: WorkerTurnBackendLifecycle = {
-      identity: this.backend.planSession(environmentPackage),
-      physicalCleanedAt: session.physicalCleanedAt,
-      session,
-      workspaceHandoffState: session.workspaceHandoffState,
-    };
-    const collectDurableOutput =
-      session.state !== 'physical-cleaned' && session.state !== 'cleaned';
 
     try {
+      const backendCapabilities = await this.backend.describeCapabilities();
+      const lifecycle: WorkerTurnBackendLifecycle = {
+        identity: this.backend.planSession(environmentPackage),
+        physicalCleanedAt: session.physicalCleanedAt,
+        session,
+        workspaceHandoffState: session.workspaceHandoffState,
+      };
+      const collectDurableOutput =
+        session.state !== 'physical-cleaned' && session.state !== 'cleaned';
+      const restartFailure = {
+        agentSessionId: environmentPackage.scope.agentSessionId,
+        completedAt: this.now(),
+        errorCode: 'worker_governance_restart_recovery',
+        message: 'Worker output could not be verified during restart closeout.',
+        outcome: 'interrupted' as const,
+        requestId: environmentPackage.scope.requestId ?? null,
+        store,
+        turnId: environmentPackage.scope.turnId,
+      };
+      const currentTurn = store.getTurnById(environmentPackage.scope.turnId);
+      if (
+        currentTurn.status === 'interrupted' &&
+        currentTurn.error?.code === restartFailure.errorCode
+      ) {
+        terminalizeGovernedWorkerTurn(restartFailure);
+        if (session.state !== 'cleaned') {
+          await this.cleanupBackendLifecycle(
+            lifecycle,
+            workspaceDb,
+            environmentPackage,
+            backendCapabilities
+          );
+        }
+        return 'interrupted';
+      }
       if (collectDurableOutput) {
-        await this.finishLaunchedTurn(
-          store,
-          environmentPackage,
-          environmentPackage.scope.requestId ?? null,
-          backendCapabilities,
-          lifecycle,
-          workspaceDb,
-          listWorkspaceInputSnapshots(workspaceDb, environmentPackage.scope.workspaceId),
-          listWorkspaceMaterializationRecords(workspaceDb, environmentPackage.scope.workspaceId),
-          accepted.acceptedAt
-        );
+        try {
+          await this.finishLaunchedTurn(
+            store,
+            environmentPackage,
+            environmentPackage.scope.requestId ?? null,
+            backendCapabilities,
+            lifecycle,
+            workspaceDb,
+            listWorkspaceInputSnapshots(workspaceDb, environmentPackage.scope.workspaceId),
+            listWorkspaceMaterializationRecords(workspaceDb, environmentPackage.scope.workspaceId),
+            accepted.acceptedAt,
+            undefined
+          );
+        } catch (error) {
+          try {
+            terminalizeGovernedWorkerTurn(restartFailure);
+          } catch (terminalError) {
+            throw new AggregateError(
+              [error, terminalError],
+              'Restored worker closeout failed and its stable product outcome could not be persisted.'
+            );
+          }
+          try {
+            await this.cleanupBackendLifecycle(
+              lifecycle,
+              workspaceDb,
+              environmentPackage,
+              backendCapabilities
+            );
+          } catch (cleanupError) {
+            throw new AggregateError(
+              [error, cleanupError],
+              'Restored worker closeout failed after its stable product outcome was persisted.'
+            );
+          }
+          return 'interrupted';
+        }
       } else if (session.state !== 'cleaned') {
         await this.cleanupBackendLifecycle(
           lifecycle,
@@ -682,10 +1184,36 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     workspaceDb: WorkspaceDb | null,
     inputSnapshots: readonly WorkspaceInputSnapshot[],
     materializationRecords: readonly WorkspaceMaterializationRecord[],
-    recordedAt: string
+    recordedAt: string,
+    contextPackageTrace?: WorkerContextPackageTrace
   ): Promise<void> {
     await this.backend.collectEvidence(environmentPackage.snapshotId);
     const transcript = await this.backend.collectTranscript(environmentPackage.snapshotId);
+    let acceptedContextPackageTrace = contextPackageTrace;
+    if (
+      !acceptedContextPackageTrace &&
+      this.coreDb &&
+      workspaceDb &&
+      workerTranscriptHasMaterialProposal(transcript) &&
+      environmentPackage.workspace.inputs.some(
+        (input) =>
+          input.id === `context_${environmentPackage.scope.turnId}` &&
+          input.kind === 'generated' &&
+          input.target === '/openkit/context'
+      )
+    ) {
+      acceptedContextPackageTrace = readWorkerContextPackageTrace({
+        authorities: createWorkerContextPackageAuthorityReader({
+          coreDb: this.coreDb,
+          store,
+          workspaceDb,
+        }),
+        threadId: environmentPackage.scope.threadId,
+        turnId: environmentPackage.scope.turnId,
+        workspaceId: environmentPackage.scope.workspaceId,
+        workspaceRoot: join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId),
+      });
+    }
     if (environmentPackage.control.transcript?.runtimeProvenance) {
       if (!workspaceDb) {
         throw new Error('Runtime provenance collection requires durable workspace storage.');
@@ -713,13 +1241,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         collectedAt: this.now(),
         environmentPackage,
         workspaceDb,
-        workspaceRoot: join(
-          workspaceDb.dataRoot,
-          'users',
-          workspaceDb.userId,
-          'workspaces',
-          workspaceDb.workspaceId
-        ),
+        workspaceRoot: join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId),
       });
       if (!provenance.complete) {
         throw new Error('Required worker runtime provenance verification failed.');
@@ -735,9 +1257,45 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           workspaceId: environmentPackage.scope.workspaceId,
         })
       : [];
+    const workspaceChanges = await this.backend.collectWorkspaceChanges(
+      environmentPackage.snapshotId
+    );
+    const publishesWorkspaceContent = Boolean(transcript.itemsJsonl?.trim());
+    const publishesArtifacts = Boolean(
+      transcript.artifactsJsonl?.trim() ||
+        transcript.artifactFiles?.length ||
+        workspaceChanges.length
+    );
+    if (
+      this.coreDb &&
+      ((publishesWorkspaceContent &&
+        !currentWorkspaceAuthority(
+          this.coreDb,
+          environmentPackage.scope.workspaceId,
+          environmentPackage.scope.triggerActor,
+          'workspace.write',
+          true
+        )) ||
+        (publishesArtifacts &&
+          !currentWorkspaceAuthority(
+            this.coreDb,
+            environmentPackage.scope.workspaceId,
+            environmentPackage.scope.triggerActor,
+            'artifact.write',
+            true
+          )))
+    ) {
+      throw new TurnStartValidationError(
+        'workspace_access_denied',
+        'Workspace access denied.',
+        403
+      );
+    }
     const importResult = importWorkerTranscript(store, environmentPackage, transcript, {
       acceptedLiveEvents,
+      ...(acceptedContextPackageTrace ? { contextPackageTrace: acceptedContextPackageTrace } : {}),
       recordedAt,
+      ...(workspaceDb ? { workspaceDb } : {}),
     });
     if (
       importResult.rejectedEventSequences.length > 0 ||
@@ -748,13 +1306,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     await this.createWorkspaceChangeArtifacts(
       store,
       environmentPackage,
-      await this.backend.collectWorkspaceChanges(environmentPackage.snapshotId),
+      workspaceChanges,
       workspaceDb,
       inputSnapshots,
       materializationRecords,
       recordedAt
     );
-    await this.backend.collectArtifacts(environmentPackage.snapshotId);
     await this.cleanupBackendLifecycle(
       backendLifecycle,
       workspaceDb,
@@ -903,6 +1460,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     materializationRecords: readonly WorkspaceMaterializationRecord[],
     recordedAt: string
   ): Promise<void> {
+    if (records.length === 0) {
+      return;
+    }
+    const artifactRequestId = environmentPackage.scope.requestId;
+    if (!artifactRequestId) {
+      throw new Error('Workspace review Artifact creation requires package request identity.');
+    }
+
     for (const record of records) {
       const workerTurnRefs = record.changeSet.evidenceRefs
         .filter((reference) => reference.kind === 'worker')
@@ -1015,9 +1580,43 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               }
             : record.review,
       };
+      let artifactCreated = false;
       /** Persists one staged record to artifact and durable workspace storage. */
       const persistRecord = (stagedItem: typeof item): void => {
-        let artifactWriteAttempted = false;
+        const body = JSON.stringify(
+          {
+            changeSet: stagedItem.changeSet,
+            patchPayload: stagedItem.patchPayload,
+            review: stagedItem.review,
+          },
+          null,
+          2
+        );
+        const existingArtifact = store
+          .listArtifacts(environmentPackage.scope.workspaceId)
+          .find((candidate) => candidate.id === artifactId);
+        const artifact = {
+          id: artifactId,
+          workspaceId: environmentPackage.scope.workspaceId,
+          threadId: environmentPackage.scope.threadId,
+          turnId: environmentPackage.scope.turnId,
+          kind: 'diff',
+          title: 'Workspace changes ready for review',
+          status: 'ready',
+          summary: stagedItem.review.riskSummary,
+          version: 1,
+          content: { format: 'json', body },
+          contentDigest: `sha256:${createHash('sha256').update(body, 'utf8').digest('hex')}`,
+          lastMutationRequestId: artifactRequestId,
+          origin: {
+            kind: 'turn-output',
+            requestId: artifactRequestId,
+            threadId: environmentPackage.scope.threadId,
+            turnId: environmentPackage.scope.turnId,
+          },
+          createdAt: existingArtifact?.createdAt ?? timestamp,
+          updatedAt: existingArtifact?.updatedAt ?? timestamp,
+        } as const;
         const persist = (): void => {
           if (record.filesystemApply && workspaceDb) {
             recordFilesystemWorkspaceStagingRoot(workspaceDb, {
@@ -1033,64 +1632,20 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           if (workspaceDb) {
             recordWorkspaceSyncReview(workspaceDb, { item: stagedItem });
           }
-
-          const artifact = {
-            id: artifactId,
-            workspaceId: environmentPackage.scope.workspaceId,
-            threadId: environmentPackage.scope.threadId,
-            turnId: environmentPackage.scope.turnId,
-            kind: 'diff',
-            title: 'Workspace changes ready for review',
-            status: 'ready',
-            summary: stagedItem.review.riskSummary,
-            version: 1,
-            content: {
-              format: 'json',
-              body: JSON.stringify(
-                {
-                  changeSet: stagedItem.changeSet,
-                  patchPayload: stagedItem.patchPayload,
-                  review: stagedItem.review,
-                },
-                null,
-                2
-              ),
-            },
-            createdAt: timestamp,
-            updatedAt: timestamp,
-          } as const;
-          const existingArtifact = store
-            .listArtifacts(environmentPackage.scope.workspaceId)
-            .find((candidate) => candidate.id === artifactId);
           if (existingArtifact) {
             if (!isDeepStrictEqual(existingArtifact, artifact)) {
               throw new Error(`Workspace review artifact replay conflict: ${artifactId}`);
             }
           } else {
-            artifactWriteAttempted = true;
             store.createArtifact(artifact);
+            artifactCreated = true;
           }
         };
 
-        try {
-          if (workspaceDb) {
-            workspaceDb.sqlite.transaction(persist)();
-          } else {
-            persist();
-          }
-        } catch (error) {
-          if (!artifactWriteAttempted) {
-            throw error;
-          }
-          try {
-            store.deleteArtifact(environmentPackage.scope.workspaceId, artifactId);
-          } catch (compensationError) {
-            throw new AggregateError(
-              [error, compensationError],
-              `Workspace review persistence and artifact compensation failed: ${record.review.id}`
-            );
-          }
-          throw error;
+        if (workspaceDb) {
+          workspaceDb.sqlite.transaction(persist)();
+        } else {
+          persist();
         }
       };
       if (
@@ -1114,22 +1669,39 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       } else {
         persistRecord(item);
       }
+      if (artifactCreated) {
+        const artifactItem = store
+          .listThreadItems(environmentPackage.scope.workspaceId, environmentPackage.scope.threadId)
+          .find(
+            (candidate) =>
+              candidate.type === 'artifact-reference' &&
+              candidate.artifactId === artifactId &&
+              candidate.artifactVersion === 1 &&
+              candidate.lastMutationRequestId === artifactRequestId
+          );
+        if (!artifactItem) {
+          throw new Error(`Workspace review Artifact reference is missing: ${artifactId}`);
+        }
+        this.emitImportedRecords(store, environmentPackage, artifactRequestId, {
+          artifactIds: [artifactId],
+          itemIds: [artifactItem.id],
+        });
+      }
     }
   }
 
   /**
    * Opens the workspace-scoped database used by workspace synchronization records.
    *
-   * @param userId Store owner that owns the workspace database.
    * @param workspaceId Workspace id that owns the records.
    * @returns Workspace database handle, or null when durable storage is disabled.
    */
-  private openWorkspaceDb(userId: string, workspaceId: string): WorkspaceDb | null {
+  private openWorkspaceDb(workspaceId: string): WorkspaceDb | null {
     if (!this.coreDb) {
       return null;
     }
 
-    return openWorkspaceDb(this.coreDb.dataRoot, userId, workspaceId);
+    return openWorkspaceDb(this.coreDb.dataRoot, workspaceId);
   }
 
   /**
@@ -1364,6 +1936,34 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       turnId: turnScope.id,
     });
   }
+}
+
+/** Identifies one redacted live Artifact collection validation failure. @param error Backend failure. @returns Whether the existing Turn boundary should return invalid_request. */
+function isWorkerArtifactCollectionInvalid(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === WORKER_ARTIFACT_COLLECTION_INVALID
+  );
+}
+
+/** Maps bounded Artifact import failures onto the existing public Turn-start error boundary. */
+function asWorkerArtifactTurnError(error: unknown): unknown {
+  if (isWorkerArtifactCollectionInvalid(error)) {
+    return new TurnStartValidationError(
+      'invalid_request',
+      'Worker Artifact declarations or content are invalid.',
+      400
+    );
+  }
+  if (
+    error instanceof ArtifactAuthorityError &&
+    (error.code === 'invalid_request' || error.code === 'recovery_required')
+  ) {
+    return new TurnStartValidationError(error.code, error.message, error.status);
+  }
+  return error;
 }
 
 /** Verifies that the restored package, Core session, and backend plan have one authority lineage. */

@@ -1,6 +1,6 @@
-import { index, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
-/** Durable workspace audit event category values. */
+/** Durable audit event category values. */
 export type AuditEventCategory =
   | 'command'
   | 'approval'
@@ -9,13 +9,13 @@ export type AuditEventCategory =
   | 'artifact'
   | 'system';
 
-/** Durable workspace audit event outcome values. */
+/** Durable audit event outcome values. */
 export type AuditEventOutcome = 'succeeded' | 'failed' | 'denied' | 'cancelled';
 
-/** Durable workspace audit event severity values. */
+/** Durable audit event severity values. */
 export type AuditEventSeverity = 'info' | 'warning' | 'error';
 
-/** Durable workspace-scoped audit event rows. */
+/** Durable Core- or Workspace-owned audit event rows. */
 export const auditEvents = sqliteTable(
   'audit_events',
   {
@@ -39,6 +39,10 @@ export const auditEvents = sqliteTable(
     vaultGrantId: text('vault_grant_id'),
     /** Request id when available. */
     requestId: text('request_id'),
+    /** Exact JSON-encoded actor reference when retained by the owning database. */
+    actorJson: text('actor_json'),
+    /** Exact JSON-encoded subject reference when retained by the owning database. */
+    subjectJson: text('subject_json'),
     /** Agent lineage when available. */
     agentId: text('agent_id'),
     /** Agent session lineage when available. */
@@ -49,6 +53,8 @@ export const auditEvents = sqliteTable(
     action: text('action').notNull(),
     /** Redacted resource reference. */
     resource: text('resource'),
+    /** Positive authority revision associated with the resource mutation. */
+    resourceRevision: integer('resource_revision'),
     /** Event outcome. */
     outcome: text('outcome').$type<AuditEventOutcome>().notNull(),
     /** Event severity. */

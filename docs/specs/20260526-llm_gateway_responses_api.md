@@ -5,11 +5,11 @@ Implementation: Implemented
 
 ## Owns
 
-This spec owns the NanoCore LLM Gateway HTTP surface for OpenAI-compatible Chat Completions and Responses requests, provider endpoint capability routing, prompt-cache key propagation, gateway error behavior, and Codex subscription-backed Responses routing.
+This spec owns the NanoCore LLM Gateway HTTP surface for OpenAI-compatible Chat Completions and Responses requests, the public endpoint capability vocabulary, optional public cache-scope input, public Gateway error behavior, and Codex subscription-backed Responses routing.
 
 ## Does Not Own
 
-This spec does not own the broader Agent Capability model, worker-side capability gateway records, worker-runtime sub-agent provenance, authenticated worker-inference identity binding, runtime cache lineage specialization, provider-account login UX, vault storage, usage metering ledgers, policy evaluation, or `packages/protocol` schemas.
+This spec does not own non-Codex provider backend selection, routing, or request, response, streaming, usage, cache, and error mapping, which belong to `docs/specs/20260708-pi_ai_unified_llm_backend.md`; the broader Agent Capability model; durable capability and usage records; worker-side capability gateway records; worker-runtime sub-agent provenance; authenticated worker-inference identity binding; runtime cache lineage specialization; provider-account login UX; vault storage; policy evaluation; or `packages/protocol` schemas.
 
 ## Core References
 
@@ -27,12 +27,11 @@ NanoCore exposes the agent-facing LLM Gateway at the fixed `/v1` boundary throug
 
 NanoCore implements `/v1/chat/completions`, `/v1/responses`, `/v1/models`, and `/health` as the current OpenAI-compatible Gateway surface.
 
-In server mode, every `/v1/*` route uses the same authenticated actor middleware as product APIs before route parsing or provider dispatch. A request that names `metadata.openkit.workspaceId` must pass active membership and token binding checks for that workspace. Local mode keeps the implicit local actor. The Gateway enabled policy applies to model discovery as well as inference routes.
+Public `metadata` and `metadata.openkit` are optional. In server mode, every `/v1/*` route authenticates the actor before route parsing or provider dispatch. A caller-supplied `metadata.openkit.workspaceId` is only a requested scope until active membership and token-binding checks authorize that Workspace; only the authenticated actor plus the authorized Workspace establish trusted persistent ownership. Other caller-supplied lineage may be retained as caller-asserted best-effort labels, but it is not trusted provenance or authority. Requests with no Workspace scope still dispatch and contribute only process-local diagnostics; a supplied unauthorized Workspace fails closed. Local mode keeps the implicit local actor, and the Gateway enabled policy applies to model discovery as well as inference routes.
 
-Gateway provider dispatch uses the provider registry capability matrix, prompt-cache key resolution, OpenAI-compatible error envelopes, streaming terminal error normalization, durable capability usage records, and process-local usage observation for diagnostics.
+Gateway admission uses provider-profile readiness and model allowlisting plus the configured provider capability matrix. Non-Codex backend routing and mapping follow `docs/specs/20260708-pi_ai_unified_llm_backend.md`. Every dispatched call may contribute process-local diagnostics, while only calls with an authenticated actor and authorized Workspace may produce durable capability usage through `docs/specs/20260704-capability_usage_gateway_foundation.md`.
 
-Gateway usage observation is both diagnostic input and the first durable usage producer for public LLM Gateway calls.
-It is not the full billing model; broader metering policy still belongs to Agent Capability, Metering, and Audit specs.
+Gateway usage observation is diagnostic input and, only for authorized Workspace-scoped calls, durable usage producer input. It is not the full billing model; broader metering policy still belongs to Agent Capability, Metering, and Audit specs.
 
 Codex OAuth provider profiles must declare an explicit `extensions.openkit.codexOAuth.accountSlotId`.
 Missing account-slot bindings fail closed and do not silently resolve to a `default` slot.
@@ -47,12 +46,12 @@ If this legacy route is touched, prefer removal or folding into the Gateway over
 - Add `/v1/responses` as a first-class endpoint instead of forcing Responses clients through a chat-only route.
 - Model provider support separately for Chat Completions and Responses with `native`, `bridged`, or `unsupported` capability values.
 - Support `openai_codex` as a ChatGPT subscription-backed Responses-native provider.
-- Ensure every upstream native Chat Completions or Responses text-generation request carries an OpenAI-compatible `prompt_cache_key`.
-- Preserve prompt-cache usage data so Gateway diagnostics can show cached input token effectiveness.
+- Accept optional public cache-scope input; the dedicated Codex path sends the resolved `prompt_cache_key`, while non-Codex mapping follows S42 and does not promise a provider wire field or cache hit.
+- Preserve provider-reported cache-read and cache-write usage so Gateway diagnostics can report cache effectiveness without inferring it from cache-scope input.
 - Keep token material out of app APIs, diagnostics, logs, and UI state.
 - Keep Codex subscription account storage aligned with the existing `DATA_ROOT` server, user, and workspace ownership boundaries.
 - Preserve `/v1/models` and `/health`.
-- Fail closed before model discovery, body parsing, provider credential resolution, or dispatch when server-mode actor authentication or workspace scope is invalid.
+- Fail closed before model discovery, body parsing, provider credential resolution, or dispatch when server-mode actor authentication fails or a supplied Workspace scope is unauthorized; absence of public metadata or Workspace scope is not an error.
 
 ## Non-Goals
 
@@ -70,13 +69,13 @@ If this legacy route is touched, prefer removal or folding into the Gateway over
 
 `POST /v1/responses` accepts OpenAI-compatible Responses requests with `model`, `input`, optional `stream`, and passthrough fields. It returns native Responses payloads when the provider supports Responses directly, or a converted Responses payload when the provider is chat-native and the request is bridgeable.
 
-`prompt_cache_key` is an OpenAI-compatible public request field, not a Codex-only field. Gateway routes preserve caller-supplied `prompt_cache_key` and `prompt_cache_retention` values. Before the dispatcher sends any native Chat Completions or Responses wire request upstream, it ensures the body contains `prompt_cache_key`.
+`prompt_cache_key` is an optional OpenAI-compatible public request field, not a Codex-only field. Gateway routes accept it as cache-scope input and preserve generic passthrough fields. The dedicated Codex path sends the resolved `prompt_cache_key`; non-Codex mapping is owned by S42 and does not promise a provider wire field or cache hit. Cache effectiveness exists only when the provider reports cache-read or cache-write usage.
 
 Both endpoints use OpenAI-compatible error envelopes for Gateway policy failures, missing defaults, disallowed providers, provider failures, and unsupported bridge features.
 
 `POST /v1/completions` is intentionally outside the Gateway surface. NanoCore supports the modern Chat Completions and Responses entry points used by agent clients.
 
-`GET /v1/models` returns configured provider models only while the Gateway is enabled. Server-mode authentication is required even though the response is OpenAI-compatible, because model supply and the sibling inference routes are deployment-owned capabilities.
+`GET /v1/models` returns only models explicitly listed by Gateway-allowlisted, dispatchable provider profiles while the Gateway is enabled. A profile is dispatchable when readiness is omitted or is `ready` or `degraded`; `blocked`, `disabled`, and `unknown` profiles are excluded. The pi-ai registry and adapter catalogs never add models to this response. Server-mode authentication is required even though the response is OpenAI-compatible, because model supply and the sibling inference routes are deployment-owned capabilities.
 
 ## Provider Capabilities
 
@@ -89,39 +88,26 @@ Provider metadata includes:
 }
 ```
 
-Default capability assignment:
-
-- `openai`: Chat Completions native, Responses native.
-- `openai_codex`: Responses native, Chat Completions bridged.
-- OpenAI-compatible gateway, custom, hosted, and local providers: Chat Completions native, Responses bridged unless the provider profile explicitly declares native Responses support.
+`openai_codex` is Responses native and Chat Completions bridged. `docs/specs/20260708-pi_ai_unified_llm_backend.md` solely owns non-Codex backend selection and the mapping from configured endpoint capabilities to pi-ai routes.
 
 Diagnostic booleans such as `supportsStreaming`, `supportsToolCalls`, and `supportsReasoning` remain secondary display hints while the explicit endpoint capability matrix becomes the routing source of truth.
 
-## Dispatcher Behavior
+## Routing Boundary
 
-The route layer parses JSON, enforces Gateway policy, resolves the configured default provider, and returns normalized errors. The dispatcher owns:
+The route layer parses JSON, enforces Gateway policy, resolves the configured default provider, and returns normalized public errors. The dedicated Codex Responses adapter remains the subscription-backed exception. `docs/specs/20260708-pi_ai_unified_llm_backend.md` is the sole owner of every non-Codex backend selection and request, response, streaming, usage, cache, and provider-error mapping. Conversion stays outside Hono routes, and a bridge that cannot preserve the public contract fails with `unsupported_gateway_feature`.
 
-- native Chat Completions calls through the Pi AI backend for every non-Codex-OAuth provider
-- native Responses calls through the Pi AI backend for every non-Codex-OAuth provider that declares native Responses support
-- native Codex Responses calls through the ChatGPT Codex backend adapter
-- Chat Completions to Responses conversion for Responses-native providers
-- Responses to Chat Completions conversion through Pi AI for chat-native non-Codex providers
-- prompt cache key resolution before native Chat Completions and Responses wire calls
-- provider usage observation for prompt and cached-token diagnostics
-- explicit `unsupported_gateway_feature` failures when a bridge cannot preserve semantics
+Gateway provider resolution uses the runtime provider registry loaded from `DATA_ROOT/config/server.jsonc` and `DATA_ROOT/config/providers/*.provider.jsonc`. The selected profile's readiness and explicit `models` list are dispatch authority: omitted readiness plus `ready` and `degraded` are runnable, while `blocked`, `disabled`, and `unknown` fail closed before credential resolution; every request model must exactly match one configured `models` entry before any adapter call. Neither pi-ai discovery nor provider-native catalogs authorize an undeclared model. `openai_codex` provider instances are selected by `vendor: "openai_codex"` or the built-in `openai_codex` provider id. They must bind to a server-owned Codex OAuth account slot through `extensions.openkit.codexOAuth.accountSlotId`; when the extension is omitted, Gateway routing fails closed instead of guessing a `default` slot.
 
-This keeps conversion logic out of Hono routes and avoids a route-level shape collapse where every request is forced into one HTTP format.
+Public JSON and post-start SSE provider failures expose only stable OpenKit codes and generic messages. Authentication, rate-limit, context-overflow, invalid-request, provider-unavailable, and unclassified provider failures use their existing Gateway code classes with fixed OpenKit messages; upstream message text, provider codes and types, response bodies, adapter vocabulary, and stack traces are never copied into public payloads. Streaming failures still terminate with `stopReason: "error"` and `[DONE]`.
 
-Gateway provider resolution uses the runtime provider registry loaded from `DATA_ROOT/config/server.jsonc` and `DATA_ROOT/config/providers/*.provider.jsonc`. `openai_codex` provider instances are selected by `vendor: "openai_codex"` or the built-in `openai_codex` provider id. They must bind to a server-owned Codex OAuth account slot through `extensions.openkit.codexOAuth.accountSlotId`; when the extension is omitted, Gateway routing fails closed instead of guessing a `default` slot.
-
-The prompt cache key resolver uses this priority order:
+Cache-scope input uses this priority order:
 
 - explicit top-level `prompt_cache_key`
 - `metadata.openkit.promptCacheKey`
-- a hashed OpenKit scope built from non-secret stable fields such as provider id, model, account slot id, workspace id, thread id, agent session id, or session id
+- an available server-owned OpenKit scope built from non-secret stable fields such as provider id, model, account slot id, authorized workspace id, thread id, agent session id, or session id
 - a request-scoped generated fallback key
 
-The generated stable key has the shape `openkit:responses:<sha256-prefix>` and never embeds raw workspace, thread, account slot, or session identifiers. The request-scoped fallback only guarantees the field is present; callers that want cross-request cache hits should provide a stable `prompt_cache_key` or stable OpenKit metadata.
+Any generated cache-scope value must not expose raw workspace, thread, account slot, or session identifiers. Public metadata remains optional advisory input and cannot establish persistent ownership or trusted lineage, though caller-supplied lineage may be retained as best-effort labels. The request-scoped fallback guarantees cache-scope input. The dedicated Codex path sends the resolved `prompt_cache_key`; non-Codex provider mapping is owned by S42. Cache effectiveness is determined only from provider-reported cache-read and cache-write usage.
 
 ## Bridge Compatibility
 
@@ -132,7 +118,7 @@ The v1 bridge supports:
 - simple function tools
 - `temperature`
 - `max_tokens`, `max_completion_tokens`, and `max_output_tokens`
-- `prompt_cache_key` and `prompt_cache_retention`
+- `prompt_cache_key` as optional cache-scope input
 - reasoning effort mapping
 - simple `tool_choice`
 - text-only streaming delta conversion
@@ -191,7 +177,7 @@ NanoCore does not ask the user to paste a token. The internal token resolver fir
 
 When the user request omits `store`, `openai_codex` sets `store: false` by default. Ordinary OpenAI API providers do not override user request fields.
 
-`openai_codex` does not define a private prompt-cache policy. It uses the same Gateway prompt cache key resolver as ordinary native Chat Completions and Responses providers, then sends the resulting `prompt_cache_key` to the ChatGPT Codex backend.
+`openai_codex` does not define a private prompt-cache policy. It uses the Gateway resolver and sends the resolved `prompt_cache_key` to the dedicated ChatGPT Codex backend. This implemented wire mapping does not guarantee a cache hit; only provider-reported cache-read and cache-write usage establishes cache effectiveness.
 
 ## Diagnostics
 
@@ -199,14 +185,14 @@ Deployment-admin `GET /api/app/diagnostics` reports:
 
 - Gateway endpoints: `/health`, `/v1/models`, `/v1/chat/completions`, `/v1/responses`
 - provider capability chips such as `chat native`, `responses native`, and `responses bridged`
-- process-local Gateway usage summaries with request count, input tokens, output tokens, total tokens, cached input tokens, cache hit rate, and latest observation time
+- process-local Gateway usage summaries with request count, input tokens, output tokens, total tokens, provider-reported cache-read and cache-write quantities when supplied, and latest observation time
 - sanitized `openai_codex` account state only
 
 Diagnostics never include bearer tokens, refresh tokens, account IDs, authorization headers, or raw `prompt_cache_key` values.
 
 ## Implementation Evidence
 
-NanoCore implements the accepted Gateway surface through `/v1/chat/completions`, `/v1/responses`, `/v1/models`, and `/health`, with no `/v1/completions` or historical `/internal/v1/chat/completions` route. Server-mode `/v1/*` requests authenticate before route work, nested OpenKit workspace metadata enters the existing workspace-scope policy, request storage fails closed without an actor, and disabled Gateway policy hides model supply as well as blocking inference. The provider dispatcher routes every non-Codex-OAuth provider through the Pi AI backend, keeps Codex OAuth on the dedicated Codex subscription Responses client, owns native and bridged Chat Completions and Responses routing, propagates prompt-cache keys, rejects unsupported features, and records durable public Gateway usage. Route, auth, dispatcher, provider-registry, prompt-cache, Pi AI client, Codex Responses client, diagnostics, and capability usage tests cover the accepted behavior. `apps/nanocore/src/llm-gateway.test.ts` guards the public route surface and asserts that the superseded internal facade remains absent.
+NanoCore implements the accepted Gateway surface through `/v1/chat/completions`, `/v1/responses`, `/v1/models`, and `/health`, with no `/v1/completions` or historical `/internal/v1/chat/completions` route. Server-mode `/v1/*` requests authenticate before route work, disabled Gateway policy hides model supply as well as blocking inference, and a requested Workspace is authorized before durable ownership is established. Public OpenKit metadata remains optional and advisory; caller lineage may persist as best-effort labels, while requests with no Workspace scope still dispatch and remain process-local-only and a supplied unauthorized Workspace fails closed. The S42-owned dispatcher routes every non-Codex-OAuth provider through pi-ai, while Codex OAuth stays on the dedicated subscription Responses client and sends the resolved `prompt_cache_key`. Non-Codex cache input does not prove provider wire fidelity or a hit, and cache effectiveness for every path comes only from provider-reported cache-read and cache-write usage. Route, auth, dispatcher, provider-registry, prompt-cache, pi-ai client, Codex Responses client, diagnostics, and capability usage tests cover the implemented behavior. `apps/nanocore/src/llm-gateway.test.ts` guards the public route surface and asserts that the superseded internal facade remains absent.
 
 ## Verification
 
@@ -219,4 +205,4 @@ NanoCore implements the accepted Gateway surface through `/v1/chat/completions`,
 
 Real Codex or real subscription verification must stay skip-aware and explicitly gated so default release gates do not consume user subscription quota.
 
-Worker-specific trusted identity and cache-lineage behavior is owned by `docs/specs/20260711-worker_runtime_subagent_provenance.md` and does not change the generic public Gateway contract in this spec.
+Worker-specific trusted identity and cache-lineage behavior is owned by `docs/specs/20260711-worker_runtime_subagent_provenance.md`. Public metadata remains optional hints and never becomes worker or persistent ownership authority under this spec.

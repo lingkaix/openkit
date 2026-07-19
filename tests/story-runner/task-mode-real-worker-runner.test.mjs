@@ -11,6 +11,7 @@ import {
   DEFAULT_TASK_MODE_REAL_WORKER_STORY_PATH,
   evaluateTaskModeRealWorkerPrerequisites,
   runTaskModeRealWorkerStory,
+  TASK_MODE_REAL_WORKER_HTTP_TIMEOUTS,
 } from './task-mode-real-worker-runner.mjs';
 
 const taskWorkerImageRef = 'openkit/worker-codex:0123456789ab-a1';
@@ -190,6 +191,13 @@ function completeTaskModeClients() {
 }
 
 describe('real Task Mode worker L6 runner', () => {
+  it('leaves the long request deadline to the story supervisor', () => {
+    assert.deepEqual(TASK_MODE_REAL_WORKER_HTTP_TIMEOUTS, {
+      bodyTimeout: 0,
+      headersTimeout: 0,
+    });
+  });
+
   it('skips by default without real worker opt-in', () => {
     const result = evaluateTaskModeRealWorkerPrerequisites({ env: {}, fileExists: () => false });
 

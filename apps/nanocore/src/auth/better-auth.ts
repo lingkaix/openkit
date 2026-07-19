@@ -1,10 +1,12 @@
 import { drizzleAdapter } from '@better-auth/drizzle-adapter';
 import { betterAuth } from 'better-auth';
+import { APIError } from 'better-auth/api';
 import { resolveBindHost, resolveBindPort } from '../config/bind-host.js';
 import type { CoreMode } from '../config/mode.js';
 import type { OpenKitConfig } from '../config/openkit-config.js';
 import { type CoreDb, getCoreDb } from '../storage/db.js';
 import * as betterAuthSchema from '../storage/schema/better-auth/index.js';
+import { isCanonicalUserActive } from './user-lifecycle.js';
 
 const LOCAL_DEVELOPMENT_SECRET = 'openkit-local-development-secret-at-least-32-characters';
 
@@ -36,6 +38,8 @@ interface CreateBetterAuthOptions {
   mode?: CoreMode;
   /** Startup operator config used for public URL, CORS, and sign-up policy. */
   openKitConfig?: OpenKitConfig;
+  /** Ensures product-owned personal scope before an active user's new session is recorded. */
+  onActiveUserSession?: (userId: string) => void;
 }
 
 /**
@@ -44,7 +48,7 @@ interface CreateBetterAuthOptions {
  * @param coreDb Core database handles to bind.
  * @param options Resolved startup mode, config, and environment.
  * @returns Better Auth server instance.
- * @throws Error when server mode has no strong deployment secret.
+ * @throws Error when server mode has no strong deployment secret or active-user scope setup fails.
  */
 export function createBetterAuth(
   coreDb: CoreDb = getCoreDb(),
@@ -70,6 +74,18 @@ export function createBetterAuth(
       provider: 'sqlite',
       schema: betterAuthSchema,
     }),
+    databaseHooks: {
+      session: {
+        create: {
+          before: async (session) => {
+            if (!isCanonicalUserActive(coreDb, session.userId)) {
+              throw new APIError('FORBIDDEN', { message: 'User is disabled.' });
+            }
+            options.onActiveUserSession?.(session.userId);
+          },
+        },
+      },
+    },
     emailAndPassword: {
       disableSignUp: config.auth?.signup?.enabled === false,
       enabled: true,
@@ -92,6 +108,17 @@ export function createBetterAuth(
           input: false,
         },
         lastSeenAt: {
+          type: 'string',
+          required: false,
+          input: false,
+        },
+        status: {
+          type: ['active', 'disabled'],
+          required: false,
+          defaultValue: 'active',
+          input: false,
+        },
+        disabledAt: {
           type: 'string',
           required: false,
           input: false,

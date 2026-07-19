@@ -1,9 +1,8 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
-import type { TurnStatus } from '@openkit/protocol';
+import { type ActorRef, ActorRefSchema, type TurnStatus } from '@openkit/protocol';
 import { WorkerProcessKeySchema } from '@openkit/worker-protocol';
 import type { CoreDb } from './storage/db.js';
-import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import type {
   SchedulerAdmissionDenialReason,
   SchedulerAdmissionPriorityClass,
@@ -27,8 +26,8 @@ export interface SchedulerAdmissionEntryRecord {
   readonly queueEntryId: string;
   /** Original command request id used for event correlation. */
   readonly requestId: string | null;
-  /** Store owner user id used to reopen the correct workspace store. */
-  readonly userId: string;
+  /** Exact actor that triggered the admission. */
+  readonly triggerActor: ActorRef;
   /** Host-local working directory captured for delayed worker startup. */
   readonly workspaceCwd: string | null;
   /** Materialized workspace roots captured for delayed worker startup. */
@@ -314,7 +313,7 @@ export type SchedulerDispatchResult =
 interface SchedulerAdmissionEntryRow {
   readonly queue_entry_id: string;
   readonly request_id: string | null;
-  readonly user_id: string;
+  readonly trigger_actor_json: string;
   readonly workspace_cwd: string | null;
   readonly workspace_roots_json: string;
   readonly workspace_id: string;
@@ -475,8 +474,8 @@ export interface CreateSchedulerAdmissionEntryInput {
   readonly queueEntryId: string;
   /** Original command request id used for event correlation. */
   readonly requestId?: string | null;
-  /** Store owner user id used to reopen the correct workspace store. */
-  readonly userId?: string;
+  /** Exact actor that triggered the admission. */
+  readonly triggerActor: ActorRef;
   /** Host-local working directory captured for delayed worker startup. */
   readonly workspaceCwd?: string | null;
   /** Materialized workspace roots captured for delayed worker startup. */
@@ -545,8 +544,6 @@ export interface DenySchedulerAdmissionEntryInput {
 export interface RetryDeniedSchedulerAdmissionEntryInput {
   /** Queue entry to retry. */
   readonly queueEntryId: string;
-  /** User that owns the scheduler admission. */
-  readonly userId: string;
   /** Workspace that owns the scheduler admission. */
   readonly workspaceId: string;
 }
@@ -555,8 +552,6 @@ export interface RetryDeniedSchedulerAdmissionEntryInput {
 export interface CancelSchedulerAdmissionEntryInput {
   /** Queue entry to cancel. */
   readonly queueEntryId: string;
-  /** User that owns the scheduler admission. */
-  readonly userId: string;
   /** Workspace that owns the scheduler admission. */
   readonly workspaceId: string;
 }
@@ -913,8 +908,6 @@ export interface CompleteSchedulerTurnLeaseInput {
 
 /** Input used to list scheduler admission entries for one workspace projection. */
 export interface ListSchedulerAdmissionEntriesForWorkspaceInput {
-  /** Store owner user id to project. */
-  readonly userId: string;
   /** Workspace lineage id to project. */
   readonly workspaceId: string;
   /** Admission statuses to include. */
@@ -944,6 +937,7 @@ export function createSchedulerAdmissionEntry(
   }
 
   const timestamp = input.now?.() ?? new Date().toISOString();
+  const triggerActor = ActorRefSchema.parse(input.triggerActor);
 
   coreDb.sqlite
     .prepare(
@@ -963,7 +957,7 @@ export function createSchedulerAdmissionEntry(
         required_pool_constraints_json,
         status,
         denial_reason,
-        user_id,
+        trigger_actor_json,
         workspace_cwd,
         workspace_roots_json
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -984,7 +978,7 @@ export function createSchedulerAdmissionEntry(
       JSON.stringify([...input.requiredPoolConstraints]),
       'queued',
       null,
-      input.userId ?? LOCAL_USER_ID,
+      JSON.stringify(triggerActor),
       input.workspaceCwd ?? null,
       JSON.stringify(input.workspaceRoots ?? [])
     );
@@ -1114,9 +1108,9 @@ export function retryDeniedSchedulerAdmissionEntry(
 
   const updated = coreDb.sqlite
     .prepare(
-      "UPDATE scheduler_admission_entries SET status = 'queued', denial_reason = NULL WHERE queue_entry_id = ? AND user_id = ? AND workspace_id = ? AND status = 'denied'"
+      "UPDATE scheduler_admission_entries SET status = 'queued', denial_reason = NULL WHERE queue_entry_id = ? AND workspace_id = ? AND status = 'denied'"
     )
-    .run(input.queueEntryId, entry.userId, entry.workspaceId);
+    .run(input.queueEntryId, entry.workspaceId);
 
   if (updated.changes !== 1) {
     throw new Error(`Scheduler admission entry could not be retried: ${input.queueEntryId}`);
@@ -1145,9 +1139,9 @@ export function cancelSchedulerAdmissionEntry(
 
   const updated = coreDb.sqlite
     .prepare(
-      "UPDATE scheduler_admission_entries SET status = 'cancelled', denial_reason = NULL WHERE queue_entry_id = ? AND user_id = ? AND workspace_id = ? AND status = ?"
+      "UPDATE scheduler_admission_entries SET status = 'cancelled', denial_reason = NULL WHERE queue_entry_id = ? AND workspace_id = ? AND status = ?"
     )
-    .run(input.queueEntryId, entry.userId, entry.workspaceId, entry.status);
+    .run(input.queueEntryId, entry.workspaceId, entry.status);
 
   if (updated.changes !== 1) {
     throw new Error(`Scheduler admission entry could not be cancelled: ${input.queueEntryId}`);
@@ -1205,10 +1199,10 @@ export function listSchedulerAdmissionEntriesForWorkspace(
     coreDb.sqlite
       .prepare(
         `${schedulerAdmissionSelectSql()}
-        WHERE user_id = ? AND workspace_id = ? AND status IN (${placeholders})
+        WHERE workspace_id = ? AND status IN (${placeholders})
         ORDER BY enqueued_at ASC, queue_entry_id ASC`
       )
-      .all(input.userId, input.workspaceId, ...input.statuses) as SchedulerAdmissionEntryRow[]
+      .all(input.workspaceId, ...input.statuses) as SchedulerAdmissionEntryRow[]
   ).map(mapSchedulerAdmissionEntryRow);
 }
 
@@ -1993,28 +1987,31 @@ export function listSchedulerSessionLeasesForTurn(
  *
  * @param coreDb Open Core database handle.
  * @param leaseId Scheduler session lease id.
- * @returns User and request ids captured by the originating admission entry.
+ * @returns Exact trigger actor and request id captured by the originating admission entry.
  * @throws Error when the lease has no durable admission owner.
  */
 export function requireSchedulerSessionLeaseAdmissionContext(
   coreDb: CoreDb,
   leaseId: string
-): Pick<SchedulerAdmissionEntryRecord, 'requestId' | 'userId'> {
+): Pick<SchedulerAdmissionEntryRecord, 'requestId' | 'triggerActor'> {
   const row = coreDb.sqlite
     .prepare(
-      `SELECT admission.request_id AS requestId, admission.user_id AS userId
+      `SELECT admission.request_id AS requestId, admission.trigger_actor_json AS triggerActorJson
        FROM scheduler_session_leases AS lease
        JOIN scheduler_placement_plans AS plan ON plan.plan_id = lease.plan_id
        JOIN scheduler_admission_entries AS admission ON admission.queue_entry_id = plan.queue_entry_id
        WHERE lease.lease_id = ?`
     )
-    .get(leaseId) as { requestId: string | null; userId: string } | undefined;
+    .get(leaseId) as { requestId: string | null; triggerActorJson: string } | undefined;
 
-  if (!row?.userId) {
+  if (!row) {
     throw new Error(`Scheduler session lease owner not found: ${leaseId}`);
   }
 
-  return row;
+  return {
+    requestId: row.requestId,
+    triggerActor: ActorRefSchema.parse(JSON.parse(row.triggerActorJson)),
+  };
 }
 
 /**
@@ -2814,20 +2811,16 @@ function threadHasNonTerminalSchedulerLease(
  * @returns Stored admission entry.
  * @throws Error when the entry does not exist in the guarded owner scope.
  */
-function requireSchedulerAdmissionEntry(
+export function requireSchedulerAdmissionEntry(
   coreDb: CoreDb,
   queueEntryId: string,
-  ownership?: { readonly userId: string; readonly workspaceId: string }
+  ownership?: { readonly workspaceId: string }
 ): SchedulerAdmissionEntryRecord {
   const row = coreDb.sqlite
     .prepare(`${schedulerAdmissionSelectSql()} WHERE queue_entry_id = ?`)
     .get(queueEntryId) as SchedulerAdmissionEntryRow | undefined;
 
-  if (
-    !row ||
-    (ownership !== undefined &&
-      (row.user_id !== ownership.userId || row.workspace_id !== ownership.workspaceId))
-  ) {
+  if (!row || (ownership !== undefined && row.workspace_id !== ownership.workspaceId)) {
     throw new Error(`Scheduler admission entry not found: ${queueEntryId}`);
   }
 
@@ -3178,7 +3171,7 @@ function schedulerAdmissionSelectSql(): string {
   return `SELECT
     queue_entry_id,
     request_id,
-    user_id,
+    trigger_actor_json,
     workspace_cwd,
     workspace_roots_json,
     workspace_id,
@@ -3354,7 +3347,7 @@ function mapSchedulerAdmissionEntryRow(
   return {
     queueEntryId: row.queue_entry_id,
     requestId: row.request_id,
-    userId: row.user_id,
+    triggerActor: ActorRefSchema.parse(JSON.parse(row.trigger_actor_json)),
     workspaceCwd: row.workspace_cwd,
     workspaceRoots: JSON.parse(row.workspace_roots_json) as MaterializedWorkspaceRoot[],
     workspaceId: row.workspace_id,

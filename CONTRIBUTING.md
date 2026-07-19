@@ -210,7 +210,7 @@ Always commit lock files:
 
 - Update README.md when adding features
 - Update local `AGENTS.md` and `README.md` for affected apps/packages
-- Follow `docs/change-tracking.md` before adding specs, change records, or working logs
+- Follow `docs/documentation-model.md` and `docs/change-tracking.md` before adding documentation
 - Add a curated change record in `docs/changes/` only for material PR, standalone, or release-level context
 - Add or update a spec in `docs/specs/` for non-trivial work
 - Add examples in docs/ directory

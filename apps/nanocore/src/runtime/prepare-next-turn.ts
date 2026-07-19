@@ -5,7 +5,6 @@ import type {
   StructuredWorkerDelegationRequestInput,
 } from '../internal-agents/delegation.js';
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
-import { LOCAL_USER_ID } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
   getDefaultWorkspaceRepositoryResource,
@@ -38,8 +37,6 @@ export interface PrepareNextTurnTaskState {
  * Input used to prepare the next worker turn.
  */
 export interface PrepareNextTurnInput {
-  /** User that owns the workspace storage; defaults to local-mode user for current callers. */
-  readonly userId?: string;
   /** Workspace that owns the worker turn. */
   readonly workspaceId: string;
   /** Thread that owns the worker turn. */
@@ -95,11 +92,7 @@ export function prepareNextTurnContext(
   coreDb: CoreDb,
   input: PrepareNextTurnInput
 ): PreparedNextTurnContext {
-  const repository = requireReadyRepository(
-    coreDb,
-    input.userId ?? LOCAL_USER_ID,
-    input.workspaceId
-  );
+  const repository = requireReadyRepository(coreDb, input.workspaceId);
   const contextRefs = createContextRefs(input);
 
   return {
@@ -133,10 +126,9 @@ export function prepareNextTurnContext(
  */
 function requireReadyRepository(
   coreDb: CoreDb,
-  userId: string,
   workspaceId: string
 ): WorkspaceRepositoryResourceRecord {
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, userId, workspaceId);
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
   let repository: WorkspaceRepositoryResourceRecord | null;
   try {
     applyScopedMigrations(workspaceDb);

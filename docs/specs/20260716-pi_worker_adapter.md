@@ -1,7 +1,7 @@
 # Pi Worker Adapter
 
 Status: Accepted
-Implementation: Not Started
+Implementation: Implemented
 
 ## Summary
 
@@ -32,10 +32,10 @@ The accepted upstream research pin is Pi monorepo commit `818d67457cdd6b60bce6b1
 The current bounded native command uses JSON mode with all ambient resource and approval paths disabled:
 
 ```text
-pi --mode json --no-approve --no-session --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --provider <provider> --model <model> <turn-input>
+pi --mode json --no-approve --no-session --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --offline --provider <provider> --model <model> <turn-input>
 ```
 
-The safe child environment sets `PI_CODING_AGENT_DIR` to a fresh AEP-controlled turn root plus `PI_OFFLINE=1`, `PI_SKIP_VERSION_CHECK=1`, and `PI_TELEMETRY=0`. The adapter spawns the argv directly without a shell.
+The safe child environment sets `PI_CODING_AGENT_DIR` to a fresh AEP-controlled turn root plus `PI_SKIP_VERSION_CHECK=1`, `PI_TELEMETRY=0`, and the one manifest-declared standard provider credential environment variable. The adapter spawns the argv directly without a shell and never uses `--api-key`.
 
 Pi also provides newline-delimited JSON RPC mode with native commands including prompt, steer, follow-up, abort, session operations, and extension UI request and response. OpenKit does not adopt RPC mode in this change because the accepted product envelope is one bounded worker turn and only interrupt has a current shared control mapping.
 
@@ -60,7 +60,7 @@ The adapter does not choose provider credentials, trust arbitrary project resour
 
 The fixed fail-closed flags prevent the image from silently loading project extensions, Skills, prompt templates, themes, context files, or saved sessions. `--no-approve` bypasses project-trust approval for the already governed workspace; it is not a general approval-state control. The fresh `PI_CODING_AGENT_DIR` prevents global `SYSTEM.md`, `APPEND_SYSTEM.md`, settings, packages, auth, and other home-directory resources from entering the run.
 
-An adapter-local command override may be used by tests and image diagnostics. NanoCore must not know Pi flags or construct a Pi command.
+No environment variable, AEP extension, test option, or image diagnostic may replace the adapter-produced argv. Tests inject a process runner or a static test adapter without creating a production command override, and NanoCore never constructs a Pi command.
 
 The adapter contract has no separate interrupt operation. The shared harness owns process-group termination.
 
@@ -68,7 +68,7 @@ The adapter contract has no separate interrupt operation. The shared harness own
 
 `collect` parses Pi stdout as newline-delimited JSON under the shared 16 MiB native-output bound. Exceeding the bound fails collection closed.
 
-It extracts final assistant content only after the pinned Pi stream reaches exactly one final `agent_settled` following normal zero-status exit without interruption. Within the final low-level run before that settlement, the accepted candidate is the last `message_end.message` whose `role` is `assistant` and whose `stopReason` is `stop`; a later `turn_end.message` and the last assistant message in a later `agent_end` with `willRetry=false` must each be structurally identical to that complete message. The adapter preserves only `content` entries with `type="text"` in array order, concatenates their strings without inserting separators, trims the combined boundary once, and requires a non-empty result. `error`, `aborted`, `length`, or terminal `toolUse`, `agent_end` with `willRetry=true` and no later completed run, missing or multiple settlement records, missing or contradictory correlation, malformed known records, and non-zero or signaled native exit fail collection closed. Unknown event types remain ignored for forward tolerance and cannot satisfy any required lifecycle predicate.
+It extracts final assistant content only after the pinned Pi stream reaches exactly one final `agent_settled` following normal zero-status exit without interruption. Within the final low-level run before that settlement, the accepted candidate is the last `message_end.message` whose `role` is `assistant` and whose `stopReason` is `stop`; a later `turn_end.message` and the last assistant message in a later `agent_end` with `willRetry=false` must each be structurally identical to that complete message. The final correlated message's provider and model must also equal the exact provider and model requested by the launch plan; missing or mismatched values fail closed instead of accepting Pi's fuzzy or synthetic model resolution. The adapter preserves only `content` entries with `type="text"` in array order, concatenates their strings without inserting separators, trims the combined boundary once, and requires a non-empty result. `error`, `aborted`, `length`, or terminal `toolUse`, `agent_end` with `willRetry=true` and no later completed run, missing or multiple settlement records, missing or contradictory correlation, malformed known records, and non-zero or signaled native exit fail collection closed. Unknown event types remain ignored for forward tolerance and cannot satisfy any required lifecycle predicate.
 
 Pi-native tool events, extension UI events, model messages, session state, and RPC envelopes remain inside the adapter. They do not enter `packages/worker-protocol` or NanoCore.
 
@@ -93,13 +93,15 @@ Pi does not need native MCP support to satisfy the OpenKit boundary. The OpenKit
 
 ## Provider And Credentials
 
-Provider and model selection belongs to the authored AgentManifest and AEP. `prepare` consumes exactly one resolved route, passes its selections explicitly through `--provider` and `--model`, and expresses the remaining Pi-native setup only through safe environment additions. It rejects zero or multiple routes and must not add Pi provider defaults, fallback, or API key handling to NanoCore or the shared harness.
+The authored AgentManifest owns provider, model, credential, backend-capability, and network requirements; the resolved AEP owns the exact selected route, credential binding, and effective launch policy. Pi `0.80.7` cannot consume the trusted NanoCore relay under the accepted no-generated-file adapter contract. The pinned runtime has no safe custom-base argv or environment binding; its custom-provider path requires `models.json`. Trusted relay is therefore unsupported and deferred. The adapter must not generate `models.json`, use `--api-key`, patch or fork Pi, or silently replace the relay with a direct route.
+
+`prepare` accepts only the pinned `anthropic` / `claude-sonnet-4-5` direct pair with the manifest-declared `ANTHROPIC_API_KEY` credential binding, which the image smoke proves exists exactly in Pi's catalog. It passes that exact pair through `--provider` and `--model`, rejects zero or multiple routes, and fails before spawn when the pair or credential binding differs. Pi's fuzzy and synthetic model fallback is never accepted as route resolution. Trusted-relay and direct-provider credentials and egress remain mutually exclusive.
 
 ## Manifest And Image Contract
 
-The repository-owned Pi AgentManifest selects adapter id `pi`, the Pi worker image, native executable paths used by network policy, provider and credential requirements, resource-discovery isolation flags, and only capabilities proven by this specification.
+The repository-owned Pi AgentManifest selects adapter id `pi`, the Pi worker image, native executable paths used by network policy, the exact `anthropic` / `claude-sonnet-4-5` pair and `ANTHROPIC_API_KEY` binding, resource-discovery isolation flags, and only capabilities proven by this specification.
 
-The Pi image installs the generic worker shim and `@earendil-works/pi-coding-agent@0.80.7`, sets the generic shim as its entrypoint, runs as a non-root worker user, and contains no Codex or OpenCode runtime. Its smoke check verifies the exact native version, JSON mode, generic shim dry run, the fixed fail-closed flags and environment, non-root identity, and expected worker filesystem layout.
+The Pi image installs the generic worker shim and `@earendil-works/pi-coding-agent@0.80.7`, sets the generic shim as its entrypoint, runs as a non-root worker user, and contains no Codex or OpenCode runtime. Its smoke check verifies the exact native version, JSON mode, generic shim dry run, the fixed fail-closed flags and environment, every provider/model pair advertised by the Pi manifest as an exact pinned-catalog pair, non-root identity, and expected worker filesystem layout.
 
 Pi-specific install commands, binary paths, resource flags, event fixtures, and version pins live only in the Pi AgentManifest, adapter, image, specification, and tests.
 
@@ -133,8 +135,9 @@ The authored manifest is the sole launch-time capability declaration. Adapter co
 Required adapter tests cover:
 
 - exact JSON-mode command construction
+- trusted-relay rejection, exact pinned provider/model enforcement, `--offline`, and absence of `--api-key` or config artifacts
 - final settled assistant extraction and ordered text parts from one pinned success fixture
-- fail-closed retry-intermediate, missing-settlement, contradictory-correlation, error, abort, and interruption cases in one compact table
+- fail-closed retry-intermediate, missing-settlement, contradictory-correlation, provider/model mismatch, error, abort, and interruption cases in one compact table
 - unknown event tolerance
 - malformed JSON, missing final output, and byte-bound failures
 - non-zero exit and redacted diagnostics
@@ -144,7 +147,13 @@ Required adapter tests cover:
 
 Shared harness tests cover process-group interruption uniformly for Codex, OpenCode, and Pi.
 
-Required image smoke covers pinned `pi --version`, JSON mode help, generic shim entrypoint, non-root user, the fixed fail-closed flags and environment, and adapter dry run.
+Required image smoke covers pinned `pi --version`, JSON mode help, generic shim entrypoint, non-root user, the fixed fail-closed flags and environment, exact manifest-advertised provider/model catalog pairs, and adapter dry run.
+
+## Implementation Evidence And Limit
+
+The Pi `0.80.7` adapter, static registry entry, authored manifest, pinned worker image, bounded `prepare`/`collect` tests, and image smoke are implemented for the exact direct `anthropic` / `claude-sonnet-4-5` route. On A1, the arm64 image was built directly, passed its smoke check, and stock unpatched OpenShell `0.0.80` created a sandbox from it, uploaded the AEP package, completed the generic shim dry run, and deleted the sandbox after the Cell's separate same-tag image cache was refreshed.
+
+This dry run proves image contents, adapter preparation, stock OpenShell containment, upload, and cleanup. It does not prove a real-provider turn, worker-control readiness, heartbeat, interruption, reconnect, or recovery lifecycle; those remain acceptance obligations of their owning specifications and change packages.
 
 ## Acceptance
 

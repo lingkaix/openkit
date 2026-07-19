@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { ListHumanAttentionResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
-import { LOCAL_USER_ID } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -14,10 +13,13 @@ describe('policy approval gates', () => {
   it('creates a durable approval gate and exposes it through Action Center', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-policy-approval-'));
     const coreDb = openCoreDb(dataRoot);
-    const workspaceDb = openWorkspaceDb(dataRoot, LOCAL_USER_ID, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Policy approval');
-    const turn = store.createTurn('ws_demo', thread.id, 'Use a protected resource');
+    const turn = store.createTurn('ws_demo', thread.id, 'Use a protected resource', {
+      kind: 'user',
+      id: 'user_local',
+    });
 
     try {
       applyMigrations(coreDb);
@@ -92,6 +94,30 @@ describe('policy approval gates', () => {
         })
       ).toThrow('Git push approval requires one exact running Turn owner.');
       expect(permissionDecision(workspaceDb, 'pd_duplicate_policy_gate')).toBeUndefined();
+
+      const reservedTurn = store.createTurn(
+        'ws_demo',
+        thread.id,
+        'Reject imported approval namespace',
+        { kind: 'user', id: 'user_local' }
+      );
+      expect(() =>
+        createPolicyApprovalGate({
+          approvalId: 'apr_imported_ws_demo_1',
+          approvalItemId: 'it_reserved_policy_gate',
+          decisionId: 'pd_reserved_policy_gate',
+          description: 'Do not create target authority in the import namespace.',
+          reasonCode: 'approval_required',
+          resourceSummary: { kind: 'vault-reference', id: 'vault_demo' },
+          store,
+          subjectSummary: { kind: 'agent', id: 'agent_demo' },
+          title: 'Reserved approval identity',
+          turnId: reservedTurn.id,
+          workspaceDb,
+          workspaceId: 'ws_demo',
+        })
+      ).toThrow('Approval id uses the reserved portable-import authority namespace.');
+      expect(permissionDecision(workspaceDb, 'pd_reserved_policy_gate')).toBeUndefined();
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();

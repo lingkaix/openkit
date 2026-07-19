@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   type HumanAttentionAction,
   type HumanAttentionRow,
@@ -6,7 +7,12 @@ import {
 import type { StopReason } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { asApiError } from './api-errors.js';
+import { listArtifactReviews } from './artifact-reviews.js';
+import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
+import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
+import { readPendingGoalSteeringProjection } from './context/worker-context-projection.js';
+import { GoalSteeringAuthorityError } from './goal-steering-authority.js';
 import type { FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
 import { listGoalReviewRecordsForTask } from './runtime/goal-review-records.js';
@@ -36,6 +42,8 @@ type UserInputResponseStoreItem = Extract<StoreItem, { type: 'user-input-respons
  * Input used to build unified Human Attention rows.
  */
 interface BuildHumanAttentionRowsInput {
+  /** Authenticated actor requesting the projection. */
+  actor?: Actor | undefined;
   /** Request-scoped workspace store. */
   store: FsStore;
   /** Optional Core database handles for app-local runtime rows. */
@@ -59,7 +67,7 @@ export function registerActionCenterRoutes({
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
-  readonly repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb;
+  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
 }): void {
   registerAppApiRoute(app, 'listHumanAttention', (c) => {
@@ -68,11 +76,12 @@ export function registerActionCenterRoutes({
       const workspaceId = c.req.param('workspaceId');
 
       store.getWorkspace(workspaceId);
-      const workspaceDb = coreDb ? repositoryWorkspaceDb(store, workspaceId) : undefined;
+      const workspaceDb = coreDb ? repositoryWorkspaceDb(workspaceId) : undefined;
       try {
         return c.json(
           ListHumanAttentionResponseSchema.parse({
             items: buildHumanAttentionRows({
+              actor: c.get('actor'),
               store,
               coreDb,
               workspaceDb,
@@ -84,6 +93,9 @@ export function registerActionCenterRoutes({
         workspaceDb?.sqlite.close();
       }
     } catch (error) {
+      if (error instanceof GoalSteeringAuthorityError) {
+        return asApiError(error.message, error.code, error.status);
+      }
       return asApiError((error as Error).message);
     }
   });
@@ -96,13 +108,39 @@ export function registerActionCenterRoutes({
  * @returns Human Attention rows in deterministic creation order.
  */
 function buildHumanAttentionRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] {
+  const approvalDecisionAuthorized =
+    input.coreDb === undefined ||
+    (input.actor !== undefined &&
+      isWorkspaceOperationAuthorized(input.coreDb, input.actor, input.workspaceId, {
+        mutating: true,
+        policyOperation: 'approval.respond',
+      }));
+  const turnDecisionAuthorized =
+    input.coreDb === undefined ||
+    (input.actor !== undefined &&
+      isWorkspaceOperationAuthorized(input.coreDb, input.actor, input.workspaceId, {
+        mutating: true,
+        policyOperation: 'turn.run',
+      }));
+  const reviewDecisionAuthorized =
+    input.coreDb === undefined ||
+    (input.actor !== undefined &&
+      isWorkspaceOperationAuthorized(input.coreDb, input.actor, input.workspaceId, {
+        mutating: true,
+        policyOperation: 'review.apply',
+      }));
   const rows = [
-    ...approvalRows(input.store, input.workspaceId),
-    ...questionRows(input.store, input.workspaceId),
-    ...runtimeRows(input),
+    ...(approvalDecisionAuthorized ? approvalRows(input.store, input.workspaceId) : []),
+    ...questionRows(
+      input.store,
+      input.workspaceId,
+      turnDecisionAuthorized ? (input.actor?.userId ?? null) : null
+    ),
+    ...runtimeRows(input, reviewDecisionAuthorized),
     ...agentReadinessRows(input.store, input.workspaceId),
-    ...durableWorkspaceReviewRows(input),
-    ...knowledgeReviewRows(input.store, input.workspaceId),
+    ...(reviewDecisionAuthorized ? artifactReviewRows(input) : []),
+    ...durableWorkspaceReviewRows(input, reviewDecisionAuthorized),
+    ...(reviewDecisionAuthorized ? knowledgeReviewRows(input.store, input.workspaceId) : []),
   ];
 
   return rows.sort(
@@ -112,38 +150,155 @@ function buildHumanAttentionRows(input: BuildHumanAttentionRowsInput): HumanAtte
 }
 
 /**
- * Projects pending durable staged workspace reviews into Action Center rows.
+ * Projects exact unresolved version-keyed Artifact Reviews into Action Center rows.
  *
- * @param input Projection dependencies and workspace scope.
- * @returns Pending durable Workspace Review rows.
+ * @param input Projection dependencies and Workspace scope.
+ * @returns Review rows backed by the exact current ready turn-output Artifact.
  */
-function durableWorkspaceReviewRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] {
+function artifactReviewRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] {
   if (!input.workspaceDb) {
     return [];
   }
 
+  const artifacts = new Map(
+    input.store.listArtifacts(input.workspaceId).map((artifact) => [artifact.id, artifact])
+  );
+  const workspaceReviewArtifactIds = new Set(
+    listWorkspaceSyncReviews(input.workspaceDb, input.workspaceId).map((item) => item.artifactId)
+  );
+
+  return listArtifactReviews(input.workspaceDb)
+    .filter((review) => review.decision === null)
+    .filter((review) => !workspaceReviewArtifactIds.has(review.artifactId))
+    .flatMap((review) => {
+      const artifact = artifacts.get(review.artifactId);
+      if (!review.sourceThreadId || !review.sourceTurnId) {
+        return [];
+      }
+      let sourceTurn: ReturnType<FsStore['getTurn']>;
+      try {
+        sourceTurn = input.store.getTurn(
+          review.workspaceId,
+          review.sourceThreadId,
+          review.sourceTurnId
+        );
+      } catch {
+        return [];
+      }
+      const canonicalDigest = `sha256:${createHash('sha256')
+        .update(artifact?.content.body ?? '', 'utf8')
+        .digest('hex')}`;
+      if (
+        !artifact ||
+        artifact.workspaceId !== review.workspaceId ||
+        artifact.status !== 'ready' ||
+        artifact.version !== review.artifactVersion ||
+        artifact.contentDigest !== review.contentDigest ||
+        artifact.origin.kind !== 'turn-output' ||
+        artifact.threadId !== review.sourceThreadId ||
+        artifact.turnId !== review.sourceTurnId ||
+        artifact.origin.threadId !== review.sourceThreadId ||
+        artifact.origin.turnId !== review.sourceTurnId ||
+        artifact.contentDigest !== canonicalDigest ||
+        (sourceTurn.agentId ?? null) !== review.sourceAgentId
+      ) {
+        return [];
+      }
+
+      return [
+        {
+          id: `artifact-review:${review.reviewId}`,
+          kind: 'artifact_review',
+          workspaceId: review.workspaceId,
+          threadId: review.sourceThreadId,
+          turnId: review.sourceTurnId,
+          reviewId: review.reviewId,
+          artifactId: review.artifactId,
+          artifactVersion: review.artifactVersion,
+          title: `Review ${artifact.title}`,
+          summary:
+            artifact.summary ?? `Artifact version ${review.artifactVersion} is ready for review.`,
+          severity: 'needs_input',
+          createdAt: review.createdAt,
+          recommendedAction:
+            'Inspect this exact Artifact version before taking a decision through its owning API.',
+          source: {
+            type: 'artifact_review',
+            reviewId: review.reviewId,
+            artifactId: review.artifactId,
+            artifactVersion: review.artifactVersion,
+            workspaceId: review.workspaceId,
+            threadId: review.sourceThreadId,
+            turnId: review.sourceTurnId,
+          },
+          actions: [
+            {
+              kind: 'open_artifact',
+              label: 'Open artifact',
+              method: 'GET',
+              href: `/api/workspaces/${review.workspaceId}/artifacts/${review.artifactId}`,
+            },
+          ],
+        },
+      ];
+    });
+}
+
+/**
+ * Projects pending durable staged workspace reviews into Action Center rows.
+ *
+ * @param input Projection dependencies and workspace scope.
+ * @param reviewDecisionAuthorized Whether the actor may apply a current review decision.
+ * @returns Pending actionable or contradictory-owner inspection Workspace Review rows.
+ */
+function durableWorkspaceReviewRows(
+  input: BuildHumanAttentionRowsInput,
+  reviewDecisionAuthorized: boolean
+): HumanAttentionRow[] {
+  if (!input.workspaceDb) {
+    return [];
+  }
+
+  const genericReviewArtifactIds = new Set(
+    listArtifactReviews(input.workspaceDb).map((review) => review.artifactId)
+  );
+
   return listWorkspaceSyncReviews(input.workspaceDb, input.workspaceId)
-    .filter((item) => item.review.status === 'pending')
-    .map((item) => ({
-      id: item.review.actionCenterRowId,
-      kind: 'workspace_review',
-      workspaceId: item.review.workspaceId,
-      artifactId: item.artifactId,
-      title: 'Review workspace changes',
-      summary: item.review.riskSummary,
-      severity: 'needs_input',
-      createdAt: item.review.updatedAt,
-      recommendedAction: 'Inspect, accept, refine, reject, or block these workspace changes.',
-      source: {
-        type: 'workspace_review',
-        reviewId: item.review.id,
-        changeSetId: item.review.changeSetId,
-        artifactId: item.artifactId,
+    .filter((item) => {
+      const inspectOnlyRecovery = genericReviewArtifactIds.has(item.artifactId);
+      return inspectOnlyRecovery || (reviewDecisionAuthorized && item.review.status === 'pending');
+    })
+    .map((item) => {
+      const inspectOnlyRecovery = genericReviewArtifactIds.has(item.artifactId);
+      return {
+        id: item.review.actionCenterRowId,
+        kind: 'workspace_review',
         workspaceId: item.review.workspaceId,
-        status: item.review.status,
-      },
-      actions: durableWorkspaceReviewActions(input.workspaceId, item.review.id, item.artifactId),
-    }));
+        artifactId: item.artifactId,
+        title: 'Review workspace changes',
+        summary: item.review.riskSummary,
+        severity: inspectOnlyRecovery ? 'risk' : 'needs_input',
+        createdAt: item.review.updatedAt,
+        recommendedAction: inspectOnlyRecovery
+          ? 'Inspect the contradictory Review owners before taking action.'
+          : 'Inspect, accept, refine, reject, or block these workspace changes.',
+        source: {
+          type: 'workspace_review',
+          reviewId: item.review.id,
+          changeSetId: item.review.changeSetId,
+          artifactId: item.artifactId,
+          workspaceId: item.review.workspaceId,
+          status: item.review.status,
+        },
+        actions: durableWorkspaceReviewActions(
+          input.workspaceId,
+          item.review.id,
+          item.artifactId,
+          inspectOnlyRecovery,
+          item.review.status === 'pending'
+        ),
+      } satisfies HumanAttentionRow;
+    });
 }
 
 /**
@@ -300,9 +455,14 @@ function approvalRows(store: FsStore, workspaceId: string): HumanAttentionRow[] 
  *
  * @param store Request-scoped workspace store.
  * @param workspaceId Workspace id to inspect.
+ * @param responsibleUserId Authorized actor id that must own the request.
  * @returns Question rows.
  */
-function questionRows(store: FsStore, workspaceId: string): HumanAttentionRow[] {
+function questionRows(
+  store: FsStore,
+  workspaceId: string,
+  responsibleUserId: string | null
+): HumanAttentionRow[] {
   const items = store.listAllItems().filter((item) => item.workspaceId === workspaceId);
   const responses = new Set(
     items.filter(isUserInputResponseItem).map((item) => item.userInputRequestId)
@@ -310,6 +470,7 @@ function questionRows(store: FsStore, workspaceId: string): HumanAttentionRow[] 
 
   return items
     .filter(isUserInputRequestItem)
+    .filter((item) => item.responsibleUserId === responsibleUserId)
     .filter((item) => !responses.has(item.userInputRequestId))
     .filter((item) => isExactUserInputRequest(store, item))
     .map((item) => ({
@@ -354,40 +515,116 @@ function questionRows(store: FsStore, workspaceId: string): HumanAttentionRow[] 
  * Projects app-local runtime rows backed by the Core database.
  *
  * @param input Projection dependencies and workspace scope.
- * @returns Runtime-backed rows.
+ * @param reviewDecisionAuthorized Whether the actor may apply review decisions.
+ * @returns Runtime-backed rows with Goal reviews filtered by current authority.
  */
-function runtimeRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] {
+function runtimeRows(
+  input: BuildHumanAttentionRowsInput,
+  reviewDecisionAuthorized: boolean
+): HumanAttentionRow[] {
   if (!input.coreDb) {
     return [];
   }
 
   return [
-    ...schedulerAdmissionRows(input.coreDb, input.store.getUserId(), input.workspaceId),
+    ...schedulerAdmissionRows(input.coreDb, input.workspaceId),
     ...workerControlRejectedEvidenceRows(input.coreDb, input.workspaceId),
     ...schedulerOrphanWorkerRows(input.coreDb, input.workspaceId),
     ...(input.workspaceDb
       ? checkpointRows(input.coreDb, input.store, input.workspaceDb, input.workspaceId)
       : []),
     ...(input.workspaceDb ? workspaceRecoveryRows(input.workspaceDb, input.workspaceId) : []),
-    ...(input.workspaceDb ? goalRows(input.store, input.workspaceDb, input.workspaceId) : []),
+    ...(input.workspaceDb
+      ? goalRows(input.store, input.workspaceDb, input.workspaceId, reviewDecisionAuthorized)
+      : []),
+    ...(input.workspaceDb ? pendingGoalSteeringRows(input) : []),
   ];
+}
+
+/**
+ * Projects the singular verified pending Goal input for each Thread.
+ *
+ * @param input Existing read-only authority owners and Workspace scope.
+ * @returns Product-safe pending input rows without input text or Material tuples.
+ */
+function pendingGoalSteeringRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] {
+  const { coreDb, workspaceDb } = input;
+  if (!coreDb || !workspaceDb) {
+    return [];
+  }
+
+  return input.store.listThreads(input.workspaceId).flatMap((thread) => {
+    const projection = readPendingGoalSteeringProjection({
+      coreDb,
+      store: input.store,
+      workspaceDb,
+      threadId: thread.id,
+    });
+    if (!projection) {
+      return [];
+    }
+
+    const { owner, state } = projection;
+    const actions: HumanAttentionAction[] = [openThreadAction(owner.threadId)];
+    if (state === 'queued' && projection.originalGoalTerminal) {
+      const href = `/api/app/workspaces/${owner.workspaceId}/threads/${owner.threadId}/goal/steering/${owner.pendingTurnId}`;
+      actions.push(
+        {
+          kind: 'run_follow_up',
+          label: 'Convert to follow-up',
+          method: 'POST',
+          href: `${href}/follow-up`,
+        },
+        { kind: 'abort', label: 'Cancel', method: 'POST', href: `${href}/cancel` }
+      );
+    }
+
+    return [
+      {
+        id: `pending-input:${owner.pendingTurnId}`,
+        kind: 'pending_input',
+        workspaceId: owner.workspaceId,
+        threadId: owner.threadId,
+        turnId: owner.activeTurnId,
+        itemId: owner.contentItemId,
+        goalId: owner.goalId,
+        title: state === 'queued' ? 'Goal input is queued' : 'Goal input was delivered',
+        summary:
+          state === 'queued'
+            ? 'Accepted input is waiting for its owning Goal.'
+            : 'Accepted input has exact worker delivery proof and is awaiting cleanup.',
+        severity: 'info',
+        createdAt: owner.receivedAt,
+        recommendedAction:
+          state === 'queued' && projection.originalGoalTerminal
+            ? 'Convert the input to follow-up history or cancel it.'
+            : 'Open the thread to inspect the current Goal.',
+        source: {
+          type: 'pending_input',
+          workspaceId: owner.workspaceId,
+          threadId: owner.threadId,
+          pendingTurnId: owner.pendingTurnId,
+          requestId: owner.requestId,
+          contentItemId: owner.contentItemId,
+          goalId: owner.goalId,
+          activeTurnId: owner.activeTurnId,
+          state,
+        },
+        actions,
+      },
+    ];
+  });
 }
 
 /**
  * Projects durable scheduler admissions into product-visible attention rows.
  *
  * @param coreDb Open server-scope Core database handle.
- * @param userId Store owner user id to project.
  * @param workspaceId Workspace id to project.
  * @returns Scheduler admission rows for queued or human-actionable denied entries.
  */
-function schedulerAdmissionRows(
-  coreDb: CoreDb,
-  userId: string,
-  workspaceId: string
-): HumanAttentionRow[] {
+function schedulerAdmissionRows(coreDb: CoreDb, workspaceId: string): HumanAttentionRow[] {
   return listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-    userId,
     workspaceId,
     statuses: ['queued', 'denied'],
   }).map((entry) => {
@@ -669,18 +906,23 @@ function workspaceRecoveryRows(workspaceDb: WorkspaceDb, workspaceId: string): H
  * @param store Request-scoped workspace store.
  * @param workspaceDb Open workspace-scope database handle.
  * @param workspaceId Workspace id to inspect.
- * @returns Goal-backed rows.
+ * @param reviewDecisionAuthorized Whether the actor may apply Goal review decisions.
+ * @returns Goal status rows plus currently authorized Goal review rows.
  */
 function goalRows(
   store: FsStore,
   workspaceDb: WorkspaceDb,
-  workspaceId: string
+  workspaceId: string,
+  reviewDecisionAuthorized: boolean
 ): HumanAttentionRow[] {
   return store
     .listThreads(workspaceId)
     .flatMap((thread) =>
       listGoalRecordsForThread(workspaceDb, { workspaceId, threadId: thread.id }).flatMap(
-        (goal) => [...goalStatusRows(goal), ...goalReviewRows(workspaceDb, goal)]
+        (goal) => [
+          ...goalStatusRows(goal, reviewDecisionAuthorized),
+          ...(reviewDecisionAuthorized ? goalReviewRows(workspaceDb, goal) : []),
+        ]
       )
     );
 }
@@ -689,10 +931,14 @@ function goalRows(
  * Projects goal lifecycle states into rows.
  *
  * @param goal Goal record to inspect.
+ * @param reviewDecisionAuthorized Whether the actor may apply Goal review decisions.
  * @returns Goal state rows.
  */
-function goalStatusRows(goal: GoalRecord): HumanAttentionRow[] {
+function goalStatusRows(goal: GoalRecord, reviewDecisionAuthorized: boolean): HumanAttentionRow[] {
   if (goal.status === 'awaiting_plan_approval') {
+    if (!reviewDecisionAuthorized) {
+      return [];
+    }
     return [
       goalRow(
         goal,
@@ -891,7 +1137,7 @@ function knowledgeReviewRows(store: FsStore, workspaceId: string): HumanAttentio
       summary: proposal.summary,
       severity: 'needs_input',
       createdAt: proposal.createdAt,
-      recommendedAction: 'Accept, edit, reject, or defer the knowledge proposal.',
+      recommendedAction: 'Accept, reject, or defer the knowledge proposal.',
       source: {
         type: 'knowledge',
         knowledgeProposalId: proposal.id,
@@ -902,12 +1148,6 @@ function knowledgeReviewRows(store: FsStore, workspaceId: string): HumanAttentio
         {
           kind: 'accept_knowledge',
           label: 'Accept',
-          href: `/api/app/workspaces/${workspaceId}/knowledge/proposals/${proposal.id}/decision`,
-          method: 'POST',
-        },
-        {
-          kind: 'edit_knowledge',
-          label: 'Edit',
           href: `/api/app/workspaces/${workspaceId}/knowledge/proposals/${proposal.id}/decision`,
           method: 'POST',
         },
@@ -948,17 +1188,21 @@ function openThreadAction(threadId: string): HumanAttentionAction {
  * @param workspaceId Workspace id.
  * @param reviewId Durable Workspace Review id.
  * @param artifactId Optional presentation Artifact id.
+ * @param inspectOnlyRecovery Whether contradictory generic Review authority disables decisions.
+ * @param pending Whether the durable Review remains open for a decision.
  * @returns Workspace Review actions.
  */
 function durableWorkspaceReviewActions(
   workspaceId: string,
   reviewId: string,
-  artifactId?: string
+  artifactId?: string,
+  inspectOnlyRecovery = false,
+  pending = true
 ): HumanAttentionAction[] {
   const reviewHref = `/api/app/workspaces/${workspaceId}/workspace-sync/reviews/${reviewId}`;
   const decisionHref = `${reviewHref}/decision`;
 
-  return [
+  const actions: HumanAttentionAction[] = [
     {
       kind: 'open_artifact',
       label: 'Open review',
@@ -994,6 +1238,13 @@ function durableWorkspaceReviewActions(
       href: decisionHref,
     },
   ];
+  if (inspectOnlyRecovery) {
+    for (const action of actions.slice(1)) {
+      action.disabled = true;
+      action.reason = 'recovery_required: The backing Artifact has contradictory Review authority.';
+    }
+  }
+  return pending ? actions : actions.slice(0, 1);
 }
 
 /**

@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+import { type ActorRef, responsibleUserIdForActor } from '@openkit/protocol';
+
 import type { FsStore } from '../lib/store.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import {
@@ -36,6 +38,8 @@ export type GoalPlanner = (input: GoalPlannerInput) => GoalPlanOutput | Promise<
  * Input used to create or request a plan for one goal.
  */
 export interface CreateGoalPlanInput {
+  /** Authenticated actor that owns the command identity. */
+  readonly triggerActor: ActorRef;
   /** Open workspace-scope database handle. */
   readonly workspaceDb: WorkspaceDb;
   /** App-local durable store. */
@@ -115,6 +119,7 @@ export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPl
     input.workspaceId,
     input.threadId,
     `Plan goal: ${goal.title}`,
+    input.triggerActor,
     null,
     { turnId: ids.turnId }
   );
@@ -161,6 +166,13 @@ export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPl
   }
 
   if (plan.questions.length > 0) {
+    const responsibleUserId = responsibleUserIdForActor(turn.triggerActor);
+    if (responsibleUserId === null) {
+      throw new GoalPlanApprovalError(
+        'recovery_required',
+        'Goal planning cannot assign its human-input responsibility.'
+      );
+    }
     const questionItem = input.store.createItem({
       id: ids.questionItemId,
       workspaceId: input.workspaceId,
@@ -169,6 +181,7 @@ export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPl
       type: 'user-input-request',
       status: 'completed',
       causationId: input.requestId,
+      responsibleUserId,
       userInputRequestId: ids.userInputRequestId,
       prompt: 'Goal planning needs more information.',
       questions: plan.questions.slice(0, 5).map((question, index) => ({
@@ -295,6 +308,7 @@ export function readGoalPlanCreation(
     !turn ||
     turn.status !== 'completed' ||
     !turn.completedAt ||
+    JSON.stringify(turn.triggerActor) !== JSON.stringify(input.triggerActor) ||
     !planItem ||
     planItem.turnId !== turn.id ||
     planItem.type !== 'plan' ||
@@ -368,7 +382,7 @@ function requirePlanningGoal(
 /**
  * Derives deterministic planning owner ids from one immutable command identity.
  *
- * @param input Planning request scope and authenticated store owner.
+ * @param input Planning request scope and authenticated actor.
  * @returns Request-owned Turn, Item, and gate ids.
  */
 function goalPlanCreationIds(input: Omit<CreateGoalPlanInput, 'goalId' | 'planner'>): {
@@ -382,7 +396,7 @@ function goalPlanCreationIds(input: Omit<CreateGoalPlanInput, 'goalId' | 'planne
     .update(
       JSON.stringify([
         'goal.plan',
-        input.store.getUserId(),
+        input.triggerActor.id,
         input.workspaceId,
         input.threadId,
         input.requestId,

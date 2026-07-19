@@ -1,11 +1,16 @@
 import { spawn } from 'node:child_process';
 import { closeSync, readSync } from 'node:fs';
-import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WorkerCanonicalTerminalEventDataSchema } from '@openkit/worker-protocol';
-import { CodexRuntimeProvenanceCapture } from './codex-runtime-provenance.js';
+import {
+  WORKER_ADAPTERS,
+  type WorkerAdapterLaunchPlan,
+  type WorkerAdapterLlmRoute,
+  type WorkerNativeProcessResult,
+} from './adapter-registry.js';
 import {
   WorkerControlClient,
   type WorkerControlCommandPoll,
@@ -24,12 +29,10 @@ import {
 
 const WORKER_CONTROL_READINESS_TIMEOUT_MS = 10_000;
 const WORKER_CONTROL_TOKEN_MAX_BYTES = 4096;
-const CODEX_FINAL_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
+const NATIVE_STDOUT_MAX_BYTES = 16 * 1024 * 1024;
 const SAFE_WORKER_CHILD_ENVIRONMENT_KEYS = [
   'ALL_PROXY',
-  'CODEX_HOME',
   'COLORTERM',
-  'HOME',
   'HTTP_PROXY',
   'HTTPS_PROXY',
   'LANG',
@@ -54,29 +57,23 @@ const SAFE_WORKER_CHILD_ENVIRONMENT_KEYS = [
 ] as const;
 
 /**
- * Parsed `openkit-codex-shim` arguments.
+ * Parsed `openkit-worker-shim` arguments.
  */
-export interface CodexShimArgs {
+export interface WorkerShimArgs {
   /** Worker-visible Agent Environment Package path. */
   packagePath: string;
   /** Durable session transcript directory. */
   sessionDir: string;
-  /** Worker artifact directory. */
-  artifactDir: string;
-  /** Whether to validate arguments and exit without launching Codex. */
+  /** Whether to validate arguments and exit without launching a native runtime. */
   dryRun: boolean;
 }
 
 /**
- * Environment variables consumed by `openkit-codex-shim`.
+ * Environment variables consumed by `openkit-worker-shim`.
  */
-export interface CodexShimEnvironment {
+export interface WorkerShimEnvironment {
   /** Optional all-protocol proxy URL inherited by child processes. */
   ALL_PROXY?: string | undefined;
-  /** Optional Codex state root used to discover native rollout streams. */
-  CODEX_HOME?: string | undefined;
-  /** Worker home used for the default `.codex` state root. */
-  HOME?: string | undefined;
   /** Optional HTTP proxy URL inherited by child processes. */
   HTTP_PROXY?: string | undefined;
   /** Optional HTTPS proxy URL inherited by child processes. */
@@ -89,7 +86,7 @@ export interface CodexShimEnvironment {
   OPENKIT_CONTROL_BASE_URL?: string | undefined;
   /** Internal launcher descriptor containing the sandbox bearer token. */
   OPENKIT_CONTROL_TOKEN_FD?: string | undefined;
-  /** Optional JSON-array or whitespace-separated Codex process command override. */
+  /** Retired Codex command override rejected before native launch. */
   OPENKIT_CODEX_COMMAND?: string | undefined;
   /** Workspace id bound to the worker session. */
   OPENKIT_WORKSPACE_ID?: string | undefined;
@@ -103,7 +100,7 @@ export interface CodexShimEnvironment {
   OPENKIT_PACKAGE_SNAPSHOT_ID?: string | undefined;
   /** Optional request id that started the worker turn. */
   OPENKIT_REQUEST_ID?: string | undefined;
-  /** OpenShell provider placeholder resolved only when Codex calls trusted worker inference. */
+  /** OpenShell placeholder resolved only when a relay adapter calls trusted worker inference. */
   OPENKIT_WORKER_INFERENCE_TOKEN?: string | undefined;
   /** Optional lowercase HTTP proxy URL inherited by child processes. */
   http_proxy?: string | undefined;
@@ -114,25 +111,27 @@ export interface CodexShimEnvironment {
 }
 
 /**
- * Input passed to the supervised Codex process runner.
+ * Input passed to the supervised native process runner.
  */
-export interface CodexProcessRunInput {
+export interface WorkerProcessRunInput {
   /** Command and arguments to execute. */
   argv: string[];
-  /** Worker cwd for the Codex process. */
+  /** Worker cwd for the native process. */
   cwd: string;
-  /** Environment variables visible to the Codex process. */
+  /** Environment variables visible to the native process. */
   env: Record<string, string>;
-  /** Supervisor cancellation signal for the Codex process. */
+  /** Supervisor cancellation signal for the native process. */
   signal: AbortSignal;
-  /** Optional backpressured sink for exact Codex stdout bytes. */
+  /** Reports that the native child process has started successfully. */
+  onStart?: (() => void) | undefined;
+  /** Optional backpressured sink for exact native stdout bytes. */
   writeStdout?: ((chunk: Uint8Array) => Promise<void>) | undefined;
 }
 
 /**
- * Result returned by a supervised Codex process runner.
+ * Result returned by a supervised native process runner.
  */
-export interface CodexProcessRunResult {
+export interface WorkerProcessRunResult {
   /** Process exit code, or null when the process ended by signal. */
   exitCode: number | null;
   /** Process signal, or null when the process exited normally. */
@@ -144,30 +143,30 @@ export interface CodexProcessRunResult {
 }
 
 /**
- * Process runner used by the Codex shim.
+ * Process runner used by the worker shim.
  */
-export interface CodexProcessRunner {
+export interface WorkerProcessRunner {
   /**
-   * Runs one Codex process.
+   * Runs one native process.
    *
    * @param input Command, cwd, and environment.
    * @returns Completed process result.
    */
-  run(input: CodexProcessRunInput): Promise<CodexProcessRunResult>;
+  run(input: WorkerProcessRunInput): Promise<WorkerProcessRunResult>;
 }
 
 /**
- * Options for running the Codex shim entrypoint.
+ * Options for running the worker shim entrypoint.
  */
-export interface CodexShimRunOptions {
-  /** Parsed Codex shim arguments. */
-  args: CodexShimArgs;
+export interface WorkerShimRunOptions {
+  /** Parsed worker shim arguments. */
+  args: WorkerShimArgs;
   /** Sandbox bearer token supplied outside the supervisor process environment. */
   controlToken?: string | undefined;
   /** Sandbox environment variables visible to the shim. */
-  environment?: CodexShimEnvironment | undefined;
+  environment?: WorkerShimEnvironment | undefined;
   /** Optional process runner for tests or alternate supervisors. */
-  runner?: CodexProcessRunner | undefined;
+  runner?: WorkerProcessRunner | undefined;
   /** Optional fetch implementation for the supervised control. */
   fetch?: WorkerControlFetch | undefined;
   /** Optional parent cancellation signal. */
@@ -175,9 +174,9 @@ export interface CodexShimRunOptions {
 }
 
 /**
- * Result returned by the Codex shim after the supervised process exits.
+ * Result returned by the worker shim after the supervised process exits.
  */
-export interface CodexShimRunResult {
+export interface WorkerShimRunResult {
   /** Process exit code, or null when the process ended by signal. */
   exitCode: number | null;
   /** Process signal, or null when the process exited normally. */
@@ -186,7 +185,7 @@ export interface CodexShimRunResult {
   status: 'completed' | 'failed' | 'interrupted';
 }
 
-/** Direct worker-control command accepted by the Codex supervisor. */
+/** Direct worker-control command accepted by the worker supervisor. */
 type DirectWorkerControlCommand = {
   /** NanoCore-issued command id. */
   commandId: string;
@@ -196,86 +195,129 @@ type DirectWorkerControlCommand = {
   reason?: string | null;
 };
 
-interface CodexShimPackageManifest {
+/** Minimal immutable AEP projection consumed by the worker shim. */
+interface WorkerShimPackageManifest {
+  /** Direct worker-control and selected adapter declaration. */
   control?: {
+    /** Static worker-side adapter selector. */
+    adapter?: {
+      /** Generic shim discriminator. */
+      kind?: unknown;
+      /** Opaque static registry key. */
+      targetRuntime?: unknown;
+    };
+    /** Required direct NanoCore control mode. */
     mode?: unknown;
+    /** Durable transcript and optional provenance declaration. */
     transcript?: {
+      /** Optional fixed native provenance outputs. */
       runtimeProvenance?: unknown;
     };
   };
+  /** Resolved environment credential declarations. */
+  credentials?: {
+    /** Backend-materialized credential targets. */
+    declarations?: unknown;
+  };
+  /** Private OpenKit extension payload. */
   extensions?: {
+    /** Turn input plus explicitly retired native overrides. */
     openkit?: {
+      /** Retired native command override. */
       codexCommand?: unknown;
+      /** Retired native final-message override. */
       resultMessagePath?: unknown;
+      /** Private per-turn worker input. */
       turnInput?: unknown;
     };
   };
+  /** Resolved worker inference declaration. */
+  llm?: {
+    /** Exactly one already resolved route. */
+    routes?: unknown;
+  };
+  /** Generic shim process declaration. */
   runtime?: {
+    /** Fixed generic shim command and worker cwd. */
     command?: {
+      /** Exact generic shim argv. */
+      argv?: unknown;
+      /** Worker-visible native cwd. */
       workingDirectory?: unknown;
     };
   };
-  workspace?: {
-    inputs?: unknown;
-  };
+  /** Static inert supply declarations. */
   supply?: {
+    /** Skill metadata supplied by NanoCore. */
     skills?: unknown;
-    mcpServers?: unknown;
+  };
+  /** Worker-visible workspace declarations. */
+  workspace?: {
+    /** Materialized worker inputs. */
+    inputs?: unknown;
   };
 }
 
-/** Fixed runtime provenance output declaration projected into a Codex AEP. */
-interface CodexRuntimeProvenanceDeclaration {
+/** Fixed runtime provenance output declaration projected into an AEP. */
+interface RuntimeProvenanceDeclaration {
+  /** Maximum native streams retained. */
   maxStreamCount: number;
+  /** Maximum aggregate native bytes retained. */
   maxTotalBytes: number;
+  /** Fixed native-origin index path. */
   nativeOriginIndexPath: '/openkit/session/runtime/native-origin-index.jsonl';
+  /** Fixed raw-stream output root. */
   rawStreamsRoot: '/openkit/session/runtime/raw';
+  /** Fixed raw-stream manifest path. */
   streamManifestPath: '/openkit/session/runtime/raw-streams.json';
 }
 
+/** Worker-local materialization metadata for static Skill supply. */
 interface RuntimeSupplyMaterialization {
+  /** Runtime-neutral materialization kind. */
   kind: string;
+  /** Worker-local metadata directory. */
   targetPath: string;
 }
 
+/** Static Skill supply record materialized as inert metadata. */
 interface RuntimeSkillSupply {
+  /** Stable catalog id. */
   id: string;
+  /** Optional pinned catalog version. */
   version?: string;
+  /** Optional catalog source reference. */
   sourceRef?: string;
+  /** Optional integrity declaration. */
   integrity?: unknown;
+  /** Runtime-neutral materialization hint. */
   materialization: RuntimeSupplyMaterialization;
+  /** Optional compatible adapter ids. */
   allowedRuntimeAdapters?: unknown;
+  /** Optional compatible workspace scopes. */
   allowedWorkspaceScopes?: unknown;
+  /** Optional policy references. */
   policyRefIds?: unknown;
+  /** Optional review state. */
   reviewStatus?: string;
+  /** Optional secret references, never values. */
   secretRefIds?: unknown;
-}
-
-interface RuntimeMcpSupply {
-  id: string;
-  version?: string;
-  sourceRef?: string;
-  transport?: string;
-  command?: unknown;
-  url?: string;
-  allowedTools?: unknown;
-  allowedPrompts?: unknown;
-  materialization: RuntimeSupplyMaterialization;
-  networkPolicyHints?: unknown;
-  providerInstanceIds?: unknown;
-  vaultGrantIds?: unknown;
-  secretRefIds?: unknown;
-  reviewStatus?: string;
 }
 
 /**
- * Parses `openkit-codex-shim` arguments.
+ * Parses `openkit-worker-shim` arguments.
  *
  * @param argv Argument vector after the binary name.
  * @returns Parsed arguments.
  */
-export function parseCodexShimArgs(argv: string[]): CodexShimArgs {
+export function parseWorkerShimArgs(argv: string[]): WorkerShimArgs {
   const values = parseFlagValues(argv, new Set(['--dry-run']));
+  const allowedFlags = new Set(['--dry-run', '--package', '--session-dir']);
+  for (const flag of values.keys()) {
+    if (!allowedFlags.has(flag)) {
+      throw new Error(`Unsupported worker shim argument: ${flag}`);
+    }
+  }
   const packagePath = values.get('--package')?.at(0);
 
   if (!packagePath) {
@@ -283,7 +325,6 @@ export function parseCodexShimArgs(argv: string[]): CodexShimArgs {
   }
 
   return {
-    artifactDir: values.get('--artifact-dir')?.at(0) ?? '/openkit/artifacts',
     dryRun: values.has('--dry-run'),
     packagePath,
     sessionDir: values.get('--session-dir')?.at(0) ?? '/openkit/session',
@@ -291,24 +332,22 @@ export function parseCodexShimArgs(argv: string[]): CodexShimArgs {
 }
 
 /**
- * Runs the Codex shim CLI entrypoint.
+ * Runs the worker shim CLI entrypoint.
  *
  * @param argv Argument vector after the binary name.
  * @param write Output sink for command help.
  * @returns Promise that resolves when the command finishes.
  */
-export async function runCodexShimCli(
+export async function runWorkerShimCli(
   argv: string[],
   write: (line: string) => void = (line) => process.stdout.write(line)
 ): Promise<void> {
   if (argv.includes('--help')) {
-    write(
-      'Usage: openkit-codex-shim --package <path> [--session-dir <path>] [--artifact-dir <path>] [--dry-run]\n'
-    );
+    write('Usage: openkit-worker-shim --package <path> [--session-dir <path>] [--dry-run]\n');
     return;
   }
 
-  const args = parseCodexShimArgs(argv);
+  const args = parseWorkerShimArgs(argv);
 
   if (!args.dryRun && process.env.OPENKIT_CONTROL_TOKEN) {
     throw new Error('Worker control token must be supplied through launcher descriptor 3.');
@@ -316,7 +355,7 @@ export async function runCodexShimCli(
   const controlToken = args.dryRun
     ? undefined
     : readWorkerControlTokenFromFileDescriptor(process.env);
-  const environment: CodexShimEnvironment = { ...process.env };
+  const environment: WorkerShimEnvironment = { ...process.env };
   delete environment.OPENKIT_CONTROL_TOKEN_FD;
   const controller = new AbortController();
   let receivedSignal: 'SIGINT' | 'SIGTERM' | null = null;
@@ -332,10 +371,10 @@ export async function runCodexShimCli(
   };
   process.once('SIGINT', abortForInterrupt);
   process.once('SIGTERM', abortForTermination);
-  let result: CodexShimRunResult;
+  let result: WorkerShimRunResult;
 
   try {
-    result = await runCodexShim({
+    result = await runWorkerShim({
       args,
       controlToken,
       environment,
@@ -356,9 +395,9 @@ export async function runCodexShimCli(
     process.off('SIGTERM', abortForTermination);
   }
 
-  if (receivedSignal === 'SIGINT') {
+  if (result.status === 'interrupted' && receivedSignal === 'SIGINT') {
     process.exitCode = 130;
-  } else if (receivedSignal === 'SIGTERM') {
+  } else if (result.status === 'interrupted' && receivedSignal === 'SIGTERM') {
     process.exitCode = 143;
   } else if (result.status !== 'completed') {
     process.exitCode = result.exitCode ?? 1;
@@ -366,20 +405,44 @@ export async function runCodexShimCli(
 }
 
 /**
- * Runs the Codex shim supervisor.
+ * Runs the worker shim supervisor.
  *
  * @param options Parsed args, environment, and optional runner.
  * @returns Supervised process outcome.
  */
-export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexShimRunResult> {
+export async function runWorkerShim(options: WorkerShimRunOptions): Promise<WorkerShimRunResult> {
   const environment = options.environment ?? process.env;
-  const packageManifest = await readCodexShimPackage(options.args.packagePath);
+  const packageManifest = await readWorkerShimPackage(options.args.packagePath);
 
   if (packageManifest.control?.mode !== 'direct-nanocore') {
-    throw new Error('Codex shim requires control.mode to be direct-nanocore.');
+    throw new Error('Worker shim requires control.mode to be direct-nanocore.');
   }
+  rejectRetiredWorkerOverrides(packageManifest, environment);
+  validateWorkerShimCommand(packageManifest);
+  const adapterId = resolveWorkerAdapterId(packageManifest);
+  const adapter = WORKER_ADAPTERS[adapterId];
+  if (!adapter) {
+    throw new Error(`Unknown worker adapter: ${adapterId}`);
+  }
+  const llmRoute = resolveWorkerLlmRoute(packageManifest);
+  const turnInput = resolveWorkerTurnInput(packageManifest);
+  const cwd = resolveWorkerWorkingDirectory(packageManifest);
 
   if (options.args.dryRun) {
+    const stateRoot = join(options.args.sessionDir, 'native-state');
+    await rm(stateRoot, { force: true, recursive: true });
+    try {
+      await adapter.prepare({
+        childEnvironment: workerChildEnvironment(packageManifest, environment, llmRoute),
+        llmRoute,
+        sessionDirectory: options.args.sessionDir,
+        stateRoot,
+        turnInput,
+        workingDirectory: cwd,
+      });
+    } finally {
+      await rm(stateRoot, { force: true, recursive: true });
+    }
     return {
       exitCode: 0,
       signal: null,
@@ -394,15 +457,36 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
   }
 
   await materializeRuntimeSupply(packageManifest);
-  const cwd = resolveCodexWorkingDirectory(packageManifest);
-  const resultMessagePath = resolveCodexResultMessagePath(packageManifest, options.args.sessionDir);
-  const command = resolveCodexCommand(packageManifest, environment, cwd, resultMessagePath);
   const workspaceInputs = resolveWorkspaceInputs(packageManifest);
   const workspaceBases = await prepareWorkspaceGitSnapshots(
     workspaceInputs,
     options.args.sessionDir
   );
   const lineage = workerLineageFromEnvironment(environment);
+  const provenanceDeclaration = parseRuntimeProvenanceDeclaration(
+    packageManifest.control?.transcript?.runtimeProvenance
+  );
+  const childEnvironment = workerChildEnvironment(packageManifest, environment, llmRoute);
+  const credentialValues = workerCredentialValues(packageManifest, childEnvironment, llmRoute);
+  const stateRoot = join(options.args.sessionDir, 'native-state');
+  await rm(stateRoot, { force: true, recursive: true });
+  let launchPlan: WorkerAdapterLaunchPlan;
+  try {
+    launchPlan = await adapter.prepare({
+      childEnvironment,
+      llmRoute,
+      ...(provenanceDeclaration
+        ? { runtimeProvenance: { ...provenanceDeclaration, lineage } }
+        : {}),
+      sessionDirectory: options.args.sessionDir,
+      stateRoot,
+      turnInput,
+      workingDirectory: cwd,
+    });
+  } catch (error) {
+    await rm(stateRoot, { force: true, recursive: true });
+    throw error;
+  }
   let controlSession: WorkerControlClient | null = null;
   const writer = new WorkerTranscriptWriter({
     appendEvent: async (record) => {
@@ -421,13 +505,14 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
   let terminalOutcomeAttempted = false;
   let workerControlReady = false;
   const controlAbortController = new AbortController();
-  const codexAbortController = new AbortController();
+  const workerAbortController = new AbortController();
   let interrupted = false;
-  /** Cancels the control and Codex child under the shared supervisor lifecycle. */
+  let acceptsWorkerCommands = true;
+  /** Cancels the control and native child under the shared supervisor lifecycle. */
   const abortChildren = (reason?: unknown) => {
     controlSession?.disablePostLaunchRecovery();
     controlAbortController.abort(reason);
-    codexAbortController.abort(reason);
+    workerAbortController.abort(reason);
   };
   /** Propagates the exact parent cancellation reason to both supervised children. */
   const abortForParent = () => abortChildren(options.signal?.reason);
@@ -451,7 +536,7 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
     /** Records a delivered interrupt and cancels both supervised child paths. */
     const interruptWorker = () => {
       interrupted = true;
-      codexAbortController.abort();
+      workerAbortController.abort();
     };
 
     failureReason = 'worker-control-readiness-failed';
@@ -500,72 +585,68 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
     }
 
     failureReason = 'worker-runtime-failed';
-    await writer.writeAndAppendEvent({
-      data: {
-        argv: command,
-        cwd,
-        runtime: 'codex',
-      },
-      type: 'worker.ready',
-    });
-    const codexEnvironment = codexChildEnvironment(environment);
-    const provenanceDeclaration = parseCodexRuntimeProvenanceDeclaration(
-      packageManifest.control?.transcript?.runtimeProvenance
-    );
-    const codexHome =
-      environment.CODEX_HOME || (environment.HOME ? join(environment.HOME, '.codex') : undefined);
-
-    if (provenanceDeclaration && !codexHome) {
-      throw new Error('Codex runtime provenance requires CODEX_HOME or HOME.');
-    }
-
-    const provenanceCapture =
-      provenanceDeclaration && codexHome
-        ? new CodexRuntimeProvenanceCapture({
-            adapterVersion: '0.144.1',
-            codexHome,
-            lineage,
-            maxStreamCount: provenanceDeclaration.maxStreamCount,
-            maxTotalBytes: provenanceDeclaration.maxTotalBytes,
-            nativeOriginIndexPath: mapWorkerSessionPath(
-              provenanceDeclaration.nativeOriginIndexPath,
-              options.args.sessionDir
-            ),
-            rawStreamsRoot: mapWorkerSessionPath(
-              provenanceDeclaration.rawStreamsRoot,
-              options.args.sessionDir
-            ),
-            streamManifestPath: mapWorkerSessionPath(
-              provenanceDeclaration.streamManifestPath,
-              options.args.sessionDir
-            ),
-          })
-        : null;
-
-    let result: CodexProcessRunResult;
+    let result: WorkerProcessRunResult;
+    let processPromise: Promise<WorkerProcessRunResult> | null = null;
     let controlPromise: Promise<void> | null = null;
+    const stdoutChunks: Buffer[] = [];
+    let stdoutBytes = 0;
+    /** Retains exact adapter stdout under the shared 16 MiB bound and forwards adapter-local sinks. */
+    const writeStdout = async (chunk: Uint8Array) => {
+      if (launchPlan.captureStdout) {
+        stdoutBytes += chunk.byteLength;
+        if (stdoutBytes > NATIVE_STDOUT_MAX_BYTES) {
+          throw new Error(`Native stdout exceeds ${NATIVE_STDOUT_MAX_BYTES} bytes.`);
+        }
+        stdoutChunks.push(Buffer.from(chunk));
+      }
+      await launchPlan.writeStdout?.(chunk);
+    };
 
     try {
-      const processPromise = (options.runner ?? new ChildProcessCodexProcessRunner()).run({
-        argv: command,
-        cwd,
-        env: codexEnvironment,
-        signal: codexAbortController.signal,
-        ...(provenanceCapture
-          ? { writeStdout: (chunk: Uint8Array) => provenanceCapture.writePrimaryChunk(chunk) }
-          : {}),
+      let processStarted = false;
+      let acknowledgeProcessStart: (() => void) | undefined;
+      const processStart = new Promise<void>((resolve) => {
+        acknowledgeProcessStart = () => {
+          if (!processStarted) {
+            processStarted = true;
+            resolve();
+          }
+        };
       });
+      processPromise = (options.runner ?? new ChildProcessWorkerProcessRunner()).run({
+        argv: launchPlan.argv,
+        cwd,
+        env: launchPlan.environment,
+        onStart: () => acknowledgeProcessStart?.(),
+        signal: workerAbortController.signal,
+        ...(launchPlan.captureStdout || launchPlan.writeStdout ? { writeStdout } : {}),
+      });
+      await Promise.race([
+        processStart,
+        processPromise.then(
+          () => acknowledgeProcessStart?.(),
+          (error: unknown) => Promise.reject(error)
+        ),
+      ]);
       session.enablePostLaunchRecovery();
+      await writer.writeAndAppendEvent({
+        data: {
+          adapter: adapterId,
+          status: 'process.started',
+        },
+        type: 'worker.ready',
+      });
       controlPromise = runWorkerControlLoop(
         session,
         writer,
         controlAbortController.signal,
         seenCommandIds,
+        () => acceptsWorkerCommands,
         interruptWorker
       );
 
-      result = await superviseCodexProcess(processPromise, controlPromise, {
-        codexAbortController,
+      result = await superviseWorkerProcess(processPromise, controlPromise, {
+        workerAbortController,
         isInterrupted: () => interrupted || Boolean(options.signal?.aborted),
         onFailureOwner: (owner) => {
           failureReason =
@@ -574,66 +655,119 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
         controlAbortController,
       });
     } catch (error) {
-      await provenanceCapture?.invalidate();
+      abortChildren(error);
+      await processPromise?.catch(() => undefined);
+      await controlPromise?.catch(() => undefined);
+      await launchPlan.invalidate?.();
       throw error;
     }
 
     await writer.writeAndAppendEvent({
       data: {
+        adapter: adapterId,
         exitCode: result.exitCode,
-        runtime: 'codex',
         signal: result.signal,
         status: 'process.exited',
       },
       type: 'worker.heartbeat',
     });
-    failureReason = 'worker-final-message-collection-failed';
-    const assistantText = await readCodexResultMessage(resultMessagePath);
-    failureReason = 'worker-runtime-failed';
-    let status: CodexShimRunResult['status'] =
-      interrupted || options.signal?.aborted
-        ? 'interrupted'
-        : result.exitCode === 0
-          ? 'completed'
-          : 'failed';
-
-    if (assistantText && status !== 'interrupted') {
-      await writer.writeAssistantMessage({
-        status,
-        text: assistantText,
-      });
+    failureReason = 'worker-result-collection-failed';
+    const returnedStdout = Buffer.from(result.stdout, 'utf8');
+    const stdout =
+      stdoutChunks.length > 0 ? Buffer.concat(stdoutChunks, stdoutBytes) : returnedStdout;
+    if (launchPlan.captureStdout && stdout.byteLength > NATIVE_STDOUT_MAX_BYTES) {
+      await launchPlan.invalidate?.();
+      throw new Error(`Native stdout exceeds ${NATIVE_STDOUT_MAX_BYTES} bytes.`);
     }
-
-    status =
-      interrupted || options.signal?.aborted
-        ? 'interrupted'
-        : result.exitCode === 0
-          ? 'completed'
-          : 'failed';
-    await provenanceCapture?.finalize();
+    const nativeResult: WorkerNativeProcessResult = {
+      exitCode: result.exitCode,
+      interrupted: interrupted || Boolean(options.signal?.aborted),
+      signal: result.signal,
+      stderr: result.stderr,
+      stdout: launchPlan.captureStdout ? stdout : new Uint8Array(),
+    };
+    const adapterResult = await adapter.collect({ launchPlan, processResult: nativeResult });
+    failureReason = 'worker-runtime-failed';
+    await launchPlan.finalize?.();
+    await rm(stateRoot, { force: true, recursive: true });
     await publishWorkspaceGitSnapshots({
       bases: workspaceBases,
+      credentialValues,
       inputs: workspaceInputs,
       lineage,
       sessionDir: options.args.sessionDir,
     });
-    terminalOutcomeAttempted = true;
-    await writeAndReportTerminalOutcome(writer, session, {
-      ...(status === 'failed' && !provenanceCapture
-        ? { diagnostics: codexFailureDiagnostics(result) }
+    acceptsWorkerCommands = false;
+    controlAbortController.abort();
+    try {
+      await controlPromise;
+    } catch (error) {
+      failureReason = 'worker-control-runtime-failed';
+      throw error;
+    }
+    options.signal?.removeEventListener('abort', abortForParent);
+    const assistantOutputRejected = containsExactCredentialValue(
+      adapterResult.assistantText,
+      credentialValues
+    );
+    const status =
+      interrupted || options.signal?.aborted
+        ? 'interrupted'
+        : assistantOutputRejected
+          ? 'failed'
+          : adapterResult.status;
+
+    if (adapterResult.assistantText && status !== 'interrupted' && !assistantOutputRejected) {
+      await writer.writeAssistantMessage({
+        status,
+        text: adapterResult.assistantText,
+      });
+    }
+    const adapterDiagnostics = sanitizeAdapterDiagnostics(
+      adapterResult.diagnostics,
+      credentialValues
+    );
+
+    const terminalInput: WorkerTerminalOutcomeInput = {
+      ...(status === 'failed' && !launchPlan.suppressFailureDiagnostics
+        ? {
+            diagnostics: {
+              ...workerFailureDiagnostics(result, credentialValues),
+              ...adapterDiagnostics,
+            },
+          }
         : {}),
       status,
       stopReason:
-        status === 'failed'
-          ? codexExitReason(result)
-          : status === 'interrupted'
-            ? interrupted
-              ? 'worker-interrupt-command'
-              : 'worker-parent-aborted'
-            : status,
-    });
-    controlAbortController.abort();
-    await controlPromise.catch(() => undefined);
+        status === 'interrupted'
+          ? interrupted
+            ? 'worker-interrupt-command'
+            : 'worker-parent-aborted'
+          : assistantOutputRejected
+            ? 'worker-assistant-output-rejected'
+            : adapterResult.stopReason,
+    };
+    terminalOutcomeAttempted = true;
+    const terminalRecord = await writer.writeTerminalOutcome(terminalInput);
+    const terminalData = WorkerCanonicalTerminalEventDataSchema.parse(terminalRecord.event.data);
+    const terminalControlController = new AbortController();
+    const terminalHeartbeatPromise = runWorkerTerminalHeartbeatLoop(
+      session,
+      terminalControlController.signal
+    );
+    const finalStatusPromise = session.recordFinalStatus(
+      {
+        ...terminalData,
+        sequence: terminalRecord.sequence,
+      },
+      terminalControlController.signal
+    );
+    try {
+      await Promise.race([finalStatusPromise, terminalHeartbeatPromise]);
+    } finally {
+      terminalControlController.abort();
+      await Promise.allSettled([finalStatusPromise, terminalHeartbeatPromise]);
+    }
 
     return {
       exitCode: result.exitCode,
@@ -652,6 +786,7 @@ export async function runCodexShim(options: CodexShimRunOptions): Promise<CodexS
   } finally {
     options.signal?.removeEventListener('abort', abortForParent);
     abortChildren();
+    await rm(stateRoot, { force: true, recursive: true }).catch(() => undefined);
   }
 }
 
@@ -677,20 +812,20 @@ async function writeAndReportTerminalOutcome(
 }
 
 /**
- * Keeps the Codex process and live control under one fail-closed lifecycle.
+ * Keeps the native process and live control under one fail-closed lifecycle.
  *
- * @param processPromise Running Codex process outcome.
+ * @param processPromise Running native process outcome.
  * @param controlPromise Running periodic control.
  * @param supervision Abort controllers and optional parent signal.
- * @returns Completed Codex process result.
+ * @returns Completed native process result.
  * @throws The first process or control failure after the sibling has stopped.
  */
-async function superviseCodexProcess(
-  processPromise: Promise<CodexProcessRunResult>,
+async function superviseWorkerProcess(
+  processPromise: Promise<WorkerProcessRunResult>,
   controlPromise: Promise<void>,
   supervision: {
-    /** Controller that terminates the Codex child. */
-    codexAbortController: AbortController;
+    /** Controller that terminates the native child. */
+    workerAbortController: AbortController;
     /** Returns whether an external or worker interrupt owns cancellation. */
     isInterrupted: () => boolean;
     /** Records whether the process or control path owns a frozen failure. */
@@ -698,7 +833,7 @@ async function superviseCodexProcess(
     /** Controller that terminates control polling and in-flight requests. */
     controlAbortController: AbortController;
   }
-): Promise<CodexProcessRunResult> {
+): Promise<WorkerProcessRunResult> {
   const first = await Promise.race([
     processPromise.then(
       (result) => ({ kind: 'process-complete' as const, result }),
@@ -719,13 +854,13 @@ async function superviseCodexProcess(
     supervision.controlAbortController.abort();
     await controlPromise.catch(() => undefined);
     if (interruptedAtWinner) {
-      return interruptedCodexProcessResult();
+      return interruptedWorkerProcessResult();
     }
     supervision.onFailureOwner('runtime');
     throw first.error;
   }
 
-  supervision.codexAbortController.abort();
+  supervision.workerAbortController.abort();
   supervision.controlAbortController.abort();
   const processOutcome = await processPromise.then(
     (result) => ({ kind: 'process-complete' as const, result }),
@@ -736,22 +871,22 @@ async function superviseCodexProcess(
   if (interruptedAtWinner) {
     return processOutcome.kind === 'process-complete'
       ? processOutcome.result
-      : interruptedCodexProcessResult();
+      : interruptedWorkerProcessResult();
   }
   if (first.kind === 'control-failed') {
     supervision.onFailureOwner('control');
     throw first.error;
   }
   supervision.onFailureOwner('control');
-  throw new Error('Worker control stopped before Codex completed.');
+  throw new Error('Worker control stopped before the native process completed.');
 }
 
 /**
  * Creates the normalized process result used after supervisor cancellation.
  *
- * @returns Signal-terminated Codex process result without child diagnostics.
+ * @returns Signal-terminated native process result without child diagnostics.
  */
-function interruptedCodexProcessResult(): CodexProcessRunResult {
+function interruptedWorkerProcessResult(): WorkerProcessRunResult {
   return {
     exitCode: null,
     signal: 'SIGTERM',
@@ -828,9 +963,9 @@ function parseFlagValues(argv: string[], booleanFlags = new Set<string>()): Map<
 }
 
 /**
- * Child-process-backed Codex process runner.
+ * Child-process-backed worker process runner.
  */
-class ChildProcessCodexProcessRunner implements CodexProcessRunner {
+class ChildProcessWorkerProcessRunner implements WorkerProcessRunner {
   /**
    * Runs one child process and retains only bounded diagnostic output prefixes.
    *
@@ -838,11 +973,11 @@ class ChildProcessCodexProcessRunner implements CodexProcessRunner {
    * @returns Completed process result.
    * @throws When spawning, reading output, or the stdout sink fails.
    */
-  public async run(input: CodexProcessRunInput): Promise<CodexProcessRunResult> {
+  public async run(input: WorkerProcessRunInput): Promise<WorkerProcessRunResult> {
     const [command, ...args] = input.argv;
 
     if (!command) {
-      throw new Error('Codex shim requires a non-empty Codex command.');
+      throw new Error('Worker shim requires a non-empty native command.');
     }
 
     return runChildProcessGroup({
@@ -850,6 +985,7 @@ class ChildProcessCodexProcessRunner implements CodexProcessRunner {
       command,
       cwd: input.cwd,
       env: input.env,
+      ...(input.onStart ? { onStart: input.onStart } : {}),
       signal: input.signal,
       ...(input.writeStdout ? { writeStdout: input.writeStdout } : {}),
     });
@@ -874,9 +1010,11 @@ async function runChildProcessGroup(input: {
   env: Record<string, string>;
   /** Supervisor cancellation signal. */
   signal: AbortSignal;
+  /** Optional callback fired only after successful native spawn. */
+  onStart?: (() => void) | undefined;
   /** Optional backpressured sink for exact stdout bytes. */
   writeStdout?: ((chunk: Uint8Array) => Promise<void>) | undefined;
-}): Promise<CodexProcessRunResult> {
+}): Promise<WorkerProcessRunResult> {
   input.signal.throwIfAborted();
   const child = spawn(input.command, input.args, {
     ...(input.cwd ? { cwd: input.cwd } : {}),
@@ -884,6 +1022,7 @@ async function runChildProcessGroup(input: {
     env: input.env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  child.once('spawn', () => input.onStart?.());
   const close = new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>(
     (resolve) => {
       child.once('close', (exitCode, signal) => resolve({ exitCode, signal }));
@@ -1108,8 +1247,8 @@ async function settleChildProcessDrains(
  * @param packagePath Worker-visible package manifest path.
  * @returns Minimal package manifest used by the shim.
  */
-async function readCodexShimPackage(packagePath: string): Promise<CodexShimPackageManifest> {
-  return JSON.parse(await readFile(packagePath, 'utf8')) as CodexShimPackageManifest;
+async function readWorkerShimPackage(packagePath: string): Promise<WorkerShimPackageManifest> {
+  return JSON.parse(await readFile(packagePath, 'utf8')) as WorkerShimPackageManifest;
 }
 
 /**
@@ -1119,9 +1258,7 @@ async function readCodexShimPackage(packagePath: string): Promise<CodexShimPacka
  * @returns Valid declaration, or null when runtime provenance is not requested.
  * @throws When a present declaration differs from the canonical AEP projection.
  */
-function parseCodexRuntimeProvenanceDeclaration(
-  value: unknown
-): CodexRuntimeProvenanceDeclaration | null {
+function parseRuntimeProvenanceDeclaration(value: unknown): RuntimeProvenanceDeclaration | null {
   if (value === undefined) {
     return null;
   }
@@ -1138,25 +1275,7 @@ function parseCodexRuntimeProvenanceDeclaration(
     throw new Error('Invalid runtime provenance declaration.');
   }
 
-  return value as unknown as CodexRuntimeProvenanceDeclaration;
-}
-
-/**
- * Maps one fixed worker-visible session output into the mounted host session directory.
- *
- * @param workerPath Worker-visible path rooted at `/openkit/session`.
- * @param sessionDir Mounted host session directory.
- * @returns Host path for the declared output.
- * @throws When the declaration escapes the fixed session root.
- */
-function mapWorkerSessionPath(workerPath: string, sessionDir: string): string {
-  const prefix = '/openkit/session/';
-
-  if (!workerPath.startsWith(prefix)) {
-    throw new Error(`Runtime provenance path must be rooted at ${prefix}`);
-  }
-
-  return join(sessionDir, workerPath.slice(prefix.length));
+  return value as unknown as RuntimeProvenanceDeclaration;
 }
 
 /**
@@ -1164,13 +1283,9 @@ function mapWorkerSessionPath(workerPath: string, sessionDir: string): string {
  *
  * @param packageManifest Parsed worker package manifest.
  */
-async function materializeRuntimeSupply(packageManifest: CodexShimPackageManifest): Promise<void> {
+async function materializeRuntimeSupply(packageManifest: WorkerShimPackageManifest): Promise<void> {
   for (const skill of resolveSkillSupply(packageManifest.supply?.skills)) {
     await materializeSkillSupply(skill);
-  }
-
-  for (const mcpServer of resolveMcpSupply(packageManifest.supply?.mcpServers)) {
-    await materializeMcpSupply(mcpServer);
   }
 }
 
@@ -1204,39 +1319,6 @@ async function materializeSkillSupply(skill: RuntimeSkillSupply): Promise<void> 
 }
 
 /**
- * Materializes one MCP supply entry as a worker-local runtime config file.
- *
- * @param mcpServer Catalog-resolved MCP supply entry.
- */
-async function materializeMcpSupply(mcpServer: RuntimeMcpSupply): Promise<void> {
-  await mkdir(dirname(mcpServer.materialization.targetPath), { recursive: true });
-  await writeFile(
-    mcpServer.materialization.targetPath,
-    `${JSON.stringify(
-      {
-        allowedPrompts: mcpServer.allowedPrompts,
-        allowedTools: mcpServer.allowedTools,
-        command: mcpServer.command,
-        id: mcpServer.id,
-        networkPolicyHints: mcpServer.networkPolicyHints,
-        providerInstanceIds: mcpServer.providerInstanceIds,
-        reviewStatus: mcpServer.reviewStatus,
-        schemaVersion: 1,
-        secretRefIds: mcpServer.secretRefIds,
-        sourceRef: mcpServer.sourceRef,
-        transport: mcpServer.transport,
-        url: mcpServer.url,
-        vaultGrantIds: mcpServer.vaultGrantIds,
-        version: mcpServer.version,
-      },
-      null,
-      2
-    )}\n`,
-    'utf8'
-  );
-}
-
-/**
  * Resolves well-formed Skill supply records from untrusted package data.
  *
  * @param value Candidate supply array.
@@ -1251,20 +1333,6 @@ function resolveSkillSupply(value: unknown): RuntimeSkillSupply[] {
 }
 
 /**
- * Resolves well-formed MCP supply records from untrusted package data.
- *
- * @param value Candidate supply array.
- * @returns MCP supply records that declare a worker-local materialization target.
- */
-function resolveMcpSupply(value: unknown): RuntimeMcpSupply[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value.filter(isRuntimeMcpSupply);
-}
-
-/**
  * Checks whether a value is a materializable Skill supply entry.
  *
  * @param value Candidate package value.
@@ -1276,21 +1344,6 @@ function isRuntimeSkillSupply(value: unknown): value is RuntimeSkillSupply {
     typeof value.id === 'string' &&
     isRuntimeSupplyMaterialization(value.materialization) &&
     value.materialization.kind === 'filesystem-copy'
-  );
-}
-
-/**
- * Checks whether a value is a materializable MCP supply entry.
- *
- * @param value Candidate package value.
- * @returns True when the value can be safely materialized as MCP runtime config.
- */
-function isRuntimeMcpSupply(value: unknown): value is RuntimeMcpSupply {
-  return (
-    isRecord(value) &&
-    typeof value.id === 'string' &&
-    isRuntimeSupplyMaterialization(value.materialization) &&
-    value.materialization.kind === 'generated-config'
   );
 }
 
@@ -1315,124 +1368,159 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Resolves the inner Codex command supervised by the shim.
+ * Rejects every retired native command or final-message override before adapter preparation.
  *
- * @param packageManifest Worker-visible package manifest.
+ * @param packageManifest Worker-visible AEP.
  * @param environment Sandbox environment.
- * @returns Command argv.
+ * @throws Error when a retired override is present.
  */
-function resolveCodexCommand(
-  packageManifest: CodexShimPackageManifest,
-  environment: CodexShimEnvironment,
-  workingDirectory: string,
-  resultMessagePath: string
-): string[] {
-  if (environment.OPENKIT_CODEX_COMMAND) {
-    return parseCodexCommandValue(environment.OPENKIT_CODEX_COMMAND);
+function rejectRetiredWorkerOverrides(
+  packageManifest: WorkerShimPackageManifest,
+  environment: WorkerShimEnvironment
+): void {
+  if (
+    environment.OPENKIT_CODEX_COMMAND !== undefined ||
+    packageManifest.extensions?.openkit?.codexCommand !== undefined
+  ) {
+    throw new Error('Retired worker command override is not supported.');
+  }
+  if (packageManifest.extensions?.openkit?.resultMessagePath !== undefined) {
+    throw new Error('Retired worker result-message override is not supported.');
+  }
+}
+
+/**
+ * Validates the fixed generic shim command carried by the AEP.
+ *
+ * @param packageManifest Worker-visible AEP.
+ * @throws Error when the command is missing or runtime-native.
+ */
+function validateWorkerShimCommand(packageManifest: WorkerShimPackageManifest): void {
+  const argv = packageManifest.runtime?.command?.argv;
+
+  if (
+    !Array.isArray(argv) ||
+    argv.length !== 3 ||
+    argv[0] !== 'openkit-worker-shim' ||
+    argv[1] !== '--package' ||
+    argv[2] !== '/openkit/config/package.json'
+  ) {
+    throw new Error('Worker shim requires the fixed AEP runtime.command.argv.');
+  }
+}
+
+/**
+ * Resolves the sole opaque adapter selector from the AEP.
+ *
+ * @param packageManifest Worker-visible AEP.
+ * @returns Static registry key.
+ * @throws Error when the selector is missing or uses another shim kind.
+ */
+function resolveWorkerAdapterId(packageManifest: WorkerShimPackageManifest): string {
+  const adapter = packageManifest.control?.adapter;
+
+  if (adapter?.kind !== 'openkit-worker-shim' || typeof adapter.targetRuntime !== 'string') {
+    throw new Error('Worker shim requires one AEP control.adapter.targetRuntime selector.');
   }
 
-  const packageCommand = packageManifest.extensions?.openkit?.codexCommand;
+  return adapter.targetRuntime;
+}
 
-  if (isStringArray(packageCommand)) {
-    return packageCommand;
+/**
+ * Resolves the package's single already selected LLM route.
+ *
+ * @param packageManifest Worker-visible AEP.
+ * @returns Valid runtime-neutral route.
+ * @throws Error when the route count or shape is invalid.
+ */
+function resolveWorkerLlmRoute(packageManifest: WorkerShimPackageManifest): WorkerAdapterLlmRoute {
+  const routes = packageManifest.llm?.routes;
+
+  if (!Array.isArray(routes) || routes.length !== 1 || !isRecord(routes[0])) {
+    throw new Error('Worker shim requires exactly one resolved LLM route.');
+  }
+  const route = routes[0];
+  const endpoint = route.endpoint;
+  if (
+    typeof route.id !== 'string' ||
+    typeof route.model !== 'string' ||
+    typeof route.providerInstanceId !== 'string' ||
+    !['none', 'placeholder', 'environment'].includes(String(route.credentialVisibility)) ||
+    !isRecord(endpoint) ||
+    !['openai-compatible', 'provider-compatible', 'backend-local'].includes(
+      String(endpoint.kind)
+    ) ||
+    (endpoint.upstream !== undefined && !isRecord(endpoint.upstream))
+  ) {
+    throw new Error('Worker shim received an invalid resolved LLM route.');
+  }
+  const upstream = isRecord(endpoint.upstream) ? endpoint.upstream : undefined;
+  if (
+    upstream &&
+    !['nanocore-gateway', 'backend-local', 'direct-provider'].includes(String(upstream.kind))
+  ) {
+    throw new Error('Worker shim received an invalid resolved LLM route.');
   }
 
+  return {
+    credentialVisibility:
+      route.credentialVisibility as WorkerAdapterLlmRoute['credentialVisibility'],
+    endpoint: {
+      kind: endpoint.kind as WorkerAdapterLlmRoute['endpoint']['kind'],
+      ...(typeof endpoint.workerBaseUrl === 'string'
+        ? { workerBaseUrl: endpoint.workerBaseUrl }
+        : {}),
+      ...(upstream
+        ? {
+            upstream: {
+              kind: upstream.kind as NonNullable<
+                WorkerAdapterLlmRoute['endpoint']['upstream']
+              >['kind'],
+              ...(typeof upstream.baseUrlRef === 'string'
+                ? { baseUrlRef: upstream.baseUrlRef }
+                : {}),
+            },
+          }
+        : {}),
+    },
+    id: route.id,
+    model: route.model,
+    providerInstanceId: route.providerInstanceId,
+  };
+}
+
+/**
+ * Resolves the private per-turn worker input.
+ *
+ * @param packageManifest Worker-visible AEP.
+ * @returns Non-empty turn input.
+ * @throws Error when the AEP omits its private turn input.
+ */
+function resolveWorkerTurnInput(packageManifest: WorkerShimPackageManifest): string {
   const turnInput = packageManifest.extensions?.openkit?.turnInput;
 
-  if (typeof turnInput === 'string' && turnInput.trim().length > 0) {
-    return [
-      'codex',
-      'exec',
-      '--json',
-      '--output-last-message',
-      resultMessagePath,
-      '--cd',
-      workingDirectory,
-      '--dangerously-bypass-approvals-and-sandbox',
-      turnInput,
-    ];
+  if (typeof turnInput !== 'string' || turnInput.trim().length === 0) {
+    throw new Error('Worker shim requires extensions.openkit.turnInput.');
   }
 
-  return ['codex', 'app-server', '--listen', 'stdio://'];
+  return turnInput;
 }
 
 /**
- * Resolves the file path where `codex exec` writes its final answer.
+ * Resolves the fixed worker-visible native cwd.
  *
- * @param packageManifest Worker-visible package manifest.
- * @param sessionDir Durable session transcript directory.
- * @returns Worker-visible final-message path.
+ * @param packageManifest Worker-visible AEP.
+ * @returns Native worker cwd.
+ * @throws Error when the AEP omits its working directory.
  */
-function resolveCodexResultMessagePath(
-  packageManifest: CodexShimPackageManifest,
-  sessionDir: string
-): string {
-  const configured = packageManifest.extensions?.openkit?.resultMessagePath;
+function resolveWorkerWorkingDirectory(packageManifest: WorkerShimPackageManifest): string {
+  const cwd = packageManifest.runtime?.command?.workingDirectory;
 
-  return typeof configured === 'string' && configured.length > 0
-    ? configured
-    : join(sessionDir, 'final-message.txt');
-}
-
-/**
- * Reads the final Codex answer when one was written by the supervised process.
- *
- * @param resultMessagePath Worker-visible final-message path.
- * @returns Trimmed assistant text, or null when no final message exists.
- * @throws When the final message is not a readable regular file or exceeds the fixed size bound.
- */
-async function readCodexResultMessage(resultMessagePath: string): Promise<string | null> {
-  let file: Awaited<ReturnType<typeof open>>;
-
-  try {
-    file = await open(resultMessagePath, 'r');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return null;
-    }
-    throw error;
+  if (typeof cwd !== 'string' || cwd.length === 0) {
+    throw new Error('Worker shim requires runtime.command.workingDirectory.');
   }
 
-  try {
-    const metadata = await file.stat();
-
-    if (!metadata.isFile()) {
-      throw new Error('Codex final message path is not a regular file.');
-    }
-    if (metadata.size > CODEX_FINAL_MESSAGE_MAX_BYTES) {
-      throw new Error(`Codex final message exceeds ${CODEX_FINAL_MESSAGE_MAX_BYTES} bytes.`);
-    }
-
-    const raw = Buffer.allocUnsafe(CODEX_FINAL_MESSAGE_MAX_BYTES + 1);
-    let length = 0;
-    while (length < raw.length) {
-      const { bytesRead } = await file.read(raw, length, raw.length - length, length);
-      if (bytesRead === 0) {
-        break;
-      }
-      length += bytesRead;
-    }
-    if (length > CODEX_FINAL_MESSAGE_MAX_BYTES) {
-      throw new Error(`Codex final message exceeds ${CODEX_FINAL_MESSAGE_MAX_BYTES} bytes.`);
-    }
-    const text = raw.toString('utf8', 0, length).trim();
-
-    return text.length > 0 ? text : null;
-  } finally {
-    await file.close();
-  }
-}
-
-/**
- * Resolves the worker cwd for the inner Codex process.
- *
- * @param packageManifest Worker-visible package manifest.
- * @returns Codex cwd.
- */
-function resolveCodexWorkingDirectory(packageManifest: CodexShimPackageManifest): string {
-  const candidate = packageManifest.runtime?.command?.workingDirectory;
-
-  return typeof candidate === 'string' && candidate.length > 0 ? candidate : process.cwd();
+  return cwd;
 }
 
 /**
@@ -1441,7 +1529,7 @@ function resolveCodexWorkingDirectory(packageManifest: CodexShimPackageManifest)
  * @param packageManifest Worker-visible package manifest.
  * @returns Workspace inputs with Git materialization enabled.
  */
-function resolveWorkspaceInputs(packageManifest: CodexShimPackageManifest): WorkspaceGitInput[] {
+function resolveWorkspaceInputs(packageManifest: WorkerShimPackageManifest): WorkspaceGitInput[] {
   const inputs = packageManifest.workspace?.inputs;
 
   if (!Array.isArray(inputs)) {
@@ -1493,52 +1581,23 @@ function readWorkspaceInput(value: unknown): WorkspaceGitInput | null {
 }
 
 /**
- * Parses a Codex command override.
+ * Builds the AEP-derived environment visible only to the selected native process.
  *
- * @param value JSON-array or whitespace-separated command value.
- * @returns Command argv.
- */
-function parseCodexCommandValue(value: string): string[] {
-  const trimmed = value.trim();
-
-  if (!trimmed) {
-    throw new Error('OPENKIT_CODEX_COMMAND must not be empty.');
-  }
-
-  if (trimmed.startsWith('[')) {
-    const parsed = JSON.parse(trimmed) as unknown;
-
-    if (!isStringArray(parsed) || parsed.length === 0) {
-      throw new Error('OPENKIT_CODEX_COMMAND JSON must be a non-empty string array.');
-    }
-
-    return parsed;
-  }
-
-  return trimmed.split(/\s+/);
-}
-
-/**
- * Checks whether a value is a string array.
- *
- * @param value Candidate value.
- * @returns True when every item is a string.
- */
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string');
-}
-
-/**
- * Builds the environment visible only to the supervised Codex process.
- *
+ * @param packageManifest Worker-visible AEP.
  * @param environment Supervisor environment candidate.
- * @returns Safe runtime environment including the trusted inference placeholder.
+ * @param route The package's single resolved LLM route.
+ * @returns Safe base environment plus only route-authorized credential bindings.
  */
-function codexChildEnvironment(environment: CodexShimEnvironment): Record<string, string> {
+function workerChildEnvironment(
+  packageManifest: WorkerShimPackageManifest,
+  environment: WorkerShimEnvironment,
+  route: WorkerAdapterLlmRoute
+): Record<string, string> {
   const source = environment as Record<string, unknown>;
   const selected: Record<string, string> = {};
+  const credentialNames = workerCredentialNames(packageManifest, route);
 
-  for (const key of [...SAFE_WORKER_CHILD_ENVIRONMENT_KEYS, 'OPENKIT_WORKER_INFERENCE_TOKEN']) {
+  for (const key of [...SAFE_WORKER_CHILD_ENVIRONMENT_KEYS, ...credentialNames]) {
     const value = source[key];
 
     if (typeof value === 'string' && value.length > 0) {
@@ -1550,31 +1609,128 @@ function codexChildEnvironment(environment: CodexShimEnvironment): Record<string
 }
 
 /**
- * Builds a product-safe terminal failure reason.
+ * Resolves only the credential environment names authorized by the selected route.
  *
- * @param result Codex process result.
- * @returns Failure reason.
+ * @param packageManifest Worker-visible AEP.
+ * @param route The package's single resolved LLM route.
+ * @returns Exact child credential environment names.
  */
-function codexExitReason(result: CodexProcessRunResult): string {
-  if (result.exitCode !== null) {
-    return `Codex process exited with code ${result.exitCode}.`;
+function workerCredentialNames(
+  packageManifest: WorkerShimPackageManifest,
+  route: WorkerAdapterLlmRoute
+): Set<string> {
+  if (route.credentialVisibility === 'environment') {
+    const names = resolveRuntimeCredentialNames(packageManifest);
+    if (names.size !== 1) {
+      throw new Error('Worker environment route requires exactly one runtime-env credential.');
+    }
+
+    return names;
+  }
+  if (route.credentialVisibility === 'placeholder') {
+    return new Set(['OPENKIT_WORKER_INFERENCE_TOKEN']);
   }
 
-  return `Codex process exited with signal ${result.signal ?? 'unknown'}.`;
+  return new Set();
 }
 
 /**
- * Builds redacted stdout and stderr summaries for failed Codex processes.
+ * Reads exact credential values that must be removed from product diagnostics.
  *
- * @param result Codex process result.
+ * @param packageManifest Worker-visible AEP.
+ * @param childEnvironment Already allowlisted native-process environment.
+ * @param route The package's single resolved LLM route.
+ * @returns Non-empty exact secret values without logging them.
+ */
+function workerCredentialValues(
+  packageManifest: WorkerShimPackageManifest,
+  childEnvironment: Record<string, string>,
+  route: WorkerAdapterLlmRoute
+): string[] {
+  return [...workerCredentialNames(packageManifest, route)]
+    .map((name) => childEnvironment[name])
+    .filter((value): value is string => Boolean(value));
+}
+
+/**
+ * Resolves backend-materialized runtime environment credential names from the AEP.
+ *
+ * @param packageManifest Worker-visible AEP.
+ * @returns Declared runtime environment variable names.
+ */
+function resolveRuntimeCredentialNames(packageManifest: WorkerShimPackageManifest): Set<string> {
+  const names = new Set<string>();
+  const declarations = packageManifest.credentials?.declarations;
+
+  if (!Array.isArray(declarations)) {
+    return names;
+  }
+  for (const declaration of declarations) {
+    if (
+      isRecord(declaration) &&
+      declaration.visibility === 'runtime-env' &&
+      typeof declaration.targetEnvVarName === 'string'
+    ) {
+      names.add(declaration.targetEnvVarName);
+    }
+  }
+
+  return names;
+}
+
+/**
+ * Builds redacted stdout and stderr summaries for failed native processes.
+ *
+ * @param result Native process result.
+ * @param credentialValues Exact child credential values to remove.
  * @returns Product-safe diagnostics for transcript events.
  */
-function codexFailureDiagnostics(result: CodexProcessRunResult): Record<string, string> {
+function workerFailureDiagnostics(
+  result: WorkerProcessRunResult,
+  credentialValues: readonly string[]
+): Record<string, string> {
   return Object.fromEntries(
     [
-      ['stderr', summarizeProcessOutput(result.stderr)],
-      ['stdout', summarizeProcessOutput(result.stdout)],
+      ['stderr', summarizeProcessOutput(result.stderr, credentialValues)],
+      ['stdout', summarizeProcessOutput(result.stdout, credentialValues)],
     ].filter((entry): entry is [string, string] => Boolean(entry[1]))
+  );
+}
+
+/**
+ * Detects exact route credential material in one assistant candidate.
+ *
+ * @param output Assistant candidate, or null when the adapter produced none.
+ * @param credentialValues Exact child credential values that must never be persisted.
+ * @returns True when the candidate contains any exact non-empty credential value.
+ */
+function containsExactCredentialValue(
+  output: string | null,
+  credentialValues: readonly string[]
+): boolean {
+  return Boolean(
+    output &&
+      credentialValues
+        .flatMap((value) => [value, JSON.stringify(value).slice(1, -1)])
+        .some((value) => value && output.includes(value))
+  );
+}
+
+/**
+ * Redacts and bounds every adapter-owned diagnostic before shared terminal merging.
+ *
+ * @param diagnostics Adapter-owned failure diagnostics.
+ * @param credentialValues Exact child credential values to remove.
+ * @returns Product-safe non-empty diagnostic summaries.
+ */
+function sanitizeAdapterDiagnostics(
+  diagnostics: Readonly<Record<string, string>> | undefined,
+  credentialValues: readonly string[]
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(diagnostics ?? {})
+      .map(([key, value]) => [key, summarizeProcessOutput(value, credentialValues)] as const)
+      .filter((entry): entry is readonly [string, string] => Boolean(entry[1]))
   );
 }
 
@@ -1582,20 +1738,33 @@ function codexFailureDiagnostics(result: CodexProcessRunResult): Record<string, 
  * Redacts and bounds one process output stream for transcript diagnostics.
  *
  * @param output Raw process output.
+ * @param credentialValues Exact child credential values to remove.
  * @returns Redacted output summary, or an empty string when no output exists.
  */
-function summarizeProcessOutput(output: string): string {
-  return redactDiagnosticOutput(output).trim().slice(0, 1000);
+function summarizeProcessOutput(output: string, credentialValues: readonly string[]): string {
+  return redactDiagnosticOutput(output, credentialValues).trim().slice(0, 1000);
 }
 
 /**
  * Removes common token-bearing fragments from process diagnostics.
  *
  * @param output Raw process output.
- * @returns Output with common secret shapes removed.
+ * @param credentialValues Exact child credential values to remove.
+ * @returns Output with exact values and common secret shapes removed.
  */
-function redactDiagnosticOutput(output: string): string {
-  return output
+function redactDiagnosticOutput(output: string, credentialValues: readonly string[]): string {
+  let redacted = output;
+  const exactForms = new Set(
+    credentialValues.flatMap((value) => [value, JSON.stringify(value).slice(1, -1)])
+  );
+
+  for (const value of exactForms) {
+    if (value) {
+      redacted = redacted.split(value).join('[redacted]');
+    }
+  }
+
+  return redacted
     .replace(/\bAuthorization:\s*Bearer\s+\S+/gi, 'Authorization: Bearer [redacted]')
     .replace(/\b(token|secret|password|api[ _-]?key)\s*[:=]\s*\S+/gi, '$1=[redacted]')
     .replace(
@@ -1630,6 +1799,7 @@ async function pollWorkerControl(
  * @param transcript Shared transcript writer owned by the worker supervisor.
  * @param signal Supervisor cancellation signal.
  * @param seenCommandIds Command ids already queued or handled.
+ * @param acceptsCommands Returns whether new commands may still affect terminal classification.
  * @param onInterrupt Optional worker interrupt callback.
  */
 async function runWorkerControlLoop(
@@ -1637,6 +1807,7 @@ async function runWorkerControlLoop(
   transcript: WorkerTranscriptWriter,
   signal: AbortSignal,
   seenCommandIds: Set<string>,
+  acceptsCommands: () => boolean,
   onInterrupt?: () => void
 ): Promise<void> {
   while (!signal.aborted) {
@@ -1646,7 +1817,7 @@ async function runWorkerControlLoop(
         return;
       }
       const commandPoll = await pollWorkerControl(client, transcript, 'running', signal);
-      if (transcript.eventTranscriptSealed) {
+      if (transcript.eventTranscriptSealed || !acceptsCommands()) {
         continue;
       }
       await handleWorkerControlCommands(
@@ -1657,6 +1828,35 @@ async function runWorkerControlLoop(
         seenCommandIds,
         onInterrupt
       );
+    } catch (error) {
+      if (isSupervisorAbort(error, signal)) {
+        return;
+      }
+      throw error;
+    }
+  }
+}
+
+/**
+ * Keeps the accepted worker lease live after terminal classification is sealed.
+ *
+ * @param client Session-level worker-control coordinator.
+ * @param signal Terminal-report cancellation signal.
+ * @returns Promise that resolves only when terminal reporting stops the loop.
+ */
+async function runWorkerTerminalHeartbeatLoop(
+  client: WorkerControlClient,
+  signal: AbortSignal
+): Promise<void> {
+  while (!signal.aborted) {
+    try {
+      await delay(1000, undefined, { signal });
+      if (!signal.aborted) {
+        await client.recordHeartbeat(
+          { message: 'Worker shim completing.', status: 'running' },
+          signal
+        );
+      }
     } catch (error) {
       if (isSupervisorAbort(error, signal)) {
         return;
@@ -1814,7 +2014,7 @@ function isInterruptCommand(
  * @param environment Control environment.
  * @returns Worker lineage.
  */
-function workerLineageFromEnvironment(environment: CodexShimEnvironment): WorkerLineage {
+function workerLineageFromEnvironment(environment: WorkerShimEnvironment): WorkerLineage {
   return {
     agentSessionId: requireEnvironmentValue(environment, 'OPENKIT_AGENT_SESSION_ID'),
     packageSnapshotId: requireEnvironmentValue(environment, 'OPENKIT_PACKAGE_SNAPSHOT_ID'),
@@ -1906,8 +2106,8 @@ function requireWorkerControlToken(token: string | undefined): string {
  * @throws Error when the value is missing.
  */
 function requireEnvironmentValue(
-  environment: CodexShimEnvironment,
-  key: keyof CodexShimEnvironment
+  environment: WorkerShimEnvironment,
+  key: keyof WorkerShimEnvironment
 ): string {
   const value = environment[key];
 

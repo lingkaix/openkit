@@ -69,4 +69,44 @@ describe('NanoCore boot phase order', () => {
     expect(templateWrite).toBeLessThan(finalConfigLoad);
     expect(finalConfigLoad).toBeLessThan(layoutPhase);
   });
+
+  it('composes queued scheduler retries with the vault-backed provider credential resolver', () => {
+    const source = readEntrypointSource();
+
+    expect(source).toContain(
+      'const schedulerProviderCredentialResolver = createVaultProviderCredentialResolver({'
+    );
+    expect(source).toContain(
+      'dependencies: { providerCredentialResolver: schedulerProviderCredentialResolver },'
+    );
+  });
+
+  it('fails authoritative storage integrity before bootstrap credentials or listener binding', () => {
+    const source = readEntrypointSource();
+    const migrationsPhase = source.indexOf("name: 'migrations'");
+    const coreIntegrityCheck = source.indexOf(
+      'coreDb = openCoreDbWithIntegrityCheck(dataRoot)',
+      migrationsPhase
+    );
+    const scopedIntegrityCheck = source.indexOf(
+      'verifyAndMigrateExistingScopedDatabases(dataRoot)',
+      coreIntegrityCheck
+    );
+    const criticalFailureGate = source.indexOf(
+      'if (criticalBootFailure || !bootReadiness.acceptingProductWork)'
+    );
+    const bootstrapCredential = source.indexOf(
+      'const bootstrap = ensureServerBootstrapToken(coreDb)',
+      criticalFailureGate
+    );
+    const listenerBind = source.indexOf('const server = serve(', criticalFailureGate);
+
+    expect(coreIntegrityCheck).toBeGreaterThan(migrationsPhase);
+    expect(scopedIntegrityCheck).toBeGreaterThan(coreIntegrityCheck);
+    expect(criticalFailureGate).toBeGreaterThan(scopedIntegrityCheck);
+    expect(bootstrapCredential).toBeGreaterThan(criticalFailureGate);
+    expect(listenerBind).toBeGreaterThan(criticalFailureGate);
+    expect(source).not.toContain('storageRecoveryEvents');
+    expect(source).not.toContain("code: 'storage.quarantined'");
+  });
 });

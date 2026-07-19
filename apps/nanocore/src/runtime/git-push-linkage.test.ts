@@ -18,7 +18,7 @@ import { recordWorkspaceSyncReview } from './workspace-sync-records.js';
  */
 function createWorkspaceDb(): WorkspaceDb {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-git-push-linkage-'));
-  const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }

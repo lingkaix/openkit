@@ -15,6 +15,10 @@ import {
   AuthSignUpEmailResponseSchema,
   AutomationRecordSchema,
   BackendWorkspaceHandleSchema,
+  BindThreadMaterialRequestSchema,
+  BindThreadMaterialResponseSchema,
+  CancelGoalSteeringRequestSchema,
+  CancelGoalSteeringResponseSchema,
   CancelSchedulerAdmissionResponseSchema,
   CapabilityUsageResponseSchema,
   ChatModeOutcomeSchema,
@@ -22,23 +26,37 @@ import {
   CodexOAuthStatusPayloadSchema,
   ConsumeOpenKitBootstrapTokenRequestSchema,
   ConsumeOpenKitBootstrapTokenResponseSchema,
+  ConvertGoalSteeringToFollowUpRequestSchema,
+  ConvertGoalSteeringToFollowUpResponseSchema,
   CreateOpenKitAccessTokenRequestSchema,
   CreateOpenKitAccessTokenResponseSchema,
   CreateThreadGoalPlanRequestSchema,
   CreateThreadGoalPlanResponseSchema,
+  CreateWorkspaceMaterialRequestSchema,
+  CreateWorkspaceMaterialResponseSchema,
   DataRootBackupCreateResponseSchema,
   DataRootBackupVerifyRequestSchema,
   DataRootBackupVerifyResponseSchema,
+  ExcludeThreadMaterialRequestSchema,
+  ExcludeThreadMaterialResponseSchema,
   ExecuteGitPushRequestSchema,
   ExecuteGitPushResponseSchema,
+  GatewayUsageSummarySchema,
   GetAgentEnvironmentPackageSnapshotResponseSchema,
   GetGitPushRecordResponseSchema,
+  GetThreadMaterialResponseSchema,
   GetWorkspaceApplyResultResponseSchema,
+  GetWorkspaceMaterialResponseSchema,
+  GetWorkspaceMaterialRevisionResponseSchema,
   GitPushRecordSchema,
   GoalReadModelStatusSchema,
   GoalReviewResolutionOutcomeSchema,
   GoalTaskCountsSchema,
   GoalTaskReadModelStatusSchema,
+  ImportWorkspaceArtifactRequestSchema,
+  ImportWorkspaceArtifactResponseSchema,
+  IntroduceWorkspaceArtifactRequestSchema,
+  IntroduceWorkspaceArtifactResponseSchema,
   KnowledgeClaimSchema,
   KnowledgeConflictSchema,
   KnowledgeDerivedIndexesResponseSchema,
@@ -57,6 +75,7 @@ import {
   KnowledgeSourceSchema,
   ListAgentCatalogResponseSchema,
   ListAgentEnvironmentPackageSnapshotsResponseSchema,
+  ListArtifactReviewsResponseSchema,
   ListBackendWorkspaceHandlesResponseSchema,
   ListGitPushRecordsResponseSchema,
   ListHumanAttentionResponseSchema,
@@ -79,6 +98,8 @@ import {
   ListWorkspaceEvidenceBundlesResponseSchema,
   ListWorkspaceInputSnapshotsResponseSchema,
   ListWorkspaceMaterializationRecordsResponseSchema,
+  ListWorkspaceMaterialRevisionsResponseSchema,
+  ListWorkspaceMaterialsResponseSchema,
   ListWorkspacePermissionDecisionsResponseSchema,
   ListWorkspaceQuarantineRecordsResponseSchema,
   ListWorkspaceReconciliationRecordsResponseSchema,
@@ -89,8 +110,9 @@ import {
   MaterializeKnowledgeContextPackageResponseSchema,
   PauseThreadGoalRequestSchema,
   PauseThreadGoalResponseSchema,
-  PromoteKnowledgeClaimRequestSchema,
-  PromoteKnowledgeClaimResponseSchema,
+  PendingGoalSteeringHumanAttentionSourceSchema,
+  ProviderRegistryEntrySchema,
+  QuickChatRequestSchema,
   QuickChatResponseSchema,
   ReadKnowledgeManagerContextPackageTraceResponseSchema,
   ReadKnowledgeSourceResponseSchema,
@@ -107,6 +129,8 @@ import {
   ResolveKnowledgeConflictRequestSchema,
   ResolveKnowledgeConflictResponseSchema,
   RestartRuntimeConfigStaleSessionResponseSchema,
+  RestoreThreadMaterialRequestSchema,
+  RestoreThreadMaterialResponseSchema,
   ResumeThreadGoalRequestSchema,
   ResumeThreadGoalResponseSchema,
   RetrieveKnowledgeRequestSchema,
@@ -131,6 +155,8 @@ import {
   RuntimeConfigStatusSchema,
   RuntimeConfigValidationResponseSchema,
   RuntimeEvidenceRecordSchema,
+  SaveWorkspaceMaterialRevisionRequestSchema,
+  SaveWorkspaceMaterialRevisionResponseSchema,
   SetupDiagnosticsResponseSchema,
   SetWorkspaceRepositoryResponseSchema,
   StagedWorkspaceReviewSchema,
@@ -141,6 +167,8 @@ import {
   StartThreadGoalRequestSchema,
   StartThreadGoalResponseSchema,
   StorageLayoutReportResponseSchema,
+  SubmitArtifactReviewDecisionRequestSchema,
+  SubmitArtifactReviewDecisionResponseSchema,
   SubmitGoalReviewDecisionRequestSchema,
   SubmitGoalReviewDecisionResponseSchema,
   SubmitKnowledgeProposalDecisionRequestSchema,
@@ -153,9 +181,12 @@ import {
   SubmitWorkspaceSyncReviewDecisionRequestSchema,
   SubmitWorkspaceSyncReviewDecisionResponseSchema,
   TaskModeAttemptStateSchema,
+  TaskModeWorkerTargetSchema,
   ThreadGoalPlanSchema,
   ThreadGoalSummaryResponseSchema,
   TurnFeedbackResponseSchema,
+  UnbindThreadMaterialRequestSchema,
+  UnbindThreadMaterialResponseSchema,
   VaultAdminBootstrapCodexAuthJsonRequestSchema,
   VaultAdminBootstrapCodexAuthJsonResponseSchema,
   VaultAdminListWorkspaceReferencesResponseSchema,
@@ -185,6 +216,7 @@ import {
 } from './index.js';
 
 const timestamp = '2026-05-15T05:17:42.000Z';
+const retrievalTraceId = 'krt_123e4567-e89b-42d3-a456-426614174000';
 const rawSecretShapes = [
   'sk-openkit-secret',
   'hf_openkit_secret',
@@ -234,6 +266,399 @@ describe('app api schema package boundary', () => {
     });
 
     expect(offenders).toEqual([]);
+  });
+});
+
+describe('S16 Material and Artifact Review schemas', () => {
+  const contentDigest = `sha256:${'a'.repeat(64)}`;
+  const material = {
+    workspaceId: 'ws_demo',
+    materialId: 'material_demo',
+    title: 'Working notes',
+    kind: 'markdown',
+    currentRevisionId: 'revision_1',
+    sensitivity: 'internal',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  } as const;
+  const revisionSummary = {
+    workspaceId: 'ws_demo',
+    materialId: 'material_demo',
+    revisionId: 'revision_1',
+    parentRevisionId: null,
+    mediaType: 'text/markdown',
+    contentDigest,
+    authorId: 'user_demo',
+    createdAt: timestamp,
+  } as const;
+  const unresolvedReview = {
+    workspaceId: 'ws_demo',
+    reviewId: 'artifact_review_demo',
+    artifactId: 'artifact_demo',
+    artifactVersion: 1,
+    contentDigest,
+    sourceThreadId: 'thread_demo',
+    sourceTurnId: 'turn_demo',
+    sourceAgentId: 'agent_demo',
+    materialProposal: null,
+    decision: null,
+    decisionActorId: null,
+    feedback: null,
+    decidedAt: null,
+    followUpTurnId: null,
+    appliedMaterialRevisionId: null,
+    createdAt: timestamp,
+  } as const;
+
+  it('accepts only the 15 closed operation success identities', () => {
+    const responses = [
+      [ImportWorkspaceArtifactResponseSchema, { artifactId: 'artifact_demo', artifactVersion: 1 }],
+      [
+        IntroduceWorkspaceArtifactResponseSchema,
+        {
+          artifactId: 'artifact_demo',
+          artifactVersion: 1,
+          turnId: 'turn_demo',
+          itemId: 'item_demo',
+        },
+      ],
+      [ListArtifactReviewsResponseSchema, { reviews: [unresolvedReview] }],
+      [
+        SubmitArtifactReviewDecisionResponseSchema,
+        {
+          reviewId: 'artifact_review_demo',
+          artifactId: 'artifact_demo',
+          artifactVersion: 1,
+          decision: 'accepted',
+          followUpTurnId: null,
+        },
+      ],
+      [ListWorkspaceMaterialsResponseSchema, { materials: [material] }],
+      [CreateWorkspaceMaterialResponseSchema, { materialId: 'material_demo' }],
+      [GetWorkspaceMaterialResponseSchema, { material }],
+      [ListWorkspaceMaterialRevisionsResponseSchema, { revisions: [revisionSummary] }],
+      [
+        SaveWorkspaceMaterialRevisionResponseSchema,
+        { materialId: 'material_demo', revisionId: 'revision_1' },
+      ],
+      [
+        GetWorkspaceMaterialRevisionResponseSchema,
+        { revision: { ...revisionSummary, content: '# Working notes' } },
+      ],
+      [
+        GetThreadMaterialResponseSchema,
+        {
+          material: {
+            workspaceId: 'ws_demo',
+            threadId: 'thread_demo',
+            resource: material,
+            currentRevision: revisionSummary,
+            inclusionState: 'included',
+            latestQueuedRevisionId: 'revision_1',
+            lastWorkerSeenRevisionId: null,
+            currentTurnRevisionId: null,
+            activeDelivery: {
+              state: 'queued',
+              pendingTurnId: 'turn_pending',
+              requestId: 'request_steering',
+              contentItemId: 'item_steering',
+              goalId: 'goal_demo',
+              activeTurnId: 'turn_active',
+              materialId: 'material_demo',
+              revisionId: 'revision_1',
+              contentDigest,
+            },
+          },
+        },
+      ],
+      [
+        BindThreadMaterialResponseSchema,
+        { materialId: 'material_demo', threadId: 'thread_demo', outcome: 'bound' },
+      ],
+      [
+        UnbindThreadMaterialResponseSchema,
+        { materialId: 'material_demo', threadId: 'thread_demo', outcome: 'unbound' },
+      ],
+      [
+        ExcludeThreadMaterialResponseSchema,
+        { materialId: 'material_demo', threadId: 'thread_demo', outcome: 'excluded' },
+      ],
+      [
+        RestoreThreadMaterialResponseSchema,
+        { materialId: 'material_demo', threadId: 'thread_demo', outcome: 'included' },
+      ],
+    ] as const;
+
+    for (const [schema, response] of responses) {
+      expect(schema.safeParse(response).success).toBe(true);
+      expect(
+        schema.safeParse({ ...response, workspaceId: 'path_id_is_not_a_body_field' }).success
+      ).toBe(false);
+    }
+    expect(GetThreadMaterialResponseSchema.safeParse({ material: null }).success).toBe(true);
+    expect(
+      GetThreadMaterialResponseSchema.safeParse({
+        material: {
+          workspaceId: 'ws_demo',
+          threadId: 'thread_demo',
+          resource: material,
+          currentRevision: revisionSummary,
+          inclusionState: 'included',
+          latestQueuedRevisionId: 'revision_1',
+          lastWorkerSeenRevisionId: null,
+          currentTurnRevisionId: null,
+          activeDelivery: {
+            state: 'queued',
+            pendingTurnId: 'turn_pending',
+            requestId: 'import-lineage:reserved',
+            contentItemId: 'item_steering',
+            goalId: 'goal_demo',
+            activeTurnId: 'turn_active',
+            materialId: 'material_demo',
+            revisionId: 'revision_1',
+            contentDigest,
+          },
+        },
+      }).success
+    ).toBe(false);
+    expect(
+      ImportWorkspaceArtifactResponseSchema.safeParse({
+        artifactId: 'artifact_demo',
+        artifactVersion: 2,
+      }).success
+    ).toBe(false);
+  });
+
+  it('keeps public views closed and excludes owner-only request proof', () => {
+    expect(
+      GetWorkspaceMaterialResponseSchema.safeParse({
+        material: { ...material, lastMutationRequestId: 'request_owner_only' },
+      }).success
+    ).toBe(false);
+    expect(
+      ListWorkspaceMaterialRevisionsResponseSchema.safeParse({
+        revisions: [{ ...revisionSummary, createdByRequestId: 'request_owner_only' }],
+      }).success
+    ).toBe(false);
+    expect(
+      ListArtifactReviewsResponseSchema.safeParse({
+        reviews: [{ ...unresolvedReview, decisionRequestId: 'request_owner_only' }],
+      }).success
+    ).toBe(false);
+  });
+
+  it('accepts only the six exact Material mutation bodies', () => {
+    const mutations = [
+      [
+        CreateWorkspaceMaterialRequestSchema,
+        {
+          requestId: 'request_create',
+          title: 'Working notes',
+          kind: 'markdown',
+          sensitivity: 'internal',
+        },
+        'workspaceId',
+      ],
+      [
+        SaveWorkspaceMaterialRevisionRequestSchema,
+        {
+          requestId: 'request_save',
+          expectedRevisionId: null,
+          contentDigest,
+          content: '# Working notes',
+        },
+        'materialId',
+      ],
+      [
+        BindThreadMaterialRequestSchema,
+        { requestId: 'request_bind', expectedBindingState: 'absent' },
+        'threadId',
+      ],
+      [
+        UnbindThreadMaterialRequestSchema,
+        { requestId: 'request_unbind', expectedBindingState: 'bound' },
+        'materialId',
+      ],
+      [
+        ExcludeThreadMaterialRequestSchema,
+        {
+          requestId: 'request_exclude',
+          expectedBindingState: 'bound',
+          expectedInclusionState: 'included',
+          expectedQueuedRevisionId: 'revision_1',
+        },
+        'workspaceId',
+      ],
+      [
+        RestoreThreadMaterialRequestSchema,
+        {
+          requestId: 'request_restore',
+          expectedBindingState: 'bound',
+          expectedInclusionState: 'excluded',
+        },
+        'threadId',
+      ],
+    ] as const;
+
+    for (const [schema, request, pathField] of mutations) {
+      expect(schema.safeParse(request).success).toBe(true);
+      expect(schema.safeParse({ ...request, [pathField]: 'duplicated_path_id' }).success).toBe(
+        false
+      );
+      expect(schema.safeParse({ ...request, requestId: 'import-lineage:reserved' }).success).toBe(
+        false
+      );
+    }
+  });
+
+  it('requires an explicit nullable expected revision and lowercase sha256 digests', () => {
+    const request = {
+      requestId: 'request_save',
+      expectedRevisionId: null,
+      contentDigest,
+      content: '# Working notes',
+    } as const;
+
+    expect(SaveWorkspaceMaterialRevisionRequestSchema.safeParse(request).success).toBe(true);
+    expect(
+      SaveWorkspaceMaterialRevisionRequestSchema.safeParse({
+        ...request,
+        expectedRevisionId: 'revision_1',
+      }).success
+    ).toBe(true);
+    expect(
+      SaveWorkspaceMaterialRevisionRequestSchema.safeParse({
+        requestId: request.requestId,
+        contentDigest,
+        content: request.content,
+      }).success
+    ).toBe(false);
+    for (const invalidDigest of [`sha256:${'A'.repeat(64)}`, `sha256:${'a'.repeat(63)}`]) {
+      expect(
+        SaveWorkspaceMaterialRevisionRequestSchema.safeParse({
+          ...request,
+          contentDigest: invalidDigest,
+        }).success
+      ).toBe(false);
+    }
+  });
+
+  it('enforces Artifact request strictness and Review decision coherence', () => {
+    const requests = [
+      [
+        ImportWorkspaceArtifactRequestSchema,
+        {
+          requestId: 'request_import',
+          title: 'Imported notes',
+          mediaType: 'text/markdown',
+          contentDigest,
+          content: '# Imported notes',
+        },
+        'workspaceId',
+      ],
+      [
+        IntroduceWorkspaceArtifactRequestSchema,
+        { requestId: 'request_introduce', expectedArtifactVersion: 1 },
+        'artifactId',
+      ],
+      [
+        SubmitArtifactReviewDecisionRequestSchema,
+        { requestId: 'request_review', decision: 'accepted' },
+        'artifactVersion',
+      ],
+    ] as const;
+
+    for (const [schema, request, pathField] of requests) {
+      expect(schema.safeParse(request).success).toBe(true);
+      expect(schema.safeParse({ ...request, [pathField]: 'duplicated_path_id' }).success).toBe(
+        false
+      );
+    }
+    for (const [content, expected] of [
+      ['{"valid":true}', true],
+      ['{"invalid":', false],
+    ] as const) {
+      expect(
+        ImportWorkspaceArtifactRequestSchema.safeParse({
+          ...requests[0][1],
+          mediaType: 'application/json',
+          content,
+        }).success
+      ).toBe(expected);
+    }
+    expect(
+      ImportWorkspaceArtifactRequestSchema.safeParse({
+        ...requests[0][1],
+        content: '',
+      }).success
+    ).toBe(false);
+    expect(
+      SubmitArtifactReviewDecisionRequestSchema.safeParse({
+        requestId: 'import-lineage:reserved',
+        decision: 'accepted',
+      }).success
+    ).toBe(false);
+    for (const request of [
+      { requestId: 'request_refine', decision: 'needs_refinement' },
+      { requestId: 'request_redo', decision: 'redo', feedback: '' },
+      { requestId: 'request_reject', decision: 'rejected', feedback: '' },
+    ]) {
+      expect(SubmitArtifactReviewDecisionRequestSchema.safeParse(request).success).toBe(false);
+    }
+    expect(
+      SubmitArtifactReviewDecisionRequestSchema.safeParse({
+        requestId: 'request_refine',
+        decision: 'needs_refinement',
+        feedback: 'Keep the previous attempt and revise the proposal.',
+      }).success
+    ).toBe(true);
+
+    const decidedReview = {
+      ...unresolvedReview,
+      decision: 'needs_refinement',
+      decisionActorId: 'user_demo',
+      feedback: 'Revise the proposal.',
+      decidedAt: timestamp,
+      followUpTurnId: 'turn_follow_up',
+    } as const;
+    expect(ListArtifactReviewsResponseSchema.safeParse({ reviews: [decidedReview] }).success).toBe(
+      true
+    );
+    const acceptedProposalReview = {
+      ...unresolvedReview,
+      materialProposal: {
+        materialId: 'material_demo',
+        baseRevisionId: 'revision_1',
+        baseContentDigest: contentDigest,
+      },
+      decision: 'accepted',
+      decisionActorId: 'user_demo',
+      decidedAt: timestamp,
+      appliedMaterialRevisionId: 'revision_2',
+    } as const;
+    expect(
+      ListArtifactReviewsResponseSchema.safeParse({ reviews: [acceptedProposalReview] }).success
+    ).toBe(true);
+    for (const review of [
+      { ...decidedReview, feedback: null },
+      { ...decidedReview, followUpTurnId: null },
+      { ...decidedReview, appliedMaterialRevisionId: 'revision_2' },
+      { ...acceptedProposalReview, appliedMaterialRevisionId: null },
+      { ...unresolvedReview, decidedAt: timestamp },
+    ]) {
+      expect(ListArtifactReviewsResponseSchema.safeParse({ reviews: [review] }).success).toBe(
+        false
+      );
+    }
+    expect(
+      SubmitArtifactReviewDecisionResponseSchema.safeParse({
+        reviewId: 'artifact_review_demo',
+        artifactId: 'artifact_demo',
+        artifactVersion: 1,
+        decision: 'accepted',
+        followUpTurnId: 'turn_not_allowed',
+      }).success
+    ).toBe(false);
   });
 });
 
@@ -580,20 +1005,29 @@ describe('app api schemas', () => {
 
   it('accepts Knowledge Store retrieval trace payloads', () => {
     const selected = {
-      conceptId: 'release-plan',
-      title: 'Release plan',
-      path: 'knowledge/pages/release-plan.md',
+      knowledgePageId: 'release-plan',
+      contentDigest: `sha256:${'b'.repeat(64)}`,
       score: 4,
-      matchedTerms: ['release', 'cadence'],
       sourceReferences: ['source:ks_demo'],
     };
     const excluded = {
-      conceptId: 'old-plan',
-      title: 'Old plan',
-      path: 'knowledge/pages/old-plan.md',
-      reason: 'relevance_too_low',
-      detail: 'No query terms matched this candidate.',
+      knowledgePageId: 'old-plan',
+      contentDigest: null,
+      reason: 'source_unavailable',
     };
+    const response = {
+      traceId: retrievalTraceId,
+      workspaceId: 'ws_demo',
+      caller: 'assistant',
+      requestDigest: `sha256:${'a'.repeat(64)}`,
+      retrievalParameters: {
+        limit: 3,
+        pinnedConceptIds: ['release-plan'],
+      },
+      selected: [selected],
+      excluded: [excluded],
+      createdAt: timestamp,
+    } as const;
 
     expect(
       RetrieveKnowledgeRequestSchema.parse({
@@ -606,23 +1040,47 @@ describe('app api schemas', () => {
       limit: 3,
       pinnedConceptIds: ['release-plan'],
     });
-    expect(
-      KnowledgeRetrievalResponseSchema.parse({
-        traceId: 'krt_demo',
-        workspaceId: 'ws_demo',
-        query: 'release cadence',
-        createdAt: timestamp,
-        selected: [selected],
-        excluded: [excluded],
-      })
-    ).toEqual({
-      traceId: 'krt_demo',
-      workspaceId: 'ws_demo',
-      query: 'release cadence',
-      createdAt: timestamp,
-      selected: [selected],
-      excluded: [excluded],
+    expect(KnowledgeRetrievalResponseSchema.parse(response)).toEqual(response);
+    expect(KnowledgeRetrievalResponseSchema.parse({ ...response, caller: 'task-mode' })).toEqual({
+      ...response,
+      caller: 'task-mode',
     });
+    expect(KnowledgeRetrievalResponseSchema.parse({ ...response, caller: 'app-api' })).toEqual({
+      ...response,
+      caller: 'app-api',
+    });
+    expect(() =>
+      KnowledgeRetrievalResponseSchema.parse({ ...response, caller: 'workflow-coordinator' })
+    ).toThrow();
+    expect(() =>
+      KnowledgeRetrievalResponseSchema.parse({ ...response, query: 'release cadence' })
+    ).toThrow();
+
+    for (const legacyFields of [
+      { matchedTerms: ['release', 'cadence'] },
+      { path: 'knowledge/pages/release-plan.md' },
+      { title: 'Release plan' },
+    ]) {
+      expect(() =>
+        KnowledgeRetrievalResponseSchema.parse({
+          ...response,
+          selected: [{ ...selected, ...legacyFields }],
+        })
+      ).toThrow();
+    }
+
+    for (const legacyFields of [
+      { path: 'knowledge/pages/old-plan.md' },
+      { title: 'Old plan' },
+      { detail: 'The source page was unavailable.' },
+    ]) {
+      expect(() =>
+        KnowledgeRetrievalResponseSchema.parse({
+          ...response,
+          excluded: [{ ...excluded, ...legacyFields }],
+        })
+      ).toThrow();
+    }
   });
 
   it('accepts Knowledge Store derived index payloads', () => {
@@ -737,7 +1195,7 @@ describe('app api schemas', () => {
       KnowledgeManagerAnswerRequestSchema.parse({
         query: 'release cadence',
       })
-    ).toMatchObject({ caller: 'assistant', query: 'release cadence' });
+    ).toEqual({ query: 'release cadence' });
 
     expect(
       KnowledgeManagerAnswerResponseSchema.parse({
@@ -745,6 +1203,7 @@ describe('app api schemas', () => {
         operation: 'answer',
         workspaceId: 'ws_demo',
         caller: 'assistant',
+        retrievalTraceId,
         query: 'release cadence',
         outcome: 'answered',
         answer: 'Release cadence is weekly.',
@@ -762,6 +1221,7 @@ describe('app api schemas', () => {
     ).toMatchObject({
       operation: 'answer',
       outcome: 'answered',
+      retrievalTraceId,
       citations: [{ knowledgeEntryId: 'mem_demo' }],
     });
   });
@@ -776,7 +1236,6 @@ describe('app api schemas', () => {
       })
     ).toMatchObject({
       artifactIds: ['artifact_release_log'],
-      caller: 'workflow-coordinator',
       query: 'release cadence',
       workspaceFiles: [{ path: 'docs/release.md' }],
       workspaceRootFiles: [{ rootId: 'repo_docs', path: 'docs/runtime.md' }],
@@ -787,7 +1246,8 @@ describe('app api schemas', () => {
         operationId: 'km_context_demo',
         operation: 'prepare-context-material',
         workspaceId: 'ws_demo',
-        caller: 'workflow-coordinator',
+        caller: 'app-api',
+        retrievalTraceId,
         query: 'release cadence',
         outcome: 'prepared',
         materials: [
@@ -809,14 +1269,27 @@ describe('app api schemas', () => {
             workspaceId: 'ws_demo',
             threadId: null,
             turnId: null,
-            kind: 'summary',
+            kind: 'file',
             title: 'Release log',
             status: 'ready',
-            summary: 'Release evidence.',
+            summary: null,
             version: 1,
             content: {
               format: 'markdown',
               body: 'Release evidence is ready.',
+            },
+            contentDigest:
+              'sha256:3dfe19c382bcb22acc80ab226fcb1f3b11dbc835c6bfc68ea5fbaa6657d30248',
+            lastMutationRequestId: 'knowledge-context-artifact-1',
+            origin: {
+              kind: 'imported',
+              sourceKind: 'direct-import',
+              sourceId: 'knowledge-context-artifact-1',
+              sourceDigest:
+                'sha256:3dfe19c382bcb22acc80ab226fcb1f3b11dbc835c6bfc68ea5fbaa6657d30248',
+              actor: { kind: 'user', id: 'user_local' },
+              requestId: 'knowledge-context-artifact-1',
+              recordedAt: '2026-07-07T00:00:00.000Z',
             },
             createdAt: '2026-07-07T00:00:00.000Z',
             updatedAt: '2026-07-07T00:00:00.000Z',
@@ -898,6 +1371,7 @@ describe('app api schemas', () => {
     ).toMatchObject({
       operation: 'prepare-context-material',
       outcome: 'prepared',
+      retrievalTraceId,
       materials: [{ knowledgeEntryId: 'kn_demo' }],
       artifacts: [{ id: 'artifact_release_log' }],
       workspaceFiles: [{ path: 'docs/release.md' }],
@@ -928,7 +1402,8 @@ describe('app api schemas', () => {
             operationId: 'km_context_demo',
             operation: 'prepare-context-material',
             workspaceId: 'ws_demo',
-            caller: 'workflow-coordinator',
+            caller: 'app-api',
+            retrievalTraceId,
             query: 'release cadence',
             outcome: 'prepared',
             materials: [
@@ -966,6 +1441,7 @@ describe('app api schemas', () => {
       trace: {
         id: 'ctxpkg_km_context_demo',
         response: {
+          retrievalTraceId,
           packageTrace: {
             contextPackageId: 'ctxpkg_km_context_demo',
           },
@@ -1112,7 +1588,6 @@ describe('app api schemas', () => {
         summary: 'Record that releases are reviewed every Friday.',
       })
     ).toMatchObject({
-      caller: 'system',
       requestId: 'req_km_proposal',
       title: 'Release cadence',
     });
@@ -1122,7 +1597,7 @@ describe('app api schemas', () => {
         operationId: 'km_proposal_demo',
         operation: 'draft-proposal',
         workspaceId: 'ws_demo',
-        caller: 'system',
+        caller: 'app-api',
         proposal: {
           id: 'kp_demo',
           workspaceId: 'ws_demo',
@@ -1163,92 +1638,15 @@ describe('app api schemas', () => {
     });
   });
 
-  it('accepts Knowledge Claim promotion requests and responses', () => {
-    expect(
-      PromoteKnowledgeClaimRequestSchema.parse({
-        requestId: 'req_claim_promote',
-      })
-    ).toEqual({
-      caller: 'system',
-      requestId: 'req_claim_promote',
-    });
-
-    expect(
-      PromoteKnowledgeClaimResponseSchema.parse({
-        claim: {
-          id: 'kc_release',
-          workspaceId: 'ws_demo',
-          statement: 'Release cadence is weekly.',
-          sourceReferences: ['knowledge:kn_demo'],
-          scope: 'workspace',
-          producer: 'knowledge-manager',
-          confidence: 0.8,
-          freshness: 'current',
-          reviewState: 'accepted',
-          conflictStatus: 'none',
-          createdAt: '2026-07-07T00:00:00.000Z',
-          updatedAt: '2026-07-07T00:00:00.000Z',
-        },
-        draft: {
-          operationId: 'km_claim_promotion_demo',
-          operation: 'draft-proposal',
-          workspaceId: 'ws_demo',
-          caller: 'system',
-          proposal: {
-            id: 'kp_demo',
-            workspaceId: 'ws_demo',
-            title: 'Claim: Release cadence is weekly.',
-            summary: 'Release cadence is weekly.',
-            status: 'pending',
-            createdAt: '2026-07-07T00:00:00.000Z',
-            updatedAt: '2026-07-07T00:00:00.000Z',
-          },
-          sourceReferences: ['knowledge:kn_demo'],
-          sourceLineage: [
-            {
-              reference: 'knowledge:kn_demo',
-              classification: 'workspace-knowledge',
-              sourceId: null,
-              knowledgeEntryId: 'kn_demo',
-              title: 'Release plan',
-              reviewRequired: false,
-              detail: 'Reference resolves to an existing workspace knowledge entry.',
-            },
-          ],
-          validation: {
-            status: 'ready-for-review',
-            checks: [
-              {
-                code: 'source-reference-resolved',
-                passed: true,
-                detail: 'Reference resolves to an existing workspace knowledge entry.',
-              },
-            ],
-          },
-          confidence: 0.8,
-        },
-      })
-    ).toMatchObject({
-      claim: { id: 'kc_release' },
-      draft: {
-        operation: 'draft-proposal',
-        proposal: { status: 'pending' },
-      },
-    });
-  });
-
   it('accepts Knowledge Manager repair suggestion requests and responses', () => {
-    expect(KnowledgeManagerSuggestRepairRequestSchema.parse({})).toMatchObject({
-      caller: 'system',
-      limit: 10,
-    });
+    expect(KnowledgeManagerSuggestRepairRequestSchema.parse({})).toEqual({ limit: 10 });
 
     expect(
       KnowledgeManagerSuggestRepairResponseSchema.parse({
         operationId: 'km_repair_demo',
         operation: 'suggest-repair',
         workspaceId: 'ws_demo',
-        caller: 'system',
+        caller: 'app-api',
         outcome: 'suggested',
         suggestions: [
           {
@@ -1270,17 +1668,14 @@ describe('app api schemas', () => {
   });
 
   it('accepts Knowledge Manager health-check requests and responses', () => {
-    expect(KnowledgeManagerHealthCheckRequestSchema.parse({})).toMatchObject({
-      caller: 'system',
-      limit: 10,
-    });
+    expect(KnowledgeManagerHealthCheckRequestSchema.parse({})).toEqual({ limit: 10 });
 
     expect(
       KnowledgeManagerHealthCheckResponseSchema.parse({
         operationId: 'km_health_demo',
         operation: 'health-check',
         workspaceId: 'ws_demo',
-        caller: 'system',
+        caller: 'app-api',
         outcome: 'needs-attention',
         summary: 'Knowledge Manager found 1 repair suggestion.',
         checks: [
@@ -1314,51 +1709,105 @@ describe('app api schemas', () => {
     });
   });
 
-  it('accepts storage layout reports with legacy and quarantine findings', () => {
-    expect(
-      StorageLayoutReportResponseSchema.parse({
-        dataRoot: '/tmp/openkit',
-        serverDb: {
-          path: 'server/db/core.sqlite',
-          exists: true,
-          appliedMigrations: ['core_0000_baseline'],
+  it('keeps semantic Knowledge callers server-owned', () => {
+    expect(appApiSchemas.KnowledgeManagerCallerSchema.options).toEqual([
+      'assistant',
+      'task-mode',
+      'app-api',
+    ]);
+
+    const publicRequests = [
+      [KnowledgeManagerAnswerRequestSchema, { query: 'release cadence' }],
+      [
+        KnowledgeManagerPrepareContextRequestSchema,
+        {
+          query: 'release cadence',
         },
-        users: [
-          {
-            userId: 'user_1',
-            userDb: {
-              path: 'users/user_1/db/user.sqlite',
-              exists: true,
-              appliedMigrations: ['user_0000_baseline'],
-            },
-            workspaces: [
-              {
-                workspaceId: 'ws_1',
-                workspaceDb: {
-                  path: 'users/user_1/workspaces/ws_1/db/workspace.sqlite',
-                  exists: true,
-                  appliedMigrations: ['workspace_0000_baseline'],
-                },
-                indexesDir: {
-                  path: 'users/user_1/workspaces/ws_1/indexes',
-                  exists: true,
-                  entryCount: 1,
-                },
-              },
-            ],
+      ],
+      [
+        KnowledgeManagerDraftProposalRequestSchema,
+        {
+          requestId: 'req_km_proposal_caller',
+          title: 'Release cadence',
+          summary: 'Record the release cadence.',
+        },
+      ],
+      [KnowledgeManagerSuggestRepairRequestSchema, {}],
+      [KnowledgeManagerHealthCheckRequestSchema, {}],
+      [
+        RegisterKnowledgeSourceRequestSchema,
+        {
+          requestId: 'req_km_source_caller',
+          kind: 'document',
+          title: 'Release notes',
+          content: 'Releases are reviewed every Friday.',
+        },
+      ],
+    ] as const;
+
+    for (const [schema, request] of publicRequests) {
+      expect(schema.safeParse({ ...request, caller: 'assistant' }).success).toBe(false);
+    }
+  });
+
+  it('accepts owner-independent storage layout reports and quarantine findings', () => {
+    const report = {
+      dataRoot: '/tmp/openkit',
+      serverDb: {
+        path: 'server/db/core.sqlite',
+        exists: true,
+        appliedMigrations: ['core_0000_baseline'],
+      },
+      users: [
+        {
+          userId: 'user_1',
+          userDb: {
+            path: 'users/user_1/db/user.sqlite',
+            exists: true,
+            appliedMigrations: ['user_0000_baseline'],
           },
-        ],
-        quarantineEntries: [
-          {
-            scope: 'workspace',
-            userId: 'user_1',
-            workspaceId: 'ws_1',
-            path: 'users/user_1/workspaces/ws_1/quarantine/1-workspace.sqlite',
-            bytes: 128,
+        },
+      ],
+      workspaces: [
+        {
+          workspaceId: 'ws_1',
+          workspaceDb: {
+            path: 'workspaces/ws_1/db/workspace.sqlite',
+            exists: true,
+            appliedMigrations: ['workspace_0000_baseline'],
           },
-        ],
-      }).quarantineEntries[0]?.scope
-    ).toBe('workspace');
+          indexesDir: {
+            path: 'workspaces/ws_1/indexes',
+            exists: true,
+            entryCount: 1,
+          },
+        },
+      ],
+      quarantineEntries: [
+        {
+          scope: 'workspace',
+          workspaceId: 'ws_1',
+          path: 'workspaces/ws_1/quarantine/1-workspace.sqlite',
+          bytes: 128,
+        },
+      ],
+    } as const;
+
+    expect(StorageLayoutReportResponseSchema.parse(report).quarantineEntries[0]?.scope).toBe(
+      'workspace'
+    );
+    expect(
+      StorageLayoutReportResponseSchema.safeParse({
+        ...report,
+        users: [{ ...report.users[0], workspaces: report.workspaces }],
+      }).success
+    ).toBe(false);
+    expect(
+      StorageLayoutReportResponseSchema.safeParse({
+        ...report,
+        quarantineEntries: [{ ...report.quarantineEntries[0], userId: 'user_1' }],
+      }).success
+    ).toBe(false);
   });
 
   it('accepts workspace export responses and rejects secret-shaped payloads', () => {
@@ -1736,6 +2185,7 @@ describe('app api schemas', () => {
           ],
           registry: [
             {
+              dispatchFamily: 'provider-api',
               displayName: 'Provider Demo',
               gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
               id: 'provider_demo',
@@ -1757,6 +2207,7 @@ describe('app api schemas', () => {
       ],
       registry: [
         {
+          dispatchFamily: 'provider-api',
           displayName: 'Provider Demo',
           gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
           id: 'provider_demo',
@@ -1765,6 +2216,48 @@ describe('app api schemas', () => {
         },
       ],
     });
+  });
+
+  it('accepts optional gateway cache token diagnostics and rejects removed cache fields', () => {
+    const summary = {
+      completionTokens: 3,
+      endpoint: 'responses',
+      inputTokens: 5,
+      lastObservedAt: timestamp,
+      model: 'gpt-5.4',
+      providerId: 'provider_openai',
+      requestCount: 1,
+      totalTokens: 8,
+    };
+
+    expect(GatewayUsageSummarySchema.parse(summary)).toEqual(summary);
+    expect(
+      GatewayUsageSummarySchema.parse({
+        ...summary,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      })
+    ).toEqual({ ...summary, cacheReadTokens: 0, cacheWriteTokens: 0 });
+    for (const removedField of ['cachedInputTokens', 'cacheHitRate']) {
+      expect(GatewayUsageSummarySchema.safeParse({ ...summary, [removedField]: 0 }).success).toBe(
+        false
+      );
+    }
+  });
+
+  it('requires the provider dispatch backend in diagnostics registry rows', () => {
+    const provider = {
+      dispatchFamily: 'provider-api',
+      displayName: 'Provider Demo',
+      gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
+      id: 'provider_demo',
+      kind: 'gateway',
+      models: ['gpt-demo'],
+    };
+
+    expect(ProviderRegistryEntrySchema.parse(provider).dispatchFamily).toBe('provider-api');
+    const { dispatchFamily: _dispatchFamily, ...withoutDispatchFamily } = provider;
+    expect(ProviderRegistryEntrySchema.safeParse(withoutDispatchFamily).success).toBe(false);
   });
 
   it('keeps generic internal-agent runtime state outside App Diagnostics', () => {
@@ -1821,6 +2314,7 @@ describe('app api schemas', () => {
         {
           id: 'usage_1',
           workspaceId: 'ws_demo',
+          responsibleUserId: 'user_1',
           threadId: 'th_demo',
           turnId: 'turn_demo',
           itemId: 'it_demo',
@@ -1900,11 +2394,6 @@ describe('app api schemas', () => {
     expect(appApiSchemas).not.toHaveProperty('CreateEvidenceBundleResponseSchema');
     expect(appApiSchemas).not.toHaveProperty('WorkspaceSyncEvidenceBundleSchema');
     expect(appApiSchemas).not.toHaveProperty('ListWorkspaceSyncEvidenceBundlesResponseSchema');
-  });
-
-  it('does not authorize the unversioned Artifact Review command', () => {
-    expect(appApiSchemas).not.toHaveProperty('SubmitArtifactReviewDecisionRequestSchema');
-    expect(appApiSchemas).not.toHaveProperty('SubmitArtifactReviewDecisionResponseSchema');
   });
 
   it('does not authorize generic pending-input recovery', () => {
@@ -2920,6 +3409,22 @@ describe('app api schemas', () => {
   });
 
   it('accepts owner-derived Task Mode state without exposing the launch decision', () => {
+    expect(
+      TaskModeWorkerTargetSchema.safeParse({
+        agentId: 'agent_fourth_runtime',
+        displayName: 'Fourth Runtime Agent',
+        runtime: 'codex',
+      }).success
+    ).toBe(false);
+    expect(
+      TaskModeWorkerTargetSchema.parse({
+        agentId: 'agent_fourth_runtime',
+        displayName: 'Fourth Runtime Agent',
+      })
+    ).toEqual({
+      agentId: 'agent_fourth_runtime',
+      displayName: 'Fourth Runtime Agent',
+    });
     expect(StartTaskModeRequestSchema.safeParse({ input: 'Missing request id.' }).success).toBe(
       false
     );
@@ -2936,7 +3441,6 @@ describe('app api schemas', () => {
         worker: {
           agentId: 'agent_codex_host',
           displayName: 'Codex Host Agent',
-          runtime: 'codex',
         },
         confidence: 0.86,
         rationale: 'The request needs bounded worker execution.',
@@ -2954,6 +3458,7 @@ describe('app api schemas', () => {
         id: 'tu_task_1',
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
+        triggerActor: { kind: 'user', id: 'user_1' },
         items: [],
         status: 'completed',
         configVersion: null,
@@ -3003,6 +3508,7 @@ describe('app api schemas', () => {
           id: 'tu_task_goal',
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
+          triggerActor: { kind: 'user', id: 'user_1' },
           items: [],
           status: 'completed',
           configVersion: null,
@@ -3041,6 +3547,7 @@ describe('app api schemas', () => {
           id: 'tu_chat_1',
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
+          triggerActor: { kind: 'user', id: 'user_1' },
           items: [],
           status: 'completed',
           configVersion: null,
@@ -3066,6 +3573,26 @@ describe('app api schemas', () => {
         },
       }).handoff?.targetMode
     ).toBe('task');
+  });
+
+  it.each([
+    ['Quick Chat', QuickChatRequestSchema, { input: 'Hello' }],
+    [
+      'Chat Mode',
+      StartChatModeRequestSchema,
+      { input: 'Hello', requestId: 'req_chat_provider_authority' },
+    ],
+  ])('rejects caller provider and model authority from %s requests', (_name, schema, input) => {
+    for (const override of [{ providerId: 'caller-provider' }, { model: 'caller-model' }]) {
+      expect(schema.safeParse({ ...input, ...override }).success).toBe(false);
+    }
+  });
+
+  it('rejects caller Workspace authority from Quick Chat requests', () => {
+    expect(
+      QuickChatRequestSchema.safeParse({ input: 'Hello', workspaceId: 'ws_caller_selected' })
+        .success
+    ).toBe(false);
   });
 
   it('accepts redacted workspace repository resources and rejects raw local paths', () => {
@@ -4620,7 +5147,7 @@ describe('app api schemas', () => {
           {
             id: 'aud_server_1',
             workspaceId: null,
-            protocolVersion: '0.3.0',
+            protocolVersion: '0.4.0',
             threadId: null,
             turnId: null,
             itemId: null,
@@ -4650,7 +5177,7 @@ describe('app api schemas', () => {
           {
             id: 'aud_1',
             workspaceId: 'ws_demo',
-            protocolVersion: '0.3.0',
+            protocolVersion: '0.4.0',
             threadId: 'th_demo',
             turnId: 'turn_demo',
             itemId: null,
@@ -4724,6 +5251,168 @@ describe('app api schemas', () => {
     ).toHaveLength(1);
     expect(ListAgentCatalogResponseSchema.parse({ items: [] }).items).toEqual([]);
     expect(ListHumanAttentionResponseSchema.parse({ items: [] }).items).toEqual([]);
+  });
+
+  it('accepts only the exact active Goal steering command contracts', () => {
+    const contentDigest = `sha256:${'a'.repeat(64)}`;
+    const queuedResponse = {
+      state: 'queued',
+      pendingTurnId: 'pending_goal_steering',
+      requestId: 'req_goal_steering',
+      contentItemId: 'it_goal_steering',
+      goalId: 'goal_demo',
+      activeTurnId: 'turn_worker',
+    } as const;
+
+    expect(
+      SubmitThreadGoalSteeringRequestSchema.parse({
+        requestId: 'req_message',
+        message: 'x'.repeat(4_001),
+      })
+    ).toEqual({ requestId: 'req_message', message: 'x'.repeat(4_001) });
+    expect(
+      SubmitThreadGoalSteeringRequestSchema.parse({
+        requestId: 'req_material',
+        materialId: 'material_demo',
+        revisionId: 'revision_demo',
+        contentDigest,
+        note: 'Use this exact revision.',
+      })
+    ).toEqual({
+      requestId: 'req_material',
+      materialId: 'material_demo',
+      revisionId: 'revision_demo',
+      contentDigest,
+      note: 'Use this exact revision.',
+    });
+    for (const invalid of [
+      {
+        requestId: 'req_mixed',
+        message: 'Use the material.',
+        materialId: 'material_demo',
+        revisionId: 'revision_demo',
+        contentDigest,
+      },
+      { requestId: 'req_incomplete', materialId: 'material_demo', revisionId: 'revision_demo' },
+      { requestId: 'req_unknown', message: 'Use this.', extra: true },
+    ]) {
+      expect(SubmitThreadGoalSteeringRequestSchema.safeParse(invalid).success).toBe(false);
+    }
+    expect(SubmitThreadGoalSteeringResponseSchema.parse(queuedResponse)).toEqual(queuedResponse);
+    expect(
+      SubmitThreadGoalSteeringResponseSchema.safeParse({ ...queuedResponse, goal: {} }).success
+    ).toBe(false);
+
+    const terminalRequest = { requestId: 'req_terminal' };
+    expect(ConvertGoalSteeringToFollowUpRequestSchema.parse(terminalRequest)).toEqual(
+      terminalRequest
+    );
+    expect(CancelGoalSteeringRequestSchema.parse(terminalRequest)).toEqual(terminalRequest);
+    expect(
+      ConvertGoalSteeringToFollowUpRequestSchema.safeParse({ ...terminalRequest, state: 'queued' })
+        .success
+    ).toBe(false);
+    expect(
+      CancelGoalSteeringRequestSchema.safeParse({ ...terminalRequest, state: 'queued' }).success
+    ).toBe(false);
+
+    const followUpResponse = {
+      state: 'follow-up',
+      pendingTurnId: queuedResponse.pendingTurnId,
+      requestId: terminalRequest.requestId,
+      sourceRequestId: queuedResponse.requestId,
+      contentItemId: queuedResponse.contentItemId,
+      goalId: queuedResponse.goalId,
+      activeTurnId: queuedResponse.activeTurnId,
+      followUpTurnId: 'turn_follow_up',
+      followUpItemId: 'it_follow_up',
+    } as const;
+    const cancelResponse = {
+      state: 'cancelled',
+      pendingTurnId: queuedResponse.pendingTurnId,
+      requestId: terminalRequest.requestId,
+      sourceRequestId: queuedResponse.requestId,
+      contentItemId: queuedResponse.contentItemId,
+      goalId: queuedResponse.goalId,
+      activeTurnId: queuedResponse.activeTurnId,
+    } as const;
+
+    expect(ConvertGoalSteeringToFollowUpResponseSchema.parse(followUpResponse)).toEqual(
+      followUpResponse
+    );
+    expect(CancelGoalSteeringResponseSchema.parse(cancelResponse)).toEqual(cancelResponse);
+    expect(
+      CancelGoalSteeringResponseSchema.safeParse({
+        ...cancelResponse,
+        followUpTurnId: 'turn_follow_up',
+      }).success
+    ).toBe(false);
+  });
+
+  it('accepts only the verified Goal steering pending-input Action Center source', () => {
+    const source = {
+      type: 'pending_input',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      pendingTurnId: 'pending_goal_steering',
+      requestId: 'req_goal_steering',
+      contentItemId: 'it_goal_steering',
+      goalId: 'goal_demo',
+      activeTurnId: 'turn_worker',
+      state: 'queued',
+    } as const;
+
+    expect(PendingGoalSteeringHumanAttentionSourceSchema.parse(source)).toEqual(source);
+    expect(appApiSchemas.HumanAttentionSourceSchema.parse({ ...source, state: 'applied' })).toEqual(
+      {
+        ...source,
+        state: 'applied',
+      }
+    );
+    for (const ownerOnlyField of [
+      'itemText',
+      'materialId',
+      'revisionId',
+      'contentDigest',
+      'terminalClaimKind',
+      'receipt',
+      'currentGoal',
+      'status',
+    ]) {
+      expect(
+        PendingGoalSteeringHumanAttentionSourceSchema.safeParse({
+          ...source,
+          [ownerOnlyField]: 'forbidden',
+        }).success
+      ).toBe(false);
+    }
+  });
+
+  it('accepts only exact version-keyed Artifact Review Action Center sources', () => {
+    const source = {
+      type: 'artifact_review',
+      reviewId: 'arev_demo',
+      artifactId: 'artifact_demo',
+      artifactVersion: 2,
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: 'turn_demo',
+    } as const;
+
+    expect(appApiSchemas.ArtifactReviewHumanAttentionSourceSchema.parse(source)).toEqual(source);
+    expect(appApiSchemas.HumanAttentionSourceSchema.parse(source)).toEqual(source);
+    expect(
+      appApiSchemas.HumanAttentionSourceSchema.safeParse({
+        type: 'artifact',
+        artifactId: source.artifactId,
+        workspaceId: source.workspaceId,
+        reviewStatus: 'pending',
+      }).success
+    ).toBe(false);
+    for (const requiredField of ['reviewId', 'artifactVersion'] as const) {
+      const invalid = { ...source, [requiredField]: undefined };
+      expect(appApiSchemas.HumanAttentionSourceSchema.safeParse(invalid).success).toBe(false);
+    }
   });
 
   it('accepts unified human attention rows for every backed source kind', () => {
@@ -4917,23 +5606,26 @@ describe('app api schemas', () => {
         ],
       },
       {
-        id: 'artifact:artifact_demo',
+        id: 'artifact-review:arev_demo',
         kind: 'artifact_review',
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         turnId: 'turn_demo',
+        reviewId: 'arev_demo',
         artifactId: 'artifact_demo',
+        artifactVersion: 1,
         title: 'Review artifact',
         summary: 'The artifact is ready for acceptance.',
         severity: 'needs_input',
         createdAt: timestamp,
         source: {
-          type: 'artifact',
+          type: 'artifact_review',
+          reviewId: 'arev_demo',
           artifactId: 'artifact_demo',
+          artifactVersion: 1,
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
           turnId: 'turn_demo',
-          reviewStatus: 'pending',
         },
         actions: [
           { kind: 'accept_review', label: 'Accept', method: 'POST' },
@@ -5142,15 +5834,11 @@ describe('app api schemas', () => {
   });
 
   it('accepts knowledge proposal decision requests and responses', () => {
-    expect(
-      SubmitKnowledgeProposalDecisionRequestSchema.parse({
-        decision: 'edited',
-        requestId: 'knowledge-review-1',
-        message: 'Looks reusable.',
-        title: 'Edited knowledge title',
-        summary: 'Edited knowledge summary.',
-      }).decision
-    ).toBe('edited');
+    for (const decision of ['accepted', 'rejected', 'deferred'] as const) {
+      expect(SubmitKnowledgeProposalDecisionRequestSchema.parse({ decision }).decision).toBe(
+        decision
+      );
+    }
     expect(
       SubmitKnowledgeProposalDecisionResponseSchema.parse({
         review: {
@@ -5163,11 +5851,14 @@ describe('app api schemas', () => {
         },
       }).review.status
     ).toBe('accepted');
-    expect(
-      SubmitKnowledgeProposalDecisionRequestSchema.safeParse({
-        decision: 'redo',
-      }).success
-    ).toBe(false);
+  });
+
+  it.each([
+    ['edited decision', { decision: 'edited', title: 'Edited knowledge title' }],
+    ['title field', { decision: 'accepted', title: 'Edited knowledge title' }],
+    ['summary field', { decision: 'accepted', summary: 'Edited knowledge summary.' }],
+  ])('rejects removed knowledge proposal request %s', (_name, request) => {
+    expect(SubmitKnowledgeProposalDecisionRequestSchema.safeParse(request).success).toBe(false);
   });
 
   it('rejects goal step review overrides', () => {
@@ -5299,5 +5990,322 @@ describe('app api schemas', () => {
     ]) {
       expect(SubmitGoalReviewDecisionRequestSchema.safeParse(request).success).toBe(false);
     }
+  });
+});
+
+describe('WP5 Workspace sharing schemas', () => {
+  const requestId = '00000000-0000-4000-8000-000000000001';
+  const workspace = {
+    id: 'ws_demo',
+    name: 'Demo Workspace',
+    kind: 'general',
+    status: 'active',
+    counts: { threadCount: 1, artifactCount: 2, knowledgeEntryCount: 3 },
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  } as const;
+  const authorizedWorkspace = {
+    workspace,
+    ownerUserId: 'user_owner',
+    effectiveRole: 'owner',
+    registryRevision: 4,
+    membershipRevision: 2,
+  } as const;
+  const activeOwner = {
+    workspaceId: workspace.id,
+    userId: 'user_owner',
+    status: 'active',
+    accessLevel: 'editor',
+    effectiveRole: 'owner',
+    invitationId: null,
+    joinedAt: timestamp,
+    removedAt: null,
+    revision: 2,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  } as const;
+  const pendingInvitation = {
+    invitationId: 'invite_demo',
+    workspaceId: workspace.id,
+    inviteeUserId: 'user_invitee',
+    proposedAccessLevel: 'viewer',
+    inviterUserId: 'user_owner',
+    effectiveStatus: 'pending',
+    expiresAt: timestamp,
+    acceptedAt: null,
+    declinedAt: null,
+    revokedAt: null,
+    revision: 1,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  } as const;
+  const accessRecovery = {
+    workspaceId: workspace.id,
+    ownerUserId: 'user_owner',
+    administratorRole: null,
+    registryRevision: 4,
+  } as const;
+
+  it('accepts the exact Workspace sharing read and mutation projections', () => {
+    expect(
+      appApiSchemas.ListAuthorizedWorkspacesResponseSchema.parse({
+        items: [authorizedWorkspace],
+      }).items[0]?.effectiveRole
+    ).toBe('owner');
+    expect(
+      appApiSchemas.ListWorkspaceMembersResponseSchema.parse({ items: [activeOwner] }).items[0]
+        ?.revision
+    ).toBe(2);
+    expect(
+      appApiSchemas.ListWorkspaceInvitationsResponseSchema.parse({
+        items: [pendingInvitation],
+      }).items[0]?.effectiveStatus
+    ).toBe('pending');
+    expect(
+      appApiSchemas.WorkspaceInvitationMutationResponseSchema.parse({
+        invitation: pendingInvitation,
+      }).invitation.invitationId
+    ).toBe('invite_demo');
+    expect(
+      appApiSchemas.WorkspaceMemberMutationResponseSchema.parse({ member: activeOwner }).member
+        .userId
+    ).toBe('user_owner');
+    expect(
+      appApiSchemas.WorkspaceOwnershipMutationResponseSchema.parse({
+        workspace: authorizedWorkspace,
+      }).workspace.registryRevision
+    ).toBe(4);
+    expect(appApiSchemas.WorkspaceAccessRecoveryStateSchema.parse(accessRecovery)).toEqual(
+      accessRecovery
+    );
+    expect(
+      appApiSchemas.WorkspaceAccessRecoveryResponseSchema.parse({ recovery: accessRecovery })
+        .recovery
+    ).toEqual(accessRecovery);
+    expect(
+      appApiSchemas.WorkspaceOwnershipMutationResponseSchema.safeParse({
+        recovery: accessRecovery,
+      }).success
+    ).toBe(false);
+  });
+
+  it('keeps user disable and invitee discovery projections strict and minimal', () => {
+    const disabledUser = {
+      userId: 'user_disabled',
+      status: 'disabled',
+      disabledAt: timestamp,
+    } as const;
+
+    expect(appApiSchemas.UserLifecycleSummarySchema.parse(disabledUser)).toEqual(disabledUser);
+    expect(appApiSchemas.DisableUserRequestSchema.parse({ requestId })).toEqual({ requestId });
+    expect(appApiSchemas.DisableUserResponseSchema.parse({ user: disabledUser }).user).toEqual(
+      disabledUser
+    );
+    expect(
+      appApiSchemas.UserLifecycleSummarySchema.safeParse({ ...disabledUser, status: 'active' })
+        .success
+    ).toBe(false);
+    expect(
+      appApiSchemas.DisableUserRequestSchema.safeParse({ requestId, userId: disabledUser.userId })
+        .success
+    ).toBe(false);
+    expect(
+      appApiSchemas.DisableUserResponseSchema.safeParse({
+        user: { ...disabledUser, email: 'disabled@example.com' },
+      }).success
+    ).toBe(false);
+    expect(
+      appApiSchemas.ListWorkspaceInvitationsResponseSchema.parse({
+        items: [pendingInvitation],
+      }).items[0]?.inviteeUserId
+    ).toBe('user_invitee');
+    expect(
+      appApiSchemas.ListWorkspaceInvitationsResponseSchema.safeParse({
+        items: [pendingInvitation],
+        userId: 'user_invitee',
+      }).success
+    ).toBe(false);
+  });
+
+  it('requires one request identity and the documented CAS field for every mutation', () => {
+    expect(
+      appApiSchemas.CreateWorkspaceInvitationRequestSchema.parse({
+        requestId,
+        inviteeEmail: 'invitee@example.com',
+        proposedAccessLevel: 'viewer',
+      }).inviteeEmail
+    ).toBe('invitee@example.com');
+
+    for (const schema of [
+      appApiSchemas.AcceptWorkspaceInvitationRequestSchema,
+      appApiSchemas.DeclineWorkspaceInvitationRequestSchema,
+      appApiSchemas.RevokeWorkspaceInvitationRequestSchema,
+      appApiSchemas.RemoveWorkspaceMemberRequestSchema,
+      appApiSchemas.LeaveWorkspaceRequestSchema,
+    ]) {
+      expect(schema.safeParse({ requestId, expectedRevision: 1 }).success).toBe(true);
+      expect(schema.safeParse({ requestId }).success).toBe(false);
+      expect(schema.safeParse({ requestId, expectedRevision: 0 }).success).toBe(false);
+    }
+
+    expect(
+      appApiSchemas.ChangeWorkspaceMemberAccessRequestSchema.safeParse({
+        requestId,
+        expectedRevision: 2,
+        accessLevel: 'editor',
+      }).success
+    ).toBe(true);
+    expect(
+      appApiSchemas.TransferWorkspaceOwnershipRequestSchema.safeParse({
+        requestId,
+        targetUserId: 'user_next_owner',
+        expectedRegistryRevision: 4,
+      }).success
+    ).toBe(true);
+    for (const action of ['add-self-as-editor', 'transfer-ownership-to-self']) {
+      expect(
+        appApiSchemas.RecoverWorkspaceAccessRequestSchema.safeParse({
+          action,
+          requestId,
+          expectedRegistryRevision: 4,
+        }).success
+      ).toBe(true);
+    }
+  });
+
+  it('rejects incoherent lifecycle projections and forbidden authority fields', () => {
+    expect(
+      appApiSchemas.AuthorizedWorkspaceSummarySchema.safeParse({
+        ...authorizedWorkspace,
+        membershipRevision: 0,
+      }).success
+    ).toBe(false);
+    expect(
+      appApiSchemas.WorkspaceAccessRecoveryStateSchema.safeParse({
+        ...accessRecovery,
+        administratorRole: 'administrator',
+      }).success
+    ).toBe(false);
+    expect(
+      appApiSchemas.WorkspaceAccessRecoveryStateSchema.safeParse({
+        ...accessRecovery,
+        workspace,
+      }).success
+    ).toBe(false);
+    expect(
+      appApiSchemas.WorkspaceMemberSchema.safeParse({
+        ...activeOwner,
+        status: 'removed',
+        removedAt: timestamp,
+      }).success
+    ).toBe(false);
+    expect(
+      appApiSchemas.WorkspaceMemberSchema.safeParse({
+        ...activeOwner,
+        accessLevel: 'viewer',
+      }).success
+    ).toBe(false);
+    for (const mismatch of [
+      { accessLevel: 'viewer', effectiveRole: 'editor' },
+      { accessLevel: 'editor', effectiveRole: 'viewer' },
+    ] as const) {
+      expect(
+        appApiSchemas.WorkspaceMemberSchema.safeParse({
+          ...activeOwner,
+          userId: 'user_member',
+          ...mismatch,
+        }).success
+      ).toBe(false);
+    }
+    expect(
+      appApiSchemas.WorkspaceInvitationSchema.safeParse({
+        ...pendingInvitation,
+        effectiveStatus: 'accepted',
+      }).success
+    ).toBe(false);
+    expect(
+      appApiSchemas.WorkspaceInvitationSchema.safeParse({
+        ...pendingInvitation,
+        effectiveStatus: 'accepted',
+        acceptedAt: timestamp,
+      }).success
+    ).toBe(true);
+    for (const forbiddenField of ['organizationId', 'tenantId', 'storageOwnerUserId', 'rawToken']) {
+      expect(
+        appApiSchemas.CreateWorkspaceInvitationRequestSchema.safeParse({
+          requestId,
+          inviteeEmail: 'invitee@example.com',
+          proposedAccessLevel: 'viewer',
+          [forbiddenField]: 'forbidden',
+        }).success
+      ).toBe(false);
+    }
+  });
+
+  it('keeps Workspace sharing errors closed and returns only the documented safe current view', () => {
+    expect(
+      appApiSchemas.WorkspaceSharingErrorSchema.safeParse({
+        protocolVersion: '0.4.0',
+        code: 'revision_conflict',
+        message: 'The Workspace registry revision changed.',
+        details: { resource: 'workspace', current: authorizedWorkspace },
+        requestId,
+      }).success
+    ).toBe(true);
+    expect(
+      appApiSchemas.WorkspaceSharingErrorSchema.safeParse({
+        protocolVersion: '0.4.0',
+        code: 'invitation_not_pending',
+        message: 'The invitation is no longer pending.',
+        details: {
+          current: { ...pendingInvitation, effectiveStatus: 'expired' },
+        },
+      }).success
+    ).toBe(true);
+    expect(
+      appApiSchemas.WorkspaceSharingErrorSchema.safeParse({
+        protocolVersion: '0.4.0',
+        code: 'invitation_not_pending',
+        message: 'The invitation is still pending.',
+        details: { current: pendingInvitation },
+      }).success
+    ).toBe(false);
+    expect(
+      appApiSchemas.WorkspaceSharingErrorSchema.safeParse({
+        protocolVersion: '0.4.0',
+        code: 'workspace_access_denied',
+        message: 'Workspace access is denied.',
+        details: { current: authorizedWorkspace },
+      }).success
+    ).toBe(false);
+    expect(
+      appApiSchemas.WorkspaceSharingErrorSchema.safeParse({
+        protocolVersion: '0.4.0',
+        code: 'revision_conflict',
+        message: 'The membership revision changed.',
+        details: { resource: 'membership', current: pendingInvitation },
+      }).success
+    ).toBe(false);
+    expect(
+      appApiSchemas.WorkspaceSharingErrorSchema.safeParse({
+        protocolVersion: '0.4.0',
+        code: 'revision_conflict',
+        message: 'The Workspace recovery revision changed.',
+        details: { resource: 'workspace_recovery', current: accessRecovery },
+        requestId,
+      }).success
+    ).toBe(true);
+    expect(
+      appApiSchemas.WorkspaceSharingErrorSchema.safeParse({
+        protocolVersion: '0.4.0',
+        code: 'revision_conflict',
+        message: 'The Workspace recovery revision changed.',
+        details: {
+          resource: 'workspace_recovery',
+          current: { ...accessRecovery, workspace },
+        },
+        requestId,
+      }).success
+    ).toBe(false);
   });
 });

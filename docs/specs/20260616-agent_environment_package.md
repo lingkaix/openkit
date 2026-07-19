@@ -64,9 +64,11 @@ OpenKit should adopt an OpenShell-inspired provider/profile/policy vocabulary, a
 
 The current NanoCore implementation uses the Agent Environment Package as the concrete V1 contract for worker governance execution. Current code resolves package metadata for local and remote disposable OpenShell Cell paths, including runtime placement, worker-visible workspace roots, generated task context, control endpoint metadata, transcript paths, policy snapshot binding, session workspace layout, workspace synchronization expectations, supply projections, capability projections, vault-backed runtime files, and backend capability requirements. NanoCore also persists redacted workspace-owned package snapshots and exposes them through App API, Core Client, OpenAPI, and the unified Skill/CLI `environment.snapshot-list` and `environment.snapshot-read` operations for diagnostics, evidence, export/import, and restart investigation.
 
-The current scope schema still carries `userId`, optional `automationId`, and optional `organizationId`. The accepted shared-Workspace target replaces those fields with `triggerActor: ActorRef`; `responsibleUserId` is accountability context and no longer doubles as a physical Workspace-store owner. Removing the unused organization placeholder and updating every producer, consumer, persisted snapshot, and policy adapter remains part of the multi-user implementation plan.
+The current V2 scope schema carries one required `triggerActor: ActorRef`; the removed `userId`, `automationId`, and `organizationId` aliases have no compatibility reader. `responsibleUserId` is derived accountability context and never doubles as a physical Workspace-store owner. Package producers, consumers, persisted snapshots, restart classification, worker control, Gateway, and policy adapters use the same V2 authority, while the stopped-process Workspace migration transforms accepted V1 snapshots before the V2 layout is published.
 
-The current OpenShell-backed path still uses `openkit-codex-shim`, a Codex-specific command, and NanoCore-owned Codex defaults. This is a pre-WP-2 implementation gap, not an accepted alternate boundary. The target entrypoint is the generic `openkit-worker-shim`, which selects one statically registered worker-side adapter from the AEP's sole opaque selector and contains no separate control sidecar.
+The current OpenShell-backed path resolves one strict `AgentManifest` through `ResolvedAgentSetup` into one immutable AEP. The manifest supplies the exact governed image reference and pull policy, a non-empty set of absolute worker-local runtime binary paths, the opaque adapter id, one provider selection, and exact sandbox network, credential, and backend requirements. Manifest and resolved-setup records carry no placement, transport, SSH, or Gateway topology; the scheduler and backend remain the only topology owners.
+
+Every current worker image launches the fixed generic command `openkit-worker-shim --package /openkit/config/package.json`. `control.adapter.targetRuntime` is the only runtime adapter selector; `agent.runtimeKind` is descriptive. The static worker-side registry contains the pinned Codex, OpenCode, and Pi adapters behind the two-operation `prepare` and `collect` contract. Codex `0.144.1` and OpenCode `1.18.1` accept only the trusted NanoCore relay envelope. Pi `0.80.7` accepts only the direct Anthropic `claude-sonnet-4-5` envelope. Zero routes, multiple routes, an unsupported runtime-route pairing, mixed relay and direct credentials, or any inferred fallback fails before child launch.
 
 The accepted V1 boundary is implemented for NanoCore-owned AEP resolution and OpenShell-backed materialization. Authored setup can project required backend capabilities into AEP backend requirements, backend materialization validates missing required capabilities before launch, grant-backed provider and runtime-file attachments flow through vault records without storing secret material in the package, and redacted package snapshots can be listed and read without exposing backend-private fields, raw credentials, or host-local runtime references.
 
@@ -76,7 +78,7 @@ Current read-write workspace roots are Git-backed: NanoCore resolves and records
 
 Current packages always emit `capabilities: { protocol: "openkit-worker-capability-v1", mode: "disabled", routes: [] }`. The removed worker capability client, NanoCore `/api/worker-capabilities/*` routes, worker MCP gateway, and capability smoke are not part of the current implementation. Skill and MCP supply records may still be resolved as static package inputs, but they do not grant a callable worker capability route. The accepted future capability and MCP contracts remain in `docs/specs/20260703-worker_agent_capability.md` and `docs/specs/20260704-worker_mcp_tool_supply.md` and are sequenced in `docs/roadmap.md`.
 
-The worker-runtime provenance and trusted worker-inference extension remains governed by `docs/specs/20260711-worker_runtime_subagent_provenance.md`; production advertisement is implemented and its real OpenShell `0.0.80` and Codex `0.144.1` proof passed on A1. Rich Web readiness views, broader provider profiles, object-store mounts, worker capabilities, multiple Cell targets, and target selection remain future extensions over the same AEP boundary.
+The three pinned arm64 worker images build on A1 and pass stock OpenShell `0.0.80` create, upload, generic-shim dry-run, and `--no-keep` cleanup checks. This proves image content, adapter preparation, containment, upload, and cleanup only; it does not prove the complete worker-control readiness, heartbeat, interrupt, reconnect, recovery, or terminal lifecycle for every adapter. The worker-runtime provenance and trusted worker-inference extension remains governed by `docs/specs/20260711-worker_runtime_subagent_provenance.md`; production advertisement is implemented and its separate real OpenShell `0.0.80` and Codex `0.144.1` proof passed on A1. Rich Web readiness views, broader provider profiles, object-store mounts, worker capabilities, multiple Cell targets, and target selection remain future extensions over the same AEP boundary.
 
 ## Goals / Non-goals
 
@@ -175,7 +177,7 @@ Backends do not replace NanoCore's canonical records.
 
 NanoCore defines the desired worker-visible environment and the allowed capability envelope.
 
-The backend translates that definition into concrete governed runtime state and launches the AEP-declared generic shim command. The shim then selects one statically registered worker-side adapter by the AEP's opaque adapter id; only that adapter produces runtime-native argv or config.
+The backend translates that definition into concrete governed runtime state and launches the AEP-declared generic shim command. The shim then selects one statically registered worker-side adapter by the AEP's opaque adapter id; only that adapter produces runtime-native argv, safe child-environment additions, isolated state-root paths, and a bounded normalized result. The current adapter contract produces no native config artifact.
 
 This keeps product semantics portable across OpenShell, Docker, Kubernetes, VM, managed sandbox, and future hosted sandbox backends.
 
@@ -217,7 +219,7 @@ They should not need to know whether routing goes through NanoCore, OpenShell `i
 
 OpenKit worker control traffic and LLM inference traffic use separate channels.
 
-The inference channel gives agent runtimes an AEP-resolved OpenAI-compatible endpoint without exposing provider credentials. Non-attributed packages may use `https://inference.local`; provenance-required packages receive an exact authenticated NanoCore worker-inference base URL.
+The AEP carries exactly one resolved LLM route. A trusted-relay route may expose an OpenAI-compatible endpoint without a real provider credential; a direct-provider route may expose only its manifest-declared credential binding and exact direct egress. The selected adapter must reject a route its pinned runtime cannot represent. Non-attributed packages may use `https://inference.local`; provenance-required packages receive an exact authenticated NanoCore worker-inference base URL only when the selected adapter supports that projection.
 
 The control channel is mandatory for governed workers. The generic `openkit-worker-shim` calls the AEP-resolved NanoCore `/api/worker-control` base URL directly over HTTP or HTTPS, authenticates with the package-bound sandbox token, emits heartbeats and bounded worker records, polls the typed interrupt command, and reports final status.
 
@@ -444,7 +446,7 @@ The conceptual shape is:
 
 ```jsonc
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "packageId": "aepkg_01jz...",
   "snapshotId": "aepsnap_01jz...",
   "createdAt": "2026-06-16T00:00:00.000Z",
@@ -453,8 +455,10 @@ The conceptual shape is:
     "threadId": "t_...",
     "turnId": "turn_...",
     "agentSessionId": "as_...",
-    "userId": "user_...",
-    "automationId": null
+    "triggerActor": {
+      "kind": "user",
+      "id": "user_..."
+    }
   },
   "agent": { "...": "..." },
   "runtime": { "...": "..." },
@@ -475,6 +479,8 @@ The conceptual shape is:
   }
 }
 ```
+
+The accepted target schema identity is exactly `2`. After the identity cutover, runtime resolution, persistence, restart, export, and import accept only schema version `2`; schema version `1` is input only to the stopped-process migration defined in [AEP V2 Identity Cutover](#aep-v2-identity-cutover) and is not a runtime union member, alias, or fallback form.
 
 All IDs are OpenKit IDs unless explicitly marked as backend-native.
 
@@ -511,8 +517,7 @@ Each field should declare one or more classes in schema documentation.
     "agentSessionId": "as_...",
     "triggerActor": {
       "kind": "user",
-      "id": "user_...",
-      "responsibleUserId": "user_..."
+      "id": "user_..."
     },
     "requestId": "req_..."
   }
@@ -523,7 +528,10 @@ Rules:
 
 - `workspaceId`, `threadId`, `turnId`, and `agentSessionId` are required for worker turns.
 - `triggerActor` is required and uses the shared `ActorRef` contract so policy can evaluate the initiating actor and responsible user independently from Workspace storage ownership.
-- `responsibleUserId` equals the user id for a human trigger. Agent, automation, and integration triggers carry their own stable actor id plus the current responsible user when one exists; an explicit system trigger may use `null`.
+- A human trigger's responsible user is its own `id` by definition and the human variant does not duplicate `responsibleUserId`. Agent, automation, integration, and system variants carry nullable `responsibleUserId`; consumers must derive the responsible user through the tagged `ActorRef` rather than use it as a storage locator.
+- `scope.triggerActor` is the sole runtime actor authority for the Turn and package snapshot. Scheduler, lease, worker-control, capability, usage, audit, and runtime-evidence records link to the Turn, Agent Session, or package snapshot and must not add another runtime `ActorRef`, replace a null responsible user, or become current-authority records; an owning schema may copy only the derived responsible-user id as historical attribution.
+- The immutable actor and policy snapshot prove launch lineage, not current Workspace authority. NanoCore applies the exact stateless predicate and effect-boundary table in `docs/specs/20260715-multi_user_workspace_system.md` immediately before launch and each implemented NanoCore-mediated governed effect.
+- A running backend keeps its immutable AEP. When the next NanoCore or worker-control boundary detects lost responsible-user authority, NanoCore uses the existing interrupt and whole-Cell cleanup owners and accepts no later Workspace publication from that attempt. A worker-native request already submitted through an AEP-authorized endpoint may finish before detection; AEP adds no mutable grant, live policy rewrite, dynamic revocation protocol, state, or recovery workflow to hide that bounded compromise.
 - `tenantId`, `organizationId`, physical Workspace owner id, and user-nested Workspace paths are not AEP scope fields.
 - `itemId` is optional but should link to the user or system item that caused the worker start when available.
 - `requestId` should be included for cross-boundary tracing.
@@ -1226,7 +1234,7 @@ Rules:
 - `credentials.*.vaultRef` is a secret reference, not secret material.
 - `grantId` links the provider use to a NanoCore vault grant.
 - `policyMode` may be `profile-default`, `read-only`, `read-write`, `custom`, or `disabled`.
-- Provider instances can be server-scoped, user-scoped, workspace-scoped, organization-scoped, or turn-scoped.
+- Provider instances can be server-scoped, user-scoped, workspace-scoped, or turn-scoped. AEP identity and provider ownership define no organization scope.
 - Backend-native provider names are materialized aliases, not canonical OpenKit IDs.
 
 ## Provider Attachments
@@ -1317,7 +1325,7 @@ Rules:
 
 `llm` describes how the worker obtains model inference.
 
-The recommended attributed OpenShell-backed path is that the AEP configures the worker with an exact NanoCore worker-inference base URL and one sandbox-wide per-package OpenShell placeholder credential, while a default-deny policy leaves only the exact Codex binaries, NanoCore host, POST methods, and paths reachable. NanoCore then authenticates the active AEP and lease before selecting the real provider, model, credential source, usage attribution, prompt cache metadata, and audit linkage.
+The recommended attributed OpenShell-backed path is that the AEP configures the worker with an exact NanoCore worker-inference base URL and one sandbox-wide per-package OpenShell placeholder credential, while a default-deny policy leaves only the manifest-declared runtime binary paths, NanoCore host, POST methods, and paths reachable. NanoCore then authenticates the active AEP and lease before selecting the real provider, model, credential source, usage attribution, prompt cache metadata, and audit linkage.
 
 In that arrangement, NanoCore is the canonical inference gateway and stock `inference.local` is not in the attributed path. A package that selects backend-local inference must report attribution as incomplete when that backend cannot preserve the same lineage.
 
@@ -1371,13 +1379,15 @@ Preferred mode is `gateway`.
 
 For OpenShell-backed workers that require complete attribution, preferred `gateway` mode uses the exact AEP-bound NanoCore worker-inference base URL plus the per-package OpenShell placeholder and REST policy. Legacy `inference.local` remains outside that trusted binding.
 
+The AEP resolves route authority but does not promise one universal runtime-native projection. The selected worker adapter must prove that its pinned runtime can express the exact endpoint, provider/model selection, credential environment name, and wire protocol without ambient authority or an adapter-authored file; an unsupported runtime-route pairing fails before child launch. The adapter must not infer protocol from a provider id, select another model, or replace a trusted-relay route with a direct route.
+
 `backend-local` is acceptable only when the backend can preserve OpenKit provider IDs, usage, prompt cache metadata, and audit linkage.
 
 `direct-external` should require explicit policy because the worker may see provider API shapes and because credential isolation depends on backend enforcement.
 
 Rules:
 
-- Workers should not receive real LLM provider API keys.
+- Trusted-relay packages must not receive real LLM provider API keys. A direct-provider package may receive only the one standard credential environment binding declared by its manifest and resolved grant.
 - Sandbox-supplied `Authorization` headers should be stripped before upstream inference.
 - NanoCore should authenticate the sandbox token, active AEP, and lease before honoring requests on the internal worker-inference routes.
 - NanoCore should map forwarded inference calls to workspace, thread, turn, agent session, provider instance, and request IDs.
@@ -1386,6 +1396,7 @@ Rules:
 - Worker authority-bearing lineage must come from an authenticated AEP and lease binding, not request-body `metadata.openkit` or runtime-supplied headers.
 - Runtime-native causal origin and runtime cache lineage must follow `docs/specs/20260711-worker_runtime_subagent_provenance.md`; the shared outer OpenKit thread, turn, or agent session must not become the cache key for every runtime-internal child.
 - An AEP that requires complete worker-inference attribution must configure the root runtime and every runtime-internal child to use the authenticated worker-inference base URL, withhold direct provider credentials, deny direct provider API egress, and fail capability negotiation when the backend cannot prove that coverage; `backend-local` and `direct-external` modes must report attribution as incomplete unless they satisfy the same authenticated path contract.
+- Trusted-relay and direct-provider authority are mutually exclusive. A relay package carries only `OPENKIT_WORKER_INFERENCE_TOKEN` and exact relay egress; a direct-provider package carries only its manifest-declared provider credential environment binding and exact direct egress. Supplying both, or silently falling back from one to the other, is invalid.
 
 ## Policy Intent
 
@@ -1705,7 +1716,6 @@ interface WorkerGovernanceBackend {
   materialize(input: AgentEnvironmentPackage): Promise<MaterializedWorkerEnvironment>;
   launch(input: MaterializedWorkerEnvironment): Promise<WorkerSessionHandle>;
   collectEvidence(handle: WorkerSessionHandle): AsyncIterable<WorkerEvidenceEvent>;
-  collectArtifacts(handle: WorkerSessionHandle): Promise<ArtifactCollectionResult>;
   teardown(handle: WorkerSessionHandle): Promise<WorkerTeardownResult>;
 }
 ```
@@ -1752,11 +1762,11 @@ The backend streams security, lifecycle, and policy evidence back to NanoCore.
 
 NanoCore decides which evidence becomes audit, item summaries, diagnostics, or artifacts.
 
-### `collectArtifacts`
+### Artifact declarations
 
-The backend collects declared outputs and registers artifacts through NanoCore.
+S16 Stage 4 authorizes one bounded artifact collection path inside the existing turn-end transcript and backend data-plane boundary; it does not add a control operation, backend-generic file API, live Artifact owner, or second protocol phase. A transcript declaration is collectable only when its canonical absolute POSIX path is a strict child of exactly one current AEP `workspace.outputs` entry with `registerAsArtifacts=true` and `retention=sync-on-turn-end`, and its exact media type is one of the three text-compatible values closed by S16. A path, artifact notice, declaration, extension, or output-root membership alone is never canonical content authority.
 
-Artifact collection must preserve source path summaries without exposing sensitive backend paths.
+The selected backend reads each exact declared file while the owning session is retained after the terminal output barrier. The complete declaration set is validated before canonical writes, and collection is transfer-bounded by making and downloading through the existing retained-session operations only a backend-owned temporary copy of at most the remaining 16 MiB aggregate budget plus one sentinel byte; the unbounded declared file is never downloaded directly, and excess rejects the complete set with zero canonical writes. Each accepted payload must be non-empty well-formed UTF-8 with no normalization. OpenShell uses only its stock sandbox command and download operations and the existing retained Cell; this contract does not patch OpenShell or require another transfer service. Backend-private exact non-empty secret values injected for the materialization are retained only in process memory through collection, while the existing scheduler-owned sandbox binding reference remains durable under its runtime owner; both enter one ephemeral comparison set, and neither the set nor another copy of those values becomes Artifact state. Each complete injected value is UTF-8 encoded and deduplicated by byte equality, and a match means contiguous byte-substring containment anywhere in a payload rather than whole-payload equality; a runtime-file value is compared as its complete injected content. Any match fails closed with a redacted result and zero Artifact or Review writes. If restart restoration cannot recover the original complete set, the existing backend cleanup lifecycle runs and declarations fail as `recovery_required` while non-Artifact closeout may continue; values are neither newly persisted nor re-resolved for reconstruction. This is the bounded exact-value guard from S30, not generic DLP.
 
 ### `teardown`
 
@@ -1784,7 +1794,7 @@ An OpenShell backend should map OpenKit package fields as follows.
 | `policy.filesystem` | `filesystem_policy` and Landlock settings. |
 | `policy.process` | OpenShell `process` and binary policy where supported. |
 | `policy.network` | `network_policies` plus provider-derived layers. |
-| `llm.mode: gateway` with an exact NanoCore `workerInferenceBaseUrl` | Per-package generic provider placeholder plus exact OpenShell Codex REST policy forwarding to NanoCore's authenticated internal worker-inference routes. |
+| `llm.mode: gateway` with an exact NanoCore `workerInferenceBaseUrl` | Per-package generic provider placeholder plus exact OpenShell network policy for the manifest-declared runtime binaries forwarding to NanoCore's authenticated internal worker-inference routes; S64-S66 own native route projection and unsupported combinations. |
 | `llm.mode: backend-local` | OpenShell `inference.local` owns final provider routing when explicitly selected. |
 | `observability.formats.preferred: ocsf-json` | OpenShell OCSF JSON export setting. |
 | `resources.cpu` and `resources.memory` | Sandbox create `--cpu` and `--memory` where driver supports them. |
@@ -1827,7 +1837,7 @@ This example is intentionally compact and shows direct worker control with a sep
 
 ```jsonc
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "packageId": "aepkg_codex_github_001",
   "snapshotId": "aepsnap_codex_github_001",
   "scope": {
@@ -1835,7 +1845,10 @@ This example is intentionally compact and shows direct worker control with a sep
     "threadId": "thread_123",
     "turnId": "turn_456",
     "agentSessionId": "as_789",
-    "userId": "user_abc",
+    "triggerActor": {
+      "kind": "user",
+      "id": "user_abc"
+    },
     "requestId": "req_def"
   },
   "agent": {
@@ -2056,17 +2069,19 @@ DATA_ROOT/users/<user-id>/config/providers/*.provider.jsonc
 DATA_ROOT/workspaces/<workspace-id>/config/providers/*.provider.jsonc
 ```
 
-Agent environment package snapshots may live under:
+Agent environment package snapshots live at the exact Workspace-owned path:
 
 ```text
-DATA_ROOT/workspaces/<workspace-id>/runtime/agent-environments/<agent-session-id>/<snapshot-id>.json
+DATA_ROOT/workspaces/<workspace-id>/runtime/agent-sessions/<agent-session-id>/aep-snapshots/<snapshot-id>.json
 ```
 
 Backend materialization records may live under:
 
 ```text
-DATA_ROOT/users/<user-id>/workspaces/<workspace-id>/runtime/agent-sessions/<agent-session-id>/backend/<materialization-id>.json
+DATA_ROOT/workspaces/<workspace-id>/runtime/agent-sessions/<agent-session-id>/backend/<materialization-id>.json
 ```
+
+The responsible user derived from `scope.triggerActor` is authority and accountability context only. Neither that user nor any other actor identifier may select, construct, reopen, or relocate a Workspace path.
 
 Backend-private files, credentials, tokens, container state, VM state, and sandbox working directories must not be stored in normal workspace config.
 
@@ -2161,6 +2176,14 @@ NanoCore must know which user, workspace, thread, turn, agent session, provider 
 
 ## Rollout / Migration Plan
 
+### AEP V2 Identity Cutover
+
+The stopped-process Workspace migration is the only owner of schema version `1` AEP snapshot input. After Workspace resolution no longer accepts a user or responsible-user storage parameter and before the staged top-level Workspace tree is published, the migration transforms every existing snapshot at `runtime/agent-sessions/<agent-session-id>/aep-snapshots/<snapshot-id>.json` into the exact schema version `2` shape.
+
+The transform is deterministic. A non-null V1 `automationId` becomes `{ kind: "automation", id: automationId, responsibleUserId: userId ?? null }`; otherwise a non-null V1 `userId` becomes `{ kind: "user", id: userId }`. The transform removes `userId`, `automationId`, and `organizationId` from AEP scope, sets `schemaVersion` to `2`, preserves every other package and lineage field, recomputes the enclosing snapshot-record content digest, and validates the final redacted record through the schema version `2` contract. A V1 snapshot that does not satisfy either mapping or fails final validation blocks publication.
+
+The migration report records the predecessor and successor digests for every transformed snapshot. The migration-only V1 reader is private to this one transformation and must not be exported into runtime resolution, ledger reads, restart, normal portable import, or any compatibility adapter. Once the top-level layout is accepted, every normal AEP reader is schema version `2` only.
+
 ### Phase 0: Reference And Schema Draft
 
 1. Accept this spec as the design direction.
@@ -2218,6 +2241,7 @@ NanoCore must know which user, workspace, thread, turn, agent session, provider 
 
 ### Schema Tests
 
+- Accept only schema version `2` packages with one required closed `triggerActor: ActorRef`, and reject schema version `1`, missing actors, duplicated human `responsibleUserId`, missing non-human `responsibleUserId`, and legacy `userId`, `automationId`, or `organizationId` scope fields.
 - Accept valid package fixtures for local and remote disposable OpenShell Cells, plain Docker, Kubernetes, VM, and hosted sandbox intents.
 - Reject unknown top-level fields outside `extensions`.
 - Reject raw secret-like fields in package snapshots.
@@ -2233,12 +2257,17 @@ NanoCore must know which user, workspace, thread, turn, agent session, provider 
 
 ### Resolver Tests
 
+- Preserve the exact initiating `triggerActor`, derive a human responsible user from actor `id`, derive a non-human responsible user from `responsibleUserId`, and never pass either identity to Workspace storage resolution.
 - Resolve package from server config, agent setup, workspace roots, provider registry, and turn request.
 - Prefer OpenKit LLM gateway mode by default.
 - Mark sessions stale when static package fields change.
 - Preserve dynamic policy updates only when backend capabilities declare support.
 - Fail before launch when a required backend capability is missing.
 - Require approval when policy says provider write access, external side effects, process-env credentials, or network outside provider policy need human authorization.
+
+### Migration Tests
+
+- Transform representative V1 human and automation snapshots only through the stopped-process migration, recompute their enclosing digests, accept the resulting V2 records, reject malformed V1 input before publication, and prove that normal ledger, restart, export, and import readers reject V1.
 
 ### Materializer Tests
 
@@ -2365,6 +2394,7 @@ Mitigation: keep the official OpenShell Gateway out of process inside the dispos
 - [Audit Model](../core/audit.md)
 - [Agent Supply](../core/agent-supply.md)
 - [Runtime Model](../core/runtime-model.md)
+- [Single-Deployment Multi-User Workspace System](./20260715-multi_user_workspace_system.md)
 - [Session Static Workspace Materialization](./20260704-session_static_workspace_materialization.md)
 - [Workspace Data Mount Materialization](./superseded/worker-runtime/20260526-workspace_data_mounts.md)
 - [Agent Manifest And AEP Resolution](./20260703-agent_manifest_aep_resolution.md)

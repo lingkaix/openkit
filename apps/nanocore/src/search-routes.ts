@@ -12,15 +12,14 @@ import { registerAppApiRoute } from './openapi.js';
  */
 export function registerSearchRoutes({
   app,
+  authorizedWorkspaceIds,
   requestStore,
-  visibleWorkspacesForActor,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
+  readonly authorizedWorkspaceIds: (
+    context: Context<{ Variables: AuthVariables }>
+  ) => readonly string[];
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
-  readonly visibleWorkspacesForActor: (
-    actor: AuthVariables['actor'] | undefined,
-    items: ReturnType<FsStore['listWorkspaces']>
-  ) => ReturnType<FsStore['listWorkspaces']>;
 }): void {
   registerAppApiRoute(app, 'searchApp', (c) => {
     const query = (c.req.query('q') ?? '').trim().toLowerCase();
@@ -30,8 +29,9 @@ export function registerSearchRoutes({
     }
 
     const store = requestStore(c);
-    const workspaces = visibleWorkspacesForActor(c.get('actor'), store.listWorkspaces());
-    const visibleWorkspaceIds = new Set(workspaces.map((workspace) => workspace.id));
+    const workspaces = authorizedWorkspaceIds(c).map((workspaceId) =>
+      store.getWorkspace(workspaceId)
+    );
     const matches = (value: string | null | undefined) => value?.toLowerCase().includes(query);
     const items: Array<{
       kind: 'workspace' | 'thread' | 'knowledge' | 'artifact' | 'item';
@@ -71,26 +71,28 @@ export function registerSearchRoutes({
       }
     }
 
-    for (const thread of workspaces.flatMap((workspace) => store.listThreads(workspace.id))) {
-      if (matches(thread.name) || matches(thread.preview)) {
-        items.push({
-          kind: 'thread',
-          id: thread.id,
-          title: thread.name ?? thread.id,
-          workspaceId: thread.workspaceId,
-        });
-      }
-    }
+    for (const workspace of workspaces) {
+      for (const thread of store.listThreads(workspace.id)) {
+        if (matches(thread.name) || matches(thread.preview)) {
+          items.push({
+            kind: 'thread',
+            id: thread.id,
+            title: thread.name ?? thread.id,
+            workspaceId: thread.workspaceId,
+          });
+        }
 
-    for (const item of store.listAllItems()) {
-      if (visibleWorkspaceIds.has(item.workspaceId) && 'text' in item && matches(item.text)) {
-        items.push({
-          kind: 'item',
-          id: item.id,
-          title: item.text ?? item.id,
-          workspaceId: item.workspaceId,
-          threadId: item.threadId,
-        });
+        for (const item of store.listThreadItems(workspace.id, thread.id)) {
+          if ('text' in item && matches(item.text)) {
+            items.push({
+              kind: 'item',
+              id: item.id,
+              title: item.text ?? item.id,
+              workspaceId: item.workspaceId,
+              threadId: item.threadId,
+            });
+          }
+        }
       }
     }
 

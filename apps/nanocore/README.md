@@ -4,8 +4,8 @@
 
 ## Scope
 
-- local-mode single-user operation
-- server-mode HTTP-only session auth
+- local-mode implicit single-user operation
+- server-mode registered-user small-team operation with HTTP-only session auth and bounded Workspace sharing
 - optional file-backed state through `OPENKIT_DATA_ROOT`
 - implicit local actor `user_local`
 - governed container Worker Agent sessions
@@ -21,7 +21,7 @@
 - `nanocore` starts governed worker sessions through the configured container worker runtime.
 - one nanocore thread binds to one Codex agent session
 - follow-up turns on the same thread reuse the same agent session when it stays healthy
-- current capabilities: turn execution, streaming assistant text, approval bridging, user-input questions, interruption, artifact inventory and content, durable Workspace Sync Review decisions, workspace configuration, workspace knowledge editing, repository linking, Goal Mode start and plan approval, actionable Goal Review, stored verification evidence, terminal summaries, unified Human Attention Action Center projection, Codex/ChatGPT login coordination, and dual-entry LLM Gateway routing
+- current capabilities: turn execution, streaming assistant text, approval bridging, user-input questions, interruption, registered-user Workspace invitation and membership lifecycle, owner transfer, explicit administrator access recovery, one-way user disable, Artifact inventory, content, direct import, idle-Thread introduction, version-owned Artifact Review decisions, Workspace Material revision, binding, proposal apply, and portable history, durable Workspace Sync Review decisions, workspace configuration, workspace knowledge editing, repository linking, Goal Mode start and plan approval, actionable Goal Review, stored verification evidence, terminal summaries, unified Human Attention Action Center projection, Codex/ChatGPT login coordination, and dual-entry LLM Gateway routing
 - current non-goals: remote agents, full Sustained Mode automation, Task Evaluator loops, and an independent final-verifier completion gate
 
 ## Prerequisites
@@ -67,7 +67,7 @@ The smoke spec stays skipped unless `OPENKIT_E2E_REAL_CODEX=1` is set, `codex` r
 
 The server listens on `http://localhost:3000` and exposes the demo protocol surface under `/api`.
 
-The unified Human Attention Action Center is available at `GET /api/app/workspaces/:workspaceId/action-center`. It replaces the old split pending approvals and pending questions endpoints, and projects approval gates, user-input gates, Goal Mode attention, checkpoint recovery, scheduler admissions, agent readiness failures, durable Workspace Sync Reviews, and explicit knowledge proposal records into one App API read model. Generic pending-input rows and recovery actions are absent until the exact S16 Goal steering owner and immutable delivery proof exist. Interrupted-worker rows require the exact interrupted Turn and recorded Session plus a matching terminal restart-cleanup lease; a strict request-identified retry releases only the existing checkpoint and applicable Goal Task for a later fresh start, and never rewrites the old Turn, changes scheduler authority, or starts a worker. Scheduler admission readback is available at `GET /api/app/workspaces/:workspaceId/scheduler/admissions`; it returns workspace-filtered queued and denied admissions with queue position and denial reasons, but excludes raw turn input, user ids, captured cwd, and workspace root paths. Scheduler admission actions are available at `POST /api/app/workspaces/:workspaceId/scheduler/admissions/:queueEntryId/retry` for denied admissions and `POST /api/app/workspaces/:workspaceId/scheduler/admissions/:queueEntryId/cancel` for queued or denied admissions. Durable Workspace Sync Review decisions are available at `POST /api/app/workspaces/:workspaceId/workspace-sync/reviews/:reviewId/decision` for `accepted`, `needs_refinement`, `rejected`, and `blocked`; a backing Artifact may supply a read-only legacy review projection but cannot own, resolve, or apply a decision, and no generic Artifact mutation or review route exists.
+The unified Human Attention Action Center is available at `GET /api/app/workspaces/:workspaceId/action-center`. It replaces the old split pending approvals and pending questions endpoints, and projects approval gates, user-input gates, Goal Mode attention, exact unresolved S16 Goal steering owners, checkpoint recovery, scheduler admissions, agent readiness failures, durable Workspace Sync Reviews, and explicit knowledge proposal records into one App API read model. A steering row preserves its original Goal lineage and exposes follow-up and cancellation only after that Goal is terminal; the projection is never command authority. Interrupted-worker rows require the exact interrupted Turn and recorded Session plus a matching terminal restart-cleanup lease; a strict request-identified retry releases only the existing checkpoint and applicable Goal Task for a later fresh start, and never rewrites the old Turn, changes scheduler authority, or starts a worker. Scheduler admission readback is available at `GET /api/app/workspaces/:workspaceId/scheduler/admissions`; it returns workspace-filtered queued and denied admissions with queue position and denial reasons, but excludes raw turn input, user ids, captured cwd, and workspace root paths. Scheduler admission actions are available at `POST /api/app/workspaces/:workspaceId/scheduler/admissions/:queueEntryId/retry` for denied admissions and `POST /api/app/workspaces/:workspaceId/scheduler/admissions/:queueEntryId/cancel` for queued or denied admissions. Durable Workspace Sync Review decisions are available at `POST /api/app/workspaces/:workspaceId/workspace-sync/reviews/:reviewId/decision` for `accepted`, `needs_refinement`, `rejected`, and `blocked`; a backing Artifact may supply a read-only legacy review projection but cannot own, resolve, or apply a decision, and no generic Artifact mutation or review route exists.
 
 Live Goal Review rows created by human-reviewed steps expose accept, refinement, retry, and abort actions without a preselected verdict; one decision atomically resolves the Review and advances or closes the Goal Task graph. Direct Task and Chat-to-Task deliver the complete Coordinator request as compact JSON through the existing Turn path. Goal launches read the complete immutable approved Goal Task, preserve its exact active Plan lineage, and deliver one schema-valid Coordinator request containing every accepted Task request fact plus the latest eligible Review context without changing previous Turns or evidence.
 
@@ -107,7 +107,7 @@ Real subscription inference smoke tests must be opt-in because they can consume 
 OPENKIT_E2E_REAL_CODEX_SUBSCRIPTION=1 pnpm --filter @openkit/nanocore run test:e2e
 ```
 
-Set `OPENKIT_DATA_ROOT` to persist canonical workspace records under `temp/nanocore-data/users/user_local/workspaces/<workspaceId>/` from the repository root.
+Set `OPENKIT_DATA_ROOT` to persist canonical Workspace records under `temp/nanocore-data/workspaces/<workspaceId>/` from the repository root.
 
 ## Repository Resources And Goal Mode
 
@@ -170,7 +170,7 @@ curl -s -X POST http://127.0.0.1:3000/api/app/workspaces/ws_demo/threads/th_demo
 
 Pause is accepted only for a running goal when the thread has no pending, running, or human-gated worker turn; resume applies the same safe-boundary check to a paused goal. Each response separates the historical command result from current resource truth through `outcome: "paused" | "resumed"` and the current `goal` projection, so replay after a later opposite transition remains truthful. While the goal is paused, `/goal/step` returns `goal_paused`; explicit resume changes only the same durable Goal to `running` and does not resume a Turn, Session, sandbox, lease, or worker.
 
-Goal steering currently fails closed with `goal_steering_delivery_unavailable` and creates no business records until the real worker path can persist an immutable Context Package delivery trace.
+Goal steering at `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/steering` accepts one exact message or current non-restricted Material revision only for a checkpoint-backed active Goal Turn and returns `202 queued` after its Item, Thread-unique pending owner, and body-free receipt are durable. The consuming Goal step may mark it applied only through the exact verified S39 Context Package trace; an unavailable delivery path or over-budget required Material returns `goal_steering_delivery_unavailable` before Turn reservation and leaves the pending input queued. Terminal follow-up and cancellation preserve the original Goal lineage and never mutate a live worker filesystem.
 
 Run one real bounded worker step with:
 
@@ -192,9 +192,21 @@ For user-facing deployment documentation, see [NanoCore Deployment Modes](../../
 
 For user-facing `DATA_ROOT/config` documentation, see [NanoCore DATA_ROOT Config Guide](../../docs/nanocore-data-root-config.en.md) and [NanoCore DATA_ROOT 配置使用说明](../../docs/nanocore-data-root-config.zh.md).
 
-Workspace config is loaded from `DATA_ROOT/users/<userId>/workspaces/<workspaceId>/config/workspace.jsonc`. V1 supports only workspace-relative `host-dir` roots under the workspace directory, and accepted turns pass materialized roots to governed workers through Agent Environment Package workspace inputs. The declared `access` field is recorded for adapters and must be enforced by the selected worker container backend. `workspace.assistant.repositoryInspection.enabled` can disable Chat Mode repository inspection for that workspace, and `excludedPaths` hides exact repository-relative path prefixes from Chat Mode reads.
+Workspace config is loaded from `DATA_ROOT/workspaces/<workspaceId>/config/workspace.jsonc`. V1 supports only workspace-relative `host-dir` roots under the workspace directory, and accepted turns pass materialized roots to governed workers through Agent Environment Package workspace inputs. The declared `access` field is recorded for adapters and must be enforced by the selected worker container backend. `workspace.assistant.repositoryInspection.enabled` can disable Chat Mode repository inspection for that workspace, and `excludedPaths` hides exact repository-relative path prefixes from Chat Mode reads.
 
 NanoCore also creates and migrates `data/server/db/core.sqlite` on boot. The baseline SQLite schema is managed by Drizzle definitions under `src/storage/schema` and committed SQL migrations under `drizzle/`.
+
+Migrate one stopped predecessor data root from owner-nested Workspace storage to the canonical top-level layout with:
+
+```bash
+pnpm --filter @openkit/nanocore run workspace-storage:migrate -- \
+  --data-root /absolute/path/to/openkit-data \
+  --backup-root /absolute/path/to/openkit-predecessor-backup
+```
+
+The command refuses to run while `server/runtime/nanocore.lock` exists, requires a new external backup destination that is separate from the data root, verifies the complete predecessor cold backup, performs the one-way migration, and writes the evidence-only relative-path report to `server/migrations/workspace-storage-v1-to-v2.json`. Retain the external backup for operator recovery; the report is not retry or resume authority and no compatibility reader remains.
+
+If an existing authoritative Core, User, or Workspace SQLite database fails its boot integrity check, NanoCore stops before product admission, bootstrap credential issuance, or listener binding and leaves the original file unchanged. Derived indexes remain disposable and rebuildable.
 
 Use a fresh `OPENKIT_DATA_ROOT` for the disposable Cell lifecycle. NanoCore does not migrate an earlier worker-lifecycle data root.
 
@@ -233,6 +245,8 @@ The end-user interface L6 is the agentic [OpenKit Agent Skill Progressive Discov
 ## Server Mode Auth
 
 Server mode uses Better Auth email/password routes under `/api/auth/*`, protects product APIs with HTTP-only session cookies, and accepts server-issued `okt_` bearer tokens for remote access. A valid session establishes the actor identity but does not grant deployment-admin authority or bypass active workspace membership checks.
+
+The Workspace sharing App API exposes the fifteen exact operations owned by [Single-Deployment Multi-User Workspace System](../../docs/specs/20260715-multi_user_workspace_system.md): authorized Workspace discovery, owner-visible membership and invitation management, session-bound invitee decisions, non-owner leave, ordinary owner transfer, content-free administrator recovery, and one-way user disable. All lifecycle mutations reuse the Core command receipt and Core audit transaction; `server-admin` never implies ordinary Workspace content access, and Quick Chat remains owner-only and non-shareable.
 
 Access-token administration is available to `server-admin` bearer tokens at `GET /api/app/auth/tokens`, `POST /api/app/auth/tokens`, `POST /api/app/auth/tokens/:tokenId/revoke`, and `POST /api/app/auth/tokens/:tokenId/rotate`. Better Auth sessions and workspace-scoped tokens are denied. Token list, revoke, and rotate responses expose only redacted token records; plaintext tokens are returned only once by create and rotate.
 
@@ -274,7 +288,6 @@ For the trusted worker-inference path, NanoCore owns the Codex OAuth account and
 OPENKIT_WORKER_RUNTIME=container \
 OPENKIT_CONTAINER_PLACEMENT=local \
 OPENKIT_CONTAINER_BACKEND=openshell \
-OPENKIT_OPENSHELL_WORKER_IMAGE=openkit/worker-codex:dev \
 OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL=http://host.openshell.internal:3000/api/worker-control \
 pnpm --filter @openkit/nanocore start
 ```
@@ -283,7 +296,7 @@ The Cell Gateway and health endpoints remain fixed at `http://127.0.0.1:17670` a
 
 Do not start a naked shared Gateway or use a custom binary path, the OpenShell CLI TLS-verification bypass flag, a patched OpenShell artifact, or a forked OpenShell artifact. The Cell Gateway intentionally serves unauthenticated HTTP only on its host loopback address, and remote access preserves that boundary through an authenticated SSH local-forward. The exact local and remote configuration profiles are in [NanoCore Deployment Modes](../../docs/nanocore-deployment-modes.en.md).
 
-Do not set `OPENKIT_OPENSHELL_CODEX_CONFIG_TOML` for trusted relay worker turns. NanoCore has no host-path Codex auth upload option or environment-configured network expansion: non-relay runtime auth may enter a sandbox only through the vault-backed runtime-file path, while the immutable AEP is the complete network authority. A relay-required AEP receives no Codex auth file and instead receives one package-scoped transient OpenShell generic provider containing only the short-lived worker placeholder. Its policy permits only the two internal worker-inference POST paths for the two pinned Codex binaries, explicitly disables Codex provider-side web search, rejects backend-private direct credentials, and revokes process-local placeholder authority before whole-Cell recycle on failure or teardown. Token-only route authentication, restart hydration, AEP-owned request authority, durable per-call attribution, bounded identity and Zstd decoding, JSON and SSE dispatch, client cancellation, Codex turn-state continuity, provider-drift failure accounting, privileged provider-state denial, and cancellation-safe ledger termination are implemented. The worker boundary also validates Codex 0.144.1 canonical turn metadata, verifies its request kind plus session, thread, parent, sub-agent, and request-header projections, and removes raw runtime and cache hints before provider dispatch.
+The selected Agent manifest owns the exact worker image, runtime binaries, sandbox policy, backend requirements, provider supply, and the single LLM route that NanoCore resolves into the immutable AEP. NanoCore has no global worker-image selector, host-path native-runtime configuration upload, or environment-configured network expansion. A relay route receives one package-scoped transient OpenShell provider containing only the short-lived worker placeholder, while an accepted direct-provider route receives only its manifest-declared backend credential binding. OpenShell policy is compiled from the AEP's exact endpoints and runtime binaries, and process-local authority is revoked before whole-Cell recycle on failure or teardown.
 
 ### A1 Cell Preparation And Verification
 

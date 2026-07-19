@@ -4,10 +4,12 @@ import {
   type RetryInterruptedWorkerCheckpointResponse,
   RetryInterruptedWorkerCheckpointResponseSchema,
 } from '@openkit/app-api-schemas';
+import type { ActorRef } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 
 import { asApiError, asCommandError, asInvalidRequestError } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
+import { assertAuthorizedWorkspaceLineage } from '../auth/operation-authorizer.js';
 import type { FsStore } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
@@ -28,19 +30,18 @@ import {
  */
 export function registerWorkerRecoveryRoutes({
   app,
+  authorizedWorkspaceIds,
   coreDb,
   repositoryWorkspaceDb,
   requestStore,
-  visibleWorkspacesForActor,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
+  readonly authorizedWorkspaceIds: (
+    context: Context<{ Variables: AuthVariables }>
+  ) => readonly string[];
   readonly coreDb: CoreDb | undefined;
-  readonly repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb;
+  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
-  readonly visibleWorkspacesForActor: (
-    actor: AuthVariables['actor'] | undefined,
-    workspaces: ReturnType<FsStore['listWorkspaces']>
-  ) => ReturnType<FsStore['listWorkspaces']>;
 }): void {
   registerAppApiRoute(app, 'listInterruptedWorkers', (c) => {
     try {
@@ -56,16 +57,14 @@ export function registerWorkerRecoveryRoutes({
 
       return c.json(
         ListInterruptedWorkerStatesResponseSchema.parse({
-          items: visibleWorkspacesForActor(c.get('actor'), store.listWorkspaces()).flatMap(
-            (workspace) => {
-              const workspaceDb = repositoryWorkspaceDb(store, workspace.id);
-              try {
-                return materializeInterruptedWorkerStates(coreDb, store, workspaceDb);
-              } finally {
-                workspaceDb.sqlite.close();
-              }
+          items: authorizedWorkspaceIds(c).flatMap((workspaceId) => {
+            const workspaceDb = repositoryWorkspaceDb(workspaceId);
+            try {
+              return materializeInterruptedWorkerStates(coreDb, store, workspaceDb);
+            } finally {
+              workspaceDb.sqlite.close();
             }
-          ),
+          }),
         })
       );
     } catch (error) {
@@ -81,12 +80,20 @@ export function registerWorkerRecoveryRoutes({
       return asInvalidRequestError(parsed.error);
     }
 
-    try {
-      const workspaceId = c.req.param('workspaceId');
-      const threadId = c.req.param('threadId');
-      const turnId = c.req.param('turnId');
-      const store = requestStore(c);
+    const workspaceId = c.req.param('workspaceId');
+    const threadId = c.req.param('threadId');
+    const turnId = c.req.param('turnId');
+    const store = requestStore(c);
+    let turn: ReturnType<FsStore['getTurnById']>;
 
+    try {
+      turn = store.getTurnById(turnId);
+    } catch (error) {
+      return asCommandError(error, 'recovery_retry_failed', 400);
+    }
+    assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), turn.workspaceId);
+
+    try {
       store.getWorkspace(workspaceId);
       store.getThread(workspaceId, threadId);
 
@@ -98,9 +105,10 @@ export function registerWorkerRecoveryRoutes({
         );
       }
 
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         const response = runInterruptedWorkerRetryCommand({
+          authorityActor: turn.triggerActor,
           coreDb,
           requestId: parsed.data.requestId,
           store,
@@ -135,6 +143,7 @@ export function registerWorkerRecoveryRoutes({
  * @throws TurnStartValidationError when reconnect or recovery authority forbids retry.
  */
 function runInterruptedWorkerRetryCommand(input: {
+  readonly authorityActor: ActorRef;
   readonly coreDb: CoreDb;
   readonly requestId: string;
   readonly store: FsStore;
@@ -213,6 +222,7 @@ function runInterruptedWorkerRetryCommand(input: {
 
     const checkpoint = decision.checkpoint;
     updateWorkerCheckpoint(input.workspaceDb, {
+      authorityActor: input.authorityActor,
       diagnosticsSummary: 'Interrupted worker attempt released for a later fresh start.',
       stage: 'aborted',
       stopReason: 'aborted',

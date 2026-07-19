@@ -1,9 +1,14 @@
 import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
 import { resolveWorkspaceDataSourceReference } from '@openkit/config-schema';
-import type { AgentSchema, TurnSchema } from '@openkit/protocol';
+import type { ActorRef, TurnSchema } from '@openkit/protocol';
 import type { z } from 'zod';
-import type { AgentManifest, AuthoredAgentConfig } from '../agents/manifest.js';
-import { type AgentReadiness, computeReadiness } from '../agents/readiness.js';
+import type { AgentManifest } from '../agents/manifest.js';
+import {
+  type AgentReadiness,
+  type AgentReadinessDependencies,
+  computeReadiness,
+  isAgentLaunchable,
+} from '../agents/readiness.js';
 import {
   type AgentSelectionDefaults,
   type AgentSelectionOverride,
@@ -17,26 +22,9 @@ import {
   resolveAgentSetup,
 } from '../agents/setup-resolver.js';
 import type { FsStore } from '../lib/store.js';
-import type { ProviderRegistry } from '../providers/registry.js';
+import type { ProviderCredentialResolver, ProviderRegistry } from '../providers/registry.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import type { TurnExecutor, TurnStartRuntimeContext } from './types.js';
-
-type AgentReadModel = z.infer<typeof AgentSchema>;
-
-/**
- * Default agent manifest used when tests or local callers do not provide file-backed manifests.
- */
-export const DEFAULT_AGENT_MANIFESTS: AgentManifest[] = [
-  {
-    adapter: 'codex-app-server',
-    deployments: ['local'],
-    displayName: 'Codex Agent',
-    id: 'agent_codex_host',
-    kind: 'custom',
-    runtime: 'codex',
-    version: '0.0.2',
-  },
-];
 
 /**
  * Input for starting a turn through the minimal orchestrator.
@@ -60,14 +48,14 @@ export interface StartTurnInput {
   store: FsStore;
   /** Thread id that owns the turn. */
   threadId: string;
+  /** Exact actor whose action triggered this turn. */
+  triggerActor: ActorRef;
   /** Scheduler-owned turn id when a queue entry already reserved lineage. */
   turnId?: string;
   /** Runtime executor that performs the turn work. */
   turnExecutor: TurnExecutor;
   /** Optional per-request agent override. */
   agentId?: string | null;
-  /** Optional authored agent configs used to produce resolved setup snapshots. */
-  agentConfigs?: AuthoredAgentConfig[];
   /** Optional workspace database used to persist resolved setup lineage. */
   agentSetupWorkspaceDb?: WorkspaceDb;
   /** Available agent manifests. */
@@ -90,6 +78,8 @@ export interface StartTurnInput {
  * Injectable start-turn orchestration dependencies.
  */
 export interface StartTurnDependencies {
+  /** Resolver used to prove provider profile credentials before turn admission. */
+  providerCredentialResolver?: ProviderCredentialResolver;
   /** Agent selector implementation. */
   selectAgent?: (
     defaults: AgentSelectionDefaults,
@@ -143,40 +133,56 @@ export class TurnStartValidationError extends Error {
 }
 
 /**
- * Resolves a model override to a compatible enabled agent.
+ * Resolves a model override to a compatible manifest-owned agent.
  *
- * @param store Store that owns workspace resources.
- * @param workspaceId Workspace whose resources should be checked.
+ * @param manifests Current file-backed agent manifests.
+ * @param providerRegistry Current provider profiles and their model declarations.
+ * @param defaultAgentId Workspace default agent id, when configured.
  * @param modelId Requested model override.
+ * @param dependencies Readiness dependencies used for launchability checks.
  * @returns Matching agent id, or null when no override was supplied.
- * @throws TurnStartValidationError when the model is missing, disabled, or unsupported.
+ * @throws TurnStartValidationError when the model is missing or unsupported.
  */
 export function resolveModelAgentOverride(
-  store: FsStore,
-  workspaceId: string,
-  modelId?: string | null
+  manifests: readonly AgentManifest[],
+  providerRegistry: ProviderRegistry,
+  defaultAgentId: string | null,
+  modelId?: string | null,
+  dependencies: AgentReadinessDependencies = {}
 ): string | null {
   if (!modelId) {
     return null;
   }
 
-  const resources = store.getWorkspaceResources(workspaceId);
-  const model = resources.models.find((candidate) => candidate.id === modelId);
-
-  if (!model) {
+  const modelProviders = providerRegistry
+    .list()
+    .filter((provider) => provider.defaultModel === modelId || provider.models.includes(modelId));
+  const matchingManifests = manifests.filter(
+    (manifest) => modelForManifest(manifest, providerRegistry) === modelId
+  );
+  const modelKnown =
+    modelProviders.length > 0 || manifests.some((manifest) => manifest.provider?.model === modelId);
+  if (!modelKnown) {
     throw new TurnStartValidationError('model_not_found', `Model not found: ${modelId}.`);
   }
 
-  if (!model.enabled) {
+  const modelDisabled =
+    (modelProviders.length > 0 &&
+      modelProviders.every((provider) => provider.readiness?.status === 'disabled')) ||
+    (matchingManifests.length > 0 &&
+      matchingManifests.every((manifest) => manifest.readiness?.status === 'disabled'));
+  if (modelDisabled) {
     throw new TurnStartValidationError('model_disabled', `Model is disabled: ${modelId}.`);
   }
 
-  const defaultAgentId = store.getWorkspace(workspaceId).defaults?.defaultAgentId ?? null;
-  const matchingAgents = resources.agents.filter(
-    (agent) => agent.status === 'enabled' && agent.modelId === modelId
-  );
-  const matchingAgent =
-    matchingAgents.find((agent) => agent.id === defaultAgentId) ?? matchingAgents[0] ?? null;
+  const launchableManifests = matchingManifests.filter((manifest) => {
+    const readiness = computeReadiness(manifest, providerRegistry, dependencies);
+    return isAgentLaunchable(readiness, manifest, providerRegistry, dependencies);
+  });
+  const matchingAgent = launchableManifests.sort((left, right) => {
+    const defaultOrder = Number(right.id === defaultAgentId) - Number(left.id === defaultAgentId);
+    return defaultOrder || left.id.localeCompare(right.id);
+  })[0];
 
   if (!matchingAgent) {
     throw new TurnStartValidationError(
@@ -189,38 +195,62 @@ export function resolveModelAgentOverride(
 }
 
 /**
- * Ensures the selected agent read model is compatible with the requested model.
+ * Resolves one manifest's effective model through its provider declaration.
  *
- * @param agent Product-visible agent read model.
- * @param modelId Requested model override.
- * @throws TurnStartValidationError when the agent does not support the model.
+ * @param manifest Agent manifest to inspect.
+ * @param providerRegistry Current provider registry.
+ * @returns Explicit or provider-default model id, when configured.
  */
-function assertAgentSupportsModel(agent: AgentReadModel, modelId?: string | null): void {
-  if (!modelId || agent.modelId === modelId) {
+function modelForManifest(
+  manifest: AgentManifest,
+  providerRegistry: ProviderRegistry
+): string | null {
+  const providerRef = manifest.provider?.ref;
+  return (
+    manifest.provider?.model ??
+    (providerRef ? providerRegistry.get(providerRef)?.defaultModel : null) ??
+    null
+  );
+}
+
+/**
+ * Ensures an explicitly selected manifest uses the requested effective provider model.
+ *
+ * @param manifest Selected agent manifest.
+ * @param providerRegistry Current provider registry.
+ * @param modelId Requested model override.
+ * @throws TurnStartValidationError when the selected manifest resolves another model.
+ */
+export function assertAgentManifestSupportsModel(
+  manifest: AgentManifest,
+  providerRegistry: ProviderRegistry,
+  modelId?: string | null
+): void {
+  if (!modelId || modelForManifest(manifest, providerRegistry) === modelId) {
     return;
   }
 
   throw new TurnStartValidationError(
     'model_not_supported_by_agent',
-    `Agent ${agent.id} does not support model: ${modelId}.`
+    `Agent ${manifest.id} does not support model override: ${modelId}.`
   );
 }
 
 /**
- * Extracts catalog source references declared by the selected authored agent config.
+ * Extracts catalog source references declared by the selected authored agent manifest.
  *
- * @param config Selected authored agent config.
+ * @param manifest Selected authored agent manifest.
  * @param workspaceRoots Materialized roots available for this turn.
  * @returns Root-id to sourceRef bindings for matching workspace inputs.
  */
-function workspaceSourceRefsFromAgentConfig(
-  config: AuthoredAgentConfig,
+function workspaceSourceRefsFromAgentManifest(
+  manifest: AgentManifest,
   workspaceRoots: MaterializedWorkspaceRoot[]
 ): Record<string, string> | undefined {
   const rootIds = new Set(workspaceRoots.map((root) => root.id));
   const sourceRefs: Record<string, string> = {};
 
-  for (const workspaceInput of config.workspace?.inputs ?? []) {
+  for (const workspaceInput of manifest.workspace?.inputs ?? []) {
     const id = typeof workspaceInput.id === 'string' ? workspaceInput.id : null;
     const sourceRef =
       typeof workspaceInput.sourceRef === 'string' ? workspaceInput.sourceRef : null;
@@ -287,27 +317,27 @@ function assertWorkspaceSourceRefsReady(
  */
 export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
   const workspace = input.store.getWorkspace(input.workspaceId);
-  const modelAgentId = resolveModelAgentOverride(input.store, input.workspaceId, input.modelId);
+  const defaultAgentId = workspace.defaults?.defaultAgentId ?? null;
+  const modelAgentId = resolveModelAgentOverride(
+    input.agentManifests,
+    input.providerRegistry,
+    defaultAgentId,
+    input.modelId,
+    input.dependencies
+  );
   const selectedAgentId = input.agentId ?? modelAgentId;
   const override = selectedAgentId ? { agentId: selectedAgentId } : {};
   const selector = input.dependencies?.selectAgent ?? selectAgent;
-  const selectedAgent = selector(
-    { defaultAgentId: workspace.defaults?.defaultAgentId ?? null },
-    override,
-    input.agentManifests
-  );
+  const selectedAgent = selector({ defaultAgentId }, override, input.agentManifests);
 
   if (!('id' in selectedAgent)) {
     throw new Error(selectedAgent.error.message);
   }
+  assertAgentManifestSupportsModel(selectedAgent, input.providerRegistry, input.modelId);
 
-  const selectedAgentReadModel = input.store.getAgent(input.workspaceId, selectedAgent.id);
-  assertAgentSupportsModel(selectedAgentReadModel, input.modelId);
-
-  const selectedAgentConfig = input.agentConfigs?.find((config) => config.id === selectedAgent.id);
-  const agentSetupResult = selectedAgentConfig
-    ? resolveAgentSetup(selectedAgentConfig, { providerRegistry: input.providerRegistry })
-    : { diagnostics: [], setup: null };
+  const agentSetupResult = resolveAgentSetup(selectedAgent, {
+    providerRegistry: input.providerRegistry,
+  });
 
   if (agentSetupResult.diagnostics.length > 0) {
     throw new Error(
@@ -315,10 +345,18 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
     );
   }
 
-  const readiness = computeReadiness(selectedAgent, input.providerRegistry);
-  const authoredWorkspaceSourceRefs = selectedAgentConfig
-    ? workspaceSourceRefsFromAgentConfig(selectedAgentConfig, input.workspaceRoots ?? [])
-    : undefined;
+  const readiness = computeReadiness(selectedAgent, input.providerRegistry, input.dependencies);
+  if (!isAgentLaunchable(readiness, selectedAgent, input.providerRegistry, input.dependencies)) {
+    throw new TurnStartValidationError(
+      'agent_not_ready',
+      `Agent ${selectedAgent.id} readiness is ${readiness.status}.`,
+      409
+    );
+  }
+  const authoredWorkspaceSourceRefs = workspaceSourceRefsFromAgentManifest(
+    selectedAgent,
+    input.workspaceRoots ?? []
+  );
   const workspaceSourceRefs = {
     ...(authoredWorkspaceSourceRefs ?? {}),
     ...(input.workspaceSourceRefs ?? {}),
@@ -332,10 +370,11 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
     input.workspaceId,
     input.threadId,
     input.input,
+    input.triggerActor,
     input.configVersion ?? null,
     input.turnId ? { turnId: input.turnId } : {}
   );
-  input.store.updateTurn(turn.id, { agentId: selectedAgentReadModel.id });
+  input.store.updateTurn(turn.id, { agentId: selectedAgent.id });
   const agentSetupRecordId =
     agentSetupResult.setup && input.agentSetupWorkspaceDb
       ? recordResolvedAgentSetup(input.agentSetupWorkspaceDb, {
@@ -350,24 +389,9 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
 
   await input.turnExecutor.startTurn(input.store, turn.id, input.input, {
     ...(input.agentSessionId ? { agentSessionId: input.agentSessionId } : {}),
-    ...(agentSetupResult.setup?.backend
-      ? {
-          backendRequirements: {
-            allowedKinds: agentSetupResult.setup.backend.allowedKinds,
-            preferred: agentSetupResult.setup.backend.preferred,
-            requiredCapabilities: agentSetupResult.setup.backend.requiredCapabilities,
-          },
-        }
-      : {}),
-    ...(agentSetupResult.setup?.provider
-      ? {
-          providerSelection: {
-            model: agentSetupResult.setup.provider.model,
-            providerId: agentSetupResult.setup.provider.providerId,
-          },
-        }
-      : {}),
+    ...(agentSetupResult.setup ? { agentSetup: agentSetupResult.setup } : {}),
     requestId: input.requestId ?? null,
+    triggerActor: input.triggerActor,
     ...(input.sandboxBindingRef ? { sandboxBindingRef: input.sandboxBindingRef } : {}),
     ...(input.workspaceDataSourceCatalog
       ? { workspaceDataSourceCatalog: input.workspaceDataSourceCatalog }

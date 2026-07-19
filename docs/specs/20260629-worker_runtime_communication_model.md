@@ -111,6 +111,8 @@ OPENKIT_CONTAINER_BACKEND=openshell
 
 Internal and public runtime records use runtime plus placement plus backend. Historical compound labels are not aliases or supported compatibility shapes.
 
+These are server, scheduler, and backend topology fields, not AgentManifest fields. An AgentManifest owns runtime supply but no `mode`, `deployment`, or `transport`; remote OpenShell Gateway origin, SSH lifecycle target, and placement remain backend configuration and records.
+
 Host execution may exist only as deterministic test doubles, fixture executors, or in-process harnesses that cannot be selected through product configuration, the end-user Agent Skill Interface, Web UI, deployment docs, status summaries, or public capability flags.
 
 ## Worker-Facing Contract
@@ -124,7 +126,7 @@ Every real Worker Agent sees the same contract inside its container:
 /openkit/session/artifacts.jsonl
 /openkit/session/workspace-changes.json
 <AEP-resolved NanoCore /api/worker-control base URL>
-<AEP-resolved OpenAI-compatible LLM base URL>
+<one AEP-resolved LLM route and its adapter-supported projection>
 declared workspace roots
 declared output roots
 ```
@@ -145,9 +147,11 @@ The AEP snapshot carries lineage, selected runtime, workspace inputs, generated 
 
 The backend materializes the AEP snapshot into the container.
 
-The selected worker adapter converts resolved AEP inputs into runtime-native argv and safe environment bindings.
+The selected worker adapter converts resolved AEP inputs into runtime-native argv and safe environment bindings. There is no universal provider-route projection: each adapter must prove that its pinned runtime can represent the exact route, provider/model selection, credential environment name, and wire protocol. An unsupported runtime-route pairing fails closed before child launch rather than being normalized, inferred, or replaced.
 
 The current adapter contract has no adapter-returned config-artifact field. The shared harness materializes only runtime-neutral AEP files, supplies one fresh session state root, and rejects any attempt to introduce adapter-authored files through the launch plan. Codex, OpenCode, and Pi express current native setup only through adapter-owned argv and safe environment bindings; a future runtime that requires generated native files must first amend this specification instead of making the harness invent an unowned file envelope. Executable MCP commands, callable capability endpoints, and MCP credentials remain absent while the capability plane is disabled.
+
+Trusted-relay and direct-provider routes are distinct, mutually exclusive authority envelopes. A trusted-relay AEP supplies only `OPENKIT_WORKER_INFERENCE_TOKEN` plus exact relay egress and withholds direct credentials and direct provider egress. A direct-provider AEP supplies only the manifest-declared provider credential plus exact direct egress and must not receive the relay placeholder. The adapter may reject an unsupported envelope but must never substitute the other one.
 
 Dynamic supply changes create a new AEP snapshot.
 
@@ -178,7 +182,6 @@ Current worker-to-NanoCore record families also include:
 - final status reporting
 - supply refresh notice
 - capability call notification summaries
-- knowledge proposal notification summaries
 
 Every control request must carry sandbox session token authentication and lineage.
 
@@ -201,6 +204,10 @@ For future backends, this can use bind mounts, `docker cp`, tar streams, SSH, rs
 NanoCore must normalize collected data into OpenKit records such as `WorkspaceInputSnapshot`, `WorkspaceMaterializationRecord`, `WorkspaceChangeSet`, `StagedWorkspaceReview`, `WorkspaceApplyResult`, `Artifact`, `Evidence`, and Action Center rows.
 
 The control plane may announce that data is ready, but it must not carry full patches, bundles, artifact files, or raw logs except within strict product metadata limits.
+
+S16 Stage 4 uses this existing data plane for turn-end Artifact bytes without adding a live file-transfer control family. The canonical transcript declaration contains the existing Artifact kind, non-empty title, one canonical absolute POSIX path, exact media type `text/markdown`, `text/plain`, or `application/json`, and at most one `materialProposal` tuple `{ materialId, baseRevisionId, baseContentDigest }`. Its package snapshot plus sequence supplies exact Artifact id `worker-artifact-${packageSnapshotId}-${sequence}`. The path must be a strict child of exactly one AEP output root with `registerAsArtifacts=true` and `retention=sync-on-turn-end`; path equality, traversal, non-canonical spelling, duplicate paths, ambiguous overlapping roots, and every undeclared root fail closed before canonical writes. Artifact notices remain bounded diagnostics and never replace terminal transcript plus downloaded bytes.
+
+The shared turn-end collector accepts only non-empty well-formed UTF-8 and at most 16 MiB of aggregate Artifact bytes per Turn, parses declared JSON, and performs no newline or Unicode normalization. In declaration-sequence order it creates through the existing retained-session command boundary and downloads only a backend-owned temporary copy bounded to the remaining aggregate budget plus one sentinel byte; it rejects a larger copy immediately, never downloads the unbounded declared file directly, and therefore transfers at most 16 MiB plus one Artifact payload byte before zero-write rejection. Before any Artifact or Review write it compares every payload with every exact non-empty sensitive value injected into that worker materialization, including runtime environment, runtime file, direct-provider, worker-control, and trusted-relay values. The comparison set contains the UTF-8 bytes of each complete injected value, deduplicated by byte equality; a runtime-file entry contributes its complete content, and a match means contiguous byte-substring containment anywhere in the payload rather than whole-payload equality. Any match rejects the complete candidate set with product-safe diagnostics and zero Artifact or Review writes. Secret environment, file, and provider values remain backend-private process memory until collection or cleanup; the existing durable scheduler-owned sandbox binding reference is included without creating another record or copy. The assembled set never enters transcript or Artifact state. A restored session without the original complete set runs the existing backend cleanup lifecycle and rejects any artifact declaration as `recovery_required` instead of guessing from current credentials. As with workspace publication, this exact-value check is not generic DLP and does not detect encoded, transformed, derived, or otherwise non-literal secret material.
 
 ### Capability Plane
 
@@ -252,6 +259,7 @@ The shim should:
 - emit heartbeat and artifact notices through direct NanoCore worker control
 - append schema-conformant candidate events through direct NanoCore worker control
 - write `/openkit/session/workspace-changes.json` when workspace changes are produced
+- before publishing `workspace.patch` or its manifest, compare every non-deleted changed path's exact stage-zero blob bytes from the isolated Git index with every exact non-empty credential value injected into the native child environment; any match fails closed, removes transient and review outputs, and leaves that value in no patch, manifest, or transcript
 - maintain sequence numbers and lineage on emitted records
 - apply best-effort lightweight redaction before records leave the container
 - fail before child launch when required direct-control readiness has not completed
@@ -285,6 +293,8 @@ The shim must not:
 - become a generic interactive shell
 
 Shim redaction is best effort.
+
+The workspace publication guard is exact-value protection only. It does not provide generic DLP or detect encoded, transformed, derived, or otherwise non-literal credential material.
 
 NanoCore canonical verification and redaction remain the server-owned product boundary.
 
@@ -320,10 +330,12 @@ The three concrete adapter contracts are owned by:
 
 ## Current Implementation Projection
 
-The current implementation is a partial projection of this model:
+The current implementation is a partial projection of this broader communication model and an implemented projection of the WP-2 runtime-adapter boundary:
 
 - `packages/worker-protocol` exists and defines canonical worker lineage, schema version, worker event records, transcript records, workspace change manifests, capability call summaries, worker-control request and response envelopes, and worker error shapes.
-- `packages/worker-shim` currently provides a Codex-specific entrypoint around otherwise reusable direct control, transcript, process supervision, and workspace publication behavior. The accepted target is one generic harness plus three small adapters. It has no worker capability client and no sidecar binary.
+- `packages/worker-shim` provides one generic `openkit-worker-shim` entrypoint, one static registry, and separate Codex, OpenCode, and Pi adapters behind the two-operation `prepare` and `collect` contract. Runtime-native argv, safe child environment, state-root selection, and bounded result parsing remain adapter-owned. The shared shim has no native config-artifact contract, worker capability client, sidecar binary, or runtime-name fallback.
+- Codex `0.144.1` and OpenCode `1.18.1` accept only the trusted NanoCore relay envelope. Pi `0.80.7` accepts only the exact direct Anthropic `claude-sonnet-4-5` envelope. Every adapter rejects zero or multiple routes, mixed relay and direct authority, and unsupported runtime-route combinations before child launch.
+- NanoCore preserves the strict manifest-authored image, pull policy, runtime binaries, adapter id, provider selection, and sandbox envelope through `ResolvedAgentSetup`, then resolves exactly one provider route into the immutable AEP. `control.adapter.targetRuntime` alone selects the adapter; runtime kind, image name, environment, deployment, transport, and backend topology do not select or infer one.
 - The active shim keeps one already launched child alive inside one bounded direct-control outage budget and reconnects that same process through the ordinary heartbeat route.
 - `apps/nanocore/src/runtime/agent-environment.ts` resolves OpenShell-backed AEP snapshots with required `direct-nanocore` control and exact `worker-control` backend capability requirements. Current packages emit a disabled capability plane with no routes.
 - `apps/nanocore/src/runtime/worker-control-gateway.ts`, `worker-control-records.ts`, `worker-control-sequences.ts`, `worker-control-commands.ts`, `worker-control-rejected-evidence.ts`, and `worker-control-rebuild.ts` provide the durable V1 worker-control state, sequence, command, rejection-evidence, and restart-rebuild surfaces for registered AEP snapshots.
@@ -335,7 +347,7 @@ The current implementation is a partial projection of this model:
 - `apps/nanocore/src/runtime/worker-governance-backend.ts` validates OpenShell control endpoints, collects transcript and workspace-change data-plane artifacts, and imports product-safe records.
 - `apps/nanocore/src/runtime/filesystem-workspace-sync.ts` and related storage code implement filesystem snapshot, staging, review, and apply records that are now owned by the workspace synchronization spec.
 
-Direct control, data collection, generic inference, evidence, and audit foundations are implemented. The worker capability plane and worker MCP gateway are not implemented and remain accepted future contracts. The trusted worker-inference and runtime-provenance extension remains governed by `docs/specs/20260711-worker_runtime_subagent_provenance.md`, whose separate real production proof has passed on A1.
+Direct control, data collection, the generic runtime-adapter boundary, inference-route validation, evidence, and audit foundations are implemented. Static Skill and MCP supply metadata may be present, but the worker capability plane and worker MCP gateway are not implemented and remain accepted future contracts. The three pinned arm64 images build on A1 and pass stock OpenShell `0.0.80` create, upload, adapter `prepare` dry-run, and `--no-keep` cleanup checks. That evidence proves image content, preparation, containment, upload, and cleanup only; it does not prove the complete worker-control readiness, heartbeat, interrupt, reconnect, recovery, or terminal closeout lifecycle for every adapter. The trusted worker-inference and runtime-provenance extension remains governed by `docs/specs/20260711-worker_runtime_subagent_provenance.md`, whose separate real production proof has passed on A1.
 
 ## Skill And MCP Supply
 
@@ -602,7 +614,7 @@ Mitigation: require the exact memory-only process key, durable lineage, next seq
 - Host runtime is removed from product execution and public surfaces.
 - Public runtime configuration should move to `OPENKIT_WORKER_RUNTIME=container`, `OPENKIT_CONTAINER_PLACEMENT=local|remote`, and `OPENKIT_CONTAINER_BACKEND=openshell`.
 - Direct NanoCore `/api/worker-control` is the only worker-control endpoint. The accepted future `capability.local` projection is a separate plane and must not carry control traffic.
-- The AEP resolves one specialized OpenAI-compatible LLM endpoint: backend-local `inference.local` or the authenticated NanoCore worker-inference base URL when complete attribution is required.
+- The AEP resolves one specialized LLM route, while its runtime-native projection is adapter-specific and fail-closed. Codex `0.144.1` and OpenCode `1.18.1` can represent the trusted NanoCore relay within the current no-file contract; Pi `0.80.7` cannot and supports only an exact pinned native direct provider/model pair.
 - `openkit-worker-shim` is the generic real container entrypoint; runtime-native behavior is selected by the AEP-declared opaque adapter id inside the worker image.
 - Codex, OpenCode, and Pi use one shared harness contract and separate runtime adapters.
 - One authored `AgentManifest`, one adapter module plus static registry entry, and one governed image definition plus existing-catalog entry are the complete permitted production extension surface for a fourth Worker Agent.

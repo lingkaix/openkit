@@ -28,6 +28,7 @@ describe('scheduler admission routes', () => {
       'queue_retry_audit_failure',
     ]) {
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId,
         workspaceId: 'ws_demo',
         threadId: thread.id,
@@ -46,12 +47,22 @@ describe('scheduler admission routes', () => {
     const workspaceDbs: WorkspaceDb[] = [];
     let failAudit = false;
     const app = new Hono<{ Variables: AuthVariables }>();
+    app.use('*', async (c, next) => {
+      c.set('actor', { kind: 'session', userId: 'user_local' });
+      c.set('workspaceAccess', {
+        effectiveRole: 'owner',
+        kind: 'workspace',
+        policyOperation: 'turn.run',
+        workspaceId: 'ws_demo',
+      });
+      await next();
+    });
     registerSchedulerAdmissionRoutes({
       app,
       coreDb,
       requestStore: () => store,
       repositoryWorkspaceDb: () => {
-        const workspaceDb = openWorkspaceDb(dataRoot, store.getUserId(), 'ws_demo');
+        const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
         applyScopedMigrations(workspaceDb);
 
         if (failAudit) {
@@ -97,15 +108,26 @@ describe('scheduler admission routes', () => {
     }
   });
 
-  it('does not reveal whether a scheduler admission belongs to another workspace', async () => {
+  it('denies cross-Workspace admissions before mutation while preserving missing behavior', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-scheduler-admission-ownership-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     const app = new Hono<{ Variables: AuthVariables }>();
+    app.use('*', async (c, next) => {
+      c.set('actor', { kind: 'session', userId: 'user_local' });
+      c.set('workspaceAccess', {
+        effectiveRole: 'owner',
+        kind: 'workspace',
+        policyOperation: 'turn.run',
+        workspaceId: 'ws_demo',
+      });
+      await next();
+    });
 
     for (const queueEntryId of ['queue_foreign_retry', 'queue_foreign_cancel']) {
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId,
         workspaceId: 'ws_foreign',
         threadId: 'thread_foreign',
@@ -121,47 +143,68 @@ describe('scheduler admission routes', () => {
       queueEntryId: 'queue_foreign_retry',
       denialReason: 'no-healthy-target',
     });
+    const repositoryWorkspaceDb = vi.fn(() => {
+      throw new Error('Foreign scheduler admissions must fail before opening workspace storage.');
+    });
     registerSchedulerAdmissionRoutes({
       app,
       coreDb,
       requestStore: () => store,
-      repositoryWorkspaceDb: () => {
-        throw new Error('Foreign scheduler admissions must fail before opening workspace storage.');
-      },
+      repositoryWorkspaceDb,
     });
 
     try {
-      for (const [queueEntryId, action] of [
-        ['queue_foreign_retry', 'retry'],
-        ['queue_foreign_cancel', 'cancel'],
+      const missing = await app.request(
+        '/api/app/workspaces/ws_demo/scheduler/admissions/queue_missing/retry',
+        { method: 'POST' }
+      );
+
+      expect(missing.status).toBe(400);
+      await expect(missing.json()).resolves.toMatchObject({
+        code: 'scheduler_admission_retry_failed',
+      });
+      for (const [queueEntryId, action, expectedStatus] of [
+        ['queue_foreign_retry', 'retry', 'denied'],
+        ['queue_foreign_cancel', 'cancel', 'queued'],
       ] as const) {
         const path = `/api/app/workspaces/ws_demo/scheduler/admissions/${queueEntryId}/${action}`;
         const foreign = await app.request(path, { method: 'POST' });
-        const foreignBody = await foreign.json();
-        coreDb.sqlite
-          .prepare('DELETE FROM scheduler_admission_entries WHERE queue_entry_id = ?')
-          .run(queueEntryId);
-        const absent = await app.request(path, { method: 'POST' });
 
-        expect(foreign.status).toBe(absent.status);
-        expect(foreignBody).toEqual(await absent.json());
+        expect(foreign.status).toBe(403);
+        await expect(foreign.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+        expect(
+          coreDb.sqlite
+            .prepare('SELECT status FROM scheduler_admission_entries WHERE queue_entry_id = ?')
+            .get(queueEntryId)
+        ).toEqual({ status: expectedStatus });
       }
+      expect(repositoryWorkspaceDb).not.toHaveBeenCalled();
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('scopes scheduler admissions by user when workspace ids collide', async () => {
+  it('lets an authorized workspace actor manage admissions created by another user', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-scheduler-admission-user-scope-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     const app = new Hono<{ Variables: AuthVariables }>();
+    app.use('*', async (c, next) => {
+      c.set('actor', { kind: 'session', userId: 'user_local' });
+      c.set('workspaceAccess', {
+        effectiveRole: 'owner',
+        kind: 'workspace',
+        policyOperation: 'turn.run',
+        workspaceId: 'ws_demo',
+      });
+      await next();
+    });
 
     for (const queueEntryId of ['queue_victim_retry', 'queue_victim_cancel']) {
       createSchedulerAdmissionEntry(coreDb, {
         queueEntryId,
-        userId: 'user_victim',
+        triggerActor: { kind: 'user', id: 'user_victim' },
         workspaceId: 'ws_demo',
         threadId: 'thread_victim',
         turnId: `turn_${queueEntryId}`,
@@ -181,7 +224,9 @@ describe('scheduler admission routes', () => {
       coreDb,
       requestStore: () => store,
       repositoryWorkspaceDb: () => {
-        throw new Error('Foreign scheduler admissions must fail before opening workspace storage.');
+        const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+        applyScopedMigrations(workspaceDb);
+        return workspaceDb;
       },
     });
 
@@ -189,27 +234,26 @@ describe('scheduler admission routes', () => {
       const listed = await app.request('/api/app/workspaces/ws_demo/scheduler/admissions');
 
       expect(listed.status).toBe(200);
-      await expect(listed.json()).resolves.toMatchObject({ items: [] });
+      await expect(listed.json()).resolves.toMatchObject({
+        items: expect.arrayContaining([
+          expect.objectContaining({ queueEntryId: 'queue_victim_retry', status: 'denied' }),
+          expect.objectContaining({ queueEntryId: 'queue_victim_cancel', status: 'queued' }),
+        ]),
+      });
 
-      for (const [queueEntryId, action, originalStatus] of [
-        ['queue_victim_retry', 'retry', 'denied'],
-        ['queue_victim_cancel', 'cancel', 'queued'],
+      for (const [queueEntryId, action, expectedStatus] of [
+        ['queue_victim_retry', 'retry', 'queued'],
+        ['queue_victim_cancel', 'cancel', 'cancelled'],
       ] as const) {
         const path = `/api/app/workspaces/ws_demo/scheduler/admissions/${queueEntryId}/${action}`;
-        const foreign = await app.request(path, { method: 'POST' });
-        const foreignBody = await foreign.json();
+        const response = await app.request(path, { method: 'POST' });
+
+        expect(response.status).toBe(200);
         expect(
           coreDb.sqlite
             .prepare('SELECT status FROM scheduler_admission_entries WHERE queue_entry_id = ?')
             .get(queueEntryId)
-        ).toEqual({ status: originalStatus });
-        coreDb.sqlite
-          .prepare('DELETE FROM scheduler_admission_entries WHERE queue_entry_id = ?')
-          .run(queueEntryId);
-        const absent = await app.request(path, { method: 'POST' });
-
-        expect(foreign.status).toBe(absent.status);
-        expect(foreignBody).toEqual(await absent.json());
+        ).toEqual({ status: expectedStatus });
       }
     } finally {
       coreDb.sqlite.close();

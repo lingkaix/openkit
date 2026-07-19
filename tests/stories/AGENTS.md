@@ -7,8 +7,9 @@ Before changing stories, read `docs/specs/20260529-l6_story_acceptance.md` and t
 ## Rules
 
 - Keep every story in English Markdown with a `*.story.md` suffix.
-- Use only scalar front matter supported by `tests/story-runner/story-metadata.mjs`.
-- Include the required metadata fields: `id`, `title`, `persona`, `entrypoint`, `default_tool`, `timeout_seconds`, `requires_real_provider`, and `requires_real_codex`.
+- Use only scalar front matter supported by `tests/story-runner/story-metadata.mjs`; `contracts` stays one comma-separated scalar line.
+- Include the required metadata fields: `id`, `title`, `persona`, `entrypoint`, `default_tool`, `timeout_seconds`, `requires_real_provider`, `requires_real_codex`, and `contracts`.
+- Keep the body inside the normative section list owned by `docs/specs/20260529-l6_story_acceptance.md`.
 - Keep story bodies human-readable and agent-readable.
 - Describe user-visible workflow steps instead of implementation shortcuts.
 - Put setup, cleanup, and evidence requirements in explicit sections.

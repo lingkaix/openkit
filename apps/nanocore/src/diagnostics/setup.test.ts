@@ -12,13 +12,20 @@ import { createSetupDiagnostics } from './setup.js';
  */
 function manifest(input: Partial<AgentManifest> = {}): AgentManifest {
   return {
-    adapter: 'custom-http',
-    deployments: ['local'],
     displayName: 'Agent',
     id: 'agent_test',
-    kind: 'custom',
-    runtime: 'custom',
-    version: '0.0.2',
+    requiredFeatures: [],
+    runtime: {
+      adapter: 'custom',
+      binaries: [
+        { id: 'openkit-worker-shim', path: '/usr/local/bin/openkit-worker-shim' },
+        { id: 'node', path: '/usr/local/bin/node' },
+        { id: 'custom', path: '/usr/local/bin/custom' },
+      ],
+      image: { pullPolicy: 'never', ref: 'openkit/worker-custom:test' },
+      kind: 'custom',
+    },
+    schemaVersion: 1,
     ...input,
   };
 }
@@ -37,8 +44,7 @@ describe('createSetupDiagnostics', () => {
     ]);
 
     const diagnostics = createSetupDiagnostics({
-      agentConfigs: [],
-      agentManifests: [manifest({ providerRef: 'hosted' })],
+      agentManifests: [manifest({ provider: { ref: 'hosted' } })],
       dataRoot: '/tmp/openkit-test',
       mode: 'local',
       openKitConfig: {},
@@ -64,7 +70,7 @@ describe('createSetupDiagnostics', () => {
     ]);
     expect(diagnostics.agents[0]?.readiness).toEqual({
       reasons: ['Provider hosted is missing credentials.'],
-      status: 'degraded',
+      status: 'blocked',
     });
     expect(diagnostics.server.dataRoot).toBe('configured');
     expect(JSON.stringify(diagnostics)).not.toContain('/tmp/openkit-test');

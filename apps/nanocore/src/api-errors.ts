@@ -1,6 +1,7 @@
 import { ApiErrorSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { z } from 'zod';
 
+import { KnowledgePageValidationError } from './knowledge/okf.js';
 import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 
@@ -30,6 +31,10 @@ export function asCommandError(error: unknown, code: string, status = 404): Resp
   }
 
   if (error instanceof TurnStartValidationError) {
+    return asApiError(error.message, error.code, error.status);
+  }
+
+  if (error instanceof KnowledgePageValidationError) {
     return asApiError(error.message, error.code, error.status);
   }
 

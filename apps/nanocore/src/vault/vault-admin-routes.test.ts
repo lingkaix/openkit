@@ -8,6 +8,7 @@ import type { BetterAuthServer } from '../auth/middleware.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { getVaultGrant } from './vault-grants.js';
 import type {
   OsKeychainVaultAdapter,
@@ -31,6 +32,12 @@ function createVaultAdminApp() {
   });
 
   applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'user_local',
+    workspaceId: 'ws_demo',
+  });
 
   return {
     app: createApp({ coreDb, dataRoot, vaultUnlockState }),
@@ -381,6 +388,53 @@ describe('vault admin app API', () => {
     }
   });
 
+  it('denies a foreign vault reference but preserves a missing reference result', async () => {
+    const { app, coreDb, masterKey } = createVaultAdminApp();
+    const materialBase64 = Buffer.from('foreign-workspace-secret', 'utf8').toString('base64');
+
+    try {
+      const before = importUnboundWorkspaceVaultReference(coreDb, {
+        backendKind: 'encrypted-file',
+        displayName: 'Foreign API token',
+        referenceId: 'vault_foreign',
+        secretKind: 'api-token',
+        workspaceId: 'ws_foreign',
+      });
+      const unlock = await app.request('/api/app/vault/unlock', {
+        body: JSON.stringify({ masterKeyBase64: masterKey.toString('base64') }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      expect(unlock.status).toBe(200);
+
+      const foreign = await app.request(
+        '/api/app/workspaces/ws_demo/vault/references/vault_foreign/rebind',
+        {
+          body: JSON.stringify({ materialBase64 }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+      const missing = await app.request(
+        '/api/app/workspaces/ws_demo/vault/references/vault_missing/rebind',
+        {
+          body: JSON.stringify({ materialBase64 }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+
+      expect(foreign.status).toBe(403);
+      await expect(foreign.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+      expect(missing.status).toBe(404);
+      await expect(missing.json()).resolves.toMatchObject({ code: 'vault_reference_not_found' });
+      expect(getVaultReference(coreDb, 'vault_foreign')).toEqual(before);
+      expect(getVaultReference(coreDb, 'vault_missing')).toBeNull();
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('lists redacted workspace vault references for re-binding', async () => {
     const { app, coreDb } = createVaultAdminApp();
 
@@ -422,6 +476,14 @@ describe('vault admin app API', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-vault-admin-authority-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    coreDb.sqlite
+      .prepare(
+        `INSERT INTO users
+          (id, display_name, email, email_verified, created_at, updated_at, kind)
+         VALUES ('user_vault_admin_default', 'Vault User',
+                 'vault-user@example.com', false, ?, ?, 'human')`
+      )
+      .run(Date.now(), Date.now());
     const app = createApp({
       auth: createSignedInAuthStub(),
       coreDb,

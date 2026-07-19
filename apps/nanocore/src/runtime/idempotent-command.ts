@@ -9,7 +9,7 @@ import {
   commandRequestKey,
   type FsStore,
 } from '../lib/store.js';
-import type { WorkspaceDb } from '../storage/db.js';
+import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 
 /** Error raised when one idempotency key is reused for different command input. */
 export class IdempotencyKeyConflictError extends Error {
@@ -33,12 +33,10 @@ export interface InflightIdempotentCommand {
   readonly promise: Promise<unknown>;
 }
 
-/** Options for executing one idempotent command. */
-interface IdempotentCommandOptions<T> {
+/** Options shared by synchronous transactional and ordinary idempotent commands. */
+interface IdempotentCommandBaseOptions<T> {
   /** Store that owns the idempotency ledger. */
   readonly store: FsStore;
-  /** Optional open Workspace database for receipt-first reads and writes. */
-  readonly workspaceDb?: WorkspaceDb;
   /** Process-local in-flight command maps keyed by actor-scoped store. */
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   /** Stable command name. */
@@ -53,13 +51,52 @@ interface IdempotentCommandOptions<T> {
   readonly responseKind: CommandRequestResponseKind;
   /** Captures the sole Core-authorized extra receipt metadata for `chat.start`. */
   readonly chatResponseMetadata?: (result: T) => ChatCommandReceiptMetadata;
-  /** Executes the command when no duplicate exists. */
-  readonly execute: () => Promise<T> | T;
   /** Replays the current resource snapshot for an existing ledger record. */
   readonly replay: (record: CommandRequestRecord) => Promise<T> | T;
   /** Extracts the response resource id from a fresh command result. */
   readonly responseId: (result: T) => string;
 }
+
+/** Options for one idempotent command, discriminated by its transaction boundary. */
+type IdempotentCommandOptions<T> = IdempotentCommandBaseOptions<T> &
+  (
+    | {
+        /** Executes synchronously inside the required Workspace transaction. */
+        readonly execute: () => T;
+        /** Open Workspace database that owns both the business record and receipt. */
+        readonly workspaceDb: WorkspaceDb;
+        /** Runs synchronous command execution and receipt writing in one Workspace transaction. */
+        readonly workspaceTransaction: true;
+        /** Core transaction mode is not selected. */
+        readonly coreTransaction?: undefined;
+        /** Core database is not selected. */
+        readonly coreDb?: undefined;
+      }
+    | {
+        /** Executes synchronously inside the required Core transaction. */
+        readonly execute: () => T;
+        /** Open Core database that owns both the business record and receipt. */
+        readonly coreDb: CoreDb;
+        /** Runs synchronous command execution and receipt writing in one Core transaction. */
+        readonly coreTransaction: true;
+        /** Workspace transaction mode is not selected. */
+        readonly workspaceTransaction?: undefined;
+        /** Workspace database is not selected. */
+        readonly workspaceDb?: undefined;
+      }
+    | {
+        /** Executes an ordinary command that may be asynchronous. */
+        readonly execute: () => Promise<T> | T;
+        /** Optional open Workspace database for receipt-first reads and writes. */
+        readonly workspaceDb?: WorkspaceDb;
+        /** Transactional execution is enabled only by the explicit true literal. */
+        readonly workspaceTransaction?: undefined;
+        /** Core database is not selected for ordinary commands. */
+        readonly coreDb?: undefined;
+        /** Core transactional execution is enabled only by the explicit true literal. */
+        readonly coreTransaction?: undefined;
+      }
+  );
 
 /**
  * Executes or replays one app-local idempotent command.
@@ -67,17 +104,40 @@ interface IdempotentCommandOptions<T> {
  * @param options Command identity, input, ledger, execution, and replay behavior.
  * @returns Fresh or replayed command result.
  * @throws IdempotencyKeyConflictError when the same request id is reused with different input.
+ * @throws Error when transaction mode lacks its database or receives asynchronous execution.
  */
 export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<T>): Promise<T> {
   if (options.chatResponseMetadata && options.command !== 'chat.start') {
     throw new Error('Only chat.start may store extra command receipt metadata.');
   }
+  let transaction: { readonly db: CoreDb | WorkspaceDb; readonly execute: () => T } | undefined;
+
+  if (options.workspaceTransaction) {
+    if (!options.workspaceDb) {
+      throw new Error('workspaceTransaction requires an open Workspace database.');
+    }
+    if (Object.prototype.toString.call(options.execute) === '[object AsyncFunction]') {
+      throw new Error('workspaceTransaction commands must execute synchronously.');
+    }
+    transaction = { db: options.workspaceDb, execute: options.execute };
+  }
+  if (options.coreTransaction) {
+    if (!options.coreDb) {
+      throw new Error('coreTransaction requires an open Core database.');
+    }
+    if (Object.prototype.toString.call(options.execute) === '[object AsyncFunction]') {
+      throw new Error('coreTransaction commands must execute synchronously.');
+    }
+    transaction = { db: options.coreDb, execute: options.execute };
+  }
+
   const inputHash = commandInputHash(options.input);
+  const commandDb = options.coreDb ?? options.workspaceDb;
   const existingRecord = options.store.getCommandRequest(
     options.command,
     options.requestId,
     options.scope,
-    options.workspaceDb
+    commandDb
   );
 
   if (existingRecord) {
@@ -88,11 +148,7 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
     return options.replay(existingRecord);
   }
 
-  const key = `${options.store.getUserId()}|${commandRequestKey(
-    options.command,
-    options.requestId,
-    options.scope
-  )}`;
+  const key = commandRequestKey(options.command, options.requestId, options.scope);
   let storeInflightCommands = options.inflightCommands.get(options.store);
 
   if (!storeInflightCommands) {
@@ -110,9 +166,13 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
     return (await existingInflight.promise) as T;
   }
 
-  const promise = (async () => {
-    const result = await options.execute();
-
+  /**
+   * Records the receipt for one freshly executed command result.
+   *
+   * @param result Fresh command result whose resource pointer is recorded.
+   * @returns The same result after its receipt is durable.
+   */
+  const recordResult = (result: T): T => {
     options.store.recordCommandRequest(
       {
         command: options.command,
@@ -127,10 +187,29 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
             : {}),
         },
       },
-      options.workspaceDb
+      commandDb
     );
 
     return result;
+  };
+  const promise = (async () => {
+    if (transaction) {
+      return transaction.db.sqlite.transaction(() => {
+        const result = transaction.execute();
+
+        if (
+          result !== null &&
+          (typeof result === 'object' || typeof result === 'function') &&
+          typeof (result as { then?: unknown }).then === 'function'
+        ) {
+          throw new Error('Transactional commands must execute synchronously.');
+        }
+
+        return recordResult(result as T);
+      })();
+    }
+
+    return recordResult(await options.execute());
   })();
 
   storeInflightCommands.set(key, { inputHash, promise });

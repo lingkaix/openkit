@@ -9,6 +9,8 @@ import { createDeterministicGoalPlanFallback } from './goal-plan.js';
 import { createGoalPlan, readGoalPlanCreation } from './goal-planning.js';
 import { createGoalRecord, getGoalPlanRecord, getGoalRecord } from './goal-store.js';
 
+const USER_ACTOR = { kind: 'user', id: 'user_demo' } as const;
+
 /**
  * Opens a migrated workspace database for goal planning tests.
  *
@@ -16,7 +18,7 @@ import { createGoalRecord, getGoalPlanRecord, getGoalRecord } from './goal-store
  */
 function createWorkspaceDb(): WorkspaceDb {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-goal-planning-'));
-  const workspaceDb = openWorkspaceDb(dataRoot, 'user_demo', 'ws_demo');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }
@@ -38,6 +40,7 @@ describe('goal planning path', () => {
       });
 
       const result = await createGoalPlan({
+        triggerActor: USER_ACTOR,
         workspaceDb,
         store,
         workspaceId: 'ws_demo',
@@ -99,6 +102,7 @@ describe('goal planning path', () => {
 
       await expect(
         createGoalPlan({
+          triggerActor: USER_ACTOR,
           workspaceDb,
           store,
           workspaceId: 'ws_demo',
@@ -112,6 +116,7 @@ describe('goal planning path', () => {
       ).toEqual({ count: 0 });
       expect(() =>
         readGoalPlanCreation({
+          triggerActor: USER_ACTOR,
           workspaceDb,
           store,
           workspaceId: 'ws_demo',
@@ -144,6 +149,7 @@ describe('goal planning path', () => {
         objective: 'Make the release ready.',
       });
       const result = await createGoalPlan({
+        triggerActor: USER_ACTOR,
         workspaceDb,
         store,
         workspaceId: 'ws_demo',
@@ -162,6 +168,7 @@ describe('goal planning path', () => {
       expect(result.status).toBe('awaiting_user');
       expect(result.questionItem).toMatchObject({
         completedAt: expect.any(String),
+        responsibleUserId: USER_ACTOR.id,
         status: 'completed',
       });
       expect(result.questionItem.questions).toHaveLength(2);
@@ -178,6 +185,7 @@ describe('goal planning path', () => {
       ).toEqual({ count: 0 });
       expect(() =>
         readGoalPlanCreation({
+          triggerActor: USER_ACTOR,
           workspaceDb,
           store,
           workspaceId: 'ws_demo',
@@ -185,6 +193,54 @@ describe('goal planning path', () => {
           requestId: 'req_goal_plan_questions',
         })
       ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('fails closed without a responsible user before writing a question or Gate', async () => {
+    const workspaceDb = createWorkspaceDb();
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Unassigned question thread');
+
+    try {
+      createGoalRecord(workspaceDb, {
+        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
+        goalId: 'goal_unassigned_question',
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        title: 'Unassigned question',
+        objective: 'Require a human without assigning one.',
+      });
+      const plan = createDeterministicGoalPlanFallback({
+        goalTitle: 'Unassigned question',
+        objective: 'Require a human without assigning one.',
+      });
+
+      await expect(
+        createGoalPlan({
+          triggerActor: {
+            kind: 'system',
+            id: 'scheduler',
+            responsibleUserId: null,
+          },
+          workspaceDb,
+          store,
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: 'goal_unassigned_question',
+          requestId: 'req_goal_plan_unassigned',
+          planner: () => ({ ...plan, questions: ['Who should answer?'] }),
+        })
+      ).rejects.toMatchObject({ code: 'recovery_required' });
+      expect(
+        store
+          .listThreadItems('ws_demo', thread.id)
+          .filter((item) => item.type === 'user-input-request')
+      ).toEqual([]);
+      expect(
+        store.listThreadTurns('ws_demo', thread.id).some((turn) => turn.status === 'awaiting_human')
+      ).toBe(false);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -206,6 +262,7 @@ describe('goal planning path', () => {
       });
 
       const result = await createGoalPlan({
+        triggerActor: USER_ACTOR,
         workspaceDb,
         store,
         workspaceId: 'ws_demo',
@@ -229,6 +286,7 @@ describe('goal planning path', () => {
       });
       expect(() =>
         readGoalPlanCreation({
+          triggerActor: USER_ACTOR,
           workspaceDb,
           store,
           workspaceId: 'ws_demo',

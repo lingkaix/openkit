@@ -1,6 +1,33 @@
 import type { WorkspaceDb } from '../storage/db.js';
 import type { ResolvedAgentSetup } from './setup-resolver.js';
 
+/** Deliberate non-secret projection of the setup facts needed for durable evidence. */
+export interface RedactedResolvedAgentSetup {
+  /** Selected manifest facts that determined runtime and sandbox policy. */
+  readonly manifest: {
+    /** Selected agent id. */
+    readonly id: string;
+    /** Required feature ids used during setup resolution. */
+    readonly requiredFeatures: string[];
+    /** Exact runtime, image, and binary declarations. */
+    readonly runtime: ResolvedAgentSetup['manifest']['runtime'];
+    /** Exact network and non-secret credential declaration metadata. */
+    readonly sandbox: {
+      /** Credential declaration metadata without resolved values. */
+      readonly credentialDeclarations: NonNullable<
+        ResolvedAgentSetup['manifest']['sandbox']
+      >['credentialDeclarations'];
+      /** Exact authored network grants. */
+      readonly network: NonNullable<ResolvedAgentSetup['manifest']['sandbox']>['network'];
+    };
+  };
+  /** Selected provider identity and model without secret references or values. */
+  readonly provider: Pick<
+    NonNullable<ResolvedAgentSetup['provider']>,
+    'model' | 'providerId'
+  > | null;
+}
+
 /** Durable workspace-scoped resolved setup record. */
 export interface ResolvedAgentSetupRecord {
   /** Durable setup record id. */
@@ -22,7 +49,7 @@ export interface ResolvedAgentSetupRecord {
   /** Required feature ids preserved by resolution. */
   readonly requiredFeatures: string[];
   /** Redacted resolved setup payload. */
-  readonly setup: ResolvedAgentSetup;
+  readonly setup: RedactedResolvedAgentSetup;
   /** Creation timestamp. */
   readonly createdAt: string;
 }
@@ -68,6 +95,8 @@ export function recordResolvedAgentSetup(
   workspaceDb: WorkspaceDb,
   input: RecordResolvedAgentSetupInput
 ): ResolvedAgentSetupRecord {
+  const redactedSetup = redactResolvedAgentSetup(input.setup);
+
   workspaceDb.sqlite
     .prepare(
       `INSERT OR REPLACE INTO resolved_agent_setups (
@@ -89,12 +118,12 @@ export function recordResolvedAgentSetup(
       input.workspaceId,
       input.turnId ?? null,
       input.requestId ?? null,
-      input.setup.agent.id,
+      input.setup.manifest.id,
       input.setup.provider?.providerId ?? null,
-      input.setup.runtime.kind,
-      input.setup.runtime.adapter,
-      JSON.stringify(input.setup.requiredFeatures),
-      JSON.stringify(input.setup),
+      input.setup.manifest.runtime.kind,
+      input.setup.manifest.runtime.adapter,
+      JSON.stringify(input.setup.manifest.requiredFeatures),
+      JSON.stringify(redactedSetup),
       input.createdAt
     );
 
@@ -175,7 +204,7 @@ export function listExportableResolvedAgentSetups(
 }
 
 /**
- * Replays exported resolved setup records into an imported workspace.
+ * Replays exported resolved setup records through the same redacted projection.
  *
  * @param workspaceDb Open target workspace database.
  * @param records Exported records already rewritten to the target workspace id.
@@ -211,7 +240,7 @@ export function importResolvedAgentSetups(
       record.runtimeKind,
       record.runtimeAdapter,
       JSON.stringify(record.requiredFeatures),
-      JSON.stringify(record.setup),
+      JSON.stringify(redactResolvedAgentSetup(record.setup)),
       record.createdAt
     );
   }
@@ -224,6 +253,8 @@ export function importResolvedAgentSetups(
  * @returns Parsed resolved setup record.
  */
 function resolvedAgentSetupFromRow(row: ResolvedAgentSetupRow): ResolvedAgentSetupRecord {
+  const setup = JSON.parse(row.setup_json) as ResolvedAgentSetup | RedactedResolvedAgentSetup;
+
   return {
     id: row.setup_record_id,
     workspaceId: row.workspace_id,
@@ -234,7 +265,88 @@ function resolvedAgentSetupFromRow(row: ResolvedAgentSetupRow): ResolvedAgentSet
     runtimeKind: row.runtime_kind,
     runtimeAdapter: row.runtime_adapter,
     requiredFeatures: JSON.parse(row.required_features_json) as string[],
-    setup: JSON.parse(row.setup_json) as ResolvedAgentSetup,
+    setup: redactResolvedAgentSetup(setup),
     createdAt: row.created_at,
+  };
+}
+
+/**
+ * Projects one complete resolved setup to its durable non-secret evidence shape.
+ *
+ * @param setup Complete launch setup or supplied redacted import projection.
+ * @returns Whitelisted runtime, sandbox-policy, and provider decision facts.
+ */
+function redactResolvedAgentSetup(
+  setup: ResolvedAgentSetup | RedactedResolvedAgentSetup
+): RedactedResolvedAgentSetup {
+  const { manifest } = setup;
+
+  return {
+    manifest: {
+      id: manifest.id,
+      requiredFeatures: [...manifest.requiredFeatures],
+      runtime: {
+        adapter: manifest.runtime.adapter,
+        binaries: manifest.runtime.binaries.map((binary) => ({
+          id: binary.id,
+          path: binary.path,
+        })),
+        image: {
+          pullPolicy: manifest.runtime.image.pullPolicy,
+          ref: manifest.runtime.image.ref,
+        },
+        kind: manifest.runtime.kind,
+        ...(manifest.runtime.version ? { version: manifest.runtime.version } : {}),
+      },
+      sandbox: {
+        credentialDeclarations: (manifest.sandbox?.credentialDeclarations ?? []).map(
+          (declaration) => {
+            if (declaration.visibility === 'sandbox-provider') {
+              return {
+                id: declaration.id,
+                provider: {
+                  credentialKey: declaration.provider.credentialKey,
+                  instanceId: declaration.provider.instanceId,
+                  profileId: declaration.provider.profileId,
+                  type: declaration.provider.type,
+                },
+                vaultGrantId: declaration.vaultGrantId,
+                visibility: declaration.visibility,
+              };
+            }
+            if (declaration.visibility === 'runtime-file') {
+              return {
+                id: declaration.id,
+                targetPath: declaration.targetPath,
+                vaultGrantId: declaration.vaultGrantId,
+                visibility: declaration.visibility,
+              };
+            }
+            return {
+              id: declaration.id,
+              targetEnvVarName: declaration.targetEnvVarName,
+              vaultGrantId: declaration.vaultGrantId,
+              visibility: declaration.visibility,
+            };
+          }
+        ),
+        network: (manifest.sandbox?.network ?? []).map((grant) => ({
+          access: grant.access,
+          binaries: [...(grant.binaries ?? [])],
+          host: grant.host,
+          id: grant.id,
+          port: grant.port,
+          protocol: grant.protocol,
+          purpose: grant.purpose,
+          scope: grant.scope,
+        })),
+      },
+    },
+    provider: setup.provider
+      ? {
+          model: setup.provider.model,
+          providerId: setup.provider.providerId,
+        }
+      : null,
   };
 }

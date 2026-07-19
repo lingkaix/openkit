@@ -147,6 +147,20 @@ export const DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA: WorkspaceKnowledgeSchema = {
   allowedFreshness: DEFAULT_FRESHNESS_VALUES,
 };
 
+/** Product-safe failure raised when candidate Knowledge Page bytes do not validate. */
+export class KnowledgePageValidationError extends Error {
+  /** Stable public API error code. */
+  public readonly code = 'invalid_request';
+  /** HTTP status for invalid candidate bytes. */
+  public readonly status = 400;
+
+  /** Creates one bounded Knowledge Page validation failure. */
+  public constructor() {
+    super('Knowledge Page validation failed.');
+    this.name = 'KnowledgePageValidationError';
+  }
+}
+
 /**
  * Parses one first-slice OKF Markdown document.
  *
@@ -387,6 +401,59 @@ export function validateWorkspaceKnowledgeSchema(
 }
 
 /**
+ * Runs the governed Knowledge Page validation pipeline against exact candidate bytes.
+ *
+ * @param input Candidate bytes, current schema text, and local reference authorities.
+ * @returns The highest conformance reached plus bounded validation diagnostics.
+ */
+export function validateKnowledgePageCandidate(input: {
+  /** Canonical path used to derive the candidate page id. */
+  path: string;
+  /** Exact UTF-8 candidate bytes. */
+  content: string;
+  /** Current workspace schema text, or the default schema when absent. */
+  workspaceSchemaText?: string;
+  /** Registered source ids in the owning Workspace. */
+  registeredSourceIds: ReadonlySet<string>;
+  /** Knowledge page ids that exist after the candidate write. */
+  knowledgeIds: ReadonlySet<string>;
+}): KnowledgeProfileValidationReport {
+  const parsed = parseOkfDocument({ path: input.path, content: input.content });
+
+  if (!parsed.ok) {
+    return buildReport('invalid', parsed.errors);
+  }
+
+  const profile = validateOpenKitKnowledgeProfile(parsed.document);
+
+  if (profile.conformance !== 'OpenKit-profile-valid') {
+    return profile;
+  }
+
+  const parsedSchema = input.workspaceSchemaText
+    ? parseWorkspaceKnowledgeSchema(input.workspaceSchemaText)
+    : { ok: true as const, schema: DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA, errors: [] as [] };
+
+  if (!parsedSchema.ok) {
+    return buildReport('OpenKit-profile-valid', parsedSchema.errors);
+  }
+
+  const schemaReport = validateWorkspaceKnowledgeSchema(parsed.document, parsedSchema.schema);
+
+  if (schemaReport.conformance !== 'Workspace-schema-valid') {
+    return schemaReport;
+  }
+
+  const referenceErrors = knowledgeReferenceErrors(
+    parsed.document,
+    input.registeredSourceIds,
+    input.knowledgeIds
+  );
+
+  return referenceErrors.length === 0 ? schemaReport : { ...schemaReport, errors: referenceErrors };
+}
+
+/**
  * Returns whether a parsed document can enter the first-slice active search index.
  *
  * @param document Parsed OKF document.
@@ -416,6 +483,60 @@ export function isActiveOpenKitKnowledgePage(
 export function stringFrontmatterField(document: OkfDocument, field: string): string | null {
   const value = document.frontmatter[field];
   return typeof value === 'string' ? value : null;
+}
+
+/**
+ * Validates local and external references declared by one Knowledge Page.
+ *
+ * @param document Parsed candidate document.
+ * @param registeredSourceIds Registered source ids in the owning Workspace.
+ * @param knowledgeIds Knowledge page ids that exist after the candidate write.
+ * @returns Reference-resolution errors.
+ */
+export function knowledgeReferenceErrors(
+  document: OkfDocument,
+  registeredSourceIds: ReadonlySet<string>,
+  knowledgeIds: ReadonlySet<string>
+): KnowledgeValidationError[] {
+  const sourceRefs = document.frontmatter.source_refs;
+
+  if (!Array.isArray(sourceRefs)) {
+    return [];
+  }
+
+  return sourceRefs.flatMap((reference) => {
+    if (reference.startsWith('source:')) {
+      return registeredSourceIds.has(reference.slice('source:'.length))
+        ? []
+        : [referenceError('reference.unresolved_source')];
+    }
+
+    if (reference.startsWith('knowledge:')) {
+      return knowledgeIds.has(reference.slice('knowledge:'.length))
+        ? []
+        : [referenceError('reference.unresolved_knowledge')];
+    }
+
+    try {
+      const url = new URL(reference);
+
+      return url.protocol === 'http:' || url.protocol === 'https:'
+        ? []
+        : [referenceError('reference.invalid_external')];
+    } catch {
+      return [referenceError('reference.invalid_external')];
+    }
+  });
+}
+
+/**
+ * Creates one bounded source-reference validation error.
+ *
+ * @param code Stable validation error code.
+ * @returns Product-safe validation diagnostic.
+ */
+function referenceError(code: string): KnowledgeValidationError {
+  return { code, field: 'source_refs', message: 'Knowledge source reference does not resolve.' };
 }
 
 function buildReport(

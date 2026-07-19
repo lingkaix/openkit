@@ -54,7 +54,7 @@ Historical identity and config specs have been moved under `docs/specs/supersede
 
 ## Current Contract
 
-Local mode is optimized for single-user development and dogfooding. It can use simplified identity assumptions, but product surfaces should still carry explicit workspace and user-facing state where the App API requires it.
+Local mode is optimized for single-user development and dogfooding. Its implicit local human is a projection of the Core `User` record family with `kind = local`, not a separate identity type. Product surfaces should still carry explicit workspace and user-facing state where the App API requires it.
 
 Server mode is the path for authenticated product operation. It uses Better Auth-backed session behavior today, and protected product APIs should enforce the server-mode auth contract.
 
@@ -70,14 +70,14 @@ The bundled CLI server-mode contract uses the `OPENKIT_NANOCORE_TOKEN` explicit 
 
 ## Current Implementation Projection
 
-The NanoCore config, authentication, and bundled CLI credential substrate satisfies its accepted V1 contract, while the owner-independent shared-Workspace identity target remains incomplete:
+The NanoCore config, authentication, bundled CLI credential substrate, and V1 shared-Workspace identity and authorization lifecycle are implemented. This specification remains partial because broader config recovery, secret-backed editing, and deployment diagnostics remain deferred:
 
 - Better Auth is the current server-mode auth implementation.
 - The Better Auth table layout may use provider-owned table names such as `session`. Core identity doctrine still names the conceptual record `AuthSession`; implementation table names must not redefine the product concept.
-- Local mode resolves an implicit local user through `LOCAL_USER_ID` when no authenticated server-mode subject exists.
+- Local mode resolves an implicit local human `User` through `LOCAL_USER_ID` with `kind = local` when no authenticated server-mode subject exists; this is a projection of the ordinary Core `User` family, not another identity type.
 - `apps/nanocore/src/auth/middleware.ts` attaches actor context and enforces server-mode authentication for protected APIs.
-- Core currently records Workspace registry owners and active or removed membership edges, but it does not yet implement fixed owner/editor/viewer access, invitations, transfer, disable-safe lifecycle, or the complete centralized Workspace access resolver.
-- Server-mode bearer-token authentication, first-boot bootstrap, scoped token administration, the reusable credential-storage substrate, and the bundled CLI credential path are implemented by `docs/specs/20260704-remote_auth_credential_bootstrap.md` and `docs/specs/20260713-openkit_agent_skill_interface.md`.
+- Core owns fixed `owner`, `editor`, and `viewer` access derived from the canonical owner and active membership records. Invitations, member access changes and removal, leave, ownership transfer, bounded administrator recovery, and canonical-user disable are implemented through centralized operation authorization and caller-owned effect checks; disabling a user revokes live sessions and tokens without deleting history.
+- Server-mode bearer-token authentication, first-boot bootstrap, scoped token administration, the reusable credential-storage substrate, and the bundled CLI credential path are implemented by `docs/specs/20260704-remote_auth_credential_bootstrap.md` and `docs/specs/20260713-openkit_agent_skill_interface.md`. Current access tokens are owned by a responsible human `User`; `AutomationIdentity` token issuance and membership remain outside V1 until separately specified.
 - The bundled CLI reads `OPENKIT_NANOCORE_TOKEN` as the explicit ephemeral override or resolves an endpoint-scoped stored credential, sends fixed `openkit-cli` / `agent-skill` channel metadata, and ignores the removed raw `OPENKIT_NANOCORE_COOKIE` and `OPENKIT_NANOCORE_AUTHORIZATION` passthrough variables.
 - `apps/nanocore/src/config/bind-host.ts` resolves host and port from explicit environment overrides, then the startup server config, then mode-safe defaults.
 - Server mode constructs Better Auth explicitly from the startup config, requires a deployment-specific secret of at least 32 characters, applies `server.publicBaseUrl`, shares `server.cors.origins` with browser CORS, and enforces `auth.signup.enabled` through Better Auth's sign-up policy.
@@ -95,7 +95,6 @@ The target data-root ownership layout is defined by `docs/specs/20260703-storage
 
 The following items remain outside this config and identity contract:
 
-- the accepted owner/editor/viewer Workspace membership implementation
 - enterprise organizations, legal tenant isolation, custom roles, groups, and delegated role administration
 - deeper audit labels for non-auth policy and workflow records
 - secret-slot and vault-backed config editing

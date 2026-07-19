@@ -28,21 +28,19 @@ export interface StorageDirectoryReport {
   entryCount: number;
 }
 
-/**
- * One quarantined storage file available for operator inspection.
- */
-export interface StorageQuarantineEntry {
-  /** Ownership scope that owns the quarantine directory. */
-  scope: 'server' | 'user' | 'workspace';
-  /** User id when the entry is user- or workspace-scoped. */
-  userId?: string;
-  /** Workspace id when the entry is workspace-scoped. */
-  workspaceId?: string;
+/** Exact owner of one quarantined storage file. */
+type StorageQuarantineOwner =
+  | { readonly scope: 'server' }
+  | { readonly scope: 'user'; readonly userId: string }
+  | { readonly scope: 'workspace'; readonly workspaceId: string };
+
+/** One quarantined storage file available for operator inspection. */
+export type StorageQuarantineEntry = StorageQuarantineOwner & {
   /** Quarantined file path relative to the data root. */
   path: string;
   /** Quarantined file size in bytes. */
   bytes: number;
-}
+};
 
 /**
  * One workspace subtree in the storage layout report.
@@ -64,8 +62,6 @@ export interface StorageUserReport {
   userId: string;
   /** User-scoped SQLite status. */
   userDb: StorageDatabaseReport;
-  /** Workspace subtrees owned by this user. */
-  workspaces: StorageWorkspaceReport[];
 }
 
 /**
@@ -78,6 +74,8 @@ export interface StorageLayoutReport {
   serverDb: StorageDatabaseReport;
   /** User subtrees found under `users/`. */
   users: StorageUserReport[];
+  /** Owner-independent Workspace subtrees found under `workspaces/`. */
+  workspaces: StorageWorkspaceReport[];
   /** Quarantined storage files preserved for operator inspection. */
   quarantineEntries: StorageQuarantineEntry[];
 }
@@ -92,12 +90,16 @@ export function createStorageLayoutReport(dataRoot: string): StorageLayoutReport
   const users = listDirectories(join(dataRoot, 'users')).map((userId) =>
     createUserReport(dataRoot, userId)
   );
+  const workspaces = listDirectories(join(dataRoot, 'workspaces'))
+    .filter((workspaceId) => workspaceId !== '.staging')
+    .map((workspaceId) => createWorkspaceReport(dataRoot, workspaceId));
 
   return {
     dataRoot,
     serverDb: createDatabaseReport(dataRoot, coreDbPath(dataRoot)),
     users,
-    quarantineEntries: createQuarantineEntries(dataRoot, users),
+    workspaces,
+    quarantineEntries: createQuarantineEntries(dataRoot, users, workspaces),
   };
 }
 
@@ -109,14 +111,9 @@ export function createStorageLayoutReport(dataRoot: string): StorageLayoutReport
  * @returns User storage report.
  */
 function createUserReport(dataRoot: string, userId: string): StorageUserReport {
-  const workspaceRoot = join(dataRoot, 'users', userId, 'workspaces');
-
   return {
     userId,
     userDb: createDatabaseReport(dataRoot, userDbPath(dataRoot, userId)),
-    workspaces: listDirectories(workspaceRoot).map((workspaceId) =>
-      createWorkspaceReport(dataRoot, userId, workspaceId)
-    ),
   };
 }
 
@@ -124,20 +121,15 @@ function createUserReport(dataRoot: string, userId: string): StorageUserReport {
  * Creates one workspace subtree report.
  *
  * @param dataRoot Data root to inspect.
- * @param userId User that owns the workspace.
  * @param workspaceId Workspace directory name.
  * @returns Workspace storage report.
  */
-function createWorkspaceReport(
-  dataRoot: string,
-  userId: string,
-  workspaceId: string
-): StorageWorkspaceReport {
-  const indexesPath = join(dataRoot, 'users', userId, 'workspaces', workspaceId, 'indexes');
+function createWorkspaceReport(dataRoot: string, workspaceId: string): StorageWorkspaceReport {
+  const indexesPath = join(dataRoot, 'workspaces', workspaceId, 'indexes');
 
   return {
     workspaceId,
-    workspaceDb: createDatabaseReport(dataRoot, workspaceDbPath(dataRoot, userId, workspaceId)),
+    workspaceDb: createDatabaseReport(dataRoot, workspaceDbPath(dataRoot, workspaceId)),
     indexesDir: createDirectoryReport(dataRoot, indexesPath),
   };
 }
@@ -203,27 +195,29 @@ function createDirectoryReport(dataRoot: string, dirPath: string): StorageDirect
  *
  * @param dataRoot Data root to inspect.
  * @param users User reports already discovered under the data root.
+ * @param workspaces Workspace reports already discovered under the data root.
  * @returns Quarantined file entries.
  */
 function createQuarantineEntries(
   dataRoot: string,
-  users: StorageUserReport[]
+  users: StorageUserReport[],
+  workspaces: StorageWorkspaceReport[]
 ): StorageQuarantineEntry[] {
   return [
     ...listQuarantineFiles(dataRoot, join(dataRoot, 'server', 'quarantine'), { scope: 'server' }),
-    ...users.flatMap((user) => [
-      ...listQuarantineFiles(dataRoot, join(dataRoot, 'users', user.userId, 'quarantine'), {
+    ...users.flatMap((user) =>
+      listQuarantineFiles(dataRoot, join(dataRoot, 'users', user.userId, 'quarantine'), {
         scope: 'user',
         userId: user.userId,
-      }),
-      ...user.workspaces.flatMap((workspace) =>
-        listQuarantineFiles(
-          dataRoot,
-          join(dataRoot, 'users', user.userId, 'workspaces', workspace.workspaceId, 'quarantine'),
-          { scope: 'workspace', userId: user.userId, workspaceId: workspace.workspaceId }
-        )
-      ),
-    ]),
+      })
+    ),
+    ...workspaces.flatMap((workspace) =>
+      listQuarantineFiles(
+        dataRoot,
+        join(dataRoot, 'workspaces', workspace.workspaceId, 'quarantine'),
+        { scope: 'workspace', workspaceId: workspace.workspaceId }
+      )
+    ),
   ].sort((left, right) => left.path.localeCompare(right.path));
 }
 
@@ -238,7 +232,7 @@ function createQuarantineEntries(
 function listQuarantineFiles(
   dataRoot: string,
   dirPath: string,
-  owner: Omit<StorageQuarantineEntry, 'path' | 'bytes'>
+  owner: StorageQuarantineOwner
 ): StorageQuarantineEntry[] {
   if (!existsSync(dirPath)) {
     return [];

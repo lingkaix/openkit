@@ -18,7 +18,7 @@ import type { Context, Hono } from 'hono';
 import { asApiError, asInvalidRequestError } from '../api-errors.js';
 import { isDeploymentAdminActor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
-import type { FsStore } from '../lib/store.js';
+import { assertAuthorizedWorkspaceLineage } from '../auth/operation-authorizer.js';
 import { registerAppApiRoute } from '../openapi.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { recordVaultAdminAuditEvent } from './vault-admin-audit-events.js';
@@ -50,13 +50,11 @@ export function registerVaultAdminRoutes({
   app,
   coreDb,
   repositoryWorkspaceDb,
-  requestStore,
   vaultUnlockState,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
-  readonly repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb;
-  readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
+  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly vaultUnlockState: VaultUnlockState | null;
 }): void {
   const vaultUnlockFailuresByActor = new Map<string, number[]>();
@@ -418,11 +416,11 @@ export function registerVaultAdminRoutes({
 
     const reference = getVaultReference(coreDb, referenceId);
 
-    if (
-      !reference ||
-      reference.ownerScope !== 'workspace' ||
-      reference.workspaceId !== workspaceId
-    ) {
+    if (!reference) {
+      return asApiError('Workspace vault reference not found.', 'vault_reference_not_found', 404);
+    }
+    assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), reference.workspaceId);
+    if (reference.ownerScope !== 'workspace' || reference.workspaceId !== workspaceId) {
       return asApiError('Workspace vault reference not found.', 'vault_reference_not_found', 404);
     }
     if (reference.status !== 'unbound') {
@@ -521,9 +519,8 @@ export function registerVaultAdminRoutes({
 
   registerAppApiRoute(app, 'listWorkspaceVaultUseRecords', (c) => {
     try {
-      const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
 
       try {
         return c.json(

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { resolveProviderProfileToLLMConfig } from './llm-config.js';
 
@@ -21,6 +21,7 @@ describe('resolveProviderProfileToLLMConfig', () => {
     expect(provider).toMatchObject({
       adapterId: 'openrouter',
       backend: 'pi-ai',
+      models: ['openai/gpt-5'],
       requiresApiKey: true,
     });
     expect(provider).not.toHaveProperty('apiKeySource');
@@ -187,5 +188,46 @@ describe('resolveProviderProfileToLLMConfig', () => {
       apiKey: null,
       requiresApiKey: false,
     });
+  });
+
+  it.each([
+    'blocked',
+    'disabled',
+    'unknown',
+  ] as const)('rejects %s providers before credential resolution', (status) => {
+    const credentialResolver = vi.fn(() => 'must-not-resolve');
+
+    expect(() =>
+      resolveProviderProfileToLLMConfig(
+        {
+          displayName: 'Unavailable Provider',
+          id: `provider-${status}`,
+          kind: 'direct',
+          models: ['configured-model'],
+          readiness: { status },
+          secretRef: 'vault://provider_unavailable',
+        },
+        credentialResolver
+      )
+    ).toThrow(/not dispatchable/i);
+    expect(credentialResolver).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, 'ready', 'degraded'] as const)('keeps readiness %s runnable', (status) => {
+    const credentialResolver = vi.fn(() => 'resolved-secret');
+    const provider = resolveProviderProfileToLLMConfig(
+      {
+        displayName: 'Runnable Provider',
+        id: `provider-${status ?? 'omitted'}`,
+        kind: 'direct',
+        models: ['configured-model'],
+        ...(status ? { readiness: { status } } : {}),
+        secretRef: 'vault://provider_runnable',
+      },
+      credentialResolver
+    );
+
+    expect(provider.models).toEqual(['configured-model']);
+    expect(credentialResolver).toHaveBeenCalledOnce();
   });
 });

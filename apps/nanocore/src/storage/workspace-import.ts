@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
+  ArtifactReviewViewSchema,
   BackendWorkspaceHandleSchema,
   EvidenceBundleRecordSchema,
   GitPushRecordSchema,
@@ -22,12 +23,15 @@ import {
   WorkspaceChangeSetSchema,
   WorkspaceInputSnapshotSchema,
   WorkspaceMaterializationRecordSchema,
+  WorkspaceMaterialRevisionViewSchema,
+  WorkspaceMaterialViewSchema,
   WorkspaceQuarantineRecordSchema,
   WorkspaceReconciliationRecordSchema,
   WorkspaceRepositoryGitConfigSchema,
   WorkspaceSyncReviewPatchPayloadSchema,
 } from '@openkit/app-api-schemas';
 import {
+  AgentEnvironmentPackageSchema,
   parseWorkspaceDataSourceCatalog,
   type WorkspaceDataSourceCatalog,
   type WorkspaceExportManifest,
@@ -46,11 +50,32 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import type { ResolvedAgentSetupRecord } from '../agents/setup-ledger.js';
+import {
+  ArtifactReviewFollowUpRequestSchema,
+  deriveArtifactReviewFollowUpTurnId,
+  deriveArtifactReviewId,
+  deriveArtifactReviewWorkerRequestId,
+  serializeArtifactReviewFollowUpRequest,
+} from '../artifact-reviews.js';
+import {
+  buildWorkerContextPackageWorkspaceInput,
+  createWorkerContextPackageFiles,
+  createWorkerContextPackagePolicyDigest,
+  createWorkerContextPackageTrace,
+  parseWorkerContextPackageTrace,
+  serializeWorkerContextPackageTrace,
+  verifyImportedWorkerContextPackageTrace,
+  type WorkerContextPackageAuthorityReader,
+  type WorkerContextPackageTrace,
+} from '../context/worker-context-package.js';
+import {
+  StructuredWorkerDelegationRequestSchema,
+  serializeStructuredWorkerDelegationRequest,
+} from '../internal-agents/delegation.js';
 import { parseOkfDocument } from '../knowledge/okf.js';
 import { createKnowledgeContextPackageDigest } from '../knowledge-manager.js';
 import type {
   AgentSession,
-  ArtifactReviewRecord,
   KnowledgeProposalRecord,
   KnowledgeProposalReviewRecord,
   KnowledgeSourceRecord,
@@ -79,12 +104,13 @@ import {
 } from './workspace-export.js';
 import {
   AgentSessionRecordSchema,
-  ArtifactReviewRecordSchema,
   artifactContentFileName,
+  artifactReferenceItemId,
   assertSafeWorkspacePathSegment,
   KnowledgeProposalRecordSchema,
   KnowledgeProposalReviewRecordSchema,
   KnowledgeSourceRecordSchema,
+  listUnresolvedUserInputRequestItemIds,
   parseCanonicalWorkspaceHistory,
 } from './workspace-file-records.js';
 import type { WorkspacePortableFileState } from './workspace-portable-file-state.js';
@@ -108,6 +134,38 @@ type WorkspaceChangeSet = z.infer<typeof WorkspaceChangeSetSchema>;
 type WorkspaceApplyPlan = z.infer<typeof WorkspaceApplyPlanSchema>;
 type WorkspaceQuarantineRecord = z.infer<typeof WorkspaceQuarantineRecordSchema>;
 type WorkspaceReconciliationRecord = z.infer<typeof WorkspaceReconciliationRecordSchema>;
+
+const ImportedWorkspaceMaterialSchema = WorkspaceMaterialViewSchema.extend({
+  lastMutationRequestId: z.string().min(1),
+}).strict();
+const ImportedWorkspaceMaterialRevisionSchema = WorkspaceMaterialRevisionViewSchema.extend({
+  createdByRequestId: z.string().min(1),
+}).strict();
+const ImportedThreadMaterialBindingSchema = z
+  .object({
+    workspaceId: z.string().min(1),
+    threadId: z.string().min(1),
+    materialId: z.string().min(1),
+    bindingState: z.enum(['bound', 'unbound']),
+    latestQueuedRevisionId: z.string().min(1).nullable(),
+    inclusionState: z.enum(['included', 'excluded']),
+    lastMutationRequestId: z.string().min(1),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  })
+  .strict();
+const ImportedArtifactReviewSchema = ArtifactReviewViewSchema.extend({
+  decisionRequestId: z.string().min(1).nullable(),
+}).strict();
+
+/** Strict portable Workspace Material owner accepted by import. */
+type ImportedWorkspaceMaterial = z.infer<typeof ImportedWorkspaceMaterialSchema>;
+/** Strict portable immutable Material revision accepted by import. */
+type ImportedWorkspaceMaterialRevision = z.infer<typeof ImportedWorkspaceMaterialRevisionSchema>;
+/** Strict portable Thread-to-Material binding accepted by import. */
+type ImportedThreadMaterialBinding = z.infer<typeof ImportedThreadMaterialBindingSchema>;
+/** Strict portable version-keyed Artifact Review accepted by import. */
+type ImportedArtifactReview = z.infer<typeof ImportedArtifactReviewSchema>;
 
 const ImportedEvidenceBundleRecordSchema = EvidenceBundleRecordSchema.strict();
 const ImportedRuntimeEvidenceRecordSchema = RuntimeEvidenceRecordSchema.strict();
@@ -574,8 +632,14 @@ export interface WorkspaceImportSnapshot {
   itemRevisions: Item[];
   /** Imported artifacts with reconstructed bodies. */
   artifacts: Artifact[];
-  /** Imported artifact review decisions. */
-  artifactReviews: ArtifactReviewRecord[];
+  /** Imported Workspace Material owners. */
+  workspaceMaterials: ImportedWorkspaceMaterial[];
+  /** Imported immutable Material revisions. */
+  workspaceMaterialRevisions: ImportedWorkspaceMaterialRevision[];
+  /** Imported Thread-to-Material bindings. */
+  threadMaterialBindings: ImportedThreadMaterialBinding[];
+  /** Imported version-keyed Artifact Reviews. */
+  artifactReviews: ImportedArtifactReview[];
   /** Imported durable agent sessions. */
   agentSessions: AgentSession[];
   /** Imported retained turn event logs keyed by reminted turn id. */
@@ -660,6 +724,153 @@ export interface WorkspaceImportSnapshot {
   portableFileState: WorkspacePortableFileState;
 }
 
+/**
+ * Verifies every staged imported-history Context Package against the reminted snapshot owners.
+ *
+ * @param snapshot Fully parsed and reminted import snapshot.
+ * @param workspaceRoot Staging root containing the exact reminted package files.
+ * @throws Error when any trace, package byte, or portable owner tuple is inconsistent.
+ */
+export function verifyImportedWorkerContextPackageSnapshot(
+  snapshot: WorkspaceImportSnapshot,
+  workspaceRoot: string
+): void {
+  const authorities = createImportedWorkerContextPackageAuthorityReader(snapshot);
+  for (const [path, text] of snapshot.portableFileState.workerContextPackageFiles) {
+    if (!path.endsWith('/context-package.json')) {
+      continue;
+    }
+    verifyImportedWorkerContextPackageTrace({
+      authorities,
+      trace: parseWorkerContextPackageTrace(JSON.parse(text)),
+      workspaceRoot,
+    });
+  }
+}
+
+/**
+ * Builds the read-only authority projection required by imported-history verification.
+ *
+ * @param snapshot Fully reminted import snapshot.
+ * @returns Authority reader backed only by the snapshot's durable owners.
+ */
+function createImportedWorkerContextPackageAuthorityReader(
+  snapshot: WorkspaceImportSnapshot
+): WorkerContextPackageAuthorityReader {
+  const items = snapshot.turns.flatMap((turn) => turn.items);
+  return {
+    readAdmission: () => null,
+    readAgentEnvironmentPackage: (workspaceId, packageSnapshotId) =>
+      snapshot.agentEnvironmentPackageSnapshots.find(
+        (record) => record.workspaceId === workspaceId && record.snapshotId === packageSnapshotId
+      )?.snapshot ?? null,
+    readAgentSession: (workspaceId, agentSessionId) => {
+      const session = snapshot.agentSessions.find(
+        (candidate) => candidate.workspaceId === workspaceId && candidate.id === agentSessionId
+      );
+      return session?.threadId
+        ? {
+            id: session.id,
+            workspaceId: session.workspaceId,
+            threadId: session.threadId,
+            environmentPackageSnapshotId: session.environmentPackageSnapshotId,
+            stale: session.stale,
+          }
+        : null;
+    },
+    readWorkspaceImportedFrom: (workspaceId) =>
+      workspaceId === snapshot.workspace.id ? (snapshot.workspace.importedFrom ?? null) : null,
+    readBackendHandoff: () => null,
+    readGoalTask: (workspaceId, threadId, goalId, taskId) => {
+      const goal = snapshot.goalRecords.find(
+        (candidate) =>
+          candidate.workspaceId === workspaceId &&
+          candidate.threadId === threadId &&
+          candidate.goalId === goalId
+      );
+      const task = snapshot.goalTasks.find(
+        (candidate) =>
+          candidate.workspaceId === workspaceId &&
+          candidate.threadId === threadId &&
+          candidate.goalId === goalId &&
+          candidate.taskId === taskId
+      );
+      if (!goal || !task || goal.planItemId === null || task.planItemId !== goal.planItemId) {
+        return null;
+      }
+      const gateContextItemIds = importedGoalGateContextItemIds(task, items);
+      return gateContextItemIds ? { goal, task, gateContextItemIds } : null;
+    },
+    readMaterialRevision: (workspaceId, materialId, revisionId) => {
+      const material = snapshot.workspaceMaterials.find(
+        (candidate) => candidate.workspaceId === workspaceId && candidate.materialId === materialId
+      );
+      const revision = snapshot.workspaceMaterialRevisions.find(
+        (candidate) =>
+          candidate.workspaceId === workspaceId &&
+          candidate.materialId === materialId &&
+          candidate.revisionId === revisionId
+      );
+      return material && revision ? { ...revision, sensitivity: material.sensitivity } : null;
+    },
+    readThreadItems: (workspaceId, threadId) =>
+      items.filter((item) => item.workspaceId === workspaceId && item.threadId === threadId),
+    readTurn: (workspaceId, threadId, turnId) => {
+      const turn = snapshot.turns.find(
+        (candidate) =>
+          candidate.workspaceId === workspaceId &&
+          candidate.threadId === threadId &&
+          candidate.id === turnId
+      );
+      return turn ? { ...turn, agentSessionId: turn.agentSessionId ?? null } : null;
+    },
+    readWorkspaceInputSnapshot: (workspaceId, snapshotId) =>
+      snapshot.workspaceInputSnapshots.find(
+        (candidate) => candidate.workspaceId === workspaceId && candidate.id === snapshotId
+      ) ?? null,
+    readWorkspaceMaterializationRecord: (workspaceId, recordId) =>
+      snapshot.workspaceMaterializationRecords.find(
+        (candidate) => candidate.workspaceId === workspaceId && candidate.id === recordId
+      ) ?? null,
+  };
+}
+
+/**
+ * Resolves the already-validated imported Goal Gate pair from reminted Item authority.
+ *
+ * @param task Imported Goal Task carrying the optional latest Gate response.
+ * @param items Imported current Items.
+ * @returns Empty ids without a Gate, the exact request-response pair, or null for invalid lineage.
+ */
+function importedGoalGateContextItemIds(
+  task: ExportedGoalTask,
+  items: readonly Item[]
+): readonly string[] | null {
+  if (!task.latestGateContextItemId) {
+    return [];
+  }
+  const response = items.find((item) => item.id === task.latestGateContextItemId);
+  const requests =
+    response?.type === 'approval-decision'
+      ? items.filter(
+          (item) =>
+            item.type === 'approval-request' &&
+            item.turnId === response.turnId &&
+            item.approvalRequestId === response.approvalRequestId
+        )
+      : response?.type === 'user-input-response'
+        ? items.filter(
+            (item) =>
+              item.type === 'user-input-request' &&
+              item.turnId === response.turnId &&
+              item.userInputRequestId === response.userInputRequestId
+          )
+        : [];
+  return response?.status === 'completed' && requests.length === 1
+    ? [requests[0]!.id, response.id]
+    : null;
+}
+
 /** Shared id lineage used while reconstructing one portable workspace import. */
 interface ImportRemintContext {
   /** Exact export files captured by offline verification. */
@@ -670,6 +881,14 @@ interface ImportRemintContext {
   report: WorkspaceImportDryRunReport;
   /** Workspace id assigned to reconstructed records. */
   targetWorkspaceId: string;
+  /** Parsed source Material owners. */
+  sourceWorkspaceMaterials: ImportedWorkspaceMaterial[];
+  /** Parsed source Material revisions. */
+  sourceWorkspaceMaterialRevisions: ImportedWorkspaceMaterialRevision[];
+  /** Parsed source Thread Material bindings. */
+  sourceThreadMaterialBindings: ImportedThreadMaterialBinding[];
+  /** Parsed source version-keyed Artifact Reviews. */
+  sourceArtifactReviews: ImportedArtifactReview[];
   /** Imported thread ids keyed by source id. */
   threadIds: Map<string, string>;
   /** Imported turn ids keyed by source id. */
@@ -680,6 +899,10 @@ interface ImportRemintContext {
   itemLineage: Map<string, Item>;
   /** Imported artifact ids keyed by source id. */
   artifactIds: Map<string, string>;
+  /** Imported Material ids keyed by source id. */
+  materialIds: Map<string, string>;
+  /** Imported Material revision ids keyed by source id. */
+  materialRevisionIds: Map<string, string>;
   /** Imported agent-session ids keyed by source id. */
   agentSessionIds: Map<string, string>;
   /** Imported approval-request ids keyed by source id. */
@@ -692,6 +915,8 @@ interface ImportRemintContext {
   goalIds: Map<string, string>;
   /** Imported Goal task ids keyed by source id. */
   goalTaskIds: Map<string, string>;
+  /** Imported worker checkpoint ids keyed by source id. */
+  workerCheckpointIds: Map<string, string>;
   /** Source Plan Item ids whose step projections carry Goal Task ids. */
   goalPlanItemIds: Set<string>;
   /** Source Goal and Task pairs that have approved durable Task rows. */
@@ -726,22 +951,55 @@ export function readWorkspaceImportSnapshot(
     verified: input.verified,
     workspaceExists: () => false,
   });
+  const sourceWorkspaceMaterials = readImportJsonl(
+    input.verified.fileContents,
+    'records/workspace-materials.jsonl'
+  ).map((record) => ImportedWorkspaceMaterialSchema.parse(record));
+  const sourceWorkspaceMaterialRevisions = readImportJsonl(
+    input.verified.fileContents,
+    'records/workspace-material-revisions.jsonl'
+  ).map((record) => ImportedWorkspaceMaterialRevisionSchema.parse(record));
+  const sourceThreadMaterialBindings = readImportJsonl(
+    input.verified.fileContents,
+    'records/thread-material-bindings.jsonl'
+  ).map((record) => ImportedThreadMaterialBindingSchema.parse(record));
+  const sourceArtifactReviews = readImportJsonl(
+    input.verified.fileContents,
+    'records/artifact-reviews.jsonl'
+  ).map((record) => ImportedArtifactReviewSchema.parse(record));
   const context: ImportRemintContext = {
     files: input.verified.fileContents,
     manifestDigest: input.verified.manifestDigest,
     report,
     targetWorkspaceId: input.targetWorkspaceId,
+    sourceWorkspaceMaterials,
+    sourceWorkspaceMaterialRevisions,
+    sourceThreadMaterialBindings,
+    sourceArtifactReviews,
     threadIds: new Map(),
     turnIds: new Map(),
     itemIds: new Map(),
     itemLineage: new Map(),
     artifactIds: new Map(),
+    materialIds: new Map(
+      sourceWorkspaceMaterials.map((material, index) => [
+        material.materialId,
+        `mat_imported_${input.targetWorkspaceId}_${index + 1}`,
+      ])
+    ),
+    materialRevisionIds: new Map(
+      sourceWorkspaceMaterialRevisions.map((revision, index) => [
+        materialRevisionKey(revision.materialId, revision.revisionId),
+        `mrev_imported_${input.targetWorkspaceId}_${index + 1}`,
+      ])
+    ),
     agentSessionIds: new Map(),
     approvalRequestIds: new Map(),
     agentEnvironmentPackageSnapshotIds: new Map(),
     knowledgeSourceIds: new Map(),
     goalIds: new Map(),
     goalTaskIds: new Map(),
+    workerCheckpointIds: new Map(),
     goalPlanItemIds: new Set(),
     goalTaskRecordKeys: new Set(),
     goalReviewIds: new Map(),
@@ -771,19 +1029,27 @@ export function readWorkspaceImportSnapshot(
   const goalRuntime = readGoalRuntimeControlState(context, exportedGoalAuthority);
   const securityRuntime = readSecurityRuntimeLedgerState(context);
   const workspaceSync = readWorkspaceSyncImportState(context);
-  const portableFileState = readPortableImportState(context, canonical.knowledgeProposals);
+  const workResources = readWorkResourceImportState(context, canonical, workspaceSync);
+  const portableFileState = readPortableImportState(
+    context,
+    canonical.knowledgeProposals,
+    workResources.workerContextPackageFiles
+  );
 
   return {
     report,
     workspace: canonical.workspace,
-    threads: canonical.threads,
-    turns: canonical.turns,
+    threads: workResources.threads,
+    turns: workResources.turns,
     knowledge: canonical.knowledge,
-    itemRevisions: canonical.itemRevisions,
+    itemRevisions: workResources.itemRevisions,
     artifacts: canonical.artifacts,
-    artifactReviews: canonical.artifactReviews,
+    workspaceMaterials: workResources.workspaceMaterials,
+    workspaceMaterialRevisions: workResources.workspaceMaterialRevisions,
+    threadMaterialBindings: workResources.threadMaterialBindings,
+    artifactReviews: workResources.artifactReviews,
     agentSessions: canonical.agentSessions,
-    turnEvents: canonical.turnEvents,
+    turnEvents: workResources.turnEvents,
     knowledgeProposals: canonical.knowledgeProposals,
     knowledgeProposalReviews: canonical.knowledgeProposalReviews,
     knowledgeSources: canonical.knowledgeSources,
@@ -802,10 +1068,10 @@ export function readWorkspaceImportSnapshot(
     dataSourceCatalog: securityRuntime.dataSourceCatalog,
     gitPushRecords: securityRuntime.gitPushRecords,
     resolvedAgentSetups: securityRuntime.resolvedAgentSetups,
-    agentEnvironmentPackageSnapshots: canonical.agentEnvironmentPackageSnapshots,
+    agentEnvironmentPackageSnapshots: workResources.agentEnvironmentPackageSnapshots,
     workspaceRepositories: workspaceSync.workspaceRepositories,
-    workspaceInputSnapshots: workspaceSync.workspaceInputSnapshots,
-    workspaceMaterializationRecords: workspaceSync.workspaceMaterializationRecords,
+    workspaceInputSnapshots: workResources.workspaceInputSnapshots,
+    workspaceMaterializationRecords: workResources.workspaceMaterializationRecords,
     backendWorkspaceHandles: workspaceSync.backendWorkspaceHandles,
     workerOutputManifests: workspaceSync.workerOutputManifests,
     workspaceChangeSets: workspaceSync.workspaceChangeSets,
@@ -824,6 +1090,42 @@ export function readWorkspaceImportSnapshot(
     mcpToolSchemaSnapshots: goalRuntime.mcpToolSchemaSnapshots,
     portableFileState,
   };
+}
+
+/**
+ * Remints one Artifact and its immutable turn-output lineage.
+ *
+ * @param artifact Source Artifact from the verified export.
+ * @param context Target workspace and canonical id maps.
+ * @returns Schema-valid Artifact with target lineage.
+ * @throws Error when a required source id is absent or the reminted Artifact is invalid.
+ */
+function remintPortableArtifact(
+  artifact: Artifact,
+  context: {
+    readonly targetWorkspaceId: string;
+    readonly artifactIds: ReadonlyMap<string, string>;
+    readonly threadIds: ReadonlyMap<string, string>;
+    readonly turnIds: ReadonlyMap<string, string>;
+  }
+): Artifact {
+  return ArtifactSchema.parse({
+    ...artifact,
+    id: requiredMapValue(context.artifactIds, artifact.id, 'artifact'),
+    workspaceId: context.targetWorkspaceId,
+    threadId: artifact.threadId
+      ? requiredMapValue(context.threadIds, artifact.threadId, 'thread')
+      : null,
+    turnId: artifact.turnId ? requiredMapValue(context.turnIds, artifact.turnId, 'turn') : null,
+    origin:
+      artifact.origin.kind === 'turn-output'
+        ? {
+            ...artifact.origin,
+            threadId: requiredMapValue(context.threadIds, artifact.origin.threadId, 'thread'),
+            turnId: requiredMapValue(context.turnIds, artifact.origin.turnId, 'turn'),
+          }
+        : artifact.origin,
+  });
 }
 
 /**
@@ -895,13 +1197,29 @@ function readCanonicalImportState(context: ImportRemintContext) {
   const exportedItemRevisions = readImportJsonl(context.files, 'records/item-revisions.jsonl').map(
     (record) => ItemSchema.parse(record)
   );
+  const unresolvedUserInputRequestIds =
+    listUnresolvedUserInputRequestItemIds(exportedItemRevisions);
+
+  if (unresolvedUserInputRequestIds.length > 0) {
+    throw new Error(
+      `Workspace import is blocked by unresolved user-input-request Items: ${unresolvedUserInputRequestIds.join(', ')}.`
+    );
+  }
   const itemIds = new Map<string, string>();
   const itemLineage = new Map<string, Item>();
   const approvalRequestIds = new Map<string, string>();
   const userInputRequestIds = new Map<string, string>();
   for (const revision of exportedItemRevisions) {
     if (!itemIds.has(revision.id)) {
-      itemIds.set(revision.id, `it_imported_${context.targetWorkspaceId}_${itemIds.size + 1}`);
+      itemIds.set(
+        revision.id,
+        revision.type === 'artifact-reference'
+          ? artifactReferenceItemId(
+              requiredMapValue(artifactIds, revision.artifactId, 'artifact'),
+              requiredMapValue(turnIds, revision.turnId, 'turn')
+            )
+          : `it_imported_${context.targetWorkspaceId}_${itemIds.size + 1}`
+      );
     }
     itemLineage.set(revision.id, revision);
     if (
@@ -1030,6 +1348,9 @@ function readCanonicalImportState(context: ImportRemintContext) {
                 : requiredMapValue(itemIds, item.parentItemId, 'parent item'),
           }),
     };
+    if (item.type !== 'user-input-response' && item.causationId && itemIds.has(item.causationId)) {
+      rewritten.causationId = requiredMapValue(itemIds, item.causationId, 'causation item');
+    }
     if (item.type === 'artifact-reference') {
       rewritten.artifactId = requiredMapValue(artifactIds, item.artifactId, 'artifact');
     } else if (item.type === 'plan' && context.goalPlanItemIds.has(item.id)) {
@@ -1094,41 +1415,11 @@ function readCanonicalImportState(context: ImportRemintContext) {
     });
   });
   const artifacts = exportedArtifacts.map((artifact) =>
-    ArtifactSchema.parse({
-      ...artifact,
-      id: requiredMapValue(artifactIds, artifact.id, 'artifact'),
-      threadId: artifact.threadId ? requiredMapValue(threadIds, artifact.threadId, 'thread') : null,
-      turnId: artifact.turnId ? requiredMapValue(turnIds, artifact.turnId, 'turn') : null,
-      workspaceId: context.targetWorkspaceId,
-    })
-  );
-  const exportedArtifactReviews = readImportJsonl(
-    context.files,
-    'records/artifact-reviews.jsonl'
-  ).map((record) => ArtifactReviewRecordSchema.parse(record));
-  const followUpTurnIds = new Map(turnIds);
-  for (const review of exportedArtifactReviews) {
-    if (
-      review.followUpTurnId &&
-      !followUpTurnIds.has(review.followUpTurnId) &&
-      review.lifecycle === 'pending'
-    ) {
-      followUpTurnIds.set(
-        review.followUpTurnId,
-        `tu_imported_${context.targetWorkspaceId}_pending_${followUpTurnIds.size - turnIds.size + 1}`
-      );
-    }
-  }
-  const artifactReviews = exportedArtifactReviews.map((review) =>
-    ArtifactReviewRecordSchema.parse({
-      ...review,
-      artifactId: requiredMapValue(artifactIds, review.artifactId, 'artifact'),
-      threadId: review.threadId ? requiredMapValue(threadIds, review.threadId, 'thread') : null,
-      turnId: review.turnId ? requiredMapValue(turnIds, review.turnId, 'turn') : null,
-      followUpTurnId: review.followUpTurnId
-        ? requiredMapValue(followUpTurnIds, review.followUpTurnId, 'follow-up turn')
-        : null,
-      workspaceId: context.targetWorkspaceId,
+    remintPortableArtifact(artifact, {
+      targetWorkspaceId: context.targetWorkspaceId,
+      artifactIds,
+      threadIds,
+      turnIds,
     })
   );
   const agentSessions = exportedAgentSessions.map(
@@ -1258,7 +1549,6 @@ function readCanonicalImportState(context: ImportRemintContext) {
     turns: exportedTurns,
     itemRevisions: exportedItemRevisions,
     artifacts: exportedArtifacts,
-    artifactReviews: exportedArtifactReviews,
     knowledgeProposals: exportedKnowledgeProposals,
     knowledgeProposalReviews: exportedKnowledgeProposalReviews,
     knowledgeSources: exportedKnowledgeSources,
@@ -1271,7 +1561,6 @@ function readCanonicalImportState(context: ImportRemintContext) {
     turns,
     itemRevisions,
     artifacts,
-    artifactReviews,
     knowledgeProposals,
     knowledgeProposalReviews,
     knowledgeSources,
@@ -1308,7 +1597,6 @@ function readCanonicalImportState(context: ImportRemintContext) {
     knowledge,
     itemRevisions,
     artifacts,
-    artifactReviews,
     agentSessions,
     turnEvents,
     knowledgeProposals,
@@ -1389,11 +1677,11 @@ function readGoalRuntimeControlState(
       goalTaskIds
     )
   );
-  const workerCheckpoints = readOptionalImportJsonl(
+  const exportedWorkerCheckpoints = readOptionalImportJsonl(
     context.files,
     'records/worker-turn-checkpoints.jsonl'
-  ).map((record) => {
-    const parsed = ExportedWorkerCheckpointSchema.parse(record);
+  ).map((record) => ExportedWorkerCheckpointSchema.parse(record));
+  const workerCheckpoints = exportedWorkerCheckpoints.map((parsed) => {
     const threadId = requiredMapValue(threadIds, parsed.threadId, 'thread');
     const turnId = requiredMapValue(turnIds, parsed.turnId, 'turn');
     assertApprovedGoalTaskReference(
@@ -1414,6 +1702,12 @@ function readGoalRuntimeControlState(
       taskId: parsed.taskId ? requiredMapValue(goalTaskIds, parsed.taskId, 'goal task') : null,
     });
   });
+  context.workerCheckpointIds = new Map(
+    exportedWorkerCheckpoints.map((checkpoint, index) => [
+      checkpoint.checkpointId,
+      workerCheckpoints[index]!.checkpointId,
+    ])
+  );
   const exportedGoalReviewRecords = readOptionalImportJsonl(
     context.files,
     'records/goal-review-records.jsonl'
@@ -1549,6 +1843,7 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
     report,
     threadIds,
     turnIds,
+    workerCheckpointIds,
   } = context;
   const vaultReferences = readOptionalImportJsonl(
     context.files,
@@ -1717,7 +2012,32 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
                     parsed.resource.slice('goal-verification:'.length),
                     'goal verification'
                   )}`
-                : parsed.resource,
+                : parsed.resource?.startsWith('goal-task:')
+                  ? `goal-task:${requiredMapValue(
+                      goalTaskIds,
+                      parsed.resource.slice('goal-task:'.length),
+                      'goal task'
+                    )}`
+                  : parsed.resource?.startsWith('goal:')
+                    ? `goal:${requiredMapValue(
+                        goalIds,
+                        parsed.resource.slice('goal:'.length),
+                        'goal'
+                      )}`
+                    : parsed.resource?.startsWith('worker-checkpoint:')
+                      ? `worker-checkpoint:${requiredMapValue(
+                          workerCheckpointIds,
+                          parsed.resource.slice('worker-checkpoint:'.length),
+                          'worker checkpoint'
+                        )}`
+                      : parsed.resource?.startsWith('vault:') &&
+                          vaultReferenceIds.has(parsed.resource.slice('vault:'.length))
+                        ? `vault:${requiredMapValue(
+                            vaultReferenceIds,
+                            parsed.resource.slice('vault:'.length),
+                            'vault reference'
+                          )}`
+                        : parsed.resource,
       });
     }
   );
@@ -2255,6 +2575,1014 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
 }
 
 /**
+ * Reconstructs the accepted Material, Review, and worker Context Package import graph.
+ *
+ * @param context Shared import lineage and verified export bytes.
+ * @param canonical Reminted canonical workspace history.
+ * @param workspaceSync Reminted Workspace Sync owners referenced by work-resource records.
+ * @returns Reminted work-resource rows, canonical snapshots, and portable Context Package files.
+ * @throws Error when source lineage is incomplete, ambiguous, or contradictory.
+ */
+function readWorkResourceImportState(
+  context: ImportRemintContext,
+  canonical: ReturnType<typeof readCanonicalImportState>,
+  workspaceSync: ReturnType<typeof readWorkspaceSyncImportState>
+) {
+  assertMaterialGraph(
+    context.sourceWorkspaceMaterials,
+    context.sourceWorkspaceMaterialRevisions,
+    context.sourceThreadMaterialBindings,
+    context.report.exportedWorkspaceId,
+    new Set(context.threadIds.keys())
+  );
+  const workspaceMaterials = context.sourceWorkspaceMaterials.map((material) =>
+    ImportedWorkspaceMaterialSchema.parse({
+      ...material,
+      workspaceId: context.targetWorkspaceId,
+      materialId: requiredMapValue(context.materialIds, material.materialId, 'Material'),
+      currentRevisionId: material.currentRevisionId
+        ? requiredMaterialRevisionId(context, material.materialId, material.currentRevisionId)
+        : null,
+      lastMutationRequestId: importRequestLineage(context, material.lastMutationRequestId),
+    })
+  );
+  const workspaceMaterialRevisions = context.sourceWorkspaceMaterialRevisions.map((revision) =>
+    ImportedWorkspaceMaterialRevisionSchema.parse({
+      ...revision,
+      workspaceId: context.targetWorkspaceId,
+      materialId: requiredMapValue(context.materialIds, revision.materialId, 'Material'),
+      revisionId: requiredMaterialRevisionId(context, revision.materialId, revision.revisionId),
+      parentRevisionId: revision.parentRevisionId
+        ? requiredMaterialRevisionId(context, revision.materialId, revision.parentRevisionId)
+        : null,
+      createdByRequestId: importRequestLineage(context, revision.createdByRequestId),
+    })
+  );
+  const threadMaterialBindings = context.sourceThreadMaterialBindings.map((binding) =>
+    ImportedThreadMaterialBindingSchema.parse({
+      ...binding,
+      workspaceId: context.targetWorkspaceId,
+      threadId: requiredMapValue(context.threadIds, binding.threadId, 'thread'),
+      materialId: requiredMapValue(context.materialIds, binding.materialId, 'Material'),
+      latestQueuedRevisionId: binding.latestQueuedRevisionId
+        ? requiredMaterialRevisionId(context, binding.materialId, binding.latestQueuedRevisionId)
+        : null,
+      lastMutationRequestId: importRequestLineage(context, binding.lastMutationRequestId),
+    })
+  );
+  assertMaterialGraph(
+    workspaceMaterials,
+    workspaceMaterialRevisions,
+    threadMaterialBindings,
+    context.targetWorkspaceId,
+    new Set(canonical.threads.map((thread) => thread.id))
+  );
+  const itemText = new Map<string, string>();
+  const threadPreviewText = new Map<string, string>();
+  const tracesBySourceTurn = new Map<string, WorkerContextPackageTrace>();
+  const workerContextPackageFiles = new Map<string, string>();
+  const agentEnvironmentPackageSnapshots = [...canonical.agentEnvironmentPackageSnapshots];
+  const workspaceInputSnapshots = [...workspaceSync.workspaceInputSnapshots];
+  const workspaceMaterializationRecords = [...workspaceSync.workspaceMaterializationRecords];
+  const tracePaths = [...context.files.keys()]
+    .map(
+      (path) =>
+        [
+          path,
+          /^workspace-files\/threads\/([^/]+)\/turns\/([^/]+)\/context-package\.json$/.exec(path),
+        ] as const
+    )
+    .filter((entry): entry is readonly [string, RegExpExecArray] => entry[1] !== null)
+    .sort(([left], [right]) => left.localeCompare(right));
+  const tracedTurnIds = new Set(tracePaths.map(([, match]) => match[2]!));
+  for (const [sourceTurnId, targetTurnId] of context.turnIds) {
+    const turn = canonical.turns.find((candidate) => candidate.id === targetTurnId)!;
+    if ((turn.agentSessionId != null) !== tracedTurnIds.has(sourceTurnId)) {
+      throw new Error(`Worker Context Package coverage is incomplete: ${sourceTurnId}`);
+    }
+  }
+  for (const [tracePath, pathMatch] of tracePaths) {
+    const sourceThreadId = pathMatch[1]!;
+    const sourceTurnId = pathMatch[2]!;
+    const sourceTrace = parseWorkerContextPackageTrace(
+      JSON.parse(requiredExportFile(context.files, tracePath))
+    );
+    if (
+      sourceTrace.workspaceId !== context.report.exportedWorkspaceId ||
+      sourceTrace.threadId !== sourceThreadId ||
+      sourceTrace.turnId !== sourceTurnId
+    ) {
+      throw new Error('Worker Context Package trace path lineage is contradictory.');
+    }
+    const sourceRequestItem = requiredMapValue(
+      context.itemLineage,
+      sourceTrace.workerRequestItemId,
+      'worker request Item'
+    );
+    if (sourceRequestItem.type !== 'user-message') {
+      throw new Error('Worker Context Package request Item has no canonical text.');
+    }
+    const sourcePackageRoot = `workspace-files/threads/${sourceThreadId}/turns/${sourceTurnId}/context-package`;
+    const sourceManifest = z
+      .object({ contextBudgetTokens: z.number().int().positive().safe() })
+      .passthrough()
+      .parse(JSON.parse(requiredExportFile(context.files, `${sourcePackageRoot}/package.json`)));
+    const sourcePackage = createWorkerContextPackageFiles({
+      contextBudgetTokens: sourceManifest.contextBudgetTokens,
+      includedItemIds: sourceTrace.includedItemIds,
+      materialSelections: sourceTrace.materialSelections.map((selection) => {
+        const revision = requireMaterialRevision(
+          context.sourceWorkspaceMaterialRevisions,
+          selection.materialId,
+          selection.revisionId
+        );
+        const material = requireMaterial(context.sourceWorkspaceMaterials, selection.materialId);
+        return { ...selection, content: revision.content, sensitivity: material.sensitivity };
+      }),
+      threadId: sourceThreadId,
+      turnId: sourceTurnId,
+      workerRequestBytes: sourceRequestItem.text,
+      workerRequestItemId: sourceTrace.workerRequestItemId,
+      workspaceId: context.report.exportedWorkspaceId,
+    });
+    const rebuiltSourceTrace = createWorkerContextPackageTrace({
+      agentSessionId: sourceTrace.agentSessionId,
+      excludedItems: sourceTrace.excludedItems,
+      goalId: sourceTrace.goalId,
+      materialExclusions: sourceTrace.materialExclusions,
+      packageFiles: sourcePackage,
+      packageSnapshotId: sourceTrace.packageSnapshotId,
+      requestId: sourceTrace.requestId,
+      taskId: sourceTrace.taskId,
+    });
+    if (
+      serializeWorkerContextPackageTrace(rebuiltSourceTrace) !==
+      requiredExportFile(context.files, tracePath)
+    ) {
+      throw new Error('Worker Context Package source trace is contradictory.');
+    }
+    const sourcePackagePaths = new Set<string>();
+    for (const file of sourcePackage.files) {
+      const path = `${sourcePackageRoot}/${file.path}`;
+      sourcePackagePaths.add(path);
+      if (requiredExportFile(context.files, path) !== Buffer.from(file.bytes).toString('utf8')) {
+        throw new Error(`Worker Context Package source bytes are contradictory: ${file.path}`);
+      }
+    }
+    const unexpectedSourceFile = [...context.files.keys()].find(
+      (path) => path.startsWith(`${sourcePackageRoot}/`) && !sourcePackagePaths.has(path)
+    );
+    if (unexpectedSourceFile) {
+      throw new Error(
+        `Worker Context Package contains an unexpected file: ${unexpectedSourceFile}`
+      );
+    }
+
+    const targetThreadId = requiredMapValue(context.threadIds, sourceThreadId, 'thread');
+    const targetTurnId = requiredMapValue(context.turnIds, sourceTurnId, 'turn');
+    const targetTurn = canonical.turns.find((turn) => turn.id === targetTurnId)!;
+    const targetRequestItemId = requiredMapValue(
+      context.itemIds,
+      sourceTrace.workerRequestItemId,
+      'worker request Item'
+    );
+    const targetRequestBytes = remintWorkerRequest(sourceRequestItem.text, context);
+    itemText.set(targetRequestItemId, targetRequestBytes);
+    const targetThread = canonical.threads.find((thread) => thread.id === targetThreadId)!;
+    if (targetThread.preview === sourceRequestItem.text) {
+      threadPreviewText.set(targetThreadId, targetRequestBytes);
+    }
+    const targetPackage = createWorkerContextPackageFiles({
+      contextBudgetTokens: sourceManifest.contextBudgetTokens,
+      includedItemIds: sourceTrace.includedItemIds.map((id) =>
+        requiredMapValue(context.itemIds, id, 'included Item')
+      ),
+      materialSelections: sourceTrace.materialSelections.map((selection) => {
+        const sourceRevision = requireMaterialRevision(
+          context.sourceWorkspaceMaterialRevisions,
+          selection.materialId,
+          selection.revisionId
+        );
+        const sourceMaterial = requireMaterial(
+          context.sourceWorkspaceMaterials,
+          selection.materialId
+        );
+        return {
+          ...selection,
+          materialId: requiredMapValue(context.materialIds, selection.materialId, 'Material'),
+          revisionId: requiredMaterialRevisionId(
+            context,
+            selection.materialId,
+            selection.revisionId
+          ),
+          parentRevisionId: selection.parentRevisionId
+            ? requiredMaterialRevisionId(context, selection.materialId, selection.parentRevisionId)
+            : null,
+          bindingMutationRequestId: selection.bindingMutationRequestId
+            ? importRequestLineage(context, selection.bindingMutationRequestId)
+            : null,
+          content: sourceRevision.content,
+          sensitivity: sourceMaterial.sensitivity,
+        };
+      }),
+      threadId: targetThreadId,
+      turnId: targetTurnId,
+      workerRequestBytes: targetRequestBytes,
+      workerRequestItemId: targetRequestItemId,
+      workspaceId: context.targetWorkspaceId,
+    });
+    const targetPackageSnapshotId = requiredMapValue(
+      context.agentEnvironmentPackageSnapshotIds,
+      sourceTrace.packageSnapshotId,
+      'agent environment package snapshot'
+    );
+    const targetTrace = createWorkerContextPackageTrace({
+      agentSessionId: requiredMapValue(
+        context.agentSessionIds,
+        sourceTrace.agentSessionId,
+        'agent session'
+      ),
+      excludedItems: sourceTrace.excludedItems.map((exclusion) => ({
+        ...exclusion,
+        itemId: requiredMapValue(context.itemIds, exclusion.itemId, 'excluded Item'),
+      })),
+      goalId: sourceTrace.goalId
+        ? requiredMapValue(context.goalIds, sourceTrace.goalId, 'Goal')
+        : null,
+      materialExclusions: sourceTrace.materialExclusions.map((exclusion) => ({
+        ...exclusion,
+        materialId: requiredMapValue(context.materialIds, exclusion.materialId, 'Material'),
+        revisionId: requiredMaterialRevisionId(context, exclusion.materialId, exclusion.revisionId),
+      })),
+      packageFiles: targetPackage,
+      packageSnapshotId: targetPackageSnapshotId,
+      requestId: importRequestLineage(context, sourceTrace.requestId),
+      taskId: sourceTrace.taskId
+        ? requiredMapValue(context.goalTaskIds, sourceTrace.taskId, 'Goal task')
+        : null,
+    });
+    const targetRoot = `threads/${targetThreadId}/turns/${targetTurnId}`;
+    for (const file of targetPackage.files) {
+      workerContextPackageFiles.set(
+        `${targetRoot}/context-package/${file.path}`,
+        Buffer.from(file.bytes).toString('utf8')
+      );
+    }
+    workerContextPackageFiles.set(
+      `${targetRoot}/context-package.json`,
+      serializeWorkerContextPackageTrace(targetTrace)
+    );
+    tracesBySourceTurn.set(sourceTurnId, sourceTrace);
+
+    const packageIndex = agentEnvironmentPackageSnapshots.findIndex(
+      (record) => record.snapshotId === targetPackageSnapshotId
+    );
+    if (packageIndex < 0) {
+      throw new Error('Worker Context Package AEP snapshot is missing.');
+    }
+    const record = agentEnvironmentPackageSnapshots[packageIndex]!;
+    const environmentPackage = AgentEnvironmentPackageSchema.parse(record.snapshot);
+    const rewrittenEnvironmentPackage = AgentEnvironmentPackageSchema.parse({
+      ...environmentPackage,
+      scope: {
+        ...environmentPackage.scope,
+        requestId: targetTrace.requestId,
+        itemId: targetRequestItemId,
+      },
+      workspace: {
+        ...environmentPackage.workspace,
+        inputs: environmentPackage.workspace.inputs.map((candidate) =>
+          candidate.target === '/openkit/context'
+            ? buildWorkerContextPackageWorkspaceInput({
+                packageRootDigest: targetPackage.packageRootDigest,
+                threadId: targetThreadId,
+                turnId: targetTurnId,
+              })
+            : candidate
+        ),
+      },
+    });
+    agentEnvironmentPackageSnapshots[packageIndex] = {
+      ...record,
+      contentDigest: createHash('sha256')
+        .update(JSON.stringify(rewrittenEnvironmentPackage))
+        .digest('hex'),
+      snapshot: rewrittenEnvironmentPackage,
+    };
+
+    const sourceInputIndex = workspaceInputSnapshots.findIndex(
+      (snapshot) => snapshot.id === sourceTrace.workspaceInputSnapshotId
+    );
+    const sourceMaterializationIndex = workspaceMaterializationRecords.findIndex(
+      (materialization) => materialization.id === sourceTrace.workspaceMaterializationRecordId
+    );
+    if (sourceInputIndex < 0 || sourceMaterializationIndex < 0) {
+      throw new Error('Worker Context Package workspace handoff owner is missing.');
+    }
+    const sourceInput = workspaceInputSnapshots[sourceInputIndex]!;
+    const sourceMaterialization = workspaceMaterializationRecords[sourceMaterializationIndex]!;
+    const historicalWorkerSessionId = `import-history-worker_${targetPackageSnapshotId}`;
+    workspaceInputSnapshots[sourceInputIndex] = WorkspaceInputSnapshotSchema.parse({
+      backend: sourceInput.backend,
+      base: { commit: null, contentDigest: targetPackage.packageRootDigest },
+      createdAt: targetTurn.startedAt,
+      generatedFiles: [],
+      id: targetTrace.workspaceInputSnapshotId,
+      ignoredPaths: [],
+      pathScope: [`context_${targetTurnId}`],
+      resourceId: `context_${targetTurnId}`,
+      resourceKind: 'filesystem',
+      strategy: 'filesystem',
+      workspaceId: context.targetWorkspaceId,
+      writableRoots: [],
+    });
+    workspaceMaterializationRecords[sourceMaterializationIndex] =
+      WorkspaceMaterializationRecordSchema.parse({
+        backendKind: sourceMaterialization.backendKind,
+        base: { commit: null, contentDigest: targetPackage.packageRootDigest },
+        createdAt: targetTurn.startedAt,
+        id: targetTrace.workspaceMaterializationRecordId,
+        inputSnapshotId: targetTrace.workspaceInputSnapshotId,
+        materializedRootRef: '/openkit/context',
+        packageSnapshotId: targetPackageSnapshotId,
+        policyDigest: createWorkerContextPackagePolicyDigest({
+          backendKind: sourceMaterialization.backendKind,
+          packageSnapshotId: targetPackageSnapshotId,
+          requiredCapabilities: rewrittenEnvironmentPackage.backend.requiredCapabilities,
+        }),
+        readinessEvidence: sourceMaterialization.readinessEvidence.map((entry) =>
+          entry.kind.startsWith('sandbox.') && entry.ref === sourceMaterialization.workerSessionId
+            ? { ...entry, ref: historicalWorkerSessionId }
+            : entry
+        ),
+        strategy: 'filesystem',
+        workerSessionId: historicalWorkerSessionId,
+        workspaceId: context.targetWorkspaceId,
+      });
+  }
+  const orphanWorkerFile = [...context.files.keys()].find(
+    (path) =>
+      path.startsWith('workspace-files/threads/') &&
+      !tracePaths.some(([tracePath]) => path.startsWith(tracePath.slice(0, -'.json'.length)))
+  );
+  if (orphanWorkerFile) {
+    throw new Error(`Worker Context Package file has no trace: ${orphanWorkerFile}`);
+  }
+
+  const threads = canonical.threads.map((thread) => {
+    const preview = threadPreviewText.get(thread.id);
+    return preview === undefined ? thread : ThreadSchema.parse({ ...thread, preview });
+  });
+  const itemRevisions = canonical.itemRevisions.map((item) =>
+    itemText.has(item.id) ? ItemSchema.parse({ ...item, text: itemText.get(item.id) }) : item
+  );
+  const currentItems = new Map<string, Item>();
+  itemRevisions.forEach((item) => {
+    currentItems.set(item.id, item);
+  });
+  const turns = canonical.turns.map((turn) =>
+    TurnSchema.parse({
+      ...turn,
+      items: turn.items.map((item) => requiredMapValue(currentItems, item.id, 'Item')),
+    })
+  );
+  const turnEvents = refreshImportedTurnEventSnapshots(
+    canonical.turnEvents,
+    threads,
+    currentItems,
+    turns
+  );
+  const artifactReviews = context.sourceArtifactReviews.map((review) => {
+    if (
+      review.workspaceId !== context.report.exportedWorkspaceId ||
+      review.reviewId !==
+        deriveArtifactReviewId(review.workspaceId, review.artifactId, review.artifactVersion)
+    ) {
+      throw new Error('Artifact Review source identity is contradictory.');
+    }
+    const artifactId = requiredMapValue(context.artifactIds, review.artifactId, 'artifact');
+    const materialProposal = review.materialProposal
+      ? {
+          materialId: requiredMapValue(
+            context.materialIds,
+            review.materialProposal.materialId,
+            'Material'
+          ),
+          baseRevisionId: requiredMaterialRevisionId(
+            context,
+            review.materialProposal.materialId,
+            review.materialProposal.baseRevisionId
+          ),
+          baseContentDigest: review.materialProposal.baseContentDigest,
+        }
+      : null;
+    const imported = ImportedArtifactReviewSchema.parse({
+      ...review,
+      workspaceId: context.targetWorkspaceId,
+      reviewId: deriveArtifactReviewId(
+        context.targetWorkspaceId,
+        artifactId,
+        review.artifactVersion
+      ),
+      artifactId,
+      sourceThreadId: review.sourceThreadId
+        ? requiredMapValue(context.threadIds, review.sourceThreadId, 'thread')
+        : null,
+      sourceTurnId: review.sourceTurnId
+        ? requiredMapValue(context.turnIds, review.sourceTurnId, 'turn')
+        : null,
+      materialProposal,
+      decisionRequestId: review.decisionRequestId
+        ? importRequestLineage(context, review.decisionRequestId)
+        : null,
+      followUpTurnId: review.followUpTurnId
+        ? requiredMapValue(context.turnIds, review.followUpTurnId, 'follow-up turn')
+        : null,
+      appliedMaterialRevisionId:
+        review.appliedMaterialRevisionId && review.materialProposal
+          ? requiredMaterialRevisionId(
+              context,
+              review.materialProposal.materialId,
+              review.appliedMaterialRevisionId
+            )
+          : review.appliedMaterialRevisionId,
+    });
+    assertArtifactReviewImport(
+      review,
+      imported,
+      canonical.artifacts,
+      turns,
+      workspaceMaterialRevisions,
+      workspaceMaterials,
+      workspaceSync.stagedWorkspaceReviews,
+      tracesBySourceTurn,
+      context.itemLineage
+    );
+    return imported;
+  });
+
+  return {
+    agentEnvironmentPackageSnapshots,
+    artifactReviews,
+    itemRevisions,
+    threadMaterialBindings,
+    threads,
+    turnEvents,
+    turns,
+    workerContextPackageFiles,
+    workspaceInputSnapshots,
+    workspaceMaterialRevisions,
+    workspaceMaterializationRecords,
+    workspaceMaterials,
+  };
+}
+
+/**
+ * Rebinds Thread, Item, and Turn snapshots embedded in already-reminted typed events.
+ *
+ * @param turnEvents Imported event logs carrying target ids.
+ * @param threads Current imported Threads.
+ * @param items Current imported Items keyed by target id.
+ * @param turns Current imported Turns.
+ * @returns Event logs whose typed snapshots match current imported authority.
+ * @throws Error when an embedded target Item or Turn is absent.
+ */
+function refreshImportedTurnEventSnapshots(
+  turnEvents: readonly (readonly [string, readonly SseEventEnvelope[]])[],
+  threads: readonly Thread[],
+  items: ReadonlyMap<string, Item>,
+  turns: readonly Turn[]
+): Array<[string, SseEventEnvelope[]]> {
+  const threadsById = new Map(threads.map((thread) => [thread.id, thread]));
+  const turnsById = new Map(turns.map((turn) => [turn.id, turn]));
+  return turnEvents.map(([turnId, events]) => [
+    turnId,
+    events.map((event) => {
+      const data = event.data;
+      if (data.type === 'thread-created' || data.type === 'thread-updated') {
+        return SseEventEnvelopeSchema.parse({
+          ...event,
+          data: { ...data, thread: requiredMapValue(threadsById, data.thread.id, 'Thread') },
+        });
+      }
+      if (data.type === 'item-created') {
+        return SseEventEnvelopeSchema.parse({
+          ...event,
+          data: { ...data, item: requiredMapValue(items, data.item.id, 'Item') },
+        });
+      }
+      if (data.type === 'item-completed') {
+        const item = requiredMapValue(items, data.item.id, 'Item');
+        return SseEventEnvelopeSchema.parse({ ...event, data: { ...data, itemId: item.id, item } });
+      }
+      if (data.type === 'turn-updated' || data.type === 'turn-completed') {
+        return SseEventEnvelopeSchema.parse({
+          ...event,
+          data: { ...data, turn: requiredMapValue(turnsById, data.turn.id, 'Turn') },
+        });
+      }
+      return event;
+    }),
+  ]);
+}
+
+/**
+ * Validates one complete linear Material graph and its Thread bindings.
+ *
+ * @param materials Source Workspace Material owners.
+ * @param revisions Source immutable Material revisions.
+ * @param bindings Source Thread-to-Material bindings.
+ * @param workspaceId Required source Workspace id.
+ * @param threadIds Exported source Thread ids.
+ * @throws Error when identity, history, digest, mutation proof, or binding lineage is invalid.
+ */
+function assertMaterialGraph(
+  materials: readonly ImportedWorkspaceMaterial[],
+  revisions: readonly ImportedWorkspaceMaterialRevision[],
+  bindings: readonly ImportedThreadMaterialBinding[],
+  workspaceId: string,
+  threadIds: ReadonlySet<string>
+): void {
+  const materialIds = new Set<string>();
+  const revisionKeys = new Set<string>();
+  for (const material of materials) {
+    if (material.workspaceId !== workspaceId || materialIds.has(material.materialId)) {
+      throw new Error(`Material identity is duplicate or out of scope: ${material.materialId}`);
+    }
+    materialIds.add(material.materialId);
+  }
+  for (const revision of revisions) {
+    const key = materialRevisionKey(revision.materialId, revision.revisionId);
+    const material = materials.find((candidate) => candidate.materialId === revision.materialId);
+    if (
+      revision.workspaceId !== workspaceId ||
+      revisionKeys.has(key) ||
+      !material ||
+      revision.mediaType !== (material.kind === 'markdown' ? 'text/markdown' : 'text/plain') ||
+      `sha256:${createHash('sha256').update(revision.content).digest('hex')}` !==
+        revision.contentDigest
+    ) {
+      throw new Error(`Material revision is contradictory: ${revision.revisionId}`);
+    }
+    revisionKeys.add(key);
+  }
+  for (const material of materials) {
+    const owned = revisions.filter((revision) => revision.materialId === material.materialId);
+    if (material.currentRevisionId === null) {
+      if (owned.length !== 0) {
+        throw new Error(
+          `Material without a current revision retains history: ${material.materialId}`
+        );
+      }
+      continue;
+    }
+    const byId = new Map(owned.map((revision) => [revision.revisionId, revision]));
+    const roots = owned.filter((revision) => revision.parentRevisionId === null);
+    const childCounts = new Map<string, number>();
+    for (const revision of owned) {
+      if (revision.parentRevisionId !== null) {
+        if (!byId.has(revision.parentRevisionId)) {
+          throw new Error(`Material revision has a missing parent: ${revision.revisionId}`);
+        }
+        childCounts.set(
+          revision.parentRevisionId,
+          (childCounts.get(revision.parentRevisionId) ?? 0) + 1
+        );
+      }
+    }
+    if (
+      roots.length !== 1 ||
+      [...childCounts.values()].some((count) => count !== 1) ||
+      byId.get(material.currentRevisionId)?.createdByRequestId !== material.lastMutationRequestId
+    ) {
+      throw new Error(`Material revision graph is not linear: ${material.materialId}`);
+    }
+    const visited = new Set<string>();
+    let revision = byId.get(material.currentRevisionId);
+    while (revision) {
+      if (visited.has(revision.revisionId)) {
+        throw new Error(`Material revision graph contains a cycle: ${material.materialId}`);
+      }
+      visited.add(revision.revisionId);
+      revision = revision.parentRevisionId ? byId.get(revision.parentRevisionId) : undefined;
+    }
+    if (visited.size !== owned.length) {
+      throw new Error(`Material revision graph is disconnected: ${material.materialId}`);
+    }
+  }
+  const bindingKeys = new Set<string>();
+  const boundThreads = new Set<string>();
+  for (const binding of bindings) {
+    const key = `${binding.threadId}\0${binding.materialId}`;
+    const material = materials.find((candidate) => candidate.materialId === binding.materialId);
+    if (
+      binding.workspaceId !== workspaceId ||
+      bindingKeys.has(key) ||
+      !threadIds.has(binding.threadId) ||
+      !material ||
+      (binding.latestQueuedRevisionId !== null &&
+        (binding.latestQueuedRevisionId !== material.currentRevisionId ||
+          !revisionKeys.has(
+            materialRevisionKey(binding.materialId, binding.latestQueuedRevisionId)
+          ))) ||
+      (binding.bindingState === 'unbound' &&
+        (binding.latestQueuedRevisionId !== null || binding.inclusionState !== 'included')) ||
+      (binding.inclusionState === 'excluded' &&
+        (binding.bindingState !== 'bound' || binding.latestQueuedRevisionId === null))
+    ) {
+      throw new Error(`Thread Material binding is contradictory: ${key}`);
+    }
+    bindingKeys.add(key);
+    if (binding.bindingState === 'bound') {
+      if (boundThreads.has(binding.threadId)) {
+        throw new Error(`Thread has more than one bound Material: ${binding.threadId}`);
+      }
+      boundThreads.add(binding.threadId);
+    }
+  }
+}
+
+/**
+ * Rewrites one accepted worker request without changing user-authored prose or Artifact bytes.
+ *
+ * @param text Serialized structured delegation or Artifact Review follow-up request.
+ * @param context Shared import lineage maps.
+ * @returns Serialized request with every owned reference reminted.
+ * @throws Error when the request is malformed or references missing authority.
+ */
+function remintWorkerRequest(text: string, context: ImportRemintContext): string {
+  const value = JSON.parse(text) as unknown;
+  const followUp = ArtifactReviewFollowUpRequestSchema.safeParse(value);
+  if (followUp.success) {
+    const review = context.sourceArtifactReviews.find(
+      (candidate) => candidate.reviewId === followUp.data.reviewId
+    );
+    if (!review) {
+      throw new Error(
+        `Worker request references missing Artifact Review: ${followUp.data.reviewId}`
+      );
+    }
+    const artifactId = requiredMapValue(context.artifactIds, review.artifactId, 'artifact');
+    return serializeArtifactReviewFollowUpRequest({
+      ...followUp.data,
+      workspaceId: context.targetWorkspaceId,
+      reviewId: deriveArtifactReviewId(
+        context.targetWorkspaceId,
+        artifactId,
+        review.artifactVersion
+      ),
+      artifactId,
+      sourceThreadId: requiredMapValue(context.threadIds, followUp.data.sourceThreadId, 'thread'),
+      sourceTurnId: requiredMapValue(context.turnIds, followUp.data.sourceTurnId, 'turn'),
+      materialProposal: followUp.data.materialProposal
+        ? {
+            ...followUp.data.materialProposal,
+            materialId: requiredMapValue(
+              context.materialIds,
+              followUp.data.materialProposal.materialId,
+              'Material'
+            ),
+            baseRevisionId: requiredMaterialRevisionId(
+              context,
+              followUp.data.materialProposal.materialId,
+              followUp.data.materialProposal.baseRevisionId
+            ),
+          }
+        : null,
+      decisionRequestId: importRequestLineage(context, followUp.data.decisionRequestId),
+      workerRequestId: importRequestLineage(context, followUp.data.workerRequestId),
+    });
+  }
+  const request = StructuredWorkerDelegationRequestSchema.parse(value);
+  /**
+   * Rewrites one structured request reference through the matching import authority map.
+   *
+   * @param kind Structured reference kind.
+   * @param id Source reference identity.
+   * @returns Target identity, or the unchanged id for stable or unknown reference kinds.
+   * @throws Error when a reminted reference has no matching source owner.
+   */
+  const rewriteReference = (kind: string, id: string): string => {
+    switch (kind) {
+      case 'workspace':
+        if (id !== context.report.exportedWorkspaceId) {
+          throw new Error(`Worker request references another Workspace: ${id}`);
+        }
+        return context.targetWorkspaceId;
+      case 'thread':
+        return requiredMapValue(context.threadIds, id, 'thread');
+      case 'item':
+        return requiredMapValue(context.itemIds, id, 'Item');
+      case 'artifact':
+        return requiredMapValue(context.artifactIds, id, 'artifact');
+      case 'knowledge':
+        if (!context.knowledgeIds.has(id)) {
+          throw new Error(`Worker request references missing knowledge: ${id}`);
+        }
+        return id;
+      default:
+        return id;
+    }
+  };
+  return serializeStructuredWorkerDelegationRequest({
+    ...request,
+    contextRefs: request.contextRefs.map((reference) => ({
+      ...reference,
+      id: rewriteReference(reference.kind, reference.id),
+    })),
+    resources: request.resources.map((resource) => ({
+      ...resource,
+      reference: rewriteReference(resource.kind, resource.reference),
+    })),
+    reviewContext: request.reviewContext
+      ? {
+          ...request.reviewContext,
+          reviewId: requiredMapValue(
+            context.goalReviewIds,
+            request.reviewContext.reviewId,
+            'Review'
+          ),
+          priorTurnId: requiredMapValue(context.turnIds, request.reviewContext.priorTurnId, 'turn'),
+          evidence: {
+            itemIds: request.reviewContext.evidence.itemIds.map((id) =>
+              requiredMapValue(context.itemIds, id, 'Item')
+            ),
+            artifactIds: request.reviewContext.evidence.artifactIds.map((id) =>
+              requiredMapValue(context.artifactIds, id, 'artifact')
+            ),
+          },
+        }
+      : null,
+  });
+}
+
+/**
+ * Validates one source and reminted Artifact Review against its durable result owners.
+ *
+ * @param source Parsed source Artifact Review.
+ * @param target Reminted target Artifact Review.
+ * @param artifacts Reminted canonical Artifacts.
+ * @param turns Reminted canonical Turns.
+ * @param revisions Reminted Material revisions.
+ * @param materials Reminted Workspace Materials.
+ * @param stagedWorkspaceReviews Reminted Workspace Sync review owners.
+ * @param tracesBySourceTurn Validated source S39 traces keyed by source Turn id.
+ * @param sourceItems Canonical source Items keyed by source id.
+ * @throws Error when source, proposal, decision, result, or follow-up lineage is contradictory.
+ */
+function assertArtifactReviewImport(
+  source: ImportedArtifactReview,
+  target: ImportedArtifactReview,
+  artifacts: readonly Artifact[],
+  turns: readonly Turn[],
+  revisions: readonly ImportedWorkspaceMaterialRevision[],
+  materials: readonly ImportedWorkspaceMaterial[],
+  stagedWorkspaceReviews: readonly ExportedStagedWorkspaceReview[],
+  tracesBySourceTurn: ReadonlyMap<string, WorkerContextPackageTrace>,
+  sourceItems: ReadonlyMap<string, Item>
+): void {
+  const artifact = artifacts.find((candidate) => candidate.id === target.artifactId);
+  if (!artifact || stagedWorkspaceReviews.some((review) => review.artifactId === artifact.id)) {
+    throw new Error('Artifact Review conflicts with Artifact or Workspace Sync authority.');
+  }
+  const sourceTurn = target.sourceTurnId
+    ? turns.find((turn) => turn.id === target.sourceTurnId)
+    : undefined;
+  if (
+    (target.sourceThreadId === null) !== (target.sourceTurnId === null) ||
+    (target.sourceTurnId !== null &&
+      (!sourceTurn ||
+        sourceTurn.threadId !== target.sourceThreadId ||
+        (sourceTurn.agentId ?? null) !== target.sourceAgentId)) ||
+    artifact.origin.kind !== 'turn-output' ||
+    artifact.threadId !== target.sourceThreadId ||
+    artifact.turnId !== target.sourceTurnId ||
+    artifact.origin.threadId !== target.sourceThreadId ||
+    artifact.origin.turnId !== target.sourceTurnId ||
+    source.artifactVersion > artifact.version
+  ) {
+    throw new Error('Artifact Review source lineage is contradictory.');
+  }
+  if (source.decision === null) {
+    if (
+      source.decisionRequestId !== null ||
+      artifact.version !== source.artifactVersion ||
+      artifact.status !== 'ready' ||
+      artifact.contentDigest !== source.contentDigest
+    ) {
+      throw new Error('Unresolved Artifact Review has no exact current Artifact version.');
+    }
+    if (target.materialProposal) {
+      const material = materials.find(
+        (candidate) => candidate.materialId === target.materialProposal?.materialId
+      );
+      const mediaFormat = material?.kind === 'markdown' ? 'markdown' : 'text';
+      if (!material || artifact.content.format !== mediaFormat) {
+        throw new Error('Artifact Review proposal media type is contradictory.');
+      }
+    }
+  } else if (source.decisionRequestId === null) {
+    throw new Error('Decided Artifact Review has no request lineage.');
+  }
+  if (source.materialProposal) {
+    if (!source.sourceTurnId) {
+      throw new Error('Material proposal Review has no source Turn.');
+    }
+    const selections = (
+      tracesBySourceTurn.get(source.sourceTurnId)?.materialSelections ?? []
+    ).filter(
+      (selection) =>
+        selection.materialId === source.materialProposal?.materialId &&
+        selection.revisionId === source.materialProposal.baseRevisionId &&
+        selection.contentDigest === source.materialProposal.baseContentDigest
+    );
+    if (selections.length !== 1) {
+      throw new Error('Artifact Review Material proposal lacks one exact S39 selection.');
+    }
+  }
+  if (target.decision === 'accepted' && target.materialProposal) {
+    const applied = target.appliedMaterialRevisionId
+      ? revisions.find(
+          (revision) =>
+            revision.materialId === target.materialProposal?.materialId &&
+            revision.revisionId === target.appliedMaterialRevisionId
+        )
+      : undefined;
+    const material = materials.find(
+      (candidate) => candidate.materialId === target.materialProposal?.materialId
+    );
+    if (
+      !applied ||
+      !material ||
+      applied.parentRevisionId !== target.materialProposal.baseRevisionId ||
+      applied.contentDigest !== target.contentDigest ||
+      applied.authorId !== target.decisionActorId ||
+      applied.createdByRequestId !== target.decisionRequestId ||
+      applied.createdAt !== target.decidedAt ||
+      applied.mediaType !== (material.kind === 'markdown' ? 'text/markdown' : 'text/plain')
+    ) {
+      throw new Error('Artifact Review applied Material revision is contradictory.');
+    }
+  } else if (target.appliedMaterialRevisionId !== null) {
+    throw new Error('Artifact Review has an invalid applied Material revision.');
+  }
+  if (target.decision === 'needs_refinement' || target.decision === 'redo') {
+    const followUpTurn = turns.find((turn) => turn.id === target.followUpTurnId);
+    const sourceTrace = source.followUpTurnId
+      ? tracesBySourceTurn.get(source.followUpTurnId)
+      : undefined;
+    const requestItem = sourceTrace ? sourceItems.get(sourceTrace.workerRequestItemId) : undefined;
+    const request =
+      requestItem?.type === 'user-message'
+        ? ArtifactReviewFollowUpRequestSchema.safeParse(JSON.parse(requestItem.text))
+        : null;
+    const proposal = request?.success ? request.data.materialProposal : null;
+    const proposalMaterial = target.materialProposal
+      ? materials.find((material) => material.materialId === target.materialProposal?.materialId)
+      : undefined;
+    const proposalMatches =
+      proposal === null
+        ? source.materialProposal === null
+        : source.materialProposal !== null &&
+          request?.success === true &&
+          proposal.materialId === source.materialProposal.materialId &&
+          proposal.baseRevisionId === source.materialProposal.baseRevisionId &&
+          proposal.baseContentDigest === source.materialProposal.baseContentDigest &&
+          proposalMaterial !== undefined &&
+          request.data.artifactMediaType ===
+            (proposalMaterial.kind === 'markdown' ? 'text/markdown' : 'text/plain');
+    const decisionRequestId = source.decisionRequestId;
+    if (
+      !followUpTurn ||
+      followUpTurn.id === target.sourceTurnId ||
+      followUpTurn.threadId !== target.sourceThreadId ||
+      (followUpTurn.agentId ?? null) !== target.sourceAgentId ||
+      !sourceTrace ||
+      sourceTrace.goalId !== null ||
+      sourceTrace.taskId !== null ||
+      !request?.success ||
+      decisionRequestId === null ||
+      request.data.workspaceId !== source.workspaceId ||
+      request.data.reviewId !== source.reviewId ||
+      request.data.artifactId !== source.artifactId ||
+      request.data.artifactVersion !== source.artifactVersion ||
+      request.data.contentDigest !== source.contentDigest ||
+      request.data.sourceThreadId !== source.sourceThreadId ||
+      request.data.sourceTurnId !== source.sourceTurnId ||
+      request.data.sourceAgentId !== source.sourceAgentId ||
+      !proposalMatches ||
+      request.data.decision !== source.decision ||
+      request.data.feedback !== source.feedback ||
+      request.data.decisionRequestId !== decisionRequestId ||
+      request.data.workerRequestId !== sourceTrace.requestId ||
+      (!/^import-lineage:sha256:[a-f0-9]{64}$/.test(decisionRequestId) &&
+        (source.followUpTurnId !==
+          deriveArtifactReviewFollowUpTurnId(
+            source.workspaceId,
+            source.artifactId,
+            source.artifactVersion,
+            decisionRequestId
+          ) ||
+          request.data.workerRequestId !== deriveArtifactReviewWorkerRequestId(decisionRequestId)))
+    ) {
+      throw new Error('Artifact Review follow-up Turn lineage is contradictory.');
+    }
+  }
+}
+
+/**
+ * Derives one reserved historical request token from exact source deployment lineage.
+ *
+ * @param context Shared import lineage and source manifest.
+ * @param requestId Source private mutation request id.
+ * @returns Deterministic non-command import lineage token.
+ */
+function importRequestLineage(context: ImportRemintContext, requestId: string): string {
+  const digest = createHash('sha256')
+    .update(context.report.manifest.sourceDeploymentId)
+    .update('\0')
+    .update(context.report.exportedWorkspaceId)
+    .update('\0')
+    .update(requestId)
+    .digest('hex');
+  return `import-lineage:sha256:${digest}`;
+}
+
+/**
+ * Reads one required Material from a parsed row set.
+ *
+ * @param materials Parsed source Materials.
+ * @param materialId Required source Material id.
+ * @returns The unique matching Material.
+ * @throws Error when the reference is missing or ambiguous.
+ */
+function requireMaterial(
+  materials: readonly ImportedWorkspaceMaterial[],
+  materialId: string
+): ImportedWorkspaceMaterial {
+  const matches = materials.filter((material) => material.materialId === materialId);
+  if (matches.length !== 1) {
+    throw new Error(`Material reference is missing or ambiguous: ${materialId}`);
+  }
+  return matches[0]!;
+}
+
+/**
+ * Reads one required Material revision from a parsed row set.
+ *
+ * @param revisions Parsed source Material revisions.
+ * @param materialId Owning source Material id.
+ * @param revisionId Required source revision id.
+ * @returns The unique matching Material revision.
+ * @throws Error when the reference is missing or ambiguous.
+ */
+function requireMaterialRevision(
+  revisions: readonly ImportedWorkspaceMaterialRevision[],
+  materialId: string,
+  revisionId: string
+): ImportedWorkspaceMaterialRevision {
+  const matches = revisions.filter(
+    (revision) => revision.materialId === materialId && revision.revisionId === revisionId
+  );
+  if (matches.length !== 1) {
+    throw new Error(`Material revision reference is missing or ambiguous: ${revisionId}`);
+  }
+  return matches[0]!;
+}
+
+/**
+ * Reads one target revision id from its composite source identity.
+ *
+ * @param context Shared import lineage maps.
+ * @param materialId Owning source Material id.
+ * @param revisionId Source revision id.
+ * @returns Reminted target revision id.
+ * @throws Error when the source revision has no reminted identity.
+ */
+function requiredMaterialRevisionId(
+  context: ImportRemintContext,
+  materialId: string,
+  revisionId: string
+): string {
+  return requiredMapValue(
+    context.materialRevisionIds,
+    materialRevisionKey(materialId, revisionId),
+    'Material revision'
+  );
+}
+
+/**
+ * Builds an unambiguous Material revision map key.
+ *
+ * @param materialId Owning Material id.
+ * @param revisionId Material revision id.
+ * @returns NUL-delimited composite identity.
+ */
+function materialRevisionKey(materialId: string, revisionId: string): string {
+  return `${materialId}\0${revisionId}`;
+}
+
+/**
  * Reconstructs authoritative workspace files after every referenced id map is known.
  *
  * @param context Shared import lineage and verified bytes.
@@ -2264,7 +3592,8 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
  */
 function readPortableImportState(
   context: ImportRemintContext,
-  knowledgeProposals: readonly KnowledgeProposalRecord[]
+  knowledgeProposals: readonly KnowledgeProposalRecord[],
+  workerContextPackageFiles: ReadonlyMap<string, string>
 ): WorkspacePortableFileState {
   const {
     agentSessionIds,
@@ -2305,7 +3634,7 @@ function readPortableImportState(
     }
   }
 
-  return portableFileState;
+  return { ...portableFileState, workerContextPackageFiles };
 }
 
 /**
@@ -2463,17 +3792,7 @@ function readPortableFileStateFromExport(
           context.sourceWorkspaceId,
           'context artifact'
         );
-        return ArtifactSchema.parse({
-          ...artifact,
-          id: requiredMapValue(context.artifactIds, artifact.id, 'artifact'),
-          workspaceId: context.targetWorkspaceId,
-          threadId: artifact.threadId
-            ? requiredMapValue(context.threadIds, artifact.threadId, 'thread')
-            : null,
-          turnId: artifact.turnId
-            ? requiredMapValue(context.turnIds, artifact.turnId, 'turn')
-            : null,
-        });
+        return remintPortableArtifact(artifact, context);
       }),
       claims: parsed.response.claims.map((claim) => {
         assertPortableWorkspaceOwner(claim.workspaceId, context.sourceWorkspaceId, 'context claim');
@@ -2557,7 +3876,10 @@ function readPortableFileStateFromExport(
       );
     } else if (workspacePath.startsWith('knowledge/context-materializations/')) {
       contextMaterializations.set(workspacePath, content);
-    } else if (workspacePath.startsWith('evidence/bundles/')) {
+    } else if (
+      workspacePath.startsWith('evidence/bundles/') ||
+      workspacePath.startsWith('threads/')
+    ) {
     } else {
       throw new Error(`Unsupported portable workspace file: ${workspacePath}`);
     }
@@ -2581,6 +3903,7 @@ function readPortableFileStateFromExport(
       contextPackageTraces,
       replacements,
     }),
+    workerContextPackageFiles: new Map(),
   };
 }
 
@@ -3379,17 +4702,23 @@ function rewritePortableTurnEvent(
       rewrittenData = { ...data, itemId: item.id, item };
       break;
     }
-    case 'item-delta':
-      rewrittenData = {
-        ...data,
-        itemId: requiredMapValue(records.items, data.itemId, 'item').id,
-        ...(data.deltaKind === 'artifact-updated'
-          ? {
-              artifactId: requiredMapValue(records.artifacts, data.artifactId, 'artifact').id,
-            }
-          : {}),
-      };
+    case 'item-delta': {
+      const item = requiredMapValue(records.items, data.itemId, 'item');
+      if (data.deltaKind === 'artifact-updated') {
+        const artifact = requiredMapValue(records.artifacts, data.artifactId, 'artifact');
+        if (
+          item.type !== 'artifact-reference' ||
+          item.artifactId !== artifact.id ||
+          item.artifactVersion !== artifact.version
+        ) {
+          throw new Error('Artifact update delta has contradictory artifact-reference lineage.');
+        }
+        rewrittenData = { ...data, itemId: item.id, artifactId: artifact.id };
+      } else {
+        rewrittenData = { ...data, itemId: item.id };
+      }
       break;
+    }
     case 'approval-requested':
     case 'approval-resolved':
       rewrittenData = {

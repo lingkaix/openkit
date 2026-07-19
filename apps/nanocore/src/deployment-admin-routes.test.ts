@@ -136,6 +136,13 @@ describe('deployment-admin routes', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
+    coreDb.sqlite
+      .prepare(
+        `INSERT INTO users
+          (id, display_name, email, email_verified, created_at, updated_at, kind)
+         VALUES ('user_session', 'Session User', 'session@example.com', false, ?, ?, 'human')`
+      )
+      .run(Date.now(), Date.now());
     const workspace = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
       ownerUserId: 'user_local',

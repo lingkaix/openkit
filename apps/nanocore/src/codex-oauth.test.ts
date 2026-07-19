@@ -10,6 +10,7 @@ import { createApp } from './test-support/app.js';
 
 class FakeCodexAccountClient implements CodexAccountClient {
   public readonly requests: Array<{ method: string; params: unknown }> = [];
+  public readonly requestErrors = new Map<string, Error>();
   public account: GetAccountResponse = { account: null, requiresOpenaiAuth: true };
   private readonly listeners = new Set<(message: JsonRpcNotification) => void>();
 
@@ -22,6 +23,11 @@ class FakeCodexAccountClient implements CodexAccountClient {
    */
   public async request<TResult>(method: string, params: unknown): Promise<TResult> {
     this.requests.push({ method, params });
+
+    const requestError = this.requestErrors.get(method);
+    if (requestError) {
+      throw requestError;
+    }
 
     if (method === 'account/read') {
       return this.account as TResult;
@@ -234,6 +240,81 @@ describe('OpenAI Codex OAuth app API', () => {
     });
   });
 
+  it('redacts failed login notification detail from status, lists, and account metadata', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-codex-login-failure-'));
+    const client = new FakeCodexAccountClient();
+    const manager = new CodexOAuthAccountManager({
+      clientFactory: async () => client,
+      dataRoot,
+    });
+    const app = createApp({ codexOAuthAccountManager: manager });
+    const canaries = [
+      'Bearer oauth-notification-canary',
+      'acct_notification_canary',
+      '/private/oauth-notification-canary/auth.json',
+    ];
+
+    await app.request('/api/app/oauth/openai-codex/accounts/default/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'browser' }),
+    });
+    client.emit({
+      method: 'account/login/completed',
+      params: {
+        loginId: 'login_browser',
+        success: false,
+        error: canaries.join(' '),
+      },
+    });
+
+    const status = manager.getLastStatus('default');
+    const listRes = await app.request('/api/app/oauth/openai-codex/accounts');
+    const list = await listRes.json();
+    const accountMetadata = JSON.parse(
+      readFileSync(
+        join(
+          dataRoot,
+          'server',
+          'files',
+          'oauth',
+          'openai-codex',
+          'accounts',
+          'default',
+          'account.json'
+        ),
+        'utf8'
+      )
+    );
+
+    expect(listRes.status).toBe(200);
+    expect(status).toMatchObject({
+      status: 'error',
+      mode: 'browser',
+      message: 'Codex ChatGPT account operation failed.',
+    });
+    expect(list).toMatchObject({
+      accounts: [
+        {
+          accountSlotId: 'default',
+          status: 'error',
+          mode: 'browser',
+          message: 'Codex ChatGPT account operation failed.',
+        },
+      ],
+    });
+    expect(accountMetadata).toMatchObject({
+      status: 'error',
+      lastLoginMode: 'browser',
+      lastError: 'Codex ChatGPT account operation failed.',
+    });
+    for (const projection of [status, list, accountMetadata]) {
+      for (const canary of canaries) {
+        expect(JSON.stringify(projection)).not.toContain(canary);
+      }
+    }
+  });
+
   it('logs out without exposing token material', async () => {
     const client = new FakeCodexAccountClient();
     client.account = {
@@ -254,24 +335,67 @@ describe('OpenAI Codex OAuth app API', () => {
     expect(JSON.stringify(body)).not.toContain('token');
   });
 
-  it('reports Codex login as unavailable when app-server cannot start', async () => {
+  it('redacts app-server errors from HTTP status, account lists, and account metadata', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-codex-app-server-failure-'));
+    const client = new FakeCodexAccountClient();
+    const canaries = [
+      'Bearer oauth-request-canary',
+      'acct_request_canary',
+      '/private/oauth-request-canary/auth.json',
+    ];
+    client.requestErrors.set('account/read', new Error(canaries.join(' ')));
     const app = createApp({
       codexOAuthAccountManager: new CodexOAuthAccountManager({
-        clientFactory: async () => {
-          throw new Error('codex app-server unavailable');
-        },
-        dataRoot: null,
+        clientFactory: async () => client,
+        dataRoot,
       }),
     });
 
     const res = await app.request('/api/app/oauth/openai-codex/accounts/default/status');
+    const status = await res.json();
+    const listRes = await app.request('/api/app/oauth/openai-codex/accounts');
+    const list = await listRes.json();
+    const accountMetadata = JSON.parse(
+      readFileSync(
+        join(
+          dataRoot,
+          'server',
+          'files',
+          'oauth',
+          'openai-codex',
+          'accounts',
+          'default',
+          'account.json'
+        ),
+        'utf8'
+      )
+    );
 
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({
+    expect(listRes.status).toBe(200);
+    expect(status).toMatchObject({
       providerId: 'openai_codex',
       status: 'unavailable',
-      message: 'codex app-server unavailable',
+      message: 'Codex app-server is unavailable.',
     });
+    expect(list).toMatchObject({
+      accounts: [
+        {
+          accountSlotId: 'default',
+          status: 'unavailable',
+          message: 'Codex app-server is unavailable.',
+        },
+      ],
+    });
+    expect(accountMetadata).toMatchObject({
+      status: 'unavailable',
+      lastError: 'Codex app-server is unavailable.',
+    });
+    for (const projection of [status, list, accountMetadata]) {
+      for (const canary of canaries) {
+        expect(JSON.stringify(projection)).not.toContain(canary);
+      }
+    }
   });
 
   it('lists, creates, renames, and deletes server-owned account slots', async () => {

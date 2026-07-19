@@ -16,7 +16,7 @@ import {
 describe('runtime evidence', () => {
   it('records package-scoped transcript collection evidence idempotently', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-evidence-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
     const packageSnapshotId = 'aepsnap_runtime_provenance_1';
     const input = {
       packageSnapshotId,
@@ -84,7 +84,7 @@ describe('runtime evidence', () => {
 
   it('strips unknown optional fields from imported runtime evidence', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-runtime-evidence-unknown-fields-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);

@@ -21,7 +21,6 @@ export function seedDemoWorkspace(store: FsStore, userId = LOCAL_USER_ID): void 
       turns: [],
       itemRevisions: [],
       artifacts: [],
-      artifactReviews: [],
       agentSessions: [],
       turnEvents: [],
     });
@@ -32,10 +31,15 @@ export function seedDemoWorkspace(store: FsStore, userId = LOCAL_USER_ID): void 
  * Creates a test store with Quick Chat plus the explicit Demo Workspace fixture.
  *
  * @param options Store options.
+ * @param fixtureUserId User namespace used only to derive deterministic fixture ids.
  * @returns Store with project workspace fixtures.
  */
-export function createDemoStore(options: FsStoreOptions = {}): FsStore {
+export function createDemoStore(
+  options: FsStoreOptions = {},
+  fixtureUserId = LOCAL_USER_ID
+): FsStore {
   const store = new FsStore(options);
-  seedDemoWorkspace(store, options.userId ?? LOCAL_USER_ID);
+  store.ensureQuickChatWorkspace(fixtureUserId);
+  seedDemoWorkspace(store, fixtureUserId);
   return store;
 }

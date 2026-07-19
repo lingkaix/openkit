@@ -86,17 +86,15 @@ describe('ensureLayout', () => {
     }
   });
 
-  it('preserves v0.0.2 directories', async () => {
+  it('creates the v2 owner-independent workspace root without an owner-nested workspace tree', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
 
     ensureLayout(root);
 
-    for (const path of [
-      join(root, 'config', 'agents'),
-      join(root, 'users', 'user_local', 'workspaces'),
-    ]) {
+    for (const path of [join(root, 'config', 'agents'), join(root, 'workspaces')]) {
       expectDirectory(path);
     }
+    expect(existsSync(join(root, 'users', 'user_local', 'workspaces'))).toBe(false);
   });
 
   it('is idempotent across repeated calls', async () => {
@@ -136,7 +134,7 @@ describe('ensureLayout', () => {
       'users/user_local/db',
       'users/user_local/files',
       'users/user_local/logs',
-      'users/user_local/workspaces',
+      'workspaces',
     ]);
   });
 
@@ -181,7 +179,7 @@ describe('ensureLayout', () => {
     ensureLayout(firstRoot);
     expect(readDataRootLayoutMarker(firstRoot)).toEqual(firstMarker);
     expect(readFileSync(join(firstRoot, 'server', 'layout.json'), 'utf8')).toContain(
-      '"layoutVersion": 1'
+      '"layoutVersion": 2'
     );
   });
 
@@ -194,7 +192,7 @@ describe('ensureLayout', () => {
 
     expect(marker).toEqual({
       schemaVersion: 1,
-      layoutVersion: 1,
+      layoutVersion: 2,
       deploymentId: 'dep_moved',
       predecessorDeploymentId: originalDeploymentId,
     });
@@ -207,7 +205,7 @@ describe('ensureLayout', () => {
     mkdirSync(join(root, 'server'), { recursive: true });
     writeFileSync(
       join(root, 'server', 'layout.json'),
-      `${JSON.stringify({ schemaVersion: 1, layoutVersion: 1 }, null, 2)}\n`
+      `${JSON.stringify({ schemaVersion: 1, layoutVersion: 2 }, null, 2)}\n`
     );
 
     ensureLayout(root);
@@ -229,6 +227,23 @@ describe('ensureLayout', () => {
     );
 
     expect(() => ensureLayout(root)).toThrow(/Unsupported DATA_ROOT layout version/);
+  });
+
+  it('rejects a v1 marker before creating the v2 Workspace root', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
+
+    mkdirSync(join(root, 'server'), { recursive: true });
+    writeFileSync(
+      join(root, 'server', 'layout.json'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        layoutVersion: 1,
+        deploymentId: 'dep_predecessor',
+      })}\n`
+    );
+
+    expect(() => ensureLayout(root)).toThrow(/Unsupported DATA_ROOT layout version/);
+    expect(existsSync(join(root, 'workspaces'))).toBe(false);
   });
 
   it('fails closed when the legacy root core database exists', async () => {
@@ -264,10 +279,8 @@ describe('ensureLayout', () => {
   it('fails closed when canonical database filenames appear under the wrong owner', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
 
-    mkdirSync(join(root, 'users', 'user_1', 'workspaces', 'ws_1', 'db'), {
-      recursive: true,
-    });
-    writeFileSync(join(root, 'users', 'user_1', 'workspaces', 'ws_1', 'db', 'core.sqlite'), '');
+    mkdirSync(join(root, 'workspaces', 'ws_1', 'db'), { recursive: true });
+    writeFileSync(join(root, 'workspaces', 'ws_1', 'db', 'core.sqlite'), '');
 
     expect(() => ensureLayout(root)).toThrow(/database ownership violation/);
   });
@@ -277,15 +290,10 @@ describe('ensureLayout', () => {
 
     mkdirSync(join(root, 'server', 'db'), { recursive: true });
     mkdirSync(join(root, 'users', 'user_1', 'db'), { recursive: true });
-    mkdirSync(join(root, 'users', 'user_1', 'workspaces', 'ws_1', 'db'), {
-      recursive: true,
-    });
+    mkdirSync(join(root, 'workspaces', 'ws_1', 'db'), { recursive: true });
     writeFileSync(join(root, 'server', 'db', 'core.sqlite'), '');
     writeFileSync(join(root, 'users', 'user_1', 'db', 'user.sqlite'), '');
-    writeFileSync(
-      join(root, 'users', 'user_1', 'workspaces', 'ws_1', 'db', 'workspace.sqlite'),
-      ''
-    );
+    writeFileSync(join(root, 'workspaces', 'ws_1', 'db', 'workspace.sqlite'), '');
 
     expect(() => ensureLayout(root)).not.toThrow();
   });
@@ -293,11 +301,9 @@ describe('ensureLayout', () => {
   it('fails closed when a canonical record envelope names an unknown family', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
 
-    mkdirSync(join(root, 'users', 'user_1', 'workspaces', 'ws_1', 'evidence'), {
-      recursive: true,
-    });
+    mkdirSync(join(root, 'workspaces', 'ws_1', 'evidence'), { recursive: true });
     writeFileSync(
-      join(root, 'users', 'user_1', 'workspaces', 'ws_1', 'evidence', 'future.json'),
+      join(root, 'workspaces', 'ws_1', 'evidence', 'future.json'),
       `${JSON.stringify({
         schemaVersion: 1,
         recordType: 'future-canonical-family',
@@ -343,11 +349,9 @@ describe('ensureLayout', () => {
   it('fails closed when text records embed absolute data-root paths', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
 
-    mkdirSync(join(root, 'users', 'user_1', 'workspaces', 'ws_1', 'threads'), {
-      recursive: true,
-    });
+    mkdirSync(join(root, 'workspaces', 'ws_1', 'threads'), { recursive: true });
     writeFileSync(
-      join(root, 'users', 'user_1', 'workspaces', 'ws_1', 'threads', 'thread.json'),
+      join(root, 'workspaces', 'ws_1', 'threads', 'thread.json'),
       `${JSON.stringify({ leakedPath: join(root, 'server', 'db', 'core.sqlite') })}\n`
     );
 
@@ -414,22 +418,21 @@ describe('ensureLayout', () => {
     expect(() => ensureLayout(root)).toThrow(/Vault store directory must use 0700 permissions/);
   });
 
-  it('creates user and workspace ownership skeletons without overwriting files', async () => {
+  it('creates user and owner-independent workspace skeletons without overwriting files', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
     const userPaths = ensureUserLayout(root, 'user_1');
-    const workspacePaths = ensureWorkspaceLayout(root, 'user_1', 'ws_1');
+    const workspacePaths = ensureWorkspaceLayout(root, 'ws_1');
     const operatorFile = join(workspacePaths.data, 'operator.txt');
 
     writeFileSync(operatorFile, 'operator-data\n');
     ensureUserLayout(root, 'user_1');
-    ensureWorkspaceLayout(root, 'user_1', 'ws_1');
+    ensureWorkspaceLayout(root, 'ws_1');
 
     for (const path of [
       userPaths.files,
       userPaths.data,
       userPaths.logs,
       userPaths.config,
-      userPaths.workspaces,
       userPaths.db,
       workspacePaths.db,
       workspacePaths.logs,
@@ -438,7 +441,6 @@ describe('ensureLayout', () => {
       workspacePaths.sources,
       workspacePaths.reviews,
       workspacePaths.reviewsWorkspace,
-      workspacePaths.reviewsArtifacts,
       workspacePaths.evidence,
       workspacePaths.evidenceBundles,
       workspacePaths.evidenceBackend,
@@ -451,6 +453,8 @@ describe('ensureLayout', () => {
     ]) {
       expectDirectory(path);
     }
+    expect(workspacePaths.root).toBe(join(root, 'workspaces', 'ws_1'));
+    expect(existsSync(join(root, 'users', 'user_1', 'workspaces', 'ws_1'))).toBe(false);
     expect(readFileSync(operatorFile, 'utf8')).toBe('operator-data\n');
   });
 

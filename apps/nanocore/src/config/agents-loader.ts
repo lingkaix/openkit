@@ -1,13 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { ProviderReadinessSchema } from '@openkit/config-schema';
 import { z } from 'zod';
-import {
-  type AgentManifest,
-  type AuthoredAgentConfig,
-  AuthoredAgentConfigSchema,
-} from '../agents/manifest.js';
-import { resolveAgentTransport } from '../agents/transport.js';
+import { type AgentManifest, AuthoredAgentConfigSchema } from '../agents/manifest.js';
 import { parseJsoncObject } from './jsonc.js';
 
 /**
@@ -30,8 +24,6 @@ export interface AgentManifestDiagnostic {
  * Agent manifest load result.
  */
 export interface AgentManifestLoadResult {
-  /** Loaded authored agent configs. */
-  configs: AuthoredAgentConfig[];
   /** Loaded agent manifests. */
   manifests: AgentManifest[];
   /** Blocking diagnostics discovered while loading manifests. */
@@ -46,7 +38,7 @@ export interface AgentManifestLoadResult {
  */
 export function loadAgentManifests(dataRoot: string): AgentManifestLoadResult {
   const agentsRoot = join(dataRoot, 'config', 'agents');
-  const result: AgentManifestLoadResult = { configs: [], diagnostics: [], manifests: [] };
+  const result: AgentManifestLoadResult = { diagnostics: [], manifests: [] };
 
   if (!existsSync(agentsRoot)) {
     return result;
@@ -86,95 +78,20 @@ export function loadAgentManifests(dataRoot: string): AgentManifestLoadResult {
       continue;
     }
 
-    result.configs.push(authoredResult.data);
-    result.manifests.push(authoredAgentConfigToManifest(authoredResult.data));
+    result.manifests.push(authoredResult.data);
   }
 
   return result;
 }
 
 /**
- * Maps a v0.0.4 authored agent config into the current runtime manifest.
- *
- * @param config Authored agent config.
- * @returns Compatibility agent manifest.
- */
-function authoredAgentConfigToManifest(config: AuthoredAgentConfig): AgentManifest {
-  return {
-    adapter: config.runtime.adapter,
-    profiles: (config.profiles ?? []).map((profile) => ({
-      displayName: String(profile.id),
-      id: profile.id,
-      ...(typeof profile.instructionsRef === 'string'
-        ? { instructionsRef: profile.instructionsRef }
-        : {}),
-      ...(Array.isArray(profile.skills)
-        ? { skills: profile.skills.filter((skill): skill is string => typeof skill === 'string') }
-        : {}),
-    })),
-    deployments: [mapAuthoredModeToDeployment(config.mode)],
-    displayName: config.displayName,
-    ...(config.extensions ? { extensions: config.extensions } : {}),
-    id: config.id,
-    kind: mapAuthoredModeToManifestKind(config),
-    ...(config.provider?.model ? { modelRef: config.provider.model } : {}),
-    ...(config.provider?.ref ? { providerRef: config.provider.ref } : {}),
-    ...mapAuthoredReadiness(config),
-    runtime: config.runtime.kind,
-    skills: (config.skills ?? []).map((skill) => skill.id),
-    version: config.runtime.version ?? '1',
-  };
-}
-
-/**
- * Maps authored readiness into the runtime readiness summary when possible.
- *
- * @param config Authored agent config.
- * @returns Runtime readiness field when the authored payload is a status summary.
- */
-function mapAuthoredReadiness(config: AuthoredAgentConfig): Pick<AgentManifest, 'readiness'> {
-  const readinessResult = config.readiness
-    ? ProviderReadinessSchema.safeParse(config.readiness)
-    : null;
-
-  return readinessResult?.success ? { readiness: readinessResult.data } : {};
-}
-
-/**
- * Maps a v0.0.4 agent mode into the deployment enum.
- *
- * @param mode Authored agent mode.
- * @returns Deployment value.
- */
-function mapAuthoredModeToDeployment(
-  mode: AuthoredAgentConfig['mode']
-): AgentManifest['deployments'][number] {
-  return mode === 'remote' ? 'server' : 'local';
-}
-
-/**
- * Maps v0.0.4 runtime/mode fields into the manifest kind enum.
- *
- * @param config Authored agent config.
- * @returns Manifest kind.
- */
-function mapAuthoredModeToManifestKind(config: AuthoredAgentConfig): AgentManifest['kind'] {
-  return config.mode === 'remote' ? 'remote' : 'custom';
-}
-
-/**
- * Validates v0.0.4 agent safety rules that need cross-field checks.
+ * Validates agent safety rules that need filesystem-oriented checks.
  *
  * @param config Authored agent config.
  * @returns Human-readable validation errors.
  */
-function validateAuthoredAgentConfig(config: AuthoredAgentConfig): string[] {
-  return [
-    ...validateUserRuntime(config),
-    ...validateAgentTransport(config),
-    ...validateWorkspacePaths(config),
-    ...validateMcpCredentialRefs(config),
-  ];
+function validateAuthoredAgentConfig(config: AgentManifest): string[] {
+  return [...validateUserRuntime(config), ...validateWorkspacePaths(config)];
 }
 
 /**
@@ -183,25 +100,10 @@ function validateAuthoredAgentConfig(config: AuthoredAgentConfig): string[] {
  * @param config Authored agent config.
  * @returns Human-readable validation errors.
  */
-function validateUserRuntime(config: AuthoredAgentConfig): string[] {
+function validateUserRuntime(config: AgentManifest): string[] {
   return config.runtime.kind === 'simulator'
     ? ['Simulator agents are internal-only and cannot be configured in DATA_ROOT/config/agents.']
     : [];
-}
-
-/**
- * Validates agent transport defaults and explicit overrides.
- *
- * @param config Authored agent config.
- * @returns Human-readable validation errors.
- */
-function validateAgentTransport(config: AuthoredAgentConfig): string[] {
-  try {
-    resolveAgentTransport(config);
-    return [];
-  } catch (error) {
-    return [error instanceof Error ? error.message : String(error)];
-  }
 }
 
 /**
@@ -210,7 +112,7 @@ function validateAgentTransport(config: AuthoredAgentConfig): string[] {
  * @param config Authored agent config.
  * @returns Human-readable validation errors.
  */
-function validateWorkspacePaths(config: AuthoredAgentConfig): string[] {
+function validateWorkspacePaths(config: AgentManifest): string[] {
   const errors: string[] = [];
   const targets = [
     ...(config.workspace?.inputs ?? []).flatMap((input) => (input.target ? [input.target] : [])),
@@ -245,30 +147,6 @@ function validateWorkspacePaths(config: AuthoredAgentConfig): string[] {
   }
 
   return errors;
-}
-
-/**
- * Validates MCP credential restrictions.
- *
- * @param config Authored agent config.
- * @returns Human-readable validation errors.
- */
-function validateMcpCredentialRefs(config: AuthoredAgentConfig): string[] {
-  return (config.mcp ?? [])
-    .filter((entry) => entry.mode === 'agent.local' && hasCredentialReference(entry))
-    .map((entry) => `agent.local MCP entries must not declare credentials: ${entry.id}`);
-}
-
-/**
- * Checks for credential reference keys on one MCP entry.
- *
- * @param entry MCP entry to inspect.
- * @returns True when a credential reference is present.
- */
-function hasCredentialReference(entry: Record<string, unknown>): boolean {
-  return ['credentialRef', 'credentialsRef', 'secretRef'].some(
-    (key) => typeof entry[key] === 'string'
-  );
 }
 
 /**

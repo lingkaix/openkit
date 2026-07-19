@@ -2,12 +2,13 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { AuthoredAgentConfig } from '../agents/manifest';
 import { requireResolvedAgentSetup } from '../agents/setup-ledger';
+import { ensureLocalUser } from '../auth/identity.js';
 import type { FsStore } from '../lib/store';
 import { ProviderRegistry } from '../providers/registry';
 import {
   createSchedulerAdmissionEntry,
+  listSchedulerAdmissionEntriesForWorkspace,
   markSchedulerSessionLeaseReleasing,
   requireSchedulerSessionLease,
   resolveSchedulerLeaseTokenBinding,
@@ -17,7 +18,9 @@ import {
 } from '../scheduler-records';
 import { openCoreDb, openWorkspaceDb } from '../storage/db';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { TurnStartValidationError } from './orchestrator';
 import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop';
 import type { TurnExecutor, TurnStartRuntimeContext } from './types';
@@ -94,6 +97,12 @@ class FailingTurnExecutor extends RecordingTurnExecutor {
 function createMigratedCoreDb() {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-scheduler-loop-')));
   applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'user_local',
+    workspaceId: 'ws_demo',
+  });
   return coreDb;
 }
 
@@ -139,37 +148,114 @@ function seedLocalSchedulerTarget(coreDb: ReturnType<typeof createMigratedCoreDb
 }
 
 /**
- * Creates an authored agent config for scheduler setup resolution tests.
+ * Creates a strict agent manifest for scheduler setup resolution tests.
  *
- * @returns Authored agent config.
+ * @param withProvider Whether the manifest should select the fixture provider.
+ * @returns Strict agent manifest.
  */
-function agentConfig(): AuthoredAgentConfig {
-  return {
-    schemaVersion: 1,
-    id: 'agent_codex_host',
-    displayName: 'Codex Agent',
-    runtime: {
-      kind: 'codex',
-      adapter: 'codex-app-server',
-      version: '0.130.0',
-    },
-    mode: 'local',
-    transport: { kind: 'stdio' },
-    provider: {
-      ref: 'agent-openrouter',
-      model: 'openai/gpt-5.2',
-    },
-    deployment: {
-      local: {
-        command: 'codex',
-        args: ['app-server', '--listen', 'stdio://'],
-      },
-    },
-    extensions: {},
-  };
+function agentManifest(withProvider = false) {
+  return createTestAgentSetup(withProvider ? {} : { provider: null }).manifest;
 }
 
 describe('scheduler dispatch loop', () => {
+  it('denies a queued admission whose actor lost current Workspace authority', async () => {
+    const coreDb = createMigratedCoreDb();
+    const store = createDemoStore();
+    const turnExecutor = new RecordingTurnExecutor();
+    const timestamp = '2026-07-19T00:00:00.000Z';
+    const now = Date.parse(timestamp);
+
+    try {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO users (
+            id, display_name, email, email_verified, created_at, updated_at, kind
+          ) VALUES ('user_revoked_dispatch', 'Revoked Dispatch', 'revoked-dispatch@example.com', false, ?, ?, 'human')`
+        )
+        .run(now, now);
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO workspace_members (
+            workspace_id, user_id, status, access_level, invitation_id,
+            joined_at, removed_at, revision, created_at, updated_at
+          ) VALUES ('ws_demo', 'user_revoked_dispatch', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+        )
+        .run(timestamp, timestamp, timestamp);
+      seedLocalSchedulerTarget(coreDb);
+      createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_revoked_dispatch' },
+        queueEntryId: 'queue_revoked_dispatch',
+        requestId: 'req_revoked_dispatch',
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: 'turn_revoked_dispatch',
+        turnInput: 'Do not launch this stale admission',
+        requestedAgentId: 'agent_codex_host',
+        profileRef: 'profile_worker',
+        priorityClass: 'interactive',
+        requiredPoolConstraints: ['openshell.local'],
+      });
+      coreDb.sqlite
+        .prepare(
+          `UPDATE workspace_members
+           SET status = 'removed', removed_at = ?, revision = revision + 1, updated_at = ?
+           WHERE workspace_id = 'ws_demo' AND user_id = 'user_revoked_dispatch'`
+        )
+        .run(timestamp, timestamp);
+
+      const result = await runSchedulerDispatchLoop({
+        agentManifests: [agentManifest()],
+        coreDb,
+        createAgentSessionId: () => 'as_revoked_dispatch',
+        createLeaseId: () => 'lease_revoked_dispatch',
+        createPlanId: () => 'plan_revoked_dispatch',
+        expectedControlMode: 'poll',
+        expectedDataPlaneMode: 'openshell-files',
+        heartbeatIntervalMs: 10_000,
+        heartbeatTimeoutMs: 30_000,
+        leaseDurationMs: 900_000,
+        maxDispatches: 1,
+        providerRegistry: new ProviderRegistry([]),
+        schedulerEpoch: 1,
+        startupTimeoutMs: 120_000,
+        store,
+        turnExecutor,
+      });
+
+      expect(result.startedTurns).toEqual([]);
+      expect(result.terminalResult).toMatchObject({
+        status: 'denied',
+        entry: { denialReason: 'policy-cap', queueEntryId: 'queue_revoked_dispatch' },
+      });
+      expect(turnExecutor.calls).toEqual([]);
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT plan_id FROM scheduler_placement_plans WHERE plan_id = ?')
+          .get('plan_revoked_dispatch')
+      ).toBeUndefined();
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT lease_id FROM scheduler_session_leases WHERE lease_id = ?')
+          .get('lease_revoked_dispatch')
+      ).toBeUndefined();
+      expect(
+        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          workspaceId: 'ws_demo',
+          statuses: ['denied'],
+        })
+      ).toEqual([
+        expect.objectContaining({
+          denialReason: 'policy-cap',
+          queueEntryId: 'queue_revoked_dispatch',
+          status: 'denied',
+        }),
+      ]);
+      expect(() => store.getTurnById('turn_revoked_dispatch')).toThrow('Turn not found');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('starts one dispatched queued turn with scheduler-owned lineage', async () => {
     const coreDb = createMigratedCoreDb();
     const store = createDemoStore();
@@ -178,6 +264,7 @@ describe('scheduler dispatch loop', () => {
     try {
       seedLocalSchedulerTarget(coreDb);
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_00000000-0000-4000-8000-00000000d201_loop_1',
         requestId: '00000000-0000-4000-8000-00000000d201',
         workspaceId: 'ws_demo',
@@ -209,17 +296,7 @@ describe('scheduler dispatch loop', () => {
         startupTimeoutMs: 120_000,
         store,
         turnExecutor,
-        agentManifests: [
-          {
-            adapter: 'custom-http',
-            deployments: ['local'],
-            displayName: 'Codex Agent',
-            id: 'agent_codex_host',
-            kind: 'custom',
-            runtime: 'custom',
-            version: '0.0.2',
-          },
-        ],
+        agentManifests: [agentManifest()],
       });
 
       expect(result.startedTurns).toHaveLength(1);
@@ -233,8 +310,10 @@ describe('scheduler dispatch loop', () => {
         {
           context: {
             agentSessionId: 'as_loop_1',
+            agentSetup: { manifest: agentManifest(), provider: null },
             requestId: '00000000-0000-4000-8000-00000000d201',
             sandboxBindingRef: 'lease-binding:lease_loop_1',
+            triggerActor: { kind: 'user', id: 'user_local' },
             workspaceCwd: null,
             workspaceRoots: [],
           },
@@ -255,6 +334,7 @@ describe('scheduler dispatch loop', () => {
     try {
       seedLocalSchedulerTarget(coreDb);
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_continuity_live',
         requestId: 'req_continuity_live',
         workspaceId: 'ws_demo',
@@ -269,17 +349,7 @@ describe('scheduler dispatch loop', () => {
       });
 
       const result = await runSchedulerDispatchLoop({
-        agentManifests: [
-          {
-            adapter: 'custom-http',
-            deployments: ['local'],
-            displayName: 'Codex Agent',
-            id: 'agent_codex_host',
-            kind: 'custom',
-            runtime: 'custom',
-            version: '0.0.2',
-          },
-        ],
+        agentManifests: [agentManifest()],
         coreDb,
         createAgentSessionId: () => {
           throw new Error('fresh session id should not be requested');
@@ -321,6 +391,7 @@ describe('scheduler dispatch loop', () => {
       });
       expect(turnExecutor.calls[0]?.context).toMatchObject({
         agentSessionId: 'as_live_continuity',
+        agentSetup: { manifest: agentManifest(), provider: null },
         sandboxBindingRef: 'lease-binding:lease_continuity_live',
       });
     } finally {
@@ -336,6 +407,7 @@ describe('scheduler dispatch loop', () => {
     try {
       seedLocalSchedulerTarget(coreDb);
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_setup_ledger',
         requestId: 'req_setup_ledger',
         workspaceId: 'ws_demo',
@@ -354,6 +426,7 @@ describe('scheduler dispatch loop', () => {
         createAgentSessionId: () => 'as_setup_ledger',
         createLeaseId: () => 'lease_setup_ledger',
         createPlanId: () => 'plan_setup_ledger',
+        dependencies: { providerCredentialResolver: () => 'test-key' },
         expectedControlMode: 'poll',
         expectedDataPlaneMode: 'openshell-files',
         heartbeatIntervalMs: 10_000,
@@ -374,20 +447,9 @@ describe('scheduler dispatch loop', () => {
         startupTimeoutMs: 120_000,
         store,
         turnExecutor,
-        agentConfigs: [agentConfig()],
-        agentManifests: [
-          {
-            adapter: 'custom-http',
-            deployments: ['local'],
-            displayName: 'Codex Agent',
-            id: 'agent_codex_host',
-            kind: 'custom',
-            runtime: 'custom',
-            version: '0.0.2',
-          },
-        ],
+        agentManifests: [agentManifest(true)],
       });
-      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'user_local', 'ws_demo');
+      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
 
       try {
         applyScopedMigrations(workspaceDb);
@@ -400,6 +462,7 @@ describe('scheduler dispatch loop', () => {
           agentId: 'agent_codex_host',
           providerId: 'agent-openrouter',
         });
+        expect(turnExecutor.calls[0]?.context?.agentSetup?.manifest).toEqual(agentManifest(true));
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -416,6 +479,7 @@ describe('scheduler dispatch loop', () => {
     try {
       seedLocalSchedulerTarget(coreDb);
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_loop_failed',
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
@@ -446,17 +510,7 @@ describe('scheduler dispatch loop', () => {
           startupTimeoutMs: 120_000,
           store,
           turnExecutor,
-          agentManifests: [
-            {
-              adapter: 'custom-http',
-              deployments: ['local'],
-              displayName: 'Codex Agent',
-              id: 'agent_codex_host',
-              kind: 'custom',
-              runtime: 'custom',
-              version: '0.0.2',
-            },
-          ],
+          agentManifests: [agentManifest()],
         })
       ).rejects.toThrow('worker launch failed');
 
@@ -576,6 +630,7 @@ describe('scheduler dispatch loop', () => {
     try {
       seedLocalSchedulerTarget(coreDb);
       createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_human_gate_fallback',
         requestId: 'req_human_gate_fallback',
         workspaceId: 'ws_demo',
@@ -607,17 +662,7 @@ describe('scheduler dispatch loop', () => {
           startupTimeoutMs: 120_000,
           store,
           turnExecutor,
-          agentManifests: [
-            {
-              adapter: 'custom-http',
-              deployments: ['local'],
-              displayName: 'Codex Agent',
-              id: 'agent_codex_host',
-              kind: 'custom',
-              runtime: 'custom',
-              version: '0.0.2',
-            },
-          ],
+          agentManifests: [agentManifest()],
         })
       ).rejects.toMatchObject({ code: 'recovery_required', status: 409 });
 

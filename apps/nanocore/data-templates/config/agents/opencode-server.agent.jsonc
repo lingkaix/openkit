@@ -1,19 +1,25 @@
 {
   "schemaVersion": 1,
+  "requiredFeatures": [],
   "id": "agent_opencode_server",
-  "displayName": "OpenCode Server Agent",
-  "mode": "local",
+  "displayName": "OpenCode Agent",
   "runtime": {
     "kind": "opencode",
-    "adapter": "opencode-server",
-    "version": "0.0.2"
-  },
-  "deployment": {
-    "local": {
-      "command": "opencode",
-      "args": ["serve"],
-      "cwdPolicy": "workspace"
-    }
+    "adapter": "opencode",
+    "version": "1.18.1",
+    "image": {
+      "ref": "openkit/worker-opencode:dev",
+      "pullPolicy": "if-not-present"
+    },
+    "binaries": [
+      { "id": "openkit-worker-shim", "path": "/usr/local/bin/openkit-worker-shim" },
+      { "id": "node", "path": "/usr/local/bin/node" },
+      { "id": "opencode", "path": "/usr/local/bin/opencode" },
+      {
+        "id": "opencode-native",
+        "path": "/usr/local/lib/node_modules/opencode-ai/bin/opencode.exe"
+      }
+    ]
   },
   "provider": {
     "ref": "openrouter",
@@ -28,12 +34,19 @@
   ],
   "defaultProfileId": "default",
   "skills": [],
+  "mcp": [],
   "workspace": {
     "root": "."
   },
-  "readiness": {
-    "status": "unknown",
-    "message": "OpenCode server availability has not been probed yet."
+  "sandbox": {
+    "filesystem": [],
+    "network": [],
+    "credentialDeclarations": [],
+    "backend": {
+      "allowedKinds": ["openshell"],
+      "preferred": "openshell",
+      "requiredCapabilities": ["trusted-worker-inference-relay"]
+    }
   },
   "extensions": {}
 }

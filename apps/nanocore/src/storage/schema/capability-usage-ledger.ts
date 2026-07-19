@@ -97,6 +97,8 @@ export const usageRecords = sqliteTable(
     agentId: text('agent_id'),
     /** Agent session lineage when available. */
     agentSessionId: text('agent_session_id'),
+    /** Immutable responsible-user attribution for this measurement. */
+    responsibleUserId: text('responsible_user_id'),
     /** Workspace data source ids attributed to this measurement. */
     sourceIdsJson: text('source_ids_json').notNull().default('[]'),
     /** Usage category. */

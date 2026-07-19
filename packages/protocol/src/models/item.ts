@@ -10,6 +10,7 @@ import {
   WorkspaceIdSchema,
 } from '../common/ids.js';
 import { TimestampSchema } from '../common/timestamps.js';
+import { ActorRefSchema, UserActorRefSchema } from './actor.js';
 
 /**
  * Closed lifecycle states shared by all turn item records.
@@ -64,6 +65,7 @@ const BaseItemSchema = z.object({
  */
 export const UserMessageItemSchema = BaseItemSchema.extend({
   type: z.literal('user-message'),
+  actor: ActorRefSchema,
   text: z.string().min(1),
 });
 
@@ -91,6 +93,7 @@ export const ArtifactReferenceItemSchema = BaseItemSchema.extend({
   type: z.literal('artifact-reference'),
   artifactId: z.string().min(1),
   artifactVersion: z.number().int().positive(),
+  lastMutationRequestId: z.string().min(1),
   title: z.string().min(1),
   summary: z.string().nullable(),
 });
@@ -130,6 +133,8 @@ export const ApprovalRequestItemSchema = BaseItemSchema.extend({
  */
 export const ApprovalDecisionItemSchema = BaseItemSchema.extend({
   type: z.literal('approval-decision'),
+  actor: UserActorRefSchema,
+  causationId: z.string().min(1),
   approvalRequestId: z.string().min(1),
   decision: z.enum(['granted', 'denied']),
 });
@@ -162,6 +167,7 @@ export const UserInputQuestionSchema = z.object({
  */
 export const UserInputRequestItemSchema = BaseItemSchema.extend({
   type: z.literal('user-input-request'),
+  responsibleUserId: z.string().min(1),
   userInputRequestId: UserInputRequestIdSchema,
   prompt: z.string().min(1),
   questions: z.array(UserInputQuestionSchema).min(1),
@@ -172,6 +178,8 @@ export const UserInputRequestItemSchema = BaseItemSchema.extend({
  */
 export const UserInputResponseItemSchema = BaseItemSchema.extend({
   type: z.literal('user-input-response'),
+  actor: UserActorRefSchema,
+  causationId: z.string().min(1),
   userInputRequestId: UserInputRequestIdSchema,
   answers: z.record(z.string().min(1), z.tuple([z.string().min(1)])),
 });

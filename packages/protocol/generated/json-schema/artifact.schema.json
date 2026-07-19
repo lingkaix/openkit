@@ -90,6 +90,142 @@
       ],
       "additionalProperties": false
     },
+    "contentDigest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "lastMutationRequestId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "origin": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "turn-output"
+            },
+            "threadId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "turnId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "threadId",
+            "turnId",
+            "requestId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "imported"
+            },
+            "sourceKind": {
+              "type": "string",
+              "const": "direct-import"
+            },
+            "sourceId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sourceDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "actor": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "user"
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "agent",
+                        "automation",
+                        "integration",
+                        "system"
+                      ]
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "responsibleUserId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id",
+                    "responsibleUserId"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "recordedAt": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "sourceKind",
+            "sourceId",
+            "sourceDigest",
+            "actor",
+            "requestId",
+            "recordedAt"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
     "createdAt": {
       "type": "string",
       "minLength": 1
@@ -110,6 +246,9 @@
     "summary",
     "version",
     "content",
+    "contentDigest",
+    "lastMutationRequestId",
+    "origin",
     "createdAt",
     "updatedAt"
   ],

@@ -824,15 +824,9 @@ function safeEvidencePath(root: string, relativePath: string): string {
   return target;
 }
 
-/** Asserts that the supplied workspace root matches the open workspace database owner. */
+/** Asserts that the supplied workspace root matches the open Workspace database. */
 function assertWorkspaceOwnership(input: ImportWorkerRuntimeProvenanceInput): void {
-  const expected = resolve(
-    input.workspaceDb.dataRoot,
-    'users',
-    input.workspaceDb.userId,
-    'workspaces',
-    input.workspaceDb.workspaceId
-  );
+  const expected = resolve(input.workspaceDb.dataRoot, 'workspaces', input.workspaceDb.workspaceId);
   if (resolve(input.workspaceRoot) !== expected) {
     throw new Error('Runtime provenance workspace root does not match database ownership.');
   }

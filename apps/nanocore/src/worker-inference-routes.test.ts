@@ -6,6 +6,8 @@ import { serve } from '@hono/node-server';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ensureLocalUser } from './auth/identity.js';
+import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import {
   type OpenAICompatibleChatCompletionRequest,
   OpenAICompatibleProviderError,
@@ -22,8 +24,10 @@ import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
 import { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 interface WorkerInferenceDispatchCall {
   /** Dispatcher context derived by the route. */
@@ -251,37 +255,49 @@ function createWorkerInferenceRouteFixture(
     applyMigrations(appCoreDb);
     ownedCoreDatabases.push(appCoreDb);
   }
+  if (appCoreDb) {
+    ensureLocalUser(appCoreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb: appCoreDb,
+      ownerUserId: 'user_local',
+      workspaceId: 'ws_demo',
+    });
+  }
   const store = createDemoStore();
-  const turn = store.createTurn('ws_demo', 'th_demo', 'Call worker inference');
+  const turn = store.createTurn('ws_demo', 'th_demo', 'Call worker inference', {
+    kind: 'user',
+    id: 'user_local',
+  });
+  const agentSetup = createTestAgentSetup({
+    provider: {
+      model: 'openai/gpt-5.2',
+      origin: 'server-providers',
+      providerId: 'agent-openrouter',
+      secretRef: null,
+    },
+    requiredCapabilities: trustedRelay
+      ? [
+          'trusted-worker-inference-relay',
+          ...(runtimeProvenance ? (['worker.runtime-provenance.v1'] as const) : []),
+        ]
+      : ['backend-local-inference'],
+  });
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
-      agent: store.getAgent('ws_demo', 'agent_codex_host'),
+      agentSetup,
       agentSessionId: trustedRelay ? 'as_worker_inference_1' : 'as_direct_worker_1',
       backend: {
         workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
-        sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
       },
-      ...(trustedRelay
-        ? {
-            backendRequirements: {
-              allowedKinds: ['openshell' as const],
-              preferred: 'openshell' as const,
-              requiredCapabilities: [
-                'trusted-worker-inference-relay' as const,
-                ...(runtimeProvenance ? (['worker.runtime-provenance.v1'] as const) : []),
-              ],
-            },
-          }
-        : {}),
       createdAt: '2026-07-13T00:00:00.000Z',
-      providerSelection: {
-        model: 'openai/gpt-5.2',
-        providerId: 'agent-openrouter',
-      },
       requestId: 'req_worker_inference_outer_1',
+      triggerActor: {
+        kind: 'automation',
+        id: 'automation_worker_inference',
+        responsibleUserId: 'user_local',
+      },
       turn,
-      userId: 'user_local',
       workspaceCwd: '/workspace/openkit',
       workspaceRoots: [],
     })
@@ -369,7 +385,6 @@ function readWorkerInferenceCapabilityCalls(
 ): Array<Record<string, unknown>> {
   const workspaceDb = openWorkspaceDb(
     fixture.coreDb!.dataRoot,
-    'user_local',
     fixture.environmentPackage.scope.workspaceId
   );
 
@@ -495,6 +510,22 @@ describe('worker inference routes', () => {
         summary: expect.stringMatching(/request-scoped cache isolation/i),
       }),
     ]);
+  });
+
+  it('does not recover missing adapter authority from descriptive runtime kind', async () => {
+    const fixture = createWorkerInferenceRouteFixture();
+    Reflect.deleteProperty(fixture.environmentPackage.control, 'adapter');
+
+    const response = await postWorkerResponses(fixture, {
+      input: 'Missing adapter authority',
+      model: 'openai/gpt-5.2',
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: 'worker_inference_invalid_request' },
+    });
+    expect(fixture.dispatcher.responseCalls).toEqual([]);
   });
 
   it('dispatches Chat Completions through the AEP provider and model', async () => {
@@ -782,7 +813,6 @@ describe('worker inference routes', () => {
 
     const workspaceDb = openWorkspaceDb(
       fixture.coreDb!.dataRoot,
-      'user_local',
       fixture.environmentPackage.scope.workspaceId
     );
     try {
@@ -956,7 +986,6 @@ describe('worker inference routes', () => {
     const fixture = createWorkerInferenceRouteFixture();
     const workspaceDb = openWorkspaceDb(
       fixture.coreDb!.dataRoot,
-      'user_local',
       fixture.environmentPackage.scope.workspaceId
     );
 
@@ -1004,7 +1033,7 @@ describe('worker inference routes', () => {
         model: 'openai/gpt-5.2',
       });
 
-      const workspaceDb = openWorkspaceDb(dataRoot, 'user_local', 'ws_demo');
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
       try {
         applyScopedMigrations(workspaceDb);
         const calls = workspaceDb.sqlite
@@ -1042,6 +1071,41 @@ describe('worker inference routes', () => {
       }
     } finally {
       coreDb.sqlite.close();
+    }
+  });
+
+  it('denies worker inference when the exact AEP actor loses current Workspace authority', async () => {
+    const fixture = createWorkerInferenceRouteFixture();
+    fixture.coreDb!.sqlite.transaction(() => {
+      disableCanonicalUser(fixture.coreDb!, 'user_local');
+    })();
+
+    const response = await postWorkerResponses(fixture, {
+      input: 'Do not dispatch',
+      model: 'openai/gpt-5.2',
+    });
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: 'worker_inference_unavailable' },
+    });
+    expect(fixture.dispatcher.chatCalls).toEqual([]);
+    expect(fixture.dispatcher.responseCalls).toEqual([]);
+
+    const workspaceDb = openWorkspaceDb(
+      fixture.coreDb!.dataRoot,
+      fixture.environmentPackage.scope.workspaceId
+    );
+    try {
+      applyScopedMigrations(workspaceDb);
+      expect(
+        workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM capability_calls').get()
+      ).toEqual({ count: 0 });
+      expect(
+        workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM usage_records').get()
+      ).toEqual({ count: 0 });
+    } finally {
+      workspaceDb.sqlite.close();
     }
   });
 
@@ -1303,7 +1367,7 @@ describe('worker inference routes', () => {
     ]);
   });
 
-  it('projects typed provider request failures as redacted worker errors', async () => {
+  it('projects typed provider request failures as generic worker errors', async () => {
     const fixture = createWorkerInferenceRouteFixture();
     fixture.dispatcher.responseError = new OpenAICompatibleProviderError({
       code: 'model_not_supported',
@@ -1323,7 +1387,7 @@ describe('worker inference routes', () => {
     expect(body).toMatchObject({
       error: {
         code: 'gateway_provider_request_invalid',
-        message: 'Unsupported model token=[redacted]',
+        message: 'Provider rejected the request.',
         type: 'provider_error',
       },
     });

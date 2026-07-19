@@ -1,7 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { FsStore } from '../lib/store';
 import { ProviderRegistry } from '../providers/registry';
 import {
@@ -12,6 +12,8 @@ import {
 } from '../scheduler-records';
 import { openCoreDb } from '../storage/db';
 import { applyMigrations } from '../storage/migrate';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { runSchedulerDispatchRetryOnce } from './scheduler-dispatch-service';
 import type { TurnExecutor, TurnStartRuntimeContext } from './types';
 
@@ -28,14 +30,14 @@ class RecordingTurnExecutor implements TurnExecutor {
   public readonly calls: Array<{
     context: TurnStartRuntimeContext | undefined;
     input: string;
-    storeUserId: string;
+    store: FsStore;
     turnId: string;
   }> = [];
 
   /**
-   * Records the store selected by background dispatch.
+   * Records the shared store used by background dispatch.
    *
-   * @param store User-scoped store selected for the queued admission.
+   * @param store Shared Workspace store selected for the queued admission.
    * @param turnId Turn id selected by the scheduler queue entry.
    * @param input Turn input captured in the scheduler queue entry.
    * @param context Runtime context forwarded to the worker executor.
@@ -46,7 +48,7 @@ class RecordingTurnExecutor implements TurnExecutor {
     input: string,
     context?: TurnStartRuntimeContext
   ): Promise<void> {
-    this.calls.push({ context, input, storeUserId: store.getUserId(), turnId });
+    this.calls.push({ context, input, store, turnId });
   }
 
   /** No-op interrupt implementation. */
@@ -107,18 +109,29 @@ function seedLocalSchedulerTarget(coreDb: ReturnType<typeof createMigratedCoreDb
 }
 
 describe('scheduler dispatch service', () => {
-  it('starts queued turns through the admission owner store', async () => {
+  it('starts queued turns through the shared Workspace store', async () => {
     const coreDb = createMigratedCoreDb();
-    const userStore = new FsStore({ userId: 'user_background' });
-    const workspace = userStore.createWorkspace('Background dispatch workspace');
-    const thread = userStore.createThread(workspace.id, 'Background dispatch thread');
-    const stores = new Map<string, FsStore>([
-      ['user_background', userStore],
-      ['user_local', new FsStore()],
-    ]);
+    const store = new FsStore();
+    const workspace = store.createWorkspace('Background dispatch workspace');
+    const thread = store.createThread(workspace.id, 'Background dispatch thread');
     const turnExecutor = new RecordingTurnExecutor();
+    const providerCredentialResolver = vi.fn((secretRef: string) =>
+      secretRef === 'vault://provider_background' ? 'test-key' : null
+    );
 
     try {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO users
+            (id, display_name, email, email_verified, created_at, updated_at, kind)
+           VALUES ('user_background', 'Background User', 'background@example.com', false, ?, ?, 'human')`
+        )
+        .run(Date.now(), Date.now());
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'user_background',
+        workspaceId: workspace.id,
+      });
       seedLocalSchedulerTarget(coreDb);
       createSchedulerAdmissionEntry(coreDb, {
         priorityClass: 'interactive',
@@ -129,7 +142,7 @@ describe('scheduler dispatch service', () => {
         threadId: thread.id,
         turnId: 'turn_background',
         turnInput: 'Run from the owner store',
-        userId: 'user_background',
+        triggerActor: { kind: 'user', id: 'user_background' },
         workspaceId: workspace.id,
         workspaceCwd: '/workspace/background',
         workspaceRoots: [
@@ -145,43 +158,45 @@ describe('scheduler dispatch service', () => {
       });
 
       const result = await runSchedulerDispatchRetryOnce({
-        agentManifests: [
-          {
-            adapter: 'custom-http',
-            deployments: ['local'],
-            displayName: 'Codex Agent',
-            id: 'agent_codex_host',
-            kind: 'custom',
-            runtime: 'custom',
-            version: '0.0.2',
-          },
-        ],
+        agentManifests: [createTestAgentSetup().manifest],
         coreDb,
         createAgentSessionId: () => 'as_background',
         createLeaseId: () => 'lease_background',
         createPlanId: () => 'plan_background',
+        dependencies: { providerCredentialResolver },
         expectedControlMode: 'poll',
         expectedDataPlaneMode: 'openshell-files',
         heartbeatIntervalMs: 10_000,
         heartbeatTimeoutMs: 30_000,
         leaseDurationMs: 900_000,
         maxDispatches: 1,
-        providerRegistry: new ProviderRegistry([]),
+        providerRegistry: new ProviderRegistry([
+          {
+            baseUrl: 'https://api.example.com/v1',
+            displayName: 'Background provider',
+            id: 'agent-openrouter',
+            kind: 'gateway',
+            models: ['openai/gpt-5.2'],
+            secretRef: 'vault://provider_background',
+          },
+        ]),
         schedulerEpoch: 1,
         startupTimeoutMs: 120_000,
-        storeForUserId: (userId) => stores.get(userId) ?? new FsStore({ userId }),
+        store,
         turnExecutor,
       });
 
       expect(result?.startedTurns).toHaveLength(1);
+      expect(providerCredentialResolver).toHaveBeenCalledWith('vault://provider_background');
       expect(turnExecutor.calls).toMatchObject([
-        {
-          input: 'Run from the owner store',
-          storeUserId: 'user_background',
-          turnId: 'turn_background',
-        },
+        { input: 'Run from the owner store', turnId: 'turn_background' },
       ]);
+      expect(turnExecutor.calls[0]?.store).toBe(store);
       expect(turnExecutor.calls[0]?.context).toMatchObject({
+        agentSetup: {
+          manifest: createTestAgentSetup().manifest,
+          provider: expect.objectContaining({ providerId: 'agent-openrouter' }),
+        },
         workspaceCwd: '/workspace/background',
         workspaceRoots: [
           {

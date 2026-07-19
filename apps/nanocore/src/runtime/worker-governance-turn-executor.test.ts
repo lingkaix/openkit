@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -28,7 +28,17 @@ import {
 } from '@openkit/worker-protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../app.js';
+import { getArtifactReview } from '../artifact-reviews.js';
+import { ensureLocalUser } from '../auth/identity.js';
+import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
+import {
+  claimPendingUserTurnRecord,
+  createPendingUserTurnRecord,
+  deleteAppliedPendingUserTurnRecord,
+  derivePendingUserTurnIds,
+  getPendingUserTurnRecord,
+} from '../goal-steering-authority.js';
 import { listInjectionPlans } from '../injection-plans.js';
 import { listInjectionReceipts } from '../injection-receipts.js';
 import type { FsStore } from '../lib/store.js';
@@ -46,7 +56,11 @@ import {
 } from '../scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { LOCAL_USER_ID, workspaceDbPath } from '../storage/fs-layout.js';
-import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import {
+  applyMigrations as applyCoreMigrations,
+  applyScopedMigrations,
+} from '../storage/migrate.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
@@ -54,18 +68,31 @@ import { createVaultReference } from '../vault/vault-references.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 import { listVaultUseRecords } from '../vault/vault-use-records.js';
 import { upsertWorkspaceRepositoryResource } from '../workspace/repository-store.js';
+import {
+  bindThreadMaterial,
+  createWorkspaceMaterial,
+  saveWorkspaceMaterialRevision,
+  selectQueuedThreadMaterialRevision,
+} from '../workspace-materials.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import { createGoalRecord, createGoalTask, updateGoalStatus } from './goal-store.js';
+import { commandInputHash } from './idempotent-command.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
 import { getWorkerBackendSession } from './worker-backend-sessions.js';
+import { upsertWorkerCheckpoint } from './worker-checkpoints.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
 import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 import type {
-  WorkerGovernanceArtifactRecord,
   WorkerGovernanceBackend,
   WorkerGovernanceEvidenceRecord,
   WorkerGovernanceMaterializationRecord,
   WorkerGovernanceWorkspaceChangeRecord,
+} from './worker-governance-backend.js';
+import {
+  WORKER_ARTIFACT_COLLECTION_INVALID,
+  WORKER_ARTIFACT_RECOVERY_REQUIRED,
 } from './worker-governance-backend.js';
 import { WorkerGovernanceTurnExecutor } from './worker-governance-turn-executor.js';
 import {
@@ -89,6 +116,17 @@ const TURN_CHILD_B_NATIVE_ID = '019f1000-0000-7000-8000-000000000003';
 const TURN_NATIVE_SESSION_ID = '019f1000-0000-7000-8000-000000000010';
 const TURN_CHILD_RAW_MESSAGE = 'private child raw answer must not become a canonical item';
 
+/** Applies Core migrations plus the Demo Workspace authority shared by this executor fixture. */
+function applyMigrations(coreDb: CoreDb): void {
+  applyCoreMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: LOCAL_USER_ID,
+    workspaceId: 'ws_demo',
+  });
+}
+
 /**
  * Opens the migrated workspace database used by worker governance tests.
  *
@@ -96,7 +134,7 @@ const TURN_CHILD_RAW_MESSAGE = 'private child raw answer must not become a canon
  * @returns Migrated workspace database handle.
  */
 function openTestWorkspaceDb(coreDb: CoreDb): WorkspaceDb {
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, 'ws_demo');
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }
@@ -110,6 +148,8 @@ function dispatchExecutorLease(
     readonly sandboxBindingRef: string;
     readonly threadId: string;
     readonly turnId: string;
+    readonly requestId?: string;
+    readonly turnInput?: string;
   }
 ): void {
   upsertSchedulerWorkerPool(coreDb, {
@@ -146,14 +186,16 @@ function dispatchExecutorLease(
     targetId: 'target_executor_anchor',
   });
   createSchedulerAdmissionEntry(coreDb, {
+    triggerActor: { kind: 'user', id: 'user_local' },
     priorityClass: 'interactive',
     profileRef: 'profile_worker',
     queueEntryId: `queue_${input.turnId}`,
+    ...(input.requestId ? { requestId: input.requestId } : {}),
     requestedAgentId: 'agent_codex_host',
     requiredPoolConstraints: ['openshell.local'],
     threadId: input.threadId,
     turnId: input.turnId,
-    turnInput: 'Run governed worker',
+    turnInput: input.turnInput ?? 'Run governed worker',
     workspaceId: 'ws_demo',
     now: () => '2026-07-15T00:00:01.000Z',
   });
@@ -186,7 +228,7 @@ function runTestGit(cwd: string, args: readonly string[]): string {
 }
 
 /**
- * Creates one worker turn with the orchestrator-owned default agent assignment.
+ * Creates one worker turn with an explicit test-manifest agent assignment.
  *
  * @param store Store that owns the turn.
  * @param workspaceId Workspace that owns the turn.
@@ -195,10 +237,262 @@ function runTestGit(cwd: string, args: readonly string[]): string {
  * @returns Persisted turn with its exact agent assignment.
  */
 function createAssignedTurn(store: FsStore, workspaceId: string, threadId: string, input: string) {
-  const turn = store.createTurn(workspaceId, threadId, input);
-  return store.updateTurn(turn.id, {
-    agentId: store.getAgentForThread(workspaceId, threadId).id,
+  const turn = store.createTurn(workspaceId, threadId, input, {
+    kind: 'user',
+    id: 'user_local',
   });
+  return store.updateTurn(turn.id, {
+    agentId: 'agent_codex_host',
+  });
+}
+
+/**
+ * Creates the single scheduler, checkpoint, Item, and Material tuple used by S39 executor tests.
+ *
+ * @param name Stable isolated fixture suffix.
+ * @param options Optional steering, budget, and claim variants.
+ * @returns Exact execution owners plus their canonical package paths.
+ */
+function createWorkerContextExecutorFixture(
+  name: string,
+  options: {
+    readonly inputKind?: 'material' | 'message';
+    readonly materialContent?: string;
+    readonly maxContextTokens?: number;
+    readonly mismatchedClaim?: boolean;
+    readonly steeringContent?: string;
+    readonly workerRequest?: string;
+  } = {}
+) {
+  const dataRoot = mkdtempSync(join(tmpdir(), `openkit-governance-context-${name}-`));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  const store = createDemoStore({ dataRoot });
+  const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Prepare worker context');
+  const requestId = '00000000-0000-4000-8000-000000000270';
+  const contextItemId = `it_context_${name}`;
+  const goalId = `goal_context_${name}`;
+  const taskId = `task_context_${name}`;
+  const maxContextTokens = options.maxContextTokens ?? 12_000;
+  const pendingIds = derivePendingUserTurnIds({
+    requestId: `request_steering_context_${name}`,
+    threadId: turn.threadId,
+    workspaceId: turn.workspaceId,
+  });
+  const workerRequest =
+    options.workerRequest ??
+    JSON.stringify({
+      schemaVersion: 1,
+      objective: 'Prepare the accepted worker context.',
+      acceptanceCriteria: ['The requested context is available.'],
+      contextRefs: [
+        { kind: 'item', id: contextItemId },
+        { kind: 'item', id: pendingIds.contentItemId },
+      ],
+      resources: [],
+      expectedArtifacts: [],
+      constraints: { maxContextTokens, maxWorkerIterations: 1 },
+      verification: [{ kind: 'manual', description: 'Inspect the worker context.' }],
+      reviewPolicy: {
+        required: true,
+        reviewers: ['human'],
+        instructions: 'Review the accepted context.',
+      },
+      escalationConditions: [],
+      reviewContext: null,
+    });
+  store.createItem({
+    completedAt: turn.startedAt,
+    createdAt: turn.startedAt ?? new Date().toISOString(),
+    id: contextItemId,
+    status: 'completed',
+    text: 'Existing Thread context.',
+    threadId: turn.threadId,
+    turnId: turn.id,
+    type: 'assistant-message',
+    workspaceId: turn.workspaceId,
+  });
+  const steeringReceivedAt = '2026-07-18T00:59:59.000Z';
+  store.createItem({
+    actor: turn.triggerActor,
+    causationId: `request_steering_context_${name}`,
+    completedAt: steeringReceivedAt,
+    createdAt: steeringReceivedAt,
+    id: pendingIds.contentItemId,
+    parentItemId: null,
+    status: 'completed',
+    text: 'Apply this accepted steering input.',
+    threadId: turn.threadId,
+    turnId: turn.id,
+    type: 'user-message',
+    workspaceId: turn.workspaceId,
+  });
+  const agentSessionId = `as_context_${name}`;
+  const sandboxBindingRef = `lease-binding:context-${name}`;
+  dispatchExecutorLease(coreDb, {
+    agentSessionId,
+    packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
+    requestId,
+    sandboxBindingRef,
+    threadId: turn.threadId,
+    turnId: turn.id,
+    turnInput: workerRequest,
+  });
+  const workspaceDb = openTestWorkspaceDb(coreDb);
+  createGoalRecord(workspaceDb, {
+    goalId,
+    objective: 'Prepare the accepted worker context.',
+    threadId: turn.threadId,
+    title: 'Prepare worker context',
+    workspaceExists: (workspaceId) => workspaceId === turn.workspaceId,
+    workspaceId: turn.workspaceId,
+  });
+  updateGoalStatus(workspaceDb, {
+    goalId,
+    planItemId: `it_plan_context_${name}`,
+    status: 'running',
+    threadId: turn.threadId,
+    workspaceId: turn.workspaceId,
+  });
+  createGoalTask(workspaceDb, {
+    acceptanceCriteria: ['The requested context is available.'],
+    contextBudgetTokens: maxContextTokens,
+    dependsOnTaskIds: [],
+    escalationConditions: [],
+    expectedArtifacts: [],
+    goalId,
+    objective: 'Prepare the accepted worker context.',
+    orderIndex: 0,
+    planItemId: `it_plan_context_${name}`,
+    resources: [],
+    reviewPolicy: {
+      instructions: 'Review the accepted context.',
+      required: true,
+      reviewers: ['human'],
+    },
+    status: 'running',
+    taskId,
+    threadId: turn.threadId,
+    title: 'Prepare worker context',
+    verificationChecks: [{ description: 'Inspect the worker context.', kind: 'manual' }],
+    workspaceId: turn.workspaceId,
+  });
+  upsertWorkerCheckpoint(workspaceDb, {
+    goalId,
+    iteration: 0,
+    requestId,
+    requestInputHash: commandInputHash({}),
+    stage: 'preparing',
+    taskId,
+    threadId: turn.threadId,
+    turnId: turn.id,
+    workspaceId: turn.workspaceId,
+  });
+  const materialContent = options.materialContent ?? '# Exact queued context\n';
+  const materialContentDigest = turnRuntimeSha256(Buffer.from(materialContent, 'utf8'));
+  const material = createWorkspaceMaterial(workspaceDb, {
+    acceptedAt: '2026-07-18T01:00:00.000Z',
+    actorId: LOCAL_USER_ID,
+    kind: 'markdown',
+    requestId: `request_create_context_${name}`,
+    sensitivity: 'internal',
+    title: 'Context material',
+  });
+  const revision = saveWorkspaceMaterialRevision(workspaceDb, {
+    acceptedAt: '2026-07-18T01:00:01.000Z',
+    actorId: LOCAL_USER_ID,
+    content: materialContent,
+    contentDigest: materialContentDigest,
+    expectedRevisionId: null,
+    materialId: material.materialId,
+    requestId: `request_save_context_${name}`,
+  });
+  bindThreadMaterial(workspaceDb, {
+    acceptedAt: '2026-07-18T01:00:02.000Z',
+    expectedBindingState: 'absent',
+    materialId: material.materialId,
+    requestId: `request_bind_context_${name}`,
+    threadId: turn.threadId,
+  });
+  const queuedMaterial = selectQueuedThreadMaterialRevision(workspaceDb, turn.threadId);
+  const steeringMaterial =
+    options.inputKind === 'material'
+      ? createWorkspaceMaterial(workspaceDb, {
+          acceptedAt: '2026-07-18T01:00:03.000Z',
+          actorId: LOCAL_USER_ID,
+          kind: 'markdown',
+          requestId: `request_create_steering_context_${name}`,
+          sensitivity: 'internal',
+          title: 'Steering context material',
+        })
+      : null;
+  const steeringContent = options.steeringContent ?? '# Exact steering context\n';
+  const steeringContentDigest = turnRuntimeSha256(Buffer.from(steeringContent, 'utf8'));
+  const steeringRevision = steeringMaterial
+    ? saveWorkspaceMaterialRevision(workspaceDb, {
+        acceptedAt: '2026-07-18T01:00:04.000Z',
+        actorId: LOCAL_USER_ID,
+        content: steeringContent,
+        contentDigest: steeringContentDigest,
+        expectedRevisionId: null,
+        materialId: steeringMaterial.materialId,
+        requestId: `request_save_steering_context_${name}`,
+      })
+    : null;
+  const pending = createPendingUserTurnRecord(workspaceDb, {
+    activeTurnId: turn.id,
+    goalId,
+    input:
+      steeringMaterial && steeringRevision
+        ? {
+            contentDigest: steeringContentDigest,
+            kind: 'material',
+            materialId: steeringMaterial.materialId,
+            revisionId: steeringRevision.revisionId,
+          }
+        : { kind: 'message' },
+    receivedAt: steeringReceivedAt,
+    requestId: `request_steering_context_${name}`,
+    threadId: turn.threadId,
+    workspaceId: turn.workspaceId,
+  });
+  claimPendingUserTurnRecord(workspaceDb, {
+    pendingTurnId: pending.pendingTurnId,
+    terminalClaimId: options.mismatchedClaim ? 'ctxpkg_wrong_turn' : `ctxpkg_${turn.id}`,
+    terminalClaimKind: 'applied',
+    terminalClaimedAt: '2026-07-18T01:00:05.000Z',
+    threadId: turn.threadId,
+    workspaceId: turn.workspaceId,
+  });
+  workspaceDb.sqlite.close();
+  const workspaceRoot = join(dataRoot, 'workspaces', turn.workspaceId);
+  const packageRoot = join(
+    workspaceRoot,
+    'threads',
+    turn.threadId,
+    'turns',
+    turn.id,
+    'context-package'
+  );
+  return {
+    agentSessionId,
+    contextItemId,
+    coreDb,
+    material,
+    materialContentDigest,
+    packageRoot,
+    pending,
+    queuedMaterial,
+    requestId,
+    revision,
+    sandboxBindingRef,
+    store,
+    steeringMaterial,
+    steeringRevision,
+    tracePath: `${packageRoot}.json`,
+    turn,
+    workerRequest,
+  };
 }
 
 /**
@@ -215,6 +509,7 @@ function createWorkspaceChangeIngressFixture(
   repositoryStrategy: 'missing' | 'review-branch' | 'staging-root'
 ) {
   const timestamp = '2026-07-11T00:00:00.000Z';
+  const requestId = '00000000-0000-4000-8000-000000000260';
   const workspaceId = 'ws_demo';
   const resourceId = 'repo';
   const reviewId = `swr_ingress_${name}`;
@@ -245,7 +540,7 @@ function createWorkspaceChangeIngressFixture(
   const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
   const beforeDigest = `sha256:${'1'.repeat(64)}`;
   const afterDigest = `sha256:${'2'.repeat(64)}`;
-  const workspaceDb = openWorkspaceDb(dataRoot, LOCAL_USER_ID, workspaceId);
+  const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
   applyScopedMigrations(workspaceDb);
   if (repositoryStrategy !== 'missing') {
     upsertWorkspaceRepositoryResource(workspaceDb, {
@@ -277,6 +572,7 @@ function createWorkspaceChangeIngressFixture(
   });
   const environmentPackage = {
     scope: {
+      requestId,
       threadId: turn.threadId,
       turnId: turn.id,
       workspaceId,
@@ -398,6 +694,7 @@ function createWorkspaceChangeIngressFixture(
     materializationRecord,
     record,
     repositoryPath,
+    requestId,
     reviewBranchRef: `refs/heads/openkit/review/${reviewId}`,
     reviewId,
     store,
@@ -503,6 +800,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     { expectedStatus: 'completed', mode: 'exact' },
     { expectedStatus: 'failed', mode: 'missing' },
     { expectedStatus: 'failed', mode: 'conflict' },
+    { expectedStatus: 'failed', mode: 'artifact-invalid' },
   ] as const)('reconciles $mode transcript events against durable live acceptance', async ({
     expectedStatus,
     mode,
@@ -514,6 +812,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const store = createDemoStore();
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', `Reconcile ${mode} worker events`);
     const backend = new FakeWorkerGovernanceBackend();
+    backend.artifactCollectionInvalid = mode === 'artifact-invalid';
     backend.eventsJsonlFactory = (environmentPackage) => {
       const lineage: WorkerLineage = {
         agentSessionId: environmentPackage.scope.agentSessionId,
@@ -566,19 +865,166 @@ describe('WorkerGovernanceTurnExecutor', () => {
       conflict: '00000000-0000-4000-8000-000000000233',
       exact: '00000000-0000-4000-8000-000000000231',
       missing: '00000000-0000-4000-8000-000000000232',
+      'artifact-invalid': '00000000-0000-4000-8000-000000000234',
     }[mode];
     const run = executor.startTurn(store, turn.id, `Reconcile ${mode} worker events`, {
+      agentSetup: createTestAgentSetup(),
       requestId,
+      triggerActor: turn.triggerActor,
       workspaceRoots: [],
     });
 
     if (mode === 'exact') {
       await expect(run).resolves.toBeUndefined();
+    } else if (mode === 'artifact-invalid') {
+      await expect(run).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
+      expect(backend.calls.at(-1)).toBe('cleanupSession');
     } else {
       await expect(run).rejects.toThrow('Worker transcript event reconciliation failed');
     }
     expect(store.getTurnById(turn.id).status).toBe(expectedStatus);
     coreDb.sqlite.close();
+  });
+
+  it('imports one backend-validated Artifact proposal through the accepted Context Package trace', async () => {
+    const fixture = createWorkerContextExecutorFixture('artifact-review');
+    const {
+      agentSessionId,
+      coreDb,
+      material,
+      materialContentDigest,
+      requestId,
+      revision,
+      sandboxBindingRef,
+      store,
+      turn,
+      workerRequest,
+    } = fixture;
+    const artifactBytes = Buffer.from('# Proposed material revision\n', 'utf8');
+    const backend = new FakeWorkerGovernanceBackend();
+    backend.artifactOutput = {
+      bytes: artifactBytes,
+      materialProposal: {
+        baseContentDigest: materialContentDigest,
+        baseRevisionId: revision.revisionId,
+        materialId: material.materialId,
+      },
+    };
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      createAgentSessionId: () => agentSessionId,
+      environmentBackend: {
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+        kind: 'openshell',
+        sandboxImageRef: 'openkit/worker-codex:dev',
+      },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+
+    try {
+      await executor.startTurn(store, turn.id, workerRequest, {
+        agentSessionId,
+        agentSetup: createTestAgentSetup(),
+        requestId,
+        sandboxBindingRef,
+        triggerActor: turn.triggerActor,
+        workspaceRoots: [],
+      });
+
+      const packageSnapshotId = backend.lastPackage?.snapshotId;
+      expect(packageSnapshotId).toBeTruthy();
+      const artifactId = `worker-artifact-${packageSnapshotId}-2`;
+      expect(store.getArtifact(turn.workspaceId, artifactId)).toMatchObject({
+        content: { body: artifactBytes.toString('utf8'), format: 'markdown' },
+        contentDigest: turnRuntimeSha256(artifactBytes),
+        origin: {
+          kind: 'turn-output',
+          requestId,
+          threadId: turn.threadId,
+          turnId: turn.id,
+        },
+        status: 'ready',
+        version: 1,
+      });
+      const workspaceDb = openTestWorkspaceDb(coreDb);
+      expect(getArtifactReview(workspaceDb, artifactId, 1)).toMatchObject({
+        artifactId,
+        artifactVersion: 1,
+        decision: null,
+        materialProposal: {
+          baseContentDigest: materialContentDigest,
+          baseRevisionId: revision.revisionId,
+          materialId: material.materialId,
+        },
+        sourceAgentId: turn.agentId,
+        sourceThreadId: turn.threadId,
+        sourceTurnId: turn.id,
+      });
+      workspaceDb.sqlite.close();
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects stale runtime authority before publishing worker output', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-stale-publication-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Do not publish stale output');
+    const backend = new FakeWorkerGovernanceBackend();
+    backend.artifactOutput = { bytes: Buffer.from('# Stale output\n', 'utf8') };
+    const collectTranscript = backend.collectTranscript.bind(backend);
+    vi.spyOn(backend, 'collectTranscript').mockImplementation(async () => {
+      const transcript = { ...(await collectTranscript()) };
+      delete transcript.itemsJsonl;
+      coreDb.sqlite.transaction(() => {
+        disableCanonicalUser(coreDb, LOCAL_USER_ID, new Date('2026-07-15T00:00:02.000Z'));
+      })();
+      return transcript;
+    });
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      createAgentSessionId: () => 'as_governance_stale_publication_1',
+      environmentBackend: {
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+        kind: 'openshell',
+        sandboxImageRef: 'openkit/worker-codex:dev',
+      },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+
+    try {
+      await expect(
+        executor.startTurn(store, turn.id, 'Do not publish stale output', {
+          agentSetup: createTestAgentSetup(),
+          requestId: '00000000-0000-4000-8000-000000000235',
+          triggerActor: turn.triggerActor,
+          workspaceRoots: [],
+        })
+      ).rejects.toMatchObject({ code: 'workspace_access_denied', status: 403 });
+
+      expect(backend.calls).toEqual([
+        'materialize',
+        'launch',
+        'collectEvidence',
+        'collectTranscript',
+        'collectWorkspaceChanges',
+        'cleanupSession',
+      ]);
+      expect(store.listArtifacts(turn.workspaceId)).toEqual([]);
+      expect(store.getTurnById(turn.id)).toMatchObject({
+        error: { code: 'workspace_access_denied' },
+        status: 'interrupted',
+      });
+      expect(store.getAgentSession('as_governance_stale_publication_1')).toMatchObject({
+        status: 'interrupted',
+      });
+    } finally {
+      coreDb.sqlite.close();
+    }
   });
 
   it('imports worker transcript records and tears down the materialized backend session', async () => {
@@ -598,7 +1044,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
       coreDb,
       createAgentSessionId: () => 'as_governance_1',
       environmentBackend: {
-        codexModel: 'gpt-5-codex',
         workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
         sandboxImageRef: 'openkit/worker-codex:dev',
@@ -607,7 +1052,22 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     await executor.startTurn(store, turn.id, 'Run in OpenShell', {
+      agentSetup: createTestAgentSetup({
+        agentId: 'agent_opencode_host',
+        displayName: 'OpenCode Agent',
+        provider: {
+          model: 'gpt-5-codex',
+          origin: 'server-providers',
+          providerId: 'agent-openrouter',
+          secretRef: null,
+        },
+      }),
       requestId: '00000000-0000-4000-8000-000000000201',
+      triggerActor: {
+        kind: 'automation',
+        id: 'automation_governance_test',
+        responsibleUserId: 'user_local',
+      },
       workspaceCwd: '/Users/m5pro/Documents/AI/openkit',
       workspaceRoots: [
         {
@@ -626,13 +1086,26 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'collectEvidence',
       'collectTranscript',
       'collectWorkspaceChanges',
-      'collectArtifacts',
       'cleanupSession',
     ]);
     expect(backend.lastPackage?.extensions.openkit).toMatchObject({
-      codexCommand: expect.arrayContaining(['--model', 'gpt-5-codex']),
       turnInput: 'Run in OpenShell',
     });
+    expect(backend.lastPackage?.scope.triggerActor).toEqual({
+      kind: 'automation',
+      id: 'automation_governance_test',
+      responsibleUserId: 'user_local',
+    });
+    expect(backend.lastPackage?.agent).toEqual({
+      agentId: 'agent_opencode_host',
+      capabilityRequests: [],
+      displayName: 'OpenCode Agent',
+      instructions: [],
+      profileId: 'default',
+      profileKind: null,
+      runtimeKind: 'codex',
+    });
+    expect(backend.lastPackage?.llm.routes[0]?.model).toBe('gpt-5-codex');
     expect(backend.lastPackage?.runtime.command.workingDirectory).toBe('/workspace/openkit');
     expect(backend.lastContext?.workspaceRoots).toEqual([
       expect.objectContaining({
@@ -666,12 +1139,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         status: 'completed',
       }),
     ]);
-    expect(store.listArtifacts('ws_demo')).toEqual([
-      expect.objectContaining({
-        title: 'Governed worker report',
-        turnId: turn.id,
-      }),
-    ]);
+    expect(store.listArtifacts('ws_demo')).toEqual([]);
     const workspaceDb = openTestWorkspaceDb(coreDb);
     expect(listWorkspaceInputSnapshots(workspaceDb, 'ws_demo')).toEqual([
       expect.objectContaining({
@@ -770,8 +1238,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
     await expect(
       executor.startTurn(store, turn.id, 'Observe failed worker status', {
         agentSessionId,
+        agentSetup: createTestAgentSetup(),
         requestId: '00000000-0000-4000-8000-000000000253',
         sandboxBindingRef,
+        triggerActor: turn.triggerActor,
         workspaceRoots: [],
       })
     ).resolves.toBeUndefined();
@@ -781,7 +1251,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'collectEvidence',
       'collectTranscript',
       'collectWorkspaceChanges',
-      'collectArtifacts',
       'cleanupSession',
     ]);
     expect(store.getTurnById(turn.id).status).toBe('failed');
@@ -832,8 +1301,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const error = await executor
       .startTurn(store, turn.id, 'Ask for unavailable input', {
         agentSessionId,
+        agentSetup: createTestAgentSetup(),
         requestId: '00000000-0000-4000-8000-000000000255',
         sandboxBindingRef,
+        triggerActor: turn.triggerActor,
         workspaceRoots: [],
       })
       .then(
@@ -858,6 +1329,32 @@ describe('WorkerGovernanceTurnExecutor', () => {
       finalStatus: 'completed',
       stopReason: 'completed',
       turnStatus: 'completed',
+    },
+    {
+      artifactRecoveryRequired: true,
+      finalStatus: 'completed',
+      stopReason: 'completed',
+      turnStatus: 'interrupted',
+    },
+    {
+      artifactCollectionInvalid: true,
+      finalStatus: 'completed',
+      stopReason: 'completed',
+      turnStatus: 'interrupted',
+    },
+    {
+      artifactCollectionInvalid: true,
+      finalStatus: 'completed',
+      stopReason: 'completed',
+      terminalProjectionFailure: 'turn',
+      turnStatus: 'interrupted',
+    },
+    {
+      artifactCollectionInvalid: true,
+      finalStatus: 'completed',
+      stopReason: 'completed',
+      terminalProjectionFailure: 'session',
+      turnStatus: 'interrupted',
     },
     {
       finalStatus: 'blocked',
@@ -927,6 +1424,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       turnId: turn.id,
     });
     const backend = new FakeWorkerGovernanceBackend();
+    backend.artifactRecoveryRequired = 'artifactRecoveryRequired' in testCase;
+    backend.artifactCollectionInvalid = 'artifactCollectionInvalid' in testCase;
     const completion = new Promise<void>(() => {});
     let reportWaiterStarted!: () => void;
     const waiterStarted = new Promise<void>((resolve) => {
@@ -956,8 +1455,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     const execution = executor.startTurn(store, turn.id, 'Wait for durable worker completion', {
       agentSessionId,
+      agentSetup: createTestAgentSetup(),
       requestId: '00000000-0000-4000-8000-000000000254',
       sandboxBindingRef,
+      triggerActor: turn.triggerActor,
       workspaceRoots: [],
     });
 
@@ -1012,6 +1513,95 @@ describe('WorkerGovernanceTurnExecutor', () => {
       now: () => '2026-07-15T00:00:04.000Z',
     });
 
+    if ('artifactRecoveryRequired' in testCase || 'artifactCollectionInvalid' in testCase) {
+      const projectionFailure =
+        'terminalProjectionFailure' in testCase ? testCase.terminalProjectionFailure : null;
+      const projectionSpy =
+        projectionFailure === 'turn'
+          ? vi.spyOn(store, 'updateTurn').mockImplementationOnce(() => {
+              throw new Error('injected restart Turn persistence failure');
+            })
+          : projectionFailure === 'session'
+            ? vi.spyOn(store, 'updateAgentSession').mockImplementationOnce(() => {
+                throw new Error('injected restart Session persistence failure');
+              })
+            : null;
+      const recovery = restartedExecutor.resumeAcceptedFinalStatus(
+        store,
+        awaitedEnvironmentPackage,
+        session
+      );
+      if (projectionSpy) {
+        await expect(recovery).rejects.toThrow('stable product outcome could not be persisted');
+        projectionSpy.mockRestore();
+        expect(backend.calls).not.toContain('cleanupSession');
+        const retrySession = getWorkerBackendSession(coreDb, `lease_${turn.id}`);
+        if (!retrySession) {
+          throw new Error('Restart projection failure lost its backend session owner.');
+        }
+        await expect(
+          restartedExecutor.resumeAcceptedFinalStatus(
+            store,
+            awaitedEnvironmentPackage,
+            retrySession
+          )
+        ).resolves.toBe('interrupted');
+        expect(backend.calls.filter((call) => call === 'cleanupSession')).toHaveLength(1);
+        expect(store.getAgentSession(agentSessionId)).toMatchObject({ status: 'interrupted' });
+        expect(
+          store
+            .getTurnEvents(turn.id)
+            .filter(
+              (event) => event.event === 'turn.completed' && event.data.type === 'turn-completed'
+            )
+        ).toHaveLength(1);
+        expect(getWorkerBackendSession(coreDb, `lease_${turn.id}`)).toMatchObject({
+          state: 'cleaned',
+        });
+        expect(store.getTurnById(turn.id)).toMatchObject({
+          error: { code: 'worker_governance_restart_recovery' },
+          status: 'interrupted',
+        });
+        coreDb.sqlite.close();
+        return;
+      }
+      await expect(recovery).resolves.toBe('interrupted');
+      expect(backend.calls).toEqual([
+        'materialize',
+        'launch',
+        'collectEvidence',
+        'collectTranscript',
+        'cleanupSession',
+      ]);
+      expect(getWorkerBackendSession(coreDb, `lease_${turn.id}`)).toMatchObject({
+        state: 'cleaned',
+      });
+      expect(store.getTurnById(turn.id)).toMatchObject({
+        error: { code: 'worker_governance_restart_recovery' },
+        status: 'interrupted',
+      });
+      const cleanedSession = getWorkerBackendSession(coreDb, `lease_${turn.id}`);
+      if (!cleanedSession) {
+        throw new Error('Restart recovery did not retain its cleaned session record.');
+      }
+      await expect(
+        restartedExecutor.resumeAcceptedFinalStatus(
+          store,
+          awaitedEnvironmentPackage,
+          cleanedSession
+        )
+      ).resolves.toBe('interrupted');
+      expect(backend.calls).toEqual([
+        'materialize',
+        'launch',
+        'collectEvidence',
+        'collectTranscript',
+        'cleanupSession',
+      ]);
+      coreDb.sqlite.close();
+      return;
+    }
+
     if ('preexistingErrorCode' in testCase) {
       await expect(
         restartedExecutor.resumeAcceptedFinalStatus(store, awaitedEnvironmentPackage, session)
@@ -1038,7 +1628,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'collectEvidence',
       'collectTranscript',
       'collectWorkspaceChanges',
-      'collectArtifacts',
       'cleanupSession',
     ]);
     expect(store.getTurnById(turn.id)).toMatchObject({
@@ -1238,16 +1827,17 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await executor.startTurn(store, turn.id, 'Import governed runtime provenance', {
-        backendRequirements: {
-          allowedKinds: ['openshell'],
-          preferred: 'openshell',
+        agentSetup: createTestAgentSetup({
+          provider: {
+            model: 'openai/gpt-5.2',
+            origin: 'server-providers',
+            providerId: 'agent-openrouter',
+            secretRef: null,
+          },
           requiredCapabilities: ['trusted-worker-inference-relay', 'worker.runtime-provenance.v1'],
-        },
-        providerSelection: {
-          model: 'openai/gpt-5.2',
-          providerId: 'agent-openrouter',
-        },
+        }),
         requestId: '00000000-0000-4000-8000-000000000220',
+        triggerActor: turn.triggerActor,
         workspaceRoots: [],
       });
 
@@ -1436,19 +2026,20 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       await expect(
         executor.startTurn(store, turn.id, `Reject ${failure} runtime provenance`, {
-          backendRequirements: {
-            allowedKinds: ['openshell'],
-            preferred: 'openshell',
+          agentSetup: createTestAgentSetup({
+            provider: {
+              model: 'openai/gpt-5.2',
+              origin: 'server-providers',
+              providerId: 'agent-openrouter',
+              secretRef: null,
+            },
             requiredCapabilities: [
               'trusted-worker-inference-relay',
               'worker.runtime-provenance.v1',
             ],
-          },
-          providerSelection: {
-            model: 'openai/gpt-5.2',
-            providerId: 'agent-openrouter',
-          },
+          }),
           requestId: `00000000-0000-4000-8000-${failure === 'missing' ? '000000000221' : '000000000222'}`,
+          triggerActor: turn.triggerActor,
           workspaceRoots: [],
         })
       ).rejects.toThrow();
@@ -1499,16 +2090,17 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     await executor.startTurn(store, turn.id, 'Run trusted worker inference', {
-      backendRequirements: {
-        allowedKinds: ['openshell'],
-        preferred: 'openshell',
+      agentSetup: createTestAgentSetup({
+        provider: {
+          model: 'openai/gpt-5.2',
+          origin: 'server-providers',
+          providerId: 'agent-openrouter',
+          secretRef: null,
+        },
         requiredCapabilities: ['trusted-worker-inference-relay'],
-      },
-      providerSelection: {
-        model: 'openai/gpt-5.2',
-        providerId: 'agent-openrouter',
-      },
+      }),
       requestId: '00000000-0000-4000-8000-000000000214',
+      triggerActor: turn.triggerActor,
       workspaceCwd: '/workspace/repo',
       workspaceRoots: [],
     });
@@ -1526,9 +2118,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
         models: ['openai/gpt-5.2'],
       }),
     ]);
-    expect(
-      (backend.lastPackage?.extensions.openkit as { codexCommand?: string[] }).codexCommand
-    ).toEqual(expect.arrayContaining(['--model', 'openai/gpt-5.2']));
   });
 
   it('stages linked review branches while ingesting production worker changes', async () => {
@@ -1573,8 +2162,40 @@ describe('WorkerGovernanceTurnExecutor', () => {
       }),
     ]);
     const artifact = fixture.store.getArtifact(fixture.workspaceId, fixture.artifactId);
-    expect(artifact.content.format).toBe('json');
-    expect(artifact.content.body).toContain(branchCommit);
+    const body = JSON.stringify(
+      {
+        changeSet: {
+          ...fixture.record.changeSet,
+          head: { ...fixture.record.changeSet.head, commit: branchCommit },
+        },
+        patchPayload: fixture.record.patchPayload,
+        review: fixture.record.review,
+      },
+      null,
+      2
+    );
+    expect(artifact).toMatchObject({
+      content: { body, format: 'json' },
+      contentDigest: `sha256:${createHash('sha256').update(body, 'utf8').digest('hex')}`,
+      lastMutationRequestId: fixture.requestId,
+      origin: {
+        kind: 'turn-output',
+        requestId: fixture.requestId,
+        threadId: fixture.environmentPackage.scope.threadId,
+        turnId: fixture.environmentPackage.scope.turnId,
+      },
+      status: 'ready',
+      version: 1,
+    });
+    expect(
+      fixture.store
+        .getTurnEvents(fixture.environmentPackage.scope.turnId)
+        .map((event) => ({ event: event.event, requestId: event.requestId, type: event.data.type }))
+    ).toEqual([
+      { event: 'item.created', requestId: fixture.requestId, type: 'item-created' },
+      { event: 'item.completed', requestId: fixture.requestId, type: 'item-completed' },
+      { event: 'artifact.created', requestId: fixture.requestId, type: 'artifact-created' },
+    ]);
     fixture.workspaceDb.sqlite.close();
   });
 
@@ -1603,6 +2224,26 @@ describe('WorkerGovernanceTurnExecutor', () => {
     fixture.workspaceDb.sqlite.close();
   });
 
+  it('rejects a workspace review without package request proof before Artifact or Review writes', async () => {
+    const fixture = createWorkspaceChangeIngressFixture(
+      'missing_package_request_proof',
+      'git',
+      'staging-root'
+    );
+    const createArtifact = vi.spyOn(fixture.store, 'createArtifact');
+
+    fixture.environmentPackage.scope.requestId = null;
+
+    try {
+      await expect(ingestWorkspaceChangeFixture(fixture, fixture.record)).rejects.toThrow();
+      expect(createArtifact).not.toHaveBeenCalled();
+      expect(listWorkspaceSyncReviews(fixture.workspaceDb, fixture.workspaceId)).toEqual([]);
+    } finally {
+      createArtifact.mockRestore();
+      fixture.workspaceDb.sqlite.close();
+    }
+  });
+
   it('keeps Git workspace changes reviewable when durable workspace storage is disabled', async () => {
     const fixture = createWorkspaceChangeIngressFixture('git_without_core_db', 'git', 'missing');
     const backend = new FakeWorkerGovernanceBackend();
@@ -1625,7 +2266,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
         fixture.store,
         fixture.environmentPackage.scope.turnId,
         'Review Git changes without durable workspace storage',
-        { requestId: '00000000-0000-4000-8000-000000000202', workspaceRoots: [] }
+        {
+          agentSetup: createTestAgentSetup(),
+          requestId: '00000000-0000-4000-8000-000000000202',
+          triggerActor: fixture.store.getTurnById(fixture.environmentPackage.scope.turnId)
+            .triggerActor,
+          workspaceRoots: [],
+        }
       );
 
       expect(fixture.store.getArtifact(fixture.workspaceId, fixture.artifactId)).toMatchObject({
@@ -1642,31 +2289,30 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
-  it('scopes worker packages and workspace synchronization records to the store actor', async () => {
-    const actorId = 'user_governance_actor';
+  it('stores worker synchronization records in the owner-independent workspace', async () => {
     const fixture = createWorkspaceChangeIngressFixture('actor_scope', 'git', 'missing');
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-actor-scope-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ userId: actorId });
+    const store = createDemoStore();
     const workspace = store.listWorkspaces().find((candidate) => candidate.kind === 'code');
     if (!workspace) {
-      throw new Error('Actor-scoped demo workspace was not created.');
+      throw new Error('Demo workspace was not created.');
     }
     const thread = store.listThreads(workspace.id)[0];
     if (!thread) {
-      throw new Error('Actor-scoped demo thread was not created.');
+      throw new Error('Demo thread was not created.');
     }
     const turn = createAssignedTurn(
       store,
       workspace.id,
       thread.id,
-      'Persist actor-scoped review records'
+      'Persist workspace review records'
     );
-    const setupDb = openWorkspaceDb(dataRoot, store.getUserId(), workspace.id);
+    const setupDb = openWorkspaceDb(dataRoot, workspace.id);
     applyScopedMigrations(setupDb);
     upsertWorkspaceRepositoryResource(setupDb, {
-      displayName: 'Actor-scoped repository',
+      displayName: 'Workspace repository',
       git: {
         authorEmail: 'actor@example.invalid',
         authorName: 'Actor User',
@@ -1683,11 +2329,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       .spyOn(backend, 'collectWorkspaceChanges')
       .mockImplementation(async () => {
         if (!backend.lastPackage) {
-          throw new Error('Actor-scoped package was not materialized.');
+          throw new Error('Workspace package was not materialized.');
         }
         const commit = backend.lastPackage.workspace.inputs[0]?.source.commit;
         if (typeof commit !== 'string') {
-          throw new Error('Actor-scoped package did not capture its Git base.');
+          throw new Error('Workspace package did not capture its Git base.');
         }
         const base = { commit, contentDigest: null };
         return [
@@ -1723,8 +2369,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       try {
-        await executor.startTurn(store, turn.id, 'Persist actor-scoped review records', {
+        await executor.startTurn(store, turn.id, 'Persist workspace review records', {
+          agentSetup: createTestAgentSetup(),
           requestId: '00000000-0000-4000-8000-000000000203',
+          triggerActor: turn.triggerActor,
           workspaceCwd: fixture.repositoryPath,
           workspaceRoots: [
             {
@@ -1740,15 +2388,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
         startError = error;
       }
 
-      const actorDb = openWorkspaceDb(dataRoot, store.getUserId(), workspace.id);
-      applyScopedMigrations(actorDb);
-      const localDb = openWorkspaceDb(dataRoot, LOCAL_USER_ID, workspace.id);
-      applyScopedMigrations(localDb);
+      const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
+      applyScopedMigrations(workspaceDb);
       try {
         expect.soft(startError).toBeNull();
-        expect.soft(backend.lastPackage?.scope.userId).toBe(store.getUserId());
-        expect.soft(listWorkspaceInputSnapshots(actorDb, workspace.id)).toHaveLength(1);
-        expect.soft(listWorkspaceSyncReviews(actorDb, workspace.id)).toEqual([
+        expect.soft(listWorkspaceInputSnapshots(workspaceDb, workspace.id)).toHaveLength(1);
+        expect.soft(listWorkspaceSyncReviews(workspaceDb, workspace.id)).toEqual([
           expect.objectContaining({
             review: expect.objectContaining({
               id: fixture.reviewId,
@@ -1756,11 +2401,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
             }),
           }),
         ]);
-        expect.soft(listWorkspaceInputSnapshots(localDb, workspace.id)).toEqual([]);
-        expect.soft(listWorkspaceSyncReviews(localDb, workspace.id)).toEqual([]);
       } finally {
-        actorDb.sqlite.close();
-        localDb.sqlite.close();
+        workspaceDb.sqlite.close();
       }
     } finally {
       collectWorkspaceChanges.mockRestore();
@@ -1769,7 +2411,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
-  it('compensates a persisted review artifact when ingress persistence fails', async () => {
+  it('retains a complete Artifact for exact retry when later ingress persistence fails', async () => {
     const fixture = createWorkspaceChangeIngressFixture(
       'artifact_compensation',
       'git',
@@ -1794,13 +2436,25 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'artifact persistence failed after write'
     );
 
-    expect(fixture.store.listArtifacts(fixture.workspaceId)).toEqual([]);
+    const retainedArtifact = fixture.store.getArtifact(fixture.workspaceId, fixture.artifactId);
     expect(
-      createDemoStore({ dataRoot: fixture.storeDataRoot }).listArtifacts(fixture.workspaceId)
-    ).toEqual([]);
+      createDemoStore({ dataRoot: fixture.storeDataRoot }).getArtifact(
+        fixture.workspaceId,
+        fixture.artifactId
+      )
+    ).toEqual(retainedArtifact);
     expect(testGitRefExists(fixture.repositoryPath, fixture.reviewBranchRef)).toBe(false);
     expect(listWorkspaceChangeSets(fixture.workspaceDb, fixture.workspaceId)).toEqual([]);
     expect(listWorkspaceSyncReviews(fixture.workspaceDb, fixture.workspaceId)).toEqual([]);
+
+    fixture.store.createArtifact = createArtifact;
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    await ingestWorkspaceChangeFixture(fixture, fixture.record);
+
+    expect(fixture.store.listArtifacts(fixture.workspaceId)).toEqual([retainedArtifact]);
+    expect(listWorkspaceSyncReviews(fixture.workspaceDb, fixture.workspaceId)).toEqual([
+      expect.objectContaining({ artifactId: fixture.artifactId }),
+    ]);
     fixture.workspaceDb.sqlite.close();
   });
 
@@ -2040,11 +2694,20 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'git',
       'review-branch'
     );
+    const body = 'Unrelated artifact content.';
     const existingArtifact = fixture.store.createArtifact({
-      content: { body: 'Unrelated artifact content.', format: 'markdown' },
+      content: { body, format: 'markdown' },
+      contentDigest: `sha256:${createHash('sha256').update(body, 'utf8').digest('hex')}`,
       createdAt: fixture.timestamp,
       id: fixture.artifactId,
       kind: 'diff',
+      lastMutationRequestId: fixture.requestId,
+      origin: {
+        kind: 'turn-output',
+        requestId: fixture.requestId,
+        threadId: fixture.environmentPackage.scope.threadId,
+        turnId: fixture.environmentPackage.scope.turnId,
+      },
       status: 'ready',
       summary: 'Existing unrelated artifact.',
       threadId: fixture.environmentPackage.scope.threadId,
@@ -2094,22 +2757,28 @@ describe('WorkerGovernanceTurnExecutor', () => {
       ...fixture.record.review,
       staging: { ...fixture.record.review.staging, branch: null },
     };
-    const orphanArtifact = fixture.store.createArtifact({
-      content: {
-        body: JSON.stringify(
-          {
-            changeSet: fixture.record.changeSet,
-            patchPayload: fixture.record.patchPayload,
-            review,
-          },
-          null,
-          2
-        ),
-        format: 'json',
+    const body = JSON.stringify(
+      {
+        changeSet: fixture.record.changeSet,
+        patchPayload: fixture.record.patchPayload,
+        review,
       },
+      null,
+      2
+    );
+    const orphanArtifact = fixture.store.createArtifact({
+      content: { body, format: 'json' },
+      contentDigest: `sha256:${createHash('sha256').update(body, 'utf8').digest('hex')}`,
       createdAt: fixture.timestamp,
       id: fixture.artifactId,
       kind: 'diff',
+      lastMutationRequestId: fixture.requestId,
+      origin: {
+        kind: 'turn-output',
+        requestId: fixture.requestId,
+        threadId: fixture.environmentPackage.scope.threadId,
+        turnId: fixture.environmentPackage.scope.turnId,
+      },
       status: 'ready',
       summary: review.riskSummary,
       threadId: fixture.environmentPackage.scope.threadId,
@@ -2127,6 +2796,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         ...fixture.record,
       });
       await ingestWorkspaceChangeFixture(fixture, fixture.record);
+      await ingestWorkspaceChangeFixture(fixture, fixture.record);
 
       expect(createArtifact.mock.calls.length).toBe(0);
       expect(fixture.store.getArtifact(fixture.workspaceId, fixture.artifactId)).toEqual(
@@ -2135,6 +2805,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(listWorkspaceSyncReviews(fixture.workspaceDb, fixture.workspaceId)).toEqual([
         expect.objectContaining({ artifactId: fixture.artifactId, review }),
       ]);
+      expect(fixture.store.getTurnEvents(fixture.environmentPackage.scope.turnId)).toEqual([]);
     } finally {
       createArtifact.mockRestore();
       fixture.workspaceDb.sqlite.close();
@@ -2162,8 +2833,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     await executor.startTurn(store, turn.id, 'Run with sandbox access', {
-      requestId: '00000000-0000-4000-8000-000000000204',
-      sandboxAccess: {
+      agentSetup: createTestAgentSetup({
         filesystem: [
           {
             access: 'read-write',
@@ -2180,7 +2850,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
             purpose: 'Install dependencies',
           },
         ],
-      },
+      }),
+      requestId: '00000000-0000-4000-8000-000000000204',
+      triggerActor: turn.triggerActor,
       workspaceRoots: [],
     });
 
@@ -2228,7 +2900,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     await expect(
       executor.startTurn(store, turn.id, 'Run in OpenShell', {
+        agentSetup: createTestAgentSetup(),
         requestId: '00000000-0000-4000-8000-000000000205',
+        triggerActor: turn.triggerActor,
         workspaceRoots: [
           {
             access: 'read-write',
@@ -2280,7 +2954,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     await expect(
       executor.startTurn(store, turn.id, 'Retry OpenShell teardown', {
+        agentSetup: createTestAgentSetup(),
         requestId: '00000000-0000-4000-8000-000000000206',
+        triggerActor: turn.triggerActor,
         workspaceRoots: [
           {
             access: 'read-write',
@@ -2359,7 +3035,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       await expect(
         executor.startTurn(store, turn.id, 'Fail cleanup status persistence', {
+          agentSetup: createTestAgentSetup(),
           requestId: '00000000-0000-4000-8000-000000000207',
+          triggerActor: turn.triggerActor,
           workspaceRoots: [
             {
               access: 'read-write',
@@ -2395,7 +3073,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-workspace-open-fail-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    mkdirSync(workspaceDbPath(dataRoot, LOCAL_USER_ID, 'ws_demo'), { recursive: true });
+    mkdirSync(workspaceDbPath(dataRoot, 'ws_demo'), { recursive: true });
 
     const store = createDemoStore();
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Fail workspace storage open');
@@ -2413,7 +3091,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       await expect(
         executor.startTurn(store, turn.id, 'Fail workspace storage open', {
+          agentSetup: createTestAgentSetup(),
           requestId: '00000000-0000-4000-8000-000000000208',
+          triggerActor: turn.triggerActor,
           workspaceRoots: [],
         })
       ).rejects.toThrow();
@@ -2435,7 +3115,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-workspace-migrate-fail-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const setupDb = openWorkspaceDb(dataRoot, LOCAL_USER_ID, 'ws_demo');
+    const setupDb = openWorkspaceDb(dataRoot, 'ws_demo');
     const sqlitePrototype = Object.getPrototypeOf(setupDb.sqlite) as {
       exec: typeof setupDb.sqlite.exec;
     };
@@ -2465,7 +3145,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       await expect(
         executor.startTurn(store, turn.id, 'Fail workspace storage migration', {
+          agentSetup: createTestAgentSetup(),
           requestId: '00000000-0000-4000-8000-000000000209',
+          triggerActor: turn.triggerActor,
           workspaceRoots: [],
         })
       ).rejects.toThrow('Failed to apply migration workspace_0000_baseline');
@@ -2512,7 +3194,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       await expect(
         executor.startTurn(store, turn.id, 'Fail workspace storage close', {
+          agentSetup: createTestAgentSetup(),
           requestId: '00000000-0000-4000-8000-000000000210',
+          triggerActor: turn.triggerActor,
           workspaceRoots: [],
         })
       ).rejects.toThrow('workspace storage close failed');
@@ -2554,7 +3238,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       await expect(
         executor.startTurn(store, turn.id, 'Fail completed turn persistence', {
+          agentSetup: createTestAgentSetup(),
           requestId: '00000000-0000-4000-8000-000000000211',
+          triggerActor: turn.triggerActor,
           workspaceRoots: [],
         })
       ).rejects.toThrow('completed turn persistence failed');
@@ -2593,7 +3279,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await executor.startTurn(store, turn.id, 'Reject without an error value', {
+        agentSetup: createTestAgentSetup(),
         requestId: '00000000-0000-4000-8000-000000000101',
+        triggerActor: turn.triggerActor,
         workspaceRoots: [],
       });
     } catch {
@@ -2639,7 +3327,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await executor.startTurn(store, turn.id, 'Fail completion notification', {
+        agentSetup: createTestAgentSetup(),
         requestId: '00000000-0000-4000-8000-000000000102',
+        triggerActor: turn.triggerActor,
         workspaceRoots: [],
       });
     } catch (error) {
@@ -2739,7 +3429,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await executor.startTurn(store, turn.id, `Fail ${failurePoint} persistence`, {
+        agentSetup: createTestAgentSetup(),
         requestId,
+        triggerActor: turn.triggerActor,
         workspaceRoots: [],
       });
     } catch (error) {
@@ -2786,7 +3478,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await executor.startTurn(store, turn.id, 'Fail worker setup', {
+        agentSetup: createTestAgentSetup(),
         requestId: '00000000-0000-4000-8000-000000000106',
+        triggerActor: turn.triggerActor,
         workspaceRoots: [],
       });
     } catch (error) {
@@ -2832,7 +3526,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     await executor.startTurn(store, turn.id, 'Run with source catalog', {
+      agentSetup: createTestAgentSetup(),
       requestId: '00000000-0000-4000-8000-000000000212',
+      triggerActor: turn.triggerActor,
       workspaceDataSourceCatalog: {
         schemaVersion: 1,
         sources: [
@@ -2932,7 +3628,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     await executor.startTurn(store, turn.id, 'Run in remote OpenShell', {
+      agentSetup: createTestAgentSetup(),
       requestId: '00000000-0000-4000-8000-000000000213',
+      triggerActor: turn.triggerActor,
       workspaceCwd: '/Users/m5pro/Documents/AI/openkit',
       workspaceRoots: [
         {
@@ -2982,6 +3680,337 @@ describe('WorkerGovernanceTurnExecutor', () => {
     coreDb.sqlite.close();
   });
 
+  it.each([
+    { inputKind: 'message', name: 'happy-message' },
+    { inputKind: 'material', name: 'happy-material' },
+  ] as const)('verifies $inputKind steering cleanup before worker launch', async ({
+    inputKind,
+    name,
+  }) => {
+    const fixture = createWorkerContextExecutorFixture(name, { inputKind });
+    const {
+      agentSessionId,
+      contextItemId,
+      coreDb,
+      material,
+      packageRoot,
+      pending,
+      requestId,
+      revision,
+      sandboxBindingRef,
+      steeringMaterial,
+      steeringRevision,
+      store,
+      tracePath,
+      turn,
+      workerRequest,
+    } = fixture;
+    const backend = new FakeWorkerGovernanceBackend();
+    const launch = backend.launch.bind(backend);
+    const launchSpy = vi.spyOn(backend, 'launch').mockImplementation(async (...args) => {
+      const trace = JSON.parse(readFileSync(tracePath, 'utf8')) as {
+        contextPackageDigest: string;
+        includedItemIds: string[];
+        materialSelections: Array<{
+          inclusionReason: string;
+          materialId: string;
+          revisionId: string;
+        }>;
+      };
+      expect(trace.contextPackageDigest).toMatch(/^ctxpkg_sha256_[0-9a-f]{64}$/);
+      expect(trace.includedItemIds).toEqual([
+        `it_user_${turn.id}`,
+        pending.contentItemId,
+        contextItemId,
+      ]);
+      expect(trace.materialSelections).toHaveLength(inputKind === 'material' ? 2 : 1);
+      expect(trace.materialSelections).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            inclusionReason: 'thread_binding',
+            materialId: material.materialId,
+            revisionId: revision.revisionId,
+          }),
+          ...(steeringMaterial && steeringRevision
+            ? [
+                expect.objectContaining({
+                  inclusionReason: 'goal_steering',
+                  materialId: steeringMaterial.materialId,
+                  revisionId: steeringRevision.revisionId,
+                }),
+              ]
+            : []),
+        ])
+      );
+      const prelaunchDb = openTestWorkspaceDb(coreDb);
+      expect(getPendingUserTurnRecord(prelaunchDb, turn.workspaceId, turn.threadId)).toBeNull();
+      expect(selectQueuedThreadMaterialRevision(prelaunchDb, turn.threadId)).toBeNull();
+      prelaunchDb.sqlite.close();
+      return launch(...args);
+    });
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      createAgentSessionId: () => agentSessionId,
+      environmentBackend: {
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+        kind: 'openshell',
+        sandboxImageRef: 'openkit/worker-codex:dev',
+      },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+
+    try {
+      await executor.startTurn(store, turn.id, workerRequest, {
+        agentSessionId,
+        agentSetup: createTestAgentSetup(),
+        requestId,
+        sandboxBindingRef,
+        triggerActor: turn.triggerActor,
+        workspaceRoots: [],
+      });
+      expect(launchSpy).toHaveBeenCalledTimes(1);
+      expect(backend.lastContext?.workspaceRoots).toEqual([
+        {
+          access: 'read-only',
+          id: `context_${turn.id}`,
+          sourceKind: 'materialized-dir',
+          sourcePath: packageRoot,
+          workerPath: '/openkit/context',
+        },
+      ]);
+    } finally {
+      launchSpy.mockRestore();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('accepts the exact Artifact Review follow-up request through the S39 boundary', async () => {
+    const artifactContent = 'Redo this exact Artifact.';
+    const workerRequest = JSON.stringify({
+      kind: 'artifact-review-follow-up',
+      workspaceId: 'ws_demo',
+      reviewId: 'arev_demo',
+      artifactId: 'ar_demo',
+      artifactVersion: 1,
+      contentDigest: `sha256:${createHash('sha256').update(artifactContent).digest('hex')}`,
+      artifactContent,
+      artifactMediaType: 'text/plain',
+      sourceThreadId: 'th_demo',
+      sourceTurnId: 'tu_source_review',
+      sourceAgentId: 'agent_codex_host',
+      materialProposal: null,
+      decision: 'redo',
+      feedback: 'Address the missing evidence.',
+      decisionRequestId: '00000000-0000-4000-8000-000000000270',
+      workerRequestId: '00000000-0000-4000-8000-000000000270',
+    });
+    const fixture = createWorkerContextExecutorFixture('artifact-follow-up', { workerRequest });
+    const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
+    workspaceDb.sqlite.transaction(() => {
+      deleteAppliedPendingUserTurnRecord(workspaceDb, {
+        workspaceId: fixture.turn.workspaceId,
+        threadId: fixture.turn.threadId,
+        pendingTurnId: fixture.pending.pendingTurnId,
+        contextPackageId: `ctxpkg_${fixture.turn.id}`,
+      });
+    })();
+    workspaceDb.sqlite.close();
+    const backend = new FakeWorkerGovernanceBackend();
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb: fixture.coreDb,
+      createAgentSessionId: () => fixture.agentSessionId,
+      environmentBackend: {
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+        kind: 'openshell',
+        sandboxImageRef: 'openkit/worker-codex:dev',
+      },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+
+    try {
+      await executor.startTurn(fixture.store, fixture.turn.id, workerRequest, {
+        agentSessionId: fixture.agentSessionId,
+        agentSetup: createTestAgentSetup(),
+        requestId: fixture.requestId,
+        sandboxBindingRef: fixture.sandboxBindingRef,
+        triggerActor: fixture.turn.triggerActor,
+        workspaceRoots: [],
+      });
+      expect(readFileSync(join(fixture.packageRoot, 'instructions.md'), 'utf8')).toBe(
+        workerRequest
+      );
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('excludes an automatic binding that exceeds the remaining Context Package budget', async () => {
+    const fixture = createWorkerContextExecutorFixture('binding-budget', {
+      materialContent: 'B'.repeat(5_000),
+      maxContextTokens: 1_000,
+    });
+    const {
+      agentSessionId,
+      coreDb,
+      material,
+      queuedMaterial,
+      requestId,
+      revision,
+      sandboxBindingRef,
+      store,
+      tracePath,
+      turn,
+      workerRequest,
+    } = fixture;
+    const backend = new FakeWorkerGovernanceBackend();
+    const launchSpy = vi.spyOn(backend, 'launch');
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      createAgentSessionId: () => agentSessionId,
+      environmentBackend: {
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+        kind: 'openshell',
+        sandboxImageRef: 'openkit/worker-codex:dev',
+      },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+
+    try {
+      await executor.startTurn(store, turn.id, workerRequest, {
+        agentSessionId,
+        agentSetup: createTestAgentSetup(),
+        requestId,
+        sandboxBindingRef,
+        triggerActor: turn.triggerActor,
+        workspaceRoots: [],
+      });
+      expect(launchSpy).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(readFileSync(tracePath, 'utf8'))).toMatchObject({
+        materialExclusions: [
+          {
+            materialId: material.materialId,
+            reason: 'budget_exceeded',
+            revisionId: revision.revisionId,
+            sensitivity: 'internal',
+          },
+        ],
+        materialSelections: [],
+      });
+      const reopenedDb = openTestWorkspaceDb(coreDb);
+      expect(getPendingUserTurnRecord(reopenedDb, turn.workspaceId, turn.threadId)).toBeNull();
+      expect(selectQueuedThreadMaterialRevision(reopenedDb, turn.threadId)).toEqual(queuedMaterial);
+      reopenedDb.sqlite.close();
+    } finally {
+      launchSpy.mockRestore();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    {
+      expectedError: 'Worker Context Package file digest mismatch: instructions.md.',
+      failure: 'corrupt package bytes',
+      name: 'corrupt',
+    },
+    {
+      expectedError: 'Worker Context Package applied steering claim is contradictory.',
+      failure: 'mismatched applied claim',
+      name: 'claim',
+    },
+    {
+      expectedError: 'Worker Context Package scheduler binding is unavailable.',
+      failure: 'missing scheduler binding',
+      name: 'binding',
+    },
+    {
+      expectedError: {
+        code: 'goal_steering_delivery_unavailable',
+        message: 'Worker Context Package steering Material exceeds the context budget.',
+        status: 503,
+      },
+      failure: 'oversized steering Material',
+      name: 'steering-budget',
+    },
+  ] as const)('fails closed before launch for $failure and preserves the Material queue', async ({
+    expectedError,
+    failure,
+    name,
+  }) => {
+    const fixture = createWorkerContextExecutorFixture(name, {
+      inputKind: failure === 'oversized steering Material' ? 'material' : undefined,
+      maxContextTokens: failure === 'oversized steering Material' ? 1_000 : undefined,
+      mismatchedClaim: failure === 'mismatched applied claim',
+      steeringContent: failure === 'oversized steering Material' ? 'S'.repeat(5_000) : undefined,
+    });
+    const {
+      agentSessionId,
+      coreDb,
+      packageRoot,
+      pending,
+      queuedMaterial,
+      requestId,
+      sandboxBindingRef,
+      store,
+      tracePath,
+      turn,
+      workerRequest,
+    } = fixture;
+    const backend = new FakeWorkerGovernanceBackend();
+    const materialize = backend.materialize.bind(backend);
+    const materializeSpy = vi.spyOn(backend, 'materialize').mockImplementation(async (...args) => {
+      const result = await materialize(...args);
+      if (failure === 'corrupt package bytes') {
+        writeFileSync(join(packageRoot, 'instructions.md'), 'corrupt');
+      }
+      return result;
+    });
+    const launchSpy = vi.spyOn(backend, 'launch');
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      createAgentSessionId: () => agentSessionId,
+      environmentBackend: {
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+        kind: 'openshell',
+        sandboxImageRef: 'openkit/worker-codex:dev',
+      },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+
+    try {
+      const execution = executor.startTurn(store, turn.id, workerRequest, {
+        agentSessionId,
+        agentSetup: createTestAgentSetup(),
+        requestId,
+        ...(failure === 'missing scheduler binding' ? {} : { sandboxBindingRef }),
+        triggerActor: turn.triggerActor,
+        workspaceRoots: [],
+      });
+      if (typeof expectedError === 'string') {
+        await expect(execution).rejects.toThrow(expectedError);
+      } else {
+        await expect(execution).rejects.toMatchObject(expectedError);
+      }
+      expect(materializeSpy).toHaveBeenCalledTimes(failure === 'corrupt package bytes' ? 1 : 0);
+      expect(launchSpy).not.toHaveBeenCalled();
+      expect(existsSync(tracePath)).toBe(false);
+      const reopenedDb = openTestWorkspaceDb(coreDb);
+      expect(selectQueuedThreadMaterialRevision(reopenedDb, turn.threadId)).toEqual(queuedMaterial);
+      expect(getPendingUserTurnRecord(reopenedDb, turn.workspaceId, turn.threadId)).toMatchObject({
+        pendingTurnId: pending.pendingTurnId,
+        terminalClaimKind: 'applied',
+      });
+      reopenedDb.sqlite.close();
+    } finally {
+      launchSpy.mockRestore();
+      materializeSpy.mockRestore();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('passes scheduler-owned lineage into backend materialization', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-binding-')));
 
@@ -3013,8 +4042,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     await executor.startTurn(store, turn.id, 'Run with scheduler binding', {
       agentSessionId,
+      agentSetup: createTestAgentSetup(),
       requestId: '00000000-0000-4000-8000-000000000214',
       sandboxBindingRef,
+      triggerActor: turn.triggerActor,
       workspaceRoots: [],
     });
 
@@ -3027,6 +4058,66 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     coreDb.sqlite.close();
+  });
+
+  it('rechecks runtime authority before backend materialization', async () => {
+    const coreDb = openCoreDb(
+      mkdtempSync(join(tmpdir(), 'openkit-governance-prematerialize-authority-'))
+    );
+    applyMigrations(coreDb);
+    const store = createDemoStore();
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Do not materialize stale work');
+    const agentSessionId = 'as_prematerialize_authority_1';
+    const sandboxBindingRef = 'lease-binding:prematerialize-authority';
+    dispatchExecutorLease(coreDb, {
+      agentSessionId,
+      packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
+      sandboxBindingRef,
+      threadId: turn.threadId,
+      turnId: turn.id,
+    });
+    coreDb.sqlite.transaction(() => {
+      disableCanonicalUser(coreDb, LOCAL_USER_ID, new Date('2026-07-15T00:00:02.500Z'));
+    })();
+    const backend = new FakeWorkerGovernanceBackend();
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      createAgentSessionId: () => agentSessionId,
+      environmentBackend: {
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+        kind: 'openshell',
+        sandboxImageRef: 'openkit/worker-codex:dev',
+      },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+
+    try {
+      await expect(
+        executor.startTurn(store, turn.id, 'Do not materialize stale work', {
+          agentSessionId,
+          agentSetup: createTestAgentSetup(),
+          requestId: '00000000-0000-4000-8000-000000000249',
+          sandboxBindingRef,
+          triggerActor: turn.triggerActor,
+          workspaceRoots: [],
+        })
+      ).rejects.toMatchObject({ code: 'workspace_access_denied', status: 403 });
+
+      expect(backend.calls).toEqual([]);
+      expect(getWorkerBackendSession(coreDb, `lease_${turn.id}`)).toBeNull();
+      const workspaceDb = openTestWorkspaceDb(coreDb);
+      expect(listWorkspaceInputSnapshots(workspaceDb, turn.workspaceId)).toEqual([]);
+      expect(listWorkspaceMaterializationRecords(workspaceDb, turn.workspaceId)).toEqual([]);
+      workspaceDb.sqlite.close();
+      expect(store.getTurnById(turn.id)).toMatchObject({
+        error: { code: 'workspace_access_denied' },
+        status: 'interrupted',
+      });
+      expect(store.getAgentSession(agentSessionId)).toMatchObject({ status: 'interrupted' });
+    } finally {
+      coreDb.sqlite.close();
+    }
   });
 
   it('writes a package-scoped backend anchor before materialization and cleans it for zero-input turns', async () => {
@@ -3069,8 +4160,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       await executor.startTurn(store, turn.id, 'Anchor before effect', {
         agentSessionId,
+        agentSetup: createTestAgentSetup(),
         requestId: '00000000-0000-4000-8000-000000000250',
         sandboxBindingRef,
+        triggerActor: turn.triggerActor,
         workspaceRoots: [],
       });
 
@@ -3126,8 +4219,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
       await expect(
         executor.startTurn(store, turn.id, 'Fail after materialize effect', {
           agentSessionId,
+          agentSetup: createTestAgentSetup(),
           requestId: '00000000-0000-4000-8000-000000000251',
           sandboxBindingRef,
+          triggerActor: turn.triggerActor,
           workspaceRoots: [],
         })
       ).rejects.toThrow('materialize failed after external effect');
@@ -3193,8 +4288,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
       await expect(
         executor.startTurn(store, turn.id, 'Lose lease before launch', {
           agentSessionId,
+          agentSetup: createTestAgentSetup(),
           requestId: '00000000-0000-4000-8000-000000000252',
           sandboxBindingRef,
+          triggerActor: turn.triggerActor,
           workspaceRoots: [],
         })
       ).rejects.toThrow('Scheduler lease is not live for worker backend launch.');
@@ -3250,8 +4347,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
       await expect(
         executor.startTurn(store, turn.id, 'Expire before launch', {
           agentSessionId,
+          agentSetup: createTestAgentSetup(),
           requestId: '00000000-0000-4000-8000-000000000253',
           sandboxBindingRef,
+          triggerActor: turn.triggerActor,
           workspaceRoots: [],
         })
       ).rejects.toThrow('Scheduler lease is not live for worker backend launch.');
@@ -3311,14 +4410,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     const store = createDemoStore();
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Run GitHub MCP in OpenShell');
-    const baseAgent = store.getAgent('ws_demo', 'agent_codex_host');
-    store.upsertAgent('ws_demo', {
-      ...baseAgent,
-      config: {
-        ...baseAgent.config,
-        mcpServerIds: ['github'],
-      },
-    });
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
@@ -3335,7 +4426,24 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await executor.startTurn(store, turn.id, 'Run GitHub MCP in OpenShell', {
+        agentSetup: createTestAgentSetup({
+          credentialDeclarations: [
+            {
+              id: 'github_mcp_read',
+              provider: {
+                credentialKey: 'GITHUB_TOKEN',
+                instanceId: 'provider_github_read',
+                profileId: 'github_mcp',
+                type: 'github_mcp',
+              },
+              vaultGrantId: 'grant_github_read',
+              visibility: 'sandbox-provider',
+            },
+          ],
+          mcpIds: ['github'],
+        }),
         requestId: '00000000-0000-4000-8000-000000000215',
+        triggerActor: turn.triggerActor,
         workspaceRoots: [],
       });
 
@@ -3423,7 +4531,18 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await executor.startTurn(store, turn.id, 'Run Codex auth runtime file', {
+        agentSetup: createTestAgentSetup({
+          credentialDeclarations: [
+            {
+              id: 'codex_auth_json',
+              targetPath: '/sandbox/.codex/auth.json',
+              vaultGrantId: 'grant_codex_auth_json',
+              visibility: 'runtime-file',
+            },
+          ],
+        }),
         requestId: '00000000-0000-4000-8000-000000000216',
+        triggerActor: turn.triggerActor,
         workspaceRoots: [],
       });
 
@@ -3747,6 +4866,16 @@ function turnRuntimeSha256(bytes: Uint8Array): string {
 
 class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
   public readonly calls: string[] = [];
+  public artifactCollectionInvalid = false;
+  public artifactOutput: {
+    readonly bytes: Buffer;
+    readonly materialProposal?: {
+      readonly baseContentDigest: string;
+      readonly baseRevisionId: string;
+      readonly materialId: string;
+    };
+  } | null = null;
+  public artifactRecoveryRequired = false;
   public failTeardown = false;
   public teardownFailuresRemaining = 0;
   public lastContext: Parameters<WorkerGovernanceBackend['materialize']>[1] | null = null;
@@ -3891,33 +5020,53 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
   public async collectTranscript(): Promise<WorkerTranscriptPayload> {
     this.calls.push('collectTranscript');
 
+    if (this.artifactCollectionInvalid) {
+      throw Object.assign(new Error('Invalid Worker Artifact collection.'), {
+        code: WORKER_ARTIFACT_COLLECTION_INVALID,
+      });
+    }
+    if (this.artifactRecoveryRequired) {
+      throw Object.assign(new Error('Restored Worker Artifact collection requires recovery.'), {
+        code: WORKER_ARTIFACT_RECOVERY_REQUIRED,
+      });
+    }
+
     if (!this.lastPackage) {
       throw new Error('Package was not materialized.');
     }
 
+    const artifactOutput = this.artifactOutput;
     return {
       ...(this.eventsJsonlFactory
         ? { eventsJsonl: this.eventsJsonlFactory(this.lastPackage) }
         : {}),
-      artifactsJsonl: `${JSON.stringify({
-        schemaVersion: 1,
-        kind: 'artifact',
-        lineage: {
-          workspaceId: this.lastPackage.scope.workspaceId,
-          threadId: this.lastPackage.scope.threadId,
-          turnId: this.lastPackage.scope.turnId,
-          agentSessionId: this.lastPackage.scope.agentSessionId,
-          packageSnapshotId: this.lastPackage.snapshotId,
-          requestId: this.lastPackage.scope.requestId,
-        },
-        sequence: 2,
-        artifact: {
-          kind: 'report',
-          mediaType: 'text/markdown',
-          path: '/openkit/artifacts/report.md',
-          title: 'Governed worker report',
-        },
-      })}\n`,
+      ...(artifactOutput
+        ? {
+            artifactFiles: [{ bytes: artifactOutput.bytes, sequence: 2 }],
+            artifactsJsonl: `${JSON.stringify({
+              schemaVersion: 1,
+              kind: 'artifact',
+              lineage: {
+                workspaceId: this.lastPackage.scope.workspaceId,
+                threadId: this.lastPackage.scope.threadId,
+                turnId: this.lastPackage.scope.turnId,
+                agentSessionId: this.lastPackage.scope.agentSessionId,
+                packageSnapshotId: this.lastPackage.snapshotId,
+                requestId: this.lastPackage.scope.requestId,
+              },
+              sequence: 2,
+              artifact: {
+                kind: 'report',
+                mediaType: 'text/markdown',
+                path: '/openkit/artifacts/report.md',
+                title: 'Governed worker report',
+                ...(artifactOutput.materialProposal
+                  ? { materialProposal: artifactOutput.materialProposal }
+                  : {}),
+              },
+            })}\n`,
+          }
+        : {}),
       itemsJsonl: `${JSON.stringify({
         schemaVersion: 1,
         kind: 'item',
@@ -3948,12 +5097,6 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (!this.lastPackage) {
       throw new Error('Package was not materialized.');
     }
-
-    return [];
-  }
-
-  public async collectArtifacts(): Promise<WorkerGovernanceArtifactRecord[]> {
-    this.calls.push('collectArtifacts');
 
     return [];
   }

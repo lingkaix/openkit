@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -12,6 +12,7 @@ import {
 
 const JUNE = '2026-06-30T23:59:59.000Z';
 const JULY = '2026-07-01T00:00:00.000Z';
+const PORTABLE_TURN = { threadId: 'th_portable', turnId: 'tu_portable' } as const;
 
 /** Creates one empty real workspace root. */
 function workspaceRoot(prefix: string): string {
@@ -205,6 +206,20 @@ function writePortableFixture(root: string): void {
     '{"workspaceId":"ws_portable_source"}\n'
   );
   writeFileSync(join(materializationRoot, 'knowledge', 'kn_owned.md'), 'Portable context.\n');
+
+  const packageRoot = join(root, 'threads', PORTABLE_TURN.threadId, 'turns', PORTABLE_TURN.turnId);
+  mkdirSync(join(packageRoot, 'context-package'), { recursive: true });
+  writeFileSync(
+    join(packageRoot, 'context-package.json'),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      threadId: PORTABLE_TURN.threadId,
+      turnId: PORTABLE_TURN.turnId,
+      workspaceId: 'ws_portable_source',
+    })}\n`
+  );
+  writeFileSync(join(packageRoot, 'context-package', 'instructions.md'), 'Portable request.\n');
+  writeFileSync(join(packageRoot, 'context-package', 'package.json'), '{"schemaVersion":1}\n');
 }
 
 describe('workspace portable file-state IO', () => {
@@ -224,7 +239,7 @@ describe('workspace portable file-state IO', () => {
       '---\nopenkit_entry_id: "kn_target"\n---\nTarget owned page.\n'
     );
 
-    const state = readWorkspacePortableFileState(sourceRoot);
+    const state = readWorkspacePortableFileState(sourceRoot, [PORTABLE_TURN]);
 
     expect([...state.observations.keys()]).toEqual(['202606', '202607']);
     expect(state.claims.get('202607')?.map((row) => row.id)).toEqual(['kc_first', 'kc_second']);
@@ -237,10 +252,24 @@ describe('workspace portable file-state IO', () => {
       'knowledge/pages/nested/native.md',
     ]);
     expect(state.nativeKnowledgePages.has('knowledge/pages/kn_owned.md')).toBe(false);
+    expect([...state.workerContextPackageFiles]).toEqual([
+      [
+        'threads/th_portable/turns/tu_portable/context-package.json',
+        '{"schemaVersion":1,"threadId":"th_portable","turnId":"tu_portable","workspaceId":"ws_portable_source"}\n',
+      ],
+      [
+        'threads/th_portable/turns/tu_portable/context-package/instructions.md',
+        'Portable request.\n',
+      ],
+      [
+        'threads/th_portable/turns/tu_portable/context-package/package.json',
+        '{"schemaVersion":1}\n',
+      ],
+    ]);
 
     writeWorkspacePortableFileState(targetRoot, state);
 
-    expect(readWorkspacePortableFileState(targetRoot)).toEqual(state);
+    expect(readWorkspacePortableFileState(targetRoot, [PORTABLE_TURN])).toEqual(state);
     expect(readFileSync(join(targetRoot, 'config', 'workspace.jsonc'), 'utf8')).toBe(
       state.workspaceConfig
     );
@@ -278,7 +307,7 @@ describe('workspace portable file-state IO', () => {
         unexpected: true,
       },
     ]);
-    expect(() => readWorkspacePortableFileState(malformedRoot)).toThrow();
+    expect(() => readWorkspacePortableFileState(malformedRoot, [PORTABLE_TURN])).toThrow();
 
     writePortableFixture(linkedRoot);
     writeFileSync(join(outsideRoot, 'sentinel.txt'), 'untouched\n');
@@ -294,7 +323,63 @@ describe('workspace portable file-state IO', () => {
         'linked.txt'
       )
     );
-    expect(() => readWorkspacePortableFileState(linkedRoot)).toThrow(/symbolic link/i);
+    expect(() => readWorkspacePortableFileState(linkedRoot, [PORTABLE_TURN])).toThrow(
+      /symbolic link/i
+    );
     expect(readFileSync(join(outsideRoot, 'sentinel.txt'), 'utf8')).toBe('untouched\n');
+  });
+
+  it.each([
+    {
+      name: 'orphan Turn package',
+      knownTurns: [],
+      alter: (_root: string) => undefined,
+    },
+    {
+      name: 'incomplete Turn package',
+      knownTurns: [PORTABLE_TURN],
+      alter: (root: string) =>
+        rmSync(
+          join(
+            root,
+            'threads',
+            PORTABLE_TURN.threadId,
+            'turns',
+            PORTABLE_TURN.turnId,
+            'context-package.json'
+          )
+        ),
+    },
+  ])('rejects $name', ({ knownTurns, alter }) => {
+    const root = workspaceRoot('openkit-portable-state-invalid-worker-package-');
+    writePortableFixture(root);
+    alter(root);
+
+    expect(() => readWorkspacePortableFileState(root, knownTurns)).toThrow();
+  });
+
+  it('rejects a worker Context Package trace carried by another Turn path', () => {
+    const root = workspaceRoot('openkit-portable-state-worker-lineage-');
+    writePortableFixture(root);
+    writeFileSync(
+      join(
+        root,
+        'threads',
+        PORTABLE_TURN.threadId,
+        'turns',
+        PORTABLE_TURN.turnId,
+        'context-package.json'
+      ),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        threadId: 'th_other',
+        turnId: 'tu_other',
+        workspaceId: 'ws_portable_source',
+      })}\n`
+    );
+
+    expect(() => readWorkspacePortableFileState(root, [PORTABLE_TURN])).toThrow(
+      'Worker Context Package trace path lineage is contradictory.'
+    );
   });
 });

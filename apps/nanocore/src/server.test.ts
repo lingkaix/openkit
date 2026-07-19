@@ -55,6 +55,7 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 
 import { type CreateAppOptions, createApp as createNanoCoreApp } from './app.js';
+import { createArtifactReview } from './artifact-reviews.js';
 import {
   listWorkspaceAuditEvents,
   recordServerAuditEvent,
@@ -68,6 +69,7 @@ import {
 import {
   finishCapabilityCall,
   listWorkspaceCapabilityCalls,
+  listWorkspaceUsageRecords,
   recordUsage,
   startCapabilityCall,
 } from './capability/usage-ledger.js';
@@ -135,7 +137,10 @@ import {
 } from './runtime/workspace-apply-results.js';
 import { recordFilesystemWorkspaceStagingRoot } from './runtime/workspace-filesystem-staging.js';
 import { recordWorkspaceQuarantineRecord } from './runtime/workspace-quarantine-records.js';
-import { recordWorkspaceReconciliationRecord } from './runtime/workspace-reconciliation-records.js';
+import {
+  listWorkspaceReconciliationRecords,
+  recordWorkspaceReconciliationRecord,
+} from './runtime/workspace-reconciliation-records.js';
 import {
   getWorkspaceSyncReview,
   listBackendWorkspaceHandles,
@@ -161,6 +166,7 @@ import {
   recordDataRootDeploymentMove,
 } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp as createDeterministicTestApp } from './test-support/app.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
 import { createVaultGrant, listVaultGrants } from './vault/vault-grants.js';
@@ -168,6 +174,7 @@ import {
   createVaultReference,
   getVaultReference,
   listVaultReferences,
+  rebindWorkspaceVaultReference,
 } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { createVaultUseRecord, listVaultUseRecords } from './vault/vault-use-records.js';
@@ -175,6 +182,7 @@ import {
   listWorkspaceRepositoryResources,
   upsertWorkspaceRepositoryResource,
 } from './workspace/repository-store.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const GOAL_TASK_RECORD_FIXTURE = {
   resources: [],
@@ -187,6 +195,16 @@ const GOAL_TASK_RECORD_FIXTURE = {
   },
   escalationConditions: [],
 };
+
+/**
+ * Computes the canonical S16 digest for exact UTF-8 Artifact content.
+ *
+ * @param content Exact Artifact body.
+ * @returns Lowercase SHA-256 digest with the required prefix.
+ */
+function artifactDigest(content: string): string {
+  return `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`;
+}
 
 /**
  * Opens a migrated Core database for turn-start repository tests.
@@ -209,7 +227,7 @@ function createCoreDb(): CoreDb {
  * @returns Migrated workspace database handle.
  */
 function openTestWorkspaceDb(coreDb: CoreDb, workspaceId: string): WorkspaceDb {
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, workspaceId);
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }
@@ -232,6 +250,7 @@ function recordWorkerRetryLease(
   }
 ): void {
   createSchedulerAdmissionEntry(coreDb, {
+    triggerActor: { kind: 'user', id: 'user_local' },
     priorityClass: 'interactive',
     profileRef: 'agent_codex_host',
     queueEntryId: `queue_${input.turnId}`,
@@ -302,7 +321,6 @@ function seedDemoWorkspace(store: FsStore, userId = LOCAL_USER_ID): void {
       turns: [],
       itemRevisions: [],
       artifacts: [],
-      artifactReviews: [],
       agentSessions: [],
       turnEvents: [],
     });
@@ -317,7 +335,8 @@ function seedDemoWorkspace(store: FsStore, userId = LOCAL_USER_ID): void {
  */
 function createDemoStore(options: FsStoreOptions = {}): FsStore {
   const store = new FsStore(options);
-  seedDemoWorkspace(store, options.userId ?? LOCAL_USER_ID);
+  store.ensureQuickChatWorkspace(LOCAL_USER_ID);
+  seedDemoWorkspace(store, LOCAL_USER_ID);
   return store;
 }
 
@@ -335,7 +354,26 @@ function createApp(options: CreateAppOptions = {}): ReturnType<typeof createNano
   const store = options.store ?? createDemoStore();
 
   seedDemoWorkspace(store);
-  return createDeterministicTestApp({ ...options, store });
+  if (options.coreDb) {
+    for (const workspace of store.listWorkspaces()) {
+      const registered = options.coreDb.sqlite
+        .prepare('SELECT 1 FROM workspace_registry WHERE workspace_id = ?')
+        .get(workspace.id);
+      if (registered) {
+        continue;
+      }
+      recordWorkspaceOwnerMembership({
+        coreDb: options.coreDb,
+        ownerUserId: LOCAL_USER_ID,
+        workspaceId: workspace.id,
+      });
+    }
+  }
+  return createDeterministicTestApp({
+    agentManifests: [createTestAgentSetup({ provider: null }).manifest],
+    ...options,
+    store,
+  });
 }
 
 /**
@@ -385,17 +423,15 @@ function createOpenShellWorkerControlPackage(
   turnId: string
 ): AgentEnvironmentPackage {
   const turn = store.getTurnById(turnId);
-  const agent = store.getAgent(turn.workspaceId, 'agent_codex_host');
 
   return AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
-      agent,
+      agentSetup: createTestAgentSetup(),
       agentSessionId: 'as_dashboard_control_1',
-      userId: 'user_local',
+      triggerActor: { kind: 'user', id: 'user_local' },
       backend: {
         workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
-        sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
       },
       createdAt: '2026-06-16T00:00:00.000Z',
       requestId: 'req_dashboard_control_1',
@@ -442,11 +478,14 @@ class FakeTurnExecutor implements TurnExecutor {
     this.startContexts.push(context);
 
     const turn = store.getTurnById(turnId);
+    if (!turn.agentId) {
+      throw new Error('Fake worker turn requires a selected agent id.');
+    }
     const timestamp = turn.startedAt ?? new Date().toISOString();
     const requestId = context.requestId ?? null;
     const agentSession = store.createAgentSession({
       id: context.agentSessionId ?? `session_${turn.threadId}`,
-      agentId: 'agent_codex_host',
+      agentId: turn.agentId,
       workspaceId: turn.workspaceId,
       threadId: turn.threadId,
       status: 'busy',
@@ -462,6 +501,7 @@ class FakeTurnExecutor implements TurnExecutor {
       turnId,
       type: 'user-message',
       status: 'completed',
+      actor: turn.triggerActor,
       text: input,
       createdAt: turn.startedAt ?? new Date().toISOString(),
       completedAt: turn.startedAt ?? new Date().toISOString(),
@@ -793,10 +833,13 @@ async function createGitWorkspaceReviewFixture(input: {
 }> {
   const coreDb = createCoreDb();
   const store = createDemoStore();
-  const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
   const workspace = store.createWorkspace(`Git review ${input.reviewId}`);
+  const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
   const thread = store.createThread(workspace.id, `Review ${input.reviewId}`);
-  const turn = store.createTurn(workspace.id, thread.id, `Produce ${input.reviewId}`);
+  const turn = store.createTurn(workspace.id, thread.id, `Produce ${input.reviewId}`, {
+    kind: 'user',
+    id: 'user_local',
+  });
   const repoDir = mkdtempSync(join(tmpdir(), `openkit-${input.reviewId}-`));
   const timestamp = new Date().toISOString();
 
@@ -916,6 +959,14 @@ async function createGitWorkspaceReviewFixture(input: {
     summary: review.review.riskSummary,
     version: 1,
     content: { format: 'json', body: JSON.stringify(review) },
+    contentDigest: artifactDigest(JSON.stringify(review)),
+    lastMutationRequestId: `workspace-sync-artifact-${input.reviewId}`,
+    origin: {
+      kind: 'turn-output',
+      threadId: thread.id,
+      turnId: turn.id,
+      requestId: `workspace-sync-artifact-${input.reviewId}`,
+    },
     createdAt: timestamp,
     updatedAt: timestamp,
   });
@@ -994,7 +1045,7 @@ describe('nanocore server', () => {
     const quickChat = await app.request('/api/app/quick-chat', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ input: 'Hello', workspaceId: 'ws_blocked' }),
+      body: JSON.stringify({ input: 'Hello' }),
     });
     const turn = await app.request('/api/turns', {
       method: 'POST',
@@ -1139,7 +1190,7 @@ describe('nanocore server', () => {
     const body = WorkspaceExportResponseSchema.parse(await res.json());
     expect(body).toMatchObject({
       workspaceId: 'ws_demo',
-      fileCount: 14,
+      fileCount: 17,
       checkedFiles: [
         'records/agent-sessions.jsonl',
         'records/artifact-reviews.jsonl',
@@ -1150,9 +1201,12 @@ describe('nanocore server', () => {
         'records/knowledge-observations.jsonl',
         'records/knowledge-retrieval-traces.jsonl',
         'records/knowledge.jsonl',
+        'records/thread-material-bindings.jsonl',
         'records/threads.jsonl',
         'records/turn-events.jsonl',
         'records/turns.jsonl',
+        'records/workspace-material-revisions.jsonl',
+        'records/workspace-materials.jsonl',
         'records/workspace.json',
         'workspace-files/knowledge/schema/workspace-schema.yaml',
       ],
@@ -1187,7 +1241,7 @@ describe('nanocore server', () => {
       sourceWorkspaceId: 'ws_demo',
       exportedWorkspaceId: 'ws_demo',
       collision: { status: 'collides', workspaceId: 'ws_demo' },
-      verification: { fileCount: 14 },
+      verification: { fileCount: 17 },
     });
     expect(store.listWorkspaces()).toHaveLength(beforeCount);
     expect(JSON.stringify(body)).not.toContain(dataRoot);
@@ -1499,6 +1553,7 @@ describe('nanocore server', () => {
     let callId = '';
     try {
       const call = startCapabilityCall({
+        authorityActor: { kind: 'user', id: LOCAL_USER_ID },
         workspaceDb: sourceDb,
         callId: 'cap_workspace_source_call',
         workspaceId: 'ws_demo',
@@ -1982,9 +2037,7 @@ describe('nanocore server', () => {
     expect(importRes.status, await importRes.clone().text()).toBe(400);
     expect({
       coreRows: coreRowCounts.get(),
-      finalWorkspaceRootExists: existsSync(
-        join(dataRoot, 'users', LOCAL_USER_ID, 'workspaces', targetWorkspaceId)
-      ),
+      finalWorkspaceRootExists: existsSync(join(dataRoot, 'workspaces', targetWorkspaceId)),
       storeHasWorkspace: store
         .listWorkspaces()
         .some((workspace) => workspace.id === targetWorkspaceId),
@@ -2146,6 +2199,37 @@ describe('nanocore server', () => {
     expect(importedGrants[0]?.grantId).not.toBe('grant_ws_demo_github');
     expect(importedGrants[0]?.vaultReferenceId).not.toBe(sourceReference.referenceId);
     expect(JSON.stringify(importedGrants)).not.toContain('redacted-source');
+
+    if (!importedReference || !importedGrants[0]) {
+      throw new Error('Imported Vault authority fixture is incomplete.');
+    }
+    expect(
+      rebindWorkspaceVaultReference(coreDb, {
+        backendKind: 'encrypted-file',
+        backendLocator: 'encrypted-file://target/rebound',
+        currentVersion: 1,
+        referenceId: importedReference.referenceId,
+        workspaceId: body.importedWorkspaceId,
+      })
+    ).toMatchObject({ status: 'active', currentVersion: 1 });
+    expect(() =>
+      createInjectionPlan(coreDb, {
+        backendCapabilityRequirement: 'encrypted-file:resolve',
+        expirationBehavior: 'grant-lifetime',
+        grantId: importedGrants[0].grantId,
+        injectionVisibility: 'gateway-only',
+        planId: 'plan_rebound_imported_grant',
+        redactionRule: 'status-only',
+        revocationBehavior: 'deny-new-use',
+      })
+    ).toThrow('Vault grant is portable-import history and cannot authorize effects.');
+    expect(listVaultGrants(coreDb)).toContainEqual(
+      expect.objectContaining({
+        grantId: importedGrants[0].grantId,
+        policyDecisionId: 'pd_grant_1',
+        status: 'active',
+      })
+    );
     coreDb.sqlite.close();
   });
 
@@ -2373,7 +2457,7 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const catalogRoot = join(dataRoot, 'users', LOCAL_USER_ID, 'workspaces', 'ws_demo', 'config');
+    const catalogRoot = join(dataRoot, 'workspaces', 'ws_demo', 'config');
     mkdirSync(catalogRoot, { recursive: true });
     writeFileSync(
       join(catalogRoot, 'data-sources.jsonc'),
@@ -2418,15 +2502,7 @@ describe('nanocore server', () => {
     const importedCatalog = parseWorkspaceDataSourceCatalog(
       JSON.parse(
         readFileSync(
-          join(
-            dataRoot,
-            'users',
-            LOCAL_USER_ID,
-            'workspaces',
-            body.importedWorkspaceId,
-            'config',
-            'data-sources.jsonc'
-          ),
+          join(dataRoot, 'workspaces', body.importedWorkspaceId, 'config', 'data-sources.jsonc'),
           'utf8'
         )
       )
@@ -2595,6 +2671,7 @@ describe('nanocore server', () => {
       'ws_demo',
       'th_demo',
       'Produce workspace sync review',
+      { kind: 'user', id: 'user_local' },
       null,
       {
         turnId: 'turn_route_1',
@@ -2625,6 +2702,14 @@ describe('nanocore server', () => {
       summary: sourceReview.review.riskSummary,
       version: 1,
       content: { format: 'text', body: sourceReview.patchPayload?.text ?? '' },
+      contentDigest: artifactDigest(sourceReview.patchPayload?.text ?? ''),
+      lastMutationRequestId: 'workspace-sync-artifact-route-1',
+      origin: {
+        kind: 'turn-output',
+        threadId: sourceTurn.threadId,
+        turnId: sourceTurn.id,
+        requestId: 'workspace-sync-artifact-route-1',
+      },
       createdAt: sourceReview.review.createdAt,
       updatedAt: sourceReview.review.updatedAt,
     });
@@ -2734,6 +2819,7 @@ describe('nanocore server', () => {
       'ws_demo',
       'th_demo',
       'Produce workspace apply result',
+      { kind: 'user', id: 'user_local' },
       null,
       {
         turnId: 'turn_route_1',
@@ -2764,6 +2850,14 @@ describe('nanocore server', () => {
       summary: sourceReview.review.riskSummary,
       version: 1,
       content: { format: 'text', body: sourceReview.patchPayload?.text ?? '' },
+      contentDigest: artifactDigest(sourceReview.patchPayload?.text ?? ''),
+      lastMutationRequestId: 'workspace-apply-artifact-route-1',
+      origin: {
+        kind: 'turn-output',
+        threadId: sourceTurn.threadId,
+        turnId: sourceTurn.id,
+        requestId: 'workspace-apply-artifact-route-1',
+      },
       createdAt: sourceReview.review.createdAt,
       updatedAt: sourceReview.review.updatedAt,
     });
@@ -2839,8 +2933,47 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    store.createTurn('ws_demo', 'th_demo', 'Record permission decision', null, {
+    store.createTurn(
+      'ws_demo',
+      'th_demo',
+      'Record permission decision',
+      { kind: 'user', id: 'user_local' },
+      null,
+      {
+        turnId: 'turn_demo',
+      }
+    );
+    store.createItem({
+      approvalRequestId: 'ap_source_repo_push',
+      completedAt: '2026-07-06T00:01:00.000Z',
+      createdAt: '2026-07-06T00:01:00.000Z',
+      description: 'Portable historical approval.',
+      id: 'it_source_repo_push_request',
+      kind: 'permission',
+      status: 'completed',
+      threadId: 'th_demo',
+      title: 'Approve source Git push',
       turnId: 'turn_demo',
+      type: 'approval-request',
+      workspaceId: 'ws_demo',
+    });
+    store.createItem({
+      approvalRequestId: 'ap_source_repo_push',
+      completedAt: '2026-07-06T00:01:01.000Z',
+      createdAt: '2026-07-06T00:01:01.000Z',
+      decision: 'granted',
+      id: 'it_source_repo_push_decision',
+      status: 'completed',
+      actor: { kind: 'user', id: 'user_local' },
+      causationId: 'it_source_repo_push_request',
+      threadId: 'th_demo',
+      turnId: 'turn_demo',
+      type: 'approval-decision',
+      workspaceId: 'ws_demo',
+    });
+    store.updateTurn('turn_demo', {
+      completedAt: '2026-07-06T00:01:01.000Z',
+      status: 'completed',
     });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     try {
@@ -2864,6 +2997,28 @@ describe('nanocore server', () => {
         workspaceDb: sourceDb,
         workspaceId: 'ws_demo',
         now: new Date('2026-07-06T00:02:00.000Z'),
+      });
+      recordProductPermissionDecision({
+        action: 'repo.push',
+        approvalId: 'ap_source_repo_push',
+        contextSummary: { workspaceId: 'ws_demo' },
+        decisionId: 'pd_workspace_import_repo_push',
+        enforcementPoint: 'repo.push.approval_response',
+        ownerScope: 'workspace',
+        policyEngineVersion: 'nanocore-approval-policy:v1',
+        policySnapshotId: 'policy_snapshot_runtime',
+        reasonCode: 'repo_push_approved',
+        resourceSummary: {
+          kind: 'git-push-target',
+          repositoryResourceId: 'repo_default',
+          targetBranch: 'main',
+          workspaceId: 'ws_demo',
+        },
+        result: 'allow',
+        subjectSummary: { kind: 'user', userId: 'user_local' },
+        workspaceDb: sourceDb,
+        workspaceId: 'ws_demo',
+        now: new Date('2026-07-06T00:02:01.000Z'),
       });
     } finally {
       sourceDb.sqlite.close();
@@ -2912,10 +3067,25 @@ describe('nanocore server', () => {
         result: 'allow',
         workspace_id: body.importedWorkspaceId,
       });
+      const importedApprovalId = `apr_imported_${body.importedWorkspaceId}_1`;
+      expect(store.getApproval(importedApprovalId)).toMatchObject({
+        id: importedApprovalId,
+        status: 'granted',
+        workspaceId: body.importedWorkspaceId,
+      });
+      expect(
+        importedDb.sqlite
+          .prepare(
+            `SELECT approval_id AS approvalId, result
+             FROM permission_decisions
+             WHERE decision_id = ?`
+          )
+          .get('pd_workspace_import_repo_push')
+      ).toEqual({ approvalId: importedApprovalId, result: 'allow' });
       const permissionAuditRows = importedDb.sqlite
         .prepare('SELECT action FROM audit_events WHERE action = ?')
         .all('permission.decision') as Array<Record<string, unknown>>;
-      expect(permissionAuditRows).toHaveLength(1);
+      expect(permissionAuditRows).toHaveLength(2);
     } finally {
       importedDb.sqlite.close();
       coreDb.sqlite.close();
@@ -2929,6 +3099,7 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot });
     const thread = store.createThread('ws_demo', 'Scheduler admission read route');
     createSchedulerAdmissionEntry(coreDb, {
+      triggerActor: { kind: 'user', id: 'user_local' },
       queueEntryId: 'queue_read_route_1',
       workspaceId: 'ws_demo',
       threadId: thread.id,
@@ -2941,6 +3112,7 @@ describe('nanocore server', () => {
       now: () => '2026-07-07T00:00:00.000Z',
     });
     createSchedulerAdmissionEntry(coreDb, {
+      triggerActor: { kind: 'user', id: 'user_local' },
       queueEntryId: 'queue_read_route_2',
       workspaceId: 'ws_demo',
       threadId: thread.id,
@@ -2953,6 +3125,7 @@ describe('nanocore server', () => {
       now: () => '2026-07-07T00:00:01.000Z',
     });
     createSchedulerAdmissionEntry(coreDb, {
+      triggerActor: { kind: 'user', id: 'user_local' },
       queueEntryId: 'queue_read_route_denied',
       workspaceId: 'ws_demo',
       threadId: thread.id,
@@ -2969,6 +3142,7 @@ describe('nanocore server', () => {
       denialReason: 'no-healthy-target',
     });
     createSchedulerAdmissionEntry(coreDb, {
+      triggerActor: { kind: 'user', id: 'user_local' },
       queueEntryId: 'queue_other_workspace',
       workspaceId: 'ws_other',
       threadId: 'th_other',
@@ -3156,6 +3330,7 @@ describe('nanocore server', () => {
         now: () => '2026-07-07T00:04:00.000Z',
       });
       updateWorkerCheckpoint(workspaceDb, {
+        authorityActor: { kind: 'user', id: 'user_1' },
         workspaceId: 'ws_demo',
         threadId: 'th_runtime',
         turnId: 'turn_runtime',
@@ -3375,6 +3550,7 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot });
     const thread = store.createThread('ws_demo', 'Scheduler admission retry route');
     createSchedulerAdmissionEntry(coreDb, {
+      triggerActor: { kind: 'user', id: 'user_local' },
       queueEntryId: 'queue_retry_route',
       workspaceId: 'ws_demo',
       threadId: thread.id,
@@ -3437,6 +3613,7 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot });
     const thread = store.createThread('ws_demo', 'Scheduler admission cancel route');
     createSchedulerAdmissionEntry(coreDb, {
+      triggerActor: { kind: 'user', id: 'user_local' },
       queueEntryId: 'queue_cancel_route',
       workspaceId: 'ws_demo',
       threadId: thread.id,
@@ -3546,27 +3723,33 @@ describe('nanocore server', () => {
     const runtimeConfigManager = createRuntimeConfigManager({
       initialSnapshot: createInMemoryRuntimeConfigSnapshot({ dataRoot, version: 2 }),
     });
-    const app = createApp({ runtimeConfigManager, store });
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const app = createApp({ coreDb, runtimeConfigManager, store });
 
-    const res = await app.request(
-      `/api/app/workspaces/ws_demo/runtime-config/stale-sessions/${session.id}/restart`,
-      { method: 'POST' }
-    );
+    try {
+      const res = await app.request(
+        `/api/app/workspaces/ws_demo/runtime-config/stale-sessions/${session.id}/restart`,
+        { method: 'POST' }
+      );
 
-    expect(res.status, await res.clone().text()).toBe(200);
-    expect(RestartRuntimeConfigStaleSessionResponseSchema.parse(await res.json())).toMatchObject({
-      restarted: true,
-      session: {
+      expect(res.status, await res.clone().text()).toBe(200);
+      expect(RestartRuntimeConfigStaleSessionResponseSchema.parse(await res.json())).toMatchObject({
+        restarted: true,
+        session: {
+          configVersion: 2,
+          id: session.id,
+          stale: false,
+          status: 'interrupted',
+        },
+      });
+      expect(store.getAgentSession(session.id)).toMatchObject({
         configVersion: 2,
-        id: session.id,
-        stale: false,
         status: 'interrupted',
-      },
-    });
-    expect(store.getAgentSession(session.id)).toMatchObject({
-      configVersion: 2,
-      status: 'interrupted',
-    });
+      });
+    } finally {
+      coreDb.sqlite.close();
+    }
   });
 
   it('releases one authoritatively interrupted goal task and replays its command', async () => {
@@ -3575,7 +3758,10 @@ describe('nanocore server', () => {
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     const thread = store.createThread('ws_demo', 'Interrupted worker retry route');
-    const turn = store.createTurn('ws_demo', thread.id, 'Interrupted worker');
+    const turn = store.createTurn('ws_demo', thread.id, 'Interrupted worker', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const agentSessionId = 'as_interrupted_retry';
     const completedAt = '2026-07-17T05:00:00.000Z';
     store.createAgentSession({
@@ -3736,7 +3922,10 @@ describe('nanocore server', () => {
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     const thread = store.createThread('ws_demo', 'Reconnect pending retry route');
-    const turn = store.createTurn('ws_demo', thread.id, 'Reconnect original worker');
+    const turn = store.createTurn('ws_demo', thread.id, 'Reconnect original worker', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const agentSessionId = 'as_reconnect_pending';
     store.createAgentSession({
       agentId: 'agent_codex_host',
@@ -3816,9 +4005,16 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    store.createTurn('ws_demo', 'th_demo', 'Checkpoint worker turn', null, {
-      turnId: 'tu_checkpoint',
-    });
+    store.createTurn(
+      'ws_demo',
+      'th_demo',
+      'Checkpoint worker turn',
+      { kind: 'user', id: 'user_local' },
+      null,
+      {
+        turnId: 'tu_checkpoint',
+      }
+    );
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     try {
       upsertWorkerCheckpoint(sourceDb, {
@@ -3919,9 +4115,16 @@ describe('nanocore server', () => {
       questions: [],
       verificationApproach: 'Confirm the imported task record.',
     });
-    const sourceTurn = store.createTurn('ws_demo', 'th_demo', 'Create portable goal', null, {
-      turnId: 'turn_goal_import_1',
-    });
+    const sourceTurn = store.createTurn(
+      'ws_demo',
+      'th_demo',
+      'Create portable goal',
+      { kind: 'user', id: 'user_local' },
+      null,
+      {
+        turnId: 'turn_goal_import_1',
+      }
+    );
     store.createItem({
       id: 'item_goal_import_1',
       workspaceId: 'ws_demo',
@@ -3929,6 +4132,7 @@ describe('nanocore server', () => {
       turnId: sourceTurn.id,
       type: 'user-message',
       status: 'completed',
+      actor: sourceTurn.triggerActor,
       text: 'Create an importable goal',
       createdAt: '2026-07-06T00:04:59.000Z',
       completedAt: '2026-07-06T00:04:59.000Z',
@@ -4092,9 +4296,16 @@ describe('nanocore server', () => {
       questions: [],
       verificationApproach: 'Import and inspect the evidence records.',
     });
-    const sourceTurn = store.createTurn('ws_demo', 'th_demo', 'Collect goal evidence', null, {
-      turnId: 'turn_evidence_1',
-    });
+    const sourceTurn = store.createTurn(
+      'ws_demo',
+      'th_demo',
+      'Collect goal evidence',
+      { kind: 'user', id: 'user_local' },
+      null,
+      {
+        turnId: 'turn_evidence_1',
+      }
+    );
     store.createItem({
       id: 'item_evidence_1',
       workspaceId: 'ws_demo',
@@ -4134,6 +4345,14 @@ describe('nanocore server', () => {
       summary: 'Portable goal evidence.',
       version: 1,
       content: { format: 'text', body: 'Evidence body' },
+      contentDigest: artifactDigest('Evidence body'),
+      lastMutationRequestId: 'goal-evidence-artifact-1',
+      origin: {
+        kind: 'turn-output',
+        threadId: sourceTurn.threadId,
+        turnId: sourceTurn.id,
+        requestId: 'goal-evidence-artifact-1',
+      },
       createdAt: '2026-07-06T00:05:59.000Z',
       updatedAt: '2026-07-06T00:05:59.000Z',
     });
@@ -4612,7 +4831,6 @@ describe('nanocore server', () => {
         threadId: 'th_demo',
         requestId: '0190f4c8-0000-7000-8000-000000000202',
         input: 'Ship the update',
-        modelId: 'model_codex',
       }),
       headers: { 'content-type': 'application/json' },
     });
@@ -4623,10 +4841,29 @@ describe('nanocore server', () => {
     });
   });
 
-  it('starts new turns through the durable scheduler when Core DB is available', async () => {
+  it('starts scheduled turns with provider credentials resolved by app composition', async () => {
     const coreDb = createCoreDb();
     const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, turnExecutor: executor });
+    const providerCredentialResolver = vi.fn((secretRef: string) =>
+      secretRef === 'vault://provider_openrouter' ? 'test-key' : null
+    );
+    const app = createApp({
+      agentManifests: [createTestAgentSetup().manifest],
+      coreDb,
+      providerCredentialResolver,
+      providerRegistry: new ProviderRegistry([
+        {
+          baseUrl: 'https://openrouter.ai/api/v1',
+          defaultModel: 'openai/gpt-5.2',
+          displayName: 'OpenRouter',
+          id: 'agent-openrouter',
+          kind: 'gateway',
+          models: ['openai/gpt-5.2'],
+          secretRef: 'vault://provider_openrouter',
+        },
+      ]),
+      turnExecutor: executor,
+    });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-scheduler-turn-repository-'));
 
     mkdirSync(join(repositoryPath, '.git'));
@@ -4659,6 +4896,7 @@ describe('nanocore server', () => {
         requestId: '0190f4c8-0000-7000-8000-000000000216',
         sandboxBindingRef: expect.stringMatching(/^lease-binding:/),
       });
+      expect(providerCredentialResolver).toHaveBeenCalledWith('vault://provider_openrouter');
       expect(turn.id).toMatch(/^turn_0190f4c8-0000-7000-8000-000000000216/);
     } finally {
       coreDb.sqlite.close();
@@ -4669,7 +4907,33 @@ describe('nanocore server', () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const baseAgentManifest = createTestAgentSetup({ provider: null }).manifest;
+    const opaqueAgentManifest = {
+      ...baseAgentManifest,
+      id: 'agent_fourth_runtime',
+      displayName: 'Fourth Runtime Agent',
+      runtime: {
+        ...baseAgentManifest.runtime,
+        adapter: 'fourth-runtime',
+        kind: 'fourth-runtime',
+      },
+    };
+    const laterAgentManifest = {
+      ...baseAgentManifest,
+      id: 'agent_zeta_runtime',
+      displayName: 'Zeta Runtime Agent',
+      runtime: {
+        ...baseAgentManifest.runtime,
+        adapter: 'zeta-runtime',
+        kind: 'zeta-runtime',
+      },
+    };
+    const app = createApp({
+      agentManifests: [laterAgentManifest, opaqueAgentManifest],
+      coreDb,
+      store,
+      turnExecutor: executor,
+    });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-task-mode-repository-'));
     const requestId = '0190f4c8-0000-7000-8000-000000000301';
     const input = 'Implement the focused Task Mode fix.';
@@ -4692,13 +4956,16 @@ describe('nanocore server', () => {
         headers: { 'content-type': 'application/json' },
       });
 
-      expect(res.status).toBe(202);
-      const parsed = StartTaskModeResponseSchema.parse(await res.json());
+      const responseBody = await res.json();
+      expect(res.status, JSON.stringify(responseBody)).toBe(202);
+      const parsed = StartTaskModeResponseSchema.parse(responseBody);
 
       expect(parsed).not.toHaveProperty('decision');
       expect(parsed.state).toBe('completed');
       expect(parsed.turn.status).toBe('completed');
+      expect(parsed.turn.agentId).toBe('agent_fourth_runtime');
       expect(parsed.turn.id).toMatch(/^turn_0190f4c8-0000-7000-8000-000000000301/);
+      expect(executor.startContexts[0]?.agentSetup?.manifest.id).toBe('agent_fourth_runtime');
       expect(parsed.completion).toEqual({
         itemId: `it_assistant_${parsed.turn.id}`,
         text: 'Completed by fake executor.',
@@ -4716,14 +4983,14 @@ describe('nanocore server', () => {
         prompt: input,
         readiness: [
           {
-            agentId: 'agent_codex_host',
-            displayName: 'Codex Host Agent',
-            runtime: 'codex',
+            agentId: 'agent_fourth_runtime',
+            displayName: 'Fourth Runtime Agent',
             readiness: 'ready',
           },
         ],
         threadState: { status: 'idle', threadId: 'th_demo' },
         workspaceSummary: { name: 'Demo Workspace', workspaceId: 'ws_demo' },
+        contextRefs: [{ kind: 'knowledge', id: 'mem_project' }],
       }).workerRequest;
       expect(expectedWorkerRequest).not.toBeNull();
       expect(
@@ -4872,6 +5139,7 @@ describe('nanocore server', () => {
       expect(executor.startContexts).toHaveLength(1);
       expect(
         store.getCommandRequest('task.start', requestId, {
+          actorId: LOCAL_USER_ID,
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
         })
@@ -4890,20 +5158,19 @@ describe('nanocore server', () => {
   it('rejects Task Mode in the Quick Chat workspace', async () => {
     const coreDb = createCoreDb();
     const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, turnExecutor: executor });
+    const store = createDemoStore();
+    const thread = store.createThread('ws_quick_chat', 'Reject Task Mode');
+    const app = createApp({ coreDb, store, turnExecutor: executor });
 
     try {
-      const res = await app.request(
-        '/api/app/workspaces/ws_quick_chat/threads/th_quick_chat/task',
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            requestId: '0190f4c8-0000-7000-8000-000000000319',
-            input: 'Implement a focused fix.',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
-      );
+      const res = await app.request(`/api/app/workspaces/ws_quick_chat/threads/${thread.id}/task`, {
+        method: 'POST',
+        body: JSON.stringify({
+          requestId: '0190f4c8-0000-7000-8000-000000000319',
+          input: 'Implement a focused fix.',
+        }),
+        headers: { 'content-type': 'application/json' },
+      });
 
       expect(res.status).toBe(400);
       await expect(res.json()).resolves.toMatchObject({
@@ -4916,7 +5183,7 @@ describe('nanocore server', () => {
     }
   });
 
-  it('recovers and closes a direct Task Gate without resuming worker execution', async () => {
+  it('fails closed for a direct Task worker Approval without policy authority', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const app = createApp({ coreDb, store, turnExecutor: new SimulatedTurnExecutor() });
@@ -4973,7 +5240,7 @@ describe('nanocore server', () => {
           store.getCommandRequest(
             'task.start',
             taskRequestId,
-            { workspaceId: 'ws_demo', threadId: 'th_demo' },
+            { actorId: LOCAL_USER_ID, workspaceId: 'ws_demo', threadId: 'th_demo' },
             liveCheckpointDb
           )
         ).not.toBeNull();
@@ -5017,26 +5284,22 @@ describe('nanocore server', () => {
           headers: { 'content-type': 'application/json' },
         }
       );
-      expect(approvalRes.status).toBe(200);
-
-      const replayRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-        method: 'POST',
-        body: JSON.stringify({ requestId: taskRequestId, input: taskInput }),
-        headers: { 'content-type': 'application/json' },
+      expect(approvalRes.status).toBe(501);
+      await expect(approvalRes.json()).resolves.toMatchObject({
+        code: 'approvals_not_supported',
       });
-      expect(replayRes.status).toBe(202);
-      const replay = StartTaskModeResponseSchema.parse(await replayRes.json());
-      expect(replay).toMatchObject({
-        state: 'blocked',
-        turn: { id: parsed.turn.id, status: 'completed' },
-        completion: null,
+      expect(store.getApproval(parsed.turn.humanGate.approvalRequestId)).toMatchObject({
+        status: 'pending',
       });
-      expect(replay.evidence.itemIds).toContain(`it_approval_decision_${parsed.turn.id}`);
-      expect(replay.evidence.itemIds).not.toContain(`it_user_input_request_${parsed.turn.id}`);
-      expect(replay.evidence.artifactIds).toEqual([]);
+      expect(store.getTurn('ws_demo', 'th_demo', parsed.turn.id)).toMatchObject({
+        status: 'awaiting_human',
+        humanGate: parsed.turn.humanGate,
+      });
       const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
       try {
-        expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', parsed.turn.id)).toBeNull();
+        expect(
+          getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', parsed.turn.id)
+        ).toMatchObject({ stage: 'waiting_for_user', stopReason: 'ask_user' });
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -5045,7 +5308,7 @@ describe('nanocore server', () => {
     }
   });
 
-  it('keeps a closed direct Task Gate checkpoint when its response receipt is missing', async () => {
+  it('does not publish an Approval receipt for an unsupported direct Task Gate', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const app = createApp({ coreDb, store, turnExecutor: new SimulatedTurnExecutor() });
@@ -5096,8 +5359,11 @@ describe('nanocore server', () => {
       );
       receiptWrite.mockRestore();
 
-      expect(responseRes.status).toBe(409);
-      await expect(responseRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(responseRes.status).toBe(501);
+      await expect(responseRes.json()).resolves.toMatchObject({
+        code: 'approvals_not_supported',
+      });
+      expect(receiptWrite).not.toHaveBeenCalled();
       expect(
         store.getCommandRequest('approval.respond', responseRequestId, {
           workspaceId: 'ws_demo',
@@ -5110,15 +5376,7 @@ describe('nanocore server', () => {
       const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
       try {
         const checkpoint = getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', task.turn.id);
-        expect(checkpoint).toMatchObject({ stage: 'completed', stopReason: 'completed' });
-        await expect(
-          classifyDirectTaskCheckpointAfterSchedulerRecovery({
-            coreDb,
-            store,
-            workspaceDb,
-            checkpoint: checkpoint!,
-          })
-        ).rejects.toMatchObject({ code: 'recovery_required' });
+        expect(checkpoint).toMatchObject({ stage: 'waiting_for_user', stopReason: 'ask_user' });
         expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', task.turn.id)).not.toBeNull();
       } finally {
         workspaceDb.sqlite.close();
@@ -5154,6 +5412,14 @@ describe('nanocore server', () => {
           summary: 'Task Mode workspace changes ready for review.',
           version: 1,
           content: { format: 'text', body: patchText },
+          contentDigest: artifactDigest(patchText),
+          lastMutationRequestId: context.requestId!,
+          origin: {
+            kind: 'turn-output',
+            threadId: turn.threadId,
+            turnId,
+            requestId: context.requestId!,
+          },
           createdAt: timestamp,
           updatedAt: timestamp,
         });
@@ -5566,17 +5832,8 @@ describe('nanocore server', () => {
         dataRoot: coreDb.dataRoot,
         workspaceConfigs: [
           {
-            userId: LOCAL_USER_ID,
             workspaceId: 'ws_demo',
-            path: join(
-              coreDb.dataRoot,
-              'users',
-              LOCAL_USER_ID,
-              'workspaces',
-              'ws_demo',
-              'config',
-              'workspace.jsonc'
-            ),
+            path: join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'config', 'workspace.jsonc'),
             config: {
               schemaVersion: 1,
               workspace: {
@@ -5647,17 +5904,8 @@ describe('nanocore server', () => {
         dataRoot: coreDb.dataRoot,
         workspaceConfigs: [
           {
-            userId: LOCAL_USER_ID,
             workspaceId: 'ws_demo',
-            path: join(
-              coreDb.dataRoot,
-              'users',
-              LOCAL_USER_ID,
-              'workspaces',
-              'ws_demo',
-              'config',
-              'workspace.jsonc'
-            ),
+            path: join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'config', 'workspace.jsonc'),
             config: {
               schemaVersion: 1,
               workspace: {
@@ -5912,12 +6160,17 @@ describe('nanocore server', () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
     const executor = new FakeTurnExecutor();
-
-    for (const agent of store.getWorkspaceResources('ws_demo').agents) {
-      store.upsertAgent('ws_demo', { ...agent, status: 'disabled' });
-    }
-
-    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const app = createApp({
+      agentManifests: [
+        {
+          ...createTestAgentSetup({ provider: null }).manifest,
+          readiness: { message: 'Blocked for this test.', status: 'blocked' },
+        },
+      ],
+      coreDb,
+      store,
+      turnExecutor: executor,
+    });
 
     try {
       const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
@@ -5934,7 +6187,7 @@ describe('nanocore server', () => {
 
       expect(parsed).toMatchObject({
         outcome: 'refused',
-        explanation: 'No ready Codex or OpenCode worker candidate is available.',
+        explanation: 'No ready worker candidate is available.',
         handoff: null,
       });
       expect(executor.startContexts).toHaveLength(0);
@@ -6162,24 +6415,43 @@ describe('nanocore server', () => {
   });
 
   it('returns a typed 400 error for unsupported turn model overrides', async () => {
-    const app = createApp({ turnExecutor: new FakeTurnExecutor() });
-    const res = await app.request('/api/turns', {
-      method: 'POST',
-      body: JSON.stringify({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        requestId: '0190f4c8-0000-7000-8000-000000000203',
-        input: 'Ship the update',
-        modelId: 'model_missing',
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const coreDb = createCoreDb();
+    const app = createApp({ coreDb, turnExecutor: new FakeTurnExecutor() });
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-turn-model-override-'));
 
-    expect(res.status).toBe(400);
-    await expect(res.json()).resolves.toMatchObject({
-      code: 'model_not_found',
-      message: 'Model not found: model_missing.',
-    });
+    mkdirSync(join(repositoryPath, '.git'));
+
+    try {
+      const link = await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+        method: 'PUT',
+        body: JSON.stringify({
+          displayName: 'Model override repository',
+          localPath: repositoryPath,
+        }),
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(link.status).toBe(200);
+
+      const res = await app.request('/api/turns', {
+        method: 'POST',
+        body: JSON.stringify({
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          requestId: '0190f4c8-0000-7000-8000-000000000203',
+          input: 'Ship the update',
+          modelId: 'model_missing',
+        }),
+        headers: { 'content-type': 'application/json' },
+      });
+
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toMatchObject({
+        code: 'model_not_found',
+        message: 'Model not found: model_missing.',
+      });
+    } finally {
+      coreDb.sqlite.close();
+    }
   });
 
   it('rejects direct worker turns in the Quick Chat workspace', async () => {
@@ -6572,7 +6844,10 @@ describe('nanocore server', () => {
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     const thread = store.createThread('ws_demo', 'Active turn steering');
     const activeTurn = store.updateTurn(
-      store.createTurn('ws_demo', thread.id, 'Keep this turn active').id,
+      store.createTurn('ws_demo', thread.id, 'Keep this turn active', {
+        kind: 'user',
+        id: 'user_local',
+      }).id,
       { status: 'running' }
     );
     const body = {
@@ -6646,11 +6921,14 @@ describe('nanocore server', () => {
     }
   });
 
-  it('deduplicates follow-up input, interrupt, and approval response commands', async () => {
+  it('deduplicates follow-up input and interrupt while unsupported approvals fail closed', async () => {
     const store = createDemoStore();
     const interactiveExecutor = new InteractiveTurnExecutor();
     const interactiveApp = createApp({ store, turnExecutor: interactiveExecutor });
-    const createdFollowUpTurn = store.createTurn('ws_demo', 'th_demo', 'Await input');
+    const createdFollowUpTurn = store.createTurn('ws_demo', 'th_demo', 'Await input', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const followUpItem = store.createItem({
       id: 'it_follow_up_question',
       workspaceId: 'ws_demo',
@@ -6658,6 +6936,7 @@ describe('nanocore server', () => {
       turnId: createdFollowUpTurn.id,
       type: 'user-input-request',
       status: 'completed',
+      responsibleUserId: 'user_local',
       userInputRequestId: 'ui_follow_up',
       prompt: 'Continue?',
       questions: [
@@ -6703,7 +6982,10 @@ describe('nanocore server', () => {
     expect((await followUpSecond.json()) as { id: string }).toMatchObject({ id: followUpTurn.id });
     expect(interactiveExecutor.userInputResponses).toBe(1);
 
-    const interruptTurn = store.createTurn('ws_demo', 'th_demo', 'Interrupt once');
+    const interruptTurn = store.createTurn('ws_demo', 'th_demo', 'Interrupt once', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const interruptBody = {
       workspaceId: 'ws_demo',
       threadId: 'th_demo',
@@ -6734,7 +7016,10 @@ describe('nanocore server', () => {
 
     const approvalExecutor = new ApprovalTurnExecutor();
     const approvalApp = createApp({ store, turnExecutor: approvalExecutor });
-    const approvalTurn = store.createTurn('ws_demo', 'th_demo', 'Approve once');
+    const approvalTurn = store.createTurn('ws_demo', 'th_demo', 'Approve once', {
+      kind: 'user',
+      id: 'user_local',
+    });
     store.createApproval({
       id: 'ap_idempotent',
       workspaceId: 'ws_demo',
@@ -6765,21 +7050,21 @@ describe('nanocore server', () => {
       headers: jsonHeaders(),
     });
 
-    expect((await approvalFirst.json()) as { id: string; status: string }).toMatchObject({
-      id: 'ap_idempotent',
-      status: 'granted',
-    });
-    expect((await approvalSecond.json()) as { id: string; status: string }).toMatchObject({
-      id: 'ap_idempotent',
-      status: 'granted',
-    });
-    expect(approvalExecutor.approvalResponses).toBe(1);
+    expect(approvalFirst.status).toBe(501);
+    await expect(approvalFirst.json()).resolves.toMatchObject({ code: 'approvals_not_supported' });
+    expect(approvalSecond.status).toBe(501);
+    await expect(approvalSecond.json()).resolves.toMatchObject({ code: 'approvals_not_supported' });
+    expect(approvalExecutor.approvalResponses).toBe(0);
   });
 
   it('rejects turn input submissions while the turn waits on approval', async () => {
     const store = createDemoStore();
-    const app = createApp({ store, turnExecutor: new InteractiveTurnExecutor() });
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Await approval');
+    const turnExecutor = new InteractiveTurnExecutor();
+    const app = createApp({ store, turnExecutor });
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Await approval', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const approvalItem = store.createItem({
       id: 'it_approval_gate',
       workspaceId: 'ws_demo',
@@ -6815,10 +7100,18 @@ describe('nanocore server', () => {
       headers: jsonHeaders(),
     });
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(409);
     await expect(res.json()).resolves.toMatchObject({
-      code: 'turn_not_awaiting_user_input',
+      code: 'not_awaiting_input',
     });
+    expect(turnExecutor.userInputResponses).toBe(0);
+    expect(
+      store.getCommandRequest('turn.input.submit', '0190f4c8-0000-7000-8000-000000000513', {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: turn.id,
+      })
+    ).toBeNull();
 
     const implicit = await app.request('/api/turns', {
       method: 'POST',
@@ -6859,14 +7152,17 @@ describe('nanocore server', () => {
   it('returns invalid_request for missing request ids on all protocol mutating routes', async () => {
     const store = createDemoStore();
     const app = createApp({ store, turnExecutor: new ApprovalTurnExecutor() });
-    const turn = store.updateTurn(store.createTurn('ws_demo', 'th_demo', 'Need input').id, {
-      status: 'awaiting_human',
-      humanGate: {
-        kind: 'approval',
-        approvalRequestId: 'ap_missing_request',
-        itemId: 'it_missing_request_approval',
-      },
-    });
+    const turn = store.updateTurn(
+      store.createTurn('ws_demo', 'th_demo', 'Need input', { kind: 'user', id: 'user_local' }).id,
+      {
+        status: 'awaiting_human',
+        humanGate: {
+          kind: 'approval',
+          approvalRequestId: 'ap_missing_request',
+          itemId: 'it_missing_request_approval',
+        },
+      }
+    );
     store.createApproval({
       id: 'ap_missing_request',
       workspaceId: 'ws_demo',
@@ -7000,12 +7296,23 @@ describe('nanocore server', () => {
       workspaceId: 'ws_demo',
       threadId: null,
       turnId: null,
-      kind: 'summary',
+      kind: 'file',
       title: 'Draft summary',
-      status: 'draft',
+      status: 'ready',
       summary: null,
       version: 1,
       content: { format: 'markdown', body: '# Draft' },
+      contentDigest: artifactDigest('# Draft'),
+      lastMutationRequestId: 'artifact-import-server-test-1',
+      origin: {
+        kind: 'imported',
+        sourceKind: 'direct-import',
+        sourceId: 'artifact-import-server-test-1',
+        sourceDigest: artifactDigest('# Draft'),
+        actor: { kind: 'user', id: LOCAL_USER_ID },
+        requestId: 'artifact-import-server-test-1',
+        recordedAt: timestamp,
+      },
       createdAt: timestamp,
       updatedAt: timestamp,
     });
@@ -7022,7 +7329,7 @@ describe('nanocore server', () => {
     expect(response.status).toBe(404);
     expect(store.getArtifact('ws_demo', 'ar_server_test')).toMatchObject({
       title: 'Draft summary',
-      status: 'draft',
+      status: 'ready',
       summary: null,
       version: 1,
     });
@@ -7031,9 +7338,16 @@ describe('nanocore server', () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
-    store.createTurn('ws_demo', 'th_demo', 'Produce workspace review', null, {
-      turnId: 'turn_demo',
-    });
+    store.createTurn(
+      'ws_demo',
+      'th_demo',
+      'Produce workspace review',
+      { kind: 'user', id: 'user_local' },
+      null,
+      {
+        turnId: 'turn_demo',
+      }
+    );
     const timestamp = new Date().toISOString();
     const patchText = 'diff --git a/docs/spec.md b/docs/spec.md\n';
     const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
@@ -7095,6 +7409,14 @@ describe('nanocore server', () => {
       summary: workspaceReview.review.riskSummary,
       version: 1,
       content: { format: 'json', body: JSON.stringify(workspaceReview) },
+      contentDigest: artifactDigest(JSON.stringify(workspaceReview)),
+      lastMutationRequestId: 'workspace-review-artifact-1',
+      origin: {
+        kind: 'turn-output',
+        threadId: 'th_demo',
+        turnId: 'turn_demo',
+        requestId: 'workspace-review-artifact-1',
+      },
       createdAt: timestamp,
       updatedAt: timestamp,
     });
@@ -7109,6 +7431,14 @@ describe('nanocore server', () => {
       summary: null,
       version: 1,
       content: { format: 'markdown', body: '# Report' },
+      contentDigest: artifactDigest('# Report'),
+      lastMutationRequestId: 'regular-report-artifact-1',
+      origin: {
+        kind: 'turn-output',
+        threadId: 'th_demo',
+        turnId: 'turn_demo',
+        requestId: 'regular-report-artifact-1',
+      },
       createdAt: timestamp,
       updatedAt: timestamp,
     });
@@ -7200,9 +7530,16 @@ describe('nanocore server', () => {
     const store = createDemoStore();
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const item = workspaceSyncReviewRouteItem();
-    store.createTurn('ws_demo', 'th_demo', 'Produce artifact-only workspace review', null, {
-      turnId: 'turn_demo',
-    });
+    store.createTurn(
+      'ws_demo',
+      'th_demo',
+      'Produce artifact-only workspace review',
+      { kind: 'user', id: 'user_local' },
+      null,
+      {
+        turnId: 'turn_demo',
+      }
+    );
 
     store.createArtifact({
       id: item.artifactId,
@@ -7215,6 +7552,14 @@ describe('nanocore server', () => {
       summary: item.review.riskSummary,
       version: 1,
       content: { format: 'json', body: JSON.stringify(item) },
+      contentDigest: artifactDigest(JSON.stringify(item)),
+      lastMutationRequestId: 'artifact-only-workspace-review-1',
+      origin: {
+        kind: 'turn-output',
+        threadId: 'th_demo',
+        turnId: 'turn_demo',
+        requestId: 'artifact-only-workspace-review-1',
+      },
       createdAt: item.review.createdAt,
       updatedAt: item.review.updatedAt,
     });
@@ -7255,9 +7600,16 @@ describe('nanocore server', () => {
     const store = createDemoStore();
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const item = workspaceSyncReviewRouteItem();
-    store.createTurn('ws_demo', 'th_demo', 'Produce durable workspace review', null, {
-      turnId: 'turn_demo',
-    });
+    store.createTurn(
+      'ws_demo',
+      'th_demo',
+      'Produce durable workspace review',
+      { kind: 'user', id: 'user_local' },
+      null,
+      {
+        turnId: 'turn_demo',
+      }
+    );
 
     store.createArtifact({
       id: item.artifactId,
@@ -7270,6 +7622,14 @@ describe('nanocore server', () => {
       summary: item.review.riskSummary,
       version: 1,
       content: { format: 'json', body: JSON.stringify(item) },
+      contentDigest: artifactDigest(JSON.stringify(item)),
+      lastMutationRequestId: 'durable-workspace-review-artifact-1',
+      origin: {
+        kind: 'turn-output',
+        threadId: 'th_demo',
+        turnId: 'turn_demo',
+        requestId: 'durable-workspace-review-artifact-1',
+      },
       createdAt: item.review.createdAt,
       updatedAt: item.review.updatedAt,
     });
@@ -7308,11 +7668,11 @@ describe('nanocore server', () => {
     }
   });
 
-  it('records durable workspace synchronization review decisions idempotently', async () => {
+  it('records workspace sync decisions idempotently and blocks dual-owner replay', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
-    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const workspace = store.createWorkspace('Durable workspace review decision');
+    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const timestamp = new Date().toISOString();
     const patchText = 'diff --git a/docs/decision.md b/docs/decision.md\n';
     const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
@@ -7409,6 +7769,78 @@ describe('nanocore server', () => {
       } finally {
         persistedDb.sqlite.close();
       }
+      const authorityDb = openTestWorkspaceDb(coreDb, workspace.id);
+      const pendingDualOwnerItem = {
+        ...item,
+        artifactId: 'ar_pending_dual_owner_review',
+        changeSet: {
+          ...item.changeSet,
+          id: 'wcs_pending_dual_owner_review',
+          artifactIds: ['ar_pending_dual_owner_review'],
+          inputSnapshotId: 'wis_pending_dual_owner_review',
+          materializationRecordId: 'wmr_pending_dual_owner_review',
+        },
+        review: {
+          ...item.review,
+          id: 'swr_pending_dual_owner_review',
+          actionCenterRowId: 'workspace-review:swr_pending_dual_owner_review',
+          changeSetId: 'wcs_pending_dual_owner_review',
+          staging: {
+            ...item.review.staging,
+            ref: 'staging://workspace/wcs_pending_dual_owner_review',
+          },
+        },
+      } satisfies Parameters<typeof recordWorkspaceSyncReview>[1]['item'];
+      try {
+        createArtifactReview(authorityDb, {
+          artifactId: item.artifactId,
+          artifactVersion: 1,
+          contentDigest: artifactDigest(JSON.stringify(item)),
+          sourceThreadId: null,
+          sourceTurnId: null,
+          sourceAgentId: null,
+          materialProposal: null,
+          createdAt: timestamp,
+        });
+        recordTestWorkspaceReviewMaterialization(authorityDb, pendingDualOwnerItem);
+        recordWorkspaceSyncReview(authorityDb, { item: pendingDualOwnerItem });
+        createArtifactReview(authorityDb, {
+          artifactId: pendingDualOwnerItem.artifactId,
+          artifactVersion: 1,
+          contentDigest: artifactDigest(JSON.stringify(pendingDualOwnerItem)),
+          sourceThreadId: null,
+          sourceTurnId: null,
+          sourceAgentId: null,
+          materialProposal: null,
+          createdAt: timestamp,
+        });
+      } finally {
+        authorityDb.sqlite.close();
+      }
+      const dualOwnerReplay = await app.request(
+        `/api/app/workspaces/${workspace.id}/workspace-sync/reviews/swr_durable_review_decision/decision`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: 'workspace-sync-review-request-1',
+            decision: 'needs_refinement',
+            message: 'Please narrow this patch.',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+      const dualOwnerFreshRequest = await app.request(
+        `/api/app/workspaces/${workspace.id}/workspace-sync/reviews/${pendingDualOwnerItem.review.id}/decision`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: 'workspace-sync-review-request-2',
+            decision: 'needs_refinement',
+            message: 'Please narrow this patch.',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
 
       expect(firstRes.status).toBe(200);
       expect(secondRes.status).toBe(200);
@@ -7419,6 +7851,21 @@ describe('nanocore server', () => {
           (row) => row.id === 'workspace-review:swr_durable_review_decision'
         )
       ).toBe(false);
+      expect(dualOwnerReplay.status).toBe(409);
+      await expect(dualOwnerReplay.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(dualOwnerFreshRequest.status).toBe(409);
+      await expect(dualOwnerFreshRequest.json()).resolves.toMatchObject({
+        code: 'recovery_required',
+      });
+      const pendingDb = openTestWorkspaceDb(coreDb, workspace.id);
+      try {
+        expect(
+          getWorkspaceSyncReview(pendingDb, workspace.id, pendingDualOwnerItem.review.id)?.review
+            .status
+        ).toBe('pending');
+      } finally {
+        pendingDb.sqlite.close();
+      }
     } finally {
       coreDb.sqlite.close();
     }
@@ -7427,8 +7874,8 @@ describe('nanocore server', () => {
   it('records workspace recovery decisions idempotently', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
-    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const workspace = store.createWorkspace('Workspace recovery decision');
+    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const timestamp = new Date().toISOString();
 
     try {
@@ -7511,8 +7958,8 @@ describe('nanocore server', () => {
   it('resumes workspace recovery collection from durable workspace sync records', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
-    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const workspace = store.createWorkspace('Workspace recovery resume');
+    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const timestamp = new Date().toISOString();
     const routeItem = workspaceSyncReviewRouteItem();
     const item: Parameters<typeof recordWorkspaceSyncReview>[1]['item'] = {
@@ -7607,46 +8054,17 @@ describe('nanocore server', () => {
   it('reads durable Agent Environment Package snapshots through App API routes', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
-    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const workspace = store.createWorkspace('AEP snapshot readback');
+    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const createdAt = '2026-07-06T00:00:01.000Z';
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
-        agent: {
-          id: 'agent_codex_host',
-          name: 'Codex Agent',
-          kind: 'coder',
-          status: 'enabled',
-          modelId: null,
-          skillIds: [],
-          profiles: [
-            {
-              id: 'default',
-              displayName: 'Default',
-              instructionsRef: null,
-              modelId: null,
-              skillIds: [],
-              capabilityIds: [],
-            },
-          ],
-          defaultProfileId: 'default',
-          capabilities: [],
-          sandboxSummary: null,
-          config: {
-            adapterType: 'codex',
-            command: null,
-            baseUrl: null,
-            workspaceRoot: '/workspace',
-            environment: { OPENAI_API_KEY: 'sk-redacted-before-response' },
-            capabilities: [],
-          },
-        },
+        agentSetup: createTestAgentSetup(),
         agentSessionId: 'as_aep_readback',
-        userId: 'user_local',
+        triggerActor: { kind: 'user', id: 'user_local' },
         backend: {
           workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
-          sandboxImageRef: 'openkit/worker-codex:dev',
         },
         requestId: 'req_aep_readback',
         turn: {
@@ -7661,6 +8079,7 @@ describe('nanocore server', () => {
           startedAt: '2026-07-06T00:00:00.000Z',
           completedAt: null,
           durationMs: null,
+          triggerActor: { kind: 'user', id: 'user_local' },
         },
         turnInput: 'Run tests',
         workspaceCwd: '/workspace',
@@ -7705,7 +8124,318 @@ describe('nanocore server', () => {
         snapshot: { snapshotId: environmentPackage.snapshotId },
       });
       expect(JSON.stringify(detailJson)).not.toContain('sk-redacted-before-response');
-      expect(missing.status).toBe(404);
+      expect(missing.status).toBe(403);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('denies foreign and missing workspace review child lineage before reads or decisions', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore();
+    const authorizedWorkspace = store
+      .listWorkspaces()
+      .find((workspace) => workspace.kind === 'quick-chat');
+    const foreignWorkspace = store.createWorkspace('Foreign workspace review owner');
+    const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const baseReview = workspaceSyncReviewRouteItem();
+    const reviewId = 'swr_foreign_child_lineage';
+    const changeSetId = 'wcs_foreign_child_lineage';
+    const artifactId = 'ar_foreign_child_lineage';
+    const review = {
+      ...baseReview,
+      artifactId,
+      changeSet: {
+        ...baseReview.changeSet,
+        artifactIds: [artifactId],
+        id: changeSetId,
+        inputSnapshotId: 'wis_foreign_child_lineage',
+        materializationRecordId: 'wmr_foreign_child_lineage',
+        workspaceId: foreignWorkspace.id,
+      },
+      review: {
+        ...baseReview.review,
+        actionCenterRowId: `workspace-review:${reviewId}`,
+        changeSetId,
+        id: reviewId,
+        workspaceId: foreignWorkspace.id,
+      },
+    } satisfies Parameters<typeof recordWorkspaceSyncReview>[1]['item'];
+
+    if (!authorizedWorkspace) {
+      throw new Error('Expected the local Quick Chat Workspace fixture.');
+    }
+
+    try {
+      const foreignDb = openTestWorkspaceDb(coreDb, foreignWorkspace.id);
+      try {
+        recordTestWorkspaceReviewMaterialization(foreignDb, review);
+        recordWorkspaceSyncReview(foreignDb, { item: review });
+      } finally {
+        foreignDb.sqlite.close();
+      }
+
+      const foreignRead = await app.request(
+        `/api/app/workspaces/${authorizedWorkspace.id}/workspace-sync/reviews/${reviewId}`
+      );
+      const missingRead = await app.request(
+        `/api/app/workspaces/${authorizedWorkspace.id}/workspace-sync/reviews/swr_missing_child_lineage`
+      );
+      const foreignDecision = await app.request(
+        `/api/app/workspaces/${authorizedWorkspace.id}/workspace-sync/reviews/${reviewId}/decision`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            decision: 'needs_refinement',
+            requestId: 'foreign-review-child-lineage',
+          }),
+          headers: jsonHeaders(),
+        }
+      );
+      const missingDecision = await app.request(
+        `/api/app/workspaces/${authorizedWorkspace.id}/workspace-sync/reviews/swr_missing_child_lineage/decision`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            decision: 'needs_refinement',
+            requestId: 'missing-review-child-lineage',
+          }),
+          headers: jsonHeaders(),
+        }
+      );
+      const foreignReadBody = await foreignRead.json();
+      const missingReadBody = await missingRead.json();
+      const foreignDecisionBody = await foreignDecision.json();
+      const missingDecisionBody = await missingDecision.json();
+
+      expect.soft(foreignRead.status).toBe(403);
+      expect.soft(missingRead.status).toBe(403);
+      expect.soft(foreignReadBody).toEqual(missingReadBody);
+      expect.soft(foreignReadBody).toMatchObject({ code: 'workspace_access_denied' });
+      expect.soft(foreignDecision.status).toBe(403);
+      expect.soft(missingDecision.status).toBe(403);
+      expect.soft(foreignDecisionBody).toEqual(missingDecisionBody);
+      expect.soft(foreignDecisionBody).toMatchObject({ code: 'workspace_access_denied' });
+
+      const persistedDb = openTestWorkspaceDb(coreDb, foreignWorkspace.id);
+      try {
+        expect(
+          getWorkspaceSyncReview(persistedDb, foreignWorkspace.id, reviewId)?.review.status
+        ).toBe('pending');
+      } finally {
+        persistedDb.sqlite.close();
+      }
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('denies foreign and missing workspace recovery child lineage without resolving the owner', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore();
+    const authorizedWorkspace = store
+      .listWorkspaces()
+      .find((workspace) => workspace.kind === 'quick-chat');
+    const foreignWorkspace = store.createWorkspace('Foreign workspace recovery owner');
+    const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const reconciliationRecordId = 'wrr_foreign_child_lineage';
+    const timestamp = '2026-07-19T00:00:00.000Z';
+
+    if (!authorizedWorkspace) {
+      throw new Error('Expected the local Quick Chat Workspace fixture.');
+    }
+
+    try {
+      const foreignDb = openTestWorkspaceDb(coreDb, foreignWorkspace.id);
+      try {
+        recordWorkspaceReconciliationRecord(foreignDb, {
+          id: reconciliationRecordId,
+          workspaceId: foreignWorkspace.id,
+          triggerReason: 'restart',
+          affectedRecordIds: ['wmr_foreign_child_lineage'],
+          backendHandleSummary: {
+            backendKind: 'openshell',
+            handleId: 'bwh_foreign_child_lineage',
+            workerSessionId: 'session_foreign_child_lineage',
+            cleanupStatus: 'pending',
+          },
+          backendReachability: { status: 'unavailable', checkedAt: timestamp, detail: null },
+          collectedOutputManifestIds: [],
+          evidenceBundleIds: [],
+          stateBefore: 'ready',
+          stateAfter: 'requires-human',
+          quarantineRefs: [],
+          requiredHumanDecision: 'inspect_recovery',
+          retentionDecision: 'retain-backend',
+          startedAt: timestamp,
+          finishedAt: null,
+        });
+      } finally {
+        foreignDb.sqlite.close();
+      }
+
+      const decide = (recordId: string, requestId: string) =>
+        app.request(
+          `/api/app/workspaces/${authorizedWorkspace.id}/workspace-sync/reconciliation-records/${recordId}/decision`,
+          {
+            method: 'POST',
+            body: JSON.stringify({ decision: 'quarantine', requestId }),
+            headers: jsonHeaders(),
+          }
+        );
+      const foreignDecision = await decide(
+        reconciliationRecordId,
+        'foreign-recovery-child-lineage'
+      );
+      const missingDecision = await decide(
+        'wrr_missing_child_lineage',
+        'missing-recovery-child-lineage'
+      );
+      const foreignBody = await foreignDecision.json();
+      const missingBody = await missingDecision.json();
+
+      expect.soft(foreignDecision.status).toBe(403);
+      expect.soft(missingDecision.status).toBe(403);
+      expect.soft(foreignBody).toEqual(missingBody);
+      expect.soft(foreignBody).toMatchObject({ code: 'workspace_access_denied' });
+
+      const persistedDb = openTestWorkspaceDb(coreDb, foreignWorkspace.id);
+      try {
+        expect(
+          listWorkspaceReconciliationRecords(persistedDb, foreignWorkspace.id).find(
+            (record) => record.id === reconciliationRecordId
+          )?.stateAfter
+        ).toBe('requires-human');
+      } finally {
+        persistedDb.sqlite.close();
+      }
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('denies foreign and missing workspace apply-result child lineage', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore();
+    const authorizedWorkspace = store
+      .listWorkspaces()
+      .find((workspace) => workspace.kind === 'quick-chat');
+    const foreignWorkspace = store.createWorkspace('Foreign workspace apply-result owner');
+    const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const applyResultId = 'war_foreign_child_lineage';
+
+    if (!authorizedWorkspace) {
+      throw new Error('Expected the local Quick Chat Workspace fixture.');
+    }
+
+    try {
+      const foreignDb = openTestWorkspaceDb(coreDb, foreignWorkspace.id);
+      try {
+        recordWorkspaceApplyResult(foreignDb, {
+          requestId: 'record-foreign-apply-result-child-lineage',
+          result: {
+            appliedAt: '2026-07-19T00:00:00.000Z',
+            appliedPaths: [],
+            changeSetId: 'wcs_foreign_apply_result_child_lineage',
+            commitIds: [],
+            conflictRecords: [],
+            id: applyResultId,
+            reviewId: 'swr_foreign_apply_result_child_lineage',
+            skippedPaths: [],
+            status: 'applied',
+            verification: [],
+            workspaceId: foreignWorkspace.id,
+          },
+        });
+      } finally {
+        foreignDb.sqlite.close();
+      }
+
+      const foreignRead = await app.request(
+        `/api/app/workspaces/${authorizedWorkspace.id}/workspace-sync/apply-results/${applyResultId}`
+      );
+      const missingRead = await app.request(
+        `/api/app/workspaces/${authorizedWorkspace.id}/workspace-sync/apply-results/war_missing_child_lineage`
+      );
+      const foreignBody = await foreignRead.json();
+      const missingBody = await missingRead.json();
+
+      expect.soft(foreignRead.status).toBe(403);
+      expect.soft(missingRead.status).toBe(403);
+      expect.soft(foreignBody).toEqual(missingBody);
+      expect.soft(foreignBody).toMatchObject({ code: 'workspace_access_denied' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('denies foreign and missing Agent Environment Package snapshot child lineage', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore();
+    const authorizedWorkspace = store
+      .listWorkspaces()
+      .find((workspace) => workspace.kind === 'quick-chat');
+    const foreignWorkspace = store.createWorkspace('Foreign AEP snapshot owner');
+    const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const environmentPackage = AgentEnvironmentPackageSchema.parse(
+      resolveAgentEnvironmentPackage({
+        agentSetup: createTestAgentSetup(),
+        agentSessionId: 'as_foreign_aep_child_lineage',
+        triggerActor: { kind: 'user', id: LOCAL_USER_ID },
+        backend: {
+          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+          kind: 'openshell',
+        },
+        requestId: 'req_foreign_aep_child_lineage',
+        turn: {
+          id: 'turn_foreign_aep_child_lineage',
+          workspaceId: foreignWorkspace.id,
+          threadId: 'th_foreign_aep_child_lineage',
+          items: [],
+          status: 'running',
+          humanGate: null,
+          error: null,
+          configVersion: null,
+          startedAt: '2026-07-19T00:00:00.000Z',
+          completedAt: null,
+          durationMs: null,
+          triggerActor: { kind: 'user', id: LOCAL_USER_ID },
+        },
+        turnInput: 'Test child lineage',
+        workspaceCwd: '/workspace',
+        workspaceRoots: [],
+      })
+    );
+
+    if (!authorizedWorkspace) {
+      throw new Error('Expected the local Quick Chat Workspace fixture.');
+    }
+
+    try {
+      const foreignDb = openTestWorkspaceDb(coreDb, foreignWorkspace.id);
+      try {
+        recordAgentEnvironmentPackageSnapshot(foreignDb, {
+          createdAt: '2026-07-19T00:00:01.000Z',
+          environmentPackage,
+        });
+      } finally {
+        foreignDb.sqlite.close();
+      }
+
+      const foreignRead = await app.request(
+        `/api/app/workspaces/${authorizedWorkspace.id}/agent-environment/snapshots/${environmentPackage.snapshotId}`
+      );
+      const missingRead = await app.request(
+        `/api/app/workspaces/${authorizedWorkspace.id}/agent-environment/snapshots/aep_missing_child_lineage`
+      );
+      const foreignBody = await foreignRead.json();
+      const missingBody = await missingRead.json();
+
+      expect.soft(foreignRead.status).toBe(403);
+      expect.soft(missingRead.status).toBe(403);
+      expect.soft(foreignBody).toEqual(missingBody);
+      expect.soft(foreignBody).toMatchObject({ code: 'workspace_access_denied' });
+      expect.soft(JSON.stringify(foreignBody)).not.toContain(environmentPackage.snapshotId);
     } finally {
       coreDb.sqlite.close();
     }
@@ -7714,7 +8444,10 @@ describe('nanocore server', () => {
   it('does not expose the unversioned Artifact Review command', async () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Unversioned Artifact Review');
-    const turn = store.createTurn('ws_demo', thread.id, 'Produce artifact');
+    const turn = store.createTurn('ws_demo', thread.id, 'Produce artifact', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const timestamp = new Date().toISOString();
     store.createArtifact({
       id: 'artifact_unversioned_review',
@@ -7727,6 +8460,14 @@ describe('nanocore server', () => {
       summary: 'Must use a version-owned Review.',
       version: 1,
       content: { format: 'markdown', body: '# Review target' },
+      contentDigest: artifactDigest('# Review target'),
+      lastMutationRequestId: 'unversioned-artifact-review-create',
+      origin: {
+        kind: 'turn-output',
+        threadId: thread.id,
+        turnId: turn.id,
+        requestId: 'unversioned-artifact-review-create',
+      },
       createdAt: timestamp,
       updatedAt: timestamp,
     });
@@ -7745,7 +8486,6 @@ describe('nanocore server', () => {
     );
 
     expect(response.status).toBe(404);
-    expect(store.getArtifactReviewDecision('artifact_unversioned_review')).toBeNull();
   });
   it('records knowledge proposal review decisions idempotently', async () => {
     const store = createDemoStore();
@@ -7825,7 +8565,7 @@ describe('nanocore server', () => {
     });
   });
 
-  it('applies edited knowledge proposal review content to the pending proposal', async () => {
+  it('rejects edited knowledge proposal decisions without mutation', async () => {
     const store = createDemoStore();
     const app = createApp({ store });
     store.createKnowledgeProposal({
@@ -7853,28 +8593,24 @@ describe('nanocore server', () => {
       }
     );
 
-    expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({
-      review: {
-        proposalId: 'kp_review_edit',
-        status: 'edited',
-        message: 'Use the edited version.',
-      },
-    });
+    expect(res.status).toBe(400);
     expect(store.getKnowledgeProposal('kp_review_edit')).toMatchObject({
-      title: 'Edited proposal title',
-      summary: 'Edited proposal summary.',
-      status: 'edited',
+      title: 'Original proposal title',
+      summary: 'Original proposal summary.',
+      status: 'pending',
     });
   });
 
   it('applies accepted workspace synchronization review patches to the linked repository', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
-    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const workspace = store.createWorkspace('Workspace sync apply');
+    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const thread = store.createThread(workspace.id, 'Apply workspace review');
-    const turn = store.createTurn(workspace.id, thread.id, 'Produce workspace patch');
+    const turn = store.createTurn(workspace.id, thread.id, 'Produce workspace patch', {
+      kind: 'user',
+      id: 'user_local',
+    });
     store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
     const repoDir = mkdtempSync(join(tmpdir(), 'openkit-workspace-apply-'));
     const timestamp = new Date().toISOString();
@@ -7979,6 +8715,14 @@ describe('nanocore server', () => {
       summary: workspaceReview.review.riskSummary,
       version: 1,
       content: { format: 'json', body: JSON.stringify(workspaceReview) },
+      contentDigest: artifactDigest(JSON.stringify(workspaceReview)),
+      lastMutationRequestId: 'workspace-apply-artifact-1',
+      origin: {
+        kind: 'turn-output',
+        threadId: thread.id,
+        turnId: turn.id,
+        requestId: 'workspace-apply-artifact-1',
+      },
       createdAt: timestamp,
       updatedAt: timestamp,
     });
@@ -8034,7 +8778,7 @@ describe('nanocore server', () => {
     expect(commitMessage).toContain('OpenKit-Review-Id: swr_apply_1');
     expect(commitMessage).toContain(`OpenKit-Workspace-Id: ${workspace.id}`);
     expect(commitMessage).toContain(
-      'Co-Authored-By: Codex Host Agent <agent_codex_host@agents.openkit.invalid>'
+      'Co-Authored-By: OpenKit Agent agent_codex_host <agent_codex_host@agents.openkit.invalid>'
     );
     expect(
       execFileSync('git', ['show', '--pretty=', '--name-only', 'HEAD'], {
@@ -8064,7 +8808,7 @@ describe('nanocore server', () => {
     const listApplyPlans = await app.request(
       `/api/app/workspaces/${workspace.id}/workspace-sync/apply-plans`
     );
-    const reconciliationDb = openWorkspaceDb(coreDb.dataRoot, LOCAL_USER_ID, workspace.id);
+    const reconciliationDb = openWorkspaceDb(coreDb.dataRoot, workspace.id);
     try {
       recordWorkspaceReconciliationRecord(reconciliationDb, {
         id: 'wrr_swr_apply_1',
@@ -8371,10 +9115,13 @@ describe('nanocore server', () => {
   it('rolls back accepted workspace synchronization review patches when commit identity is missing', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
-    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const workspace = store.createWorkspace('Workspace sync rollback');
+    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const thread = store.createThread(workspace.id, 'Rollback workspace review');
-    const turn = store.createTurn(workspace.id, thread.id, 'Produce workspace patch');
+    const turn = store.createTurn(workspace.id, thread.id, 'Produce workspace patch', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const repoDir = mkdtempSync(join(tmpdir(), 'openkit-workspace-rollback-'));
     const timestamp = new Date().toISOString();
 
@@ -8472,6 +9219,14 @@ describe('nanocore server', () => {
       summary: workspaceReview.review.riskSummary,
       version: 1,
       content: { format: 'json', body: JSON.stringify(workspaceReview) },
+      contentDigest: artifactDigest(JSON.stringify(workspaceReview)),
+      lastMutationRequestId: 'workspace-rollback-artifact-1',
+      origin: {
+        kind: 'turn-output',
+        threadId: thread.id,
+        turnId: turn.id,
+        requestId: 'workspace-rollback-artifact-1',
+      },
       createdAt: timestamp,
       updatedAt: timestamp,
     });
@@ -8517,7 +9272,10 @@ describe('nanocore server', () => {
     const store = createDemoStore();
     const workspace = store.createWorkspace('Filesystem workspace sync apply');
     const thread = store.createThread(workspace.id, 'Apply filesystem workspace review');
-    const turn = store.createTurn(workspace.id, thread.id, 'Produce filesystem changes');
+    const turn = store.createTurn(workspace.id, thread.id, 'Produce filesystem changes', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const targetRoot = mkdtempSync(join(tmpdir(), 'openkit-filesystem-apply-target-'));
     const workerRoot = mkdtempSync(join(tmpdir(), 'openkit-filesystem-apply-worker-'));
     const stagingRoot = mkdtempSync(join(tmpdir(), 'openkit-filesystem-apply-staging-'));
@@ -8607,6 +9365,14 @@ describe('nanocore server', () => {
       summary: workspaceReview.review.riskSummary,
       version: 1,
       content: { format: 'json', body: JSON.stringify(workspaceReview) },
+      contentDigest: artifactDigest(JSON.stringify(workspaceReview)),
+      lastMutationRequestId: 'filesystem-workspace-apply-artifact-1',
+      origin: {
+        kind: 'turn-output',
+        threadId: thread.id,
+        turnId: turn.id,
+        requestId: 'filesystem-workspace-apply-artifact-1',
+      },
       createdAt: timestamp,
       updatedAt: timestamp,
     });
@@ -8670,7 +9436,10 @@ describe('nanocore server', () => {
     const store = createDemoStore();
     const workspace = store.createWorkspace('Filesystem apply persistence rollback');
     const thread = store.createThread(workspace.id, 'Rollback filesystem workspace review');
-    const turn = store.createTurn(workspace.id, thread.id, 'Produce filesystem changes');
+    const turn = store.createTurn(workspace.id, thread.id, 'Produce filesystem changes', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const targetRoot = mkdtempSync(join(tmpdir(), 'openkit-filesystem-rollback-target-'));
     const workerRoot = mkdtempSync(join(tmpdir(), 'openkit-filesystem-rollback-worker-'));
     const stagingRoot = mkdtempSync(join(tmpdir(), 'openkit-filesystem-rollback-staging-'));
@@ -8764,6 +9533,14 @@ describe('nanocore server', () => {
         summary: workspaceReview.review.riskSummary,
         version: 1,
         content: { format: 'json', body: JSON.stringify(workspaceReview) },
+        contentDigest: artifactDigest(JSON.stringify(workspaceReview)),
+        lastMutationRequestId: 'filesystem-persist-rollback-artifact-1',
+        origin: {
+          kind: 'turn-output',
+          threadId: thread.id,
+          turnId: turn.id,
+          requestId: 'filesystem-persist-rollback-artifact-1',
+        },
         createdAt: timestamp,
         updatedAt: timestamp,
       });
@@ -8812,7 +9589,10 @@ describe('nanocore server', () => {
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Goal review decision');
-    const turn = store.createTurn('ws_demo', thread.id, 'Review the first Goal Task');
+    const turn = store.createTurn('ws_demo', thread.id, 'Review the first Goal Task', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
 
     try {
@@ -9012,7 +9792,10 @@ describe('nanocore server', () => {
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Final goal review decision');
-    const turn = store.createTurn('ws_demo', thread.id, 'Review the final Goal Task');
+    const turn = store.createTurn('ws_demo', thread.id, 'Review the final Goal Task', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
 
     try {
@@ -9124,7 +9907,10 @@ describe('nanocore server', () => {
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Goal review rollback');
-    const turn = store.createTurn('ws_demo', thread.id, 'Review the rollback Goal Task');
+    const turn = store.createTurn('ws_demo', thread.id, 'Review the rollback Goal Task', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
 
     try {
@@ -9263,7 +10049,10 @@ describe('nanocore server', () => {
 
   it('routes interrupts through the turn executor', async () => {
     const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Interrupt this running turn');
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Interrupt this running turn', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const app = createApp({ store, turnExecutor: new FakeTurnExecutor() });
     const interruptRes = await app.request(
       `/api/workspaces/ws_demo/threads/th_demo/turns/${turn.id}/interrupt`,
@@ -9290,7 +10079,10 @@ describe('nanocore server', () => {
 
   it('projects live OpenShell worker control status into thread dashboard sessions', async () => {
     const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Show worker control status');
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Show worker control status', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const environmentPackage = createOpenShellWorkerControlPackage(store, turn.id);
     const gateway = new WorkerControlGateway({
       createToken: () => 'token_dashboard_control_1',
@@ -9376,8 +10168,14 @@ describe('nanocore server', () => {
 
   it('projects worker control status from the active package snapshot when a session id is reused', async () => {
     const store = createDemoStore();
-    const oldTurn = store.createTurn('ws_demo', 'th_demo', 'Run the old worker package');
-    const currentTurn = store.createTurn('ws_demo', 'th_demo', 'Run the current worker package');
+    const oldTurn = store.createTurn('ws_demo', 'th_demo', 'Run the old worker package', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    const currentTurn = store.createTurn('ws_demo', 'th_demo', 'Run the current worker package', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const oldPackage = createOpenShellWorkerControlPackage(store, oldTurn.id);
     const currentPackage = createOpenShellWorkerControlPackage(store, currentTurn.id);
     const gateway = new WorkerControlGateway({
@@ -9492,7 +10290,8 @@ describe('nanocore server', () => {
     const unavailableTurn = store.createTurn(
       'ws_demo',
       'th_demo',
-      'Run an unavailable worker package'
+      'Run an unavailable worker package',
+      { kind: 'user', id: 'user_local' }
     );
     const unavailablePackage = createOpenShellWorkerControlPackage(store, unavailableTurn.id);
     store.updateAgentSession(currentPackage.scope.agentSessionId, {
@@ -9635,10 +10434,13 @@ describe('nanocore server', () => {
   it('requests and resolves Git push approvals through the App API', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
-    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const workspace = store.createWorkspace('Git push approval');
+    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const thread = store.createThread(workspace.id, 'Publish accepted work');
-    const turn = store.createTurn(workspace.id, thread.id, 'Publish accepted work');
+    const turn = store.createTurn(workspace.id, thread.id, 'Publish accepted work', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-git-push-approval-repository-'));
 
     execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
@@ -9755,7 +10557,8 @@ describe('nanocore server', () => {
       const receiptGapTurn = store.createTurn(
         workspace.id,
         thread.id,
-        'Publish work with a missing approval receipt'
+        'Publish work with a missing approval receipt',
+        { kind: 'user', id: 'user_local' }
       );
       const receiptGapRequest = {
         ...approvalRequest,
@@ -9983,12 +10786,15 @@ describe('nanocore server', () => {
     }
   });
 
-  it('records one unsupported-provider push and fails closed when its receipt is missing', async () => {
+  it('records an unsupported push, rejects invalid Vault grants, and fails closed without a receipt', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
     const workspace = store.createWorkspace('Git push execution');
     const thread = store.createThread(workspace.id, 'Publish accepted work');
-    const turn = store.createTurn(workspace.id, thread.id, 'Publish accepted work');
+    const turn = store.createTurn(workspace.id, thread.id, 'Publish accepted work', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const vaultUnlockState = createVaultUnlockState({
       backendKind: 'encrypted-file',
       storeDir: join(coreDb.dataRoot, 'server', 'vault'),
@@ -10127,6 +10933,74 @@ describe('nanocore server', () => {
       );
       expect(decisionRes.status).toBe(200);
 
+      const interruptedPushDb = openTestWorkspaceDb(coreDb, workspace.id);
+      try {
+        startCapabilityCall({
+          authorityActor: { kind: 'user', id: LOCAL_USER_ID },
+          workspaceDb: interruptedPushDb,
+          callId: 'cap_interrupted_git_push',
+          workspaceId: workspace.id,
+          threadId: thread.id,
+          turnId: turn.id,
+          itemId: approvalPayload.approvalItemId,
+          requestId: '00000000-0000-4000-8000-000000000063',
+          family: 'network',
+          operation: 'git.push',
+          capabilityId: 'workspace.git.push',
+          redactionClass: 'product-safe',
+        });
+
+        const interruptedPushRes = await app.request(
+          `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: '00000000-0000-4000-8000-000000000064',
+              approvalRequestId: approvalPayload.approval.id,
+            }),
+          }
+        );
+
+        expect(interruptedPushRes.status).toBe(409);
+        await expect(interruptedPushRes.json()).resolves.toMatchObject({
+          code: 'recovery_required',
+        });
+        expect(listGitPushRecords(interruptedPushDb, workspace.id)).toEqual([]);
+        expect(listVaultUseRecords(interruptedPushDb)).toEqual([]);
+        expect(() =>
+          execFileSync('git', ['rev-parse', 'refs/heads/feature/demo'], {
+            cwd: remotePath,
+            encoding: 'utf8',
+            stdio: 'pipe',
+          })
+        ).toThrow();
+        expect(
+          interruptedPushDb.sqlite
+            .prepare('DELETE FROM capability_calls WHERE call_id = ?')
+            .run('cap_interrupted_git_push').changes
+        ).toBe(1);
+      } finally {
+        interruptedPushDb.sqlite.close();
+      }
+
+      const decisionDb = openTestWorkspaceDb(coreDb, workspace.id);
+      try {
+        const result = decisionDb.sqlite
+          .prepare(
+            `UPDATE permission_decisions
+             SET subject_summary_json = ?
+             WHERE approval_id = ? AND action = 'repo.push' AND result = 'allow'`
+          )
+          .run(
+            JSON.stringify({ kind: 'user', userId: 'user_historical_decision_subject' }),
+            approvalPayload.approval.id
+          );
+        expect(result.changes).toBe(1);
+      } finally {
+        decisionDb.sqlite.close();
+      }
+
       const previousGithubToken = process.env.GITHUB_TOKEN;
       process.env.GITHUB_TOKEN = 'ghp_route_secret';
       const pushRes = await (async () => {
@@ -10227,6 +11101,134 @@ describe('nanocore server', () => {
           stdio: 'pipe',
         })
       ).toThrow();
+
+      execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/openkit/openkit.git'], {
+        cwd: repositoryPath,
+        stdio: 'ignore',
+      });
+      createVaultReference(coreDb, {
+        backendKind: 'encrypted-file',
+        displayName: 'Workspace GitHub push token',
+        ownerScope: 'workspace',
+        referenceId: 'vault_workspace_github_push',
+        secretKind: 'github-token',
+        workspaceId: workspace.id,
+      });
+      createVaultGrant(coreDb, {
+        allowedInjectionPaths: ['gateway-only'],
+        grantId: 'grant_git_push_import_seed',
+        lifetime: 'workspace',
+        ownerScope: 'workspace',
+        targetCapabilityId: 'workspace.git.push',
+        vaultReferenceId: 'vault_workspace_github_push',
+        workspaceId: workspace.id,
+      });
+      const importedGrantId = `grant_imported_${workspace.id}_git_push`;
+      expect(
+        coreDb.sqlite
+          .prepare('UPDATE vault_grants SET grant_id = ? WHERE grant_id = ?')
+          .run(importedGrantId, 'grant_git_push_import_seed').changes
+      ).toBe(1);
+      createVaultGrant(coreDb, {
+        allowedInjectionPaths: ['gateway-only'],
+        grantId: 'grant_git_push_wrong_target',
+        lifetime: 'workspace',
+        ownerScope: 'workspace',
+        targetAgentSessionId: 'as_wrong_git_push_target',
+        targetCapabilityId: 'workspace.git.push',
+        vaultReferenceId: 'vault_workspace_github_push',
+        workspaceId: workspace.id,
+      });
+
+      for (const [index, grantId] of [importedGrantId, 'grant_git_push_wrong_target'].entries()) {
+        const scenario = index * 3 + 52;
+        const scenarioTurn = store.createTurn(
+          workspace.id,
+          thread.id,
+          `Reject invalid Git push grant ${grantId}`,
+          { kind: 'user', id: 'user_local' }
+        );
+        const repositoryUpdate = await app.request(
+          `/api/app/workspaces/${workspace.id}/repositories/default`,
+          {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              displayName: 'Publish repository',
+              localPath: repositoryPath,
+              git: {
+                authorEmail: null,
+                authorName: null,
+                allowedPushTargets: ['feature/demo'],
+                commitOnApply: true,
+                vaultGrantRef: grantId,
+              },
+            }),
+          }
+        );
+        expect(repositoryUpdate.status).toBe(200);
+
+        const scenarioApproval = await app.request(
+          `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push/approval`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: `00000000-0000-4000-8000-0000000000${scenario}`,
+              threadId: thread.id,
+              turnId: scenarioTurn.id,
+              sourceRef: commitId,
+              targetBranch: 'feature/demo',
+              commitIds: [commitId],
+            }),
+          }
+        );
+        expect(scenarioApproval.status).toBe(200);
+        const scenarioApprovalPayload = await scenarioApproval.json();
+        const scenarioDecision = await app.request(
+          `/api/approvals/${scenarioApprovalPayload.approval.id}/respond`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: `00000000-0000-4000-8000-0000000000${scenario + 1}`,
+              workspaceId: workspace.id,
+              threadId: thread.id,
+              turnId: scenarioTurn.id,
+              decision: 'granted',
+            }),
+          }
+        );
+        expect(scenarioDecision.status).toBe(200);
+
+        const scenarioPush = await app.request(
+          `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: `00000000-0000-4000-8000-0000000000${scenario + 2}`,
+              approvalRequestId: scenarioApprovalPayload.approval.id,
+            }),
+          }
+        );
+        const scenarioPushBody = await scenarioPush.json();
+        expect(scenarioPush.status).toBe(200);
+        expect(scenarioPushBody).toMatchObject({
+          errorSummary: 'Git push refused because current vault.use authority is not allowed.',
+          outcome: 'refused-policy',
+        });
+      }
+
+      const authorityDb = openTestWorkspaceDb(coreDb, workspace.id);
+      try {
+        expect(listVaultUseRecords(authorityDb)).toEqual([]);
+        expect(listWorkspaceUsageRecords(authorityDb, workspace.id)).toEqual([]);
+      } finally {
+        authorityDb.sqlite.close();
+      }
+      expect(listInjectionPlans(coreDb)).toEqual([]);
+      expect(listInjectionReceipts(coreDb)).toEqual([]);
     } finally {
       coreDb.sqlite.close();
     }
@@ -10325,62 +11327,29 @@ describe('nanocore server', () => {
     });
     const catalogPath = join(
       coreDb.dataRoot,
-      'users',
-      LOCAL_USER_ID,
       'workspaces',
       'ws_demo',
       'config',
       'data-sources.jsonc'
     );
-    const workspaceConfigDir = join(
-      coreDb.dataRoot,
-      'users',
-      LOCAL_USER_ID,
-      'workspaces',
-      'ws_demo',
-      'config'
-    );
+    const workspaceConfigDir = join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'config');
     const runtimeConfigManager = createRuntimeConfigManager({
       dataRoot: coreDb.dataRoot,
       initialSnapshot: createInMemoryRuntimeConfigSnapshot({
         dataRoot: coreDb.dataRoot,
-        agentConfigs: [
+        agentManifests: [
           {
-            schemaVersion: 1,
-            id: 'agent_codex_host',
-            displayName: 'Codex Agent',
-            runtime: { kind: 'codex', adapter: 'codex-app-server' },
-            mode: 'local',
-            deployment: { local: {} },
+            ...createTestAgentSetup().manifest,
+            provider: undefined,
             workspace: {
               inputs: [{ id: 'repo_root', sourceRef: 'main-repo', target: 'repo' }],
             },
           },
         ],
-        agentManifests: [
-          {
-            adapter: 'codex-app-server',
-            deployments: ['local'],
-            displayName: 'Codex Agent',
-            id: 'agent_codex_host',
-            kind: 'custom',
-            runtime: 'codex',
-            version: '0.0.2',
-          },
-        ],
         workspaceConfigs: [
           {
-            userId: LOCAL_USER_ID,
             workspaceId: 'ws_demo',
-            path: join(
-              coreDb.dataRoot,
-              'users',
-              LOCAL_USER_ID,
-              'workspaces',
-              'ws_demo',
-              'config',
-              'workspace.jsonc'
-            ),
+            path: join(workspaceConfigDir, 'workspace.jsonc'),
             config: {
               schemaVersion: 1,
               workspace: {
@@ -10399,7 +11368,6 @@ describe('nanocore server', () => {
         ],
         workspaceDataSourceCatalogs: [
           {
-            userId: LOCAL_USER_ID,
             workspaceId: 'ws_demo',
             path: catalogPath,
             catalog,
@@ -10485,46 +11453,23 @@ describe('nanocore server', () => {
         },
       ],
     });
-    const workspaceConfigDir = join(
-      coreDb.dataRoot,
-      'users',
-      LOCAL_USER_ID,
-      'workspaces',
-      'ws_demo',
-      'config'
-    );
+    const workspaceConfigDir = join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'config');
     const catalogPath = join(workspaceConfigDir, 'data-sources.jsonc');
     const runtimeConfigManager = createRuntimeConfigManager({
       dataRoot: coreDb.dataRoot,
       initialSnapshot: createInMemoryRuntimeConfigSnapshot({
         dataRoot: coreDb.dataRoot,
-        agentConfigs: [
+        agentManifests: [
           {
-            schemaVersion: 1,
-            id: 'agent_codex_host',
-            displayName: 'Codex Agent',
-            runtime: { kind: 'codex', adapter: 'codex-app-server' },
-            mode: 'local',
-            deployment: { local: {} },
+            ...createTestAgentSetup().manifest,
+            provider: undefined,
             workspace: {
               inputs: [{ id: 'repo_root', sourceRef: 'disabled-repo', target: 'repo' }],
             },
           },
         ],
-        agentManifests: [
-          {
-            adapter: 'codex-app-server',
-            deployments: ['local'],
-            displayName: 'Codex Agent',
-            id: 'agent_codex_host',
-            kind: 'custom',
-            runtime: 'codex',
-            version: '0.0.2',
-          },
-        ],
         workspaceConfigs: [
           {
-            userId: LOCAL_USER_ID,
             workspaceId: 'ws_demo',
             path: join(workspaceConfigDir, 'workspace.jsonc'),
             config: {
@@ -10545,7 +11490,6 @@ describe('nanocore server', () => {
         ],
         workspaceDataSourceCatalogs: [
           {
-            userId: LOCAL_USER_ID,
             workspaceId: 'ws_demo',
             path: catalogPath,
             catalog,
@@ -10688,8 +11632,8 @@ describe('nanocore server', () => {
     const app = createApp({
       openKitConfig: {
         defaults: {
-          gatewayModel: 'openai/gpt-5.2',
-          gatewayProviderId: 'openrouter',
+          coreModel: 'openai/gpt-5.2',
+          coreProviderId: 'openrouter',
         },
       },
       providerCredentialResolver: () => 'test-key',
@@ -10728,12 +11672,9 @@ describe('nanocore server', () => {
     expect(res.status, JSON.stringify(body)).toBe(429);
     expect(body).toMatchObject({
       code: 'provider_rate_limited',
-      message: 'Rate limit exceeded token=[redacted]',
-      details: {
-        providerCode: 'rate_limit_exceeded',
-        providerStatus: 429,
-      },
+      message: 'Provider rate limit exceeded.',
     });
+    expect(body).not.toHaveProperty('details');
   });
 
   it('emits SSE events that conform to the shared protocol schema', async () => {

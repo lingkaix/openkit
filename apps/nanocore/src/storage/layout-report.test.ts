@@ -21,7 +21,7 @@ describe('storage layout report', () => {
     const dataRoot = createDataRoot();
     const coreDb = openCoreDb(dataRoot);
     const userDb = openUserDb(dataRoot, 'user_1');
-    const workspaceDb = openWorkspaceDb(dataRoot, 'user_1', 'ws_1');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_1');
 
     try {
       applyMigrations(coreDb);
@@ -31,34 +31,45 @@ describe('storage layout report', () => {
       const report = createStorageLayoutReport(dataRoot);
 
       expect(report.serverDb.exists).toBe(true);
-      expect(report.serverDb.appliedMigrations).toEqual(['core_0000_baseline']);
+      expect(report.serverDb.appliedMigrations).toEqual([
+        'core_0000_baseline',
+        'core_0001_workspace_sharing',
+        'core_0002_scheduler_trigger_actor',
+        'core_0003_lifecycle_authority',
+      ]);
       expect(report.users).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({
+          {
             userId: 'user_1',
             userDb: expect.objectContaining({
               exists: true,
               appliedMigrations: ['user_0000_baseline', 'user_0001_idempotency_requests'],
             }),
-            workspaces: [
-              expect.objectContaining({
-                workspaceId: 'ws_1',
-                workspaceDb: expect.objectContaining({
-                  exists: true,
-                  appliedMigrations: [
-                    'workspace_0000_baseline',
-                    'workspace_0001_goal_review_resolution_snapshot',
-                    'workspace_0002_idempotency_requests',
-                    'workspace_0003_drop_sync_evidence_bundles',
-                    'workspace_0004_capability_runtime_correlation',
-                  ],
-                }),
-                indexesDir: expect.objectContaining({ exists: true, entryCount: 0 }),
-              }),
-            ],
-          }),
+          },
         ])
       );
+      expect(report.users.every((user) => !Object.hasOwn(user, 'workspaces'))).toBe(true);
+      expect(report.workspaces).toEqual([
+        {
+          workspaceId: 'ws_1',
+          workspaceDb: expect.objectContaining({
+            exists: true,
+            appliedMigrations: [
+              'workspace_0000_baseline',
+              'workspace_0001_goal_review_resolution_snapshot',
+              'workspace_0002_idempotency_requests',
+              'workspace_0003_drop_sync_evidence_bundles',
+              'workspace_0004_capability_runtime_correlation',
+              'workspace_0005_material_authority',
+              'workspace_0006_goal_steering_authority',
+              'workspace_0007_artifact_review_authority',
+              'workspace_0008_shared_attribution',
+              'workspace_0009_usage_responsible_user',
+            ],
+          }),
+          indexesDir: expect.objectContaining({ exists: true, entryCount: 0 }),
+        },
+      ]);
     } finally {
       workspaceDb.sqlite.close();
       userDb.sqlite.close();
@@ -70,13 +81,11 @@ describe('storage layout report', () => {
     const dataRoot = createDataRoot();
     mkdirSync(join(dataRoot, 'server', 'quarantine'), { recursive: true });
     mkdirSync(join(dataRoot, 'users', 'user_1', 'quarantine'), { recursive: true });
-    mkdirSync(join(dataRoot, 'users', 'user_1', 'workspaces', 'ws_1', 'quarantine'), {
-      recursive: true,
-    });
+    mkdirSync(join(dataRoot, 'workspaces', 'ws_1', 'quarantine'), { recursive: true });
     writeFileSync(join(dataRoot, 'server', 'quarantine', '1-core.sqlite'), 'server');
     writeFileSync(join(dataRoot, 'users', 'user_1', 'quarantine', '2-user.sqlite'), 'user');
     writeFileSync(
-      join(dataRoot, 'users', 'user_1', 'workspaces', 'ws_1', 'quarantine', '3-workspace.sqlite'),
+      join(dataRoot, 'workspaces', 'ws_1', 'quarantine', '3-workspace.sqlite'),
       'workspace'
     );
 
@@ -96,9 +105,8 @@ describe('storage layout report', () => {
       },
       {
         bytes: 9,
-        path: 'users/user_1/workspaces/ws_1/quarantine/3-workspace.sqlite',
+        path: 'workspaces/ws_1/quarantine/3-workspace.sqlite',
         scope: 'workspace',
-        userId: 'user_1',
         workspaceId: 'ws_1',
       },
     ]);

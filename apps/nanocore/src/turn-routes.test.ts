@@ -7,16 +7,23 @@ import { ApiErrorSchema, TurnSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { createApp } from './app.js';
+import { ensureLocalUser } from './auth/identity.js';
+import type { BetterAuthServer } from './auth/middleware.js';
 import type { FsStore } from './lib/store.js';
 import type {
   TurnCommandRuntimeContext,
   TurnExecutor,
   TurnStartRuntimeContext,
 } from './runtime/types.js';
+import { upsertWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import type { CoreDb } from './storage/db.js';
-import { openCoreDb } from './storage/db.js';
-import { applyMigrations } from './storage/migrate.js';
+import { openCoreDb, openWorkspaceDb } from './storage/db.js';
+import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+
+const LOCAL_ACTOR = { kind: 'user', id: 'user_local' } as const;
 
 /** Minimal turn executor that records route calls and applies deterministic turn transitions. */
 class RecordingTurnExecutor implements TurnExecutor {
@@ -106,7 +113,19 @@ async function createSchedulerFixture(
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const store = createDemoStore();
-  const app = createApp({ coreDb, store, turnExecutor: executor, workerPlacement });
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'user_local',
+    workspaceId: 'ws_demo',
+  });
+  const app = createApp({
+    agentManifests: [createTestAgentSetup({ provider: null, requiredCapabilities: [] }).manifest],
+    coreDb,
+    store,
+    turnExecutor: executor,
+    workerPlacement,
+  });
   const repositoryPath = mkdtempSync(join(tmpdir(), `openkit-turn-repository-${slug}-`));
   mkdirSync(join(repositoryPath, '.git'));
 
@@ -125,6 +144,75 @@ async function createSchedulerFixture(
   }
 
   return { app, coreDb, repositoryPath, store };
+}
+
+/** Creates session authentication from one test-only user header. */
+function createHeaderAuthStub(): BetterAuthServer {
+  return {
+    api: {
+      getSession: async ({ headers }) => {
+        const userId = headers.get('x-user-id');
+        return userId ? { session: { id: `session_${userId}` }, user: { id: userId } } : null;
+      },
+    },
+    handler: async () => Response.json({ status: 'auth-ok' }),
+  };
+}
+
+/** Creates a server-mode scheduler fixture with an owner and an editor in one Workspace. */
+async function createSharedSchedulerFixture(executor: RecordingTurnExecutor, slug: string) {
+  const dataRoot = mkdtempSync(join(tmpdir(), `openkit-turn-routes-shared-${slug}-`));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  const now = Date.now();
+  const timestamp = new Date(now).toISOString();
+  coreDb.sqlite
+    .prepare(
+      `INSERT INTO users (
+        id, display_name, email, email_verified, created_at, updated_at, kind
+      ) VALUES ('user_other', 'Other User', 'other@example.com', false, ?, ?, 'human')`
+    )
+    .run(now, now);
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'user_local',
+    workspaceId: 'ws_demo',
+  });
+  coreDb.sqlite
+    .prepare(
+      `INSERT INTO workspace_members (
+        workspace_id, user_id, status, access_level, invitation_id,
+        joined_at, removed_at, revision, created_at, updated_at
+      ) VALUES ('ws_demo', 'user_other', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+    )
+    .run(timestamp, timestamp, timestamp);
+
+  const store = createDemoStore();
+  const app = createApp({
+    agentManifests: [createTestAgentSetup({ provider: null, requiredCapabilities: [] }).manifest],
+    auth: createHeaderAuthStub(),
+    coreDb,
+    mode: 'server',
+    store,
+    turnExecutor: executor,
+  });
+  const repositoryPath = mkdtempSync(join(tmpdir(), `openkit-turn-shared-repository-${slug}-`));
+  mkdirSync(join(repositoryPath, '.git'));
+  const link = await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+    method: 'PUT',
+    body: JSON.stringify({
+      displayName: 'Shared Turn route repository',
+      localPath: repositoryPath,
+    }),
+    headers: { 'content-type': 'application/json', 'x-user-id': 'user_local' },
+  });
+  if (link.status !== 200) {
+    coreDb.sqlite.close();
+    throw new Error(`Failed to link the shared turn route repository: ${await link.text()}`);
+  }
+
+  return { app, coreDb, dataRoot, repositoryPath, store };
 }
 
 /**
@@ -149,20 +237,20 @@ function readTurnLease(coreDb: CoreDb, turnId: string) {
 /**
  * Reproduces the scheduler-owned deterministic turn id for failed-start orphan checks.
  *
- * @param userId Store owner id.
+ * @param canonicalActorRef Canonical serialized trigger ActorRef.
  * @param workspaceId Workspace id.
  * @param threadId Thread id.
  * @param requestId Turn-start request id.
  * @returns Scheduler-owned turn id.
  */
 function schedulerTurnId(
-  userId: string,
+  canonicalActorRef: string,
   workspaceId: string,
   threadId: string,
   requestId: string
 ): string {
   const suffix = createHash('sha256')
-    .update(`${userId}:${workspaceId}:${threadId}:${requestId}`)
+    .update(`${canonicalActorRef}:${workspaceId}:${threadId}:${requestId}`)
     .digest('hex')
     .slice(0, 16);
 
@@ -172,7 +260,7 @@ function schedulerTurnId(
 describe('generic turn routes', () => {
   it('reads one turn through its owning workspace and thread path', async () => {
     const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Read this turn');
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Read this turn', LOCAL_ACTOR);
     const app = createApp({ store, turnExecutor: new RecordingTurnExecutor() });
 
     const response = await app.request(`/api/workspaces/ws_demo/threads/th_demo/turns/${turn.id}`);
@@ -183,7 +271,7 @@ describe('generic turn routes', () => {
 
   it('does not read a turn through a different workspace or thread path', async () => {
     const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Keep this turn scoped');
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Keep this turn scoped', LOCAL_ACTOR);
     const app = createApp({ store, turnExecutor: new RecordingTurnExecutor() });
 
     for (const path of [
@@ -199,7 +287,12 @@ describe('generic turn routes', () => {
 
   it('rejects an interrupt scope mismatch before executor or store mutation', async () => {
     const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Do not interrupt across scopes');
+    const turn = store.createTurn(
+      'ws_demo',
+      'th_demo',
+      'Do not interrupt across scopes',
+      LOCAL_ACTOR
+    );
     const executor = new RecordingTurnExecutor();
     const app = createApp({ store, turnExecutor: executor });
 
@@ -235,7 +328,7 @@ describe('generic turn routes', () => {
 
   it('returns typed unsupported without mutating when the executor cannot interrupt', async () => {
     const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Unsupported interrupt');
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Unsupported interrupt', LOCAL_ACTOR);
     const executor = new RecordingTurnExecutor({ interrupts: false });
     const app = createApp({ store, turnExecutor: executor });
 
@@ -271,7 +364,7 @@ describe('generic turn routes', () => {
 
   it('does not rewrite a terminal turn through a new interrupt command', async () => {
     const store = createDemoStore();
-    const created = store.createTurn('ws_demo', 'th_demo', 'Already complete');
+    const created = store.createTurn('ws_demo', 'th_demo', 'Already complete', LOCAL_ACTOR);
     const turn = store.updateTurn(created.id, {
       completedAt: '2026-07-12T00:00:00.000Z',
       status: 'completed',
@@ -310,6 +403,110 @@ describe('generic turn routes', () => {
       responseStatus: 409,
       turnStatus: 'completed',
     });
+  });
+
+  it('rejects a UserInput Gate response from a different Workspace editor', async () => {
+    const executor = new RecordingTurnExecutor({ completeStarts: false });
+    const fixture = await createSharedSchedulerFixture(executor, 'responsible-user');
+    const startRequestId = '00000000-0000-4000-8000-000000000410';
+
+    try {
+      const startResponse = await fixture.app.request('/api/turns', {
+        method: 'POST',
+        body: JSON.stringify({
+          input: 'Pause for the responsible user.',
+          requestId: startRequestId,
+          threadId: 'th_demo',
+          workspaceId: 'ws_demo',
+        }),
+        headers: { 'content-type': 'application/json', 'x-user-id': 'user_local' },
+      });
+      expect(startResponse.status, await startResponse.clone().text()).toBe(202);
+      const turn = TurnSchema.parse(await startResponse.json());
+      const acceptedAt = turn.startedAt ?? new Date().toISOString();
+      const requestItem = fixture.store.createItem({
+        id: `it_responsible_user_${turn.id}`,
+        workspaceId: turn.workspaceId,
+        threadId: turn.threadId,
+        turnId: turn.id,
+        type: 'user-input-request',
+        status: 'completed',
+        responsibleUserId: 'user_local',
+        userInputRequestId: `ui_responsible_user_${turn.id}`,
+        prompt: 'Only the responsible user may answer.',
+        questions: [
+          {
+            id: 'choice',
+            header: 'Choice',
+            question: 'Continue?',
+            options: null,
+            isOther: false,
+            isSecret: false,
+          },
+        ],
+        createdAt: acceptedAt,
+        completedAt: acceptedAt,
+      });
+      fixture.store.updateTurn(turn.id, {
+        status: 'awaiting_human',
+        humanGate: {
+          kind: 'user-input',
+          userInputRequestId: requestItem.userInputRequestId,
+          itemId: requestItem.id,
+        },
+      });
+      const lease = fixture.coreDb.sqlite
+        .prepare(
+          `SELECT agent_session_id AS agentSessionId
+           FROM scheduler_session_leases
+           WHERE turn_id = ?`
+        )
+        .get(turn.id) as { readonly agentSessionId: string } | undefined;
+      if (!lease) {
+        throw new Error('Expected one scheduler lease for the responsible-user fixture.');
+      }
+      const workspaceDb = openWorkspaceDb(fixture.dataRoot, 'ws_demo');
+      try {
+        applyScopedMigrations(workspaceDb);
+        upsertWorkerCheckpoint(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          turnId: turn.id,
+          requestId: startRequestId,
+          requestInputHash: 'sha256:responsible-user-fixture',
+          stage: 'waiting_for_user',
+          iteration: 1,
+          workerSessionId: lease.agentSessionId,
+          stopReason: 'ask_user',
+        });
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+
+      const response = await fixture.app.request('/api/turns', {
+        method: 'POST',
+        body: JSON.stringify({
+          answers: { choice: ['Continue'] },
+          requestId: '00000000-0000-4000-8000-000000000411',
+          threadId: 'th_demo',
+          turnId: turn.id,
+          workspaceId: 'ws_demo',
+        }),
+        headers: { 'content-type': 'application/json', 'x-user-id': 'user_other' },
+      });
+
+      expect(response.status, await response.clone().text()).toBe(403);
+      expect(ApiErrorSchema.parse(await response.json()).code).toBe('workspace_access_denied');
+      expect(fixture.store.getTurn('ws_demo', 'th_demo', turn.id).status).toBe('awaiting_human');
+      expect(
+        fixture.store
+          .listThreadItems('ws_demo', 'th_demo')
+          .filter((item) => item.type === 'user-input-response')
+      ).toEqual([]);
+    } finally {
+      fixture.coreDb.sqlite.close();
+      rmSync(fixture.repositoryPath, { force: true, recursive: true });
+    }
   });
 
   it('releases the scheduler lease when a new turn completes synchronously', async () => {
@@ -533,11 +730,14 @@ describe('generic turn routes', () => {
     const fixture = await createSchedulerFixture(executor, 'invalid-thread');
     const requestId = '00000000-0000-4000-8000-000000000305';
     const threadId = 'th_missing';
-    const turnId = schedulerTurnId(fixture.store.getUserId(), 'ws_demo', threadId, requestId);
+    const turnId = schedulerTurnId(
+      JSON.stringify({ kind: 'user', id: 'user_local' }),
+      'ws_demo',
+      threadId,
+      requestId
+    );
     const sourceCatalogPath = join(
       fixture.coreDb.dataRoot,
-      'users',
-      fixture.store.getUserId(),
       'workspaces',
       'ws_demo',
       'config',

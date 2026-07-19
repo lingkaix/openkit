@@ -1,15 +1,19 @@
-import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Hono } from 'hono';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import type { AuthVariables } from './auth/middleware.js';
+import { registerAutomationRoutes } from './automation-routes.js';
 import { AutomationStore } from './lib/automation-store.js';
+import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 describe('automation app API', () => {
   it('lists and creates local automation definitions', async () => {
@@ -79,31 +83,48 @@ describe('automation app API', () => {
     await expect(listRes.json()).resolves.toEqual({ items: [] });
   });
 
-  it('isolates process-local records by user even when workspace ids match', () => {
+  it('uses the authenticated actor for user-private records with one shared store', async () => {
+    const store = createDemoStore();
+    const listWorkspaces = vi.spyOn(store, 'listWorkspaces').mockImplementation(() => {
+      throw new Error('Collection routes must not enumerate every Workspace.');
+    });
     const automationStore = new AutomationStore();
-    const input = {
-      cron: '0 9 * * *',
-      name: 'Morning status',
-      prompt: 'Summarize active threads',
-      workspaceId: 'ws_shared',
-    };
-    const first = automationStore.createAutomation('user_first', input);
-    const second = automationStore.createAutomation('user_second', input);
+    const app = new Hono<{ Variables: AuthVariables }>();
+    app.use('*', async (c, next) => {
+      c.set('actor', {
+        kind: 'session',
+        userId: c.req.header('x-test-user') ?? 'user_first',
+      });
+      await next();
+    });
+    registerAutomationRoutes({
+      app,
+      authorizedWorkspaceIds: () => ['ws_demo'],
+      automationStore,
+      requestStore: () => store,
+    });
 
-    expect(first.id).toMatch(
-      /^auto_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
-    );
-    expect(second.id).not.toBe(first.id);
-    expect(automationStore.listAutomations('user_first')).toEqual([first]);
-    expect(automationStore.listAutomations('user_second')).toEqual([second]);
+    const created = await app.request('/api/app/automations', {
+      body: JSON.stringify({
+        cron: '0 9 * * *',
+        name: 'Morning status',
+        prompt: 'Summarize active threads',
+        workspaceId: 'ws_demo',
+      }),
+      headers: { 'content-type': 'application/json', 'x-test-user': 'user_first' },
+      method: 'POST',
+    });
+    const firstList = await app.request('/api/app/automations', {
+      headers: { 'x-test-user': 'user_first' },
+    });
+    const secondList = await app.request('/api/app/automations', {
+      headers: { 'x-test-user': 'user_second' },
+    });
 
-    expect(() =>
-      automationStore.updateAutomation('user_second', first.id, { status: 'enabled' })
-    ).toThrow(`Automation not found: ${first.id}`);
-    expect(() => automationStore.deleteAutomation('user_second', first.id)).toThrow(
-      `Automation not found: ${first.id}`
-    );
-    expect(automationStore.listAutomations('user_first')).toEqual([first]);
+    expect(created.status).toBe(201);
+    await expect(firstList.json()).resolves.toMatchObject({ items: [{ name: 'Morning status' }] });
+    await expect(secondList.json()).resolves.toEqual({ items: [] });
+    expect(listWorkspaces).not.toHaveBeenCalled();
   });
 
   it('lists only active token-bound workspace automations', async () => {
@@ -127,12 +148,18 @@ describe('automation app API', () => {
           VALUES ('user_owner', 'Owner', 'owner@example.com', false, ?, ?, 'human')`
         )
         .run(now, now);
-      const admin = createOpenKitAccessTokenRecord(coreDb, {
-        expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
-        scope: 'server-admin',
-        workspaceIds: [],
-      });
+      const store = new FsStore({ dataRoot });
+      const allowedWorkspace = store.createWorkspace('Allowed');
+      const deniedWorkspace = store.createWorkspace('Denied');
+
+      for (const workspace of [allowedWorkspace, deniedWorkspace]) {
+        recordWorkspaceOwnerMembership({
+          coreDb,
+          ownerUserId: 'user_owner',
+          workspaceId: workspace.id,
+        });
+      }
+
       const automationStore = new AutomationStore();
       const app = createApp({
         automationStore,
@@ -143,63 +170,44 @@ describe('automation app API', () => {
         coreDb,
         dataRoot,
         mode: 'server',
+        store,
       });
-      /**
-       * Creates one workspace through the authenticated App API.
-       *
-       * @param name Workspace name.
-       * @returns Created workspace identity.
-       */
-      const createWorkspace = async (name: string) => {
-        const response = await app.request('/api/workspaces', {
-          body: JSON.stringify({ name, requestId: randomUUID() }),
-          headers: {
-            authorization: `Bearer ${admin.secret}`,
-            'content-type': 'application/json',
-          },
-          method: 'POST',
-        });
-
-        expect(response.status).toBe(201);
-        return (await response.json()) as { id: string };
-      };
-      const allowedWorkspace = await createWorkspace('Allowed');
-      const deniedWorkspace = await createWorkspace('Denied');
-      /**
-       * Creates one process-local automation through the authenticated App API.
-       *
-       * @param workspaceId Target workspace id.
-       * @param name Automation name.
-       * @returns Created automation identity and workspace binding.
-       */
-      const createAutomation = async (workspaceId: string, name: string) => {
-        const response = await app.request('/api/app/automations', {
-          body: JSON.stringify({
-            cron: '0 9 * * *',
-            name,
-            prompt: 'Summarize active threads',
-            workspaceId,
-          }),
-          headers: {
-            authorization: `Bearer ${admin.secret}`,
-            'content-type': 'application/json',
-          },
-          method: 'POST',
-        });
-
-        expect(response.status).toBe(201);
-        return (await response.json()) as { id: string; workspaceId: string };
-      };
-      const allowedAutomation = await createAutomation(allowedWorkspace.id, 'Allowed automation');
-      const deniedAutomation = await createAutomation(deniedWorkspace.id, 'Denied automation');
       const workspaceToken = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
         ownerUserId: 'user_owner',
         scope: 'workspace',
         workspaceIds: [allowedWorkspace.id],
       });
+      const create = await app.request('/api/app/automations', {
+        body: JSON.stringify({
+          cron: '0 9 * * *',
+          name: 'Allowed automation',
+          prompt: 'Summarize active threads',
+          workspaceId: allowedWorkspace.id,
+        }),
+        headers: {
+          authorization: `Bearer ${workspaceToken.secret}`,
+          'content-type': 'application/json',
+        },
+        method: 'POST',
+      });
+
+      expect(create.status).toBe(201);
+      const allowedAutomation = (await create.json()) as { id: string; workspaceId: string };
+      const deniedAutomation = automationStore.createAutomation('user_owner', {
+        cron: '0 9 * * *',
+        name: 'Denied automation',
+        prompt: 'Summarize active threads',
+        workspaceId: deniedWorkspace.id,
+      });
+      const readonlyToken = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerUserId: 'user_owner',
+        scope: 'workspace-readonly',
+        workspaceIds: [allowedWorkspace.id],
+      });
       const list = await app.request('/api/app/automations', {
-        headers: { authorization: `Bearer ${workspaceToken.secret}` },
+        headers: { authorization: `Bearer ${readonlyToken.secret}` },
       });
 
       expect(list.status).toBe(200);
@@ -226,15 +234,41 @@ describe('automation app API', () => {
         'paused'
       );
 
-      coreDb.sqlite
-        .prepare(
-          `UPDATE workspace_members
-           SET status = 'removed'
-           WHERE workspace_id = ? AND user_id = ?`
-        )
-        .run(allowedWorkspace.id, 'user_owner');
+      const transferredAt = new Date().toISOString();
+      coreDb.sqlite.transaction(() => {
+        coreDb.sqlite
+          .prepare(
+            `INSERT INTO users
+              (id, display_name, email, email_verified, created_at, updated_at, kind)
+             VALUES ('user_replacement_owner', 'Replacement Owner',
+                     'automation-replacement@example.com', false, ?, ?, 'human')`
+          )
+          .run(Date.now(), Date.now());
+        coreDb.sqlite
+          .prepare(
+            `INSERT INTO workspace_members (
+              workspace_id, user_id, status, access_level, invitation_id,
+              joined_at, removed_at, revision, created_at, updated_at
+            ) VALUES (?, 'user_replacement_owner', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+          )
+          .run(allowedWorkspace.id, transferredAt, transferredAt, transferredAt);
+        coreDb.sqlite
+          .prepare(
+            `UPDATE workspace_registry
+             SET owner_user_id = 'user_replacement_owner', revision = revision + 1, updated_at = ?
+             WHERE workspace_id = ?`
+          )
+          .run(transferredAt, allowedWorkspace.id);
+        coreDb.sqlite
+          .prepare(
+            `UPDATE workspace_members
+             SET status = 'removed', removed_at = ?, revision = revision + 1, updated_at = ?
+             WHERE workspace_id = ? AND user_id = ?`
+          )
+          .run(transferredAt, transferredAt, allowedWorkspace.id, 'user_owner');
+      })();
       const removed = await app.request('/api/app/automations', {
-        headers: { authorization: `Bearer ${workspaceToken.secret}` },
+        headers: { authorization: `Bearer ${readonlyToken.secret}` },
       });
 
       expect(removed.status).toBe(200);

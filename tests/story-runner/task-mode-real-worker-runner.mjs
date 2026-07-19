@@ -4,6 +4,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { Agent, fetch as undiciFetch } from 'undici';
+
 import {
   assertBuilt,
   assertNoPublicSecretLeak,
@@ -25,6 +27,12 @@ export const DEFAULT_TASK_MODE_REAL_WORKER_STORY_PATH = resolve(
   '../stories/task-mode-real-worker-release.story.md'
 );
 
+/** Undici settings that leave the real Task request deadline to the story supervisor. */
+export const TASK_MODE_REAL_WORKER_HTTP_TIMEOUTS = Object.freeze({
+  bodyTimeout: 0,
+  headersTimeout: 0,
+});
+
 const RESULT_FILE = 'task-mode-real-worker-result.json';
 const FAILURE_FILE = 'task-mode-real-worker-failure.json';
 const REDACTION_NOTES_FILE = 'task-mode-real-worker-redaction-notes.md';
@@ -40,6 +48,7 @@ const TASK_RUNTIME_RESTART_MESSAGE =
 const TASK_ASSERTION_ERROR_CODE = 'OPENKIT_TASK_MODE_ASSERTION';
 const SUPERVISED_CHILD_ARG = '--openkit-task-l6-supervised-child';
 const RESTART_REQUIRED_EXIT_CODE = 75;
+const taskModeRealWorkerDispatcher = new Agent(TASK_MODE_REAL_WORKER_HTTP_TIMEOUTS);
 
 /** Repository-relative proof file requested by the default task input. */
 const TASK_MODE_REAL_WORKER_PROOF_PATH = 'docs/task-mode-runtime-provenance-proof.md';
@@ -714,12 +723,24 @@ async function createRealClients(config) {
   const { createCoreClient } = await import(pathToFileURL(coreClientDist).href);
   const clientOptions = {
     baseUrl: config.nanoCoreUrl,
+    fetch: fetchTaskModeRealWorker,
     ...(config.token ? { headers: authHeaders(config.token) } : {}),
   };
 
   return {
     core: createCoreClient(clientOptions),
   };
+}
+
+/**
+ * Sends one real Task story request without adding a transport deadline below the story supervisor.
+ *
+ * @param {string | URL | Request} input Request target.
+ * @param {RequestInit | undefined} init Optional request options.
+ * @returns {Promise<Response>} Undici response.
+ */
+function fetchTaskModeRealWorker(input, init) {
+  return undiciFetch(input, { ...init, dispatcher: taskModeRealWorkerDispatcher });
 }
 
 /**

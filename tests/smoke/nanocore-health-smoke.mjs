@@ -5,7 +5,6 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { seedDemoWorkspaceDataRoot } from '../support/demo-data.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -17,7 +16,6 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 async function main() {
   const port = await findOpenPort();
   const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-nano-smoke-'));
-  seedDemoWorkspaceDataRoot(dataRoot);
   const child = spawn(process.execPath, [join(repoRoot, 'apps/nanocore/dist/index.js')], {
     cwd: join(repoRoot, 'apps/nanocore'),
     env: {
@@ -36,8 +34,17 @@ async function main() {
     await waitForHttp(`${baseUrl}/api/health`, child);
     await assertOkJson(`${baseUrl}/api/health`, 'health');
     await assertOkJson(`${baseUrl}/api/meta`, 'meta');
-    await assertGoalModeRoutes(baseUrl);
-    await assertWorkspacePortabilitySmoke(baseUrl, dataRoot);
+    const workspace = await postJson(`${baseUrl}/api/workspaces`, 'create smoke workspace', {
+      name: 'Built artifact smoke',
+      requestId: randomUUID(),
+    });
+    if (typeof workspace.id !== 'string') {
+      throw new Error(
+        `create smoke workspace returned malformed payload: ${JSON.stringify(workspace)}.`
+      );
+    }
+    await assertGoalModeRoutes(baseUrl, workspace.id);
+    await assertWorkspacePortabilitySmoke(baseUrl, dataRoot, workspace.id);
     console.log('OpenKit NanoCore built-artifact smoke PASS');
   } finally {
     await stopProcess(child);
@@ -50,10 +57,10 @@ async function main() {
  *
  * @param {string} sourceBaseUrl Source NanoCore base URL.
  * @param {string} sourceDataRoot Source NanoCore data root.
+ * @param {string} workspaceId Publicly created Workspace to export.
  * @returns {Promise<void>} Resolves after export, verification, dry-run, and import pass.
  */
-async function assertWorkspacePortabilitySmoke(sourceBaseUrl, sourceDataRoot) {
-  const workspaceId = 'ws_demo';
+async function assertWorkspacePortabilitySmoke(sourceBaseUrl, sourceDataRoot, workspaceId) {
   const knowledge = await postJson(
     `${sourceBaseUrl}/api/workspaces/${workspaceId}/knowledge`,
     'create portability knowledge',
@@ -175,10 +182,10 @@ async function assertWorkspacePortabilitySmoke(sourceBaseUrl, sourceDataRoot) {
  * Verifies that built Goal Mode routes and read models boot without providers.
  *
  * @param {string} baseUrl NanoCore base URL.
+ * @param {string} workspaceId Publicly created Workspace to exercise.
  * @returns {Promise<void>} Resolves after Goal Mode smoke checks pass.
  */
-async function assertGoalModeRoutes(baseUrl) {
-  const workspaceId = 'ws_demo';
+async function assertGoalModeRoutes(baseUrl, workspaceId) {
   const thread = await postJson(
     `${baseUrl}/api/workspaces/${workspaceId}/threads`,
     'create thread',

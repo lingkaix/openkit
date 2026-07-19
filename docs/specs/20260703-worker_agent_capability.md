@@ -96,7 +96,6 @@ The accepted target capability families are:
 - `mcp`: call an MCP tool exposed through NanoCore.
 - `knowledge.search`: search governed knowledge and source indexes.
 - `knowledge.read`: read selected knowledge pages, source summaries, or derived representations.
-- `knowledge.propose`: propose source-traceable knowledge changes discovered during worker execution.
 - `external-api`: call a configured external API through a provider profile. Deferred beyond V1.
 - `network`: access an allowed network target through a proxy policy. Deferred beyond V1.
 - `vault.use`: use a vault-mediated credential without exposing the secret value where possible. Logical provider declarations, Codex auth JSON runtime-file, and Git push credential paths are separate implementation mechanisms; non-transient OpenShell provider materialization is currently fail-closed, and none of these paths makes this future gateway route active.

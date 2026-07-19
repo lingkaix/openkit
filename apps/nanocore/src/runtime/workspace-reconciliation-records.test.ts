@@ -16,7 +16,7 @@ const timestamp = '2026-07-08T00:00:00.000Z';
 describe('workspace reconciliation records', () => {
   it('records durable reconciliation state transitions', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-reconciliation-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -50,7 +50,7 @@ describe('workspace reconciliation records', () => {
 
   it('maps human recovery decisions to terminal state and backend teardown decisions', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-reconciliation-decision-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
     const decidedAt = '2026-07-08T00:05:00.000Z';
 
     try {
@@ -124,7 +124,7 @@ describe('workspace reconciliation records', () => {
 
   it('resumes recovery collection from durable output manifests and retained evidence ids', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-reconciliation-resume-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
     const decidedAt = '2026-07-08T00:10:00.000Z';
 
     try {
@@ -185,7 +185,7 @@ describe('workspace reconciliation records', () => {
 
   it('rejects resume collection when no durable output manifest matches the recovery record', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-reconciliation-resume-empty-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);

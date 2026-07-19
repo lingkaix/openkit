@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest';
 
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
@@ -27,7 +28,7 @@ import { importWorkerRuntimeProvenance } from './worker-runtime-provenance.js';
  */
 function createWorkspaceDb(): WorkspaceDb {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-recovery-'));
-  const workspaceDb = openWorkspaceDb(dataRoot, 'user_demo', 'ws_demo');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }
@@ -87,27 +88,25 @@ function createRecoveryRuntimeStream(
  */
 async function createRetainedRecoveryProvenance(workspaceDb: WorkspaceDb) {
   const store = createDemoStore();
-  const turn = store.createTurn('ws_demo', 'th_demo', 'Recover retained runtime provenance');
+  const turn = store.createTurn('ws_demo', 'th_demo', 'Recover retained runtime provenance', {
+    kind: 'user',
+    id: 'user_local',
+  });
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
-      agent: store.getAgent('ws_demo', 'agent_codex_host'),
+      agentSetup: createTestAgentSetup({
+        requiredCapabilities: ['trusted-worker-inference-relay', 'worker.runtime-provenance.v1'],
+      }),
       agentSessionId: 'as_recovery_provenance',
       backend: {
         workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
         kind: 'openshell',
-        sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
-      },
-      backendRequirements: {
-        allowedKinds: ['openshell'],
-        preferred: 'openshell',
-        requiredCapabilities: ['trusted-worker-inference-relay', 'worker.runtime-provenance.v1'],
       },
       createdAt: '2026-07-13T00:00:00.000Z',
-      providerSelection: { model: 'openai/gpt-5.2', providerId: 'agent-openrouter' },
       requestId: 'req_recovery_provenance',
+      triggerActor: { kind: 'user', id: 'user_demo' },
       turn,
       turnInput: 'Recover retained runtime provenance',
-      userId: workspaceDb.userId,
       workspaceCwd: '/workspace/repo',
       workspaceRoots: [],
     })
@@ -174,13 +173,7 @@ async function createRetainedRecoveryProvenance(workspaceDb: WorkspaceDb) {
   for (const stream of streams) {
     writeFileSync(join(rawStreamsRoot, stream.manifest.streamRef), stream.bytes);
   }
-  const workspaceRoot = join(
-    workspaceDb.dataRoot,
-    'users',
-    workspaceDb.userId,
-    'workspaces',
-    workspaceDb.workspaceId
-  );
+  const workspaceRoot = join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId);
   const imported = await importWorkerRuntimeProvenance({
     backend: { kind: 'openshell', placement: 'local', version: '0.0.80' },
     capture: { nativeOriginIndexPath, rawStreamsRoot, streamManifestPath },

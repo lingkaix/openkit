@@ -151,9 +151,7 @@ describe('loadOpenKitConfig', () => {
             "baseUrl": "https://openrouter.ai/api/v1",
             "models": ["openai/gpt-5.1"],
             "defaultModel": "openai/gpt-5.1",
-            "secretRef": "env:CORE_OPENROUTER_API_KEY",
-            "extraHeaders": {},
-            "extraBody": {}
+            "secretRef": "env:CORE_OPENROUTER_API_KEY"
           },
           {
             "id": "agent-openrouter",
@@ -261,6 +259,31 @@ describe('loadOpenKitConfig', () => {
     );
 
     expect(() => loadOpenKitConfig(dataRoot)).toThrow();
+  });
+
+  it.each([
+    ['extraBody', { service_tier: 'auto' }],
+    ['extraHeaders', { 'x-provider-feature': 'enabled' }],
+  ] as const)('rejects unowned provider field %s', (field, value) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-config-'));
+    mkdirSync(join(dataRoot, 'config'), { recursive: true });
+    writeFileSync(
+      join(dataRoot, 'config', 'server.jsonc'),
+      JSON.stringify({
+        providers: [
+          {
+            displayName: 'OpenRouter',
+            id: 'openrouter',
+            kind: 'gateway',
+            models: ['openai/gpt-5.1'],
+            vendor: 'openrouter',
+            [field]: value,
+          },
+        ],
+      })
+    );
+
+    expect(() => loadOpenKitConfig(dataRoot)).toThrow(BootConfigError);
   });
 
   it('rejects removed internal OpenAI-compatible facade settings', () => {

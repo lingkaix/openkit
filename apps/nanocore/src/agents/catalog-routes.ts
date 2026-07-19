@@ -25,17 +25,14 @@ function appAgentCatalogEntry(agent: unknown): unknown {
  * Lists unique product-visible agent catalog entries across accessible workspaces.
  *
  * @param store Request-scoped workspace store.
- * @param workspaces Workspaces visible to the current actor.
+ * @param workspaceIds Workspace ids authorized for the current request.
  * @returns Agent catalog response payload.
  */
-function listAgentCatalog(
-  store: FsStore,
-  workspaces: ReturnType<FsStore['listWorkspaces']>
-): unknown {
+function listAgentCatalog(store: FsStore, workspaceIds: readonly string[]): unknown {
   const agents = new Map<string, unknown>();
 
-  for (const workspace of workspaces) {
-    for (const agent of store.getWorkspaceResources(workspace.id).agents) {
+  for (const workspaceId of workspaceIds) {
+    for (const agent of store.getWorkspaceResources(workspaceId).agents) {
       if (!agents.has(agent.id)) {
         agents.set(agent.id, appAgentCatalogEntry(agent));
       }
@@ -49,18 +46,18 @@ function listAgentCatalog(
  * Reads one product-visible agent catalog entry across accessible workspaces.
  *
  * @param store Request-scoped workspace store.
- * @param workspaces Workspaces visible to the current actor.
+ * @param workspaceIds Workspace ids authorized for the current request.
  * @param agentId Agent id to read.
  * @returns Agent catalog entry.
  */
 function getAgentCatalogEntry(
   store: FsStore,
-  workspaces: ReturnType<FsStore['listWorkspaces']>,
+  workspaceIds: readonly string[],
   agentId: string
 ): unknown {
-  for (const workspace of workspaces) {
+  for (const workspaceId of workspaceIds) {
     const agent = store
-      .getWorkspaceResources(workspace.id)
+      .getWorkspaceResources(workspaceId)
       .agents.find((candidate) => candidate.id === agentId);
 
     if (agent) {
@@ -78,22 +75,20 @@ function getAgentCatalogEntry(
  */
 export function registerAgentCatalogRoutes({
   app,
+  authorizedWorkspaceIds,
   requestStore,
-  visibleWorkspacesForActor,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
+  readonly authorizedWorkspaceIds: (
+    context: Context<{ Variables: AuthVariables }>
+  ) => readonly string[];
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
-  readonly visibleWorkspacesForActor: (
-    actor: AuthVariables['actor'] | undefined,
-    items: ReturnType<FsStore['listWorkspaces']>
-  ) => ReturnType<FsStore['listWorkspaces']>;
 }): void {
   registerAppApiRoute(app, 'listAgentCatalog', (c) => {
     try {
       const store = requestStore(c);
-      const workspaces = visibleWorkspacesForActor(c.get('actor'), store.listWorkspaces());
 
-      return c.json(listAgentCatalog(store, workspaces));
+      return c.json(listAgentCatalog(store, authorizedWorkspaceIds(c)));
     } catch (error) {
       return asApiError((error as Error).message);
     }
@@ -102,9 +97,8 @@ export function registerAgentCatalogRoutes({
   registerAppApiRoute(app, 'getAgentCatalogEntry', (c) => {
     try {
       const store = requestStore(c);
-      const workspaces = visibleWorkspacesForActor(c.get('actor'), store.listWorkspaces());
 
-      return c.json(getAgentCatalogEntry(store, workspaces, c.req.param('agentId')));
+      return c.json(getAgentCatalogEntry(store, authorizedWorkspaceIds(c), c.req.param('agentId')));
     } catch (error) {
       return asApiError((error as Error).message);
     }

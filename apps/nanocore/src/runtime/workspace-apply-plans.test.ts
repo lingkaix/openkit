@@ -14,7 +14,7 @@ import {
 describe('workspace apply plans', () => {
   it('records apply plans before workspace apply mutation', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-apply-plan-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -32,7 +32,7 @@ describe('workspace apply plans', () => {
 
   it('rejects a conflicting same-id apply plan replay and preserves the original', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-apply-plan-conflict-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -52,7 +52,7 @@ describe('workspace apply plans', () => {
 
   it('reuses the first apply-plan timestamp when an accepted decision is retried', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-apply-plan-retry-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);

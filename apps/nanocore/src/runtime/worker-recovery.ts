@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import type { StopReason } from '@openkit/protocol';
 
@@ -39,6 +40,40 @@ import {
  * Worker stages that still need visible recovery materialization.
  */
 export type RecoverableWorkerTurnStage = Exclude<WorkerTurnStage, 'completed'>;
+
+/**
+ * Resolves the initiating human command scope for one exact worker checkpoint.
+ *
+ * @param coreDb Core database containing scheduler admission lineage.
+ * @param checkpoint Worker checkpoint whose initiating command is being verified.
+ * @returns Human actor, Workspace, and Thread command scope.
+ * @throws Error when scheduler ownership or the human trigger identity is absent or contradictory.
+ */
+export function requireWorkerCheckpointHumanCommandScope(
+  coreDb: CoreDb,
+  checkpoint: WorkerCheckpointRecord
+): { readonly actorId: string; readonly threadId: string; readonly workspaceId: string } {
+  const leases = listSchedulerSessionLeasesForTurn(coreDb, {
+    workspaceId: checkpoint.workspaceId,
+    threadId: checkpoint.threadId,
+    turnId: checkpoint.turnId,
+  });
+  const lease = leases[0];
+  if (leases.length !== 1 || !lease || lease.agentSessionId !== checkpoint.workerSessionId) {
+    throw new Error('Worker checkpoint has no exact scheduler lease.');
+  }
+
+  const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, lease.leaseId);
+  if (admission.requestId !== checkpoint.requestId || admission.triggerActor.kind !== 'user') {
+    throw new Error('Worker checkpoint has no exact human command identity.');
+  }
+
+  return {
+    actorId: admission.triggerActor.id,
+    threadId: checkpoint.threadId,
+    workspaceId: checkpoint.workspaceId,
+  };
+}
 
 /**
  * Read-model row describing a worker turn that was interrupted before terminal save.
@@ -184,7 +219,7 @@ export function recoverWorkerCheckpointStopReason(
     throw new Error('Worker checkpoint has no exact scheduler lease.');
   }
   const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, lease.leaseId);
-  if (admission.userId !== store.getUserId() || admission.requestId !== checkpoint.requestId) {
+  if (admission.requestId !== checkpoint.requestId) {
     throw new Error('Worker scheduler admission contradicts its command owner.');
   }
 
@@ -209,7 +244,7 @@ export function recoverWorkerCheckpointStopReason(
       throw new Error('Worker checkpoint is missing its environment package.');
     }
     if (
-      environmentPackage.scope.userId !== store.getUserId() ||
+      !isDeepStrictEqual(environmentPackage.scope.triggerActor, admission.triggerActor) ||
       environmentPackage.scope.workspaceId !== checkpoint.workspaceId ||
       environmentPackage.scope.threadId !== checkpoint.threadId ||
       environmentPackage.scope.turnId !== checkpoint.turnId ||
@@ -704,13 +739,7 @@ export async function clearWorkerCheckpointAfterTerminalState(
       .get(input.workspaceId, input.turnId, environmentPackage.scope.agentSessionId) as
       | { backend_version: string | null; placement: 'local' | 'remote' | 'unknown' }
       | undefined;
-    const workspaceRoot = join(
-      workspaceDb.dataRoot,
-      'users',
-      workspaceDb.userId,
-      'workspaces',
-      workspaceDb.workspaceId
-    );
+    const workspaceRoot = join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId);
     const rawRoot = join(workspaceRoot, 'evidence', 'backend', rawBundle.evidence_bundle_id);
     const verified = await importWorkerRuntimeProvenance({
       backend: {

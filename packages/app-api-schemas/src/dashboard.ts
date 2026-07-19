@@ -12,6 +12,7 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { GoalReviewResolutionOutcomeSchema, GoalReviewVerdictSchema } from './action-center.js';
+import { WorkspaceMaterialRevisionSummarySchema } from './material.js';
 import { MaterializedWorkspaceRootSchema } from './runtime-config.js';
 import { TaskModeContextRefSchema } from './task-mode.js';
 
@@ -234,20 +235,73 @@ export const ResumeThreadGoalResponseSchema = z.object({
   goal: ThreadGoalSummarySchema,
 });
 
-/** Request body for submitting steering to an active Goal Mode thread. */
-export const SubmitThreadGoalSteeringRequestSchema = z.object({
-  requestId: z.string().min(1),
-  message: z.string().min(1).max(4_000),
-});
+/** Message request body for submitting steering to an active Goal Mode thread. */
+export const SubmitThreadGoalSteeringMessageRequestSchema = z
+  .object({
+    requestId: z.string().min(1),
+    message: z.string().min(1),
+  })
+  .strict();
+
+/** Exact Material request body for submitting steering to an active Goal Mode thread. */
+export const SubmitThreadGoalSteeringMaterialRequestSchema = z
+  .object({
+    requestId: z.string().min(1),
+    materialId: z.string().min(1),
+    revisionId: z.string().min(1),
+    contentDigest: WorkspaceMaterialRevisionSummarySchema.shape.contentDigest,
+    note: z.string().min(1).optional(),
+  })
+  .strict();
+
+/** Request body for submitting message or exact Material steering to an active Goal Mode thread. */
+export const SubmitThreadGoalSteeringRequestSchema = z.union([
+  SubmitThreadGoalSteeringMessageRequestSchema,
+  SubmitThreadGoalSteeringMaterialRequestSchema,
+]);
 
 /** Response payload returned after submitting Goal Mode steering. */
-export const SubmitThreadGoalSteeringResponseSchema = z.object({
-  state: z.literal('queued'),
-  pendingTurnId: z.string().min(1),
-  requestId: z.string().min(1),
-  contentItemId: z.string().min(1),
-  goalId: z.string().min(1),
-  activeTurnId: z.string().min(1),
+export const SubmitThreadGoalSteeringResponseSchema = z
+  .object({
+    state: z.literal('queued'),
+    pendingTurnId: z.string().min(1),
+    requestId: z.string().min(1),
+    contentItemId: z.string().min(1),
+    goalId: z.string().min(1),
+    activeTurnId: z.string().min(1),
+  })
+  .strict();
+
+/** Request body for converting terminal Goal steering into Thread follow-up history. */
+export const ConvertGoalSteeringToFollowUpRequestSchema = z
+  .object({ requestId: z.string().min(1) })
+  .strict();
+
+/** Request body for cancelling terminal Goal steering. */
+export const CancelGoalSteeringRequestSchema = ConvertGoalSteeringToFollowUpRequestSchema;
+
+const goalSteeringTerminalResponseBaseSchema = z
+  .object({
+    pendingTurnId: z.string().min(1),
+    requestId: z.string().min(1),
+    sourceRequestId: z.string().min(1),
+    contentItemId: z.string().min(1),
+    goalId: z.string().min(1),
+    activeTurnId: z.string().min(1),
+  })
+  .strict();
+
+/** Response payload after converting terminal Goal steering into Thread follow-up history. */
+export const ConvertGoalSteeringToFollowUpResponseSchema =
+  goalSteeringTerminalResponseBaseSchema.extend({
+    state: z.literal('follow-up'),
+    followUpTurnId: z.string().min(1),
+    followUpItemId: z.string().min(1),
+  });
+
+/** Response payload after cancelling terminal Goal steering. */
+export const CancelGoalSteeringResponseSchema = goalSteeringTerminalResponseBaseSchema.extend({
+  state: z.literal('cancelled'),
 });
 
 /** Resource reference selected by a Goal Mode plan task. */
@@ -703,6 +757,18 @@ export type SubmitThreadGoalSteeringRequest = z.infer<typeof SubmitThreadGoalSte
 export type SubmitThreadGoalSteeringResponse = z.infer<
   typeof SubmitThreadGoalSteeringResponseSchema
 >;
+/** Request body for converting terminal Goal steering into Thread follow-up history. */
+export type ConvertGoalSteeringToFollowUpRequest = z.infer<
+  typeof ConvertGoalSteeringToFollowUpRequestSchema
+>;
+/** Response payload after converting terminal Goal steering into Thread follow-up history. */
+export type ConvertGoalSteeringToFollowUpResponse = z.infer<
+  typeof ConvertGoalSteeringToFollowUpResponseSchema
+>;
+/** Request body for cancelling terminal Goal steering. */
+export type CancelGoalSteeringRequest = z.infer<typeof CancelGoalSteeringRequestSchema>;
+/** Response payload after cancelling terminal Goal steering. */
+export type CancelGoalSteeringResponse = z.infer<typeof CancelGoalSteeringResponseSchema>;
 /** Resource reference selected by a Goal Mode plan task. */
 export type ThreadGoalPlanTaskResource = z.infer<typeof ThreadGoalPlanTaskResourceSchema>;
 /** Expected output from one Goal Mode plan task. */

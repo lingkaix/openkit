@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import {
   listSchedulerLeasesNeedingWorkspaceRecovery,
   markSchedulerLeaseWorkspaceRecoveryProjected,
@@ -106,9 +108,8 @@ export function recordWorkspaceRecoveryTriggersForLeases(
 
   for (const lease of leases) {
     try {
-      const { userId } = requireSchedulerSessionLeaseAdmissionContext(coreDb, lease.leaseId);
       const stateBefore = lease.status === 'lost' ? 'lease-releasing' : 'lease-stale';
-      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, userId, lease.workspaceId);
+      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lease.workspaceId);
       let handoffComplete = false;
       try {
         applyScopedMigrations(workspaceDb);
@@ -117,6 +118,12 @@ export function recordWorkspaceRecoveryTriggersForLeases(
           lease.workspaceId,
           lease.packageSnapshotId
         ).snapshot;
+        const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, lease.leaseId);
+        if (!isDeepStrictEqual(environmentPackage.scope.triggerActor, admission.triggerActor)) {
+          throw new Error(
+            `Scheduler lease ${lease.leaseId} package trigger actor does not match admission.`
+          );
+        }
         const packageHandles = requireCompleteBackendWorkspaceHandleHandoff(
           workspaceDb,
           environmentPackage

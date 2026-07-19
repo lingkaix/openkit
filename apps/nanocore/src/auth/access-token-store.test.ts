@@ -186,4 +186,40 @@ describe('OpenKit access token store', () => {
       coreDb.sqlite.close();
     }
   });
+
+  it('rejects an otherwise usable token when its canonical owner is disabled', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-store-disabled-owner-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      insertTokenOwnerUser(coreDb);
+      const issued = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2026-07-20T00:00:00.000Z',
+        now: new Date('2026-07-19T00:00:00.000Z'),
+        ownerUserId: 'user_owner',
+        scope: 'server-admin',
+        workspaceIds: [],
+      });
+
+      coreDb.sqlite
+        .prepare("UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = ?")
+        .run('2026-07-19T01:00:00.000Z', 'user_owner');
+
+      expect(
+        verifyOpenKitAccessTokenRecord(coreDb, issued.secret, {
+          now: new Date('2026-07-19T02:00:00.000Z'),
+        })
+      ).toBeNull();
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT last_used_at AS lastUsedAt FROM openkit_access_tokens WHERE token_id = ?'
+          )
+          .get(issued.tokenId)
+      ).toEqual({ lastUsedAt: null });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
 });

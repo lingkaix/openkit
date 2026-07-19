@@ -56,6 +56,8 @@ export interface WorkspacePortableFileState {
   readonly nativeKnowledgePages: ReadonlyMap<string, string>;
   /** Context materialization text keyed by workspace-relative path. */
   readonly contextMaterializations: ReadonlyMap<string, string>;
+  /** Turn-owned worker Context Package traces and exact worker-visible text files. */
+  readonly workerContextPackageFiles: ReadonlyMap<string, string>;
 }
 
 /**
@@ -227,16 +229,31 @@ export function readWorkspaceKnowledgeContextPackageTraceLedger(
  *
  * @param workspaceRoot Published workspace root.
  * @param row Retrieval trace to append.
- * @throws Error for malformed rows, timestamps, paths, links, or non-regular files.
+ * @throws Error for duplicate ids, malformed rows, timestamps, paths, links, or non-regular files.
  */
 export function appendWorkspaceKnowledgeRetrievalTrace(
   workspaceRoot: string,
   row: z.infer<typeof RetrievalTraceRowSchema>
 ): void {
+  const parsed = RetrievalTraceRowSchema.parse(row);
+  // ponytail: a linear scan fits the small-deployment profile; add an index only if trace volume proves it necessary.
+  const existing = readMonthlyLedger(
+    workspaceRoot,
+    'knowledge/traces',
+    RetrievalTraceRowSchema,
+    (entry) => entry.createdAt,
+    true
+  );
+
+  if (
+    [...existing.values()].some((rows) => rows.some((entry) => entry.traceId === parsed.traceId))
+  ) {
+    throw new Error('Duplicate Knowledge retrieval trace id.');
+  }
   appendMonthlyLedgerRow(
     workspaceRoot,
     'knowledge/traces',
-    row,
+    parsed,
     RetrievalTraceRowSchema,
     (entry) => entry.createdAt
   );
@@ -246,10 +263,14 @@ export function appendWorkspaceKnowledgeRetrievalTrace(
  * Reads all authoritative portable file state beneath one real workspace root.
  *
  * @param workspaceRoot Published source workspace root.
+ * @param turns Canonical Thread and Turn identities allowed to own package trees.
  * @returns Strictly parsed ledgers and exact portable text files.
  * @throws Error for malformed rows, invalid month placement, links, or non-regular files.
  */
-export function readWorkspacePortableFileState(workspaceRoot: string): WorkspacePortableFileState {
+export function readWorkspacePortableFileState(
+  workspaceRoot: string,
+  turns: readonly { readonly threadId: string; readonly turnId: string }[]
+): WorkspacePortableFileState {
   const root = resolve(workspaceRoot);
 
   assertCanonicalDirectory(root);
@@ -268,6 +289,7 @@ export function readWorkspacePortableFileState(workspaceRoot: string): Workspace
     workspaceSchema: readOptionalText(root, 'knowledge/schema/workspace-schema.yaml'),
     nativeKnowledgePages: readNativeKnowledgePages(root),
     contextMaterializations: readTextTree(root, 'knowledge/context-materializations', true),
+    workerContextPackageFiles: readWorkerContextPackageFiles(root, turns),
   };
 }
 
@@ -328,6 +350,8 @@ export function writeWorkspacePortableFileState(
   }
   writeTextMap(root, state.nativeKnowledgePages, 'knowledge/pages/', false);
   writeTextMap(root, state.contextMaterializations, 'knowledge/context-materializations/', false);
+  assertWorkerContextPackageFiles(state.workerContextPackageFiles);
+  writeTextMap(root, state.workerContextPackageFiles, 'threads/', false);
 }
 
 /**
@@ -407,6 +431,8 @@ export function writeWorkspacePortableExportState(
   }
   writeExportTextMap(root, state.nativeKnowledgePages, 'knowledge/pages/');
   writeExportTextMap(root, state.contextMaterializations, 'knowledge/context-materializations/');
+  assertWorkerContextPackageFiles(state.workerContextPackageFiles);
+  writeExportTextMap(root, state.workerContextPackageFiles, 'threads/');
 }
 
 /** Reads and validates one optional monthly JSONL family. */
@@ -574,6 +600,113 @@ function readNativeKnowledgePages(root: string): ReadonlyMap<string, string> {
     }
   }
   return nativePages;
+}
+
+/** Reads only complete worker Context Package trees owned by canonical Turns. */
+function readWorkerContextPackageFiles(
+  root: string,
+  turns: readonly { readonly threadId: string; readonly turnId: string }[]
+): ReadonlyMap<string, string> {
+  const knownTurns = new Set(
+    turns.map(({ threadId, turnId }) => {
+      safeRelativeSegments(`threads/${threadId}/turns/${turnId}`);
+      return `${threadId}\0${turnId}`;
+    })
+  );
+  if (knownTurns.size !== turns.length) {
+    throw new Error('Portable worker Context Package Turn identities must be unique.');
+  }
+  const files = new Map<string, string>();
+  const threadsDirectory = workspaceDirectory(root, 'threads', false);
+  if (!threadsDirectory) {
+    return files;
+  }
+
+  for (const thread of readdirSync(threadsDirectory, { withFileTypes: true }).sort((a, b) =>
+    a.name.localeCompare(b.name)
+  )) {
+    if (thread.isSymbolicLink()) {
+      throw new Error(`Portable workspace path must not be a symbolic link: ${thread.name}.`);
+    }
+    if (!thread.isDirectory()) {
+      continue;
+    }
+    const turnsDirectory = workspaceDirectory(root, `threads/${thread.name}/turns`, false);
+    if (!turnsDirectory) {
+      continue;
+    }
+    for (const turn of readdirSync(turnsDirectory, { withFileTypes: true }).sort((a, b) =>
+      a.name.localeCompare(b.name)
+    )) {
+      if (turn.isSymbolicLink()) {
+        throw new Error(`Portable workspace path must not be a symbolic link: ${turn.name}.`);
+      }
+      if (!turn.isDirectory()) {
+        continue;
+      }
+      const turnPath = `threads/${thread.name}/turns/${turn.name}`;
+      const turnDirectory = workspaceDirectory(root, turnPath, false);
+      if (!turnDirectory) {
+        throw new Error(`Portable worker Context Package Turn is unavailable: ${turnPath}.`);
+      }
+      const tracePath = `${turnPath}/context-package.json`;
+      const packagePath = `${turnPath}/context-package`;
+      const trace = lstatSync(join(turnDirectory, 'context-package.json'), {
+        throwIfNoEntry: false,
+      });
+      const packageDirectory = lstatSync(join(turnDirectory, 'context-package'), {
+        throwIfNoEntry: false,
+      });
+      if (!trace && !packageDirectory) {
+        continue;
+      }
+      if (!knownTurns.has(`${thread.name}\0${turn.name}`)) {
+        throw new Error(`Portable worker Context Package has no canonical Turn: ${turnPath}.`);
+      }
+      if (!trace?.isFile() || !packageDirectory?.isDirectory()) {
+        throw new Error(`Portable worker Context Package tree is incomplete: ${turnPath}.`);
+      }
+      files.set(tracePath, readCanonicalTextFile(join(turnDirectory, 'context-package.json')));
+      for (const entry of readTextTree(root, packagePath, true)) {
+        files.set(...entry);
+      }
+    }
+  }
+  assertWorkerContextPackageFiles(files);
+  return files;
+}
+
+/** Requires every text-map entry to belong to one complete worker Context Package tree. */
+function assertWorkerContextPackageFiles(files: ReadonlyMap<string, string>): void {
+  const roots = new Map<string, { packageManifest: boolean; trace: boolean }>();
+  for (const [path, content] of files) {
+    const match =
+      /^threads\/([^/]+)\/turns\/([^/]+)\/(context-package\.json|context-package\/(.+))$/.exec(
+        path
+      );
+    if (!match || typeof content !== 'string') {
+      throw new Error(`Portable worker Context Package path is invalid: ${path}.`);
+    }
+    if (match[3] === 'context-package.json') {
+      const trace = JSON.parse(content) as {
+        readonly threadId?: unknown;
+        readonly turnId?: unknown;
+      };
+      if (trace.threadId !== match[1] || trace.turnId !== match[2]) {
+        throw new Error('Worker Context Package trace path lineage is contradictory.');
+      }
+    }
+    const root = `threads/${match[1]}/turns/${match[2]}`;
+    const state = roots.get(root) ?? { packageManifest: false, trace: false };
+    state.trace ||= match[3] === 'context-package.json';
+    state.packageManifest ||= match[3] === 'context-package/package.json';
+    roots.set(root, state);
+  }
+  for (const [root, state] of roots) {
+    if (!state.trace || !state.packageManifest) {
+      throw new Error(`Portable worker Context Package tree is incomplete: ${root}.`);
+    }
+  }
 }
 
 /** Reads exact UTF-8 files below one optional verified directory tree. */

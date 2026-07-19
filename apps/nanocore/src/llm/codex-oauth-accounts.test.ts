@@ -117,6 +117,52 @@ describe('Codex OAuth account slots', () => {
     });
   });
 
+  it('sanitizes persisted failure detail before public account-list projection', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-codex-persisted-failure-'));
+    const manager = new CodexOAuthAccountManager({ dataRoot });
+    const canaries = [
+      'Bearer oauth-persisted-canary',
+      'acct_persisted_canary',
+      '/private/oauth-persisted-canary/auth.json',
+    ];
+
+    await manager.createAccount({ accountSlotId: 'team_error' });
+    writeFileSync(
+      join(
+        dataRoot,
+        'server',
+        'files',
+        'oauth',
+        'openai-codex',
+        'accounts',
+        'team_error',
+        'account.json'
+      ),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        accountSlotId: 'team_error',
+        status: 'error',
+        lastError: canaries.join(' '),
+        lastLoginMode: 'browser',
+        lastUpdatedAt: '2026-05-26T00:00:00.000Z',
+      })}\n`
+    );
+
+    const accounts = await new CodexOAuthAccountManager({ dataRoot }).listAccounts();
+    const failedAccount = accounts.accounts.find(
+      (account) => account.accountSlotId === 'team_error'
+    );
+
+    expect(failedAccount).toMatchObject({
+      status: 'error',
+      mode: 'browser',
+      message: 'Codex ChatGPT account operation failed.',
+    });
+    for (const canary of canaries) {
+      expect(JSON.stringify(failedAccount)).not.toContain(canary);
+    }
+  });
+
   it('rejects absolute and traversal account slot ids before resolving paths', async () => {
     const manager = new CodexOAuthAccountManager({
       dataRoot: mkdtempSync(join(tmpdir(), 'openkit-codex-slots-')),

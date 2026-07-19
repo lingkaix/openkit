@@ -54,7 +54,7 @@ describe('nanocore metadata', () => {
       const parsed = MetaResponseSchema.parse(await res.json());
 
       expect(parsed).toMatchObject({
-        protocolVersion: '0.3.0',
+        protocolVersion: '0.4.0',
         capabilities: ['core.artifacts', 'core.agent_session.visible', 'core.stream.replay'],
         itemTypes: ['user-message', 'assistant-message', 'artifact-reference', 'status'],
         itemDeltaKinds: [],

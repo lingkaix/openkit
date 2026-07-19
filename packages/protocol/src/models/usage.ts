@@ -35,6 +35,7 @@ export const UsageUnitSchema = z.enum([
 export const UsageRecordSchema = z.object({
   id: UsageRecordIdSchema,
   workspaceId: WorkspaceIdSchema,
+  responsibleUserId: z.string().min(1).nullable(),
   threadId: ThreadIdSchema.nullable(),
   turnId: TurnIdSchema.nullable(),
   itemId: ItemIdSchema.nullable().default(null),

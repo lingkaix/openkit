@@ -4,6 +4,7 @@ import path from 'node:path';
 import { z } from 'zod';
 
 import {
+  ActorRefSchema,
   AgentSessionSchema,
   ApiErrorSchema,
   ApprovalRequestSchema,
@@ -28,6 +29,7 @@ async function main(): Promise<void> {
   await mkdir(outputDir, { recursive: true });
 
   const schemaMap = {
+    'actor-ref.schema.json': ActorRefSchema,
     'workspace.schema.json': WorkspaceRecordSchema,
     'thread.schema.json': ThreadSchema,
     'turn.schema.json': TurnSchema,

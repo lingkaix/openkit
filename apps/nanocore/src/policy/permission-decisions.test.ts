@@ -8,6 +8,7 @@ import { loadBootPolicyKernel } from '../bootstrap/policy.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
+  listExportableWorkspacePermissionDecisions,
   recordBootPolicySelfCheckDecisions,
   recordPermissionDecision,
   recordProductPermissionDecision,
@@ -228,13 +229,14 @@ describe('permission decision recorder', () => {
 
   it('records linked audit events for workspace-scoped permission decisions', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-decision-audit-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
 
       recordProductPermissionDecision({
         action: 'runtime.launch',
+        auditActor: { kind: 'user', id: 'user_operator' },
         contextSummary: { threadId: 'th_demo', turnId: 'turn_demo', workspaceId: 'ws_demo' },
         decisionId: 'pd_workspace_audit',
         enforcementPoint: 'runtime.worker_turn_loop.start',
@@ -265,6 +267,7 @@ describe('permission decision recorder', () => {
       expect(decision.audit_event_id).toMatch(/^aud_/);
       expect(audit).toMatchObject({
         action: 'permission.decision',
+        actor_json: JSON.stringify({ kind: 'user', id: 'user_operator' }),
         category: 'approval',
         created_at: '2026-07-05T00:00:00.000Z',
         error_code: null,
@@ -337,7 +340,7 @@ describe('permission decision recorder', () => {
 
   it('rolls back a permission decision when its linked audit event cannot persist', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-decision-atomic-audit-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'local-user', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -372,6 +375,70 @@ describe('permission decision recorder', () => {
           .prepare('SELECT COUNT(*) AS count FROM permission_decisions WHERE decision_id = ?')
           .get('pd_atomic_audit')
       ).toEqual({ count: 0 });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('permits only one terminal permission decision for an approval', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-decision-terminal-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      const base = {
+        action: 'repo.push',
+        approvalId: 'approval_terminal_1',
+        auditActor: { kind: 'user' as const, id: 'user_operator' },
+        contextSummary: { requestId: '00000000-0000-4000-8000-000000000015' },
+        enforcementPoint: 'repo.push.approval_response',
+        ownerScope: 'workspace' as const,
+        policyEngineVersion: 'nanocore-approval-policy:v1',
+        policySnapshotId: 'policy_snapshot_runtime',
+        requiredApprovalKind: 'permission',
+        resourceSummary: { repositoryId: 'repo_default' },
+        subjectSummary: { kind: 'agent', id: 'agent_demo' },
+        workspaceDb,
+        workspaceId: 'ws_demo',
+      };
+
+      recordProductPermissionDecision({
+        ...base,
+        decisionId: 'pd_requires_approval',
+        reasonCode: 'repo_push_requires_approval',
+        result: 'require_approval',
+      });
+      recordProductPermissionDecision({
+        ...base,
+        decisionId: 'pd_terminal_allow',
+        reasonCode: 'repo_push_approved',
+        result: 'allow',
+      });
+      expect(() =>
+        recordProductPermissionDecision({
+          ...base,
+          decisionId: 'pd_terminal_deny',
+          reasonCode: 'repo_push_denied',
+          result: 'deny',
+        })
+      ).toThrow();
+
+      expect(
+        listExportableWorkspacePermissionDecisions(workspaceDb, 'ws_demo').map((decision) => ({
+          decisionId: decision.decisionId,
+          result: decision.result,
+        }))
+      ).toEqual([
+        { decisionId: 'pd_requires_approval', result: 'require_approval' },
+        { decisionId: 'pd_terminal_allow', result: 'allow' },
+      ]);
+      expect(
+        workspaceDb.sqlite
+          .prepare(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE action = 'permission.decision'"
+          )
+          .get()
+      ).toEqual({ count: 2 });
     } finally {
       workspaceDb.sqlite.close();
     }

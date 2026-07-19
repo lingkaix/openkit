@@ -1,4 +1,5 @@
-import { index, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
+import { index, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 /** Durable product-level permission decision result. */
 export type PermissionDecisionResult =
@@ -56,5 +57,10 @@ export const permissionDecisions = sqliteTable(
       table.createdAt
     ),
     index('permission_decisions_enforcement_idx').on(table.enforcementPoint, table.createdAt),
+    uniqueIndex('permission_decisions_terminal_approval_idx')
+      .on(table.approvalId)
+      .where(
+        sql`${table.ownerScope} = 'workspace' AND ${table.approvalId} IS NOT NULL AND ${table.result} IN ('allow', 'deny')`
+      ),
   ]
 );

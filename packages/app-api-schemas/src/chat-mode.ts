@@ -2,12 +2,12 @@ import { ItemSchema, TurnSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
 /** Request body for one thread-scoped Chat Mode Assistant turn. */
-export const StartChatModeRequestSchema = z.object({
-  input: z.string().min(1),
-  providerId: z.string().min(1).optional(),
-  model: z.string().min(1).optional(),
-  requestId: z.string().min(1),
-});
+export const StartChatModeRequestSchema = z
+  .object({
+    input: z.string().min(1),
+    requestId: z.string().min(1),
+  })
+  .strict();
 
 /** Terminal routing outcome selected by Core Assistant. */
 export const ChatModeOutcomeSchema = z.enum([

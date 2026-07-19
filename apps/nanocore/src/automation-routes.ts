@@ -15,45 +15,43 @@ import { registerAppApiRoute } from './openapi.js';
 /**
  * Registers automation definition list, create, update, and delete routes.
  *
- * @param dependencies Hono app, automation storage, and request-scoped workspace storage.
+ * @param dependencies Hono app, automation storage, Workspace authorization, and shared storage.
  */
 export function registerAutomationRoutes({
   app,
+  authorizedWorkspaceIds,
   automationStore,
   requestStore,
-  visibleWorkspacesForActor,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
+  readonly authorizedWorkspaceIds: (
+    context: Context<{ Variables: AuthVariables }>
+  ) => readonly string[];
   readonly automationStore: AutomationStore;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
-  readonly visibleWorkspacesForActor: (
-    actor: AuthVariables['actor'] | undefined,
-    items: ReturnType<FsStore['listWorkspaces']>
-  ) => ReturnType<FsStore['listWorkspaces']>;
 }): void {
   /**
-   * Returns workspace ids visible to the current actor.
+   * Opens and returns only Workspace ids authorized for the current actor.
    *
    * @param c Authenticated request context.
-   * @param store Actor-owned workspace store.
-   * @returns Workspace ids the actor may see.
+   * @param store Shared Workspace store.
+   * @returns Authorized Workspace ids present in the shared store.
    */
   function visibleWorkspaceIds(
     c: Context<{ Variables: AuthVariables }>,
     store: FsStore
   ): Set<string> {
     return new Set(
-      visibleWorkspacesForActor(c.get('actor'), store.listWorkspaces()).map(
-        (workspace) => workspace.id
-      )
+      authorizedWorkspaceIds(c).map((workspaceId) => store.getWorkspace(workspaceId).id)
     );
   }
 
   registerAppApiRoute(app, 'listAutomations', (c) => {
     const store = requestStore(c);
+    const userId = c.get('actor').userId;
     const workspaceIds = visibleWorkspaceIds(c, store);
     const items = automationStore
-      .listAutomations(store.getUserId())
+      .listAutomations(userId)
       .filter((automation) => workspaceIds.has(automation.workspaceId));
 
     return c.json(ListAutomationsResponseSchema.parse({ items }));
@@ -62,14 +60,14 @@ export function registerAutomationRoutes({
   registerAppApiRoute(app, 'createAutomation', async (c) => {
     const input = CreateAutomationRequestSchema.parse(await c.req.json());
     const store = requestStore(c);
+    const userId = c.get('actor').userId;
 
-    store.getWorkspace(input.workspaceId);
     if (!visibleWorkspaceIds(c, store).has(input.workspaceId)) {
       return asApiError('Workspace is unavailable.', 'automation_create_failed');
     }
 
     return c.json(
-      AutomationRecordSchema.parse(automationStore.createAutomation(store.getUserId(), input)),
+      AutomationRecordSchema.parse(automationStore.createAutomation(userId, input)),
       201
     );
   });
@@ -78,17 +76,16 @@ export function registerAutomationRoutes({
     try {
       const input = UpdateAutomationRequestSchema.parse(await c.req.json());
       const store = requestStore(c);
+      const userId = c.get('actor').userId;
       const automationId = c.req.param('automationId');
-      const automation = automationStore.getAutomation(store.getUserId(), automationId);
+      const automation = automationStore.getAutomation(userId, automationId);
 
       if (!visibleWorkspaceIds(c, store).has(automation.workspaceId)) {
         throw new Error(`Automation not found: ${automationId}`);
       }
 
       return c.json(
-        AutomationRecordSchema.parse(
-          automationStore.updateAutomation(store.getUserId(), automationId, input)
-        )
+        AutomationRecordSchema.parse(automationStore.updateAutomation(userId, automationId, input))
       );
     } catch (error) {
       return asApiError((error as Error).message, 'automation_update_failed');
@@ -98,14 +95,15 @@ export function registerAutomationRoutes({
   registerAppApiRoute(app, 'deleteAutomation', (c) => {
     try {
       const store = requestStore(c);
+      const userId = c.get('actor').userId;
       const automationId = c.req.param('automationId');
-      const automation = automationStore.getAutomation(store.getUserId(), automationId);
+      const automation = automationStore.getAutomation(userId, automationId);
 
       if (!visibleWorkspaceIds(c, store).has(automation.workspaceId)) {
         throw new Error(`Automation not found: ${automationId}`);
       }
 
-      automationStore.deleteAutomation(store.getUserId(), automationId);
+      automationStore.deleteAutomation(userId, automationId);
 
       return c.body(null, 204);
     } catch (error) {

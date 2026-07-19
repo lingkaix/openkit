@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "bin": {
-    "openkit-codex-shim": "./dist/bin/openkit-codex-shim.js"
+    "openkit-worker-shim": "./dist/bin/openkit-worker-shim.js"
   },
   "exports": {
     ".": {

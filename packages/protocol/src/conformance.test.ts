@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 import {
+  ActorRefSchema,
   AgentSessionSchema,
   ApiErrorSchema,
   ApprovalRequestSchema,
@@ -22,6 +23,7 @@ import {
 const FIXTURES_DIR = new URL('../conformance/', import.meta.url);
 
 const cases = [
+  { name: 'actor-ref', schema: ActorRefSchema },
   { name: 'workspace', schema: WorkspaceRecordSchema },
   { name: 'thread', schema: ThreadSchema },
   { name: 'turn', schema: TurnSchema },
@@ -61,6 +63,58 @@ describe('conformance fixtures round-trip via @openkit/protocol schemas', () => 
       expect(JSON.parse(JSON.stringify(parsed))).toEqual(raw.data);
     });
   }
+});
+
+describe('audit event actor attribution', () => {
+  const auditEvent = {
+    id: 'audit_actor_demo',
+    action: 'workspace.member.add',
+    outcome: 'succeeded',
+    summary: 'Workspace member added.',
+  } as const;
+
+  it('accepts strict nullable actor and subject references', () => {
+    const actor = { kind: 'user', id: 'user_owner' } as const;
+    const subject = {
+      kind: 'automation',
+      id: 'automation_invitation',
+      responsibleUserId: 'user_owner',
+    } as const;
+
+    expect(AuditEventSchema.parse({ ...auditEvent, actor, subject })).toMatchObject({
+      actor,
+      subject,
+    });
+    expect(AuditEventSchema.parse(auditEvent)).toMatchObject({ actor: null, subject: null });
+  });
+
+  it('accepts only nullable positive resource revisions', () => {
+    expect(AuditEventSchema.parse({ ...auditEvent, resourceRevision: 2 }).resourceRevision).toBe(2);
+    expect(AuditEventSchema.parse(auditEvent).resourceRevision).toBeNull();
+    expect(AuditEventSchema.safeParse({ ...auditEvent, resourceRevision: 0 }).success).toBe(false);
+    expect(AuditEventSchema.safeParse({ ...auditEvent, resourceRevision: 1.5 }).success).toBe(
+      false
+    );
+  });
+
+  it('rejects legacy, malformed, and secret-bearing attribution fields', () => {
+    expect(AuditEventSchema.safeParse({ ...auditEvent, actorId: 'user_owner' }).success).toBe(
+      false
+    );
+    expect(
+      AuditEventSchema.safeParse({
+        ...auditEvent,
+        actor: { kind: 'automation', id: 'automation_invitation' },
+      }).success
+    ).toBe(false);
+    expect(
+      AuditEventSchema.safeParse({
+        ...auditEvent,
+        credential: { token: 'secret' },
+        channel: { authorization: 'Bearer secret' },
+      }).success
+    ).toBe(false);
+  });
 });
 
 describe('item delta conformance fixtures', () => {

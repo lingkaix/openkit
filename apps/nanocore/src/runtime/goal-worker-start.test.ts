@@ -10,6 +10,8 @@ import { startGoalTaskWorkerTurn } from './goal-worker-start.js';
 import type { PreparedNextTurn } from './prepare-next-turn.js';
 import { getWorkerCheckpoint } from './worker-checkpoints.js';
 
+const USER_ACTOR = { kind: 'user', id: 'user_demo' } as const;
+
 /**
  * Opens a migrated workspace database for goal worker start tests.
  *
@@ -17,7 +19,7 @@ import { getWorkerCheckpoint } from './worker-checkpoints.js';
  */
 function createWorkspaceDb(): WorkspaceDb {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-goal-worker-start-'));
-  const workspaceDb = openWorkspaceDb(dataRoot, 'user_demo', 'ws_demo');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }
@@ -114,6 +116,7 @@ describe('goal worker start', () => {
       const result = await startGoalTaskWorkerTurn({
         workspaceDb,
         store,
+        triggerActor: USER_ACTOR,
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         goalId: 'goal_demo',
@@ -125,6 +128,7 @@ describe('goal worker start', () => {
       });
 
       expect(result.turn.id).toBe('tu_1');
+      expect(result.turn.triggerActor).toEqual(USER_ACTOR);
       expect(result.workerSessionId).toBe('session_worker_1');
       expect(
         listGoalTasks(workspaceDb, {
@@ -160,6 +164,7 @@ describe('goal worker start', () => {
         startGoalTaskWorkerTurn({
           workspaceDb,
           store,
+          triggerActor: USER_ACTOR,
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
           goalId: 'goal_demo',

@@ -14,8 +14,9 @@ import {
   type TaskDelegationDecision,
   type TaskModeEvidence,
 } from '@openkit/app-api-schemas';
-import type { StopReason, TurnSchema } from '@openkit/protocol';
+import { type ActorRef, type StopReason, TurnSchema } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import type { z } from 'zod';
 
 import {
@@ -25,6 +26,7 @@ import {
   asInvalidRequestError,
 } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
+import { assertAuthorizedWorkspaceLineage } from './auth/operation-authorizer.js';
 import {
   finishCapabilityCall,
   normalizeCapabilityRequestId,
@@ -45,7 +47,11 @@ import {
   type WorkerCoordinatorCandidate,
   type WorkerCoordinatorDecision,
 } from './internal-agents/worker-coordinator.js';
-import { answerKnowledgeManager, prepareKnowledgeContext } from './knowledge-manager.js';
+import {
+  answerKnowledgeManager,
+  prepareKnowledgeContext,
+  resolveRetrievedKnowledgeEntries,
+} from './knowledge-manager.js';
 import type { ChatCommandReceiptMetadata, CommandRequestRecord, FsStore } from './lib/store.js';
 import { parseUsage } from './llm/gateway-usage.js';
 import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
@@ -79,7 +85,12 @@ import {
 import { workerTurnStageForStopReason } from './runtime/worker-stage.js';
 import { runWorkerTurnLoop } from './runtime/worker-turn-loop.js';
 import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
+import {
+  listSchedulerSessionLeasesForTurn,
+  requireSchedulerSessionLeaseAdmissionContext,
+} from './scheduler-records.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
+import { retrieveWorkspaceKnowledge } from './storage/index-rebuild.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import {
   getDefaultWorkspaceRepositoryResource,
@@ -138,7 +149,8 @@ type ChatModeCommandResult = {
  */
 function replayChatModeCommand(
   store: FsStore,
-  repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb,
+  actorId: string,
+  repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb,
   workspaceId: string,
   threadId: string,
   record: CommandRequestRecord
@@ -161,9 +173,13 @@ function replayChatModeCommand(
       record.response.kind !== 'turn' ||
       currentTurn.workspaceId !== workspaceId ||
       currentTurn.threadId !== threadId ||
+      currentTurn.triggerActor.kind !== 'user' ||
+      currentTurn.triggerActor.id !== actorId ||
       userItem?.type !== 'user-message' ||
       userItem.status !== 'completed' ||
       !userItem.completedAt ||
+      userItem.actor.kind !== 'user' ||
+      userItem.actor.id !== actorId ||
       userItem.workspaceId !== workspaceId ||
       userItem.threadId !== threadId ||
       userItem.turnId !== currentTurn.id ||
@@ -173,8 +189,10 @@ function replayChatModeCommand(
       currentTurn.startedAt !== userItem.createdAt ||
       resultItem.createdAt !== userItem.createdAt ||
       !currentUserItem ||
-      currentUserItem.type !== userItem.type ||
+      currentUserItem.type !== 'user-message' ||
       currentUserItem.createdAt !== userItem.createdAt ||
+      currentUserItem.actor.kind !== 'user' ||
+      currentUserItem.actor.id !== actorId ||
       !currentResultItem ||
       currentResultItem.type !== resultItem.type ||
       currentResultItem.createdAt !== resultItem.createdAt
@@ -188,7 +206,10 @@ function replayChatModeCommand(
         metadata.downstream !== null ||
         resultItem.type !== 'user-input-request' ||
         resultItem.status !== 'completed' ||
-        resultItem.completedAt !== resultItem.createdAt
+        resultItem.completedAt !== resultItem.createdAt ||
+        resultItem.responsibleUserId !== actorId ||
+        currentResultItem.type !== 'user-input-request' ||
+        currentResultItem.responsibleUserId !== actorId
       ) {
         throw new Error('Chat clarification owner contradiction.');
       }
@@ -198,9 +219,7 @@ function replayChatModeCommand(
           outcome: 'clarification-needed',
           explanation: 'The Assistant needs a concrete request before choosing a mode.',
           turn: {
-            id: currentTurn.id,
-            workspaceId,
-            threadId,
+            ...currentTurn,
             items: [userItem, resultItem],
             status: 'awaiting_human',
             humanGate: {
@@ -209,8 +228,6 @@ function replayChatModeCommand(
               itemId: resultItem.id,
             },
             error: null,
-            configVersion: null,
-            startedAt: userItem.createdAt,
             completedAt: null,
             durationMs: null,
           },
@@ -302,13 +319,13 @@ function replayChatModeCommand(
 
       const goalTurn = store.getTurnById(metadata.downstream.turnId);
       const ids = goalStartOwnerIds({
+        actorId,
         owningCommand: 'chat.start',
         requestId: record.requestId,
-        store,
         workspaceId,
         threadId,
       });
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
 
       try {
         const goal = getGoalRecord(workspaceDb, workspaceId, threadId, metadata.downstream.goalId);
@@ -359,20 +376,8 @@ function replayChatModeCommand(
         outcome,
         explanation,
         turn: {
-          id: currentTurn.id,
-          workspaceId,
-          threadId,
+          ...currentTurn,
           items: [userItem, resultItem],
-          status: 'completed',
-          humanGate: null,
-          error: null,
-          configVersion: null,
-          startedAt: userItem.createdAt,
-          completedAt: resultItem.completedAt,
-          durationMs: Math.max(
-            0,
-            new Date(resultItem.completedAt).getTime() - new Date(userItem.createdAt).getTime()
-          ),
         },
         item: resultItem,
         handoff,
@@ -404,8 +409,9 @@ function replayChatModeCommand(
  */
 function replayTaskModeCommand(
   store: FsStore,
+  actorId: string,
   coreDb: CoreDb | undefined,
-  repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb,
+  repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb,
   workspaceId: string,
   threadId: string,
   record: CommandRequestRecord
@@ -421,10 +427,7 @@ function replayTaskModeCommand(
       throw new Error('Task command owner contradiction.');
     }
 
-    if (
-      currentTurn.id ===
-      directTaskModeTurnId(store.getUserId(), workspaceId, threadId, record.requestId)
-    ) {
+    if (currentTurn.id === directTaskModeTurnId(actorId, workspaceId, threadId, record.requestId)) {
       const initiatingItem = currentTurn.items.find(
         (item) => item.id === `it_user_${currentTurn.id}`
       );
@@ -451,7 +454,7 @@ function replayTaskModeCommand(
         throw new Error('Task worker Turn owner contradiction.');
       }
 
-      const workspaceDb = coreDb ? repositoryWorkspaceDb(store, workspaceId) : null;
+      const workspaceDb = coreDb ? repositoryWorkspaceDb(workspaceId) : null;
 
       try {
         return StartTaskModeResponseSchema.parse({
@@ -487,13 +490,13 @@ function replayTaskModeCommand(
 
     const goalId = statusItem.id.slice('it_task_goal_'.length, -statusItemSuffix.length);
     const ids = goalStartOwnerIds({
+      actorId,
       owningCommand: 'task.start',
       requestId: record.requestId,
-      store,
       workspaceId,
       threadId,
     });
-    const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+    const workspaceDb = repositoryWorkspaceDb(workspaceId);
 
     try {
       const goal = goalId ? getGoalRecord(workspaceDb, workspaceId, threadId, goalId) : null;
@@ -639,6 +642,7 @@ function recoverDirectTaskModeCheckpoint(input: {
     };
     stage = workerTurnStageForStopReason(stopReason);
     updateWorkerCheckpoint(input.workspaceDb, {
+      authorityActor: turn.triggerActor,
       workspaceId: input.workspaceId,
       threadId: input.threadId,
       turnId: input.turnId,
@@ -698,8 +702,28 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
   readonly checkpoint: WorkerCheckpointRecord;
 }): Promise<'complete' | 'live'> {
   const { checkpoint } = input;
+  const leases = listSchedulerSessionLeasesForTurn(input.coreDb, {
+    workspaceId: checkpoint.workspaceId,
+    threadId: checkpoint.threadId,
+    turnId: checkpoint.turnId,
+  });
+  const lease = leases[0];
+  if (leases.length !== 1 || !lease || lease.agentSessionId !== checkpoint.workerSessionId) {
+    throw directTaskModeRecoveryError('The boot Task checkpoint has no exact scheduler lease.');
+  }
+  let admission: ReturnType<typeof requireSchedulerSessionLeaseAdmissionContext>;
+  try {
+    admission = requireSchedulerSessionLeaseAdmissionContext(input.coreDb, lease.leaseId);
+  } catch {
+    throw directTaskModeRecoveryError('The boot Task checkpoint has no scheduler admission owner.');
+  }
+  if (admission.requestId !== checkpoint.requestId || admission.triggerActor.kind !== 'user') {
+    throw directTaskModeRecoveryError(
+      'The boot Task scheduler admission contradicts its human command identity.'
+    );
+  }
   const expectedTurnId = directTaskModeTurnId(
-    input.store.getUserId(),
+    admission.triggerActor.id,
     checkpoint.workspaceId,
     checkpoint.threadId,
     checkpoint.requestId
@@ -713,7 +737,11 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
     throw directTaskModeRecoveryError('The boot Task checkpoint contradicts its command identity.');
   }
 
-  const scope = { workspaceId: checkpoint.workspaceId, threadId: checkpoint.threadId };
+  const scope = {
+    actorId: admission.triggerActor.id,
+    workspaceId: checkpoint.workspaceId,
+    threadId: checkpoint.threadId,
+  };
   const receipt = input.store.getCommandRequest(
     'task.start',
     checkpoint.requestId,
@@ -768,7 +796,7 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
   if (recoveredCheckpoint.stage === 'waiting_for_user' && response.state !== 'awaiting-human') {
     throw directTaskModeRecoveryError('The active Task Gate contradicts its Task projection.');
   }
-  if (!hasClosedDirectTaskGateReceipt(input.store, response.turn)) {
+  if (!hasClosedDirectTaskGateReceipt(input.store, TurnSchema.parse(response.turn))) {
     throw directTaskModeRecoveryError('The closed Task Gate has no response command receipt.');
   }
   if (!receipt) {
@@ -848,21 +876,21 @@ function directTaskModeRecoveryError(message: string): TurnStartValidationError 
 /**
  * Derives one direct Task Turn id from the complete command identity.
  *
- * @param userId Authenticated actor id.
+ * @param actorId Authenticated actor id.
  * @param workspaceId Workspace command scope.
  * @param threadId Thread command scope.
  * @param requestId Caller-supplied command request id.
  * @returns Stable direct Task worker Turn id.
  */
 function directTaskModeTurnId(
-  userId: string,
+  actorId: string,
   workspaceId: string,
   threadId: string,
   requestId: string
 ): string {
   const suffix = commandInputHash({
     command: 'task.start',
-    userId,
+    actorId,
     workspaceId,
     threadId,
     requestId,
@@ -878,8 +906,8 @@ function directTaskModeTurnId(
 function recordQuickChatLlmUsage(input: {
   /** Optional Core database handle for durable workspace storage. */
   coreDb?: CoreDb;
-  /** Store that owns the user/workspace mapping. */
-  store: FsStore;
+  /** Fresh request actor responsible for this Workspace-attributed call. */
+  authorityActor: ActorRef;
   /** Workspace that owns the QuickChat request. */
   workspaceId: string;
   /** Thread lineage when the call belongs to a thread-scoped mode. */
@@ -901,15 +929,12 @@ function recordQuickChatLlmUsage(input: {
     return;
   }
 
-  const workspaceDb = openWorkspaceDb(
-    input.coreDb.dataRoot,
-    input.store.getUserId(),
-    input.workspaceId
-  );
+  const workspaceDb = openWorkspaceDb(input.coreDb.dataRoot, input.workspaceId);
 
   try {
     applyScopedMigrations(workspaceDb);
     const call = startCapabilityCall({
+      authorityActor: input.authorityActor,
       agentId: QUICK_CHAT_AGENT_ID,
       agentSessionId: null,
       capabilityId: 'inference.local.quick_chat',
@@ -956,20 +981,11 @@ function recordQuickChatLlmUsage(input: {
  * @returns Status-preserving App API error response.
  */
 function asProviderApiError(error: OpenAICompatibleProviderError): Response {
-  const message = redactInternalAgentText(error.message);
-  const providerCode = redactInternalAgentText(error.code);
-  const providerType = error.type === null ? null : redactInternalAgentText(error.type);
-
   if (error.status === 429) {
     return Response.json(
       apiErrorPayload({
         code: 'provider_rate_limited',
-        message,
-        details: {
-          providerCode,
-          providerStatus: error.status,
-          providerType,
-        },
+        message: 'Provider rate limit exceeded.',
       }),
       { status: 429 }
     );
@@ -978,12 +994,7 @@ function asProviderApiError(error: OpenAICompatibleProviderError): Response {
   return Response.json(
     apiErrorPayload({
       code: 'provider_request_failed',
-      message,
-      details: {
-        providerCode,
-        providerStatus: error.status,
-        providerType,
-      },
+      message: 'Provider request failed.',
     }),
     { status: error.status }
   );
@@ -1010,22 +1021,7 @@ function createTaskModeDelegation(input: {
     workspaceId: string
   ) => WorkerCoordinatorCandidate[];
 }): { coordinator: WorkerCoordinatorDecision; taskDecision: TaskDelegationDecision | null } {
-  const knowledgeContext = prepareKnowledgeContext({
-    operationId: `km_context_${randomUUID()}`,
-    workspaceId: input.workspaceId,
-    caller: 'workflow-coordinator',
-    query: input.prompt,
-    limit: 5,
-    entries: input.store.listKnowledge(input.workspaceId),
-  });
-  const contextRefs: DelegationContextRef[] =
-    knowledgeContext.outcome === 'prepared'
-      ? knowledgeContext.materials.map((material) => ({
-          kind: 'knowledge',
-          id: material.knowledgeEntryId,
-        }))
-      : [];
-  const coordinator = createWorkerCoordinatorDecision({
+  const coordinatorInput = {
     prompt: input.prompt,
     readiness: input.workerCoordinatorCandidates(input.store, input.workspaceId),
     threadState: { status: 'idle', threadId: input.threadId },
@@ -1033,8 +1029,49 @@ function createTaskModeDelegation(input: {
       name: input.store.getWorkspace(input.workspaceId).name,
       workspaceId: input.workspaceId,
     },
-    contextRefs,
-  });
+  } as const;
+  let coordinator = createWorkerCoordinatorDecision(coordinatorInput);
+
+  if (
+    coordinator.decision === 'worker_turn' &&
+    coordinator.selectedWorkerCandidate &&
+    coordinator.workerRequest &&
+    coordinator.requiredUserAction === 'none'
+  ) {
+    const dataRoot = input.store.getDataRoot();
+
+    if (dataRoot) {
+      const retrieval = retrieveWorkspaceKnowledge({
+        dataRoot,
+        workspaceId: input.workspaceId,
+        caller: 'task-mode',
+        query: input.prompt,
+        limit: 5,
+        traceId: `krt_${randomUUID()}`,
+      });
+      const knowledgeContext = prepareKnowledgeContext({
+        operationId: `km_context_${randomUUID()}`,
+        workspaceId: input.workspaceId,
+        caller: 'task-mode',
+        query: input.prompt,
+        limit: 5,
+        retrievalTraceId: retrieval.traceId,
+        entries: resolveRetrievedKnowledgeEntries(
+          input.store.listKnowledge(input.workspaceId),
+          retrieval.selected
+        ),
+      });
+      const contextRefs: DelegationContextRef[] =
+        knowledgeContext.outcome === 'prepared'
+          ? knowledgeContext.materials.map((material) => ({
+              kind: 'knowledge',
+              id: material.knowledgeEntryId,
+            }))
+          : [];
+
+      coordinator = createWorkerCoordinatorDecision({ ...coordinatorInput, contextRefs });
+    }
+  }
 
   if (
     coordinator.decision !== 'worker_turn' ||
@@ -1053,7 +1090,6 @@ function createTaskModeDelegation(input: {
       worker: {
         agentId: coordinator.selectedWorkerCandidate.agentId,
         displayName: coordinator.selectedWorkerCandidate.displayName,
-        runtime: coordinator.selectedWorkerCandidate.runtime,
       },
       confidence: coordinator.confidence,
       rationale: coordinator.explanation,
@@ -1182,16 +1218,14 @@ function isRepositoryFileReadChatPrompt(prompt: string): boolean {
  * Reads the Chat Mode repository inspection policy from workspace config.
  *
  * @param snapshot Runtime config snapshot containing workspace policy.
- * @param store Actor-scoped store that owns the workspace.
  * @param workspaceId Workspace id to inspect.
  * @returns Effective repository inspection policy.
  */
 function chatRepositoryInspectionPolicy(
   snapshot: RuntimeConfigSnapshot,
-  store: FsStore,
   workspaceId: string
 ): ChatRepositoryInspectionPolicy {
-  const workspaceConfig = findWorkspaceConfig(snapshot, store.getUserId(), workspaceId);
+  const workspaceConfig = findWorkspaceConfig(snapshot, workspaceId);
   const policy = workspaceConfig?.config.workspace?.assistant?.repositoryInspection;
 
   return {
@@ -1575,6 +1609,7 @@ function taskModeEvidenceForTurn(
  * @returns Started Task Mode projection for the selected worker.
  */
 async function startTaskModeAttempt(input: {
+  readonly triggerActor: ActorRef;
   readonly store: FsStore;
   readonly workspaceId: string;
   readonly threadId: string;
@@ -1583,6 +1618,7 @@ async function startTaskModeAttempt(input: {
   readonly decision: TaskDelegationDecision;
   readonly workerRequest: StructuredWorkerDelegationRequest;
   readonly startModeWorkerTurn: (input: {
+    readonly triggerActor: ActorRef;
     readonly store: FsStore;
     readonly workspaceId: string;
     readonly threadId: string;
@@ -1597,6 +1633,7 @@ async function startTaskModeAttempt(input: {
   readonly turn: z.infer<typeof TurnSchema>;
 }> {
   const turn = await input.startModeWorkerTurn({
+    triggerActor: input.triggerActor,
     store: input.store,
     workspaceId: input.workspaceId,
     threadId: input.threadId,
@@ -1614,6 +1651,38 @@ async function startTaskModeAttempt(input: {
 }
 
 /**
+ * Requires one Thread to belong to the centrally authorized path Workspace.
+ *
+ * @param context Request context carrying optional central authorization in Core-backed mode.
+ * @param store Existing Thread owner.
+ * @param workspaceId Authorized path Workspace.
+ * @param threadId Child Thread identifier.
+ * @returns Existing Thread after lineage verification.
+ * @throws The original missing error in no-Core tests, or uniform Workspace denial in guarded mode.
+ */
+function requireAuthorizedModeThread(
+  context: Context<{ Variables: AuthVariables }>,
+  store: FsStore,
+  workspaceId: string,
+  threadId: string
+): ReturnType<FsStore['getThread']> {
+  const workspaceAccess = context.get('workspaceAccess');
+  let thread: ReturnType<FsStore['getThread']>;
+  try {
+    thread = store.getThread(workspaceId, threadId);
+  } catch (error) {
+    if (workspaceAccess) {
+      assertAuthorizedWorkspaceLineage(workspaceAccess, null);
+    }
+    throw error;
+  }
+  if (workspaceAccess) {
+    assertAuthorizedWorkspaceLineage(workspaceAccess, thread.workspaceId);
+  }
+  return thread;
+}
+
+/**
  * Registers Quick Chat and Chat Mode entry routes.
  *
  * @param dependencies Hono app and shared app composition callbacks.
@@ -1622,8 +1691,8 @@ export function registerQuickAndChatModeRoutes({
   app,
   assertProjectWorkspace,
   coreDb,
-  gatewayDefaultModel,
-  gatewayDefaultProviderId,
+  coreDefaultModel,
+  coreDefaultProviderId,
   inflightCommands,
   llmGatewayDispatcher,
   repositoryWorkspaceDb,
@@ -1639,15 +1708,16 @@ export function registerQuickAndChatModeRoutes({
     action: string
   ) => void;
   readonly coreDb: CoreDb | undefined;
-  readonly gatewayDefaultModel: () => string | null;
-  readonly gatewayDefaultProviderId: () => string | null;
+  readonly coreDefaultModel: () => string | null;
+  readonly coreDefaultProviderId: () => string | null;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly llmGatewayDispatcher: Pick<LLMGatewayProviderDispatcher, 'createChatCompletion'>;
-  readonly repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb;
+  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
-  readonly resolveGatewayProvider: (providerId: string) => ResolvedLLMProviderConfig;
+  readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   readonly startModeWorkerTurn: (input: {
+    readonly triggerActor: ActorRef;
     readonly store: FsStore;
     readonly workspaceId: string;
     readonly threadId: string;
@@ -1664,14 +1734,12 @@ export function registerQuickAndChatModeRoutes({
   /**
    * Resolves provider and model for quick-chat requests.
    *
-   * @param providerId Optional provider id from request body.
-   * @param model Optional model from request body.
    * @returns Provider id and model selected for quick chat.
    */
-  function quickChatSelection(providerId?: string, model?: string) {
+  function quickChatSelection() {
     return {
-      providerId: providerId ?? gatewayDefaultProviderId(),
-      model: model ?? gatewayDefaultModel(),
+      providerId: coreDefaultProviderId(),
+      model: coreDefaultModel(),
     };
   }
 
@@ -1702,7 +1770,7 @@ export function registerQuickAndChatModeRoutes({
     readonly providerId: string;
     readonly usage?: unknown;
   }> {
-    const provider = resolveGatewayProvider(input.providerId);
+    const provider = resolveGatewayProvider(input.providerId, input.model);
     const timeoutSignal = AbortSignal.timeout(QUICK_CHAT_TIMEOUT_MS);
     const signal = AbortSignal.any([input.signal, timeoutSignal]);
     let abortListener: (() => void) | undefined;
@@ -1791,8 +1859,18 @@ export function registerQuickAndChatModeRoutes({
 
     try {
       const input = parsed.data;
-      const { model, providerId } = quickChatSelection(input.providerId, input.model);
-      const workspaceId = input.workspaceId ?? 'ws_quick_chat';
+      const { model, providerId } = quickChatSelection();
+      const workspaceAccess = c.get('workspaceAccess');
+      const workspaceId =
+        workspaceAccess?.kind === 'workspace'
+          ? workspaceAccess.workspaceId
+          : coreDb
+            ? null
+            : 'ws_quick_chat';
+
+      if (!workspaceId) {
+        return asApiError('Workspace access denied.', 'workspace_access_denied', 403);
+      }
       const sessionId = `quick-chat:${workspaceId}`;
 
       if (!providerId || !model) {
@@ -1815,9 +1893,9 @@ export function registerQuickAndChatModeRoutes({
       });
       recordQuickChatLlmUsage({
         ...(coreDb ? { coreDb } : {}),
+        authorityActor: { kind: 'user', id: c.get('actor').userId },
         model,
         providerId: result.providerId,
-        store: requestStore(c),
         ...(result.usage === undefined ? {} : { usage: result.usage }),
         workspaceId,
       });
@@ -1840,11 +1918,7 @@ export function registerQuickAndChatModeRoutes({
         return asApiError(redactInternalAgentText(error.message), error.code, error.status);
       }
 
-      return asApiError(
-        redactInternalAgentText(error instanceof Error ? error.message : String(error)),
-        'quick_chat_failed',
-        500
-      );
+      return asApiError('Quick chat failed.', 'quick_chat_failed', 500);
     }
   });
 
@@ -1855,6 +1929,11 @@ export function registerQuickAndChatModeRoutes({
       return asInvalidRequestError(parsed.error);
     }
     const chatInput = parsed.data;
+    const triggerActor = {
+      kind: 'user',
+      id: c.get('actor').userId,
+    } as const satisfies ActorRef;
+    const actorId = triggerActor.id;
 
     /**
      * Executes one fresh Chat command after the command ledger accepts its identity.
@@ -1872,8 +1951,6 @@ export function registerQuickAndChatModeRoutes({
       const workspace = store.getWorkspace(workspaceId);
       const isQuickChatWorkspace = workspace.kind === 'quick-chat';
 
-      store.getThread(workspaceId, threadId);
-
       /**
        * Creates the durable Chat Mode turn and its user-message item.
        *
@@ -1881,7 +1958,7 @@ export function registerQuickAndChatModeRoutes({
        * @returns Created turn.
        */
       const createChatTurn = (completedAt: string) => {
-        const turn = store.createTurn(workspaceId, threadId, chatInput.input);
+        const turn = store.createTurn(workspaceId, threadId, chatInput.input, triggerActor);
 
         store.createItem({
           id: `it_chat_user_${turn.id}`,
@@ -1890,6 +1967,7 @@ export function registerQuickAndChatModeRoutes({
           turnId: turn.id,
           type: 'user-message',
           status: 'completed',
+          actor: triggerActor,
           text: chatInput.input,
           createdAt: turn.startedAt ?? completedAt,
           completedAt,
@@ -1956,6 +2034,7 @@ export function registerQuickAndChatModeRoutes({
           turnId: turn.id,
           type: 'user-input-request',
           status: 'completed',
+          responsibleUserId: triggerActor.id,
           userInputRequestId: requestId,
           prompt: 'Chat Mode needs a more specific request.',
           questions: [
@@ -2059,6 +2138,7 @@ export function registerQuickAndChatModeRoutes({
 
       if (delegation?.taskDecision && delegation.coordinator.workerRequest) {
         const attempt = await startTaskModeAttempt({
+          triggerActor,
           store,
           workspaceId,
           threadId,
@@ -2078,6 +2158,7 @@ export function registerQuickAndChatModeRoutes({
 
       if (delegation?.coordinator.decision === 'goal') {
         const goalStart = startGoalModeObjective({
+          triggerActor,
           assertProjectWorkspace,
           coreDb,
           repositoryWorkspaceDb,
@@ -2110,16 +2191,32 @@ export function registerQuickAndChatModeRoutes({
         };
       }
 
-      const knowledgeAnswer = answerKnowledgeManager({
-        operationId: `km_answer_${randomUUID()}`,
-        workspaceId,
-        caller: 'assistant',
-        query: chatInput.input,
-        limit: 3,
-        entries: store.listKnowledge(workspaceId),
-      });
+      const dataRoot = store.getDataRoot();
+      let knowledgeAnswer: ReturnType<typeof answerKnowledgeManager> | null = null;
 
-      if (knowledgeAnswer.outcome === 'answered') {
+      if (dataRoot) {
+        const retrieval = retrieveWorkspaceKnowledge({
+          dataRoot,
+          workspaceId,
+          caller: 'assistant',
+          query: chatInput.input,
+          limit: 3,
+          traceId: `krt_${randomUUID()}`,
+        });
+        knowledgeAnswer = answerKnowledgeManager({
+          operationId: `km_answer_${randomUUID()}`,
+          workspaceId,
+          caller: 'assistant',
+          query: chatInput.input,
+          retrievalTraceId: retrieval.traceId,
+          entries: resolveRetrievedKnowledgeEntries(
+            store.listKnowledge(workspaceId),
+            retrieval.selected
+          ),
+        });
+      }
+
+      if (knowledgeAnswer?.outcome === 'answered') {
         const completedAt = new Date().toISOString();
         const turn = createChatTurn(completedAt);
         const sourceTitles = knowledgeAnswer.citations.map((citation) => citation.title).join(', ');
@@ -2162,7 +2259,6 @@ export function registerQuickAndChatModeRoutes({
       ) {
         const repositoryInspectionPolicy = chatRepositoryInspectionPolicy(
           runtimeConfig(),
-          store,
           workspaceId
         );
 
@@ -2177,7 +2273,7 @@ export function registerQuickAndChatModeRoutes({
           };
         }
 
-        const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+        const workspaceDb = repositoryWorkspaceDb(workspaceId);
         let repository: WorkspaceRepositoryResourceRecord | null;
 
         try {
@@ -2206,6 +2302,7 @@ export function registerQuickAndChatModeRoutes({
             const completedAt = new Date().toISOString();
             const turn = createChatTurn(completedAt);
             const capabilityCall = startCapabilityCall({
+              authorityActor: triggerActor,
               workspaceDb,
               workspaceId,
               threadId,
@@ -2271,7 +2368,7 @@ export function registerQuickAndChatModeRoutes({
         }
       }
 
-      const { model, providerId } = quickChatSelection(chatInput.providerId, chatInput.model);
+      const { model, providerId } = quickChatSelection();
       const sessionId = `chat-mode:${workspaceId}:${threadId}`;
 
       if (!providerId || !model) {
@@ -2294,10 +2391,10 @@ export function registerQuickAndChatModeRoutes({
       const turn = createChatTurn(completedAt);
       recordQuickChatLlmUsage({
         ...(coreDb ? { coreDb } : {}),
+        authorityActor: triggerActor,
         model,
         providerId: result.providerId,
         requestId: chatInput.requestId,
-        store,
         threadId,
         turnId: turn.id,
         ...(result.usage === undefined ? {} : { usage: result.usage }),
@@ -2338,17 +2435,23 @@ export function registerQuickAndChatModeRoutes({
       const workspaceId = c.req.param('workspaceId');
       const threadId = c.req.param('threadId');
       const store = requestStore(c);
+      requireAuthorizedModeThread(c, store, workspaceId, threadId);
       const result = await runIdempotentCommand({
         command: 'chat.start',
         execute: () => executeChatCommand(store, workspaceId, threadId),
         inflightCommands,
         input: {
           input: chatInput.input,
-          model: chatInput.model,
-          providerId: chatInput.providerId,
         },
         replay: (record) =>
-          replayChatModeCommand(store, repositoryWorkspaceDb, workspaceId, threadId, record),
+          replayChatModeCommand(
+            store,
+            actorId,
+            repositoryWorkspaceDb,
+            workspaceId,
+            threadId,
+            record
+          ),
         requestId: chatInput.requestId,
         responseId: ({ body }) => body.turn.id,
         responseKind: 'turn',
@@ -2357,12 +2460,15 @@ export function registerQuickAndChatModeRoutes({
           resultKind,
           status,
         }),
-        scope: { threadId, workspaceId },
+        scope: { actorId, threadId, workspaceId },
         store,
       });
 
       return c.json(result.body, result.status);
     } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       if (error instanceof TurnStartValidationError) {
         return asApiError(redactInternalAgentText(error.message), error.code, error.status);
       }
@@ -2373,11 +2479,7 @@ export function registerQuickAndChatModeRoutes({
         return asApiError(redactInternalAgentText(error.message), error.code, error.status);
       }
 
-      return asApiError(
-        redactInternalAgentText(error instanceof Error ? error.message : String(error)),
-        'chat_mode_failed',
-        500
-      );
+      return asApiError('Chat Mode failed.', 'chat_mode_failed', 500);
     }
   });
 }
@@ -2404,9 +2506,10 @@ export function registerTaskModeRoute({
   ) => void;
   readonly coreDb: CoreDb | undefined;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
-  readonly repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb;
+  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
   readonly startModeWorkerTurn: (input: {
+    readonly triggerActor: ActorRef;
     readonly store: FsStore;
     readonly workspaceId: string;
     readonly threadId: string;
@@ -2428,6 +2531,11 @@ export function registerTaskModeRoute({
       return asInvalidRequestError(parsed.error);
     }
     const taskInput = parsed.data;
+    const triggerActor = {
+      kind: 'user',
+      id: c.get('actor').userId,
+    } as const satisfies ActorRef;
+    const actorId = triggerActor.id;
     const requestInputHash = commandInputHash({
       input: taskInput.input,
       modelId: taskInput.modelId,
@@ -2449,8 +2557,6 @@ export function registerTaskModeRoute({
       const workspace = store.getWorkspace(workspaceId);
 
       assertProjectWorkspace(workspace, 'start Task Mode');
-      store.getThread(workspaceId, threadId);
-
       if (!coreDb) {
         throw new TurnStartValidationError(
           'scheduler_unavailable',
@@ -2460,12 +2566,12 @@ export function registerTaskModeRoute({
       }
 
       const reservedTurnId = directTaskModeTurnId(
-        store.getUserId(),
+        actorId,
         workspaceId,
         threadId,
         taskInput.requestId
       );
-      const recoveryDb = repositoryWorkspaceDb(store, workspaceId);
+      const recoveryDb = repositoryWorkspaceDb(workspaceId);
       try {
         const checkpoint = getWorkerCheckpoint(recoveryDb, workspaceId, threadId, reservedTurnId);
         if (checkpoint) {
@@ -2495,6 +2601,7 @@ export function registerTaskModeRoute({
 
       if (delegation.coordinator.decision === 'goal') {
         const goalStart = startGoalModeObjective({
+          triggerActor,
           assertProjectWorkspace,
           coreDb,
           repositoryWorkspaceDb,
@@ -2543,7 +2650,7 @@ export function registerTaskModeRoute({
         );
       }
 
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
         const repository = getDefaultWorkspaceRepositoryResource(workspaceDb, workspaceId);
         if (!repository || repository.diagnosticsStatus !== 'ready') {
@@ -2554,6 +2661,8 @@ export function registerTaskModeRoute({
           );
         }
         await runWorkerTurnLoop({
+          coreDb,
+          triggerActor,
           workspaceDb,
           workspaceId,
           threadId,
@@ -2569,6 +2678,7 @@ export function registerTaskModeRoute({
           reserveTurn: () => ({ turnId: reservedTurnId }),
           startWorker: async ({ turnId, prepared }) => {
             const turn = await startModeWorkerTurn({
+              triggerActor,
               store,
               workspaceId,
               threadId,
@@ -2624,6 +2734,7 @@ export function registerTaskModeRoute({
       const workspaceId = c.req.param('workspaceId');
       const threadId = c.req.param('threadId');
       const store = requestStore(c);
+      requireAuthorizedModeThread(c, store, workspaceId, threadId);
       const result = await runIdempotentCommand({
         command: 'task.start',
         execute: () => executeTaskCommand(store, workspaceId, threadId),
@@ -2632,6 +2743,7 @@ export function registerTaskModeRoute({
         replay: (record) =>
           replayTaskModeCommand(
             store,
+            actorId,
             coreDb,
             repositoryWorkspaceDb,
             workspaceId,
@@ -2641,18 +2753,18 @@ export function registerTaskModeRoute({
         requestId: taskInput.requestId,
         responseId: ({ turn }) => turn.id,
         responseKind: 'turn',
-        scope: { threadId, workspaceId },
+        scope: { actorId, threadId, workspaceId },
         store,
       });
 
       if (coreDb) {
         const reservedTurnId = directTaskModeTurnId(
-          store.getUserId(),
+          actorId,
           workspaceId,
           threadId,
           taskInput.requestId
         );
-        const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+        const workspaceDb = repositoryWorkspaceDb(workspaceId);
         try {
           const checkpoint = getWorkerCheckpoint(
             workspaceDb,
@@ -2678,8 +2790,8 @@ export function registerTaskModeRoute({
               );
             }
             if (
-              classifyClosedWorkerApprovalGate(store, recovered.turn) ??
-              classifyClosedWorkerUserInputGate(store, recovered.turn)
+              classifyClosedWorkerApprovalGate(store, TurnSchema.parse(recovered.turn)) ??
+              classifyClosedWorkerUserInputGate(store, TurnSchema.parse(recovered.turn))
             ) {
               throw directTaskModeRecoveryError('The Task Gate response receipt is not durable.');
             }
@@ -2703,6 +2815,9 @@ export function registerTaskModeRoute({
 
       return c.json(result, 202);
     } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       if (error instanceof TurnStartValidationError) {
         return asApiError(error.message, error.code, error.status);
       }
@@ -2713,15 +2828,14 @@ export function registerTaskModeRoute({
       if (coreDb) {
         const workspaceId = c.req.param('workspaceId');
         const threadId = c.req.param('threadId');
-        const store = requestStore(c);
-        const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+        const workspaceDb = repositoryWorkspaceDb(workspaceId);
         let checkpoint: WorkerCheckpointRecord | null = null;
         try {
           checkpoint = getWorkerCheckpoint(
             workspaceDb,
             workspaceId,
             threadId,
-            directTaskModeTurnId(store.getUserId(), workspaceId, threadId, taskInput.requestId)
+            directTaskModeTurnId(actorId, workspaceId, threadId, taskInput.requestId)
           );
         } finally {
           workspaceDb.sqlite.close();

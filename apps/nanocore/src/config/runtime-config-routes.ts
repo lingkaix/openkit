@@ -9,9 +9,9 @@ import type { Context, Hono } from 'hono';
 import { asApiError, asInvalidRequestError } from '../api-errors.js';
 import { isDeploymentAdminActor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
+import { assertAuthorizedWorkspaceLineage } from '../auth/operation-authorizer.js';
 import type { FsStore } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
-import { findStoredAgentSessionById } from '../runtime/agent-session-read-model.js';
 import type { RuntimeConfigManager } from './runtime-config.js';
 import {
   type RuntimeConfigFileService,
@@ -186,14 +186,22 @@ export function registerRuntimeConfigRoutes({
   });
 
   registerAppApiRoute(app, 'restartRuntimeConfigStaleSession', (c) => {
+    const workspaceId = c.req.param('workspaceId');
+    const sessionId = c.req.param('sessionId');
+    const store = requestStore(c);
+    let session: ReturnType<FsStore['getAgentSession']> | null = null;
+
     try {
-      const workspaceId = c.req.param('workspaceId');
-      const sessionId = c.req.param('sessionId');
-      const store = requestStore(c);
+      session = store.getAgentSession(sessionId);
+    } catch {
+      // Missing global owners retain the existing no-op response.
+    }
+    if (session) {
+      assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), session.workspaceId);
+    }
 
+    try {
       store.getWorkspace(workspaceId);
-
-      const session = findStoredAgentSessionById(store, workspaceId, sessionId);
 
       if (!session) {
         return c.json(

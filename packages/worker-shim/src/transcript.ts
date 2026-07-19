@@ -46,8 +46,17 @@ export interface WorkerArtifactInput {
   title: string;
   /** Worker-visible artifact path. */
   path: string;
-  /** Optional media type. */
-  mediaType?: string | null;
+  /** Exact text-compatible media type consumed by NanoCore import. */
+  mediaType: 'text/markdown' | 'text/plain' | 'application/json';
+  /** Optional immutable Material target and base proposed by this Artifact. */
+  materialProposal?: {
+    /** Target Material id. */
+    materialId: string;
+    /** Immutable base Material revision id. */
+    baseRevisionId: string;
+    /** Lowercase SHA-256 digest of the exact base revision content. */
+    baseContentDigest: string;
+  };
 }
 
 /**
@@ -151,7 +160,8 @@ export class WorkerTranscriptWriter {
       ...this.nextBaseRecord('artifact'),
       artifact: {
         kind: input.kind,
-        mediaType: input.mediaType ?? null,
+        materialProposal: input.materialProposal,
+        mediaType: input.mediaType,
         path: input.path,
         title: input.title,
       },

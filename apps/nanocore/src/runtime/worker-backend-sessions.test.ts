@@ -58,6 +58,7 @@ function createFixture() {
     targetId: 'target_backend_session',
   });
   createSchedulerAdmissionEntry(coreDb, {
+    triggerActor: { kind: 'user', id: 'user_local' },
     priorityClass: 'interactive',
     profileRef: 'profile_worker',
     queueEntryId: 'queue_backend_session',

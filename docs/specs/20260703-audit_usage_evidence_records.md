@@ -97,7 +97,8 @@ SQLite rows should link to file-backed evidence by stable evidence ids and diges
 
 Every durable audit, usage, capability-call, permission-decision, and vault-use row carries `ownerScope` per the record envelope, and the scope decides the home database:
 
-- Rows with workspace lineage — turns, items, capability calls, context packages, worker sessions, workspace sync, workspace-scoped vault use — home in `workspace.sqlite`, and their evidence files home under the workspace `evidence/` tree. A workspace backup or export is therefore self-contained, including its own audit history.
+- Rows whose authority belongs to Workspace content — turns, items, capability calls, context packages, worker sessions, workspace sync, workspace-scoped vault use — home in `workspace.sqlite`, and their evidence files home under the workspace `evidence/` tree. A workspace backup or export is self-contained for portable Workspace-owned audit history.
+- Workspace registry, membership, invitation, ownership-transfer, administrator-recovery, and user-disable lifecycle authority lives in `core.sqlite`. Its sole authoritative `AuditEvent` therefore lives in the same Core transaction even when it carries `workspaceId`; it is deployment-local access history, is excluded from portable Workspace export, and is retained by a full deployment backup. A Workspace audit read model may aggregate these Core rows by `workspaceId`, but it must not copy or dual-write them into `workspace.sqlite`.
 - Server control-plane rows — auth sessions, server config changes, provider account lifecycle, gateway account rotation, scheduler operations, migrations — home in `core.sqlite`, with evidence under `server/evidence/`.
 - Restart recovery armed, exact adoption, recovery timeout, cleanup CAS fence, and terminal capacity release are scheduler control-plane audit events in `core.sqlite`. They carry product-safe lease, scheduler epoch, process-key-hash reference, backend digest, and workspace lineage, but never the raw process key, bearer token, transcript, or backend credential. There is no challenge or settlement-phase event family.
 - Rows that concern only a user identity — login events, user config changes — home in `user.sqlite`.
@@ -127,6 +128,7 @@ Domain-specific additions owned by this spec:
 - stable `ActorRef` when an actor exists
 - redacted credential kind, credential record id, and channel summary when applicable
 - subject reference when the affected subject differs from the actor
+- positive resource revision when the audited lifecycle mutation uses compare-and-swap
 - workspace id when applicable
 - thread id when applicable
 - turn id when applicable
@@ -139,6 +141,7 @@ Domain-specific additions owned by this spec:
 - resource summary
 - action
 - outcome
+- request id when the audited command or decision has one
 - policy reference
 - evidence bundle ids
 - timestamp
@@ -146,6 +149,8 @@ Domain-specific additions owned by this spec:
 - required features when the audit record depends on a newer required semantic
 
 Audit events are immutable.
+
+The actor and subject fields are nullable `ActorRef` values. The actor is the authenticated principal that issued the lifecycle command. The subject is the affected invitee, member, disabled user, or new owner when that principal differs from the actor. Ordinary ownership transfer records the former owner as actor and the new owner as subject; administrator transfer-to-self records the administrator as actor and the former owner as subject. Invitee terminal actions and administrator add-self recovery leave the subject null when actor and subject are the same principal.
 
 ## UsageRecord
 
@@ -218,7 +223,7 @@ The current usage schema has durable workspace storage, a shared recorder, inter
 
 Current `UsageRecordSchema` ownership fields include `workspaceId`, optional `threadId`, optional `turnId`, optional `itemId`, optional `capabilityCallId`, optional `agentId`, optional `agentSessionId`, and `sourceIds`.
 
-The usage schema currently has no responsible-user field, and the general `AuditEventSchema` lacks the complete shared `ActorRef`, subject, and credential-channel projection. The accepted multi-user target adds responsible-user attribution where consumption or a governed effect is accountable to a user and adds stable actor attribution to shared audit producers; it does not duplicate display names, email addresses, or a full actor object on telemetry already linked to an attributed capability or audit record.
+Stage 7 adds exactly one required nullable `responsibleUserId` to `UsageRecord`. A Workspace-attributed row produced by an authenticated request or AEP-backed runtime effect must store the non-null user derived by the successful current-authority predicate; a server diagnostic or system-only measurement with no user-accountable Workspace effect stores `null`. A fresh apply or Git-push request attributes its own authenticated command actor rather than the originating worker. The value is immutable historical attribution after removal or disable and never authorizes an effect, selects storage, or substitutes for current Core membership and policy. Existing CapabilityCall, AuditEvent, RuntimeEvidence, scheduler, and worker-control records gain no Stage 7 actor field: they retain their existing Turn, Agent Session, AEP snapshot, request, and cross-record links, with `AEP.scope.triggerActor` remaining the sole runtime actor authority.
 
 Current measurement fields include `unit`, `quantity`, `category`, `providerRef`, `modelId`, `source`, `recordedAt`, and `requestId`. The closed unit vocabulary includes `usd` only for provider-reported cost estimates; it does not establish billing, currency conversion, or allocation policy.
 
@@ -393,9 +398,10 @@ If a producer is not implemented, diagnostics must not claim that audit or usage
 - Process-local gateway usage summaries are diagnostics, not durable usage records.
 - Provider-reported cost is stored only as a positive estimated-`usd` usage row with normal capability lineage; it is not an invoice or billing authority.
 - The first retention classes are `ephemeral-diagnostic`, `turn-evidence`, `workspace-audit`, `restricted-raw`, and `legal-hold`.
-- Audit-family rows home in the database of their `ownerScope`; workspace-lineage rows live in `workspace.sqlite` so workspace export and deletion are self-contained.
+- Audit-family rows home with their authoritative responsibility owner. Workspace-content audit lives in `workspace.sqlite`; Core-owned registry, membership, invitation, ownership-transfer, administrator-recovery, and user-disable audit lives only in `core.sqlite` even when it carries `workspaceId`. Portable export excludes that deployment-local access history, while a full deployment backup retains it.
 - Stable actor references remain historical lineage after membership removal, user disable, or portable import and never reconstruct an access grant.
 - Membership, invitation, owner-transfer, shared-write, approval, review, and user-lifecycle mutations are required audit producer families in the multi-user baseline.
+- For the bounded WP-5 Approval slice, the terminal `PermissionDecision` is the decision authority and its same-transaction linked Workspace `AuditEvent` is the sole actor and winning-request projection. The terminal row is complete only when it matches the originating `require_approval` row's Workspace, approval id, action, resource summary, subject summary, and approval kind, `PermissionDecision.auditEventId` equals that AuditEvent id, and `AuditEvent.permissionDecisionId` equals the terminal decision id. `PermissionDecision` does not duplicate `ActorRef`; a missing or contradictory source tuple or audit link makes the claim incomplete and fail closed.
 - Spanning events home at the responsibility subject; server-side copies are derived aggregates, never a second source of truth.
 - Workspace deletion produces a sealed server-owned audit closure export before removal; `legal-hold` blocks deletion.
 - The first OpenShell evidence normalization pass should keep product-safe launch, policy, upload/download, transcript, artifact, workspace-change, control, capability, outcome, and redacted error summaries while leaving raw backend-native payloads as restricted evidence.
@@ -406,7 +412,7 @@ If a producer is not implemented, diagnostics must not claim that audit or usage
 - Add durable usage producers for future knowledge gateway metering, additional storage producers, network producers, broader sandbox lifecycle measurements, and any denied or failed capability attempts where measurable resources are consumed.
 - Extend automatic `EvidenceBundle` promotion and evidence-kind normalization beyond the current producers; extend `RuntimeEvidence` beyond terminal worker checkpoints, materialization readiness, and transcript collection into richer OpenShell launch, heartbeat, file-transfer, workspace-change, teardown, and backend-error normalization.
 - Wire every relevant producer to fill the available permission decision and vault-use audit links.
-- Add shared `ActorRef`, subject, credential-channel, responsible-user, membership, invitation, and ownership-transfer linkage to the general schemas and producers.
+- Add credential-channel context and broader producer linkage outside the exact WP-5 Stage 6 and Stage 7 families only when an owning specification requires it. Stage 7 owns the single UsageRecord responsible-user projection and current implemented governed-effect paths above; automation execution remains with the recurring-trigger specification, and broader usage coverage remains future work.
 - Extend retention compaction beyond explicit ephemeral-diagnostic and restricted-provenance expiry into scheduled maintenance, workspace policy configuration, and broader retention classes.
 - Normalize broader OpenShell evidence fields beyond the first terminal-checkpoint and materialization-readiness runtime evidence slices.
 - Implement the ownership-scope homing and workspace deletion closure export defined in Storage Scope Homing.

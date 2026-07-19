@@ -16,7 +16,9 @@ import {
 import { describe, expect, it } from 'vitest';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import {
+  importAgentEnvironmentPackageSnapshots,
   listExportableAgentEnvironmentPackageSnapshots,
   recordAgentEnvironmentPackageSnapshot,
   requireAgentEnvironmentPackageSnapshot,
@@ -31,7 +33,6 @@ import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 function createWorkspaceDb() {
   const workspaceDb = openWorkspaceDb(
     mkdtempSync(join(tmpdir(), 'openkit-aep-snapshot-ledger-')),
-    'user_1',
     'ws_1'
   );
   applyScopedMigrations(workspaceDb);
@@ -75,12 +76,12 @@ function createEnvironmentPackage(): AgentEnvironmentPackage {
           capabilities: [],
         },
       },
+      agentSetup: createTestAgentSetup(),
       agentSessionId: 'as_1',
-      userId: 'user_local',
+      triggerActor: { kind: 'user', id: 'user_local' },
       backend: {
         workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
-        sandboxImageRef: 'openkit/worker-codex:dev',
       },
       requestId: 'req_1',
       turn: {
@@ -95,6 +96,7 @@ function createEnvironmentPackage(): AgentEnvironmentPackage {
         startedAt: '2026-07-06T00:00:00.000Z',
         completedAt: null,
         durationMs: null,
+        triggerActor: { kind: 'user', id: 'user_local' },
       },
       turnInput: 'Run tests',
       workspaceCwd: '/workspace',
@@ -116,8 +118,6 @@ function snapshotPath(
 ): string {
   return join(
     workspaceDb.dataRoot,
-    'users',
-    workspaceDb.userId,
     'workspaces',
     workspaceDb.workspaceId,
     'runtime',
@@ -151,9 +151,9 @@ describe('AEP snapshot ledger', () => {
     expect(record.contentDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.stringify(record.snapshot)).not.toContain('sk-');
 
-    const { dataRoot, userId, workspaceId } = workspaceDb;
+    const { dataRoot, workspaceId } = workspaceDb;
     workspaceDb.sqlite.close();
-    const reopened = openWorkspaceDb(dataRoot, userId, workspaceId);
+    const reopened = openWorkspaceDb(dataRoot, workspaceId);
     applyScopedMigrations(reopened);
 
     try {
@@ -163,6 +163,45 @@ describe('AEP snapshot ledger', () => {
       expect(listExportableAgentEnvironmentPackageSnapshots(reopened, 'ws_1')).toEqual([record]);
     } finally {
       reopened.sqlite.close();
+    }
+  });
+
+  it('rejects V1 snapshots through every normal ledger path', () => {
+    const workspaceDb = createWorkspaceDb();
+    const environmentPackage = createEnvironmentPackage();
+
+    try {
+      const record = recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+        createdAt: '2026-07-06T00:00:01.000Z',
+        environmentPackage,
+      });
+      const legacyScope = { ...record.snapshot.scope } as Record<string, unknown>;
+      delete legacyScope.triggerActor;
+      legacyScope.userId = 'user_local';
+      const legacyRecord = {
+        ...record,
+        snapshot: { ...record.snapshot, schemaVersion: 1, scope: legacyScope },
+      };
+      writeFileSync(
+        snapshotPath(workspaceDb, environmentPackage),
+        `${JSON.stringify(legacyRecord)}\n`
+      );
+
+      expect(() =>
+        requireAgentEnvironmentPackageSnapshot(workspaceDb, 'ws_1', environmentPackage.snapshotId)
+      ).toThrow();
+      expect(() => listExportableAgentEnvironmentPackageSnapshots(workspaceDb, 'ws_1')).toThrow();
+      expect(() =>
+        recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+          createdAt: '2026-07-06T00:00:02.000Z',
+          environmentPackage: legacyRecord.snapshot as never,
+        })
+      ).toThrow();
+      expect(() =>
+        importAgentEnvironmentPackageSnapshots(workspaceDb, [legacyRecord as never])
+      ).toThrow();
+    } finally {
+      workspaceDb.sqlite.close();
     }
   });
 

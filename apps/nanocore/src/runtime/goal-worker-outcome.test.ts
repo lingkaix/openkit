@@ -16,7 +16,7 @@ import { getWorkerCheckpoint, upsertWorkerCheckpoint } from './worker-checkpoint
  */
 function createWorkspaceDb(): WorkspaceDb {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-goal-worker-outcome-'));
-  const workspaceDb = openWorkspaceDb(dataRoot, 'user_demo', 'ws_demo');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }
@@ -82,6 +82,7 @@ describe('goal worker terminal outcome', () => {
       addRunningGoalTask(workspaceDb);
 
       const result = recordGoalTaskWorkerOutcome(workspaceDb, {
+        authorityActor: { kind: 'user', id: 'user_1' },
         workspaceDb,
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
@@ -120,6 +121,7 @@ describe('goal worker terminal outcome', () => {
       addRunningGoalTask(workspaceDb);
 
       const result = recordGoalTaskWorkerOutcome(workspaceDb, {
+        authorityActor: { kind: 'user', id: 'user_1' },
         workspaceDb,
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
@@ -146,6 +148,7 @@ describe('goal worker terminal outcome', () => {
       addRunningGoalTask(workspaceDb);
 
       const result = recordGoalTaskWorkerOutcome(workspaceDb, {
+        authorityActor: { kind: 'user', id: 'user_1' },
         workspaceDb,
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
@@ -174,6 +177,7 @@ describe('goal worker terminal outcome', () => {
       addRunningGoalTask(workspaceDb);
 
       const result = recordGoalTaskWorkerOutcome(workspaceDb, {
+        authorityActor: { kind: 'user', id: 'user_1' },
         workspaceDb,
         workspaceId: 'ws_demo',
         threadId: 'th_demo',

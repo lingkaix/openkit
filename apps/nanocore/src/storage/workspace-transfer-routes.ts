@@ -17,12 +17,14 @@ import {
   listExportableResolvedAgentSetups,
 } from '../agents/setup-ledger.js';
 import { asApiError, asInvalidRequestError } from '../api-errors.js';
+import { listExportableArtifactReviews } from '../artifact-reviews.js';
 import {
   importWorkspaceAuditEvents,
   listWorkspaceAuditEvents,
   recordWorkspaceAuditEvent,
 } from '../audit-events.js';
 import type { AuthVariables } from '../auth/middleware.js';
+import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
 import {
   finishCapabilityCall,
   importWorkspaceCapabilityUsageLedger,
@@ -32,6 +34,11 @@ import {
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
 import { parseJsoncObject } from '../config/jsonc.js';
+import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
+import {
+  parseWorkerContextPackageTrace,
+  verifyPortableWorkerContextPackageTrace,
+} from '../context/worker-context-package.js';
 import {
   importWorkspaceEvidenceBundles,
   listWorkspaceEvidenceBundles,
@@ -116,13 +123,21 @@ import {
   importWorkspaceRepositoryResources,
   listExportableWorkspaceRepositoryResources,
 } from '../workspace/repository-store.js';
+import { listExportableWorkspaceMaterialRows } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
 import { openWorkspaceDbAtRoot } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { applyScopedMigrations } from './migrate.js';
 import {
+  artifactReviews,
+  threadMaterialBindings,
+  workspaceMaterialRevisions,
+  workspaceMaterials,
+} from './schema/index.js';
+import {
   dryRunWorkspaceImport,
+  type VerifiedWorkspaceExportTree,
   verifyWorkspaceExportTree,
   type WorkspaceImportDryRunReport,
   writeWorkspaceExportTree,
@@ -131,7 +146,11 @@ import {
   assertCanonicalDirectory,
   assertSafeWorkspacePathSegment,
 } from './workspace-file-records.js';
-import { readWorkspaceImportSnapshot, type WorkspaceImportSnapshot } from './workspace-import.js';
+import {
+  readWorkspaceImportSnapshot,
+  verifyImportedWorkerContextPackageSnapshot,
+  type WorkspaceImportSnapshot,
+} from './workspace-import.js';
 import {
   readWorkspacePortableFileState,
   writeWorkspacePortableFileState,
@@ -183,7 +202,7 @@ function importedWorkspaceExists(
     return true;
   } catch {
     return Boolean(
-      lstatSync(join(dataRoot, 'users', store.getUserId(), 'workspaces', workspaceId), {
+      lstatSync(join(dataRoot, 'workspaces', workspaceId), {
         throwIfNoEntry: false,
       })
     );
@@ -198,31 +217,40 @@ function importedWorkspaceExists(
  *
  * @param dataRoot Canonical data root carrying the current deployment marker.
  * @param store Current user Store.
- * @param report Verified export preview.
- * @param isActiveWorkspaceMember Optional server membership predicate.
+ * @param actor Authenticated actor whose current source-read authority is required.
+ * @param verified Verified export tree whose manifest identifies the source Workspace.
+ * @param coreDb Optional Core membership and policy authority.
  * @returns True when the export may be previewed or imported by this store.
  */
 function canReadWorkspaceExport(
   dataRoot: string,
   store: FsStore,
-  report: WorkspaceImportDryRunReport,
-  isActiveWorkspaceMember: ((userId: string, workspaceId: string) => boolean) | undefined
+  actor: AuthVariables['actor'],
+  verified: VerifiedWorkspaceExportTree,
+  coreDb: CoreDb | undefined
 ): boolean {
   const marker = readDataRootLayoutMarker(dataRoot);
   if (
-    report.manifest.sourceDeploymentId !== marker.deploymentId &&
-    report.manifest.sourceDeploymentId !== marker.predecessorDeploymentId
+    verified.manifest.sourceDeploymentId !== marker.deploymentId &&
+    verified.manifest.sourceDeploymentId !== marker.predecessorDeploymentId
   ) {
     return true;
   }
 
+  if (coreDb) {
+    return isWorkspaceOperationAuthorized(coreDb, actor, verified.manifest.workspaceId, {
+      mutating: false,
+      policyOperation: 'workspace.read',
+    });
+  }
+
   try {
-    store.getWorkspace(report.exportedWorkspaceId);
+    store.getWorkspace(verified.manifest.workspaceId);
   } catch {
     return false;
   }
 
-  return isActiveWorkspaceMember?.(store.getUserId(), report.exportedWorkspaceId) ?? true;
+  return true;
 }
 
 /**
@@ -273,7 +301,6 @@ function existingWorkspaceExportRoot(
  * Collects every portable workspace-database row family for one export.
  *
  * @param coreDb Optional Core database whose presence enables durable workspace rows.
- * @param store Current user Store.
  * @param workspaceId Exported workspace id.
  * @param repositoryWorkspaceDb Workspace database resolver.
  * @returns Portable workspace-database row families, or empty families without Core storage.
@@ -281,9 +308,8 @@ function existingWorkspaceExportRoot(
  */
 function collectWorkspaceExportRows(
   coreDb: CoreDb | undefined,
-  store: FsStore,
   workspaceId: string,
-  repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb
+  repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb
 ) {
   if (!coreDb) {
     return {
@@ -317,14 +343,18 @@ function collectWorkspaceExportRows(
         stagedReviews: [],
         workerOutputManifests: [],
       },
+      artifactReviews: [],
+      workspaceMaterialRows: { bindings: [], materials: [], revisions: [] },
     };
   }
 
-  const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+  const workspaceDb = repositoryWorkspaceDb(workspaceId);
   try {
     return workspaceDb.sqlite.transaction(() => {
       const workspaceSyncRecords = listExportableWorkspaceSyncRecords(workspaceDb, workspaceId);
+      const workspaceMaterialRows = listExportableWorkspaceMaterialRows(workspaceDb);
       return {
+        artifactReviews: listExportableArtifactReviews(workspaceDb),
         auditEvents: listWorkspaceAuditEvents(workspaceDb, workspaceId),
         agentEnvironmentPackageSnapshots: listExportableAgentEnvironmentPackageSnapshots(
           workspaceDb,
@@ -356,6 +386,7 @@ function collectWorkspaceExportRows(
           workspaceId
         ),
         workspaceRepositories: listExportableWorkspaceRepositoryResources(workspaceDb, workspaceId),
+        workspaceMaterialRows,
         workspaceSyncRecords,
       };
     })();
@@ -371,16 +402,17 @@ function collectWorkspaceExportRows(
  * @throws Error when migration, row replay, or usage recording fails.
  */
 function importWorkspaceDatabaseRows({
+  authorityUserId,
   coreDb,
-  store,
   workspaceRoot,
   importedWorkspaceId,
   requestId,
   report,
   snapshot,
 }: {
+  /** Exact authenticated user that authorized the workspace import. */
+  readonly authorityUserId: string;
   readonly coreDb: CoreDb;
-  readonly store: FsStore;
   readonly workspaceRoot: string;
   readonly importedWorkspaceId: string;
   readonly requestId: string | null;
@@ -389,13 +421,39 @@ function importWorkspaceDatabaseRows({
 }): void {
   const workspaceDb = openWorkspaceDbAtRoot({
     dataRoot: coreDb.dataRoot,
-    userId: store.getUserId(),
     workspaceId: importedWorkspaceId,
     workspaceRoot,
   });
 
   try {
     applyScopedMigrations(workspaceDb);
+    workspaceDb.sqlite.transaction(() => {
+      if (snapshot.workspaceMaterials.length > 0) {
+        workspaceDb.db.insert(workspaceMaterials).values(snapshot.workspaceMaterials).run();
+      }
+      if (snapshot.workspaceMaterialRevisions.length > 0) {
+        workspaceDb.db
+          .insert(workspaceMaterialRevisions)
+          .values(snapshot.workspaceMaterialRevisions)
+          .run();
+      }
+      if (snapshot.threadMaterialBindings.length > 0) {
+        workspaceDb.db.insert(threadMaterialBindings).values(snapshot.threadMaterialBindings).run();
+      }
+      if (snapshot.artifactReviews.length > 0) {
+        workspaceDb.db
+          .insert(artifactReviews)
+          .values(
+            snapshot.artifactReviews.map(({ materialProposal, ...review }) => ({
+              ...review,
+              proposalMaterialId: materialProposal?.materialId ?? null,
+              proposalBaseRevisionId: materialProposal?.baseRevisionId ?? null,
+              proposalBaseContentDigest: materialProposal?.baseContentDigest ?? null,
+            }))
+          )
+          .run();
+      }
+    })();
     importWorkspaceCapabilityUsageLedger({
       workspaceDb,
       capabilityCalls: snapshot.capabilityCalls,
@@ -454,6 +512,7 @@ function importWorkspaceDatabaseRows({
     const now = new Date();
     const storageImportId = randomUUID();
     const call = startCapabilityCall({
+      authorityActor: { kind: 'user', id: authorityUserId },
       workspaceDb,
       callId: `cap_storage_import_${storageImportId}`,
       workspaceId: importedWorkspaceId,
@@ -501,6 +560,7 @@ function importWorkspaceDatabaseRows({
  *
  * @param coreDb Optional Core database for Vault and injection records.
  * @param store Current user Store.
+ * @param ownerUserId Authenticated user that owns the imported Workspace.
  * @param snapshot Verified and reminted import snapshot.
  * @param stageWorkspace Staged file and workspace-database writer.
  * @returns Imported workspace record.
@@ -509,6 +569,7 @@ function importWorkspaceDatabaseRows({
 function publishImportedWorkspace(
   coreDb: CoreDb | undefined,
   store: FsStore,
+  ownerUserId: string,
   snapshot: WorkspaceImportSnapshot,
   stageWorkspace: (stage: ImportWorkspaceStage) => void
 ): ReturnType<FsStore['importWorkspaceSnapshot']> {
@@ -528,7 +589,7 @@ function publishImportedWorkspace(
       publishedWorkspaceId = imported.id;
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: store.getUserId(),
+        ownerUserId,
         workspaceId: imported.id,
       });
       for (const reference of snapshot.vaultReferences) {
@@ -556,16 +617,13 @@ export function registerWorkspaceTransferRoutes({
   app,
   coreDb,
   dataRoot,
-  isActiveWorkspaceMember,
   repositoryWorkspaceDb,
   requestStore,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
   readonly dataRoot: string | null;
-  /** Optional server-mode active membership check for same-deployment exports. */
-  readonly isActiveWorkspaceMember?: (userId: string, workspaceId: string) => boolean;
-  readonly repositoryWorkspaceDb: (store: FsStore, workspaceId: string) => WorkspaceDb;
+  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
 }): void {
   registerAppApiRoute(app, 'exportWorkspace', (c) => {
@@ -578,7 +636,7 @@ export function registerWorkspaceTransferRoutes({
     const workspace = store.getWorkspace(workspaceId);
     const threads = store.listThreads(workspaceId);
     const turns = threads.flatMap((thread) => store.listThreadTurns(workspaceId, thread.id));
-    const workspaceRoot = join(dataRoot, 'users', store.getUserId(), 'workspaces', workspaceId);
+    const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
     assertCanonicalDirectory(workspaceRoot);
     const dataSourceCatalogPath = join(workspaceRoot, 'config', 'data-sources.jsonc');
     const dataSourceCatalog = existsSync(dataSourceCatalogPath)
@@ -588,7 +646,6 @@ export function registerWorkspaceTransferRoutes({
       : null;
     const workspaceRowFamilies = collectWorkspaceExportRows(
       coreDb,
-      store,
       workspaceId,
       repositoryWorkspaceDb
     );
@@ -630,6 +687,46 @@ export function registerWorkspaceTransferRoutes({
       }
       runtimeProvenanceIndexes.set(bundle.id, text);
     }
+    const portableFileState = readWorkspacePortableFileState(
+      workspaceRoot,
+      turns.map(({ threadId, id }) => ({ threadId, turnId: id }))
+    );
+    const workerContextTraces = [...portableFileState.workerContextPackageFiles]
+      .filter(([path]) => path.endsWith('/context-package.json'))
+      .map(([path, text]) => [path, parseWorkerContextPackageTrace(JSON.parse(text))] as const);
+    const tracedTurnIds = new Set(workerContextTraces.map(([, trace]) => trace.turnId));
+    const workerBackedTurnIds = new Set(
+      turns.filter((turn) => turn.agentSessionId != null).map((turn) => turn.id)
+    );
+    if (
+      tracedTurnIds.size !== workerContextTraces.length ||
+      tracedTurnIds.size !== workerBackedTurnIds.size ||
+      [...tracedTurnIds].some((turnId) => !workerBackedTurnIds.has(turnId))
+    ) {
+      throw new Error('Worker Context Package coverage is incomplete.');
+    }
+    if (workerContextTraces.length > 0) {
+      if (!coreDb) {
+        throw new Error('Worker Context Package export requires durable authority.');
+      }
+      const workerContextDb = repositoryWorkspaceDb(workspaceId);
+      try {
+        const authorities = createWorkerContextPackageAuthorityReader({
+          coreDb,
+          store,
+          workspaceDb: workerContextDb,
+        });
+        for (const [, trace] of workerContextTraces) {
+          verifyPortableWorkerContextPackageTrace({
+            authorities,
+            trace,
+            workspaceRoot,
+          });
+        }
+      } finally {
+        workerContextDb.sqlite.close();
+      }
+    }
     const exported = writeWorkspaceExportTree({
       exportRoot,
       exportId,
@@ -645,10 +742,13 @@ export function registerWorkspaceTransferRoutes({
       knowledgeSourceMaterials: store.listKnowledgeSourceMaterials(workspaceId),
       itemRevisions: store.listWorkspaceItemRevisions(workspaceId),
       artifacts: store.listArtifacts(workspaceId),
-      artifactReviews: store.listArtifactReviewDecisions(workspaceId),
+      artifactReviews: workspaceRowFamilies.artifactReviews,
+      threadMaterialBindings: workspaceRowFamilies.workspaceMaterialRows.bindings,
+      workspaceMaterialRevisions: workspaceRowFamilies.workspaceMaterialRows.revisions,
+      workspaceMaterials: workspaceRowFamilies.workspaceMaterialRows.materials,
       agentSessions: store.listWorkspaceAgentSessions(workspaceId),
       turnEvents: turns.map((turn) => [turn.id, store.getTurnEventsForExport(turn.id)]),
-      portableFileState: readWorkspacePortableFileState(workspaceRoot),
+      portableFileState,
       ...(dataSourceCatalog ? { dataSourceCatalog } : {}),
       auditEvents: workspaceRowFamilies.auditEvents,
       agentEnvironmentPackageSnapshots: workspaceRowFamilies.agentEnvironmentPackageSnapshots,
@@ -706,11 +806,12 @@ export function registerWorkspaceTransferRoutes({
     );
 
     if (coreDb) {
-      const workspaceDb = repositoryWorkspaceDb(store, workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
       const now = new Date();
 
       try {
         const call = startCapabilityCall({
+          authorityActor: { kind: 'user', id: c.get('actor').userId },
           workspaceDb,
           callId: `cap_storage_export_${exportId}`,
           workspaceId,
@@ -789,15 +890,15 @@ export function registerWorkspaceTransferRoutes({
           parsed.data.exportId
         ),
       });
+      if (!canReadWorkspaceExport(dataRoot, store, c.get('actor'), verified, coreDb)) {
+        return asApiError('Workspace export is unavailable.', 'workspace_import_forbidden', 403);
+      }
       const report = dryRunWorkspaceImport({
         verified,
         workspaceExists: (workspaceId) =>
           importedWorkspaceExists(coreDb, store, dataRoot, workspaceId),
       });
       assertRequestedExportHandles(report, parsed.data.sourceWorkspaceId, parsed.data.exportId);
-      if (!canReadWorkspaceExport(dataRoot, store, report, isActiveWorkspaceMember)) {
-        return asApiError('Workspace export is unavailable.', 'workspace_import_forbidden', 403);
-      }
 
       return c.json(WorkspaceImportDryRunResponseSchema.parse(report));
     } catch {
@@ -831,11 +932,11 @@ export function registerWorkspaceTransferRoutes({
           parsed.data.exportId
         ),
       });
-      const report = dryRunWorkspaceImport({ verified, workspaceExists });
-      assertRequestedExportHandles(report, parsed.data.sourceWorkspaceId, parsed.data.exportId);
-      if (!canReadWorkspaceExport(dataRoot, store, report, isActiveWorkspaceMember)) {
+      if (!canReadWorkspaceExport(dataRoot, store, c.get('actor'), verified, coreDb)) {
         return asApiError('Workspace export is unavailable.', 'workspace_import_forbidden', 403);
       }
+      const report = dryRunWorkspaceImport({ verified, workspaceExists });
+      assertRequestedExportHandles(report, parsed.data.sourceWorkspaceId, parsed.data.exportId);
       const importedWorkspaceId =
         report.collision.status === 'available'
           ? report.collision.workspaceId
@@ -847,6 +948,7 @@ export function registerWorkspaceTransferRoutes({
       const importCoreDb = coreDb;
       const stageWorkspace = ({ workspaceRoot }: ImportWorkspaceStage) => {
         writeWorkspacePortableFileState(workspaceRoot, snapshot.portableFileState);
+        verifyImportedWorkerContextPackageSnapshot(snapshot, workspaceRoot);
         for (const [bundleId, text] of snapshot.runtimeProvenanceIndexes) {
           assertSafeWorkspacePathSegment(bundleId, 'Evidence bundle id');
           const path = join(
@@ -871,8 +973,8 @@ export function registerWorkspaceTransferRoutes({
           return;
         }
         importWorkspaceDatabaseRows({
+          authorityUserId: c.get('actor').userId,
           coreDb: importCoreDb,
-          store,
           workspaceRoot,
           importedWorkspaceId,
           requestId: parsed.data.requestId ?? null,
@@ -880,7 +982,13 @@ export function registerWorkspaceTransferRoutes({
           snapshot,
         });
       };
-      const workspace = publishImportedWorkspace(importCoreDb, store, snapshot, stageWorkspace);
+      const workspace = publishImportedWorkspace(
+        importCoreDb,
+        store,
+        c.get('actor').userId,
+        snapshot,
+        stageWorkspace
+      );
 
       return c.json(
         WorkspaceImportResponseSchema.parse({

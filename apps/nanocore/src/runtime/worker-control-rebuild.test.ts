@@ -6,6 +6,7 @@ import {
   AgentEnvironmentPackageSchema,
   redactAgentEnvironmentPackageSnapshot,
 } from '@openkit/config-schema';
+import type { ActorRef } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import {
   createSchedulerAdmissionEntry,
@@ -14,6 +15,7 @@ import {
 } from '../scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
@@ -39,9 +41,9 @@ function createRestorableWorkerControlFixture(
   options: {
     /** Request id stored on the originating admission. */
     readonly admissionRequestId?: string | null;
-    /** User id stored on the originating admission. */
-    readonly admissionUserId?: string;
-    /** Agent session stored on the lease instead of the AEP owner. */
+    /** Exact trigger actor stored on the originating admission. */
+    readonly admissionTriggerActor?: ActorRef;
+    /** Agent session stored on the lease instead of the AEP lineage. */
     readonly leaseAgentSessionId?: string;
     /** Whether to persist the owning AEP snapshot. */
     readonly recordSnapshot?: boolean;
@@ -52,25 +54,27 @@ function createRestorableWorkerControlFixture(
 
   applyMigrations(coreDb);
   const store = createDemoStore();
-  const turn = store.createTurn('ws_demo', 'th_demo', 'Restore worker inference identity');
+  const turn = store.createTurn('ws_demo', 'th_demo', 'Restore worker inference identity', {
+    kind: 'user',
+    id: 'user_local',
+  });
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
-      agent: store.getAgent('ws_demo', 'agent_codex_host'),
+      agentSetup: createTestAgentSetup(),
       agentSessionId: 'as_restore_1',
       backend: {
         workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
-        sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
       },
       createdAt: '2026-07-13T00:00:00.000Z',
       requestId: 'req_restore_1',
+      triggerActor: { kind: 'user', id: 'user_restore_1' },
       turn,
-      userId: 'user_restore_1',
       workspaceCwd: '/workspace/openkit',
       workspaceRoots: [],
     })
   );
-  const workspaceDb = openWorkspaceDb(dataRoot, 'user_restore_1', 'ws_demo');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
   applyScopedMigrations(workspaceDb);
   try {
@@ -85,6 +89,7 @@ function createRestorableWorkerControlFixture(
   }
 
   createSchedulerAdmissionEntry(coreDb, {
+    triggerActor: options.admissionTriggerActor ?? environmentPackage.scope.triggerActor,
     now: () => '2026-07-13T00:00:02.000Z',
     priorityClass: 'interactive',
     profileRef: 'default',
@@ -98,7 +103,6 @@ function createRestorableWorkerControlFixture(
     threadId: environmentPackage.scope.threadId,
     turnId: environmentPackage.scope.turnId,
     turnInput: 'Restore worker inference identity',
-    userId: options.admissionUserId ?? 'user_restore_1',
     workspaceId: environmentPackage.scope.workspaceId,
   });
   createSchedulerPlacementPlan(coreDb, {
@@ -256,7 +260,13 @@ describe('worker control gateway restart hydration', () => {
       { recordSnapshot: false },
       { leaseAgentSessionId: 'as_wrong_owner' },
       { admissionRequestId: 'req_wrong_owner' },
-      { admissionUserId: 'user_wrong_owner' },
+      {
+        admissionTriggerActor: {
+          kind: 'automation',
+          id: 'automation_wrong_actor',
+          responsibleUserId: 'user_restore_1',
+        },
+      },
     ]) {
       const fixture = createRestorableWorkerControlFixture(options);
       const gateway = new WorkerControlGateway();

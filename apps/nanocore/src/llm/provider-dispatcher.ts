@@ -14,11 +14,12 @@ import {
   type GatewayUsageRecordInput,
   GatewayUsageTracker,
 } from './gateway-usage.js';
-import type {
-  OpenAICompatibleChatCompletionRequest,
-  OpenAICompatibleChatCompletionResponse,
-  OpenAICompatibleResponsesRequest,
-  OpenAICompatibleResponsesResponse,
+import {
+  type OpenAICompatibleChatCompletionRequest,
+  type OpenAICompatibleChatCompletionResponse,
+  OpenAICompatibleProviderError,
+  type OpenAICompatibleResponsesRequest,
+  type OpenAICompatibleResponsesResponse,
 } from './openai-compatible-client.js';
 import { PiAiGatewayClient } from './pi-ai-client.js';
 import { PromptCacheKeyResolver, type PromptCacheKeyScope } from './prompt-cache-key.js';
@@ -96,6 +97,7 @@ export class LLMGatewayProviderDispatcher {
     request: OpenAICompatibleChatCompletionRequest,
     context: LLMGatewayDispatchContext = {}
   ): Promise<OpenAICompatibleChatCompletionResponse> {
+    this.assertConfiguredModel(provider, request.model);
     const capability = provider.gatewayCapabilities.chatCompletions;
     const endpoint = context.usageEndpoint ?? 'chat_completions';
 
@@ -165,6 +167,7 @@ export class LLMGatewayProviderDispatcher {
     request: OpenAICompatibleChatCompletionRequest,
     context: LLMGatewayDispatchContext = {}
   ): Promise<ReadableStream<Uint8Array>> {
+    this.assertConfiguredModel(provider, request.model);
     const capability = provider.gatewayCapabilities.chatCompletions;
     const endpoint = context.usageEndpoint ?? 'chat_completions';
 
@@ -241,6 +244,7 @@ export class LLMGatewayProviderDispatcher {
     request: OpenAICompatibleResponsesRequest,
     context: LLMGatewayDispatchContext = {}
   ): Promise<OpenAICompatibleResponsesResponse> {
+    this.assertConfiguredModel(provider, request.model);
     const capability = provider.gatewayCapabilities.responses;
     const endpoint = context.usageEndpoint ?? 'responses';
 
@@ -310,6 +314,7 @@ export class LLMGatewayProviderDispatcher {
     request: OpenAICompatibleResponsesRequest,
     context: LLMGatewayDispatchContext = {}
   ): Promise<ReadableStream<Uint8Array>> {
+    this.assertConfiguredModel(provider, request.model);
     const capability = provider.gatewayCapabilities.responses;
     const endpoint = context.usageEndpoint ?? 'responses';
 
@@ -365,6 +370,24 @@ export class LLMGatewayProviderDispatcher {
     }
 
     throw new GatewayUnsupportedFeatureError('responses stream');
+  }
+
+  /**
+   * Requires the request model to be explicitly authorized by the provider profile.
+   *
+   * @param provider Resolved provider config.
+   * @param model Requested model id.
+   * @throws OpenAICompatibleProviderError when the model is not configured.
+   */
+  private assertConfiguredModel(provider: ResolvedLLMProviderConfig, model: string): void {
+    if (!provider.models.includes(model)) {
+      throw new OpenAICompatibleProviderError({
+        code: 'model_not_configured',
+        message: 'Requested model is not configured for this provider.',
+        status: 400,
+        type: 'invalid_request_error',
+      });
+    }
   }
 
   private observeUsage(

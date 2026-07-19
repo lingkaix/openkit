@@ -12,6 +12,7 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type {
+  IntroduceWorkspaceArtifactResponse,
   KnowledgeClaim,
   KnowledgeConflict,
   KnowledgeConflictStatus,
@@ -23,6 +24,7 @@ import type {
 } from '@openkit/app-api-schemas';
 import { WorkerContextPackageManifestSchema } from '@openkit/app-api-schemas';
 import type {
+  ActorRef,
   KnowledgeEntrySchema,
   ThreadSchema,
   WorkspaceRecordSchema,
@@ -34,10 +36,12 @@ import {
   ArtifactSchema,
   ItemSchema,
   PROTOCOL_VERSION,
+  responsibleUserIdForActor,
   SseEventEnvelopeSchema,
   TurnSchema,
 } from '@openkit/protocol';
 import { resolveDataRoot } from '../config/data-root.js';
+import { KnowledgePageValidationError, validateKnowledgePageCandidate } from '../knowledge/okf.js';
 import { ensureTurnFeedback } from '../runtime/feedback.js';
 import type { RuntimeAgent } from '../runtime/types.js';
 import {
@@ -48,7 +52,7 @@ import {
   recordCommandRequestRecord,
   recordCommandRequestRecordInDb,
 } from '../storage/command-request-records.js';
-import type { WorkspaceDb } from '../storage/db.js';
+import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
   ensureLayout,
   ensureWorkspaceLayout,
@@ -60,19 +64,22 @@ import {
   AgentSessionRecordSchema,
   appendWorkspaceItemRevision,
   appendWorkspaceTurnEvent,
+  artifactReferenceItemId,
   assertCanonicalDirectory,
+  assertImmutableItemAttribution,
   assertSafeWorkspacePathSegment,
   assertTurnEventPayloadLineage,
-  deleteWorkspaceArtifactRecords,
   deleteWorkspaceKnowledgeRecord,
   loadWorkspaceFileRecords,
   parseCanonicalWorkspaceHistory,
   readCanonicalTextFile,
   readWorkspaceTurnEvents,
+  serializeUserAuthoredKnowledgePage,
   TURN_STREAM_EVENT_WINDOW_SIZE,
   type WorkspaceFileRecords,
   writeWorkspaceFileRecords,
 } from '../storage/workspace-file-records.js';
+import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import {
   appendWorkspaceKnowledgeClaim,
   appendWorkspaceKnowledgeConflict,
@@ -170,13 +177,22 @@ const MAX_CONTEXT_WORKSPACE_FILE_BYTES = 64 * 1024;
 export type CommandRequestName =
   | 'workspace.create'
   | 'workspace.update'
+  | 'workspace.invitation.create'
+  | 'workspace.invitation.accept'
+  | 'workspace.invitation.decline'
+  | 'workspace.invitation.revoke'
+  | 'workspace.member.access.change'
+  | 'workspace.member.remove'
+  | 'workspace.leave'
+  | 'workspace.ownership.transfer'
+  | 'workspace.access.recover'
+  | 'user.disable'
   | 'knowledge.create'
   | 'knowledge.update'
   | 'knowledge.delete'
   | 'knowledge.source.register'
   | 'knowledge.observation.record'
   | 'knowledge.claim.record'
-  | 'knowledge.claim.promote'
   | 'knowledge.conflict.record'
   | 'knowledge.conflict.resolve'
   | 'thread.create'
@@ -202,13 +218,29 @@ export type CommandRequestName =
   | 'goal.resume'
   | 'goal.step'
   | 'goal.review.decide'
-  | 'worker.recovery.retry';
+  | 'goal.steering.send'
+  | 'goal.steering.follow_up'
+  | 'goal.steering.cancel'
+  | 'worker.recovery.retry'
+  | 'artifact.import'
+  | 'artifact.introduce'
+  | 'artifact.review.decide'
+  | 'material.create'
+  | 'material.save'
+  | 'material.bind'
+  | 'material.unbind'
+  | 'material.exclude'
+  | 'material.restore';
 
 /**
  * Resource kind returned by an idempotent command.
  */
 export type CommandRequestResponseKind =
   | 'workspace'
+  | 'workspace_invitation'
+  | 'workspace_member'
+  | 'workspace_recovery'
+  | 'user'
   | 'knowledge'
   | 'knowledge_source'
   | 'knowledge_observation'
@@ -219,12 +251,18 @@ export type CommandRequestResponseKind =
   | 'approval'
   | 'git_push_record'
   | 'artifact'
+  | 'artifact_review'
   | 'workspace_sync_review'
   | 'knowledge_proposal'
   | 'knowledge_proposal_review'
   | 'goal'
   | 'goal_plan'
-  | 'goal_review';
+  | 'goal_review'
+  | 'pending_user_turn'
+  | 'steering_terminal_outcome'
+  | 'material'
+  | 'material_revision'
+  | 'thread_material_binding';
 
 /**
  * Non-secret scope identifiers used to isolate idempotency keys.
@@ -306,45 +344,9 @@ export interface CommandRequestRecordInput {
 }
 
 /**
- * App-local artifact review status tracked outside the stable Core protocol.
- */
-export type ArtifactReviewStatus =
-  | 'accepted'
-  | 'needs_refinement'
-  | 'redo'
-  | 'rejected'
-  | 'deferred';
-
-/**
- * Stored app-local artifact review decision.
- */
-export interface ArtifactReviewRecord {
-  /** Artifact being reviewed. */
-  artifactId: string;
-  /** Workspace that owns the artifact. */
-  workspaceId: string;
-  /** Optional thread that produced the artifact. */
-  threadId: string | null;
-  /** Optional turn that produced the artifact. */
-  turnId: string | null;
-  /** Latest review status. */
-  status: ArtifactReviewStatus;
-  /** Caller-supplied idempotency and audit id, when available. */
-  requestId: string | null;
-  /** Optional reviewer-facing message after redaction by the caller. */
-  message: string | null;
-  /** ISO timestamp when the decision was recorded. */
-  decidedAt: string;
-  /** Optional follow-up turn created for refinement or redo decisions. */
-  followUpTurnId: string | null;
-  /** Whether the claimed decision is pending, completed, or released after a conflict. */
-  lifecycle: 'pending' | 'completed' | 'failed';
-}
-
-/**
  * App-local knowledge proposal status tracked outside ordinary knowledge entries.
  */
-export type KnowledgeProposalStatus = 'pending' | 'accepted' | 'edited' | 'rejected' | 'deferred';
+export type KnowledgeProposalStatus = 'pending' | 'accepted' | 'rejected' | 'deferred';
 
 /**
  * Stored app-local knowledge proposal awaiting explicit human review.
@@ -477,14 +479,66 @@ interface TurnStreamState {
 interface CreateTurnOptions {
   /** Scheduler-owned turn id when external coordination already reserved lineage. */
   turnId?: string;
+  /** Command-owned start time when a Core-local Turn must share one accepted timestamp. */
+  startedAt?: string;
+}
+
+/** Accepted store input for one workspace-only Artifact introduction. */
+export interface IntroduceArtifactInput {
+  /** Workspace that owns the Artifact and Thread. */
+  readonly workspaceId: string;
+  /** Idle Thread that will receive the Core-local Turn. */
+  readonly threadId: string;
+  /** Workspace-only imported Artifact to communicate. */
+  readonly artifactId: string;
+  /** Exact Artifact version accepted by the caller. */
+  readonly expectedArtifactVersion: number;
+  /** Command identity copied into the reference proof. */
+  readonly requestId: string;
+  /** Accepted command timestamp. */
+  readonly acceptedAt: string;
+  /** Deterministic Core-local Turn id reserved by the command owner. */
+  readonly turnId: string;
+  /** Exact authenticated actor whose command created the introduction Turn. */
+  readonly triggerActor: ActorRef;
+}
+
+/** Closed S16 failures owned by the Artifact authority boundary. */
+export type ArtifactAuthorityErrorCode =
+  | 'invalid_request'
+  | 'source_digest_mismatch'
+  | 'recovery_required'
+  | 'stale'
+  | 'conflict'
+  | 'thread_busy';
+
+/** Structured failure raised by Artifact creation and introduction. */
+export class ArtifactAuthorityError extends Error {
+  /** Stable S16 error code. */
+  public readonly code: ArtifactAuthorityErrorCode;
+  /** Exact HTTP status assigned by S16. */
+  public readonly status: 400 | 409;
+
+  /**
+   * Creates one Artifact authority failure.
+   *
+   * @param code Stable S16 error code.
+   * @param message Product-safe diagnostic.
+   */
+  public constructor(code: ArtifactAuthorityErrorCode, message: string) {
+    super(message);
+    this.name = 'ArtifactAuthorityError';
+    this.code = code;
+    this.status = ['invalid_request', 'source_digest_mismatch'].includes(code) ? 400 : 409;
+  }
 }
 
 /**
  * Optional store configuration.
  */
 export interface FsStoreOptions {
+  /** Optional data root for durable file-backed storage. */
   dataRoot?: string;
-  userId?: string;
 }
 
 function now(): string {
@@ -586,6 +640,16 @@ function workspaceIdForUser(userId: string, suffix: string): string {
 }
 
 /**
+ * Derives the built-in owner-only Quick Chat Workspace id for one canonical user.
+ *
+ * @param userId Canonical user id.
+ * @returns Stable Quick Chat Workspace id.
+ */
+export function quickChatWorkspaceIdForUser(userId: string): string {
+  return workspaceIdForUser(userId, 'quick_chat');
+}
+
+/**
  * Builds a thread id in the current store namespace.
  *
  * @param userId Store owner id.
@@ -617,146 +681,17 @@ function sandboxSummaryForWorkspaceRoots(
 }
 
 /**
- * Creates the default profile attached to a built-in agent.
- *
- * @returns Default agent profile read model.
- */
-function createDefaultProfile(): Agent['profiles'][number] {
-  return {
-    id: 'default',
-    displayName: 'Default Coding Profile',
-    instructionsRef: null,
-    modelId: null,
-    skillIds: [],
-    capabilityIds: [],
-  };
-}
-
-/**
- * Returns the default agent resources for a runnable local workspace.
- *
- * @returns Default agent read models.
- */
-function createDefaultAgents(): Agent[] {
-  return [
-    {
-      id: 'agent_codex_host',
-      name: 'Codex Host Agent',
-      kind: 'coder',
-      status: 'enabled',
-      modelId: 'model_codex',
-      skillIds: [],
-      profiles: [createDefaultProfile()],
-      defaultProfileId: 'default',
-      capabilities: [
-        { id: 'turns', label: 'Turns', description: 'Can execute turn requests.' },
-        { id: 'streaming', label: 'Streaming', description: null },
-        { id: 'interrupts', label: 'Interrupts', description: null },
-      ],
-      sandboxSummary: {
-        access: 'read-write',
-        workspaceRootRefs: ['workspace'],
-        summary: 'Local workspace access is available.',
-      },
-      config: {
-        adapterType: 'codex',
-        command: 'codex app-server --listen stdio://',
-        baseUrl: null,
-        workspaceRoot: process.cwd(),
-        environment: {},
-        capabilities: ['turns', 'streaming', 'interrupts'],
-      },
-      health: {
-        status: 'unknown',
-        message: 'Health is checked when a turn starts.',
-        checkedAt: null,
-      },
-    },
-    {
-      id: 'agent_opencode_host',
-      name: 'OpenCode Host Agent',
-      kind: 'coder',
-      status: 'enabled',
-      modelId: 'model_opencode',
-      skillIds: [],
-      profiles: [createDefaultProfile()],
-      defaultProfileId: 'default',
-      capabilities: [
-        { id: 'turns', label: 'Turns', description: 'Can execute turn requests.' },
-        { id: 'streaming', label: 'Streaming', description: null },
-        { id: 'interrupts', label: 'Interrupts', description: null },
-      ],
-      sandboxSummary: {
-        access: 'read-write',
-        workspaceRootRefs: ['workspace'],
-        summary: 'Local workspace access is available.',
-      },
-      config: {
-        adapterType: 'opencode',
-        command: 'opencode run --format default',
-        baseUrl: 'http://localhost:4096',
-        workspaceRoot: process.cwd(),
-        environment: {},
-        capabilities: ['turns', 'streaming', 'interrupts'],
-      },
-      health: {
-        status: 'unknown',
-        message: 'Health is checked when a turn starts.',
-        checkedAt: null,
-      },
-    },
-    {
-      id: 'agent_opencode_server',
-      name: 'OpenCode Server Agent',
-      kind: 'coder',
-      status: 'enabled',
-      modelId: 'model_opencode',
-      skillIds: [],
-      profiles: [createDefaultProfile()],
-      defaultProfileId: 'default',
-      capabilities: [],
-      sandboxSummary: null,
-      config: {
-        adapterType: 'opencode',
-        command: 'opencode serve',
-        baseUrl: null,
-        workspaceRoot: process.cwd(),
-        environment: {},
-        capabilities: ['turns', 'streaming', 'interrupts'],
-      },
-      health: {
-        status: 'unknown',
-        message: 'OpenCode server availability has not been probed yet.',
-        checkedAt: null,
-      },
-    },
-  ];
-}
-
-/**
- * Returns the default model resources for a runnable local workspace.
- *
- * @returns Default model read models.
- */
-function createDefaultModels(): WorkspaceResources['models'] {
-  return [
-    { id: 'model_codex', name: 'Codex', enabled: true, isDefault: true },
-    { id: 'model_opencode', name: 'OpenCode', enabled: true, isDefault: false },
-  ];
-}
-
-/**
- * Returns default resources for a runnable local workspace.
+ * Returns empty dynamic resources for a workspace.
  *
  * @param knowledge Seed knowledge entries.
- * @returns Workspace resources with agent and model defaults.
+ * @returns Workspace resources without a second agent or model catalog.
  */
-function createRunnableWorkspaceResources(knowledge: KnowledgeEntry[] = []): WorkspaceResources {
+function createWorkspaceResources(knowledge: KnowledgeEntry[] = []): WorkspaceResources {
   return {
     knowledge,
     skills: [],
-    agents: createDefaultAgents(),
-    models: createDefaultModels(),
+    agents: [],
+    models: [],
   };
 }
 
@@ -786,8 +721,8 @@ export function createDemoWorkspaceForUser(userId: string): DemoWorkspaceFixture
     kind: 'code',
     status: 'active',
     defaults: {
-      defaultModelId: 'model_codex',
-      defaultAgentId: 'agent_codex_host',
+      defaultModelId: null,
+      defaultAgentId: null,
       defaultSkillIds: [],
     },
     counts: {
@@ -834,22 +769,19 @@ export class FsStore {
   private approvals = new Map<string, ApprovalRequest>();
   private agentSessions = new Map<string, AgentSession>();
   private artifacts = new Map<string, Artifact>();
-  private artifactReviews = new Map<string, ArtifactReviewRecord>();
   private knowledgeProposals = new Map<string, KnowledgeProposalRecord>();
   private knowledgeProposalReviews = new Map<string, KnowledgeProposalReviewRecord>();
   private knowledgeSources = new Map<string, KnowledgeSourceRecord>();
   private commandRequests = new Map<string, CommandRequestRecord>();
   private streams = new Map<string, TurnStreamState>();
   private readonly dataRoot: string | null;
-  private readonly userId: string;
 
   public constructor(options: FsStoreOptions = {}) {
     this.dataRoot =
       options.dataRoot ?? (process.env.OPENKIT_DATA_ROOT ? resolveDataRoot(process.env) : null);
-    this.userId = options.userId ?? LOCAL_USER_ID;
 
     if (this.dataRoot) {
-      const workspaceRecords = loadWorkspaceFileRecords(this.dataRoot, this.userId);
+      const workspaceRecords = loadWorkspaceFileRecords(this.dataRoot);
 
       if (workspaceRecords.length > 0) {
         if (this.restoreWorkspaceFileRecords(workspaceRecords)) {
@@ -860,35 +792,6 @@ export class FsStore {
         return;
       }
     }
-
-    const timestamp = now();
-    const quickChatWorkspace: WorkspaceRecord = {
-      id: workspaceIdForUser(this.userId, 'quick_chat'),
-      name: 'Quick Chat',
-      kind: 'quick-chat',
-      status: 'active',
-      defaults: {
-        defaultModelId: null,
-        defaultAgentId: null,
-        defaultSkillIds: [],
-      },
-      counts: {
-        threadCount: 0,
-        artifactCount: 0,
-        knowledgeEntryCount: 0,
-      },
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
-
-    this.workspaces.set(quickChatWorkspace.id, quickChatWorkspace);
-    this.workspaceResources.set(quickChatWorkspace.id, {
-      knowledge: [],
-      skills: [],
-      agents: [],
-      models: [],
-    });
-    this.persist(quickChatWorkspace.id);
   }
 
   /**
@@ -904,7 +807,7 @@ export class FsStore {
         records.workspace.id,
         records.workspace.kind === 'quick-chat'
           ? { knowledge: [...records.knowledge], skills: [], agents: [], models: [] }
-          : createRunnableWorkspaceResources([...records.knowledge])
+          : createWorkspaceResources([...records.knowledge])
       );
       for (const thread of records.threads) {
         this.threads.set(thread.id, thread);
@@ -921,9 +824,6 @@ export class FsStore {
       }
       for (const artifact of records.artifacts) {
         this.artifacts.set(artifact.id, artifact);
-      }
-      for (const review of records.artifactReviews) {
-        this.artifactReviews.set(review.artifactId, review);
       }
       for (const proposal of records.knowledgeProposals) {
         this.knowledgeProposals.set(proposal.id, proposal);
@@ -979,7 +879,7 @@ export class FsStore {
    */
   public listCommandRequests(): CommandRequestRecord[] {
     if (this.dataRoot) {
-      return listCommandRequestRecords(this.dataRoot, this.userId, now());
+      return listCommandRequestRecords(this.dataRoot, now());
     }
 
     this.pruneExpiredCommandRequests();
@@ -993,24 +893,23 @@ export class FsStore {
    * @param command Stable command name.
    * @param requestId Caller-supplied idempotency id.
    * @param scope Non-secret command scope ids.
-   * @param workspaceDb Optional open Workspace database for transaction-local reads.
+   * @param commandDb Optional open Core or Workspace database for transaction-local reads.
    * @returns Matching command request record, or null.
    */
   public getCommandRequest(
     command: CommandRequestName,
     requestId: string,
     scope: CommandRequestScope,
-    workspaceDb?: WorkspaceDb
+    commandDb?: CoreDb | WorkspaceDb
   ): CommandRequestRecord | null {
     const key = commandRequestKey(command, requestId, scope);
 
-    if (workspaceDb) {
-      this.assertCommandWorkspaceDb(scope, workspaceDb);
-      return getCommandRequestRecordFromDb(workspaceDb, key, now());
+    if (commandDb) {
+      return getCommandRequestRecordFromDb(commandDb, key, now());
     }
 
     if (this.dataRoot) {
-      return getCommandRequestRecord(this.dataRoot, this.userId, scope.workspaceId, key, now());
+      return getCommandRequestRecord(this.dataRoot, scope, key, now());
     }
 
     this.pruneExpiredCommandRequests();
@@ -1022,12 +921,12 @@ export class FsStore {
    * Records the resource pointer for a completed idempotent command.
    *
    * @param input Idempotency record input.
-   * @param workspaceDb Optional open Workspace database for transaction-local writes.
+   * @param commandDb Optional open Core or Workspace database for transaction-local writes.
    * @returns Persisted idempotency record.
    */
   public recordCommandRequest(
     input: CommandRequestRecordInput,
-    workspaceDb?: WorkspaceDb
+    commandDb?: CoreDb | WorkspaceDb
   ): CommandRequestRecord {
     const createdAt = input.createdAt ?? now();
     const record: CommandRequestRecord = {
@@ -1041,29 +940,15 @@ export class FsStore {
       expiresAt: input.expiresAt ?? commandRequestExpiresAt(createdAt),
     };
 
-    if (workspaceDb) {
-      this.assertCommandWorkspaceDb(input.scope, workspaceDb);
-      recordCommandRequestRecordInDb(workspaceDb, record);
+    if (commandDb) {
+      recordCommandRequestRecordInDb(commandDb, record);
     } else if (this.dataRoot) {
-      recordCommandRequestRecord(this.dataRoot, this.userId, record);
+      recordCommandRequestRecord(this.dataRoot, record);
     } else {
       this.commandRequests.set(record.key, record);
     }
 
     return record;
-  }
-
-  /**
-   * Confirms that an open Workspace database owns one command scope.
-   *
-   * @param scope Command scope that must name a Workspace.
-   * @param workspaceDb Open Workspace database supplied by the caller.
-   * @throws Error when actor or Workspace ownership does not match.
-   */
-  private assertCommandWorkspaceDb(scope: CommandRequestScope, workspaceDb: WorkspaceDb): void {
-    if (scope.workspaceId !== workspaceDb.workspaceId || workspaceDb.userId !== this.userId) {
-      throw new Error('Command request database does not match its actor and Workspace scope.');
-    }
   }
 
   /**
@@ -1076,7 +961,7 @@ export class FsStore {
       return;
     }
 
-    const workspaceRoot = ensureWorkspaceLayout(this.dataRoot, this.userId, workspaceId).root;
+    const workspaceRoot = ensureWorkspaceLayout(this.dataRoot, workspaceId).root;
     this.writeWorkspaceFileRecordsToRoot(workspaceId, workspaceRoot);
   }
 
@@ -1145,9 +1030,6 @@ export class FsStore {
       turns: [...this.turns.values()].filter((turn) => turn.workspaceId === workspaceId),
       itemRevisions: this.itemRevisions.filter((item) => item.workspaceId === workspaceId),
       artifacts: this.listArtifacts(workspaceId),
-      artifactReviews: [...this.artifactReviews.values()].filter(
-        (review) => review.workspaceId === workspaceId
-      ),
       knowledgeProposals: [...this.knowledgeProposals.values()].filter(
         (proposal) => proposal.workspaceId === workspaceId
       ),
@@ -1167,7 +1049,7 @@ export class FsStore {
   }
 
   /**
-   * Returns one workspace root path under the configured v0.0.2 data-root layout.
+   * Returns one owner-independent Workspace root path under the configured data-root layout.
    *
    * @param workspaceId Workspace whose root path should be returned.
    * @returns Workspace root path.
@@ -1177,9 +1059,57 @@ export class FsStore {
       throw new Error('FsStore data root is not configured.');
     }
 
-    assertSafeWorkspacePathSegment(this.userId, 'User id');
     assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
-    return resolveDataRootPath(this.dataRoot, 'users', this.userId, 'workspaces', workspaceId);
+    return resolveDataRootPath(this.dataRoot, 'workspaces', workspaceId);
+  }
+
+  /**
+   * Validates exact direct-write Knowledge Page bytes before store mutation.
+   *
+   * @param workspaceId Workspace that owns the candidate page.
+   * @param candidate Candidate entry about to be written.
+   * @param knowledge Knowledge entries that will exist after the write.
+   * @throws KnowledgePageValidationError when the candidate or current schema is invalid.
+   */
+  private assertValidKnowledgeEntryCandidate(
+    workspaceId: string,
+    candidate: KnowledgeEntry,
+    knowledge: readonly KnowledgeEntry[]
+  ): void {
+    let workspaceSchemaText: string | undefined;
+
+    try {
+      if (this.dataRoot) {
+        const schemaPath = join(
+          this.workspaceRootPath(workspaceId),
+          'knowledge',
+          'schema',
+          'workspace-schema.yaml'
+        );
+
+        if (existsSync(schemaPath)) {
+          workspaceSchemaText = readCanonicalTextFile(schemaPath);
+        }
+      }
+    } catch {
+      throw new KnowledgePageValidationError();
+    }
+
+    const report = validateKnowledgePageCandidate({
+      path: `knowledge/pages/${candidate.id}.md`,
+      content: serializeUserAuthoredKnowledgePage(candidate),
+      ...(workspaceSchemaText === undefined ? {} : { workspaceSchemaText }),
+      registeredSourceIds: new Set(
+        [...this.knowledgeSources.values()]
+          .filter((source) => source.workspaceId === workspaceId)
+          .map((source) => source.id)
+      ),
+      knowledgeIds: new Set(knowledge.map((entry) => entry.id)),
+    });
+
+    if (report.conformance !== 'Workspace-schema-valid' || report.errors.length > 0) {
+      throw new KnowledgePageValidationError();
+    }
   }
 
   /**
@@ -1296,16 +1226,32 @@ export class FsStore {
     return [...this.workspaces.values()];
   }
 
-  public createWorkspace(name: string): WorkspaceRecord {
+  /**
+   * Ensures the built-in owner-only Quick Chat Workspace for one canonical user.
+   *
+   * @param userId Canonical user id that determines the stable Workspace id.
+   * @returns Existing or newly created Quick Chat Workspace.
+   * @throws Error when the reserved id already belongs to another Workspace kind.
+   */
+  public ensureQuickChatWorkspace(userId: string): WorkspaceRecord {
+    const workspaceId = quickChatWorkspaceIdForUser(userId);
+    const existing = this.workspaces.get(workspaceId);
+    if (existing) {
+      if (existing.kind !== 'quick-chat') {
+        throw new Error(`Reserved Quick Chat workspace id ${workspaceId} has another kind.`);
+      }
+      return existing;
+    }
+
     const timestamp = now();
     const workspace: WorkspaceRecord = {
-      id: workspaceIdForUser(this.userId, String(this.workspaces.size + 1)),
-      name,
-      kind: 'general',
+      id: workspaceId,
+      name: 'Quick Chat',
+      kind: 'quick-chat',
       status: 'active',
       defaults: {
-        defaultModelId: 'model_codex',
-        defaultAgentId: 'agent_codex_host',
+        defaultModelId: null,
+        defaultAgentId: null,
         defaultSkillIds: [],
       },
       counts: {
@@ -1316,7 +1262,33 @@ export class FsStore {
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    const resources = createRunnableWorkspaceResources();
+    this.workspaces.set(workspace.id, workspace);
+    this.workspaceResources.set(workspace.id, createWorkspaceResources());
+    this.persist(workspace.id);
+    return workspace;
+  }
+
+  public createWorkspace(name: string): WorkspaceRecord {
+    const timestamp = now();
+    const workspace: WorkspaceRecord = {
+      id: workspaceIdForUser(LOCAL_USER_ID, String(this.workspaces.size + 1)),
+      name,
+      kind: 'general',
+      status: 'active',
+      defaults: {
+        defaultModelId: null,
+        defaultAgentId: null,
+        defaultSkillIds: [],
+      },
+      counts: {
+        threadCount: 0,
+        artifactCount: 0,
+        knowledgeEntryCount: 0,
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const resources = createWorkspaceResources();
     this.workspaces.set(workspace.id, workspace);
     this.workspaceResources.set(workspace.id, resources);
     this.persist(workspace.id);
@@ -1337,7 +1309,6 @@ export class FsStore {
     knowledge: readonly KnowledgeEntry[];
     itemRevisions: readonly Item[];
     artifacts: readonly Artifact[];
-    artifactReviews: readonly ArtifactReviewRecord[];
     agentSessions: readonly AgentSession[];
     turnEvents: readonly (readonly [string, readonly SseEventEnvelope[]])[];
     knowledgeProposals?: readonly KnowledgeProposalRecord[];
@@ -1352,7 +1323,6 @@ export class FsStore {
       turns: input.turns,
       itemRevisions: input.itemRevisions,
       artifacts: input.artifacts,
-      artifactReviews: input.artifactReviews,
       knowledgeProposals: input.knowledgeProposals,
       knowledgeProposalReviews: input.knowledgeProposalReviews,
       knowledgeSources: input.knowledgeSources,
@@ -1436,7 +1406,6 @@ export class FsStore {
       turns: approvalState.turns,
       itemRevisions: history.itemRevisions,
       artifacts: history.artifacts,
-      artifactReviews: history.artifactReviews,
       knowledgeProposals: history.knowledgeProposals,
       knowledgeProposalReviews: history.knowledgeProposalReviews,
       knowledgeSources: history.knowledgeSources,
@@ -1454,10 +1423,7 @@ export class FsStore {
     });
 
     this.workspaces.set(workspace.id, workspace);
-    this.workspaceResources.set(
-      workspace.id,
-      createRunnableWorkspaceResources([...input.knowledge])
-    );
+    this.workspaceResources.set(workspace.id, createWorkspaceResources([...input.knowledge]));
     for (const thread of history.threads) {
       this.threads.set(thread.id, thread);
     }
@@ -1470,9 +1436,6 @@ export class FsStore {
     this.itemRevisions.push(...history.itemRevisions);
     for (const artifact of history.artifacts) {
       this.artifacts.set(artifact.id, artifact);
-    }
-    for (const review of history.artifactReviews) {
-      this.artifactReviews.set(review.artifactId, review);
     }
     for (const session of history.agentSessions) {
       this.agentSessions.set(session.id, session);
@@ -1548,7 +1511,6 @@ export class FsStore {
     for (const [artifactId, artifact] of this.artifacts) {
       if (artifact.workspaceId === workspaceId) {
         this.artifacts.delete(artifactId);
-        this.artifactReviews.delete(artifactId);
       }
     }
     for (const [sessionId, session] of this.agentSessions) {
@@ -1658,18 +1620,6 @@ export class FsStore {
     return entry;
   }
 
-  public getAgent(workspaceId: string, agentId: string): Agent {
-    const agent = this.getWorkspaceResources(workspaceId).agents.find(
-      (candidate) => candidate.id === agentId
-    );
-
-    if (!agent) {
-      throw new Error(`Agent not found: ${agentId}`);
-    }
-
-    return agent;
-  }
-
   /**
    * Creates or replaces one agent in a workspace resource set.
    *
@@ -1697,20 +1647,6 @@ export class FsStore {
       ...resources,
       agents,
     });
-    return agent;
-  }
-
-  public getAgentForThread(workspaceId: string, _threadId: string): Agent {
-    const resources = this.getWorkspaceResources(workspaceId);
-    const defaultAgentId = this.getWorkspace(workspaceId).defaults?.defaultAgentId;
-    const agent =
-      resources.agents.find((candidate) => candidate.id === defaultAgentId) ??
-      resources.agents.find((candidate) => candidate.status === 'enabled');
-
-    if (!agent) {
-      throw new Error(`No enabled agent is configured for workspace: ${workspaceId}`);
-    }
-
     return agent;
   }
 
@@ -1804,6 +1740,7 @@ export class FsStore {
       createdAt: now(),
       updatedAt: now(),
     };
+    this.assertValidKnowledgeEntryCandidate(workspaceId, entry, [...resources.knowledge, entry]);
     this.workspaceResources.set(workspaceId, {
       ...resources,
       knowledge: [...resources.knowledge, entry],
@@ -1847,29 +1784,29 @@ export class FsStore {
     }
   ): KnowledgeEntry {
     const resources = this.getWorkspaceResources(workspaceId);
+    const existing = resources.knowledge.find((entry) => entry.id === knowledgeEntryId);
+
+    if (!existing) {
+      throw new Error(`Knowledge entry not found: ${knowledgeEntryId}`);
+    }
+
+    const updated: KnowledgeEntry = {
+      ...existing,
+      title: input.title ?? existing.title,
+      content: input.content ?? existing.content,
+      updatedAt: now(),
+    };
     const knowledge = resources.knowledge.map((entry) =>
-      entry.id === knowledgeEntryId
-        ? {
-            ...entry,
-            title: input.title ?? entry.title,
-            content: input.content ?? entry.content,
-            updatedAt: now(),
-          }
-        : entry
+      entry.id === knowledgeEntryId ? updated : entry
     );
+    this.assertValidKnowledgeEntryCandidate(workspaceId, updated, knowledge);
     this.workspaceResources.set(workspaceId, {
       ...resources,
       knowledge,
     });
     this.refreshWorkspaceCounts(workspaceId);
-    const entry = knowledge.find((item) => item.id === knowledgeEntryId);
-
-    if (!entry) {
-      throw new Error(`Knowledge entry not found: ${knowledgeEntryId}`);
-    }
-
     this.persist(workspaceId);
-    return entry;
+    return updated;
   }
 
   public listThreads(workspaceId: string): Thread[] {
@@ -1878,7 +1815,7 @@ export class FsStore {
 
   public createThread(workspaceId: string, title: string): Thread {
     const thread: Thread = {
-      id: threadIdForUser(this.userId, String(this.threads.size + 1)),
+      id: threadIdForUser(LOCAL_USER_ID, String(this.threads.size + 1)),
       workspaceId,
       name: title,
       preview: title,
@@ -1943,6 +1880,7 @@ export class FsStore {
    * @param workspaceId Workspace that owns the turn.
    * @param threadId Thread that owns the turn.
    * @param input User or scheduler input used for the thread preview.
+   * @param triggerActor Exact actor whose accepted action created the Turn.
    * @param configVersion Runtime config version captured for the turn.
    * @param options Optional turn creation controls.
    * @returns Created turn.
@@ -1952,10 +1890,11 @@ export class FsStore {
     workspaceId: string,
     threadId: string,
     input: string,
+    triggerActor: ActorRef,
     configVersion: number | null = null,
     options: CreateTurnOptions = {}
   ): Turn {
-    const timestamp = now();
+    const timestamp = options.startedAt ?? now();
     const turnId = options.turnId ?? `tu_${this.turns.size + 1}`;
 
     if (this.turns.has(turnId)) {
@@ -1963,10 +1902,11 @@ export class FsStore {
     }
 
     const thread = this.getThread(workspaceId, threadId);
-    const turn: Turn = {
+    const turn = TurnSchema.parse({
       id: turnId,
       workspaceId,
       threadId,
+      triggerActor,
       items: [],
       status: 'running',
       humanGate: null,
@@ -1975,7 +1915,7 @@ export class FsStore {
       startedAt: timestamp,
       completedAt: null,
       durationMs: null,
-    };
+    });
     this.turns.set(turn.id, turn);
     this.threads.set(threadId, {
       ...thread,
@@ -2113,21 +2053,28 @@ export class FsStore {
     return this.dataRoot;
   }
 
-  /**
-   * Returns the store owner user id.
-   *
-   * @returns User id.
-   */
-  public getUserId(): string {
-    return this.userId;
-  }
-
   public createItem(input: Item): Item {
     const item = ItemSchema.parse(input);
     const existing = this.items.get(item.id);
     const turn = this.getTurnById(item.turnId);
     if (turn.workspaceId !== item.workspaceId || turn.threadId !== item.threadId) {
       throw new Error(`Item has invalid turn lineage: ${item.id}`);
+    }
+    if (
+      item.type === 'user-input-request' &&
+      item.responsibleUserId !== responsibleUserIdForActor(turn.triggerActor)
+    ) {
+      throw new Error(`User-input request has invalid responsible user: ${item.id}`);
+    }
+    if (item.type === 'user-input-response') {
+      const request = turn.items.find(
+        (candidate) =>
+          candidate.type === 'user-input-request' &&
+          candidate.userInputRequestId === item.userInputRequestId
+      );
+      if (request?.type !== 'user-input-request' || request.responsibleUserId !== item.actor.id) {
+        throw new Error(`User-input response has invalid responsible user: ${item.id}`);
+      }
     }
     if (
       existing &&
@@ -2138,6 +2085,9 @@ export class FsStore {
         existing.createdAt !== item.createdAt)
     ) {
       throw new Error(`Item immutable identity cannot change: ${item.id}`);
+    }
+    if (existing) {
+      assertImmutableItemAttribution(existing, item);
     }
     const updatedTurn = {
       ...turn,
@@ -2172,6 +2122,7 @@ export class FsStore {
     ) {
       throw new Error(`Item immutable identity cannot change: ${itemId}`);
     }
+    assertImmutableItemAttribution(item, updated);
     const turn = this.getTurnById(item.turnId);
     const updatedTurn = {
       ...turn,
@@ -2221,7 +2172,18 @@ export class FsStore {
     return [...this.items.values()];
   }
 
+  /**
+   * Creates or replaces one target-issued Approval request.
+   *
+   * @param input Approval request to store.
+   * @returns Stored Approval request.
+   * @throws When the id belongs to the portable-import history namespace.
+   */
   public createApproval(input: ApprovalRequest): ApprovalRequest {
+    if (!isTargetIssuedEffectAuthority(input.id)) {
+      throw new Error('Approval id uses the reserved portable-import authority namespace.');
+    }
+
     this.approvals.set(input.id, input);
     return input;
   }
@@ -2358,172 +2320,239 @@ export class FsStore {
     );
   }
 
+  /**
+   * Creates one immutable Artifact and its producing-Turn reference when applicable.
+   *
+   * @param input Complete Artifact authority.
+   * @returns Created Artifact.
+   * @throws ArtifactAuthorityError when content proof or create-only ownership is invalid.
+   */
   public createArtifact(input: Artifact): Artifact {
-    const artifact = ArtifactSchema.parse(input);
+    const parsed = ArtifactSchema.safeParse(input);
+    if (!parsed.success) {
+      throw new ArtifactAuthorityError('invalid_request', 'Artifact input is invalid.');
+    }
+    const artifact = parsed.data;
+    if (
+      artifact.version !== 1 ||
+      (artifact.origin.kind === 'imported' &&
+        (artifact.kind !== 'file' || artifact.status !== 'ready' || artifact.summary !== null))
+    ) {
+      throw new ArtifactAuthorityError(
+        'invalid_request',
+        'Artifact creation accepts only a valid initial authority shape.'
+      );
+    }
     this.getWorkspace(artifact.workspaceId);
-    if ((artifact.threadId === null) !== (artifact.turnId === null)) {
-      throw new Error(`Artifact thread and turn lineage must be paired: ${artifact.id}`);
-    }
-    if (artifact.threadId !== null) {
-      this.getThread(artifact.workspaceId, artifact.threadId);
-    }
-    if (artifact.turnId !== null) {
-      if (artifact.threadId === null) {
-        throw new Error(`Artifact turn requires a thread: ${artifact.id}`);
-      }
-      this.getTurn(artifact.workspaceId, artifact.threadId, artifact.turnId);
-    }
-    const existing = this.artifacts.get(artifact.id);
-
-    if (existing && existing.workspaceId !== artifact.workspaceId) {
-      throw new Error(`Artifact id belongs to another workspace: ${artifact.id}`);
+    const contentDigest = `sha256:${createHash('sha256')
+      .update(artifact.content.body, 'utf8')
+      .digest('hex')}`;
+    if (contentDigest !== artifact.contentDigest) {
+      throw new ArtifactAuthorityError(
+        'source_digest_mismatch',
+        'Artifact content does not match its digest.'
+      );
     }
     if (
-      existing &&
-      (existing.threadId !== artifact.threadId ||
-        existing.turnId !== artifact.turnId ||
-        existing.createdAt !== artifact.createdAt)
+      this.artifacts.has(artifact.id) ||
+      [...this.items.values()].some(
+        (item) => item.type === 'artifact-reference' && item.artifactId === artifact.id
+      )
     ) {
-      throw new Error(`Artifact immutable lineage cannot change: ${artifact.id}`);
+      throw new ArtifactAuthorityError(
+        'recovery_required',
+        'The request-owned Artifact already has authority without a receipt.'
+      );
     }
 
-    this.assertArtifactReferenceLineage(artifact);
+    let producingTurn: Turn | null = null;
+    let reference: Extract<Item, { type: 'artifact-reference' }> | null = null;
+    if (artifact.origin.kind === 'turn-output') {
+      producingTurn = this.getTurn(
+        artifact.workspaceId,
+        artifact.origin.threadId,
+        artifact.origin.turnId
+      );
+      const itemId = artifactReferenceItemId(artifact.id, producingTurn.id);
+      if (this.items.has(itemId)) {
+        throw new ArtifactAuthorityError(
+          'recovery_required',
+          'The producing Artifact reference identity is already occupied.'
+        );
+      }
+      reference = ItemSchema.parse({
+        id: itemId,
+        workspaceId: artifact.workspaceId,
+        threadId: producingTurn.threadId,
+        turnId: producingTurn.id,
+        type: 'artifact-reference',
+        status: 'completed',
+        artifactId: artifact.id,
+        artifactVersion: artifact.version,
+        title: artifact.title,
+        summary: artifact.summary,
+        lastMutationRequestId: artifact.lastMutationRequestId,
+        createdAt: artifact.createdAt,
+        completedAt: artifact.updatedAt,
+      }) as Extract<Item, { type: 'artifact-reference' }>;
+    }
+
     this.artifacts.set(artifact.id, artifact);
     this.refreshWorkspaceCounts(artifact.workspaceId);
     try {
       this.persist(artifact.workspaceId);
-      this.recordArtifactReference(artifact);
     } catch (error) {
-      if (existing) {
-        this.artifacts.set(existing.id, existing);
-      } else {
-        this.artifacts.delete(artifact.id);
-      }
+      this.artifacts.delete(artifact.id);
       this.refreshWorkspaceCounts(artifact.workspaceId);
       this.persist(artifact.workspaceId);
       throw error;
+    }
+    if (reference) {
+      this.createItem(reference);
     }
     return artifact;
   }
 
   /**
-   * Deletes one artifact as an idempotent compensation action.
+   * Introduces one workspace-only imported Artifact into an idle Thread.
    *
-   * @param workspaceId Workspace that owns the artifact.
-   * @param artifactId Artifact to delete when present.
-   * @throws Error when the artifact id belongs to another workspace.
+   * @param input Accepted command scope, proof, and deterministic identities.
+   * @returns Stable Artifact, Turn, and Item identities.
+   * @throws ArtifactAuthorityError when the target is stale, busy, conflicting, or incomplete.
    */
-  public deleteArtifact(workspaceId: string, artifactId: string): void {
-    const artifact = this.artifacts.get(artifactId);
-    if (!artifact) {
-      return;
+  public introduceArtifact(input: IntroduceArtifactInput): IntroduceWorkspaceArtifactResponse {
+    const thread = this.threads.get(input.threadId);
+    if (
+      !this.workspaces.has(input.workspaceId) ||
+      !thread ||
+      thread.workspaceId !== input.workspaceId
+    ) {
+      throw new ArtifactAuthorityError('stale', 'The requested Workspace or Thread is absent.');
     }
-    if (artifact.workspaceId !== workspaceId) {
-      throw new Error(`Artifact not found: ${artifactId}`);
+    const artifact = this.artifacts.get(input.artifactId);
+    if (!artifact || artifact.workspaceId !== input.workspaceId) {
+      throw new ArtifactAuthorityError('stale', 'The requested Artifact is absent.');
+    }
+    if (
+      artifact.origin.kind !== 'imported' ||
+      artifact.threadId !== null ||
+      artifact.turnId !== null
+    ) {
+      throw new ArtifactAuthorityError(
+        'stale',
+        'The requested Artifact is not workspace-only imported content.'
+      );
+    }
+    const contentDigest = `sha256:${createHash('sha256')
+      .update(artifact.content.body, 'utf8')
+      .digest('hex')}`;
+    if (
+      contentDigest !== artifact.contentDigest ||
+      contentDigest !== artifact.origin.sourceDigest
+    ) {
+      throw new ArtifactAuthorityError(
+        'recovery_required',
+        'The imported Artifact has invalid durable content proof.'
+      );
+    }
+    if (artifact.version !== input.expectedArtifactVersion) {
+      throw new ArtifactAuthorityError(
+        'conflict',
+        'The Artifact version does not match the request.'
+      );
     }
 
-    if (this.dataRoot) {
-      deleteWorkspaceArtifactRecords(this.workspaceRootPath(workspaceId), artifactId);
-    }
-    this.artifacts.delete(artifactId);
-    this.artifactReviews.delete(artifactId);
-    const reference = [...this.items.values()].find(
-      (item) => item.type === 'artifact-reference' && item.artifactId === artifactId
+    const itemId = artifactReferenceItemId(input.artifactId, input.turnId);
+    const matchingReference = [...this.items.values()].find(
+      (item) =>
+        item.type === 'artifact-reference' &&
+        item.workspaceId === input.workspaceId &&
+        item.threadId === input.threadId &&
+        item.artifactId === input.artifactId &&
+        (item.turnId === input.turnId || item.lastMutationRequestId === input.requestId)
     );
-    if (reference) {
-      this.updateItem(reference.id, { status: 'declined', completedAt: now() });
+    if (
+      this.turns.has(input.turnId) ||
+      this.items.has(itemId) ||
+      this.streams.has(input.turnId) ||
+      matchingReference
+    ) {
+      throw new ArtifactAuthorityError(
+        'recovery_required',
+        'The Artifact introduction owner tuple already exists without a receipt.'
+      );
     }
-    this.refreshWorkspaceCounts(workspaceId);
-    this.persist(workspaceId);
-  }
-
-  /**
-   * Updates one artifact within its owning workspace.
-   *
-   * @param workspaceId Workspace that must own the artifact.
-   * @param artifactId Artifact to update.
-   * @param input Artifact fields to replace.
-   * @returns Updated artifact.
-   * @throws Error when the artifact is absent or belongs to another workspace.
-   */
-  public updateArtifact(
-    workspaceId: string,
-    artifactId: string,
-    input: Partial<Pick<Artifact, 'status' | 'summary' | 'title' | 'updatedAt' | 'version'>>
-  ): Artifact {
-    const artifact = this.getArtifact(workspaceId, artifactId);
-
-    const updated: Artifact = { ...artifact, ...input, updatedAt: input.updatedAt ?? now() };
-    this.assertArtifactReferenceLineage(updated);
-    this.artifacts.set(artifactId, updated);
-    try {
-      this.persist(workspaceId);
-      this.recordArtifactReference(updated);
-    } catch (error) {
-      this.artifacts.set(artifactId, artifact);
-      this.persist(workspaceId);
-      throw error;
-    }
-    return updated;
-  }
-
-  /**
-   * Creates or revises the one Item that communicates a turn-bound Artifact.
-   *
-   * @param artifact Current Artifact revision.
-   */
-  private recordArtifactReference(artifact: Artifact): void {
-    if (artifact.threadId === null || artifact.turnId === null) {
-      return;
+    if (
+      [...this.turns.values()].some(
+        (turn) =>
+          turn.workspaceId === input.workspaceId &&
+          turn.threadId === input.threadId &&
+          ['pending', 'running', 'awaiting_human'].includes(turn.status)
+      )
+    ) {
+      throw new ArtifactAuthorityError(
+        'thread_busy',
+        'The Thread already has a non-terminal Turn.'
+      );
     }
 
-    const itemId = `it_artifact_${artifact.id}`;
-    const existing = this.items.get(itemId);
-
-    const reference = {
+    const reference = ItemSchema.parse({
       id: itemId,
-      workspaceId: artifact.workspaceId,
-      threadId: artifact.threadId,
-      turnId: artifact.turnId,
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      turnId: input.turnId,
       type: 'artifact-reference',
       status: 'completed',
       artifactId: artifact.id,
       artifactVersion: artifact.version,
       title: artifact.title,
       summary: artifact.summary,
-      createdAt: existing?.createdAt ?? artifact.createdAt,
-      completedAt: artifact.updatedAt,
-    } as const;
+      lastMutationRequestId: input.requestId,
+      createdAt: input.acceptedAt,
+      completedAt: input.acceptedAt,
+    }) as Extract<Item, { type: 'artifact-reference' }>;
+    const turn = TurnSchema.parse({
+      id: input.turnId,
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      triggerActor: input.triggerActor,
+      items: [reference],
+      status: 'completed',
+      humanGate: null,
+      error: null,
+      configVersion: null,
+      startedAt: input.acceptedAt,
+      completedAt: input.acceptedAt,
+      durationMs: 0,
+    });
+    const itemRevisionCount = this.itemRevisions.length;
 
-    if (existing) {
-      this.updateItem(itemId, reference);
-    } else {
-      this.createItem(reference);
+    this.turns.set(turn.id, turn);
+    this.items.set(reference.id, reference);
+    this.itemRevisions.push(reference);
+    this.streams.set(turn.id, {
+      sequence: 0,
+      events: [],
+      listeners: new Set(),
+      timers: new Set(),
+    });
+    try {
+      this.persist(input.workspaceId);
+    } catch (error) {
+      this.turns.delete(turn.id);
+      this.items.delete(reference.id);
+      this.itemRevisions.length = itemRevisionCount;
+      this.streams.delete(turn.id);
+      this.persist(input.workspaceId);
+      throw error;
     }
-  }
 
-  /**
-   * Validates the deterministic Item identity reserved for one turn-bound Artifact.
-   *
-   * @param artifact Artifact whose communicating Item must remain on the same lineage.
-   * @throws Error when the deterministic Item id is occupied by another identity.
-   */
-  private assertArtifactReferenceLineage(artifact: Artifact): void {
-    if (artifact.threadId === null || artifact.turnId === null) {
-      return;
-    }
-
-    const existing = this.items.get(`it_artifact_${artifact.id}`);
-    if (
-      existing &&
-      (existing.type !== 'artifact-reference' ||
-        existing.workspaceId !== artifact.workspaceId ||
-        existing.threadId !== artifact.threadId ||
-        existing.turnId !== artifact.turnId ||
-        existing.artifactId !== artifact.id)
-    ) {
-      throw new Error(`Artifact reference has invalid lineage: ${artifact.id}`);
-    }
+    return {
+      artifactId: artifact.id,
+      artifactVersion: artifact.version,
+      turnId: turn.id,
+      itemId: reference.id,
+    };
   }
 
   public listArtifacts(workspaceId: string): Artifact[] {
@@ -2538,89 +2567,6 @@ export class FsStore {
     }
 
     return artifact;
-  }
-
-  /**
-   * Records the latest app-local review decision for one artifact.
-   *
-   * @param input Artifact review decision to store.
-   * @returns Stored artifact review record.
-   */
-  public recordArtifactReviewDecision(input: ArtifactReviewRecord): ArtifactReviewRecord {
-    this.getWorkspace(input.workspaceId);
-    const artifact = this.artifacts.get(input.artifactId);
-
-    if (
-      !artifact ||
-      artifact.workspaceId !== input.workspaceId ||
-      artifact.threadId !== input.threadId ||
-      artifact.turnId !== input.turnId
-    ) {
-      throw new Error(`Artifact review has invalid artifact lineage: ${input.artifactId}`);
-    }
-    if (input.followUpTurnId !== null) {
-      const followUpTurn = this.turns.get(input.followUpTurnId);
-
-      if (
-        (input.lifecycle !== 'pending' && !followUpTurn) ||
-        (followUpTurn &&
-          (followUpTurn.workspaceId !== input.workspaceId ||
-            followUpTurn.threadId !== input.threadId))
-      ) {
-        throw new Error(`Artifact review has invalid follow-up turn: ${input.followUpTurnId}`);
-      }
-    }
-
-    const existing = this.artifactReviews.get(input.artifactId);
-    if (existing && existing.workspaceId !== input.workspaceId) {
-      throw new Error(`Artifact review id belongs to another workspace: ${input.artifactId}`);
-    }
-    if (existing) {
-      const sameLineage =
-        existing.workspaceId === input.workspaceId &&
-        existing.threadId === input.threadId &&
-        existing.turnId === input.turnId;
-      const sameClaim =
-        sameLineage &&
-        existing.status === input.status &&
-        existing.requestId === input.requestId &&
-        existing.message === input.message &&
-        existing.decidedAt === input.decidedAt &&
-        existing.followUpTurnId === input.followUpTurnId;
-      const startsReplacementClaim =
-        sameLineage && existing.lifecycle === 'failed' && input.lifecycle === 'pending';
-      const finishesPendingClaim =
-        sameClaim && existing.lifecycle === 'pending' && input.lifecycle !== 'pending';
-      if (!startsReplacementClaim && !finishesPendingClaim) {
-        return existing;
-      }
-    }
-    this.artifactReviews.set(input.artifactId, input);
-    this.persist(artifact.workspaceId);
-    return input;
-  }
-
-  /**
-   * Returns one app-local artifact review decision.
-   *
-   * @param artifactId Artifact id to inspect.
-   * @returns Stored artifact review record, or null.
-   */
-  public getArtifactReviewDecision(artifactId: string): ArtifactReviewRecord | null {
-    return this.artifactReviews.get(artifactId) ?? null;
-  }
-
-  /**
-   * Lists app-local artifact review decisions for one workspace.
-   *
-   * @param workspaceId Workspace that owns the reviews.
-   * @returns Stored artifact review records.
-   */
-  public listArtifactReviewDecisions(workspaceId: string): ArtifactReviewRecord[] {
-    this.getWorkspace(workspaceId);
-    return [...this.artifactReviews.values()].filter(
-      (review) => review.workspaceId === workspaceId
-    );
   }
 
   /**
@@ -2653,34 +2599,6 @@ export class FsStore {
    */
   public getKnowledgeProposal(proposalId: string): KnowledgeProposalRecord | null {
     return this.knowledgeProposals.get(proposalId) ?? null;
-  }
-
-  /**
-   * Updates human-edited content on one pending app-local knowledge proposal.
-   *
-   * @param proposalId Proposal id to update.
-   * @param updates Human-edited proposal fields and update timestamp.
-   * @returns Updated proposal.
-   */
-  public updateKnowledgeProposalContent(
-    proposalId: string,
-    updates: { title?: string; summary?: string; updatedAt: string }
-  ): KnowledgeProposalRecord {
-    const proposal = this.knowledgeProposals.get(proposalId);
-
-    if (!proposal) {
-      throw new Error(`Knowledge proposal not found: ${proposalId}`);
-    }
-
-    const updated = {
-      ...proposal,
-      title: updates.title ?? proposal.title,
-      summary: updates.summary ?? proposal.summary,
-      updatedAt: updates.updatedAt,
-    };
-    this.knowledgeProposals.set(proposalId, updated);
-    this.persist(proposal.workspaceId);
-    return updated;
   }
 
   /**

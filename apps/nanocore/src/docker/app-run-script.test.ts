@@ -72,17 +72,18 @@ describe('app run script', () => {
     expect(existsSync(join(dataRoot, 'config', 'server.jsonc'))).toBe(true);
   });
 
-  it('seeds a first-run nano-data config with env secret references', async () => {
+  it('seeds server config and leaves AgentManifest seeding to NanoCore templates', async () => {
     const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-app-data-'));
 
     const result = runSeedOnly(dataRoot);
 
     expect(result.status).toBe(0);
     expect(existsSync(join(dataRoot, 'config', 'server.jsonc'))).toBe(true);
-    expect(existsSync(join(dataRoot, 'config', 'agents', 'codex.agent.jsonc'))).toBe(true);
+    expect(existsSync(join(dataRoot, 'config', 'agents', 'codex.agent.jsonc'))).toBe(false);
     expect(existsSync(join(dataRoot, 'config', 'agents', 'opencode-server.agent.jsonc'))).toBe(
-      true
+      false
     );
+    expect(existsSync(join(dataRoot, 'config', 'agents', 'codex-home', 'config.toml'))).toBe(false);
 
     const serverConfig = readFileSync(join(dataRoot, 'config', 'server.jsonc'), 'utf8');
     expect(serverConfig).toContain('"id": "nanocore-openrouter"');
@@ -95,7 +96,7 @@ describe('app run script', () => {
 
   it('does not copy a process-env provider secret into workspace-owned state', async () => {
     const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-app-data-'));
-    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
     const storePath = join(workspaceRoot, 'store.json');
     const secret = 'fake-provider-secret-from-process-env';
     mkdirSync(join(dataRoot, 'config'), { recursive: true });
@@ -154,7 +155,7 @@ describe('app run script', () => {
 
   it('does not copy a secrets-file provider secret into workspace-owned state', async () => {
     const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-app-data-'));
-    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
     const secretsPath = join(dataRoot, 'secrets', 'openkit.env');
     const storePath = join(workspaceRoot, 'store.json');
     const secret = 'fake-provider-secret-from-env-file';

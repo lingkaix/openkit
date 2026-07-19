@@ -5,20 +5,24 @@ import {
   type AgentEnvironmentPackage,
   WORKER_RUNTIME_PROVENANCE_FEATURE,
 } from '@openkit/config-schema';
+import type { ActorRef } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { z } from 'zod';
 
+import { asApiError } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
+import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import {
   finishCapabilityCall,
   recordUsage,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
 import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
-import { redactInternalAgentText } from '../internal-agents/redaction.js';
-import type { FsStore } from '../lib/store.js';
 import { recordGatewayPolicyDecision } from '../policy/permission-decisions.js';
-import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import {
+  isProviderProfileDispatchable,
+  type ResolvedLLMProviderConfig,
+} from '../providers/llm-config.js';
 import {
   type WorkerControlGateway,
   WorkerControlGatewayError,
@@ -108,10 +112,10 @@ interface DurableLlmGatewayCall {
  * @returns Started call or null when durable attribution is unavailable.
  */
 function startPublicLlmGatewayCall(input: {
+  /** Exact authenticated actor that authorized the workspace call. */
+  authorityActor: ActorRef;
   /** Optional Core database handle for durable workspace storage. */
   coreDb?: CoreDb;
-  /** Store that owns the user/workspace mapping. */
-  store: FsStore;
   /** Provider selected for the public gateway call. */
   provider: ResolvedLLMProviderConfig;
   /** Gateway endpoint family. */
@@ -129,11 +133,7 @@ function startPublicLlmGatewayCall(input: {
     return null;
   }
 
-  const workspaceDb = openWorkspaceDb(
-    input.coreDb.dataRoot,
-    input.store.getUserId(),
-    lineage.workspaceId
-  );
+  const workspaceDb = openWorkspaceDb(input.coreDb.dataRoot, lineage.workspaceId);
 
   try {
     applyScopedMigrations(workspaceDb);
@@ -142,6 +142,7 @@ function startPublicLlmGatewayCall(input: {
       call: startCapabilityCall({
         agentId: lineage.agentId ?? null,
         agentSessionId: lineage.agentSessionId ?? null,
+        authorityActor: input.authorityActor,
         capabilityId: `llm.${input.endpoint}`,
         family: 'llm',
         itemId: lineage.itemId ?? null,
@@ -198,7 +199,7 @@ function recordLlmGatewayUsage(input: {
       unit: 'tokens' as const,
     },
     {
-      quantity: parsed.cachedInputTokens,
+      quantity: parsed.cacheReadTokens,
       source: 'llm-gateway-adapter-reported:cache_read',
       unit: 'tokens' as const,
     },
@@ -211,8 +212,8 @@ function recordLlmGatewayUsage(input: {
       quantity:
         parsed.inputTokens ||
         parsed.completionTokens ||
-        parsed.cachedInputTokens ||
-        parsed.cacheWriteTokens
+        (parsed.cacheReadTokens ?? 0) ||
+        (parsed.cacheWriteTokens ?? 0)
           ? 0
           : parsed.totalTokens,
       source: 'llm-gateway-adapter-reported:total',
@@ -224,7 +225,10 @@ function recordLlmGatewayUsage(input: {
       unit: 'usd' as const,
     },
   ].flatMap((record) =>
-    record.quantity > 0
+    record.quantity !== undefined &&
+    (record.quantity > 0 ||
+      record.source === 'llm-gateway-adapter-reported:cache_read' ||
+      record.source === 'llm-gateway-adapter-reported:cache_write')
       ? [
           {
             category: 'llm' as const,
@@ -339,6 +343,35 @@ function readPublicLlmGatewayLineage(metadata: unknown): PublicLlmGatewayLineage
     ...(threadId ? { threadId } : {}),
     ...(turnId ? { turnId } : {}),
   };
+}
+
+/**
+ * Checks current Workspace authority for one explicitly attributed public Gateway call.
+ *
+ * @param input Authenticated actor, request metadata, and current Core authority.
+ * @returns True only when explicit Workspace attribution is present but no longer authorized.
+ */
+function publicGatewayAuthorityDenied(input: {
+  /** Fresh authenticated actor responsible for the pending provider effect. */
+  actor: ActorRef;
+  /** Optional Core database containing current Workspace authority. */
+  coreDb?: CoreDb;
+  /** OpenAI-compatible request metadata. */
+  metadata: unknown;
+}): boolean {
+  const lineage = readPublicLlmGatewayLineage(input.metadata);
+
+  return Boolean(
+    lineage &&
+      (!input.coreDb ||
+        !currentWorkspaceAuthority(
+          input.coreDb,
+          lineage.workspaceId,
+          input.actor,
+          'llm.gateway.use',
+          true
+        ))
+  );
 }
 
 /**
@@ -601,24 +634,17 @@ function startWorkerInferenceCall(input: {
   const { environmentPackage } = input;
   const { scope } = environmentPackage;
 
-  if (!scope.userId) {
-    throw new WorkerInferenceRouteError(
-      'worker_inference_unauthorized',
-      'Worker inference requires an owner-bound package.',
-      401
-    );
-  }
-
   let workspaceDb: WorkspaceDb | null = null;
 
   try {
-    workspaceDb = openWorkspaceDb(input.coreDb.dataRoot, scope.userId, scope.workspaceId);
+    workspaceDb = openWorkspaceDb(input.coreDb.dataRoot, scope.workspaceId);
     applyScopedMigrations(workspaceDb);
 
     return {
       call: startCapabilityCall({
         agentId: environmentPackage.agent.agentId,
         agentSessionId: scope.agentSessionId,
+        authorityActor: scope.triggerActor,
         capabilityId: `llm.${input.endpoint}`,
         family: 'llm',
         itemId: scope.itemId ?? null,
@@ -995,7 +1021,7 @@ function asOpenAIGatewayError(error: unknown): Response {
     return Response.json(
       {
         error: {
-          message: redactInternalAgentText(error.message),
+          message: gatewayProviderFailureMessage(normalized.code),
           type: normalized.type,
           code: normalized.code,
         },
@@ -1007,7 +1033,7 @@ function asOpenAIGatewayError(error: unknown): Response {
   return Response.json(
     {
       error: {
-        message: (error as Error).message,
+        message: 'Gateway request failed.',
         type: 'invalid_request_error',
         code: 'gateway_request_failed',
       },
@@ -1224,9 +1250,7 @@ function createGatewayTerminalErrorSse(
   const normalized = classifyGatewayProviderFailure(error, 'gateway_stream_failed');
   const payload = {
     error: {
-      message:
-        failureMessage ??
-        redactInternalAgentText(error instanceof Error ? error.message : String(error)),
+      message: failureMessage ?? gatewayProviderFailureMessage(errorCode ?? normalized.code),
       type: normalized.type,
       code: errorCode ?? normalized.code,
       endpoint,
@@ -1247,14 +1271,12 @@ function createGatewayTerminalErrorSse(
 function classifyGatewayProviderFailure(error: unknown, fallbackCode: string) {
   const detail = error && typeof error === 'object' ? (error as Record<string, unknown>) : {};
   const status = typeof detail.status === 'number' ? detail.status : undefined;
-  const type = typeof detail.type === 'string' ? detail.type : 'provider_error';
   const code = typeof detail.code === 'string' ? detail.code : '';
+  const providerType = typeof detail.type === 'string' ? detail.type : '';
   const message = error instanceof Error ? error.message : String(error);
-  const signal = `${code} ${type} ${message}`.toLowerCase();
+  const signal = `${code} ${providerType} ${message}`.toLowerCase();
+  const type = 'provider_error';
 
-  if (code.startsWith('vault-')) {
-    return { type, code };
-  }
   if (
     status === 401 ||
     status === 403 ||
@@ -1277,6 +1299,7 @@ function classifyGatewayProviderFailure(error: unknown, fallbackCode: string) {
   }
   if (
     status === 408 ||
+    status === 423 ||
     status === 500 ||
     status === 502 ||
     status === 503 ||
@@ -1287,6 +1310,34 @@ function classifyGatewayProviderFailure(error: unknown, fallbackCode: string) {
   }
 
   return { type, code: fallbackCode };
+}
+
+/**
+ * Projects one normalized provider failure code onto a fixed public message.
+ *
+ * @param code Stable OpenKit provider failure code.
+ * @returns Generic public message that contains no upstream text.
+ */
+function gatewayProviderFailureMessage(code: string): string {
+  switch (code) {
+    case 'gateway_provider_authentication_failed':
+      return 'Provider authentication failed.';
+    case 'gateway_provider_rate_limited':
+      return 'Provider rate limit exceeded.';
+    case 'gateway_context_overflow':
+      return 'Provider context limit exceeded.';
+    case 'gateway_provider_request_invalid':
+      return 'Provider rejected the request.';
+    case 'gateway_provider_unavailable':
+      return 'Provider is unavailable.';
+    case 'gateway_stream_failed':
+      return 'Provider stream failed.';
+    case 'llm_gateway_cancelled':
+    case 'worker_inference_cancelled':
+      return 'Request was cancelled.';
+    default:
+      return 'Provider request failed.';
+  }
 }
 
 /**
@@ -1308,7 +1359,7 @@ export function registerWorkerInferenceRoutes({
   /** Shared provider dispatcher. */
   readonly llmGatewayDispatcher: LLMGatewayProviderDispatcher;
   /** Resolves the provider selected by the authenticated AEP. */
-  readonly resolveGatewayProvider: (providerId: string) => ResolvedLLMProviderConfig;
+  readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
   /** Worker token and durable lease authority. */
   readonly workerControlGateway: WorkerControlGateway;
 }): void {
@@ -1340,7 +1391,7 @@ export function registerWorkerInferenceRoutes({
         runtimeHint = readWorkerInferenceRuntimeHint(
           c.req.raw.headers,
           input,
-          environmentPackage.control.adapter?.targetRuntime ?? environmentPackage.agent.runtimeKind
+          environmentPackage.control.adapter.targetRuntime
         );
       } catch {
         throw invalidWorkerInferenceRequest();
@@ -1356,10 +1407,26 @@ export function registerWorkerInferenceRoutes({
         provenanceRequired && runtimeHint
           ? createWorkerRuntimeOriginRef(environmentPackage.snapshotId, runtimeHint.nativeThreadId)
           : null;
+      if (
+        !coreDb ||
+        !currentWorkspaceAuthority(
+          coreDb,
+          environmentPackage.scope.workspaceId,
+          environmentPackage.scope.triggerActor,
+          'llm.gateway.use',
+          true
+        )
+      ) {
+        throw new WorkerInferenceRouteError(
+          'worker_inference_unavailable',
+          'Worker inference durable attribution is unavailable.',
+          503
+        );
+      }
       let provider: ResolvedLLMProviderConfig;
 
       try {
-        provider = resolveGatewayProvider(route.providerInstanceId);
+        provider = resolveGatewayProvider(route.providerInstanceId, route.model);
       } catch {
         const unavailableCall = startWorkerInferenceCall({
           ...(coreDb ? { coreDb } : {}),
@@ -1389,9 +1456,7 @@ export function registerWorkerInferenceRoutes({
           : {}),
         providerId: provider.id,
         runtimeFamily:
-          runtimeHint?.runtimeFamily ??
-          environmentPackage.control.adapter?.targetRuntime ??
-          environmentPackage.agent.runtimeKind,
+          runtimeHint?.runtimeFamily ?? environmentPackage.control.adapter.targetRuntime,
         workspaceId: environmentPackage.scope.workspaceId,
       });
       sanitized.prompt_cache_key = cache.promptCacheKey;
@@ -1581,7 +1646,6 @@ export function registerLlmGatewayRoutes({
   coreDb,
   gatewayDefaultProviderId,
   llmGatewayDispatcher,
-  requestStore,
   resolveGatewayProvider,
   runtimeConfig,
 }: {
@@ -1589,8 +1653,7 @@ export function registerLlmGatewayRoutes({
   readonly coreDb?: CoreDb;
   readonly gatewayDefaultProviderId: () => string | null;
   readonly llmGatewayDispatcher: LLMGatewayProviderDispatcher;
-  readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
-  readonly resolveGatewayProvider: (providerId: string) => ResolvedLLMProviderConfig;
+  readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
 }): void {
   /**
@@ -1658,6 +1721,10 @@ export function registerLlmGatewayRoutes({
       object: 'list',
       data: runtimeConfig()
         .providerRegistry.list()
+        .filter(
+          (provider) =>
+            isGatewayProviderAllowed(provider.id) && isProviderProfileDispatchable(provider)
+        )
         .flatMap((provider) =>
           provider.models.map((model) => ({
             id: model,
@@ -1726,6 +1793,17 @@ export function registerLlmGatewayRoutes({
         );
       }
 
+      const authorityActor = { kind: 'user', id: c.get('actor').userId } as const;
+      if (
+        publicGatewayAuthorityDenied({
+          actor: authorityActor,
+          ...(coreDb ? { coreDb } : {}),
+          metadata: (input as { metadata?: unknown }).metadata,
+        })
+      ) {
+        return asApiError('Workspace access denied.', 'workspace_access_denied', 403);
+      }
+
       recordLlmGatewayPolicyDecision({
         action: 'llm.gateway.chat_completions',
         providerId,
@@ -1734,7 +1812,7 @@ export function registerLlmGatewayRoutes({
         route: '/v1/chat/completions',
       });
 
-      const provider = resolveGatewayProvider(providerId);
+      const provider = resolveGatewayProvider(providerId, input.model);
       const request = {
         ...input,
         messages: input.messages.map((message): OpenAICompatibleChatMessage => {
@@ -1750,10 +1828,10 @@ export function registerLlmGatewayRoutes({
       if (input.stream) {
         const durableCall = startPublicLlmGatewayCall({
           ...(coreDb ? { coreDb } : {}),
+          authorityActor,
           endpoint: 'chat_completions',
           metadata: (request as { metadata?: unknown }).metadata,
           provider,
-          store: requestStore(c),
         });
 
         try {
@@ -1805,10 +1883,10 @@ export function registerLlmGatewayRoutes({
 
       const durableCall = startPublicLlmGatewayCall({
         ...(coreDb ? { coreDb } : {}),
+        authorityActor,
         endpoint: 'chat_completions',
         metadata: (request as { metadata?: unknown }).metadata,
         provider,
-        store: requestStore(c),
       });
 
       try {
@@ -1909,6 +1987,17 @@ export function registerLlmGatewayRoutes({
         );
       }
 
+      const authorityActor = { kind: 'user', id: c.get('actor').userId } as const;
+      if (
+        publicGatewayAuthorityDenied({
+          actor: authorityActor,
+          ...(coreDb ? { coreDb } : {}),
+          metadata: (input as { metadata?: unknown }).metadata,
+        })
+      ) {
+        return asApiError('Workspace access denied.', 'workspace_access_denied', 403);
+      }
+
       recordLlmGatewayPolicyDecision({
         action: 'llm.gateway.responses',
         providerId,
@@ -1917,7 +2006,7 @@ export function registerLlmGatewayRoutes({
         route: '/v1/responses',
       });
 
-      const provider = resolveGatewayProvider(providerId);
+      const provider = resolveGatewayProvider(providerId, input.model);
       const request = {
         ...input,
         stream: input.stream ?? false,
@@ -1926,10 +2015,10 @@ export function registerLlmGatewayRoutes({
       if (input.stream) {
         const durableCall = startPublicLlmGatewayCall({
           ...(coreDb ? { coreDb } : {}),
+          authorityActor,
           endpoint: 'responses',
           metadata: (request as { metadata?: unknown }).metadata,
           provider,
-          store: requestStore(c),
         });
 
         try {
@@ -1981,10 +2070,10 @@ export function registerLlmGatewayRoutes({
 
       const durableCall = startPublicLlmGatewayCall({
         ...(coreDb ? { coreDb } : {}),
+        authorityActor,
         endpoint: 'responses',
         metadata: (request as { metadata?: unknown }).metadata,
         provider,
-        store: requestStore(c),
       });
 
       try {

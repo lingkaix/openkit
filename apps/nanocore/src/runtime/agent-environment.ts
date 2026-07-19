@@ -7,26 +7,25 @@ import {
   OPENKIT_WORKER_CONTROL_POST_PATHS,
   planSessionWorkspaceMaterialization,
   resolveWorkspaceDataSourceReference,
-  type SessionWorkspaceMaterializationPlan,
   WORKER_RUNTIME_PROVENANCE_FEATURE,
-  type WorkerSandboxAccess,
-  WorkerSandboxAccessSchema,
   type WorkspaceDataSourceCatalog,
 } from '@openkit/config-schema';
-import type { TurnSchema } from '@openkit/protocol';
+import { type ActorRef, ActorRefSchema, type TurnSchema } from '@openkit/protocol';
 import type { z } from 'zod';
+import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
+import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { createInjectionPlan } from '../injection-plans.js';
 import { createInjectionReceipt } from '../injection-receipts.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import type { CoreDb } from '../storage/db.js';
+import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import { type VaultBackend, vaultSecretMaterialToString } from '../vault/vault-backend.js';
 import { getVaultGrant, type VaultGrantRecord } from '../vault/vault-grants.js';
 import { getVaultReference, type VaultReferenceRecord } from '../vault/vault-references.js';
 import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend.js';
-import type { RuntimeAgent } from './types.js';
+import { TurnStartValidationError } from './orchestrator.js';
 
 type Turn = z.infer<typeof TurnSchema>;
-type WorkerRuntimeAdapter = RuntimeAgent['config']['adapterType'];
 
 /**
  * Worker Skill catalog entry owned by NanoCore.
@@ -41,7 +40,7 @@ interface WorkerSkillCatalogEntry {
   /** Digest for the materialized supply content. */
   sha256: string;
   /** Runtime adapters allowed to consume this supply. */
-  allowedRuntimeAdapters: WorkerRuntimeAdapter[];
+  allowedRuntimeAdapters: string[];
   /** Workspace scopes where this supply may be used. */
   allowedWorkspaceScopes: string[];
   /** Worker-local materialization target. */
@@ -66,12 +65,8 @@ interface WorkerMcpCatalogEntry {
   sourceRef: string;
   /** Digest for the generated MCP config. */
   sha256: string;
-  /** MCP transport supplied to the worker runtime. */
-  transport: 'stdio' | 'http' | 'websocket';
-  /** Worker-local command argv for stdio transports. */
-  command: string[];
   /** Runtime adapters allowed to consume this MCP server. */
-  allowedRuntimeAdapters: WorkerRuntimeAdapter[];
+  allowedRuntimeAdapters: string[];
   /** Workspace scopes where this supply may be used. */
   allowedWorkspaceScopes: string[];
   /** Tool names allowed through this MCP server. */
@@ -82,16 +77,6 @@ interface WorkerMcpCatalogEntry {
   toolSchemas: Array<{ inputSchema: Record<string, unknown>; name: string }>;
   /** Prompt names allowed through this MCP server. */
   allowedPrompts: string[];
-  /** Network policy hints required by this MCP server. */
-  networkPolicyHints: string[];
-  /** Provider instance ids required by this MCP server. */
-  providerInstanceIds: string[];
-  /** Vault grants required by this MCP server. */
-  vaultGrantIds: string[];
-  /** Secret references required by this MCP server, never secret values. */
-  secretRefIds: string[];
-  /** Worker-local generated config target. */
-  targetPath: string;
   /** Review status of this catalog entry. */
   reviewStatus: 'approved' | 'pending' | 'rejected';
 }
@@ -144,24 +129,13 @@ const WORKER_MCP_CATALOG: Record<string, WorkerMcpCatalogEntry> = {
       },
     ],
     allowedWorkspaceScopes: ['workspace'],
-    command: ['github-mcp-server'],
     id: 'github',
-    networkPolicyHints: ['api.github.com'],
-    providerInstanceIds: ['provider_github_read'],
     reviewStatus: 'approved',
-    secretRefIds: ['vault_github_read'],
     sha256: 'sha256-github-mcp-v1',
     sourceRef: 'server:mcp/github',
-    targetPath: '/openkit/supply/mcp/github.json',
-    transport: 'stdio',
-    vaultGrantIds: ['grant_github_read'],
     version: '1.0.0',
   },
 };
-
-const OPEN_SHELL_LOCAL_DEPLOYMENT_ID = 'local';
-const OPEN_SHELL_MAPPING_MAJOR = '1';
-const OPEN_SHELL_GITHUB_MCP_PROFILE_ID = `okp-${OPEN_SHELL_LOCAL_DEPLOYMENT_ID}-github-mcp-v${OPEN_SHELL_MAPPING_MAJOR}`;
 
 /**
  * OpenShell package target for real sandbox materialization.
@@ -171,18 +145,12 @@ export interface ResolveOpenShellAgentEnvironmentBackendInput {
   kind: 'openshell';
   /** Runtime placement for the OpenShell target. Defaults to `local`. */
   placement?: 'local' | 'remote';
-  /** Sandbox image, Dockerfile/build context, or OpenShell community name. */
-  sandboxImageRef: string;
   /** Direct NanoCore Worker Control Gateway URL reached by the sandbox. */
   workerControlBaseUrl: string;
   /** Remote OpenShell gateway URL retained only as runtime-private configuration. */
   gatewayUrl?: string;
-  /** Optional Codex model name passed to one-shot OpenShell workers. */
-  codexModel?: string;
   /** Worker-visible OpenAI-compatible inference endpoint. */
   inferenceBaseUrl?: string;
-  /** Worker-visible package manifest path consumed by the shim. */
-  workerPackagePath?: string;
 }
 
 /**
@@ -220,21 +188,20 @@ export interface ResolvedAgentEnvironmentRuntimeEnvCredential {
   readonly targetEnvVarName: string;
 }
 
+/** Backend-private prepared Context Package projected into one exact generated AEP input. */
+export interface PreparedWorkerContextPackage {
+  /** Package-root digest derived from the complete sorted worker-visible file inventory. */
+  readonly contentDigest: string;
+  /** Prepared host directory transported through the existing workspace-root channel. */
+  readonly workspaceRoot: MaterializedWorkspaceRoot;
+}
+
 /**
  * Inputs required to resolve one Agent Environment Package for the current container runtime.
  */
 export interface ResolveAgentEnvironmentPackageInput {
-  /** Worker agent selected for the turn. */
-  agent: RuntimeAgent;
-  /** Backend requirements resolved from authored agent setup. */
-  backendRequirements?: {
-    /** Backend kinds allowed by the authored setup. */
-    allowedKinds: AgentEnvironmentPackage['backend']['allowedKinds'];
-    /** Preferred backend kind, when declared. */
-    preferred: AgentEnvironmentPackage['backend']['preferred'] | null;
-    /** Backend capabilities required by the authored setup. */
-    requiredCapabilities: AgentEnvironmentPackage['backend']['requiredCapabilities'];
-  };
+  /** Complete manifest and provider selection resolved before materialization. */
+  agentSetup: ResolvedAgentSetup;
   /** Agent session id that the package will govern. */
   agentSessionId: string;
   /** Container backend target for the package. */
@@ -245,19 +212,14 @@ export interface ResolveAgentEnvironmentPackageInput {
   createdAt?: string;
   /** Client request id associated with the turn start. */
   requestId?: string | null;
-  /** Immutable provider and model selection resolved for this worker turn. */
-  providerSelection?: {
-    /** Model selected for the worker. */
-    model: string | null;
-    /** NanoCore provider instance selected for the worker. */
-    providerId: string;
-  };
+  /** Optional immutable Context Package prepared for this exact worker Turn. */
+  preparedContextPackage?: PreparedWorkerContextPackage;
   /** Turn that requested worker execution. */
   turn: Turn;
   /** User-facing turn input that the worker should execute. */
   turnInput?: string;
-  /** Store owner that governs the package and its durable workspace scope. */
-  userId: string;
+  /** Exact actor whose action triggered this package resolution. */
+  triggerActor: ActorRef;
   /** Host-local cwd selected for this turn. */
   workspaceCwd?: string | null;
   /** Materialized workspace roots captured for this turn. */
@@ -266,10 +228,6 @@ export interface ResolveAgentEnvironmentPackageInput {
   workspaceDataSourceCatalog?: WorkspaceDataSourceCatalog;
   /** Optional root-id to sourceRef bindings supplied by manifest resolution. */
   workspaceSourceRefs?: Record<string, string>;
-  /** Optional generic worker credential declarations resolved before materialization. */
-  credentialDeclarations?: AgentEnvironmentCredentialDeclaration[];
-  /** Optional user-authored sandbox access declarations normalized before AEP resolution. */
-  sandboxAccess?: WorkerSandboxAccess;
   /** Optional vault backend used to validate grant-derived provider attachments. */
   vaultBackend?: () => VaultBackend;
   /** Optional sink for backend-private provider credential material. */
@@ -312,30 +270,47 @@ function resolveOpenShellAgentEnvironmentPackage(
   input: ResolveAgentEnvironmentPackageInput,
   backend: ResolveOpenShellAgentEnvironmentBackendInput
 ): AgentEnvironmentPackage {
+  const triggerActor = ActorRefSchema.parse(input.triggerActor);
+  const responsibleUserId =
+    triggerActor.kind === 'user' ? triggerActor.id : triggerActor.responsibleUserId;
+  const manifest = input.agentSetup.manifest;
+  const agent = projectAgentEnvironmentIdentity(input.agentSetup);
+  const provider = input.agentSetup.provider;
+  const sandboxAccess = manifest.sandbox ?? {
+    credentialDeclarations: [],
+    filesystem: [],
+    network: [],
+  };
+  const backendRequirements = sandboxAccess.backend;
+  const requiredCapabilities = backendRequirements?.requiredCapabilities ?? [];
   const workingDirectory =
-    input.workspaceRoots[0]?.workerPath ?? input.workspaceCwd ?? input.agent.config.workspaceRoot;
+    input.workspaceRoots[0]?.workerPath ?? input.workspaceCwd ?? '/workspace';
   const packageId = `aepkg_${input.turn.id}_${input.agentSessionId}`;
   const snapshotId = `aepsnap_${input.turn.id}_${input.agentSessionId}`;
   const createdAt = input.createdAt ?? new Date().toISOString();
-  const profile = resolveProfile(input.agent);
-  const workerPackagePath = backend.workerPackagePath ?? '/openkit/config/package.json';
-  const trustedInferenceRequired =
-    input.backendRequirements?.requiredCapabilities.includes('trusted-worker-inference-relay') ??
-    false;
-  const runtimeProvenanceRequired =
-    input.backendRequirements?.requiredCapabilities.includes(WORKER_RUNTIME_PROVENANCE_FEATURE) ??
-    false;
-  const providerSelection = input.providerSelection;
+  const workerPackagePath = '/openkit/config/package.json';
+  const trustedInferenceRequired = requiredCapabilities.includes('trusted-worker-inference-relay');
+  const runtimeProvenanceRequired = requiredCapabilities.includes(
+    WORKER_RUNTIME_PROVENANCE_FEATURE
+  );
 
   if (runtimeProvenanceRequired && !trustedInferenceRequired) {
     throw new Error('Runtime provenance requires the trusted worker inference relay.');
   }
-  if (trustedInferenceRequired && !providerSelection?.model) {
-    throw new Error('Trusted worker inference requires a resolved provider and model.');
+  if (!provider?.model) {
+    throw new Error('Agent Environment Package resolution requires one provider and model.');
   }
   if (trustedInferenceRequired && backend.inferenceBaseUrl) {
     throw new Error(
       'Trusted worker inference derives its base URL from the worker-control origin.'
+    );
+  }
+  if (
+    trustedInferenceRequired &&
+    (sandboxAccess.network.length > 0 || sandboxAccess.credentialDeclarations.length > 0)
+  ) {
+    throw new Error(
+      'Trusted worker inference does not allow direct sandbox network or credentials.'
     );
   }
 
@@ -346,77 +321,113 @@ function resolveOpenShellAgentEnvironmentPackage(
   }
 
   const workerControlOrigin = workerControlUrl.origin;
-  const inferenceBaseUrl = trustedInferenceRequired
-    ? `${workerControlOrigin}/api/worker-inference/v1`
-    : (backend.inferenceBaseUrl ?? 'https://inference.local/v1');
-  const inferenceUrl = new URL(inferenceBaseUrl);
-  const sandboxAccess = WorkerSandboxAccessSchema.parse(input.sandboxAccess ?? {});
-  const resultMessagePath = '/openkit/session/final-message.txt';
-  const turnInput = input.turnInput?.trim() || 'Continue the assigned OpenKit turn.';
-  const placement = backend.placement ?? 'local';
-  const backendAllowedKinds =
-    input.backendRequirements?.allowedKinds && input.backendRequirements.allowedKinds.length > 0
-      ? input.backendRequirements.allowedKinds
-      : ['openshell'];
-  const workerSkills = resolveWorkerSkillSupply(
-    input.agent.skillIds,
-    input.agent.config.adapterType
+  const directCredentialDeclarations = sandboxAccess.credentialDeclarations.filter(
+    (declaration) => declaration.visibility === 'runtime-env'
   );
-  const workerMcpServers = resolveWorkerMcpServerSupply(
-    input.agent.config.mcpServerIds ?? [],
-    input.agent.config.adapterType
-  );
-  const workspaceInputs = input.workspaceRoots.map((root) => ({
-    access: root.access,
-    id: root.id,
-    kind: 'directory' as const,
-    materialization: workspaceInputMaterialization(root.access),
-    source: workspaceInputSource(root, input),
-    target: root.workerPath,
-  }));
-  const credentialDeclarations = [
-    ...(input.credentialDeclarations ?? []),
-    ...sandboxAccess.credentialDeclarations,
-    ...(trustedInferenceRequired
-      ? []
-      : resolveCodexAuthRuntimeFileDeclarations({
-          agentSessionId: input.agentSessionId,
-          ...(input.coreDb ? { coreDb: input.coreDb } : {}),
-          now: () => createdAt,
-          packageSnapshotId: snapshotId,
-          ...(input.vaultBackend ? { vaultBackend: input.vaultBackend } : {}),
-        })),
-  ];
+  const llmMode = trustedInferenceRequired
+    ? ('gateway' as const)
+    : directCredentialDeclarations.length > 0
+      ? ('direct-external' as const)
+      : ('backend-local' as const);
 
+  if (llmMode === 'direct-external' && directCredentialDeclarations.length !== 1) {
+    throw new Error('Direct worker inference requires exactly one runtime environment credential.');
+  }
   if (
-    trustedInferenceRequired &&
-    (sandboxAccess.network.length > 0 ||
-      credentialDeclarations.length > 0 ||
-      workspaceInputsNeedGitHubReadProvider(workspaceInputs) ||
-      workerMcpServers.some((server) => server.providerInstanceIds.length > 0))
+    llmMode === 'direct-external' &&
+    (sandboxAccess.network.length === 0 ||
+      sandboxAccess.credentialDeclarations.length !== directCredentialDeclarations.length)
   ) {
     throw new Error(
-      'Trusted worker inference does not allow direct sandbox network, credentials, or provider attachments.'
+      'Direct worker inference requires exact manifest network and runtime environment credentials.'
     );
   }
+  if (llmMode === 'backend-local' && !requiredCapabilities.includes('backend-local-inference')) {
+    throw new Error('Backend-local inference requires explicit manifest capability.');
+  }
 
-  const workerMcpProviderArtifacts = resolveWorkerMcpProviderArtifacts(workerMcpServers, {
-    agentSessionId: input.agentSessionId,
-    ...(input.coreDb ? { coreDb: input.coreDb } : {}),
-    includeGitHubReadProvider: workspaceInputsNeedGitHubReadProvider(workspaceInputs),
-    now: () => createdAt,
-    packageSnapshotId: snapshotId,
-    ...(input.providerCredentialSink
-      ? { providerCredentialSink: input.providerCredentialSink }
-      : {}),
-    ...(input.vaultBackend ? { vaultBackend: input.vaultBackend } : {}),
-  });
+  const inferenceBaseUrl = trustedInferenceRequired
+    ? `${workerControlOrigin}/api/worker-inference/v1`
+    : llmMode === 'backend-local'
+      ? (backend.inferenceBaseUrl ?? 'https://inference.local/v1')
+      : undefined;
+  const inferenceUrl = inferenceBaseUrl ? new URL(inferenceBaseUrl) : null;
+  const turnInput = input.turnInput?.trim() || 'Continue the assigned OpenKit turn.';
+  const placement = backend.placement ?? 'local';
+  const backendAllowedKinds = backendRequirements?.allowedKinds ?? ['openshell'];
+
+  if (!backendAllowedKinds.includes('openshell')) {
+    throw new Error('The selected OpenShell backend is not allowed by the agent manifest.');
+  }
+
+  const runtimeBinaryPaths = manifest.runtime.binaries.map((binary) => binary.path);
+  const controlBinaryPaths = ['/usr/local/bin/node', '/usr/local/bin/openkit-worker-shim'] as const;
+  for (const binaryPath of controlBinaryPaths) {
+    if (!runtimeBinaryPaths.includes(binaryPath)) {
+      throw new Error(`Agent manifest does not declare required control binary: ${binaryPath}`);
+    }
+  }
+  const inferenceBinaryPaths = runtimeBinaryPaths.filter(
+    (binaryPath) => !controlBinaryPaths.includes(binaryPath as (typeof controlBinaryPaths)[number])
+  );
+  if (inferenceBinaryPaths.length === 0) {
+    throw new Error('Agent manifest does not declare a native inference binary.');
+  }
+
+  const workerSkills = resolveWorkerSkillSupply(
+    (manifest.skills ?? []).map((skill) => skill.id),
+    manifest.runtime.adapter
+  );
+  const workerMcpServers = resolveWorkerMcpServerSupply(
+    (manifest.mcp ?? []).map((server) => server.id),
+    manifest.runtime.adapter
+  );
+  const preparedContextPackage = input.preparedContextPackage
+    ? requirePreparedWorkerContextPackage(
+        input.turn,
+        input.workspaceRoots,
+        input.preparedContextPackage
+      )
+    : null;
+  const workspaceInputs = [
+    ...input.workspaceRoots.map((root) => ({
+      access: root.access,
+      id: root.id,
+      kind: 'directory' as const,
+      materialization: workspaceInputMaterialization(root.access),
+      source: workspaceInputSource(root, input),
+      target: root.workerPath,
+    })),
+    ...(preparedContextPackage
+      ? [
+          {
+            access: 'read-only' as const,
+            id: preparedContextPackage.workspaceRoot.id,
+            kind: 'generated' as const,
+            materialization: {
+              contentDigest: preparedContextPackage.contentDigest,
+              slotId: 'context',
+              strategy: 'filesystem',
+            },
+            source: {
+              kind: 'generated',
+              pathRef: `threads/${input.turn.threadId}/turns/${input.turn.id}/context-package`,
+            },
+            target: '/openkit/context',
+          },
+        ]
+      : []),
+  ];
   const credentialArtifacts = resolveWorkerCredentialDeclarations({
+    agentId: agent.agentId,
     agentSessionId: input.agentSessionId,
-    declarations: credentialDeclarations,
+    declarations: sandboxAccess.credentialDeclarations,
     ...(input.coreDb ? { coreDb: input.coreDb } : {}),
     now: () => createdAt,
     packageSnapshotId: snapshotId,
+    responsibleUserId,
+    triggerActor,
+    workspaceId: input.turn.workspaceId,
     ...(input.providerCredentialSink
       ? { providerCredentialSink: input.providerCredentialSink }
       : {}),
@@ -429,45 +440,32 @@ function resolveOpenShellAgentEnvironmentPackage(
     ...(input.vaultBackend ? { vaultBackend: input.vaultBackend } : {}),
   });
 
-  const workerProviderId = trustedInferenceRequired
-    ? (providerSelection?.providerId ?? '')
-    : 'codex';
-  const workerModel = trustedInferenceRequired ? (providerSelection?.model ?? '') : 'default';
-  const primaryProviderProfile = trustedInferenceRequired
-    ? {
-        category: 'model',
-        displayName: workerProviderId,
-        id: workerProviderId,
-        kind: 'gateway' as const,
-        models: [workerModel],
-      }
-    : {
-        category: 'agent',
-        displayName: 'Codex',
-        id: 'codex',
-        kind: 'oauth' as const,
-        models: ['gpt-5.5'],
-      };
-  const primaryProviderInstance = trustedInferenceRequired
-    ? {
-        displayName: workerProviderId,
-        id: workerProviderId,
-        kind: 'gateway' as const,
-        models: [workerModel],
-        profileId: workerProviderId,
-        vendor: workerProviderId,
-      }
-    : {
-        displayName: 'Codex',
-        id: 'codex',
-        kind: 'oauth' as const,
-        models: ['gpt-5.5'],
-        profileId: 'codex',
-        vendor: 'codex',
-      };
+  const workerProviderId = provider.providerId;
+  const workerModel = provider.model;
+  const providerKind =
+    llmMode === 'gateway'
+      ? ('gateway' as const)
+      : llmMode === 'direct-external'
+        ? ('direct' as const)
+        : ('local' as const);
+  const primaryProviderProfile = {
+    category: 'model',
+    displayName: workerProviderId,
+    id: workerProviderId,
+    kind: providerKind,
+    models: [workerModel],
+  };
+  const primaryProviderInstance = {
+    displayName: workerProviderId,
+    id: workerProviderId,
+    kind: providerKind,
+    models: [workerModel],
+    profileId: workerProviderId,
+    vendor: workerProviderId,
+  };
 
   const environmentPackage = AgentEnvironmentPackageSchema.parse({
-    schemaVersion: 1,
+    schemaVersion: 2,
     packageId,
     snapshotId,
     createdAt,
@@ -476,29 +474,27 @@ function resolveOpenShellAgentEnvironmentPackage(
       threadId: input.turn.threadId,
       turnId: input.turn.id,
       agentSessionId: input.agentSessionId,
-      userId: input.userId,
+      triggerActor,
       requestId: input.requestId ?? null,
     },
     agent: {
-      agentId: input.agent.id,
-      profileId: profile?.id ?? input.agent.defaultProfileId ?? null,
-      displayName: input.agent.name,
-      runtimeKind: input.agent.config.adapterType,
-      profileKind: input.agent.kind,
+      agentId: agent.agentId,
+      profileId: agent.profileId,
+      displayName: agent.displayName,
+      runtimeKind: manifest.runtime.kind,
+      profileKind: null,
       instructions: [],
-      capabilityRequests: uniqueStrings([
-        ...input.agent.capabilities.map((capability) => capability.id),
-        ...input.agent.config.capabilities,
-      ]),
+      capabilityRequests: [],
     },
     runtime: {
       image: {
         kind: 'container-image',
-        pullPolicy: 'if-not-present',
-        ref: backend.sandboxImageRef,
+        pullPolicy: manifest.runtime.image.pullPolicy,
+        ref: manifest.runtime.image.ref,
       },
+      binaries: manifest.runtime.binaries,
       command: {
-        argv: ['openkit-codex-shim', '--package', workerPackagePath],
+        argv: ['openkit-worker-shim', '--package', workerPackagePath],
         workingDirectory,
         stdin: 'pipe',
         stdout: 'pipe',
@@ -532,20 +528,6 @@ function resolveOpenShellAgentEnvironmentPackage(
         })),
     },
     supply: {
-      binaries: [
-        {
-          allowedProviderIds: [],
-          id: 'openkit-codex-shim',
-          path: 'openkit-codex-shim',
-          required: true,
-        },
-        {
-          allowedProviderIds: [],
-          id: input.agent.config.adapterType,
-          path: input.agent.config.adapterType,
-          required: true,
-        },
-      ],
       skills: workerSkills,
       mcpServers: workerMcpServers,
       services: [],
@@ -601,8 +583,8 @@ function resolveOpenShellAgentEnvironmentPackage(
         'turn.failed',
       ],
       adapter: {
-        kind: 'openkit-codex-shim',
-        targetRuntime: input.agent.config.adapterType,
+        kind: 'openkit-worker-shim',
+        targetRuntime: manifest.runtime.adapter,
         targetTransport: workerControlUrl.protocol === 'http:' ? 'outbound-http' : 'outbound-https',
       },
     },
@@ -612,39 +594,16 @@ function resolveOpenShellAgentEnvironmentPackage(
       routes: [],
     },
     providers: {
-      providerProfiles: [
-        primaryProviderProfile,
-        ...workerMcpProviderArtifacts.providerProfiles,
-        ...credentialArtifacts.providerProfiles,
-      ],
-      providerInstances: [
-        primaryProviderInstance,
-        ...workerMcpProviderArtifacts.providerInstances,
-        ...credentialArtifacts.providerInstances,
-      ],
-      attachments: [
-        ...(trustedInferenceRequired
-          ? []
-          : [
-              {
-                binaryIds: [input.agent.config.adapterType],
-                id: 'attach_codex',
-                providerInstanceId: 'codex',
-              },
-            ]),
-        ...workerMcpProviderArtifacts.attachments,
-        ...credentialArtifacts.attachments,
-      ],
+      providerProfiles: [primaryProviderProfile, ...credentialArtifacts.providerProfiles],
+      providerInstances: [primaryProviderInstance, ...credentialArtifacts.providerInstances],
+      attachments: [...credentialArtifacts.attachments],
     },
     credentials: {
       declarations: [...credentialArtifacts.declarations],
     },
     vault: {
-      references: [
-        ...workerMcpProviderArtifacts.vaultReferences,
-        ...credentialArtifacts.vaultReferences,
-      ],
-      grants: [...workerMcpProviderArtifacts.vaultGrants, ...credentialArtifacts.vaultGrants],
+      references: [...credentialArtifacts.vaultReferences],
+      grants: [...credentialArtifacts.vaultGrants],
     },
     policy: {
       snapshotId: WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID,
@@ -657,6 +616,15 @@ function resolveOpenShellAgentEnvironmentPackage(
             access: root.access,
             workerPath: root.workerPath,
           })),
+          ...(preparedContextPackage
+            ? [
+                {
+                  access: preparedContextPackage.workspaceRoot.access,
+                  id: preparedContextPackage.workspaceRoot.id,
+                  workerPath: preparedContextPackage.workspaceRoot.workerPath,
+                },
+              ]
+            : []),
           ...(input.workspaceRoots.length === 0 && workingDirectory.startsWith('/workspace/')
             ? [
                 {
@@ -681,7 +649,7 @@ function resolveOpenShellAgentEnvironmentPackage(
         rules: [
           {
             action: 'allow',
-            binaries: ['/usr/local/bin/node', '/usr/local/bin/openkit-codex-shim'],
+            binaries: [...controlBinaryPaths],
             host: workerControlUrl.hostname,
             id: 'openkit-worker-control',
             port: Number(
@@ -690,11 +658,11 @@ function resolveOpenShellAgentEnvironmentPackage(
             protocol: 'rest',
             rules: OPENKIT_WORKER_CONTROL_POST_PATHS.map((path) => ({ method: 'POST', path })),
           },
-          ...(trustedInferenceRequired
+          ...(llmMode === 'gateway' && inferenceUrl
             ? [
                 {
                   action: 'allow',
-                  binaries: ['/usr/local/bin/codex', '/usr/local/lib/codex/bin/codex'],
+                  binaries: inferenceBinaryPaths,
                   host: inferenceUrl.hostname,
                   id: 'openkit-worker-inference',
                   port: Number(
@@ -710,17 +678,23 @@ function resolveOpenShellAgentEnvironmentPackage(
                   ],
                 },
               ]
-            : [
-                {
-                  action: 'allow',
-                  host: 'inference.local',
-                  id: 'openkit-inference-local',
-                },
-              ]),
+            : llmMode === 'backend-local' && inferenceUrl
+              ? [
+                  {
+                    action: 'allow',
+                    binaries: inferenceBinaryPaths,
+                    host: inferenceUrl.hostname,
+                    id: 'openkit-backend-local-inference',
+                    port: Number(
+                      inferenceUrl.port || (inferenceUrl.protocol === 'https:' ? '443' : '80')
+                    ),
+                  },
+                ]
+              : []),
           ...sandboxAccess.network.map((grant) => ({
             access: grant.access,
             action: 'allow',
-            ...(grant.binaries ? { binaries: grant.binaries } : {}),
+            binaries: grant.binaries,
             host: grant.host,
             id: grant.id,
             port: grant.port,
@@ -736,7 +710,7 @@ function resolveOpenShellAgentEnvironmentPackage(
         rules: [],
       },
       inference: {
-        mode: 'gateway',
+        mode: llmMode,
       },
       secrets: {
         visibility: 'none',
@@ -746,19 +720,36 @@ function resolveOpenShellAgentEnvironmentPackage(
       },
     },
     llm: {
-      mode: 'gateway',
+      mode: llmMode,
       routes: [
         {
-          credentialVisibility: trustedInferenceRequired ? 'placeholder' : 'none',
+          credentialVisibility:
+            llmMode === 'gateway'
+              ? 'placeholder'
+              : llmMode === 'direct-external'
+                ? 'environment'
+                : 'none',
           endpoint: {
-            kind: 'openai-compatible',
+            kind:
+              llmMode === 'gateway'
+                ? 'openai-compatible'
+                : llmMode === 'direct-external'
+                  ? 'provider-compatible'
+                  : 'backend-local',
             upstream: {
-              baseUrlRef: 'nanocore-local-v1',
-              kind: 'nanocore-gateway',
+              baseUrlRef: workerProviderId,
+              kind:
+                llmMode === 'gateway'
+                  ? 'nanocore-gateway'
+                  : llmMode === 'direct-external'
+                    ? 'direct-provider'
+                    : 'backend-local',
             },
-            workerBaseUrl: inferenceBaseUrl,
+            ...(llmMode === 'gateway' && inferenceBaseUrl
+              ? { workerBaseUrl: inferenceBaseUrl }
+              : {}),
           },
-          id: 'nanocore-gateway',
+          id: 'default',
           model: workerModel,
           providerInstanceId: workerProviderId,
         },
@@ -778,35 +769,26 @@ function resolveOpenShellAgentEnvironmentPackage(
       },
     },
     backend: {
-      preferred: input.backendRequirements?.preferred ?? 'openshell',
+      preferred: backendRequirements?.preferred ?? 'openshell',
       allowedKinds: backendAllowedKinds,
       requiredCapabilities: uniqueStrings([
         ...openShellRequiredCapabilities(placement),
-        ...(input.backendRequirements?.requiredCapabilities ?? []),
+        ...requiredCapabilities,
       ]),
       degrade: {
         hardenedSandbox: true,
       },
       extensions: {
-        openshell: openShellBackendExtension(backend, placement),
+        openshell: openShellBackendExtension(placement),
       },
     },
     extensions: {
       openkit: {
-        codexCommand: openShellCodexExecCommand(
-          workingDirectory,
-          resultMessagePath,
-          turnInput,
-          trustedInferenceRequired ? workerModel : backend.codexModel,
-          trustedInferenceRequired ? inferenceBaseUrl : undefined
-        ),
-        resultMessagePath,
         turnInput,
       },
     },
   });
   const sessionWorkspace = planSessionWorkspaceMaterialization({ environmentPackage });
-  const activeWorkerDirectory = sessionWorkspaceActiveDirectory(sessionWorkspace, workingDirectory);
   const materializedWorkspaceInputs = environmentPackage.workspace.inputs.map((workspaceInput) => {
     const materializationInput = sessionWorkspace.materialization.inputs.find(
       (candidate) => candidate.inputId === workspaceInput.id
@@ -836,13 +818,6 @@ function resolveOpenShellAgentEnvironmentPackage(
       ...environmentPackage.extensions,
       openkit: {
         ...openkitExtensions,
-        codexCommand: openShellCodexExecCommand(
-          activeWorkerDirectory,
-          resultMessagePath,
-          turnInput,
-          trustedInferenceRequired ? workerModel : backend.codexModel,
-          trustedInferenceRequired ? inferenceBaseUrl : undefined
-        ),
         sessionWorkspace,
       },
     },
@@ -850,26 +825,38 @@ function resolveOpenShellAgentEnvironmentPackage(
 }
 
 /**
- * Selects the worker directory that should receive the task command.
+ * Validates the one backend-private root allowed to become the exact S39 generated input.
  *
- * @param sessionWorkspace Planned session workspace materialization.
- * @param fallback Fallback process working directory.
- * @returns Main worktree slot path when present, otherwise the fallback.
+ * @param turn Worker Turn that owns the Context Package.
+ * @param workspaceRoots Existing configured workspace roots.
+ * @param contextPackage Prepared Context Package projection.
+ * @returns The validated unchanged Context Package projection.
+ * @throws Error when the root or digest does not match the accepted S39 tuple.
  */
-function sessionWorkspaceActiveDirectory(
-  sessionWorkspace: SessionWorkspaceMaterializationPlan,
-  fallback: string
-): string {
-  const worktreeInput = sessionWorkspace.materialization.inputs.find((input) => {
-    const slot = sessionWorkspace.layout.slots.find((candidate) => candidate.id === input.slotId);
+function requirePreparedWorkerContextPackage(
+  turn: Turn,
+  workspaceRoots: readonly MaterializedWorkspaceRoot[],
+  contextPackage: PreparedWorkerContextPackage
+): PreparedWorkerContextPackage {
+  const expectedId = `context_${turn.id}`;
+  const root = contextPackage.workspaceRoot;
 
-    return slot?.kind === 'worktree';
-  });
-  const slot = sessionWorkspace.layout.slots.find(
-    (candidate) => candidate.id === worktreeInput?.slotId
-  );
+  if (!/^sha256:[0-9a-f]{64}$/.test(contextPackage.contentDigest)) {
+    throw new Error('Prepared Context Package requires one canonical package-root digest.');
+  }
+  if (
+    root.id !== expectedId ||
+    root.sourceKind !== 'materialized-dir' ||
+    root.access !== 'read-only' ||
+    root.workerPath !== '/openkit/context'
+  ) {
+    throw new Error(`Prepared Context Package root does not match worker Turn ${turn.id}.`);
+  }
+  if (workspaceRoots.some((candidate) => candidate.id === expectedId)) {
+    throw new Error(`Prepared Context Package root duplicates workspace input ${expectedId}.`);
+  }
 
-  return slot?.path ?? fallback;
+  return contextPackage;
 }
 
 /**
@@ -960,25 +947,13 @@ function readWorkspaceGitCommit(sourcePath: string): string {
 }
 
 /**
- * Checks whether any workspace input needs the GitHub read provider attachment.
- *
- * @param inputs Resolved workspace inputs.
- * @returns True when a source references the GitHub read vault grant.
- */
-function workspaceInputsNeedGitHubReadProvider(
-  inputs: ReadonlyArray<{ readonly source: Record<string, unknown> }>
-): boolean {
-  return inputs.some((input) => input.source.vaultGrantRef === 'grant_github_read');
-}
-
-/**
  * Resolves requested Skill ids into catalog-approved AEP supply snapshots.
  *
  * @param skillIds Worker Skill ids requested by the selected agent.
  * @param adapter Runtime adapter that will consume the supply.
  * @returns Catalog-resolved Skill supply entries.
  */
-function resolveWorkerSkillSupply(skillIds: string[], adapter: WorkerRuntimeAdapter) {
+function resolveWorkerSkillSupply(skillIds: string[], adapter: string) {
   return skillIds.map((skillId) => {
     const entry = WORKER_SKILL_CATALOG[skillId];
 
@@ -1015,7 +990,7 @@ function resolveWorkerSkillSupply(skillIds: string[], adapter: WorkerRuntimeAdap
  * @param adapter Runtime adapter that will consume the supply.
  * @returns Catalog-resolved MCP server supply entries.
  */
-function resolveWorkerMcpServerSupply(mcpServerIds: string[], adapter: WorkerRuntimeAdapter) {
+function resolveWorkerMcpServerSupply(mcpServerIds: string[], adapter: string) {
   return mcpServerIds.map((mcpServerId) => {
     const entry = WORKER_MCP_CATALOG[mcpServerId];
 
@@ -1036,160 +1011,13 @@ function resolveWorkerMcpServerSupply(mcpServerIds: string[], adapter: WorkerRun
         name: tool.name,
       })),
       allowedWorkspaceScopes: [...entry.allowedWorkspaceScopes],
-      command: [...entry.command],
       id: entry.id,
       integrity: { sha256: entry.sha256 },
-      materialization: {
-        kind: 'generated-config' as const,
-        targetPath: entry.targetPath,
-      },
-      networkPolicyHints: [...entry.networkPolicyHints],
-      providerInstanceIds: [...entry.providerInstanceIds],
       reviewStatus: entry.reviewStatus,
-      secretRefIds: [...entry.secretRefIds],
       sourceRef: entry.sourceRef,
-      transport: entry.transport,
-      vaultGrantIds: [...entry.vaultGrantIds],
       version: entry.version,
     };
   });
-}
-
-/**
- * Builds redacted provider and vault metadata required by resolved worker MCP supply.
- *
- * @param mcpServers Catalog-resolved MCP server supply snapshots.
- * @returns Redacted provider, attachment, vault reference, and grant records for the same AEP.
- */
-function resolveWorkerMcpProviderArtifacts(
-  mcpServers: ReturnType<typeof resolveWorkerMcpServerSupply>,
-  input: ResolveWorkerMcpProviderArtifactsInput
-) {
-  const includesGitHub =
-    input.includeGitHubReadProvider || mcpServers.some((server) => server.id === 'github');
-
-  if (!includesGitHub) {
-    return {
-      attachments: [],
-      declarations: [],
-      providerInstances: [],
-      providerProfiles: [],
-      vaultGrants: [],
-      vaultReferences: [],
-    };
-  }
-
-  if (input.coreDb && input.vaultBackend) {
-    return resolveWorkerCredentialDeclarations({
-      ...input,
-      declarations: [githubMcpCredentialDeclaration()],
-    });
-  }
-
-  return {
-    attachments: [
-      {
-        id: 'attach_github_mcp',
-        policyContributionIds: ['policy_worker_mcp_github'],
-        providerInstanceId: 'provider_github_read',
-        vaultGrantIds: ['grant_github_read'],
-      },
-    ],
-    declarations: [],
-    providerInstances: [
-      {
-        displayName: 'GitHub Read MCP',
-        id: 'provider_github_read',
-        kind: 'custom' as const,
-        models: ['github-mcp'],
-        profileId: 'github_mcp',
-        secretRef: 'vault_github_read',
-        vaultRefIds: ['vault_github_read'],
-        vendor: 'github',
-      },
-    ],
-    providerProfiles: [
-      {
-        category: 'mcp',
-        displayName: 'GitHub MCP',
-        id: 'github_mcp',
-        kind: 'custom' as const,
-        models: ['github-mcp'],
-      },
-    ],
-    vaultGrants: [
-      {
-        id: 'grant_github_read',
-        scope: 'turn' as const,
-        vaultRefId: 'vault_github_read',
-      },
-    ],
-    vaultReferences: [
-      {
-        id: 'vault_github_read',
-        kind: 'secret-ref' as const,
-        providerInstanceId: 'provider_github_read',
-        secretRef: 'secret://providers/github/read-token',
-      },
-    ],
-  };
-}
-
-/** Input used to derive worker MCP provider artifacts from durable vault records. */
-interface ResolveWorkerMcpProviderArtifactsInput {
-  /** Agent session id receiving the provider attachment. */
-  readonly agentSessionId: string;
-  /** Optional Core database that owns durable vault metadata. */
-  readonly coreDb?: CoreDb;
-  /** Whether workspace sources require the GitHub read provider outside MCP supply. */
-  readonly includeGitHubReadProvider?: boolean;
-  /** Deterministic clock for created records. */
-  readonly now: () => string;
-  /** Agent Environment Package snapshot id receiving the attachment. */
-  readonly packageSnapshotId: string;
-  /** Optional vault backend used to validate material availability. */
-  readonly vaultBackend?: () => VaultBackend;
-  /** Optional sink for backend-private provider credential material. */
-  readonly providerCredentialSink?: (
-    credential: ResolvedAgentEnvironmentProviderCredential
-  ) => void;
-}
-
-/** Input used to resolve durable runtime-file credentials. */
-interface ResolveRuntimeFileCredentialArtifactsInput {
-  /** Agent session id receiving the runtime file. */
-  readonly agentSessionId: string;
-  /** Optional Core database that owns durable vault metadata. */
-  readonly coreDb?: CoreDb;
-  /** Deterministic clock for created records. */
-  readonly now: () => string;
-  /** Agent Environment Package snapshot id receiving the runtime file. */
-  readonly packageSnapshotId: string;
-  /** Optional sink for backend-private runtime file material. */
-  readonly runtimeFileCredentialSink?: (
-    credential: ResolvedAgentEnvironmentRuntimeFileCredential
-  ) => void;
-  /** Optional vault backend used to resolve runtime file material. */
-  readonly vaultBackend?: () => VaultBackend;
-}
-
-/**
- * Builds the GitHub MCP credential declaration used by durable worker package resolution.
- *
- * @returns Provider credential declaration for the GitHub MCP token.
- */
-function githubMcpCredentialDeclaration(): AgentEnvironmentCredentialDeclaration {
-  return {
-    id: 'github_mcp_read',
-    provider: {
-      credentialKey: 'GITHUB_TOKEN',
-      instanceId: 'provider_github_read',
-      profileId: OPEN_SHELL_GITHUB_MCP_PROFILE_ID,
-      type: OPEN_SHELL_GITHUB_MCP_PROFILE_ID,
-    },
-    vaultGrantId: 'grant_github_read',
-    visibility: 'sandbox-provider',
-  };
 }
 
 /** Redacted records produced by worker credential declarations. */
@@ -1210,6 +1038,8 @@ interface ResolvedWorkerCredentialDeclarationArtifacts {
 
 /** Input used to resolve worker credential declarations into backend-private sinks. */
 interface ResolveWorkerCredentialDeclarationsInput {
+  /** Agent receiving the credential injection. */
+  readonly agentId: string;
   /** Agent session receiving the credential injection. */
   readonly agentSessionId: string;
   /** Core database that stores vault metadata and injection records. */
@@ -1234,6 +1064,12 @@ interface ResolveWorkerCredentialDeclarationsInput {
   ) => void;
   /** Vault backend used to resolve secret material after metadata validation. */
   readonly vaultBackend?: () => VaultBackend;
+  /** Responsible user derived from the exact trigger actor for user-scoped Vault authority. */
+  readonly responsibleUserId: string | null;
+  /** Exact AEP actor whose current Workspace authority governs credential use. */
+  readonly triggerActor: ActorRef;
+  /** Workspace that owns the package being resolved. */
+  readonly workspaceId: string;
 }
 
 /**
@@ -1259,16 +1095,35 @@ function resolveWorkerCredentialDeclarations(
   }
 
   const coreDb = requireCoreDb(input);
-  const vaultBackend = requireVaultBackend(input);
 
   for (const declaration of input.declarations) {
     const grant = requireDeclarationGrant(coreDb, declaration);
     const reference = requireDeclarationReference(coreDb, grant);
     assertCredentialGrantMatchesDeclaration(input, declaration, grant, reference);
     assertCredentialSinkAvailable(input, declaration);
+    const effectAuthority =
+      isTargetIssuedEffectAuthority(grant.grantId) &&
+      (grant.approvalId === null ||
+        (isTargetIssuedEffectAuthority(grant.approvalId) && grant.policyDecisionId !== null));
     const injection = declarationInjectionTarget(declaration);
     const planId = `plan_${input.packageSnapshotId}_${declaration.id}`;
     const receiptId = `receipt_${input.packageSnapshotId}_${declaration.id}`;
+    if (
+      !currentWorkspaceAuthority(
+        coreDb,
+        input.workspaceId,
+        input.triggerActor,
+        'vault.use',
+        effectAuthority
+      )
+    ) {
+      throw new TurnStartValidationError(
+        'workspace_access_denied',
+        'Workspace access denied.',
+        403
+      );
+    }
+    const vaultBackend = requireVaultBackend(input);
 
     createInjectionPlan(coreDb, {
       backendCapabilityRequirement: injection.backendCapabilityRequirement,
@@ -1389,6 +1244,21 @@ function assertCredentialGrantMatchesDeclaration(
   }
   if (grant.workspaceId !== reference.workspaceId || grant.userId !== reference.userId) {
     throw new Error(`Vault grant owner identity does not match reference: ${declaration.id}`);
+  }
+  if (
+    grant.ownerScope === 'user' &&
+    (grant.userId === null || grant.userId !== input.responsibleUserId)
+  ) {
+    throw new Error(`Vault grant targets a different responsible user: ${declaration.id}`);
+  }
+  if (grant.workspaceId !== null && grant.workspaceId !== input.workspaceId) {
+    throw new Error(`Vault grant targets a different workspace: ${declaration.id}`);
+  }
+  if (grant.targetAgentId !== null && grant.targetAgentId !== input.agentId) {
+    throw new Error(`Vault grant targets a different agent: ${declaration.id}`);
+  }
+  if (grant.targetCapabilityId !== null) {
+    throw new Error(`Vault grant targets an unproven capability: ${declaration.id}`);
   }
   if (grant.status !== 'active' || reference.status !== 'active') {
     throw new Error(`Vault grant and reference must be active: ${declaration.id}`);
@@ -1529,7 +1399,7 @@ function appendCredentialDeclarationArtifacts(
 
   if (declaration.visibility === 'sandbox-provider') {
     artifacts.providerProfiles.push({
-      category: declaration.provider.type === OPEN_SHELL_GITHUB_MCP_PROFILE_ID ? 'mcp' : 'agent',
+      category: 'agent',
       displayName: credentialProviderProfileDisplayName(declaration),
       id: declaration.provider.profileId,
       kind: 'custom' as const,
@@ -1571,7 +1441,6 @@ function appendCredentialDeclarationArtifacts(
   artifacts.vaultReferences.push({
     id: reference.referenceId,
     kind: 'secret-ref' as const,
-    providerInstanceId: 'codex',
     secretRef: `vault://${reference.referenceId}`,
   });
 
@@ -1632,13 +1501,6 @@ function aepVaultGrantScope(grant: VaultGrantRecord): 'agent-session' | 'turn' |
 function credentialProviderProfileDisplayName(
   declaration: AgentEnvironmentCredentialDeclaration
 ): string {
-  if (
-    declaration.visibility === 'sandbox-provider' &&
-    declaration.provider.profileId === OPEN_SHELL_GITHUB_MCP_PROFILE_ID
-  ) {
-    return 'GitHub MCP';
-  }
-
   return declaration.id;
 }
 
@@ -1651,48 +1513,7 @@ function credentialProviderProfileDisplayName(
 function credentialProviderInstanceDisplayName(
   declaration: AgentEnvironmentCredentialDeclaration
 ): string {
-  if (
-    declaration.visibility === 'sandbox-provider' &&
-    declaration.provider.instanceId === 'provider_github_read'
-  ) {
-    return 'GitHub Read MCP';
-  }
-
   return declaration.id;
-}
-
-const CODEX_AUTH_JSON_VAULT_GRANT_ID = 'grant_codex_auth_json';
-const CODEX_AUTH_JSON_VAULT_REFERENCE_ID = 'vault_codex_auth_json';
-const CODEX_AUTH_JSON_TARGET_PATH = '/sandbox/.codex/auth.json';
-
-/**
- * Resolves the optional vault-backed Codex auth JSON runtime file declaration.
- *
- * @param input Durable storage, vault backend, and package lineage.
- * @returns Runtime-file credential declaration when durable metadata exists.
- */
-function resolveCodexAuthRuntimeFileDeclarations(
-  input: ResolveRuntimeFileCredentialArtifactsInput
-): AgentEnvironmentCredentialDeclaration[] {
-  if (!input.coreDb || !input.vaultBackend) {
-    return [];
-  }
-
-  const grant = getVaultGrant(input.coreDb, CODEX_AUTH_JSON_VAULT_GRANT_ID);
-  const reference = getVaultReference(input.coreDb, CODEX_AUTH_JSON_VAULT_REFERENCE_ID);
-
-  if (!grant && !reference) {
-    return [];
-  }
-
-  return [
-    {
-      id: 'codex_auth_json',
-      targetPath: CODEX_AUTH_JSON_TARGET_PATH,
-      vaultGrantId: CODEX_AUTH_JSON_VAULT_GRANT_ID,
-      visibility: 'runtime-file',
-    },
-  ];
 }
 
 /**
@@ -1751,8 +1572,8 @@ function assertSupplyApproved(
 function assertRuntimeAdapterAllowed(
   kind: 'skill' | 'mcp',
   id: string,
-  adapter: WorkerRuntimeAdapter,
-  allowedRuntimeAdapters: WorkerRuntimeAdapter[]
+  adapter: string,
+  allowedRuntimeAdapters: string[]
 ): void {
   if (!allowedRuntimeAdapters.includes(adapter)) {
     throw new Error(`Worker supply catalog entry is not allowed for ${adapter}: ${kind}:${id}`);
@@ -1799,80 +1620,34 @@ function openShellRequiredCapabilities(
  * @param placement Runtime placement selected for this package.
  * @returns Product-safe backend extension metadata.
  */
-function openShellBackendExtension(
-  backend: ResolveOpenShellAgentEnvironmentBackendInput,
-  placement: 'local' | 'remote'
-): Record<string, unknown> {
+function openShellBackendExtension(placement: 'local' | 'remote'): Record<string, unknown> {
   return {
     ...(placement === 'remote' ? { gatewayUrlRef: 'runtime://openshell/gateway-url' } : {}),
     placement,
-    sandboxSource: backend.sandboxImageRef,
   };
 }
 
 /**
- * Builds the default one-shot Codex command used by OpenShell workers.
+ * Projects AEP-visible agent identity solely from the resolved manifest and profile.
  *
- * @param workingDirectory Worker-visible repository directory.
- * @param resultMessagePath Worker-visible final-message file path.
- * @param turnInput User-facing turn input to execute.
- * @param codexModel Optional Codex model name to pass through.
- * @param workerInferenceBaseUrl Optional trusted worker-inference base URL.
- * @returns Codex exec argv.
+ * @param setup Resolved manifest and provider selection for one worker turn.
+ * @returns Minimal agent identity required by the Agent Environment Package.
  */
-function openShellCodexExecCommand(
-  workingDirectory: string,
-  resultMessagePath: string,
-  turnInput: string,
-  codexModel?: string,
-  workerInferenceBaseUrl?: string
-): string[] {
-  return [
-    'codex',
-    'exec',
-    '--json',
-    '--output-last-message',
-    resultMessagePath,
-    '--cd',
-    workingDirectory,
-    ...(workerInferenceBaseUrl
-      ? [
-          '--ignore-user-config',
-          '--strict-config',
-          '-c',
-          'model_provider="openkit-worker-inference"',
-          '-c',
-          'web_search="disabled"',
-          '-c',
-          'model_providers.openkit-worker-inference.name="OpenKit Worker Inference"',
-          '-c',
-          `model_providers.openkit-worker-inference.base_url=${JSON.stringify(workerInferenceBaseUrl)}`,
-          '-c',
-          'model_providers.openkit-worker-inference.env_key="OPENKIT_WORKER_INFERENCE_TOKEN"',
-          '-c',
-          'model_providers.openkit-worker-inference.wire_api="responses"',
-          '-c',
-          'model_providers.openkit-worker-inference.requires_openai_auth=false',
-        ]
-      : []),
-    ...(codexModel ? ['--model', codexModel] : []),
-    '--dangerously-bypass-approvals-and-sandbox',
-    turnInput,
-  ];
-}
+function projectAgentEnvironmentIdentity(setup: ResolvedAgentSetup): {
+  readonly agentId: string;
+  readonly displayName: string;
+  readonly profileId: string | null;
+} {
+  const manifest = setup.manifest;
+  const selectedProfile = manifest.defaultProfileId
+    ? (manifest.profiles?.find((profile) => profile.id === manifest.defaultProfileId) ?? null)
+    : (manifest.profiles?.[0] ?? null);
 
-/**
- * Resolves the active agent profile summary.
- *
- * @param agent Runtime agent to inspect.
- * @returns Selected profile or null when no profile is available.
- */
-function resolveProfile(agent: RuntimeAgent): RuntimeAgent['profiles'][number] | null {
-  return (
-    agent.profiles.find((profile) => profile.id === agent.defaultProfileId) ??
-    agent.profiles[0] ??
-    null
-  );
+  return {
+    agentId: manifest.id,
+    displayName: manifest.displayName,
+    profileId: selectedProfile?.id ?? null,
+  };
 }
 
 /**

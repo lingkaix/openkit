@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   appendFileSync,
   existsSync,
@@ -28,12 +29,25 @@ function createDataRoot(): string {
   return mkdtempSync(join(tmpdir(), 'openkit-index-rebuild-'));
 }
 
+/**
+ * Computes the canonical digest for exact UTF-8 content.
+ *
+ * @param content Exact content.
+ * @returns Lowercase SHA-256 digest with the required prefix.
+ */
+function sha256Digest(content: string): string {
+  return `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`;
+}
+
 describe('workspace derived index rebuild', () => {
   it('rebuilds the search index from file-backed workspace records', () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
     const thread = store.createThread('ws_demo', 'Needle thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Find needle');
+    const turn = store.createTurn('ws_demo', thread.id, 'Find needle', {
+      kind: 'user',
+      id: 'user_local',
+    });
     store.createItem({
       id: 'it_search_needle',
       workspaceId: 'ws_demo',
@@ -56,6 +70,14 @@ describe('workspace derived index rebuild', () => {
       summary: 'Needle artifact summary',
       version: 1,
       content: { format: 'markdown', body: 'Needle artifact body' },
+      contentDigest: sha256Digest('Needle artifact body'),
+      lastMutationRequestId: 'req_ar_search_needle_create',
+      origin: {
+        kind: 'turn-output',
+        threadId: thread.id,
+        turnId: turn.id,
+        requestId: 'req_ar_search_needle_create',
+      },
       createdAt: turn.startedAt ?? new Date().toISOString(),
       updatedAt: turn.startedAt ?? new Date().toISOString(),
     });
@@ -64,28 +86,38 @@ describe('workspace derived index rebuild', () => {
       workspaceId: 'ws_demo',
       threadId: null,
       turnId: null,
-      kind: 'summary',
+      kind: 'file',
       title: 'Summary-less artifact',
       status: 'ready',
       summary: null,
       version: 1,
       content: { format: 'markdown', body: 'Artifact without summary.' },
+      contentDigest: sha256Digest('Artifact without summary.'),
+      lastMutationRequestId: 'req_ar_without_summary_import',
+      origin: {
+        kind: 'imported',
+        sourceKind: 'direct-import',
+        sourceId: 'req_ar_without_summary_import',
+        sourceDigest: sha256Digest('Artifact without summary.'),
+        actor: { kind: 'user', id: 'user_local' },
+        requestId: 'req_ar_without_summary_import',
+        recordedAt: turn.startedAt ?? new Date().toISOString(),
+      },
       createdAt: turn.startedAt ?? new Date().toISOString(),
       updatedAt: turn.startedAt ?? new Date().toISOString(),
     });
-    const indexesRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo', 'indexes');
+    const indexesRoot = join(dataRoot, 'workspaces', 'ws_demo', 'indexes');
     mkdirSync(indexesRoot, { recursive: true });
     writeFileSync(join(indexesRoot, 'stale.json'), '{}');
 
     const result = rebuildWorkspaceDerivedIndexes({
       dataRoot,
-      userId: 'user_local',
       workspaceId: 'ws_demo',
     });
 
     expect(result).toEqual({
       workspaceId: 'ws_demo',
-      indexPath: 'users/user_local/workspaces/ws_demo/indexes/search.json',
+      indexPath: 'workspaces/ws_demo/indexes/search.json',
       itemCount: 9,
       removedEntries: ['stale.json'],
     });
@@ -99,7 +131,6 @@ describe('workspace derived index rebuild', () => {
         expect.objectContaining({ kind: 'item', id: 'it_search_needle', title: 'Needle answer' }),
         expect.objectContaining({
           kind: 'item',
-          id: 'it_artifact_ar_search_needle',
           title: 'Needle artifact',
         }),
         expect.objectContaining({
@@ -120,7 +151,10 @@ describe('workspace derived index rebuild', () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
     const thread = store.createThread('ws_demo', 'Revision thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Revise the answer');
+    const turn = store.createTurn('ws_demo', thread.id, 'Revise the answer', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const timestamp = turn.startedAt ?? new Date().toISOString();
     const firstRevision = store.createItem({
       id: 'it_revised_answer',
@@ -139,7 +173,7 @@ describe('workspace derived index rebuild', () => {
       text: 'Current answer text',
       completedAt: timestamp,
     };
-    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
 
     writeFileSync(
       join(workspaceRoot, 'threads', thread.id, 'turns', turn.id, 'items.jsonl'),
@@ -148,7 +182,6 @@ describe('workspace derived index rebuild', () => {
 
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
-      userId: 'user_local',
       workspaceId: 'ws_demo',
     });
 
@@ -173,7 +206,10 @@ describe('workspace derived index rebuild', () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
     const thread = store.createThread('ws_demo', 'Interrupted revision thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Keep the complete revision');
+    const turn = store.createTurn('ws_demo', thread.id, 'Keep the complete revision', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const timestamp = turn.startedAt ?? new Date().toISOString();
     const item = store.createItem({
       id: 'it_interrupted_index_rebuild',
@@ -186,14 +222,13 @@ describe('workspace derived index rebuild', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
     const itemsPath = join(workspaceRoot, 'threads', thread.id, 'turns', turn.id, 'items.jsonl');
     const completeLog = readFileSync(itemsPath, 'utf8');
 
     appendFileSync(itemsPath, '{"id":"interrupted');
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
-      userId: 'user_local',
       workspaceId: 'ws_demo',
     });
 
@@ -215,22 +250,32 @@ describe('workspace derived index rebuild', () => {
       workspaceId: 'ws_demo',
       threadId: null,
       turnId: null,
-      kind: 'summary',
+      kind: 'file',
       title: 'Exact content file artifact',
       status: 'ready',
       summary: null,
       version: 1,
       content: { format: 'text', body: 'Canonical text content.' },
+      contentDigest: sha256Digest('Canonical text content.'),
+      lastMutationRequestId: 'req_ar_exact_content_file_import',
+      origin: {
+        kind: 'imported',
+        sourceKind: 'direct-import',
+        sourceId: 'req_ar_exact_content_file_import',
+        sourceDigest: sha256Digest('Canonical text content.'),
+        actor: { kind: 'user', id: 'user_local' },
+        requestId: 'req_ar_exact_content_file_import',
+        recordedAt: '2026-07-07T00:00:00.000Z',
+      },
       createdAt: '2026-07-07T00:00:00.000Z',
       updatedAt: '2026-07-07T00:00:00.000Z',
     });
-    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
     const artifactRoot = join(workspaceRoot, 'artifacts', artifact.id);
 
     writeFileSync(join(artifactRoot, 'files', 'content.md'), 'Stale Markdown content.');
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
-      userId: 'user_local',
       workspaceId: 'ws_demo',
     });
 
@@ -245,13 +290,101 @@ describe('workspace derived index rebuild', () => {
     expect(indexed?.searchText).not.toContain('Stale Markdown content.');
   });
 
+  it('persists the exact governed retrieval row and omits unaddressed pages', () => {
+    const dataRoot = createDataRoot();
+    const store = createDemoStore({ dataRoot });
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const createdAt = '2026-07-12T00:00:00.000Z';
+    const sourceId = 'ks_00000000-0000-4000-8000-000000000001';
+    const sourceReference = `source:${sourceId}`;
+
+    store.createKnowledgeSource({
+      id: sourceId,
+      workspaceId: 'ws_demo',
+      kind: 'document',
+      title: 'Governed retrieval source',
+      uri: null,
+      contentDigest: sha256Digest('Governed retrieval source.'),
+      originatingThreadId: null,
+      originatingTurnId: null,
+      originatingFileId: null,
+      capturedAt: createdAt,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    const selected = store.createKnowledgeEntry('ws_demo', {
+      kind: 'project-context',
+      title: 'Selected page',
+      content: 'retrievalneedle',
+      sourceReferences: [sourceReference],
+    });
+    const overflow = store.createKnowledgeEntry('ws_demo', {
+      kind: 'project-context',
+      title: 'Overflow page',
+      content: 'retrievalneedle',
+    });
+    const zeroScore = store.createKnowledgeEntry('ws_demo', {
+      kind: 'project-context',
+      title: 'Unaddressed page',
+      content: 'No matching term.',
+    });
+    const traceId = 'krt_00000000-0000-4000-8000-000000000003';
+    const input = {
+      dataRoot,
+      workspaceId: 'ws_demo',
+      caller: 'task-mode' as const,
+      query: 'retrievalneedle',
+      limit: 1,
+      pinnedConceptIds: [overflow.id, selected.id, selected.id],
+      traceId,
+      now: () => createdAt,
+    };
+
+    retrieveWorkspaceKnowledge(input);
+
+    const row = JSON.parse(
+      readFileSync(join(workspaceRoot, 'knowledge', 'traces', '202607.jsonl'), 'utf8')
+    ) as unknown;
+    expect(row).toEqual({
+      traceId,
+      workspaceId: 'ws_demo',
+      caller: 'task-mode',
+      requestDigest: sha256Digest(
+        '{"caller":"task-mode","request":{"limit":1,"pinnedConceptIds":["mem_2","mem_3"],"query":"retrievalneedle"},"workspaceId":"ws_demo"}'
+      ),
+      retrievalParameters: {
+        limit: 1,
+        pinnedConceptIds: [selected.id, overflow.id],
+      },
+      selected: [
+        {
+          knowledgePageId: selected.id,
+          contentDigest: sha256Digest(
+            readFileSync(join(workspaceRoot, 'knowledge', 'pages', `${selected.id}.md`), 'utf8')
+          ),
+          score: 1,
+          sourceReferences: [sourceReference],
+        },
+      ],
+      excluded: [
+        {
+          knowledgePageId: overflow.id,
+          contentDigest: sha256Digest(
+            readFileSync(join(workspaceRoot, 'knowledge', 'pages', `${overflow.id}.md`), 'utf8')
+          ),
+          reason: 'budget_exceeded',
+        },
+      ],
+      createdAt,
+    });
+    expect(JSON.stringify(row)).not.toContain(zeroScore.id);
+  });
+
   it('repairs an incomplete retrieval-trace tail before appending', () => {
     const dataRoot = createDataRoot();
     const workspace = new FsStore({ dataRoot }).createWorkspace('Retrieval trace recovery');
     const tracePath = join(
       dataRoot,
-      'users',
-      'user_local',
       'workspaces',
       workspace.id,
       'knowledge',
@@ -260,19 +393,27 @@ describe('workspace derived index rebuild', () => {
     );
     const input = {
       dataRoot,
-      userId: 'user_local',
       workspaceId: workspace.id,
+      caller: 'app-api' as const,
       query: 'canonical recovery',
       now: () => '2026-07-12T00:00:00.000Z',
     };
 
-    retrieveWorkspaceKnowledge({ ...input, traceId: 'krt_first' });
+    const firstTraceId = 'krt_00000000-0000-4000-8000-000000000001';
+
+    retrieveWorkspaceKnowledge({ ...input, traceId: firstTraceId });
     appendFileSync(tracePath, '{"traceId":"interrupted');
-    retrieveWorkspaceKnowledge({ ...input, traceId: 'krt_second' });
+    retrieveWorkspaceKnowledge({
+      ...input,
+      traceId: 'krt_00000000-0000-4000-8000-000000000002',
+    });
 
     const rows = readFileSync(tracePath, 'utf8').trim().split('\n');
     expect(rows).toHaveLength(2);
     expect(rows.map((row) => JSON.parse(row))).toHaveLength(2);
+    expect(() => retrieveWorkspaceKnowledge({ ...input, traceId: firstTraceId })).toThrow(
+      /duplicate/i
+    );
   });
 
   it('rejects a symlinked retrieval-trace ledger without writing outside', () => {
@@ -280,8 +421,6 @@ describe('workspace derived index rebuild', () => {
     const workspace = new FsStore({ dataRoot }).createWorkspace('Retrieval trace symlink');
     const tracePath = join(
       dataRoot,
-      'users',
-      'user_local',
       'workspaces',
       workspace.id,
       'knowledge',
@@ -292,18 +431,26 @@ describe('workspace derived index rebuild', () => {
     const outsidePath = join(outsideRoot, 'sentinel.jsonl');
     const input = {
       dataRoot,
-      userId: 'user_local',
       workspaceId: workspace.id,
+      caller: 'app-api' as const,
       query: 'canonical symlink',
       now: () => '2026-07-12T00:00:00.000Z',
     };
 
-    retrieveWorkspaceKnowledge({ ...input, traceId: 'krt_before_link' });
+    retrieveWorkspaceKnowledge({
+      ...input,
+      traceId: 'krt_00000000-0000-4000-8000-000000000004',
+    });
     rmSync(tracePath);
     writeFileSync(outsidePath, 'untouched\n');
     symlinkSync(outsidePath, tracePath);
 
-    expect(() => retrieveWorkspaceKnowledge({ ...input, traceId: 'krt_after_link' })).toThrow();
+    expect(() =>
+      retrieveWorkspaceKnowledge({
+        ...input,
+        traceId: 'krt_00000000-0000-4000-8000-000000000005',
+      })
+    ).toThrow();
     expect(readFileSync(outsidePath, 'utf8')).toBe('untouched\n');
   });
 
@@ -318,16 +465,27 @@ describe('workspace derived index rebuild', () => {
       workspaceId: 'ws_demo',
       threadId: null,
       turnId: null,
-      kind: 'summary',
+      kind: 'file',
       title: 'Invalid artifact metadata',
       status: 'ready',
       summary: null,
       version: 1,
       content: { format: 'text', body: 'Canonical artifact content.' },
+      contentDigest: sha256Digest('Canonical artifact content.'),
+      lastMutationRequestId: `req_ar_invalid_metadata_${violation.replace(' ', '_')}_import`,
+      origin: {
+        kind: 'imported',
+        sourceKind: 'direct-import',
+        sourceId: `req_ar_invalid_metadata_${violation.replace(' ', '_')}_import`,
+        sourceDigest: sha256Digest('Canonical artifact content.'),
+        actor: { kind: 'user', id: 'user_local' },
+        requestId: `req_ar_invalid_metadata_${violation.replace(' ', '_')}_import`,
+        recordedAt: '2026-07-07T00:00:00.000Z',
+      },
       createdAt: '2026-07-07T00:00:00.000Z',
       updatedAt: '2026-07-07T00:00:00.000Z',
     });
-    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
     const metadataPath = join(workspaceRoot, 'artifacts', artifact.id, 'artifact.json');
     const metadata = JSON.parse(readFileSync(metadataPath, 'utf8')) as Record<string, unknown>;
 
@@ -340,7 +498,6 @@ describe('workspace derived index rebuild', () => {
     expect(() =>
       rebuildWorkspaceDerivedIndexes({
         dataRoot,
-        userId: 'user_local',
         workspaceId: 'ws_demo',
       })
     ).toThrow(/artifact|content/i);
@@ -349,25 +506,15 @@ describe('workspace derived index rebuild', () => {
   it('fails closed when the workspace projection is missing', () => {
     const dataRoot = createDataRoot();
 
-    expect(() =>
-      rebuildWorkspaceDerivedIndexes({ dataRoot, userId: 'user_local', workspaceId: 'missing' })
-    ).toThrow(
-      'Workspace projection is missing: users/user_local/workspaces/missing/workspace.json'
+    expect(() => rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId: 'missing' })).toThrow(
+      'Workspace projection is missing: workspaces/missing/workspace.json'
     );
   });
 
   it('rejects a symlinked canonical subtree instead of reading external content', () => {
     const dataRoot = createDataRoot();
     createDemoStore({ dataRoot });
-    const pagesRoot = join(
-      dataRoot,
-      'users',
-      'user_local',
-      'workspaces',
-      'ws_demo',
-      'knowledge',
-      'pages'
-    );
+    const pagesRoot = join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'pages');
     const outsidePagesRoot = mkdtempSync(join(tmpdir(), 'openkit-outside-pages-'));
 
     writeFileSync(join(outsidePagesRoot, 'outside.md'), 'External content must not be indexed.\n');
@@ -377,7 +524,6 @@ describe('workspace derived index rebuild', () => {
     expect(() =>
       rebuildWorkspaceDerivedIndexes({
         dataRoot,
-        userId: 'user_local',
         workspaceId: 'ws_demo',
       })
     ).toThrow();
@@ -386,7 +532,7 @@ describe('workspace derived index rebuild', () => {
   it('rejects a symlinked indexes directory without deleting its external target', () => {
     const dataRoot = createDataRoot();
     createDemoStore({ dataRoot });
-    const indexesRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo', 'indexes');
+    const indexesRoot = join(dataRoot, 'workspaces', 'ws_demo', 'indexes');
     const outsideIndexesRoot = mkdtempSync(join(tmpdir(), 'openkit-outside-indexes-'));
     const sentinelPath = join(outsideIndexesRoot, 'sentinel.txt');
 
@@ -398,7 +544,6 @@ describe('workspace derived index rebuild', () => {
     try {
       rebuildWorkspaceDerivedIndexes({
         dataRoot,
-        userId: 'user_local',
         workspaceId: 'ws_demo',
       });
     } catch (error) {
@@ -422,16 +567,12 @@ describe('workspace derived index rebuild', () => {
 
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
-      userId: 'user_local',
       workspaceId: 'ws_demo',
     });
 
     expect(
       JSON.parse(
-        readFileSync(
-          join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo', 'indexes', 'search.json'),
-          'utf8'
-        )
+        readFileSync(join(dataRoot, 'workspaces', 'ws_demo', 'indexes', 'search.json'), 'utf8')
       )
     ).toMatchObject({
       items: expect.arrayContaining([
@@ -448,7 +589,7 @@ describe('workspace derived index rebuild', () => {
   it('rebuilds a knowledge full-text term index from active file-backed pages', () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
-    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
     const timestamp = '2026-07-07T00:00:00.000Z';
 
     store.createKnowledgeEntry('ws_demo', {
@@ -499,7 +640,6 @@ describe('workspace derived index rebuild', () => {
 
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
-      userId: 'user_local',
       workspaceId: 'ws_demo',
     });
 
@@ -554,16 +694,7 @@ describe('workspace derived index rebuild', () => {
       content: 'Searchable valid body.',
     });
     writeFileSync(
-      join(
-        dataRoot,
-        'users',
-        'user_local',
-        'workspaces',
-        'ws_demo',
-        'knowledge',
-        'pages',
-        'invalid.md'
-      ),
+      join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'pages', 'invalid.md'),
       [
         '---',
         'type: "KnowledgePage"',
@@ -583,15 +714,11 @@ describe('workspace derived index rebuild', () => {
 
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
-      userId: 'user_local',
       workspaceId: 'ws_demo',
     });
 
     const index = JSON.parse(
-      readFileSync(
-        join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo', 'indexes', 'search.json'),
-        'utf8'
-      )
+      readFileSync(join(dataRoot, 'workspaces', 'ws_demo', 'indexes', 'search.json'), 'utf8')
     ) as { items: Array<{ title: string; searchText: string }> };
 
     expect(index.items.map((item) => item.title)).toContain('Valid knowledge');
@@ -604,7 +731,7 @@ describe('workspace derived index rebuild', () => {
   it('rebuilds validation reports for file-backed knowledge pages', () => {
     const dataRoot = createDataRoot();
     createDemoStore({ dataRoot });
-    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
     const timestamp = '2026-07-07T00:00:00.000Z';
 
     writeFileSync(
@@ -669,7 +796,6 @@ describe('workspace derived index rebuild', () => {
 
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
-      userId: 'user_local',
       workspaceId: 'ws_demo',
     });
 
@@ -719,7 +845,7 @@ describe('workspace derived index rebuild', () => {
       title: 'Seed knowledge',
       content: 'Seed body.',
     });
-    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
     writeFileSync(
       join(workspaceRoot, 'knowledge', 'schema', 'workspace-schema.yaml'),
       [
@@ -756,7 +882,6 @@ describe('workspace derived index rebuild', () => {
 
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
-      userId: 'user_local',
       workspaceId: 'ws_demo',
     });
 
@@ -778,7 +903,7 @@ describe('workspace derived index rebuild', () => {
       title: 'Schema blocked knowledge',
       content: 'This body should not be indexed.',
     });
-    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
     writeFileSync(
       join(workspaceRoot, 'knowledge', 'schema', 'workspace-schema.yaml'),
       'schema_version: "openkit-workspace-knowledge-schema-v1"\n'
@@ -786,7 +911,6 @@ describe('workspace derived index rebuild', () => {
 
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
-      userId: 'user_local',
       workspaceId: 'ws_demo',
     });
 
@@ -803,7 +927,7 @@ describe('workspace derived index rebuild', () => {
   it('requires active knowledge page source references to resolve to registered records', () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
-    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
     const timestamp = '2026-07-07T00:00:00.000Z';
     const knowledge = store.createKnowledgeEntry('ws_demo', {
       kind: 'project-context',
@@ -948,7 +1072,6 @@ describe('workspace derived index rebuild', () => {
 
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
-      userId: 'user_local',
       workspaceId: 'ws_demo',
     });
 
@@ -993,7 +1116,7 @@ describe('workspace derived index rebuild', () => {
   it('rebuilds the knowledge source-reference index from file-backed pages', () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
-    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
     const timestamp = '2026-07-07T00:00:00.000Z';
     const knowledge = store.createKnowledgeEntry('ws_demo', {
       kind: 'project-context',
@@ -1038,7 +1161,6 @@ describe('workspace derived index rebuild', () => {
 
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
-      userId: 'user_local',
       workspaceId: 'ws_demo',
     });
 
@@ -1116,7 +1238,7 @@ describe('workspace derived index rebuild', () => {
   it('rebuilds the knowledge link graph from active file-backed pages', () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
-    const workspaceRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
     const timestamp = '2026-07-07T00:00:00.000Z';
 
     store.createKnowledgeEntry('ws_demo', {
@@ -1167,7 +1289,6 @@ describe('workspace derived index rebuild', () => {
 
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
-      userId: 'user_local',
       workspaceId: 'ws_demo',
     });
 
@@ -1208,28 +1329,35 @@ describe('workspace derived index rebuild', () => {
       workspaceId: 'ws_demo',
       threadId: null,
       turnId: null,
-      kind: 'report',
+      kind: 'file',
       title: 'File-backed artifact',
       status: 'ready',
-      summary: 'Artifact summary',
+      summary: null,
       version: 1,
       content: { format: 'markdown', body: 'Artifact body from file.' },
+      contentDigest: sha256Digest('Artifact body from file.'),
+      lastMutationRequestId: 'req_ar_file_backed_import',
+      origin: {
+        kind: 'imported',
+        sourceKind: 'direct-import',
+        sourceId: 'req_ar_file_backed_import',
+        sourceDigest: sha256Digest('Artifact body from file.'),
+        actor: { kind: 'user', id: 'user_local' },
+        requestId: 'req_ar_file_backed_import',
+        recordedAt: '2026-07-05T00:00:00.000Z',
+      },
       createdAt: '2026-07-05T00:00:00.000Z',
       updatedAt: '2026-07-05T00:00:00.000Z',
     });
 
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
-      userId: 'user_local',
       workspaceId: 'ws_demo',
     });
 
     expect(
       JSON.parse(
-        readFileSync(
-          join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo', 'indexes', 'search.json'),
-          'utf8'
-        )
+        readFileSync(join(dataRoot, 'workspaces', 'ws_demo', 'indexes', 'search.json'), 'utf8')
       )
     ).toMatchObject({
       items: expect.arrayContaining([
@@ -1247,7 +1375,7 @@ describe('workspace derived index rebuild', () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
     store.createThread('ws_demo', 'Boot rebuild thread');
-    const indexesRoot = join(dataRoot, 'users', 'user_local', 'workspaces', 'ws_demo', 'indexes');
+    const indexesRoot = join(dataRoot, 'workspaces', 'ws_demo', 'indexes');
     mkdirSync(indexesRoot, { recursive: true });
     writeFileSync(join(indexesRoot, 'stale.json'), '{}');
 
@@ -1259,7 +1387,7 @@ describe('workspace derived index rebuild', () => {
       expect.arrayContaining([
         {
           workspaceId: 'ws_demo',
-          indexPath: 'users/user_local/workspaces/ws_demo/indexes/search.json',
+          indexPath: 'workspaces/ws_demo/indexes/search.json',
           itemCount: 4,
           removedEntries: ['stale.json'],
         },
@@ -1274,7 +1402,7 @@ describe('workspace derived index rebuild', () => {
 
   it('skips workspace directories without a canonical projection during boot scan', () => {
     const dataRoot = createDataRoot();
-    mkdirSync(join(dataRoot, 'users', 'user_local', 'workspaces', 'half-built', 'indexes'), {
+    mkdirSync(join(dataRoot, 'workspaces', 'half-built', 'indexes'), {
       recursive: true,
     });
 

@@ -113,6 +113,17 @@ describe('vault grants', () => {
       expect(() =>
         createVaultGrant(coreDb, {
           allowedInjectionPaths: ['gateway-only'],
+          grantId: 'grant_imported_ws_1_1',
+          lifetime: 'turn',
+          ownerScope: 'workspace',
+          vaultReferenceId: 'vault_github',
+          workspaceId: 'ws_1',
+        })
+      ).toThrow('Vault grant id uses the reserved portable-import authority namespace.');
+
+      expect(() =>
+        createVaultGrant(coreDb, {
+          allowedInjectionPaths: ['gateway-only'],
           grantId: 'grant_no_workspace',
           lifetime: 'turn',
           ownerScope: 'workspace',

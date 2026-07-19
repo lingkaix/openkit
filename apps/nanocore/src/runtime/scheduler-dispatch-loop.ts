@@ -6,15 +6,17 @@ import {
   type SnapshotCandidate,
   selectAgentSessionContinuity,
 } from '../agent-session-continuity.js';
-import type { AgentManifest, AuthoredAgentConfig } from '../agents/manifest.js';
+import type { AgentManifest } from '../agents/manifest.js';
+import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import type { FsStore } from '../lib/store.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import {
   completeSchedulerSessionLease,
+  denySchedulerAdmissionEntry,
   dispatchNextSchedulerEntry,
+  listQueuedSchedulerAdmissionEntries,
   requireSchedulerSessionLease,
   requireSchedulerSessionLeaseAdmissionContext,
-  type SchedulerAdmissionEntryRecord,
   type SchedulerDispatchResult,
 } from '../scheduler-records.js';
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -32,8 +34,6 @@ import { getWorkerControlAcceptedFinalStatus } from './worker-control-records.js
 
 /** Input for one scheduler dispatch loop run. */
 export interface RunSchedulerDispatchLoopInput {
-  /** Available agent configs used by start-turn orchestration. */
-  agentConfigs?: AuthoredAgentConfig[];
   /** Available agent manifests used by start-turn orchestration. */
   agentManifests: AgentManifest[];
   /** Open Core database handle. */
@@ -72,8 +72,6 @@ export interface RunSchedulerDispatchLoopInput {
   startupTimeoutMs: number;
   /** File-backed product store. */
   store: FsStore;
-  /** Optional store selector for multi-user queued admissions. */
-  storeForEntry?: (entry: SchedulerAdmissionEntryRecord) => FsStore;
   /** Runtime executor used to start worker turns. */
   turnExecutor: TurnExecutor;
   /** Runtime config snapshot version captured for started turns. */
@@ -136,6 +134,28 @@ export async function runSchedulerDispatchLoop(
   const startedTurns: SchedulerDispatchLoopStartedTurn[] = [];
 
   while (startedTurns.length < maxDispatches) {
+    const staleEntry = listQueuedSchedulerAdmissionEntries(input.coreDb).find(
+      (entry) =>
+        !currentWorkspaceAuthority(
+          input.coreDb,
+          entry.workspaceId,
+          entry.triggerActor,
+          'runtime.launch',
+          true
+        )
+    );
+    if (staleEntry) {
+      return {
+        startedTurns,
+        terminalResult: {
+          status: 'denied',
+          entry: denySchedulerAdmissionEntry(input.coreDb, {
+            queueEntryId: staleEntry.queueEntryId,
+            denialReason: 'policy-cap',
+          }),
+        },
+      };
+    }
     const leaseId = (input.createLeaseId ?? createLeaseId)();
     const continuity = selectDispatchContinuity(input);
     const agentSessionId =
@@ -161,20 +181,18 @@ export async function runSchedulerDispatchLoop(
       return { startedTurns, terminalResult: dispatch };
     }
 
-    let store: FsStore | null = null;
+    const store = input.store;
     try {
-      store = input.storeForEntry?.(dispatch.entry) ?? input.store;
-      const agentSetupWorkspaceDb = input.agentConfigs
-        ? openWorkspaceDb(input.coreDb.dataRoot, dispatch.entry.userId, dispatch.entry.workspaceId)
-        : null;
-      if (agentSetupWorkspaceDb) {
-        applyScopedMigrations(agentSetupWorkspaceDb);
-      }
+      const agentSetupWorkspaceDb = openWorkspaceDb(
+        input.coreDb.dataRoot,
+        dispatch.entry.workspaceId
+      );
+      applyScopedMigrations(agentSetupWorkspaceDb);
       try {
         const handle = await startTurn({
           agentId: dispatch.entry.requestedAgentId,
           agentManifests: input.agentManifests,
-          ...(agentSetupWorkspaceDb ? { agentSetupWorkspaceDb } : {}),
+          agentSetupWorkspaceDb,
           agentSessionId: dispatch.lease.agentSessionId,
           input: dispatch.entry.turnInput,
           providerRegistry: input.providerRegistry,
@@ -182,6 +200,7 @@ export async function runSchedulerDispatchLoop(
           sandboxBindingRef: dispatch.lease.sandboxBindingRef,
           store,
           threadId: dispatch.entry.threadId,
+          triggerActor: dispatch.entry.triggerActor,
           turnExecutor: input.turnExecutor,
           turnId: dispatch.entry.turnId,
           workspaceCwd: dispatch.entry.workspaceCwd ?? input.workspaceCwd ?? null,
@@ -194,13 +213,12 @@ export async function runSchedulerDispatchLoop(
             ? { workspaceDataSourceCatalog: input.workspaceDataSourceCatalog }
             : {}),
           ...(input.workspaceSourceRefs ? { workspaceSourceRefs: input.workspaceSourceRefs } : {}),
-          ...(input.agentConfigs ? { agentConfigs: input.agentConfigs } : {}),
           ...(input.configVersion !== undefined ? { configVersion: input.configVersion } : {}),
           ...(input.dependencies ? { dependencies: input.dependencies } : {}),
         });
         startedTurns.push({ continuity, dispatch, handle });
       } finally {
-        agentSetupWorkspaceDb?.sqlite.close();
+        agentSetupWorkspaceDb.sqlite.close();
       }
     } catch (error) {
       const humanGateFallback = isExactUnavailableHumanGateCloseout(
@@ -227,18 +245,17 @@ export async function runSchedulerDispatchLoop(
  *
  * @param coreDb Open Core database handle.
  * @param dispatch Exact admission, plan, and lease dispatched by this loop iteration.
- * @param store Product store selected for the admission owner.
+ * @param store Shared product store containing the dispatched Turn.
  * @param error Typed recovery failure returned after Product interruption.
  * @returns Whether scheduler capacity can be released without claiming recoverable completion.
  */
 function isExactUnavailableHumanGateCloseout(
   coreDb: CoreDb,
   dispatch: Extract<SchedulerDispatchResult, { status: 'dispatched' }>,
-  store: FsStore | null,
+  store: FsStore,
   error: unknown
 ): boolean {
   if (
-    !store ||
     !(error instanceof TurnStartValidationError) ||
     error.code !== 'recovery_required' ||
     error.status !== 409

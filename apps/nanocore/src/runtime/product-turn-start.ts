@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
 
-import type { SubmitTurnInputRequestSchema } from '@openkit/protocol';
+import type { ActorRef, SubmitTurnInputRequestSchema } from '@openkit/protocol';
 import type { z } from 'zod';
-
+import { selectAgent } from '../agents/selector.js';
+import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { FsStore } from '../lib/store.js';
+import type { ProviderCredentialResolver } from '../providers/registry.js';
 import {
   CONFIGURED_WORKER_INITIAL_LEASE_DURATION_MS,
   CONFIGURED_WORKER_STARTUP_TIMEOUT_MS,
@@ -13,7 +15,11 @@ import {
   ensureConfiguredSchedulerBaseline,
 } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
-import { resolveModelAgentOverride, TurnStartValidationError } from './orchestrator.js';
+import {
+  assertAgentManifestSupportsModel,
+  resolveModelAgentOverride,
+  TurnStartValidationError,
+} from './orchestrator.js';
 import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
 import {
   materializeWorkspaceRootsForTurn,
@@ -28,6 +34,10 @@ interface StartProductTurnInput {
   readonly coreDb?: CoreDb;
   /** Parsed protocol turn-start request. */
   readonly input: Extract<z.infer<typeof SubmitTurnInputRequestSchema>, { input: string }>;
+  /** Exact actor that triggered this scheduler admission. */
+  readonly triggerActor: ActorRef;
+  /** Resolver used to prove provider profile credentials before worker admission. */
+  readonly providerCredentialResolver: ProviderCredentialResolver;
   /** Runtime config snapshot captured for this turn. */
   readonly snapshot: RuntimeConfigSnapshot;
   /** Scheduler epoch owned by this process. */
@@ -54,11 +64,35 @@ interface StartProductTurnInput {
  * @throws TurnStartValidationError when repository, model, scheduler, or dispatch validation fails.
  */
 export async function startProductTurn(input: StartProductTurnInput) {
-  const repository = resolveWorkspaceRepositoryForTurn(
-    input.coreDb,
-    input.input.workspaceId,
-    input.store.getUserId()
-  );
+  if (!input.coreDb) {
+    throw new TurnStartValidationError(
+      'scheduler_unavailable',
+      'Durable scheduler storage is required to start product turns.',
+      503
+    );
+  }
+
+  const canonicalTriggerActor: ActorRef =
+    input.triggerActor.kind === 'user'
+      ? { kind: 'user', id: input.triggerActor.id }
+      : {
+          kind: input.triggerActor.kind,
+          id: input.triggerActor.id,
+          responsibleUserId: input.triggerActor.responsibleUserId,
+        };
+  if (
+    !currentWorkspaceAuthority(
+      input.coreDb,
+      input.input.workspaceId,
+      canonicalTriggerActor,
+      'runtime.launch',
+      true
+    )
+  ) {
+    throw new TurnStartValidationError('workspace_access_denied', 'Workspace access denied.', 403);
+  }
+
+  const repository = resolveWorkspaceRepositoryForTurn(input.coreDb, input.input.workspaceId);
   const workspaceRoots = materializeWorkspaceRootsForTurn(
     input.snapshot,
     input.store,
@@ -68,27 +102,38 @@ export async function startProductTurn(input: StartProductTurnInput) {
   const workspaceSourceContext = workspaceSourceContextForTurn(
     input.coreDb,
     input.snapshot,
-    input.store,
     input.input.workspaceId,
     repository,
     workspaceRoots
   );
-  const requestedAgentId =
-    input.requestedAgentId ??
-    resolveModelAgentOverride(input.store, input.input.workspaceId, input.input.modelId) ??
-    input.store.getWorkspace(input.input.workspaceId).defaults?.defaultAgentId ??
-    'agent_codex_host';
+  const workspace = input.store.getWorkspace(input.input.workspaceId);
+  const modelAgentId = resolveModelAgentOverride(
+    input.snapshot.agentManifests,
+    input.snapshot.providerRegistry,
+    workspace.defaults?.defaultAgentId ?? null,
+    input.input.modelId,
+    { providerCredentialResolver: input.providerCredentialResolver }
+  );
+  const requestedAgentOverride = input.requestedAgentId ?? modelAgentId;
+  const selectedAgent = selectAgent(
+    { defaultAgentId: workspace.defaults?.defaultAgentId ?? null },
+    requestedAgentOverride ? { agentId: requestedAgentOverride } : {},
+    input.snapshot.agentManifests
+  );
 
-  if (!input.coreDb) {
-    throw new TurnStartValidationError(
-      'scheduler_unavailable',
-      'Durable scheduler storage is required to start product turns.',
-      503
-    );
+  if (!('id' in selectedAgent)) {
+    throw new TurnStartValidationError(selectedAgent.error.code, selectedAgent.error.message, 409);
   }
+  assertAgentManifestSupportsModel(
+    selectedAgent,
+    input.snapshot.providerRegistry,
+    input.input.modelId
+  );
+
+  const requestedAgentId = selectedAgent.id;
 
   const suffix = schedulerAdmissionIdSuffix(
-    input.store.getUserId(),
+    JSON.stringify(canonicalTriggerActor),
     input.input.workspaceId,
     input.input.threadId,
     input.input.requestId,
@@ -108,19 +153,19 @@ export async function startProductTurn(input: StartProductTurnInput) {
     threadId: input.input.threadId,
     turnId,
     turnInput: input.input.input,
-    userId: input.store.getUserId(),
+    triggerActor: canonicalTriggerActor,
     workspaceCwd: repository?.localPath ?? null,
     workspaceId: input.input.workspaceId,
     workspaceRoots,
   });
 
   const dispatch = await runSchedulerDispatchLoop({
-    agentConfigs: input.snapshot.agentConfigs,
     agentManifests: input.snapshot.agentManifests,
     coreDb: input.coreDb,
     createAgentSessionId: () => `as_${suffix}`,
     createLeaseId: () => `lease_${suffix}`,
     createPlanId: () => `plan_${suffix}`,
+    dependencies: { providerCredentialResolver: input.providerCredentialResolver },
     expectedControlMode: 'poll',
     expectedDataPlaneMode: 'openshell-files',
     heartbeatIntervalMs: 10_000,
@@ -150,7 +195,6 @@ export async function startProductTurn(input: StartProductTurnInput) {
     if (input.cancelDeferredAdmission) {
       cancelSchedulerAdmissionEntry(input.coreDb, {
         queueEntryId,
-        userId: input.store.getUserId(),
         workspaceId: input.input.workspaceId,
       });
     }
@@ -168,7 +212,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
 /**
  * Creates a server-scope scheduler id suffix for one product turn admission.
  *
- * @param userId Actor user id.
+ * @param canonicalActorRef Canonical serialized trigger ActorRef.
  * @param workspaceId Workspace id.
  * @param threadId Thread id.
  * @param requestId Request id.
@@ -176,7 +220,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
  * @returns Stable short id suffix.
  */
 function schedulerAdmissionIdSuffix(
-  userId: string,
+  canonicalActorRef: string,
   workspaceId: string,
   threadId: string,
   requestId: string,
@@ -184,7 +228,7 @@ function schedulerAdmissionIdSuffix(
 ): string {
   return createHash('sha256')
     .update(
-      `${userId}:${workspaceId}:${threadId}:${requestId}${
+      `${canonicalActorRef}:${workspaceId}:${threadId}:${requestId}${
         reservedTurnId ? `:${reservedTurnId}` : ''
       }`
     )

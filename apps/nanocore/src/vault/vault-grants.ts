@@ -4,6 +4,7 @@ import type {
   VaultGrantOwnerScope,
   VaultGrantStatus,
 } from '../storage/schema/index.js';
+import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import { getVaultReference } from './vault-references.js';
 
 /** Durable non-secret vault grant record. */
@@ -110,9 +111,13 @@ export interface RevokeVaultGrantInput {
  * @param coreDb Open Core database handle.
  * @param input Grant metadata to store.
  * @returns Stored vault grant record.
- * @throws Error when referenced vault reference or scope identity fields are invalid.
+ * @throws Error when the grant id is reserved for imported history or referenced Vault and scope fields are invalid.
  */
 export function createVaultGrant(coreDb: CoreDb, input: CreateVaultGrantInput): VaultGrantRecord {
+  if (!isTargetIssuedEffectAuthority(input.grantId)) {
+    throw new Error('Vault grant id uses the reserved portable-import authority namespace.');
+  }
+
   assertVaultGrantScope(input);
   assertAllowedInjectionPaths(input.allowedInjectionPaths);
 

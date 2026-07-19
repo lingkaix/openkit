@@ -62,6 +62,11 @@ describe('WorkerTranscriptWriter', () => {
     });
     await writer.writeArtifact({
       kind: 'file',
+      materialProposal: {
+        baseContentDigest: `sha256:${'a'.repeat(64)}`,
+        baseRevisionId: 'matrev_1',
+        materialId: 'mat_1',
+      },
       mediaType: 'text/markdown',
       path: '/workspace/output/summary.md',
       title: 'Patch Summary',
@@ -119,6 +124,11 @@ describe('WorkerTranscriptWriter', () => {
         lineage,
         artifact: {
           kind: 'file',
+          materialProposal: {
+            baseContentDigest: `sha256:${'a'.repeat(64)}`,
+            baseRevisionId: 'matrev_1',
+            materialId: 'mat_1',
+          },
           mediaType: 'text/markdown',
           path: '/workspace/output/summary.md',
           title: 'Patch Summary',

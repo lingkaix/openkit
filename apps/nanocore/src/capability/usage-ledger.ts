@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import {
+  type ActorRef,
   type CapabilityCall,
   CapabilityCallSchema,
   RequestIdSchema,
+  responsibleUserIdForActor,
   type UsageRecord,
   UsageRecordSchema,
 } from '@openkit/protocol';
@@ -54,6 +56,8 @@ export interface CapabilityCallLedgerRecord extends CapabilityCall {
 export interface GatewayCallContext {
   /** Workspace that owns the call. */
   workspaceId: string;
+  /** Process-local authority actor for linked usage attribution. */
+  authorityActor: ActorRef | null;
   /** Thread lineage when available. */
   threadId?: string | null;
   /** Turn lineage when available. */
@@ -179,7 +183,13 @@ export function normalizeCapabilityRequestId(requestId: string | null | undefine
  * @returns Durable call summary.
  */
 export function startCapabilityCall(input: StartCapabilityCallInput): StartedCapabilityCall {
-  const { workspaceDb: _workspaceDb, now: _now, callId: _callId, ...safeInput } = input;
+  const {
+    workspaceDb: _workspaceDb,
+    now: _now,
+    callId: _callId,
+    authorityActor: _authorityActor,
+    ...safeInput
+  } = input;
   assertNoUnsafeLedgerValue(safeInput);
 
   const startedAt = (input.now ?? new Date()).toISOString();
@@ -260,12 +270,14 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
     );
 
   const stored = findCapabilityCallByIdOrIdempotency(input.workspaceDb, input);
+  assertMatchingCapabilityCallAttribution(stored, protocolCall, input);
 
   return {
     id: stored.call_id,
     context: {
       agentId: stored.agent_id,
       agentSessionId: stored.agent_session_id,
+      authorityActor: input.authorityActor,
       capabilityId: stored.capability_id,
       family: stored.family as CapabilityCallFamily,
       itemId: stored.item_id,
@@ -301,6 +313,9 @@ export function recordUsage(input: RecordUsageInput): void {
       const usage = UsageRecordSchema.parse({
         id: record.usageId ?? `use_${randomUUID()}`,
         workspaceId: input.call.context.workspaceId,
+        responsibleUserId: input.call.context.authorityActor
+          ? responsibleUserIdForActor(input.call.context.authorityActor)
+          : null,
         threadId: input.call.context.threadId ?? null,
         turnId: input.call.context.turnId ?? null,
         itemId: input.call.context.itemId ?? null,
@@ -334,6 +349,7 @@ export function recordUsage(input: RecordUsageInput): void {
             request_id,
             agent_id,
             agent_session_id,
+            responsible_user_id,
             source_ids_json,
             category,
             unit,
@@ -342,7 +358,7 @@ export function recordUsage(input: RecordUsageInput): void {
             provider_ref,
             source,
             recorded_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           usage.id,
@@ -354,6 +370,7 @@ export function recordUsage(input: RecordUsageInput): void {
           usage.requestId,
           usage.agentId,
           usage.agentSessionId,
+          usage.responsibleUserId,
           sourceIdsJson(usage.sourceIds),
           usage.category,
           usage.unit,
@@ -631,6 +648,7 @@ function insertUsageRecord(workspaceDb: WorkspaceDb, usage: UsageRecord): void {
         request_id,
         agent_id,
         agent_session_id,
+        responsible_user_id,
         source_ids_json,
         category,
         unit,
@@ -639,7 +657,7 @@ function insertUsageRecord(workspaceDb: WorkspaceDb, usage: UsageRecord): void {
         provider_ref,
         source,
         recorded_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       usage.id,
@@ -651,6 +669,7 @@ function insertUsageRecord(workspaceDb: WorkspaceDb, usage: UsageRecord): void {
       usage.requestId,
       usage.agentId,
       usage.agentSessionId,
+      usage.responsibleUserId,
       sourceIdsJson(usage.sourceIds),
       usage.category,
       usage.unit,
@@ -710,6 +729,7 @@ function usageRecordFromRow(row: unknown): UsageRecord {
     requestId: usage.request_id,
     agentId: usage.agent_id,
     agentSessionId: usage.agent_session_id,
+    responsibleUserId: usage.responsible_user_id,
     sourceIds: parseSourceIdsJson(String(usage.source_ids_json ?? '[]')),
     category: usage.category,
     unit: usage.unit,
@@ -815,37 +835,73 @@ function findCapabilityCallByIdOrIdempotency(
   workspaceDb: WorkspaceDb,
   input: StartCapabilityCallInput
 ): CapabilityCallRow {
+  if (input.requestId) {
+    const storedByRequest = workspaceDb.sqlite
+      .prepare(
+        `SELECT * FROM capability_calls
+         WHERE workspace_id = ?
+           AND request_id = ?
+           AND family = ?
+           AND operation = ?
+         ORDER BY started_at
+         LIMIT 1`
+      )
+      .get(input.workspaceId, input.requestId, input.family, input.operation) as
+      | CapabilityCallRow
+      | undefined;
+
+    if (storedByRequest) {
+      return storedByRequest;
+    }
+  }
+
   if (input.callId) {
     const storedById = findCapabilityCallById(workspaceDb, input.callId);
 
-    if (storedById) {
+    if (
+      storedById &&
+      storedById.workspace_id === input.workspaceId &&
+      storedById.request_id === (input.requestId ?? null) &&
+      storedById.family === input.family &&
+      storedById.operation === input.operation
+    ) {
       return storedById;
     }
   }
 
-  if (!input.requestId) {
-    throw new Error('Capability call was not stored.');
+  throw new Error('Capability call was not stored.');
+}
+
+/**
+ * Rejects replay when immutable effect attribution differs from the stored call.
+ *
+ * @param stored Existing capability-call row selected by the idempotency key.
+ * @param incoming Protocol-validated incoming capability call.
+ * @param input Ledger-only attribution supplied by the producer.
+ */
+function assertMatchingCapabilityCallAttribution(
+  stored: CapabilityCallRow,
+  incoming: CapabilityCall,
+  input: StartCapabilityCallInput
+): void {
+  if (
+    stored.capability_id !== incoming.capabilityId ||
+    stored.thread_id !== incoming.threadId ||
+    stored.turn_id !== incoming.turnId ||
+    stored.item_id !== incoming.itemId ||
+    stored.agent_id !== incoming.agentId ||
+    stored.agent_session_id !== incoming.agentSessionId ||
+    stored.package_snapshot_id !== incoming.packageSnapshotId ||
+    stored.runtime_origin_ref !== incoming.runtimeOriginRef ||
+    stored.runtime_cache_lineage_ref !== incoming.runtimeCacheLineageRef ||
+    sourceIdsJson(parseSourceIdsJson(stored.source_ids_json)) !==
+      sourceIdsJson(incoming.sourceIds) ||
+    stored.provider_ref !== (input.providerRef ?? null) ||
+    stored.service_ref !== (input.serviceRef ?? null) ||
+    stored.redaction_class !== input.redactionClass
+  ) {
+    throw new Error('Capability call attribution conflicts with the existing request.');
   }
-
-  const stored = workspaceDb.sqlite
-    .prepare(
-      `SELECT * FROM capability_calls
-       WHERE workspace_id = ?
-         AND request_id = ?
-         AND family = ?
-         AND operation = ?
-       ORDER BY started_at
-       LIMIT 1`
-    )
-    .get(input.workspaceId, input.requestId, input.family, input.operation) as
-    | CapabilityCallRow
-    | undefined;
-
-  if (!stored) {
-    throw new Error('Capability call was not stored.');
-  }
-
-  return stored;
 }
 
 /**

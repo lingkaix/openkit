@@ -34,7 +34,7 @@ describe('boot audit recorder', () => {
         migrationIds: ['core_0000_baseline'],
         indexRebuildEvents: [
           {
-            indexPath: 'users/user_local/workspaces/ws_demo/indexes/search.json',
+            indexPath: 'workspaces/ws_demo/indexes/search.json',
             itemCount: 2,
             workspaceId: 'ws_demo',
           },
@@ -82,7 +82,7 @@ describe('boot audit recorder', () => {
         migrationIds: ['core_0000_baseline'],
         indexRebuildEvents: [
           {
-            indexPath: 'users/user_local/workspaces/ws_demo/indexes/search.json',
+            indexPath: 'workspaces/ws_demo/indexes/search.json',
             itemCount: 2,
             workspaceId: 'ws_demo',
           },

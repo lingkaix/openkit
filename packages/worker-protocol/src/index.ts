@@ -336,10 +336,19 @@ export const WorkerTranscriptArtifactRecordSchema = WorkerRecordBaseSchema.exten
   kind: z.literal('artifact'),
   artifact: z
     .object({
-      kind: z.enum(['report', 'diff', 'file', 'summary']).default('file'),
+      kind: z.enum(['report', 'diff', 'file', 'summary']),
       title: z.string().min(1),
       path: z.string().min(1),
-      mediaType: z.string().min(1).nullable().optional(),
+      mediaType: z.enum(['text/markdown', 'text/plain', 'application/json']),
+      /** Optional immutable Material target and base proposed by this Artifact. */
+      materialProposal: z
+        .object({
+          materialId: WorkerOpaqueIdSchema,
+          baseRevisionId: WorkerOpaqueIdSchema,
+          baseContentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+        })
+        .strict()
+        .optional(),
     })
     .strict(),
 }).strict();
@@ -462,7 +471,6 @@ export const WorkerControlOperationSchema = z.enum([
   'final_status',
   'supply_refresh_ack',
   'capability_summary',
-  'knowledge_proposal_summary',
 ]);
 
 /** Canonical 256-bit worker process key or SHA-256 digest encoded as unpadded base64url. */

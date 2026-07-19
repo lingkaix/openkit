@@ -145,6 +145,7 @@ describe('protocol hardening boundary', () => {
       agentId: 'agent_codex',
       agentSessionId: 'as_demo',
       agentProfileId: 'coder',
+      triggerActor: { kind: 'user', id: 'user_demo' },
       triggerSource: { kind: 'user-input', summary: 'User started a worker turn.' },
       items: [],
       status: 'running',
@@ -466,6 +467,7 @@ describe('protocol hardening boundary', () => {
       protocol.UsageRecordSchema.parse({
         id: 'usage_demo',
         workspaceId: 'ws_demo',
+        responsibleUserId: 'user_demo',
         threadId: 'th_demo',
         turnId: 'tu_demo',
         itemId: 'it_assistant',

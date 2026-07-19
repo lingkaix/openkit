@@ -9,9 +9,8 @@ import type {
   KnowledgeManagerPrepareContextResponse,
   KnowledgeManagerSuggestRepairResponse,
 } from '@openkit/app-api-schemas';
-import type { ArtifactSchema } from '@openkit/protocol';
+import type { ArtifactSchema, KnowledgeEntrySchema } from '@openkit/protocol';
 import type { z } from 'zod';
-import { searchKnowledgeEntries, type WorkspaceKnowledgeEntry } from './knowledge-search.js';
 import type { KnowledgeProposalRecord, KnowledgeSourceRecord } from './lib/store.js';
 
 const KNOWLEDGE_CONTEXT_POLICY_VERSION = 'knowledge-context-v1';
@@ -27,11 +26,39 @@ type KnowledgeManagerWorkspaceRootFile =
   KnowledgeManagerPrepareContextResponse['workspaceRootFiles'][number];
 type Artifact = z.infer<typeof ArtifactSchema>;
 
+/** Workspace Knowledge Page projection consumed by request-scoped Knowledge operations. */
+export type WorkspaceKnowledgeEntry = z.infer<typeof KnowledgeEntrySchema>;
+
 const KNOWLEDGE_CONTEXT_POLICY: KnowledgeManagerContextPolicy = {
   version: KNOWLEDGE_CONTEXT_POLICY_VERSION,
   claimReviewState: 'accepted',
   conflictResolution: 'exclude-resolved',
 };
+
+/**
+ * Resolves governed retrieval selections to store projections without changing their order.
+ *
+ * @param entries Workspace Knowledge Page projections.
+ * @param selected Persisted S61 selections in ranking order.
+ * @returns Selected entries in the exact persisted order.
+ * @throws Error when a selected page is unavailable from the current store projection.
+ */
+export function resolveRetrievedKnowledgeEntries(
+  entries: readonly WorkspaceKnowledgeEntry[],
+  selected: readonly { readonly knowledgePageId: string }[]
+): WorkspaceKnowledgeEntry[] {
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+
+  return selected.map(({ knowledgePageId }) => {
+    const entry = byId.get(knowledgePageId);
+
+    if (!entry) {
+      throw new Error('Knowledge retrieval selected an unavailable page.');
+    }
+
+    return entry;
+  });
+}
 
 /** Input for deriving a package-level trace from selected Knowledge Manager material. */
 interface BuildKnowledgeContextPackageTraceInput {
@@ -55,10 +82,10 @@ export interface AnswerKnowledgeManagerInput {
   caller: z.infer<typeof KnowledgeManagerCallerSchema>;
   /** User or coordinator query. */
   query: string;
-  /** Candidate knowledge entries from the workspace store. */
+  /** Entries already selected by the governed S61 retrieval owner. */
   entries: readonly WorkspaceKnowledgeEntry[];
-  /** Maximum number of source entries to cite. */
-  limit?: number | undefined;
+  /** Durable S61 retrieval trace that selected the entries. */
+  retrievalTraceId: string;
 }
 
 /** Input for one deterministic Knowledge Manager context-material operation. */
@@ -71,8 +98,10 @@ export interface PrepareKnowledgeContextInput {
   caller: z.infer<typeof KnowledgeManagerCallerSchema>;
   /** Coordinator query used to select material. */
   query: string;
-  /** Candidate knowledge entries from the workspace store. */
+  /** Entries already selected by the governed S61 retrieval owner. */
   entries: readonly WorkspaceKnowledgeEntry[];
+  /** Durable S61 retrieval trace that selected the entries. */
+  retrievalTraceId: string;
   /** Workspace claim ledger rows available for governed context selection. */
   claims?: readonly KnowledgeClaim[] | undefined;
   /** Workspace conflict ledger rows available for governed context selection. */
@@ -144,7 +173,7 @@ export interface CheckKnowledgeHealthInput {
 export function answerKnowledgeManager(
   input: AnswerKnowledgeManagerInput
 ): KnowledgeManagerAnswerResponse {
-  const matches = searchKnowledgeEntries(input.entries, input.query, input.limit ?? 3);
+  const matches = input.entries;
 
   if (matches.length === 0) {
     return {
@@ -152,6 +181,7 @@ export function answerKnowledgeManager(
       operation: 'answer',
       workspaceId: input.workspaceId,
       caller: input.caller,
+      retrievalTraceId: input.retrievalTraceId,
       query: input.query,
       outcome: 'insufficient-evidence',
       answer: 'I do not have enough source-traceable workspace knowledge to answer that.',
@@ -173,6 +203,7 @@ export function answerKnowledgeManager(
     operation: 'answer',
     workspaceId: input.workspaceId,
     caller: input.caller,
+    retrievalTraceId: input.retrievalTraceId,
     query: input.query,
     outcome: 'answered',
     answer: matches[0]?.content ?? citations[0]?.excerpt ?? 'Knowledge matched the query.',
@@ -192,7 +223,7 @@ export function prepareKnowledgeContext(
   input: PrepareKnowledgeContextInput
 ): KnowledgeManagerPrepareContextResponse {
   const requestedLimit = input.limit ?? 5;
-  const matches = searchKnowledgeEntries(input.entries, input.query, requestedLimit);
+  const matches = input.entries;
   const artifacts = [...(input.artifacts ?? [])];
   const workspaceFiles = [...(input.workspaceFiles ?? [])];
   const workspaceRootFiles = [...(input.workspaceRootFiles ?? [])];
@@ -215,6 +246,7 @@ export function prepareKnowledgeContext(
       operation: 'prepare-context-material',
       workspaceId: input.workspaceId,
       caller: input.caller,
+      retrievalTraceId: input.retrievalTraceId,
       query: input.query,
       outcome: 'insufficient-evidence',
       materials: [],
@@ -272,6 +304,7 @@ export function prepareKnowledgeContext(
     operation: 'prepare-context-material',
     workspaceId: input.workspaceId,
     caller: input.caller,
+    retrievalTraceId: input.retrievalTraceId,
     query: input.query,
     outcome: 'prepared',
     materials,

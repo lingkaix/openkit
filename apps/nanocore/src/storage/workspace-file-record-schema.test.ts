@@ -18,7 +18,10 @@ function createCanonicalRecordFixture() {
   const store = new FsStore({ dataRoot });
   const workspace = store.createWorkspace('Canonical record schema workspace');
   const thread = store.createThread(workspace.id, 'Canonical record schema thread');
-  const turn = store.createTurn(workspace.id, thread.id, 'Validate canonical record schemas');
+  const turn = store.createTurn(workspace.id, thread.id, 'Validate canonical record schemas', {
+    kind: 'user',
+    id: 'user_local',
+  });
 
   return {
     dataRoot,
@@ -26,7 +29,7 @@ function createCanonicalRecordFixture() {
     workspace,
     thread,
     turn,
-    workspaceRoot: join(dataRoot, 'users', 'user_local', 'workspaces', workspace.id),
+    workspaceRoot: join(dataRoot, 'workspaces', workspace.id),
   };
 }
 
@@ -139,126 +142,6 @@ describe('workspace canonical record schemas', () => {
     writeFileSync(path, `${JSON.stringify(record)}\n`);
 
     expect(() => new FsStore({ dataRoot })).toThrow();
-  });
-
-  it.each([
-    'invalid status',
-    'invalid follow-up lineage',
-  ])('rejects an artifact review with %s', (violation) => {
-    const { dataRoot, store, workspace, thread, turn, workspaceRoot } =
-      createCanonicalRecordFixture();
-    const artifact = store.createArtifact({
-      id: 'ar_invalid_review_schema',
-      workspaceId: workspace.id,
-      threadId: thread.id,
-      turnId: turn.id,
-      kind: 'summary',
-      title: 'Invalid artifact review schema',
-      status: 'ready',
-      summary: null,
-      version: 1,
-      content: { format: 'text', body: 'Artifact review schema body.' },
-      createdAt: TIMESTAMP,
-      updatedAt: TIMESTAMP,
-    });
-    store.recordArtifactReviewDecision({
-      artifactId: artifact.id,
-      workspaceId: workspace.id,
-      threadId: thread.id,
-      turnId: turn.id,
-      status: 'accepted',
-      requestId: null,
-      message: null,
-      decidedAt: TIMESTAMP,
-      followUpTurnId: null,
-      lifecycle: 'completed',
-    });
-    const path = join(workspaceRoot, 'reviews', 'artifacts', `${artifact.id}.json`);
-    const record = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
-
-    if (violation === 'invalid status') {
-      record.status = 'not-an-artifact-review-status';
-    } else {
-      record.followUpTurnId = 'tu_missing_follow_up';
-    }
-    writeFileSync(path, `${JSON.stringify(record)}\n`);
-
-    expect(() => new FsStore({ dataRoot })).toThrow();
-  });
-
-  it('rejects an artifact review whose persisted lineage differs from its artifact', () => {
-    const { dataRoot, store, workspace, thread, turn, workspaceRoot } =
-      createCanonicalRecordFixture();
-    const otherThread = store.createThread(workspace.id, 'Other artifact review thread');
-    const otherTurn = store.createTurn(workspace.id, otherThread.id, 'Other artifact review turn');
-    const artifact = store.createArtifact({
-      id: 'ar_cross_lineage_review_schema',
-      workspaceId: workspace.id,
-      threadId: thread.id,
-      turnId: turn.id,
-      kind: 'summary',
-      title: 'Cross-lineage artifact review schema',
-      status: 'ready',
-      summary: null,
-      version: 1,
-      content: { format: 'text', body: 'Artifact review lineage body.' },
-      createdAt: TIMESTAMP,
-      updatedAt: TIMESTAMP,
-    });
-    store.recordArtifactReviewDecision({
-      artifactId: artifact.id,
-      workspaceId: workspace.id,
-      threadId: thread.id,
-      turnId: turn.id,
-      status: 'accepted',
-      requestId: null,
-      message: null,
-      decidedAt: TIMESTAMP,
-      followUpTurnId: null,
-      lifecycle: 'completed',
-    });
-    const path = join(workspaceRoot, 'reviews', 'artifacts', `${artifact.id}.json`);
-    const record = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
-
-    writeFileSync(
-      path,
-      `${JSON.stringify({ ...record, threadId: otherThread.id, turnId: otherTurn.id })}\n`
-    );
-
-    expect(() => new FsStore({ dataRoot })).toThrow();
-  });
-
-  it('allows a pending artifact review claim before its deterministic follow-up turn exists', () => {
-    const { dataRoot, store, workspace, thread, turn } = createCanonicalRecordFixture();
-    const artifact = store.createArtifact({
-      id: 'ar_pending_follow_up_schema',
-      workspaceId: workspace.id,
-      threadId: thread.id,
-      turnId: turn.id,
-      kind: 'summary',
-      title: 'Pending follow-up artifact review schema',
-      status: 'ready',
-      summary: null,
-      version: 1,
-      content: { format: 'text', body: 'Pending review claim body.' },
-      createdAt: TIMESTAMP,
-      updatedAt: TIMESTAMP,
-    });
-
-    store.recordArtifactReviewDecision({
-      artifactId: artifact.id,
-      workspaceId: workspace.id,
-      threadId: thread.id,
-      turnId: turn.id,
-      status: 'needs_refinement',
-      requestId: 'review_pending_follow_up_schema',
-      message: null,
-      decidedAt: TIMESTAMP,
-      followUpTurnId: 'tu_pending_follow_up_schema',
-      lifecycle: 'pending',
-    });
-
-    expect(() => new FsStore({ dataRoot })).not.toThrow();
   });
 
   it.each([

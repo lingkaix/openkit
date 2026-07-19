@@ -1,4 +1,4 @@
-import type { StopReason } from '@openkit/protocol';
+import type { ActorRef, StopReason } from '@openkit/protocol';
 
 import type { WorkspaceDb } from '../storage/db.js';
 import { type GoalTaskRecord, updateGoalTask } from './goal-store.js';
@@ -13,6 +13,8 @@ import { type WorkerTurnStage, workerTurnStageForStopReason } from './worker-sta
  * Input for recording one worker terminal outcome on a goal task.
  */
 export interface RecordGoalTaskWorkerOutcomeInput {
+  /** Exact actor responsible for the worker effect. */
+  readonly authorityActor: ActorRef;
   /** Open workspace-scope database handle for worker checkpoint storage. */
   readonly workspaceDb: WorkspaceDb;
   /** Workspace that owns the task and checkpoint. */
@@ -82,6 +84,7 @@ export function recordGoalTaskWorkerOutcome(
   };
 
   updateWorkerCheckpoint(input.workspaceDb, {
+    authorityActor: input.authorityActor,
     workspaceId: input.workspaceId,
     threadId: input.threadId,
     turnId: input.turnId,

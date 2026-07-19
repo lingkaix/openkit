@@ -1,7 +1,8 @@
 import { ThreadGoalSummaryResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
+import { parseWorkspaceSharingError } from './app.js';
 import { type CoreClient, createCoreClient } from './client.js';
-import { type ApiCallError, ProtocolValidationError } from './errors.js';
+import { ApiCallError, ProtocolValidationError } from './errors.js';
 import { subscribeTurnEvents } from './events.js';
 
 const timestamp = '2026-05-28T00:00:00.000Z';
@@ -31,7 +32,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 /** Creates a current protocol API error fixture. */
 function apiError(code: string, message: string): Record<string, string> {
-  return { protocolVersion: '0.3.0', code, message };
+  return { protocolVersion: '0.4.0', code, message };
 }
 
 /** Creates a tiny SSE response from complete event payloads. */
@@ -113,6 +114,72 @@ function workspace() {
   };
 }
 
+/** Returns one authorized Workspace summary for sharing-client tests. */
+function authorizedWorkspaceSummary() {
+  return {
+    effectiveRole: 'owner',
+    membershipRevision: 1,
+    ownerUserId: 'user_1',
+    registryRevision: 1,
+    workspace: workspace(),
+  };
+}
+
+/** Returns one current Workspace member projection for sharing-client tests. */
+function workspaceMember(status: 'active' | 'removed' = 'active') {
+  return {
+    accessLevel: 'editor',
+    createdAt: timestamp,
+    effectiveRole: status === 'active' ? ('editor' as const) : null,
+    invitationId: 'invitation_1',
+    joinedAt: timestamp,
+    removedAt: status === 'removed' ? timestamp : null,
+    revision: 1,
+    status,
+    updatedAt: timestamp,
+    userId: 'user_2',
+    workspaceId: 'ws_demo',
+  };
+}
+
+/** Returns one pending Workspace invitation for sharing-client tests. */
+function workspaceInvitation() {
+  return {
+    acceptedAt: null,
+    createdAt: timestamp,
+    declinedAt: null,
+    effectiveStatus: 'pending',
+    expiresAt: '2026-08-01T00:00:00.000Z',
+    invitationId: 'invitation_1',
+    inviteeUserId: 'user_2',
+    inviterUserId: 'user_1',
+    proposedAccessLevel: 'editor',
+    revision: 1,
+    revokedAt: null,
+    updatedAt: timestamp,
+    workspaceId: 'ws_demo',
+  };
+}
+
+/** Returns one administrator-safe Workspace recovery projection. */
+function workspaceAccessRecovery() {
+  return {
+    administratorRole: null,
+    ownerUserId: 'user_1',
+    registryRevision: 1,
+    workspaceId: 'ws_demo',
+  };
+}
+
+/** Returns one disabled canonical-user projection. */
+function disabledUser() {
+  return {
+    disabledAt: timestamp,
+    status: 'disabled',
+    userId: 'user_2',
+  };
+}
+
 /** Returns one valid thread record. */
 function thread() {
   return {
@@ -132,6 +199,7 @@ function turn() {
     id: 'turn_demo',
     workspaceId: 'ws_demo',
     threadId: 'th_demo',
+    triggerActor: { kind: 'user', id: 'user_1' },
     items: [],
     error: null,
     status: 'running',
@@ -156,6 +224,14 @@ function artifact() {
     summary: null,
     version: 1,
     content: { format: 'markdown', body: '# Demo' },
+    contentDigest: `sha256:${'a'.repeat(64)}`,
+    lastMutationRequestId: requestId,
+    origin: {
+      kind: 'turn-output',
+      threadId: 'th_demo',
+      turnId: 'turn_demo',
+      requestId,
+    },
     createdAt: timestamp,
     updatedAt: timestamp,
   };
@@ -363,6 +439,7 @@ function appDiagnostics() {
         {
           id: 'provider_demo',
           displayName: 'Provider Demo',
+          dispatchFamily: 'provider-api',
           gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
           kind: 'gateway',
           models: ['gpt-demo'],
@@ -465,6 +542,8 @@ function userMessageItem() {
     turnId: 'turn_demo',
     type: 'user-message',
     status: 'completed',
+    actor: { kind: 'user', id: 'user_1' },
+    causationId: requestId,
     text: 'Hello',
     createdAt: timestamp,
     completedAt: timestamp,
@@ -799,6 +878,7 @@ function storageLayoutReport() {
       appliedMigrations: ['core_0000_baseline'],
     },
     users: [],
+    workspaces: [],
     quarantineEntries: [
       {
         scope: 'server',
@@ -945,6 +1025,7 @@ function capabilityUsageResponse() {
       {
         id: 'usage_1',
         workspaceId: 'ws_demo',
+        responsibleUserId: 'user_1',
         threadId: 'th_demo',
         turnId: 'turn_demo',
         itemId: 'it_demo',
@@ -1049,7 +1130,7 @@ function workspaceAuditEventsResponse() {
       {
         id: 'aud_1',
         workspaceId: 'ws_demo',
-        protocolVersion: '0.3.0',
+        protocolVersion: '0.4.0',
         threadId: 'th_demo',
         turnId: 'turn_demo',
         itemId: null,
@@ -1057,11 +1138,14 @@ function workspaceAuditEventsResponse() {
         permissionDecisionId: null,
         vaultGrantId: null,
         requestId: '00000000-0000-4000-8000-000000000001',
+        actor: null,
+        subject: null,
         agentId: null,
         agentSessionId: null,
         category: 'system',
         action: 'goal.create',
         resource: 'goal:goal_1',
+        resourceRevision: null,
         outcome: 'succeeded',
         severity: 'info',
         summary: 'Goal created.',
@@ -1080,7 +1164,7 @@ function serverAuditEventsResponse() {
       {
         id: 'aud_server_1',
         workspaceId: null,
-        protocolVersion: '0.3.0',
+        protocolVersion: '0.4.0',
         threadId: null,
         turnId: null,
         itemId: null,
@@ -1088,11 +1172,14 @@ function serverAuditEventsResponse() {
         permissionDecisionId: null,
         vaultGrantId: null,
         requestId,
+        actor: null,
+        subject: null,
         agentId: null,
         agentSessionId: null,
         category: 'system',
         action: 'server.config.update',
         resource: 'server:runtime-config',
+        resourceRevision: null,
         outcome: 'succeeded',
         severity: 'info',
         summary: 'Runtime config updated.',
@@ -1373,7 +1460,7 @@ function interruptedWorkerState() {
 /** Returns one valid turn event envelope. */
 function turnEvent(sequence: number, event = 'turn.started') {
   return {
-    protocolVersion: '0.3.0',
+    protocolVersion: '0.4.0',
     event,
     sequence,
     requestId,
@@ -1406,7 +1493,8 @@ describe('createCoreClient', () => {
     expect(client.actionCenter).toBeDefined();
     expect(client.repositories).toBeDefined();
     expect('updateArtifactMetadata' in client.core).toBe(false);
-    expect('submitArtifactReviewDecision' in client.app).toBe(false);
+    expect(client.app.listArtifactReviews).toBeTypeOf('function');
+    expect(client.app.submitArtifactReviewDecision).toBeTypeOf('function');
     expect('refreshAgentHealth' in client.app).toBe(false);
 
     for (const alias of [
@@ -1431,6 +1519,27 @@ describe('createCoreClient', () => {
     ]) {
       expect(removedEvidenceOperation in client.app).toBe(false);
     }
+  });
+
+  it.each([
+    [
+      'Quick Chat',
+      (client: CoreClient) =>
+        client.app.quickChat({ input: 'Hello', providerId: 'caller-provider' } as never),
+    ],
+    [
+      'Chat Mode',
+      (client: CoreClient) =>
+        client.app.startChatMode('ws_demo', 'th_demo', {
+          input: 'Hello',
+          model: 'caller-model',
+        } as never),
+    ],
+  ])('rejects caller provider or model authority before %s transport', (_name, invoke) => {
+    const { client, requests } = createFakeClient({});
+
+    expect(() => invoke(client)).toThrow();
+    expect(requests).toEqual([]);
   });
 
   it('routes core protocol calls through the core sub-client', async () => {
@@ -1483,7 +1592,7 @@ describe('createCoreClient', () => {
     const { client, requests } = createFakeClient({
       'GET /api/meta': {
         body: {
-          protocolVersion: '0.3.0',
+          protocolVersion: '0.4.0',
           capabilities: [],
           eventFamilies: [],
         },
@@ -1746,7 +1855,7 @@ describe('createCoreClient', () => {
       },
     });
 
-    await expect(client.core.meta()).resolves.toMatchObject({ protocolVersion: '0.3.0' });
+    await expect(client.core.meta()).resolves.toMatchObject({ protocolVersion: '0.4.0' });
     await expect(client.core.getWorkspace('ws_demo')).resolves.toEqual(workspace());
     await expect(client.core.updateWorkspace('ws_demo', { status: 'archived' })).resolves.toEqual(
       workspace()
@@ -1912,7 +2021,525 @@ describe('createCoreClient', () => {
     });
   });
 
+  it('routes the Stage 2 Artifact and Material surface through client.app', async () => {
+    const contentDigest = `sha256:${'a'.repeat(64)}`;
+    const material = {
+      workspaceId: 'ws_demo',
+      materialId: 'material_demo',
+      title: 'Demo material',
+      kind: 'markdown',
+      currentRevisionId: 'revision_demo',
+      sensitivity: 'internal',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const revision = {
+      workspaceId: 'ws_demo',
+      materialId: 'material_demo',
+      revisionId: 'revision_demo',
+      parentRevisionId: null,
+      mediaType: 'text/markdown',
+      contentDigest,
+      authorId: 'user_demo',
+      createdAt: timestamp,
+    };
+    const threadMaterial = {
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      resource: material,
+      currentRevision: revision,
+      inclusionState: 'included',
+      latestQueuedRevisionId: 'revision_demo',
+      lastWorkerSeenRevisionId: null,
+      currentTurnRevisionId: null,
+      activeDelivery: null,
+    };
+    const routeCases = [
+      [
+        'POST /api/app/workspaces/ws_demo/artifacts/imports',
+        { artifactId: 'artifact_demo', artifactVersion: 1 },
+        201,
+      ],
+      [
+        'POST /api/app/workspaces/ws_demo/threads/th_demo/artifacts/artifact_demo/introductions',
+        {
+          artifactId: 'artifact_demo',
+          artifactVersion: 1,
+          turnId: 'turn_introduction',
+          itemId: 'item_introduction',
+        },
+        201,
+      ],
+      ['GET /api/app/workspaces/ws_demo/materials', { materials: [material] }, 200],
+      ['POST /api/app/workspaces/ws_demo/materials', { materialId: 'material_demo' }, 201],
+      ['GET /api/app/workspaces/ws_demo/materials/material_demo', { material }, 200],
+      [
+        'GET /api/app/workspaces/ws_demo/materials/material_demo/revisions',
+        { revisions: [revision] },
+        200,
+      ],
+      [
+        'POST /api/app/workspaces/ws_demo/materials/material_demo/revisions',
+        { materialId: 'material_demo', revisionId: 'revision_demo' },
+        201,
+      ],
+      [
+        'GET /api/app/workspaces/ws_demo/materials/material_demo/revisions/revision_demo',
+        { revision: { ...revision, content: '# Demo material' } },
+        200,
+      ],
+      [
+        'GET /api/app/workspaces/ws_demo/threads/th_demo/material',
+        { material: threadMaterial },
+        200,
+      ],
+      [
+        'POST /api/app/workspaces/ws_demo/threads/th_demo/materials/material_demo/bind',
+        { materialId: 'material_demo', threadId: 'th_demo', outcome: 'bound' },
+        200,
+      ],
+      [
+        'POST /api/app/workspaces/ws_demo/threads/th_demo/materials/material_demo/unbind',
+        { materialId: 'material_demo', threadId: 'th_demo', outcome: 'unbound' },
+        200,
+      ],
+      [
+        'POST /api/app/workspaces/ws_demo/threads/th_demo/materials/material_demo/exclude',
+        { materialId: 'material_demo', threadId: 'th_demo', outcome: 'excluded' },
+        200,
+      ],
+      [
+        'POST /api/app/workspaces/ws_demo/threads/th_demo/materials/material_demo/restore',
+        { materialId: 'material_demo', threadId: 'th_demo', outcome: 'included' },
+        200,
+      ],
+    ] as const;
+    const { client, requests } = createFakeClient(
+      Object.fromEntries(routeCases.map(([path, body, status]) => [path, { body, status }]))
+    );
+
+    const responses = [
+      await client.app.importWorkspaceArtifact('ws_demo', {
+        title: 'Imported artifact',
+        mediaType: 'text/markdown',
+        contentDigest,
+        content: '# Imported artifact',
+      }),
+      await client.app.introduceWorkspaceArtifact('ws_demo', 'th_demo', 'artifact_demo', {
+        expectedArtifactVersion: 1,
+      }),
+      await client.app.listWorkspaceMaterials('ws_demo'),
+      await client.app.createWorkspaceMaterial('ws_demo', {
+        title: 'Demo material',
+        kind: 'markdown',
+        sensitivity: 'internal',
+      }),
+      await client.app.getWorkspaceMaterial('ws_demo', 'material_demo'),
+      await client.app.listWorkspaceMaterialRevisions('ws_demo', 'material_demo'),
+      await client.app.saveWorkspaceMaterialRevision('ws_demo', 'material_demo', {
+        expectedRevisionId: null,
+        contentDigest,
+        content: '# Demo material',
+      }),
+      await client.app.getWorkspaceMaterialRevision('ws_demo', 'material_demo', 'revision_demo'),
+      await client.app.getThreadMaterial('ws_demo', 'th_demo'),
+      await client.app.bindThreadMaterial('ws_demo', 'th_demo', 'material_demo', {
+        expectedBindingState: 'absent',
+      }),
+      await client.app.unbindThreadMaterial('ws_demo', 'th_demo', 'material_demo', {
+        expectedBindingState: 'bound',
+      }),
+      await client.app.excludeThreadMaterial('ws_demo', 'th_demo', 'material_demo', {
+        expectedBindingState: 'bound',
+        expectedInclusionState: 'included',
+        expectedQueuedRevisionId: 'revision_demo',
+      }),
+      await client.app.restoreThreadMaterial('ws_demo', 'th_demo', 'material_demo', {
+        expectedBindingState: 'bound',
+        expectedInclusionState: 'excluded',
+      }),
+    ];
+
+    expect(responses).toEqual(routeCases.map(([, body]) => body));
+    expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual(
+      routeCases.map(([path]) => path)
+    );
+    expect(requests.map(({ body }) => body)).toEqual([
+      {
+        requestId: expect.any(String),
+        title: 'Imported artifact',
+        mediaType: 'text/markdown',
+        contentDigest,
+        content: '# Imported artifact',
+      },
+      { requestId: expect.any(String), expectedArtifactVersion: 1 },
+      null,
+      {
+        requestId: expect.any(String),
+        title: 'Demo material',
+        kind: 'markdown',
+        sensitivity: 'internal',
+      },
+      null,
+      null,
+      {
+        requestId: expect.any(String),
+        expectedRevisionId: null,
+        contentDigest,
+        content: '# Demo material',
+      },
+      null,
+      null,
+      { requestId: expect.any(String), expectedBindingState: 'absent' },
+      { requestId: expect.any(String), expectedBindingState: 'bound' },
+      {
+        requestId: expect.any(String),
+        expectedBindingState: 'bound',
+        expectedInclusionState: 'included',
+        expectedQueuedRevisionId: 'revision_demo',
+      },
+      {
+        requestId: expect.any(String),
+        expectedBindingState: 'bound',
+        expectedInclusionState: 'excluded',
+      },
+    ]);
+  });
+
+  it('routes the Stage 4 Artifact Review surface through client.app', async () => {
+    const contentDigest = `sha256:${'a'.repeat(64)}`;
+    const review = {
+      workspaceId: 'ws_demo',
+      reviewId: 'review_demo',
+      artifactId: 'artifact_demo',
+      artifactVersion: 1,
+      contentDigest,
+      sourceThreadId: 'th_demo',
+      sourceTurnId: 'turn_demo',
+      sourceAgentId: 'agent_demo',
+      materialProposal: null,
+      decision: null,
+      decisionActorId: null,
+      feedback: null,
+      decidedAt: null,
+      followUpTurnId: null,
+      appliedMaterialRevisionId: null,
+      createdAt: timestamp,
+    };
+    const decision = {
+      reviewId: review.reviewId,
+      artifactId: review.artifactId,
+      artifactVersion: review.artifactVersion,
+      decision: 'accepted',
+      followUpTurnId: null,
+    };
+    const { client, requests } = createFakeClient({
+      'GET /api/app/workspaces/ws_demo/artifacts/artifact_demo/reviews': {
+        body: { reviews: [review] },
+      },
+      'POST /api/app/workspaces/ws_demo/artifacts/artifact_demo/versions/1/review/decision': {
+        body: decision,
+      },
+    });
+
+    await expect(client.app.listArtifactReviews('ws_demo', 'artifact_demo')).resolves.toEqual({
+      reviews: [review],
+    });
+    await expect(
+      client.app.submitArtifactReviewDecision('ws_demo', 'artifact_demo', 1, {
+        decision: 'accepted',
+      })
+    ).resolves.toEqual(decision);
+    expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
+      'GET /api/app/workspaces/ws_demo/artifacts/artifact_demo/reviews',
+      'POST /api/app/workspaces/ws_demo/artifacts/artifact_demo/versions/1/review/decision',
+    ]);
+    expect(requests[1]?.body).toEqual({ decision: 'accepted', requestId: expect.any(String) });
+  });
+
+  it('routes the exact closed Workspace sharing surface through client.app', async () => {
+    const invitation = workspaceInvitation();
+    const member = workspaceMember();
+    const removedMember = workspaceMember('removed');
+    const recovery = workspaceAccessRecovery();
+    const summary = authorizedWorkspaceSummary();
+    const user = disabledUser();
+    const cases: Array<{
+      body: unknown;
+      invoke: (client: CoreClient) => Promise<unknown>;
+      methodPath: string;
+      response: unknown;
+      status?: number;
+    }> = [
+      {
+        body: null,
+        invoke: (client) => client.app.listAuthorizedWorkspaces(),
+        methodPath: 'GET /api/app/workspaces',
+        response: { items: [summary] },
+      },
+      {
+        body: null,
+        invoke: (client) => client.app.listWorkspaceMembers('ws_demo'),
+        methodPath: 'GET /api/app/workspaces/ws_demo/members',
+        response: { items: [member] },
+      },
+      {
+        body: null,
+        invoke: (client) => client.app.listWorkspaceInvitations('ws_demo'),
+        methodPath: 'GET /api/app/workspaces/ws_demo/invitations',
+        response: { items: [invitation] },
+      },
+      {
+        body: {
+          inviteeEmail: 'invitee@example.com',
+          proposedAccessLevel: 'editor',
+          requestId,
+        },
+        invoke: (client) =>
+          client.app.createWorkspaceInvitation('ws_demo', {
+            inviteeEmail: 'invitee@example.com',
+            proposedAccessLevel: 'editor',
+            requestId,
+          }),
+        methodPath: 'POST /api/app/workspaces/ws_demo/invitations',
+        response: { invitation },
+        status: 201,
+      },
+      {
+        body: null,
+        invoke: (client) => client.app.listMyWorkspaceInvitations(),
+        methodPath: 'GET /api/app/workspace-invitations',
+        response: { items: [invitation] },
+      },
+      {
+        body: { expectedRevision: 1, requestId },
+        invoke: (client) =>
+          client.app.acceptWorkspaceInvitation('invitation_1', {
+            expectedRevision: 1,
+            requestId,
+          }),
+        methodPath: 'POST /api/app/workspace-invitations/invitation_1/accept',
+        response: { invitation },
+      },
+      {
+        body: { expectedRevision: 1, requestId },
+        invoke: (client) =>
+          client.app.declineWorkspaceInvitation('invitation_1', {
+            expectedRevision: 1,
+            requestId,
+          }),
+        methodPath: 'POST /api/app/workspace-invitations/invitation_1/decline',
+        response: { invitation },
+      },
+      {
+        body: { expectedRevision: 1, requestId },
+        invoke: (client) =>
+          client.app.revokeWorkspaceInvitation('ws_demo', 'invitation_1', {
+            expectedRevision: 1,
+            requestId,
+          }),
+        methodPath: 'POST /api/app/workspaces/ws_demo/invitations/invitation_1/revoke',
+        response: { invitation },
+      },
+      {
+        body: { accessLevel: 'viewer', expectedRevision: 1, requestId },
+        invoke: (client) =>
+          client.app.changeWorkspaceMemberAccess('ws_demo', 'user_2', {
+            accessLevel: 'viewer',
+            expectedRevision: 1,
+            requestId,
+          }),
+        methodPath: 'PATCH /api/app/workspaces/ws_demo/members/user_2',
+        response: { member },
+      },
+      {
+        body: { expectedRevision: 1, requestId },
+        invoke: (client) =>
+          client.app.removeWorkspaceMember('ws_demo', 'user_2', {
+            expectedRevision: 1,
+            requestId,
+          }),
+        methodPath: 'POST /api/app/workspaces/ws_demo/members/user_2/remove',
+        response: { member: removedMember },
+      },
+      {
+        body: { expectedRevision: 1, requestId },
+        invoke: (client) =>
+          client.app.leaveWorkspace('ws_demo', { expectedRevision: 1, requestId }),
+        methodPath: 'POST /api/app/workspaces/ws_demo/leave',
+        response: { member: removedMember },
+      },
+      {
+        body: { expectedRegistryRevision: 1, requestId, targetUserId: 'user_2' },
+        invoke: (client) =>
+          client.app.transferWorkspaceOwnership('ws_demo', {
+            expectedRegistryRevision: 1,
+            requestId,
+            targetUserId: 'user_2',
+          }),
+        methodPath: 'POST /api/app/workspaces/ws_demo/ownership/transfer',
+        response: { workspace: summary },
+      },
+      {
+        body: null,
+        invoke: (client) => client.app.getWorkspaceAccessRecoveryState('ws_demo'),
+        methodPath: 'GET /api/app/workspaces/ws_demo/access-recovery',
+        response: { recovery },
+      },
+      {
+        body: {
+          action: 'add-self-as-editor',
+          expectedRegistryRevision: 1,
+          requestId,
+        },
+        invoke: (client) =>
+          client.app.recoverWorkspaceAccess('ws_demo', {
+            action: 'add-self-as-editor',
+            expectedRegistryRevision: 1,
+            requestId,
+          }),
+        methodPath: 'POST /api/app/workspaces/ws_demo/access-recovery',
+        response: { recovery },
+      },
+      {
+        body: { requestId },
+        invoke: (client) => client.app.disableUser('user_2', { requestId }),
+        methodPath: 'POST /api/app/users/user_2/disable',
+        response: { user },
+      },
+    ];
+    const routes = Object.fromEntries(
+      cases.map((testCase) => [
+        testCase.methodPath,
+        { body: testCase.response, ...(testCase.status ? { status: testCase.status } : {}) },
+      ])
+    );
+    const { client, requests } = createFakeClient(routes);
+
+    for (const testCase of cases) {
+      await expect(testCase.invoke(client)).resolves.toEqual(testCase.response);
+    }
+
+    expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual(
+      cases.map((testCase) => testCase.methodPath)
+    );
+    expect(requests.map(({ body }) => body)).toEqual(cases.map((testCase) => testCase.body));
+  });
+
+  it('narrows only schema-valid Workspace sharing revision conflicts', () => {
+    const validConflict = new ApiCallError(409, 'Workspace membership revision changed.', {
+      code: 'revision_conflict',
+      details: { current: workspaceMember(), resource: 'membership' },
+      requestId,
+    });
+    const malformedConflict = new ApiCallError(409, 'Workspace membership revision changed.', {
+      code: 'revision_conflict',
+      details: {
+        current: { ...workspaceMember(), revision: 0 },
+        resource: 'membership',
+      },
+      requestId,
+    });
+    const genericRecovery = new ApiCallError(409, 'Recovery is required.', {
+      code: 'recovery_required',
+      requestId,
+    });
+
+    expect(parseWorkspaceSharingError(validConflict)).toEqual({
+      code: 'revision_conflict',
+      details: { current: workspaceMember(), resource: 'membership' },
+      message: 'Workspace membership revision changed.',
+      protocolVersion: '0.4.0',
+      requestId,
+    });
+    expect(parseWorkspaceSharingError(malformedConflict)).toBeNull();
+    expect(parseWorkspaceSharingError(genericRecovery)).toBeNull();
+  });
+
+  it('routes the exact Stage 3 Goal steering commands through client.app', async () => {
+    const contentDigest = `sha256:${'a'.repeat(64)}`;
+    const queued = {
+      state: 'queued',
+      pendingTurnId: 'pending_goal_steering',
+      requestId: 'req_send',
+      contentItemId: 'it_goal_steering',
+      goalId: 'goal_demo',
+      activeTurnId: 'turn_worker',
+    } as const;
+    const followUp = {
+      state: 'follow-up',
+      pendingTurnId: queued.pendingTurnId,
+      requestId: 'req_follow_up',
+      sourceRequestId: queued.requestId,
+      contentItemId: queued.contentItemId,
+      goalId: queued.goalId,
+      activeTurnId: queued.activeTurnId,
+      followUpTurnId: 'turn_follow_up',
+      followUpItemId: 'it_follow_up',
+    } as const;
+    const cancelled = {
+      state: 'cancelled',
+      pendingTurnId: queued.pendingTurnId,
+      requestId: 'req_cancel',
+      sourceRequestId: queued.requestId,
+      contentItemId: queued.contentItemId,
+      goalId: queued.goalId,
+      activeTurnId: queued.activeTurnId,
+    } as const;
+    const { client, requests } = createFakeClient({
+      'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/steering': { body: queued },
+      'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/steering/pending_goal_steering/follow-up':
+        {
+          body: followUp,
+        },
+      'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/steering/pending_goal_steering/cancel':
+        {
+          body: cancelled,
+        },
+    });
+
+    await expect(
+      client.app.submitThreadGoalSteering('ws_demo', 'th_demo', {
+        requestId: queued.requestId,
+        materialId: 'material_demo',
+        revisionId: 'revision_demo',
+        contentDigest,
+        note: 'Use this exact revision.',
+      })
+    ).resolves.toEqual(queued);
+    await expect(
+      client.app.convertGoalSteeringToFollowUp('ws_demo', 'th_demo', queued.pendingTurnId, {
+        requestId: followUp.requestId,
+      })
+    ).resolves.toEqual(followUp);
+    await expect(
+      client.app.cancelGoalSteering('ws_demo', 'th_demo', queued.pendingTurnId, {
+        requestId: cancelled.requestId,
+      })
+    ).resolves.toEqual(cancelled);
+
+    expect(requests.map(({ path }) => path)).toEqual([
+      '/api/app/workspaces/ws_demo/threads/th_demo/goal/steering',
+      '/api/app/workspaces/ws_demo/threads/th_demo/goal/steering/pending_goal_steering/follow-up',
+      '/api/app/workspaces/ws_demo/threads/th_demo/goal/steering/pending_goal_steering/cancel',
+    ]);
+    expect(requests.map(({ body }) => body)).toEqual([
+      {
+        requestId: queued.requestId,
+        materialId: 'material_demo',
+        revisionId: 'revision_demo',
+        contentDigest,
+        note: 'Use this exact revision.',
+      },
+      { requestId: followUp.requestId },
+      { requestId: cancelled.requestId },
+    ]);
+  });
+
   it('routes NanoCore App API calls through app-owned schemas', async () => {
+    const retrievalTraceId = 'krt_123e4567-e89b-42d3-a456-426614174000';
+    const retrievalRequestDigest = `sha256:${'b'.repeat(64)}`;
+    const retrievedPageDigest = `sha256:${'c'.repeat(64)}`;
     const { client, requests } = createFakeClient({
       'GET /api/app/diagnostics': { body: appDiagnostics() },
       'GET /api/app/storage/layout-report': { body: storageLayoutReport() },
@@ -2024,8 +2651,9 @@ describe('createCoreClient', () => {
           operationId: 'km_answer_demo',
           operation: 'answer',
           workspaceId: 'ws_demo',
-          caller: 'assistant',
+          caller: 'app-api',
           query: 'release cadence',
+          retrievalTraceId,
           outcome: 'answered',
           answer: 'Release cadence is weekly.',
           citations: [
@@ -2312,27 +2940,28 @@ describe('createCoreClient', () => {
       },
       'POST /api/app/workspaces/ws_demo/knowledge/retrievals': {
         body: {
-          traceId: 'krt_demo',
+          traceId: retrievalTraceId,
           workspaceId: 'ws_demo',
-          query: 'release cadence',
+          caller: 'app-api',
+          requestDigest: retrievalRequestDigest,
+          retrievalParameters: {
+            limit: 1,
+            pinnedConceptIds: [],
+          },
           createdAt: timestamp,
           selected: [
             {
-              conceptId: 'release-plan',
-              title: 'Release plan',
-              path: 'knowledge/pages/release-plan.md',
+              knowledgePageId: 'release-plan',
+              contentDigest: retrievedPageDigest,
               score: 4,
-              matchedTerms: ['cadence', 'release'],
               sourceReferences: ['source:ks_demo'],
             },
           ],
           excluded: [
             {
-              conceptId: 'old-plan',
-              title: 'Old plan',
-              path: 'knowledge/pages/old-plan.md',
-              reason: 'relevance_too_low',
-              detail: 'No query terms matched this candidate.',
+              knowledgePageId: 'old-plan',
+              contentDigest: null,
+              reason: 'sensitive_content',
             },
           ],
         },
@@ -2342,8 +2971,9 @@ describe('createCoreClient', () => {
           operationId: 'km_context_demo',
           operation: 'prepare-context-material',
           workspaceId: 'ws_demo',
-          caller: 'workflow-coordinator',
+          caller: 'app-api',
           query: 'release cadence',
+          retrievalTraceId,
           outcome: 'prepared',
           materials: [
             {
@@ -2372,6 +3002,19 @@ describe('createCoreClient', () => {
               content: {
                 format: 'markdown',
                 body: 'Release evidence is ready.',
+              },
+              contentDigest:
+                'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+              lastMutationRequestId: 'req_artifact_release_log',
+              origin: {
+                kind: 'imported',
+                sourceKind: 'direct-import',
+                sourceId: 'req_artifact_release_log',
+                sourceDigest:
+                  'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+                actor: { kind: 'user', id: 'user_demo' },
+                requestId: 'req_artifact_release_log',
+                recordedAt: '2026-07-07T00:00:00.000Z',
               },
               createdAt: '2026-07-07T00:00:00.000Z',
               updatedAt: '2026-07-07T00:00:00.000Z',
@@ -2462,8 +3105,9 @@ describe('createCoreClient', () => {
               operationId: 'km_context_demo',
               operation: 'prepare-context-material',
               workspaceId: 'ws_demo',
-              caller: 'workflow-coordinator',
+              caller: 'app-api',
               query: 'release cadence',
+              retrievalTraceId,
               outcome: 'prepared',
               materials: [
                 {
@@ -2492,6 +3136,19 @@ describe('createCoreClient', () => {
                   content: {
                     format: 'markdown',
                     body: 'Release evidence is ready.',
+                  },
+                  contentDigest:
+                    'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+                  lastMutationRequestId: 'req_artifact_release_log',
+                  origin: {
+                    kind: 'imported',
+                    sourceKind: 'direct-import',
+                    sourceId: 'req_artifact_release_log',
+                    sourceDigest:
+                      'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+                    actor: { kind: 'user', id: 'user_demo' },
+                    requestId: 'req_artifact_release_log',
+                    recordedAt: '2026-07-07T00:00:00.000Z',
                   },
                   createdAt: '2026-07-07T00:00:00.000Z',
                   updatedAt: '2026-07-07T00:00:00.000Z',
@@ -2619,7 +3276,7 @@ describe('createCoreClient', () => {
           operationId: 'km_proposal_demo',
           operation: 'draft-proposal',
           workspaceId: 'ws_demo',
-          caller: 'system',
+          caller: 'app-api',
           proposal: {
             id: 'kp_demo',
             workspaceId: 'ws_demo',
@@ -2654,68 +3311,12 @@ describe('createCoreClient', () => {
           confidence: 0.5,
         },
       },
-      'POST /api/app/workspaces/ws_demo/knowledge/claims/kc_release/promotion': {
-        body: {
-          claim: {
-            id: 'kc_release',
-            workspaceId: 'ws_demo',
-            statement: 'Release cadence is weekly.',
-            sourceReferences: ['knowledge:kn_demo'],
-            scope: 'workspace',
-            producer: 'knowledge-manager',
-            confidence: 0.8,
-            freshness: 'current',
-            reviewState: 'accepted',
-            conflictStatus: 'none',
-            createdAt: '2026-07-07T00:00:00.000Z',
-            updatedAt: '2026-07-07T00:00:00.000Z',
-          },
-          draft: {
-            operationId: 'km_claim_promotion_demo',
-            operation: 'draft-proposal',
-            workspaceId: 'ws_demo',
-            caller: 'system',
-            proposal: {
-              id: 'kp_claim_demo',
-              workspaceId: 'ws_demo',
-              title: 'Claim: Release cadence is weekly.',
-              summary: 'Release cadence is weekly.',
-              status: 'pending',
-              createdAt: timestamp,
-              updatedAt: timestamp,
-            },
-            sourceReferences: ['knowledge:kn_demo'],
-            sourceLineage: [
-              {
-                reference: 'knowledge:kn_demo',
-                classification: 'workspace-knowledge',
-                sourceId: null,
-                knowledgeEntryId: 'kn_demo',
-                title: 'Release plan',
-                reviewRequired: false,
-                detail: 'Reference resolves to an existing workspace knowledge entry.',
-              },
-            ],
-            validation: {
-              status: 'ready-for-review',
-              checks: [
-                {
-                  code: 'source-reference-resolved',
-                  passed: true,
-                  detail: 'Reference resolves to an existing workspace knowledge entry.',
-                },
-              ],
-            },
-            confidence: 0.8,
-          },
-        },
-      },
       'POST /api/app/workspaces/ws_demo/knowledge/manager/repairs': {
         body: {
           operationId: 'km_repair_demo',
           operation: 'suggest-repair',
           workspaceId: 'ws_demo',
-          caller: 'system',
+          caller: 'app-api',
           outcome: 'suggested',
           suggestions: [
             {
@@ -2735,7 +3336,7 @@ describe('createCoreClient', () => {
           operationId: 'km_health_demo',
           operation: 'health-check',
           workspaceId: 'ws_demo',
-          caller: 'system',
+          caller: 'app-api',
           outcome: 'needs-attention',
           summary: 'Knowledge Manager found 1 repair suggestion.',
           checks: [
@@ -2930,6 +3531,7 @@ describe('createCoreClient', () => {
       client.app.answerKnowledgeManager('ws_demo', { query: 'release cadence' })
     ).resolves.toMatchObject({
       outcome: 'answered',
+      retrievalTraceId,
       citations: [{ knowledgeEntryId: 'mem_demo' }],
     });
     await expect(
@@ -3012,10 +3614,31 @@ describe('createCoreClient', () => {
     });
     await expect(
       client.app.retrieveKnowledge('ws_demo', { query: 'release cadence', limit: 1 })
-    ).resolves.toMatchObject({
-      traceId: 'krt_demo',
-      selected: [{ conceptId: 'release-plan', matchedTerms: ['cadence', 'release'] }],
-      excluded: [{ conceptId: 'old-plan', reason: 'relevance_too_low' }],
+    ).resolves.toEqual({
+      traceId: retrievalTraceId,
+      workspaceId: 'ws_demo',
+      caller: 'app-api',
+      requestDigest: retrievalRequestDigest,
+      retrievalParameters: {
+        limit: 1,
+        pinnedConceptIds: [],
+      },
+      createdAt: timestamp,
+      selected: [
+        {
+          knowledgePageId: 'release-plan',
+          contentDigest: retrievedPageDigest,
+          score: 4,
+          sourceReferences: ['source:ks_demo'],
+        },
+      ],
+      excluded: [
+        {
+          knowledgePageId: 'old-plan',
+          contentDigest: null,
+          reason: 'sensitive_content',
+        },
+      ],
     });
     await expect(
       client.app.prepareKnowledgeContext('ws_demo', {
@@ -3026,6 +3649,7 @@ describe('createCoreClient', () => {
       })
     ).resolves.toMatchObject({
       outcome: 'prepared',
+      retrievalTraceId,
       materials: [{ knowledgeEntryId: 'kn_demo' }],
       artifacts: [{ id: 'artifact_release_log' }],
       workspaceFiles: [{ path: 'docs/release.md' }],
@@ -3047,6 +3671,7 @@ describe('createCoreClient', () => {
       trace: {
         id: 'ctxpkg_km_context_demo',
         response: {
+          retrievalTraceId,
           packageTrace: {
             contextPackageId: 'ctxpkg_km_context_demo',
           },
@@ -3083,17 +3708,6 @@ describe('createCoreClient', () => {
       operation: 'draft-proposal',
       proposal: { id: 'kp_demo', status: 'pending' },
     });
-    await expect(
-      client.app.promoteKnowledgeClaim('ws_demo', 'kc_release', {
-        requestId: 'req_claim_promote',
-      })
-    ).resolves.toMatchObject({
-      claim: { id: 'kc_release' },
-      draft: {
-        operation: 'draft-proposal',
-        proposal: { id: 'kp_claim_demo', status: 'pending' },
-      },
-    });
     await expect(client.app.suggestKnowledgeRepairs('ws_demo', {})).resolves.toMatchObject({
       operation: 'suggest-repair',
       suggestions: [{ kind: 'duplicate-title' }],
@@ -3103,6 +3717,16 @@ describe('createCoreClient', () => {
       outcome: 'needs-attention',
       repairSuggestions: [{ kind: 'duplicate-title' }],
     });
+    for (const path of [
+      '/api/app/workspaces/ws_demo/knowledge/manager/answer',
+      '/api/app/workspaces/ws_demo/knowledge/manager/context',
+      '/api/app/workspaces/ws_demo/knowledge/manager/proposals',
+      '/api/app/workspaces/ws_demo/knowledge/manager/repairs',
+      '/api/app/workspaces/ws_demo/knowledge/manager/health',
+      '/api/app/workspaces/ws_demo/knowledge/sources',
+    ]) {
+      expect(requests.find((request) => request.path === path)?.body).not.toHaveProperty('caller');
+    }
     await expect(client.app.search('protocol design')).resolves.toEqual({
       items: [{ kind: 'workspace', id: 'ws_demo', title: 'Demo' }],
     });
@@ -3189,7 +3813,6 @@ describe('createCoreClient', () => {
       'POST /api/app/workspaces/ws_demo/knowledge/manager/context/ctxpkg_km_context_demo/materialization',
       'GET /api/app/workspaces/ws_demo/knowledge/manager/context/ctxpkg_km_context_demo/materialization',
       'POST /api/app/workspaces/ws_demo/knowledge/manager/proposals',
-      'POST /api/app/workspaces/ws_demo/knowledge/claims/kc_release/promotion',
       'POST /api/app/workspaces/ws_demo/knowledge/manager/repairs',
       'POST /api/app/workspaces/ws_demo/knowledge/manager/health',
       'GET /api/app/search?q=protocol%20design',
@@ -3543,8 +4166,8 @@ describe('createCoreClient', () => {
           review: {
             proposalId: 'kp_demo',
             workspaceId: 'ws_demo',
-            status: 'edited',
-            message: 'Keep the edited version.',
+            status: 'accepted',
+            message: 'Accept the proposal.',
             decidedAt: timestamp,
             requestId: 'knowledge-review-request-1',
           },
@@ -3720,15 +4343,13 @@ describe('createCoreClient', () => {
     await expect(
       client.app.submitKnowledgeProposalDecision('ws_demo', 'kp_demo', {
         requestId: 'knowledge-review-request-1',
-        decision: 'edited',
-        message: 'Keep the edited version.',
-        title: 'Edited knowledge title',
-        summary: 'Edited knowledge summary.',
+        decision: 'accepted',
+        message: 'Accept the proposal.',
       })
     ).resolves.toMatchObject({
       review: {
         proposalId: 'kp_demo',
-        status: 'edited',
+        status: 'accepted',
       },
     });
     await expect(client.app.getSetupDiagnostics()).resolves.toEqual(setupDiagnostics());
@@ -3851,10 +4472,8 @@ describe('createCoreClient', () => {
       requests.find((request) => request.path.endsWith('/knowledge/proposals/kp_demo/decision'))
         ?.body
     ).toMatchObject({
-      decision: 'edited',
-      message: 'Keep the edited version.',
-      title: 'Edited knowledge title',
-      summary: 'Edited knowledge summary.',
+      decision: 'accepted',
+      message: 'Accept the proposal.',
       requestId: 'knowledge-review-request-1',
     });
   });
@@ -4085,7 +4704,7 @@ describe('createCoreClient', () => {
     const { client } = createFakeClient({
       'GET /api/meta': {
         body: {
-          protocolVersion: '0.3.0',
+          protocolVersion: '0.4.0',
           capabilities: ['core.questions'],
           eventFamilies: ['turn.started', 'turn.completed'],
         },
@@ -4109,7 +4728,7 @@ describe('createCoreClient', () => {
     const fetcher: typeof fetch = async () =>
       sseResponse([
         {
-          protocolVersion: '0.3.0',
+          protocolVersion: '0.4.0',
           event: 'turn.completed',
           sequence: 'not-a-number',
           requestId,
@@ -4173,7 +4792,7 @@ describe('createCoreClient', () => {
         });
 
         return jsonResponse({
-          protocolVersion: '0.3.0',
+          protocolVersion: '0.4.0',
           capabilities: [],
           eventFamilies: [],
         });

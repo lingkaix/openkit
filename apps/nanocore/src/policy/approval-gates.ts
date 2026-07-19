@@ -1,5 +1,6 @@
 import type { FsStore } from '../lib/store.js';
 import type { WorkspaceDb } from '../storage/db.js';
+import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import { recordProductPermissionDecision } from './permission-decisions.js';
 
 /** Input for creating one Git push policy approval gate. */
@@ -49,11 +50,15 @@ export interface CreatePolicyApprovalGateResult {
  *
  * @param input Approval gate input.
  * @returns Created record ids.
- * @throws Error when the Turn is not the exact running owner for a new Gate.
+ * @throws Error when the Approval id is reserved for imported history or the Turn is not the exact running owner for a new Gate.
  */
 export function createPolicyApprovalGate(
   input: CreatePolicyApprovalGateInput
 ): CreatePolicyApprovalGateResult {
+  if (!isTargetIssuedEffectAuthority(input.approvalId)) {
+    throw new Error('Approval id uses the reserved portable-import authority namespace.');
+  }
+
   const turn = input.store.getTurnById(input.turnId);
   if (
     turn.workspaceId !== input.workspaceId ||

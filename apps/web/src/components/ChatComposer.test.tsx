@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { ChatComposer, type ChatComposerMode } from './ChatComposer';
+import { ChatComposer, type ChatComposerMode, type ChatComposerSubmitInput } from './ChatComposer';
 
 const workspaces = [
   { id: 'ws_demo', name: 'Demo Workspace' },
@@ -21,12 +21,7 @@ describe('ChatComposer', () => {
   it('submits agent chat with the selected workspace and model', async () => {
     const [draft, setDraft] = createSignal('');
     const [mode, setMode] = createSignal<ChatComposerMode>('agent');
-    let submitted: {
-      input: string;
-      mode: ChatComposerMode;
-      modelId: string | null;
-      workspaceId: string;
-    } | null = null;
+    let submitted: ChatComposerSubmitInput | null = null;
 
     render(() => (
       <ChatComposer
@@ -92,8 +87,10 @@ describe('ChatComposer', () => {
     expect(screen.getByText(/demo workspace/i)).toBeInTheDocument();
   });
 
-  it('switches to quick chat and keeps voice input unavailable', () => {
+  it('submits quick chat without exposing or carrying a caller-selected model', () => {
+    const [draft, setDraft] = createSignal('Answer briefly');
     const [mode, setMode] = createSignal<ChatComposerMode>('agent');
+    let submitted: ChatComposerSubmitInput | null = null;
 
     render(() => (
       <ChatComposer
@@ -103,16 +100,18 @@ describe('ChatComposer', () => {
         isSubmitting={false}
         mode={mode()}
         models={models}
-        onInput={() => undefined}
+        onInput={setDraft}
         onModeChange={setMode}
         onModelChange={() => undefined}
-        onSubmit={() => undefined}
+        onSubmit={(input) => {
+          submitted = input;
+        }}
         placeholder="Ask OpenKit anything."
         quickChatEnabled={true}
         selectedModelId="model_codex"
         selectedWorkspaceId="ws_demo"
         submitLabel="Start thread"
-        value=""
+        value={draft()}
         workspaceLocked={false}
         workspaces={workspaces}
       />
@@ -121,6 +120,13 @@ describe('ChatComposer', () => {
     fireEvent.click(screen.getByRole('button', { name: /quick chat/i }));
 
     expect(mode()).toBe('quick');
+    expect(screen.queryByRole('combobox', { name: /model/i })).toBeNull();
     expect(screen.getByRole('button', { name: /use voice input/i })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: /start thread/i }));
+    expect(submitted).toEqual({
+      input: 'Answer briefly',
+      mode: 'quick',
+      workspaceId: 'ws_demo',
+    });
   });
 });

@@ -7,12 +7,14 @@ import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
 import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
-  type WorkerSandboxAccess,
 } from '@openkit/config-schema';
-import { WorkerCanonicalEventRecordSchema } from '@openkit/worker-protocol';
 import { describe, expect, it, vi } from 'vitest';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { resolveAgentEnvironmentPackage } from './agent-environment.js';
+import {
+  type PreparedWorkerContextPackage,
+  resolveAgentEnvironmentPackage,
+} from './agent-environment.js';
 import type { OpenShellCellLifecycle } from './openshell-cell.js';
 import type { OpenShellSandboxExecInput } from './openshell-cli.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
@@ -20,9 +22,9 @@ import {
   OpenShellWorkerGovernanceBackend,
   type OpenShellWorkerGovernanceBackendOptions,
   type OpenShellWorkerGovernanceClient,
+  WORKER_ARTIFACT_RECOVERY_REQUIRED,
   type WorkerGovernanceMaterializationContext,
 } from './worker-governance-backend.js';
-import { importWorkerTranscript } from './worker-transcript.js';
 
 /** Creates one OpenShell backend with an isolated private data root. */
 function createTestOpenShellBackend(
@@ -285,15 +287,7 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     expect(cli.createSandboxCalls).toEqual([]);
     expect(cli.statusCalls).toEqual([]);
     expect(existsSync(join(dataRoot, identity.stagingDirectoryRef))).toBe(false);
-    const materialization = await backend.materialize(environmentPackage, {
-      runtimeFileCredentials: [
-        {
-          credentialValue: 'runtime_secret_value',
-          targetPath: '/sandbox/.codex/auth.json',
-        },
-      ],
-      workspaceRoots,
-    });
+    const materialization = await backend.materialize(environmentPackage, { workspaceRoots });
     const serialized = JSON.stringify(materialization);
 
     expect(cli.createSandboxCalls).toEqual([
@@ -354,7 +348,12 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       stagingDirectoryRef: relative(dataRoot, sessionDirectory),
       transientProviderInstanceId: null,
     });
-    expect(cli.execSandboxCalls).toEqual([]);
+    expect(cli.execSandboxCalls).toEqual([
+      expect.objectContaining({
+        gateway: 'openshell',
+        name: expectedOpenShellSandboxName(environmentPackage.scope.agentSessionId),
+      }),
+    ]);
     expect(materialization).toMatchObject({
       backendKind: 'openshell',
       packageSnapshotId: environmentPackage.snapshotId,
@@ -392,8 +391,12 @@ describe('OpenShellWorkerGovernanceBackend', () => {
         gateway: 'openshell',
         name: expectedOpenShellSandboxName(environmentPackage.scope.agentSessionId),
       }),
+      expect.objectContaining({
+        gateway: 'openshell',
+        name: expectedOpenShellSandboxName(environmentPackage.scope.agentSessionId),
+      }),
     ]);
-    expect(cli.execSandboxCalls[0]?.command.join(' ')).toContain('openkit-codex-shim');
+    expect(cli.execSandboxCalls[1]?.command.join(' ')).toContain('openkit-worker-shim');
   });
 
   it('delegates launch through a detached sandbox shell without interpolating worker argv', async () => {
@@ -560,6 +563,30 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     await expect(
       backend.restoreSession(environmentPackage, backend.planSession(environmentPackage))
     ).resolves.toBeUndefined();
+  });
+
+  it('requires recovery for any restored Artifact stream before parsing declarations', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-openshell-restored-artifact-'));
+    const environmentPackage = createOpenShellPackage([]);
+    const cli = new FakeOpenShellClient({
+      downloads: { '/sandbox/openkit/session/artifacts.jsonl': '{malformed\n' },
+    });
+    const original = createTestOpenShellBackend({
+      cli,
+      dataRoot,
+      gatewayName: 'openshell',
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'token_openshell_restored_artifact',
+      }),
+    });
+    await original.materialize(environmentPackage);
+    const backend = createTestOpenShellBackend({ cli, dataRoot, gatewayName: 'openshell' });
+    await backend.restoreSession(environmentPackage, backend.planSession(environmentPackage));
+
+    await expect(backend.collectTranscript(environmentPackage.snapshotId)).rejects.toMatchObject({
+      code: WORKER_ARTIFACT_RECOVERY_REQUIRED,
+    });
+    expect(cli.execSandboxCalls).toEqual([]);
   });
 
   it('rejects a conflicting restored OpenShell identity before any external effect', async () => {
@@ -1028,7 +1055,7 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     expect(cli.createSandboxCalls).toEqual([]);
   });
 
-  it('uploads backend-private runtime file credentials without leaking them in materialization', async () => {
+  it('uploads backend-private runtime files without leaking them in materialization', async () => {
     const cli = new FakeOpenShellClient();
     const backend = createTestOpenShellBackend({
       cli,
@@ -1038,84 +1065,25 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       }),
     });
     const environmentPackage = createOpenShellPackage();
+    const credentialPath = '/sandbox/.config/openkit/runtime-credentials.json';
 
     const materialization = await backend.materialize(environmentPackage, {
       runtimeFileCredentials: [
         {
-          credentialValue: '{"tokens":{"openai":"codex_backend_secret"}}',
-          targetPath: '/sandbox/.codex/auth.json',
+          credentialValue: '{"token":"backend_secret"}',
+          targetPath: credentialPath,
         },
       ],
       workspaceRoots: [],
     });
     const upload = cli.createSandboxCalls[0]?.uploads?.find(
-      (candidate) => candidate.targetPath === '/sandbox/.codex/auth.json'
+      (candidate) => candidate.targetPath === credentialPath
     );
 
     expect(upload).toBeDefined();
-    expect(readFileSync(upload?.sourcePath ?? '', 'utf8')).toBe(
-      '{"tokens":{"openai":"codex_backend_secret"}}'
-    );
-    expect(JSON.stringify(materialization)).not.toContain('codex_backend_secret');
-    expect(JSON.stringify(cli.createSandboxCalls)).not.toContain('codex_backend_secret');
-  });
-
-  it('merges backend-private runtime env credentials without leaking them in materialization', async () => {
-    const cli = new FakeOpenShellClient();
-    const backend = createTestOpenShellBackend({
-      cli,
-      gatewayName: 'openshell',
-      workerControlGateway: new WorkerControlGateway({
-        createToken: () => 'token_openshell_control_1',
-      }),
-    });
-    const environmentPackage = createOpenShellPackage();
-
-    const materialization = await backend.materialize(environmentPackage, {
-      runtimeEnvCredentials: [
-        {
-          credentialValue: 'legacy_env_backend_secret',
-          targetEnvVarName: 'LEGACY_API_KEY',
-        },
-      ],
-      workspaceRoots: [],
-    });
-
-    expect(cli.createSandboxCalls[0]?.env).toEqual(
-      expect.objectContaining({ LEGACY_API_KEY: 'legacy_env_backend_secret' })
-    );
-    expect(JSON.stringify(materialization)).not.toContain('legacy_env_backend_secret');
-  });
-
-  it('does not accept a non-contract host Codex auth upload option', async () => {
-    const cli = new FakeOpenShellClient();
-    const authPath = join(mkdtempSync(join(tmpdir(), 'openkit-codex-auth-upload-')), 'auth.json');
-
-    writeFileSync(authPath, '{"tokens":{"openai":"codex_host_secret"}}', 'utf8');
-
-    const backendOptions = {
-      cellLifecycle: new FakeOpenShellCellLifecycle(),
-      cli,
-      codexAuthJsonPath: authPath,
-      dataRoot: mkdtempSync(join(tmpdir(), 'openkit-codex-auth-backend-')),
-      deploymentId: 'local',
-      gatewayName: 'openshell',
-      workerControlGateway: new WorkerControlGateway({
-        createToken: () => 'token_openshell_control_1',
-      }),
-    };
-    const backend = new OpenShellWorkerGovernanceBackend(backendOptions);
-
-    await backend.materialize(createOpenShellPackage(), {
-      workspaceRoots: [],
-    });
-
-    const upload = cli.createSandboxCalls[0]?.uploads?.find(
-      (candidate) => candidate.targetPath === '/sandbox/.codex/auth.json'
-    );
-
-    expect(upload).toBeUndefined();
-    expect(JSON.stringify(cli.createSandboxCalls)).not.toContain('codex_host_secret');
+    expect(readFileSync(upload?.sourcePath ?? '', 'utf8')).toBe('{"token":"backend_secret"}');
+    expect(JSON.stringify(materialization)).not.toContain('backend_secret');
+    expect(JSON.stringify(cli.createSandboxCalls)).not.toContain('backend_secret');
   });
 
   it('materializes exactly the AEP network allowlist', async () => {
@@ -1144,12 +1112,12 @@ describe('OpenShellWorkerGovernanceBackend', () => {
         network: [
           {
             access: 'read-write',
-            binaries: ['/usr/bin/npm'],
-            host: 'registry.npmjs.org',
-            id: 'npm_registry',
+            binaries: ['/usr/local/bin/codex'],
+            host: 'api.example.com',
+            id: 'direct_api',
             port: 443,
             protocol: 'rest',
-            purpose: 'Install package dependencies',
+            purpose: 'Call an external API',
           },
         ],
       }),
@@ -1162,24 +1130,24 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       (match) => match[1]
     );
 
-    expect(endpointNames).toEqual(['openkit_worker_control', 'npm_registry']);
+    expect(endpointNames).toEqual([
+      'openkit_worker_control',
+      'openkit_backend_local_inference',
+      'direct_api',
+    ]);
   });
 
   it('materializes distinct verified relay providers without direct credentials or egress', async () => {
     const cellLifecycle = new FakeOpenShellCellLifecycle();
     const cli = new FakeOpenShellClient();
-    const configDirectory = mkdtempSync(join(tmpdir(), 'openkit-relay-codex-config-'));
-    const configPath = join(configDirectory, 'config.toml');
     const controlTokens = ['relay_token_one', 'relay_token_two'];
 
-    writeFileSync(configPath, 'model_provider = "direct"\n', 'utf8');
     const workerControlGateway = new WorkerControlGateway({
       createToken: () => controlTokens.shift() ?? 'unexpected_relay_token',
     });
     const backend = createTestOpenShellBackend({
       cellLifecycle,
       cli,
-      codexConfigTomlPath: configPath,
       gatewayName: 'openshell',
       workerControlGateway,
     });
@@ -1216,7 +1184,7 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       expect(index === 0 ? firstProfileMode : statSync(call.path).mode & 0o777).toBe(0o600);
 
       expect(profile).toEqual({
-        binaries: ['/usr/local/bin/codex', '/usr/local/lib/codex/bin/codex'],
+        binaries: ['/usr/local/bin/codex'],
         category: 'inference',
         credentials: [
           {
@@ -1290,10 +1258,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       [relayProviderNames[1]],
     ]);
     expect(cli.createSandboxCalls[0]?.env).not.toHaveProperty('OPENKIT_WORKER_INFERENCE_TOKEN');
-    const uploadTargets = cli.createSandboxCalls[0]?.uploads?.map((upload) => upload.targetPath);
-
-    expect(uploadTargets).not.toContain('/sandbox/.codex/auth.json');
-    expect(uploadTargets).not.toContain('/sandbox/.codex/config.toml');
     const policy = firstPolicyText;
 
     expect(policy).not.toContain('openkit_worker_inference');
@@ -1371,7 +1335,7 @@ describe('OpenShellWorkerGovernanceBackend', () => {
         runtimeFileCredentials: [
           {
             credentialValue: 'direct_file_secret',
-            targetPath: '/sandbox/.codex/auth.json',
+            targetPath: '/sandbox/.config/openkit/direct-credentials.json',
           },
         ],
         workspaceRoots: [],
@@ -1686,20 +1650,20 @@ describe('OpenShellWorkerGovernanceBackend', () => {
         filesystem: [
           {
             access: 'read-write',
-            id: 'npm_cache',
-            purpose: 'Package cache',
-            targetPath: '/sandbox/.cache/npm',
+            id: 'runtime_cache',
+            purpose: 'Runtime cache',
+            targetPath: '/sandbox/.cache/runtime',
           },
         ],
         network: [
           {
             access: 'read-write',
-            binaries: ['/usr/bin/npm'],
-            host: 'registry.npmjs.org',
-            id: 'npm_registry',
+            binaries: ['/usr/local/bin/codex'],
+            host: 'api.example.com',
+            id: 'direct_api',
             port: 443,
             protocol: 'rest',
-            purpose: 'Install package dependencies',
+            purpose: 'Call an external API',
           },
         ],
       }),
@@ -1710,11 +1674,11 @@ describe('OpenShellWorkerGovernanceBackend', () => {
 
     const policy = readFileSync(cli.createSandboxCalls[0]?.policyPath ?? '', 'utf8');
 
-    expect(policy).toContain('npm_registry:');
-    expect(policy).toContain('path: /usr/bin/npm');
-    expect(policy).toContain('host: registry.npmjs.org');
+    expect(policy).toContain('direct_api:');
+    expect(policy).toContain('path: /usr/local/bin/codex');
+    expect(policy).toContain('host: api.example.com');
     expect(policy).toContain('access: read-write');
-    expect(policy).toContain('    - /sandbox/.cache/npm');
+    expect(policy).toContain('    - /sandbox/.cache/runtime');
   });
 
   it('preserves read-only workspace roots without a broad writable workspace grant', async () => {
@@ -1748,37 +1712,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     expect(policy).toContain('    - /workspace/vendor-sdk');
     expect(readWriteSection).not.toContain('    - /workspace\n');
     expect(readWriteSection).not.toContain('    - /workspace/vendor-sdk');
-  });
-
-  it('uses vault-backed Codex auth runtime-file uploads', async () => {
-    const cli = new FakeOpenShellClient();
-
-    const backend = createTestOpenShellBackend({
-      cli,
-      gatewayName: 'openshell',
-      workerControlGateway: new WorkerControlGateway({
-        createToken: () => 'token_openshell_control_1',
-      }),
-    });
-
-    await backend.materialize(createOpenShellPackage(), {
-      runtimeFileCredentials: [
-        {
-          credentialValue: '{"tokens":{"openai":"codex_vault_secret"}}',
-          targetPath: '/sandbox/.codex/auth.json',
-        },
-      ],
-      workspaceRoots: [],
-    });
-
-    const authUploads = cli.createSandboxCalls[0]?.uploads?.filter(
-      (candidate) => candidate.targetPath === '/sandbox/.codex/auth.json'
-    );
-
-    expect(authUploads).toHaveLength(1);
-    expect(readFileSync(authUploads?.[0]?.sourcePath ?? '', 'utf8')).toBe(
-      '{"tokens":{"openai":"codex_vault_secret"}}'
-    );
   });
 
   it('collects transient relay provider evidence without its credential value', async () => {
@@ -1918,7 +1851,7 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     ]);
   });
 
-  it('uploads backend-private workspace bundles and extracts them before worker startup', async () => {
+  it('extracts backend-private workspace bundles during materialization before worker startup', async () => {
     const cli = new FakeOpenShellClient();
     const sourcePath = createGitWorkspace('openkit-openshell-workspace-source-');
     const readonlySourcePath = mkdtempSync(join(tmpdir(), 'openkit-openshell-readonly-source-'));
@@ -1965,26 +1898,31 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     expect(readonlyUpload?.sourcePath).toMatch(/workspace-docs\.tar$/);
     expect(existsSync(readonlyUpload?.sourcePath ?? '')).toBe(true);
     expect(createCall?.command).toEqual([
-      'openkit-codex-shim',
+      'openkit-worker-shim',
       '--package',
       '/openkit/config/package.json',
       '--dry-run',
     ]);
+    expect(cli.execSandboxCalls).toHaveLength(1);
+    expect(cli.execSandboxCalls[0]?.command.every((argument) => !/[\r\n]/.test(argument))).toBe(
+      true
+    );
+    expect(decodeWorkspaceBundleMaterializationPlan(cli.execSandboxCalls[0]?.command)).toEqual([
+      {
+        targetPath: '/openkit/config/workspaces/repo.tar',
+        workerPath: '/workspace/openkit/worktrees/main',
+      },
+      {
+        targetPath: '/openkit/config/workspaces/docs.tar',
+        workerPath: '/workspace/openkit/inputs',
+      },
+    ]);
     await backend.launch(materialization);
-    expect(cli.execSandboxCalls[0]?.command.slice(4)).toEqual([
-      'bash',
-      '-lc',
-      expect.stringContaining(
-        "tar -xf '/openkit/config/workspaces/repo.tar' -C '/workspace/openkit/worktrees/main'"
-      ),
-    ]);
-    expect(cli.execSandboxCalls[0]?.command.slice(4)).toEqual([
-      'bash',
-      '-lc',
-      expect.stringContaining(
-        "tar -xf '/openkit/config/workspaces/docs.tar' -C '/workspace/openkit/inputs'"
-      ),
-    ]);
+    expect(cli.execSandboxCalls).toHaveLength(2);
+    expect(cli.execSandboxCalls[1]?.command.slice(4)).toEqual(
+      environmentPackage.runtime.command.argv
+    );
+    expect(cli.execSandboxCalls[1]?.command.join(' ')).not.toContain('tar -xf');
     expect(materialization.workspaceInputs).toEqual([
       expect.objectContaining({ id: 'repo', target: '/workspace/openkit/worktrees/main' }),
       expect.objectContaining({ id: 'docs', target: '/workspace/openkit/inputs' }),
@@ -1993,13 +1931,28 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     expect(JSON.stringify(createCall)).not.toContain(readonlySourcePath);
   });
 
-  it('uploads pre-materialized read-only workspace inputs without leaking host paths', async () => {
+  it('verifies an exact pre-materialized Context Package inventory before returning', async () => {
     const cli = new FakeOpenShellClient();
     const materializedPath = mkdtempSync(join(tmpdir(), 'openkit-openshell-materialized-input-'));
-    writeFileSync(
-      join(materializedPath, 'package.json'),
-      '{"version":"worker-context-package-v1"}\n'
-    );
+    const packageContent = '{"version":"worker-context-package-v1"}\n';
+    const instructionsContent = '# Exact worker request\n';
+    writeFileSync(join(materializedPath, 'package.json'), packageContent);
+    writeFileSync(join(materializedPath, 'instructions.md'), instructionsContent);
+    const fileInventory = [
+      {
+        byteLength: Buffer.byteLength(instructionsContent),
+        contentDigest: `sha256:${createHash('sha256').update(instructionsContent).digest('hex')}`,
+        path: 'instructions.md',
+      },
+      {
+        byteLength: Buffer.byteLength(packageContent),
+        contentDigest: `sha256:${createHash('sha256').update(packageContent).digest('hex')}`,
+        path: 'package.json',
+      },
+    ];
+    const packageRootDigest = `sha256:${createHash('sha256')
+      .update(JSON.stringify(fileInventory))
+      .digest('hex')}`;
     const backend = createTestOpenShellBackend({
       cli,
       gatewayName: 'openshell',
@@ -2015,45 +1968,183 @@ describe('OpenShellWorkerGovernanceBackend', () => {
         sourcePath: createGitWorkspace('openkit-openshell-materialized-repo-'),
         workerPath: '/workspace/openkit',
       },
-      {
-        access: 'read-only',
-        id: 'context',
-        sourceKind: 'materialized-dir',
-        sourcePath: materializedPath,
-        workerPath: '/openkit/context',
-      },
     ];
-    const environmentPackage = createOpenShellPackage(workspaceRoots);
+    const contextRoot: MaterializedWorkspaceRoot = {
+      access: 'read-only',
+      id: 'context_tu_1',
+      sourceKind: 'materialized-dir',
+      sourcePath: materializedPath,
+      workerPath: '/openkit/context',
+    };
+    const environmentPackage = createOpenShellPackage(
+      workspaceRoots,
+      {},
+      {
+        contentDigest: packageRootDigest,
+        workspaceRoot: contextRoot,
+      }
+    );
 
-    const materialization = await backend.materialize(environmentPackage, { workspaceRoots });
+    const materialization = await backend.materialize(environmentPackage, {
+      workspaceRoots: [...workspaceRoots, contextRoot],
+    });
 
     const createCall = cli.createSandboxCalls[0];
     const contextUpload = createCall?.uploads?.find(
-      (upload) => upload.targetPath === '/openkit/config/workspaces/context.tar'
+      (upload) => upload.targetPath === '/openkit/config/workspaces/context_tu_1.tar'
     );
 
     expect(contextUpload).toBeDefined();
-    expect(contextUpload?.sourcePath).toMatch(/workspace-context\.tar$/);
+    expect(contextUpload?.sourcePath).toMatch(/workspace-context_tu_1\.tar$/);
     expect(existsSync(contextUpload?.sourcePath ?? '')).toBe(true);
     expect(createCall?.command).toEqual([
-      'openkit-codex-shim',
+      'openkit-worker-shim',
       '--package',
       '/openkit/config/package.json',
       '--dry-run',
     ]);
-    await backend.launch(materialization);
-    expect(cli.execSandboxCalls[0]?.command.slice(4)).toEqual([
-      'bash',
-      '-lc',
-      expect.stringContaining(
-        "tar -xf '/openkit/config/workspaces/context.tar' -C '/workspace/openkit/inputs'"
-      ),
+    expect(cli.execSandboxCalls).toHaveLength(1);
+    expect(decodeWorkspaceBundleMaterializationPlan(cli.execSandboxCalls[0]?.command)).toEqual([
+      {
+        targetPath: '/openkit/config/workspaces/repo.tar',
+        workerPath: '/workspace/openkit/worktrees/main',
+      },
+      {
+        expectedFileInventory: fileInventory,
+        expectedRootDigest: packageRootDigest,
+        targetPath: '/openkit/config/workspaces/context_tu_1.tar',
+        workerPath: '/openkit/context',
+      },
     ]);
+    const materializationCommand = cli.execSandboxCalls[0]?.command ?? [];
+    const verificationRoot = mkdtempSync(join(tmpdir(), 'openkit-openshell-context-verify-'));
+    const verificationPlan = [
+      {
+        expectedFileInventory: fileInventory,
+        expectedRootDigest: packageRootDigest,
+        targetPath: contextUpload?.sourcePath,
+        workerPath: verificationRoot,
+      },
+    ];
+    expect(() =>
+      execFileSync(
+        'node',
+        [
+          '-e',
+          materializationCommand[2] ?? '',
+          Buffer.from(JSON.stringify(verificationPlan)).toString('base64url'),
+        ],
+        { stdio: 'pipe' }
+      )
+    ).not.toThrow();
+    expect(() =>
+      execFileSync(
+        'node',
+        [
+          '-e',
+          materializationCommand[2] ?? '',
+          Buffer.from(
+            JSON.stringify([
+              {
+                ...verificationPlan[0],
+                expectedRootDigest: `sha256:${'0'.repeat(64)}`,
+              },
+            ])
+          ).toString('base64url'),
+        ],
+        { stdio: 'pipe' }
+      )
+    ).toThrow();
+    await backend.launch(materialization);
+    expect(cli.execSandboxCalls).toHaveLength(2);
+    expect(cli.execSandboxCalls[1]?.command.slice(4)).toEqual(
+      environmentPackage.runtime.command.argv
+    );
+    expect(cli.execSandboxCalls[1]?.command.join(' ')).not.toContain('tar -xf');
     expect(materialization.workspaceInputs).toEqual([
       expect.objectContaining({ id: 'repo', target: '/workspace/openkit/worktrees/main' }),
-      expect.objectContaining({ id: 'context', target: '/workspace/openkit/inputs' }),
+      expect.objectContaining({ id: 'context_tu_1', target: '/openkit/context' }),
     ]);
     expect(JSON.stringify(createCall)).not.toContain(materializedPath);
+  });
+
+  it('rejects a Context Package whose prepared root digest does not match its files', async () => {
+    const cli = new FakeOpenShellClient();
+    const materializedPath = mkdtempSync(join(tmpdir(), 'openkit-openshell-invalid-context-'));
+    writeFileSync(join(materializedPath, 'package.json'), '{"version":1}\n');
+    const contextRoot: MaterializedWorkspaceRoot = {
+      access: 'read-only',
+      id: 'context_tu_1',
+      sourceKind: 'materialized-dir',
+      sourcePath: materializedPath,
+      workerPath: '/openkit/context',
+    };
+    const environmentPackage = createOpenShellPackage(
+      [],
+      {},
+      {
+        contentDigest: `sha256:${'0'.repeat(64)}`,
+        workspaceRoot: contextRoot,
+      }
+    );
+    const backend = createTestOpenShellBackend({
+      cli,
+      gatewayName: 'openshell',
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'token_openshell_control_1',
+      }),
+    });
+
+    await expect(
+      backend.materialize(environmentPackage, { workspaceRoots: [contextRoot] })
+    ).rejects.toThrow('OpenShell Context Package root digest does not match its file inventory.');
+    expect(cli.createSandboxCalls).toEqual([]);
+    expect(cli.execSandboxCalls).toEqual([]);
+  });
+
+  it('redacts backend-private Context Package source paths when bytes are unavailable', async () => {
+    const cli = new FakeOpenShellClient();
+    const sourcePath = join(
+      mkdtempSync(join(tmpdir(), 'openkit-openshell-private-context-parent-')),
+      'backend-private-context-source'
+    );
+    const contextRoot: MaterializedWorkspaceRoot = {
+      access: 'read-only',
+      id: 'context_tu_1',
+      sourceKind: 'materialized-dir',
+      sourcePath,
+      workerPath: '/openkit/context',
+    };
+    const environmentPackage = createOpenShellPackage(
+      [],
+      {},
+      {
+        contentDigest: `sha256:${'0'.repeat(64)}`,
+        workspaceRoot: contextRoot,
+      }
+    );
+    const backend = createTestOpenShellBackend({
+      cli,
+      gatewayName: 'openshell',
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'token_openshell_control_1',
+      }),
+    });
+
+    const failure = await backend
+      .materialize(environmentPackage, { workspaceRoots: [contextRoot] })
+      .then(
+        () => new Error('Expected Context Package materialization to fail.'),
+        (error: unknown) => error
+      );
+
+    expect(failure).toMatchObject({
+      code: 'source_unavailable',
+      message: 'OpenShell Context Package source is unavailable.',
+    });
+    expect((failure as Error).message).not.toContain(sourcePath);
+    expect(cli.createSandboxCalls).toEqual([]);
+    expect(cli.execSandboxCalls).toEqual([]);
   });
 
   it('omits macOS extended attributes from workspace bundle archives', async () => {
@@ -2107,43 +2198,14 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     expect(archiveStrings).not.toContain('com.apple.provenance');
   });
 
-  it('does not upload legacy explicit host Codex auth files', async () => {
-    const cli = new FakeOpenShellClient();
-    const backend = createTestOpenShellBackend({
-      cli,
-      codexConfigTomlPath: '/home/ubuntu/.codex/config.toml',
-      gatewayName: 'openshell',
-      workerControlGateway: new WorkerControlGateway({
-        createToken: () => 'token_openshell_control_1',
-      }),
-    });
-
-    await backend.materialize(createOpenShellPackage());
-
-    expect(cli.createSandboxCalls[0]?.uploads).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          targetPath: '/sandbox/.codex/auth.json',
-        }),
-      ])
-    );
-    expect(cli.createSandboxCalls[0]?.uploads).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          sourcePath: '/home/ubuntu/.codex/config.toml',
-          targetPath: '/sandbox/.codex/config.toml',
-        }),
-      ])
-    );
-  });
-
-  it('downloads transcript evidence and artifact candidates from a retained sandbox', async () => {
+  it('downloads transcript evidence and bounded Artifact bytes', async () => {
     const environmentPackage = AgentEnvironmentPackageSchema.parse({
       ...createOpenShellPackage(),
       snapshotId: 'pkg_pending',
     });
     const cli = new FakeOpenShellClient({
       downloads: {
+        '/sandbox/openkit/session/artifact-collection/3.bin': '# Worker report\n',
         '/sandbox/openkit/session/artifacts.jsonl': `${JSON.stringify({
           schemaVersion: 1,
           kind: 'artifact',
@@ -2159,7 +2221,7 @@ describe('OpenShellWorkerGovernanceBackend', () => {
           artifact: {
             kind: 'report',
             mediaType: 'text/markdown',
-            path: '/openkit/artifacts/report.md',
+            path: '/workspace/openkit/report.md',
             title: 'Worker report',
           },
         })}\n`,
@@ -2208,13 +2270,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
       gatewayName: 'openshell',
       workerControlGateway,
     });
-    const importStore = createDemoStore();
-    importStore.createTurn(
-      environmentPackage.scope.workspaceId,
-      environmentPackage.scope.threadId,
-      'Import worker transcript'
-    );
-
     await backend.materialize(environmentPackage);
 
     await expect(backend.collectEvidence(environmentPackage.snapshotId)).resolves.toEqual(
@@ -2229,36 +2284,20 @@ describe('OpenShellWorkerGovernanceBackend', () => {
         }),
       ])
     );
-    await expect(backend.collectArtifacts(environmentPackage.snapshotId)).resolves.toEqual([
-      expect.objectContaining({
-        id: `worker-artifact-${environmentPackage.snapshotId}-3`,
-        mediaType: 'text/markdown',
-        path: '/openkit/artifacts/report.md',
-      }),
-    ]);
-    await expect(backend.collectTranscript(environmentPackage.snapshotId)).resolves.toMatchObject({
-      artifactsJsonl: expect.stringContaining('/openkit/artifacts/report.md'),
+    const transcript = await backend.collectTranscript(environmentPackage.snapshotId);
+    expect(transcript).toMatchObject({
+      artifactFiles: [{ bytes: Buffer.from('# Worker report\n'), sequence: 3 }],
+      artifactsJsonl: expect.stringContaining('/workspace/openkit/report.md'),
       eventsJsonl: expect.stringContaining('worker.ready'),
       itemsJsonl: expect.stringContaining('OpenShell worker completed the task.'),
     });
-
-    const transcript = await backend.collectTranscript(environmentPackage.snapshotId);
-    expect(Object.keys(transcript).sort()).toEqual(['artifactsJsonl', 'eventsJsonl', 'itemsJsonl']);
+    expect(Object.keys(transcript).sort()).toEqual([
+      'artifactFiles',
+      'artifactsJsonl',
+      'eventsJsonl',
+      'itemsJsonl',
+    ]);
     expect(transcript).not.toHaveProperty('runtimeProvenance');
-    const acceptedLiveEvents = (transcript.eventsJsonl ?? '')
-      .trim()
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => WorkerCanonicalEventRecordSchema.parse(JSON.parse(line)));
-    const importResult = importWorkerTranscript(importStore, environmentPackage, transcript, {
-      acceptedLiveEvents,
-    });
-
-    expect(importResult).toMatchObject({
-      itemIds: [expect.stringMatching(/^it_worker_/), 'it_artifact_ar_worker_tu_1_3'],
-      artifactIds: [expect.stringMatching(/^ar_worker_/)],
-      diagnostics: [],
-    });
   });
 
   it('treats a stock OpenShell missing optional transcript file as absent', async () => {
@@ -2286,6 +2325,171 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     await expect(backend.collectTranscript(environmentPackage.snapshotId)).resolves.toMatchObject({
       artifactsJsonl: '',
     });
+  });
+
+  it('collects declared Artifact bytes through one bounded retained-session copy', async () => {
+    const environmentPackage = createOpenShellPackage();
+    const artifactsJsonl = `${JSON.stringify({
+      artifact: {
+        kind: 'file',
+        mediaType: 'text/markdown',
+        path: '/workspace/openkit/report.md',
+        title: 'Worker report',
+      },
+      kind: 'artifact',
+      lineage: {
+        agentSessionId: environmentPackage.scope.agentSessionId,
+        packageSnapshotId: environmentPackage.snapshotId,
+        requestId: environmentPackage.scope.requestId,
+        threadId: environmentPackage.scope.threadId,
+        turnId: environmentPackage.scope.turnId,
+        workspaceId: environmentPackage.scope.workspaceId,
+      },
+      schemaVersion: 1,
+      sequence: 2,
+    })}\n`;
+    const cli = new FakeOpenShellClient({
+      downloads: {
+        '/sandbox/openkit/session/artifact-collection/2.bin': '# Exact report\n',
+        '/sandbox/openkit/session/artifacts.jsonl': artifactsJsonl,
+      },
+    });
+    const backend = createTestOpenShellBackend({
+      cli,
+      gatewayName: 'openshell',
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'token_openshell_artifact_collection',
+      }),
+    });
+
+    await backend.materialize(environmentPackage);
+    const transcript = await backend.collectTranscript(environmentPackage.snapshotId);
+
+    expect(transcript.artifactFiles).toEqual([
+      { bytes: Buffer.from('# Exact report\n'), sequence: 2 },
+    ]);
+    expect(cli.execSandboxCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          command: expect.arrayContaining([
+            '/workspace/openkit/report.md',
+            String(16 * 1024 * 1024 + 1),
+            '/openkit/session/artifact-collection/2.bin',
+          ]),
+        }),
+      ])
+    );
+    expect(
+      cli.downloadFileCalls.some((call) => call.sandboxPath === '/workspace/openkit/report.md')
+    ).toBe(false);
+  });
+
+  it.each([
+    ['runtime environment', 'prefix env-secret suffix', null],
+    ['runtime file', 'prefix file-secret suffix', null],
+    ['worker control', 'prefix control-secret suffix', null],
+    ['sandbox binding', 'prefix sandbox-binding-secret suffix', 'sandbox-binding-secret'],
+  ] as const)('rejects an embedded exact %s value before returning Artifact bytes', async (_kind, body, sandboxBindingRef) => {
+    const environmentPackage = createOpenShellPackage();
+    const cli = new FakeOpenShellClient({
+      downloads: {
+        '/sandbox/openkit/session/artifact-collection/2.bin': body,
+        '/sandbox/openkit/session/artifacts.jsonl': `${JSON.stringify({
+          artifact: {
+            kind: 'file',
+            mediaType: 'text/plain',
+            path: '/workspace/openkit/report.txt',
+            title: 'Worker report',
+          },
+          kind: 'artifact',
+          lineage: {
+            agentSessionId: environmentPackage.scope.agentSessionId,
+            packageSnapshotId: environmentPackage.snapshotId,
+            requestId: environmentPackage.scope.requestId,
+            threadId: environmentPackage.scope.threadId,
+            turnId: environmentPackage.scope.turnId,
+            workspaceId: environmentPackage.scope.workspaceId,
+          },
+          schemaVersion: 1,
+          sequence: 2,
+        })}\n`,
+      },
+    });
+    const backend = createTestOpenShellBackend({
+      cli,
+      gatewayName: 'openshell',
+      workerControlGateway: new WorkerControlGateway({ createToken: () => 'control-secret' }),
+    });
+
+    await backend.materialize(environmentPackage, {
+      runtimeEnvCredentials: [
+        { credentialValue: 'env-secret', targetEnvVarName: 'OPENKIT_TEST_SECRET' },
+      ],
+      runtimeFileCredentials: [
+        { credentialValue: 'file-secret', targetPath: '/workspace/openkit/.secret' },
+      ],
+      ...(sandboxBindingRef ? { sandboxBindingRef } : {}),
+      workspaceRoots: [],
+    });
+
+    await expect(backend.collectTranscript(environmentPackage.snapshotId)).rejects.toThrow(
+      'Worker Artifact collection rejected a sensitive value.'
+    );
+  });
+
+  it('decrements the aggregate budget and stops after the remaining-byte sentinel', async () => {
+    const environmentPackage = createOpenShellPackage();
+    const firstBytes = Buffer.alloc(1024, 0x61);
+    const remainingBytes = 16 * 1024 * 1024 - firstBytes.length;
+    const artifactsJsonl = [2, 3, 4]
+      .map((sequence) =>
+        JSON.stringify({
+          artifact: {
+            kind: 'file',
+            mediaType: 'text/plain',
+            path: `/workspace/openkit/report-${sequence}.txt`,
+            title: `Worker report ${sequence}`,
+          },
+          kind: 'artifact',
+          lineage: {
+            agentSessionId: environmentPackage.scope.agentSessionId,
+            packageSnapshotId: environmentPackage.snapshotId,
+            requestId: environmentPackage.scope.requestId,
+            threadId: environmentPackage.scope.threadId,
+            turnId: environmentPackage.scope.turnId,
+            workspaceId: environmentPackage.scope.workspaceId,
+          },
+          schemaVersion: 1,
+          sequence,
+        })
+      )
+      .join('\n');
+    const cli = new FakeOpenShellClient({
+      downloads: {
+        '/sandbox/openkit/session/artifact-collection/2.bin': firstBytes,
+        '/sandbox/openkit/session/artifact-collection/3.bin': Buffer.alloc(remainingBytes + 1),
+        '/sandbox/openkit/session/artifact-collection/4.bin': 'must not download',
+        '/sandbox/openkit/session/artifacts.jsonl': `${artifactsJsonl}\n`,
+      },
+    });
+    const backend = createTestOpenShellBackend({
+      cli,
+      gatewayName: 'openshell',
+      workerControlGateway: new WorkerControlGateway({
+        createToken: () => 'token_openshell_artifact_limit',
+      }),
+    });
+
+    await backend.materialize(environmentPackage);
+    await expect(backend.collectTranscript(environmentPackage.snapshotId)).rejects.toThrow(
+      'Worker Artifact payload exceeds the 16 MiB Turn limit.'
+    );
+    expect(
+      cli.downloadFileCalls.filter((call) =>
+        call.sandboxPath.startsWith('/sandbox/openkit/session/artifact-collection/')
+      )
+    ).toHaveLength(2);
+    expect(cli.execSandboxCalls.at(-1)?.command).toContain(String(remainingBytes + 1));
   });
 
   it.each([
@@ -2320,7 +2524,10 @@ describe('OpenShellWorkerGovernanceBackend', () => {
   });
 
   it('reports an exact missing required runtime provenance file', async () => {
-    const environmentPackage = createTrustedRelayOpenShellPackage('as_runtime_provenance_missing');
+    const environmentPackage = createTrustedRelayOpenShellPackage(
+      'as_runtime_provenance_missing',
+      true
+    );
     const cli = new FakeOpenShellClient();
     const backend = createTestOpenShellBackend({
       cli,
@@ -2331,7 +2538,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     });
 
     await backend.materialize(environmentPackage);
-    enableRuntimeProvenanceCollection(environmentPackage);
     const downloadFile = cli.downloadFile.bind(cli);
     vi.spyOn(cli, 'downloadFile').mockImplementation(async (input) => {
       if (input.sandboxPath === '/sandbox/openkit/session/runtime/raw-streams.json') {
@@ -2366,7 +2572,8 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     ['sandbox unreachable', 'OpenShell sandbox download failed: sandbox not found'],
   ])('propagates %s failures while collecting runtime provenance', async (_label, message) => {
     const environmentPackage = createTrustedRelayOpenShellPackage(
-      'as_runtime_provenance_download_failure'
+      'as_runtime_provenance_download_failure',
+      true
     );
     const cellLifecycle = new FakeOpenShellCellLifecycle();
     const cli = new FakeOpenShellClient();
@@ -2380,7 +2587,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     });
 
     await backend.materialize(environmentPackage);
-    enableRuntimeProvenanceCollection(environmentPackage);
     const downloadFile = cli.downloadFile.bind(cli);
     vi.spyOn(cli, 'downloadFile').mockImplementation(async (input) => {
       if (input.sandboxPath === '/sandbox/openkit/session/runtime/raw-streams.json') {
@@ -2394,7 +2600,10 @@ describe('OpenShellWorkerGovernanceBackend', () => {
   });
 
   it('collects declared runtime provenance as bounded session-owned files without raw payload text', async () => {
-    const environmentPackage = createTrustedRelayOpenShellPackage('as_runtime_provenance_collect');
+    const environmentPackage = createTrustedRelayOpenShellPackage(
+      'as_runtime_provenance_collect',
+      true
+    );
     const lineage = {
       agentSessionId: environmentPackage.scope.agentSessionId,
       packageSnapshotId: environmentPackage.snapshotId,
@@ -2450,7 +2659,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     });
 
     await backend.materialize(environmentPackage);
-    enableRuntimeProvenanceCollection(environmentPackage);
     const transcript = (await backend.collectTranscript(
       environmentPackage.snapshotId
     )) as unknown as {
@@ -2499,7 +2707,8 @@ describe('OpenShellWorkerGovernanceBackend', () => {
 
   it('rejects an oversized runtime provenance manifest before parsing or collecting its files', async () => {
     const environmentPackage = createTrustedRelayOpenShellPackage(
-      'as_runtime_provenance_manifest_limit'
+      'as_runtime_provenance_manifest_limit',
+      true
     );
     const cli = new FakeOpenShellClient({
       downloads: {
@@ -2515,7 +2724,6 @@ describe('OpenShellWorkerGovernanceBackend', () => {
     });
 
     await backend.materialize(environmentPackage);
-    enableRuntimeProvenanceCollection(environmentPackage);
     const transcript = await backend.collectTranscript(environmentPackage.snapshotId);
 
     expect(transcript.runtimeProvenance).toMatchObject({
@@ -2658,7 +2866,7 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
   >[0][] = [];
   private readonly createSandboxGate: Promise<void> | null;
   private readonly createSandboxFailure: Error | null;
-  private readonly downloads: Record<string, string>;
+  private readonly downloads: Record<string, string | Buffer>;
   private readonly endpoint: string;
   private readonly ensureProviderProfileFailure: Error | null;
   private readonly execSandboxGate: Promise<void> | null;
@@ -2671,7 +2879,7 @@ class FakeOpenShellClient implements OpenShellWorkerGovernanceClient {
     options: {
       createSandboxGate?: Promise<void>;
       createSandboxFailure?: Error;
-      downloads?: Record<string, string>;
+      downloads?: Record<string, string | Buffer>;
       endpoint?: string;
       ensureProviderProfileFailure?: Error;
       execSandboxGate?: Promise<void>;
@@ -2849,6 +3057,13 @@ function createGitWorkspace(prefix: string): string {
   return repositoryPath;
 }
 
+/**
+ * Creates one OpenShell AEP from the shared authored-manifest fixture.
+ *
+ * @param workspaceRoots Workspace roots projected into the package.
+ * @param setupOptions Explicit manifest differences owned by the test.
+ * @returns Parsed OpenShell Agent Environment Package.
+ */
 function createOpenShellPackage(
   workspaceRoots: MaterializedWorkspaceRoot[] = [
     {
@@ -2859,25 +3074,31 @@ function createOpenShellPackage(
       workerPath: '/workspace/openkit',
     },
   ],
-  sandboxAccess?: WorkerSandboxAccess
+  setupOptions: Parameters<typeof createTestAgentSetup>[0] = {},
+  preparedContextPackage?: PreparedWorkerContextPackage
 ): AgentEnvironmentPackage {
   const store = createDemoStore();
-  const turn = store.createTurn('ws_demo', 'th_demo', 'Materialize OpenShell backend');
-  const agent = store.getAgent('ws_demo', 'agent_codex_host');
+  const turn = store.createTurn('ws_demo', 'th_demo', 'Materialize OpenShell backend', {
+    kind: 'user',
+    id: 'user_local',
+  });
 
   return AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
-      agent,
+      agentSetup: createTestAgentSetup({
+        imageRef: 'ghcr.io/openkit/codex-worker:test',
+        ...setupOptions,
+      }),
       agentSessionId: 'as_openshell_1',
+      triggerActor: turn.triggerActor,
       userId: 'user_local',
       backend: {
         workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
-        sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
       },
       createdAt: '2026-06-16T00:00:00.000Z',
+      ...(preparedContextPackage ? { preparedContextPackage } : {}),
       requestId: 'req_openshell_1',
-      ...(sandboxAccess ? { sandboxAccess } : {}),
       turn,
       workspaceCwd: '/Users/m5pro/Documents/AI/openkit',
       workspaceRoots,
@@ -2886,54 +3107,51 @@ function createOpenShellPackage(
 }
 
 /**
- * Enables runtime-provenance collection after materialization.
+ * Decodes the backend-private workspace bundle plan passed to the sandbox materializer.
  *
- * @param environmentPackage Materialized trusted-relay package retained by the backend fixture.
+ * @param command Exact sandbox command argv.
+ * @returns Decoded workspace bundle materialization plan.
  */
-function enableRuntimeProvenanceCollection(environmentPackage: AgentEnvironmentPackage): void {
-  environmentPackage.backend.requiredCapabilities.push('worker.runtime-provenance.v1');
-  if (!environmentPackage.control.transcript) {
-    throw new Error('Runtime provenance test fixture requires a transcript declaration.');
-  }
-  environmentPackage.control.transcript.runtimeProvenance = {
-    maxStreamCount: 64,
-    maxTotalBytes: 256 * 1024 * 1024,
-    nativeOriginIndexPath: '/openkit/session/runtime/native-origin-index.jsonl',
-    rawStreamsRoot: '/openkit/session/runtime/raw',
-    streamManifestPath: '/openkit/session/runtime/raw-streams.json',
-  };
+function decodeWorkspaceBundleMaterializationPlan(command: string[] | undefined): unknown {
+  expect(command?.slice(0, 2)).toEqual(['node', '-e']);
+  const encodedPlan = command?.[3];
+  expect(encodedPlan).toBeDefined();
+  return JSON.parse(Buffer.from(encodedPlan ?? '', 'base64url').toString('utf8'));
 }
 
 /**
  * Creates one relay-required OpenShell package with immutable provider selection.
  *
  * @param agentSessionId Agent session id used to derive unique package lineage.
+ * @param runtimeProvenance Whether the authored setup requires runtime provenance.
  * @returns Relay-required OpenShell package fixture.
  */
-function createTrustedRelayOpenShellPackage(agentSessionId: string): AgentEnvironmentPackage {
+function createTrustedRelayOpenShellPackage(
+  agentSessionId: string,
+  runtimeProvenance = false
+): AgentEnvironmentPackage {
   const store = createDemoStore();
-  const turn = store.createTurn('ws_demo', 'th_demo', 'Materialize trusted inference relay');
-  const agent = store.getAgent('ws_demo', 'agent_codex_host');
+  const turn = store.createTurn('ws_demo', 'th_demo', 'Materialize trusted inference relay', {
+    kind: 'user',
+    id: 'user_local',
+  });
 
   return AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
-      agent,
+      agentSetup: createTestAgentSetup({
+        imageRef: 'ghcr.io/openkit/codex-worker:test',
+        requiredCapabilities: [
+          'trusted-worker-inference-relay',
+          ...(runtimeProvenance ? ['worker.runtime-provenance.v1' as const] : []),
+        ],
+      }),
       agentSessionId,
+      triggerActor: turn.triggerActor,
       backend: {
         workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
-        sandboxImageRef: 'ghcr.io/openkit/codex-worker:test',
-      },
-      backendRequirements: {
-        allowedKinds: ['openshell'],
-        preferred: 'openshell',
-        requiredCapabilities: ['trusted-worker-inference-relay'],
       },
       createdAt: '2026-07-13T00:00:00.000Z',
-      providerSelection: {
-        model: 'openai/gpt-5.2',
-        providerId: 'agent-openrouter',
-      },
       requestId: `req_${agentSessionId}`,
       turn,
       userId: 'user_local',

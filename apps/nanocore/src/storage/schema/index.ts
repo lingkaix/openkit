@@ -1,3 +1,5 @@
+export type { ArtifactReviewDecision } from './artifact-reviews.js';
+export { artifactReviews } from './artifact-reviews.js';
 export type { AuditEventCategory, AuditEventOutcome, AuditEventSeverity } from './audit-events.js';
 export { auditEvents } from './audit-events.js';
 export * from './better-auth/index.js';
@@ -93,8 +95,29 @@ export { workspaceApplyPlans } from './workspace-apply-plans.js';
 export type { WorkspaceApplyResultStatus } from './workspace-apply-results.js';
 export { workspaceApplyResults } from './workspace-apply-results.js';
 export { workspaceFilesystemStagingRoots } from './workspace-filesystem-staging.js';
-export type { WorkspaceMemberStatus, WorkspaceRegistryStatus } from './workspace-membership.js';
-export { workspaceMembers, workspaceRegistry } from './workspace-membership.js';
+export type {
+  ThreadMaterialBindingState,
+  ThreadMaterialInclusionState,
+  WorkspaceMaterialKind,
+  WorkspaceMaterialMediaType,
+  WorkspaceMaterialSensitivity,
+} from './workspace-materials.js';
+export {
+  threadMaterialBindings,
+  workspaceMaterialRevisions,
+  workspaceMaterials,
+} from './workspace-materials.js';
+export type {
+  WorkspaceAccessLevel,
+  WorkspaceInvitationStatus,
+  WorkspaceMemberStatus,
+  WorkspaceRegistryStatus,
+} from './workspace-membership.js';
+export {
+  workspaceInvitations,
+  workspaceMembers,
+  workspaceRegistry,
+} from './workspace-membership.js';
 export { workspaceQuarantineRecords } from './workspace-quarantine-records.js';
 export { workspaceReconciliationRecords } from './workspace-reconciliation-records.js';
 export type {

@@ -104,9 +104,6 @@ describe('createConfiguredTurnExecutor', () => {
         OPENKIT_CONTAINER_PLACEMENT: 'local',
         OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL:
           'http://host.openshell.internal:54001/api/worker-control',
-        OPENKIT_OPENSHELL_CODEX_CONFIG_TOML: '/home/ubuntu/.codex/config.toml',
-        OPENKIT_OPENSHELL_CODEX_MODEL: 'gpt-5-codex',
-        OPENKIT_OPENSHELL_WORKER_IMAGE: 'openkit/worker-codex:dev',
         OPENKIT_WORKER_RUNTIME: 'container',
       },
       workerControlGateway: new WorkerControlGateway(),
@@ -119,13 +116,14 @@ describe('createConfiguredTurnExecutor', () => {
       questions: false,
     });
     expect(
-      (executor as unknown as { environmentBackend: { codexModel: string } }).environmentBackend
-        .codexModel
-    ).toBe('gpt-5-codex');
+      (executor as unknown as { environmentBackend: object }).environmentBackend
+    ).not.toHaveProperty('sandboxImageRef');
     expect(
-      (executor as unknown as { backend: { codexConfigTomlPath: string } }).backend
-        .codexConfigTomlPath
-    ).toBe('/home/ubuntu/.codex/config.toml');
+      (executor as unknown as { environmentBackend: object }).environmentBackend
+    ).not.toHaveProperty('codexModel');
+    expect((executor as unknown as { backend: object }).backend).not.toHaveProperty(
+      'codexConfigTomlPath'
+    );
   });
 
   it('selects the OpenShell remote-container executor through the public worker runtime model', () => {

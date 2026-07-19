@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { loadRuntimeConfig } from '../config/runtime-config.js';
+import { LOCAL_USER_ID } from '../storage/fs-layout.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import type { WorkspaceRepositoryResourceRecord } from '../workspace/repository-store.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
@@ -59,18 +61,21 @@ describe('turn workspace context', () => {
       'ws_demo',
       repository
     );
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Update repository');
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Update repository', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const environmentPackage = resolveAgentEnvironmentPackage({
-      agent: store.getAgent('ws_demo', 'agent_codex_host'),
+      agentSetup: createTestAgentSetup({ imageRef: 'openkit/worker-codex:dev' }),
       agentSessionId: 'as_repository_commit',
+      triggerActor: turn.triggerActor,
       backend: {
         kind: 'openshell',
-        sandboxImageRef: 'openkit/worker-codex:dev',
         workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
       },
       createdAt: '2026-07-13T00:01:00.000Z',
       turn,
-      userId: store.getUserId(),
+      userId: LOCAL_USER_ID,
       workspaceRoots,
     });
     const inputSnapshots = buildWorkspaceInputSnapshots({

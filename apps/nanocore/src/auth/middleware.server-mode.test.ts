@@ -1,9 +1,11 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 
 import { ApiErrorSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
-
+import { openCoreDb } from '../storage/db.js';
+import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { actorFromSession } from './identity.js';
 import type { BetterAuthServer } from './middleware.js';
@@ -53,7 +55,7 @@ function createAuthStub(
 describe('server-mode auth middleware', () => {
   it('rejects protected API routes without a session', async () => {
     const app = createApp({ auth: createAuthStub(null), mode: 'server' });
-    const res = await app.request('/api/workspaces');
+    const res = await app.request('/api/openapi.json');
 
     expect(res.status).toBe(401);
     expect(ApiErrorSchema.parse(await res.json())).toEqual({
@@ -71,9 +73,39 @@ describe('server-mode auth middleware', () => {
       }),
       mode: 'server',
     });
-    const res = await app.request('/api/workspaces');
+    const res = await app.request('/api/openapi.json');
 
     expect(res.status).toBe(200);
+  });
+
+  it('rejects a valid Better Auth session when its canonical user is disabled', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-disabled-session-')));
+
+    try {
+      applyMigrations(coreDb);
+      const now = Date.now();
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO users (
+            id, display_name, email, email_verified, image, created_at, updated_at, kind,
+            last_seen_at, status, disabled_at
+          ) VALUES (?, 'Disabled', 'disabled@example.com', false, NULL, ?, ?, 'human', NULL,
+            'disabled', '2026-07-19T01:02:03.000Z')`
+        )
+        .run('user_disabled', now, now);
+      const app = createApp({
+        auth: createAuthStub({
+          session: { id: 'session_disabled' },
+          user: { id: 'user_disabled' },
+        }),
+        coreDb,
+        mode: 'server',
+      });
+
+      expect((await app.request('/api/openapi.json')).status).toBe(401);
+    } finally {
+      coreDb.sqlite.close();
+    }
   });
 
   it('protects every public LLM Gateway route before request parsing', async () => {
@@ -117,7 +149,7 @@ describe('server-mode auth middleware', () => {
 
     expect(metaRes.status).toBe(200);
     expect(await metaRes.json()).toEqual({
-      protocolVersion: '0.3.0',
+      protocolVersion: '0.4.0',
       capabilities: [],
       eventFamilies: [],
     });

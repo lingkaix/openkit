@@ -10,7 +10,6 @@ import { z } from 'zod';
 
 import { asInvalidRequestError } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
-import type { FsStore } from '../lib/store.js';
 import { recordSchedulerSupplyRefreshAck } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 import {
@@ -53,14 +52,6 @@ const WorkerControlSupplyRefreshAckBodySchema = z
     message: z.string().min(1).nullable().optional(),
   })
   .strict();
-const WorkerControlKnowledgeProposalSummaryBodySchema = z
-  .object({
-    proposalId: z.string().min(1),
-    title: z.string().min(1),
-    summary: z.string().min(1),
-  })
-  .strict();
-
 const WORKER_CONTROL_REQUEST_MAX_BYTES = 64 * 1024;
 const WORKER_CONTROL_EVENT_APPEND_MAX_BYTES = 256 * 1024;
 
@@ -71,15 +62,10 @@ const WORKER_CONTROL_EVENT_APPEND_MAX_BYTES = 256 * 1024;
  */
 export function registerWorkerControlRoutes({
   app,
-  authenticateWorkerPackageOwner,
   coreDb,
   workerControlGateway,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
-  readonly authenticateWorkerPackageOwner: (input: {
-    readonly authorization: string | null;
-    readonly lineage: WorkerControlLineage;
-  }) => { readonly store: FsStore };
   readonly coreDb: CoreDb | undefined;
   readonly workerControlGateway: WorkerControlGateway;
 }): void {
@@ -351,80 +337,6 @@ export function registerWorkerControlRoutes({
         lineage: parsed.data.lineage,
         operation: 'capability_summary',
         route: '/api/worker-control/capability-summary',
-      });
-      return asWorkerControlApiError(error);
-    }
-  });
-
-  app.post('/api/worker-control/knowledge-proposal-summary', async (c) => {
-    const parsed = await parseWorkerControlEnvelope(c);
-
-    if (!parsed.success) {
-      return parsed.response;
-    }
-
-    if (parsed.data.operation !== 'knowledge_proposal_summary') {
-      return asInvalidRequestError(
-        new Error('Worker control operation must be knowledge_proposal_summary.')
-      );
-    }
-
-    const body = WorkerControlKnowledgeProposalSummaryBodySchema.safeParse(parsed.data.body);
-
-    if (!body.success) {
-      return asInvalidRequestError(body.error);
-    }
-
-    try {
-      const { store } = authenticateWorkerPackageOwner({
-        authorization: c.req.header('authorization') ?? null,
-        lineage: parsed.data.lineage,
-      });
-      const priorSummary = workerControlGateway
-        .getSessionSnapshot(parsed.data.lineage.packageSnapshotId)
-        ?.knowledgeProposalSummaries.find((summary) => summary.sequence === parsed.data.sequence);
-      const existingProposal = store.getKnowledgeProposal(body.data.proposalId);
-
-      if (
-        existingProposal &&
-        (!priorSummary || existingProposal.workspaceId !== parsed.data.lineage.workspaceId)
-      ) {
-        throw new WorkerControlGatewayError(
-          'worker_control_knowledge_proposal_conflict',
-          `Worker knowledge proposal id is already owned: ${body.data.proposalId}`,
-          409
-        );
-      }
-
-      const knowledgeProposalSummary = workerControlGateway.recordKnowledgeProposalSummary({
-        authorization: c.req.header('authorization') ?? null,
-        lineage: parsed.data.lineage,
-        proposalId: body.data.proposalId,
-        sequence: parsed.data.sequence,
-        summary: body.data.summary,
-        title: body.data.title,
-      });
-
-      if (!existingProposal) {
-        store.createKnowledgeProposal({
-          createdAt: knowledgeProposalSummary.receivedAt,
-          id: body.data.proposalId,
-          status: 'pending',
-          summary: body.data.summary,
-          title: body.data.title,
-          updatedAt: knowledgeProposalSummary.receivedAt,
-          workspaceId: parsed.data.lineage.workspaceId,
-        });
-      }
-
-      return c.json({ knowledgeProposalSummary });
-    } catch (error) {
-      quarantineWorkerControlRejection({
-        coreDb,
-        error,
-        lineage: parsed.data.lineage,
-        operation: 'knowledge_proposal_summary',
-        route: '/api/worker-control/knowledge-proposal-summary',
       });
       return asWorkerControlApiError(error);
     }

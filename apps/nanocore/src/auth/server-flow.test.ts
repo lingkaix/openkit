@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
-import type { FsStore } from '../lib/store.js';
+import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import type { TurnExecutor, TurnStartRuntimeContext } from '../runtime/types.js';
 import {
   ensureConfiguredSchedulerBaseline,
@@ -14,8 +14,10 @@ import {
 import type { CoreDb } from '../storage/db.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { importUnboundWorkspaceVaultReference } from '../vault/vault-references.js';
+import { ensureUserQuickChatWorkspace } from '../workspace-membership.js';
 import { createBetterAuth } from './better-auth.js';
 
 /**
@@ -211,11 +213,16 @@ describe('server auth flow', () => {
     applyMigrations(coreDb);
 
     try {
+      const store = new FsStore({ dataRoot });
+      expect(store.listWorkspaces()).toEqual([]);
       const app = createApp({
-        auth: createBetterAuth(coreDb),
+        auth: createBetterAuth(coreDb, {
+          onActiveUserSession: (userId) => ensureUserQuickChatWorkspace({ coreDb, store, userId }),
+        }),
         coreDb,
         dataRoot,
         mode: 'server',
+        store,
       });
 
       const firstSignUp = await app.request('/api/auth/sign-up/email', {
@@ -231,6 +238,21 @@ describe('server auth flow', () => {
       expect(firstSignUp.status).toBe(200);
 
       const firstCookie = sessionCookie(firstSignUp);
+      const firstUser = coreDb.sqlite
+        .prepare('SELECT id FROM users WHERE email = ?')
+        .get('first@example.com') as { id: string };
+      const firstQuickChatId = quickChatWorkspaceIdForUser(firstUser.id);
+      const initialWorkspaceList = await app.request('/api/workspaces', {
+        headers: { cookie: firstCookie },
+      });
+
+      expect(initialWorkspaceList.status).toBe(200);
+      expect((await initialWorkspaceList.json()) as { items: Array<{ id: string }> }).toMatchObject(
+        {
+          items: [expect.objectContaining({ id: firstQuickChatId, kind: 'quick-chat' })],
+        }
+      );
+
       const createWorkspace = await app.request('/api/workspaces', {
         method: 'POST',
         headers: { cookie: firstCookie, 'content-type': 'application/json' },
@@ -271,7 +293,7 @@ describe('server auth flow', () => {
 
       expect(crossUserGet.status).toBe(403);
       await expect(crossUserGet.json()).resolves.toMatchObject({
-        code: 'core.auth.scope_forbidden',
+        code: 'workspace_access_denied',
       });
 
       importUnboundWorkspaceVaultReference(coreDb, {
@@ -288,16 +310,12 @@ describe('server auth flow', () => {
 
       expect(crossUserVaultReferences.status).toBe(403);
       await expect(crossUserVaultReferences.json()).resolves.toMatchObject({
-        code: 'core.auth.scope_forbidden',
+        code: 'workspace_access_denied',
       });
-
-      const userRoots = readdirSync(join(dataRoot, 'users')).sort();
-
-      expect(userRoots).toContain('user_local');
-      expect(userRoots.filter((userId) => userId !== 'user_local')).toHaveLength(2);
 
       const restartedApp = createApp({
         auth: createBetterAuth(coreDb),
+        coreDb,
         dataRoot,
         mode: 'server',
       });
@@ -400,6 +418,7 @@ describe('server auth flow', () => {
     try {
       const executor = new DelayedServerTurnExecutor();
       const app = createApp({
+        agentManifests: [createTestAgentSetup({ provider: null }).manifest],
         auth: createBetterAuth(coreDb),
         coreDb,
         dataRoot,

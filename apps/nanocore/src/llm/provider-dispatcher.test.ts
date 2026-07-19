@@ -31,10 +31,9 @@ function piProviderConfig(
     backend: 'pi-ai',
     baseUrl: null,
     displayName: 'Anthropic',
-    extraBody: {},
-    extraHeaders: {},
     gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
     id: 'anthropic_primary',
+    models: ['faux-chat', 'gpt-test'],
     requiresApiKey: true,
     ...input,
   };
@@ -96,6 +95,56 @@ describe('LLMGatewayProviderDispatcher pi-ai routing', () => {
       })
     ).rejects.toMatchObject({ code: 'unsupported_gateway_feature' });
     expect(faux.state.callCount).toBe(0);
+  });
+
+  it('rejects models outside the configured provider allowlist before every adapter call', async () => {
+    const invocations = [
+      (dispatcher: LLMGatewayProviderDispatcher) =>
+        dispatcher.createChatCompletion(piProviderConfig({ models: ['configured-model'] }), {
+          model: 'adapter-catalog-only-model',
+          messages: [{ role: 'user', content: 'Hello' }],
+        }),
+      (dispatcher: LLMGatewayProviderDispatcher) =>
+        dispatcher.createChatCompletionStream(piProviderConfig({ models: ['configured-model'] }), {
+          model: 'adapter-catalog-only-model',
+          messages: [{ role: 'user', content: 'Hello' }],
+          stream: true,
+        }),
+      (dispatcher: LLMGatewayProviderDispatcher) =>
+        dispatcher.createResponses(piProviderConfig({ models: ['configured-model'] }), {
+          model: 'adapter-catalog-only-model',
+          input: 'Hello',
+        }),
+      (dispatcher: LLMGatewayProviderDispatcher) =>
+        dispatcher.createResponsesStream(piProviderConfig({ models: ['configured-model'] }), {
+          model: 'adapter-catalog-only-model',
+          input: 'Hello',
+          stream: true,
+        }),
+    ];
+
+    for (const invoke of invocations) {
+      const adapterCalls = {
+        createChatCompletion: vi.fn(),
+        createChatCompletionStream: vi.fn(),
+        createResponses: vi.fn(),
+        createResponsesStream: vi.fn(),
+      };
+      const dispatcher = new LLMGatewayProviderDispatcher({
+        codexResponsesClient: new CodexResponsesClient({
+          tokenResolver: {
+            resolve: async () => ({ accessToken: 'unused', chatgptAccountId: 'unused' }),
+          },
+        }),
+        piAiClient: adapterCalls as unknown as PiAiGatewayClient,
+      });
+
+      await expect(invoke(dispatcher)).rejects.toMatchObject({
+        code: 'model_not_configured',
+        status: 400,
+      });
+      expect(Object.values(adapterCalls).every((call) => call.mock.calls.length === 0)).toBe(true);
+    }
   });
 
   it('routes pi-ai backend chat completion streams through the pi-ai client', async () => {

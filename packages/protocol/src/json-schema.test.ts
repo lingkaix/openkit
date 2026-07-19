@@ -3,9 +3,17 @@ import { readFileSync } from 'node:fs';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { describe, expect, it } from 'vitest';
 
-import { PROTOCOL_VERSION } from './index.js';
+import { AuditEventSchema, PROTOCOL_VERSION } from './index.js';
 
 const eventSchemaUrl = new URL('../generated/json-schema/event.schema.json', import.meta.url);
+const actorRefSchemaUrl = new URL(
+  '../generated/json-schema/actor-ref.schema.json',
+  import.meta.url
+);
+const auditEventSchemaUrl = new URL(
+  '../generated/json-schema/audit-event.schema.json',
+  import.meta.url
+);
 const stopReasonSchemaUrl = new URL(
   '../generated/json-schema/stop-reason.schema.json',
   import.meta.url
@@ -48,6 +56,7 @@ function createTurnCompletedEnvelope(stopReason: string = 'completed') {
         id: 'tu_demo',
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
+        triggerActor: { kind: 'user', id: 'user_demo' },
         items: [],
         status: 'completed',
         humanGate: null,
@@ -62,6 +71,52 @@ function createTurnCompletedEnvelope(stopReason: string = 'completed') {
 }
 
 describe('generated JSON Schema event parity', () => {
+  it('generates a standalone closed ActorRef JSON Schema artifact', () => {
+    const validate = createValidator(actorRefSchemaUrl);
+    const actor = { kind: 'user', id: 'user_demo' };
+
+    expect(validate(actor)).toBe(true);
+    expect(validate({ ...actor, responsibleUserId: actor.id })).toBe(false);
+    expect(
+      validate({ kind: 'automation', id: 'automation_demo', responsibleUserId: actor.id })
+    ).toBe(true);
+    expect(validate({ ...actor, displayName: 'Demo User' })).toBe(false);
+  });
+
+  it('keeps AuditEvent actor attribution closed and secret-free', () => {
+    const validate = createValidator(auditEventSchemaUrl);
+    const auditEvent = AuditEventSchema.parse({
+      id: 'audit_actor_demo',
+      actor: { kind: 'user', id: 'user_owner' },
+      subject: {
+        kind: 'automation',
+        id: 'automation_invitation',
+        responsibleUserId: 'user_owner',
+      },
+      action: 'workspace.member.add',
+      outcome: 'succeeded',
+      summary: 'Workspace member added.',
+    });
+
+    expect(validate(auditEvent)).toBe(true);
+    expect(validate({ ...auditEvent, resourceRevision: 2 })).toBe(true);
+    expect(validate({ ...auditEvent, resourceRevision: 0 })).toBe(false);
+    expect(validate({ ...auditEvent, actorId: 'user_owner' })).toBe(false);
+    expect(
+      validate({
+        ...auditEvent,
+        actor: { kind: 'automation', id: 'automation_invitation' },
+      })
+    ).toBe(false);
+    expect(
+      validate({
+        ...auditEvent,
+        credential: { token: 'secret' },
+        channel: { authorization: 'Bearer secret' },
+      })
+    ).toBe(false);
+  });
+
   it('accepts valid item delta matrix combinations', () => {
     const validate = createValidator();
     const envelope = {
@@ -114,6 +169,7 @@ describe('generated JSON Schema event parity', () => {
       id: 'tu_demo',
       workspaceId: 'ws_demo',
       threadId: 'th_demo',
+      triggerActor: { kind: 'user', id: 'user_demo' },
       items: [],
       error: null,
       configVersion: null,
@@ -121,7 +177,11 @@ describe('generated JSON Schema event parity', () => {
       completedAt: null,
       durationMs: null,
     };
+    const { triggerActor: _triggerActor, ...turnWithoutTriggerActor } = baseTurn;
 
+    expect(validate({ ...turnWithoutTriggerActor, status: 'running', humanGate: null })).toBe(
+      false
+    );
     expect(
       validate({
         ...baseTurn,

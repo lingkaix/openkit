@@ -1,36 +1,59 @@
 import { createHash } from 'node:crypto';
 
 import {
+  AcceptWorkspaceInvitationRequestSchema,
   AgentHealthRefreshResponseSchema,
   AppDiagnosticsResponseSchema,
   ApproveThreadGoalPlanRequestSchema,
   ApproveThreadGoalPlanResponseSchema,
   AppSearchResponseSchema,
   AutomationRecordSchema,
+  BindThreadMaterialRequestSchema,
+  BindThreadMaterialResponseSchema,
+  CancelGoalSteeringRequestSchema,
+  CancelGoalSteeringResponseSchema,
   CancelOpenAICodexOAuthRequestSchema,
   CancelSchedulerAdmissionResponseSchema,
   CapabilityUsageResponseSchema,
+  ChangeWorkspaceMemberAccessRequestSchema,
   CodexOAuthAccountSummarySchema,
   CodexOAuthAccountsPayloadSchema,
   CodexOAuthStatusPayloadSchema,
   ConsumeOpenKitBootstrapTokenRequestSchema,
   ConsumeOpenKitBootstrapTokenResponseSchema,
+  ConvertGoalSteeringToFollowUpRequestSchema,
+  ConvertGoalSteeringToFollowUpResponseSchema,
   CreateAutomationRequestSchema,
   CreateOpenAICodexOAuthAccountRequestSchema,
   CreateOpenKitAccessTokenRequestSchema,
   CreateOpenKitAccessTokenResponseSchema,
   CreateThreadGoalPlanRequestSchema,
   CreateThreadGoalPlanResponseSchema,
+  CreateWorkspaceInvitationRequestSchema,
+  CreateWorkspaceMaterialRequestSchema,
+  CreateWorkspaceMaterialResponseSchema,
   DataRootBackupCreateResponseSchema,
   DataRootBackupVerifyRequestSchema,
   DataRootBackupVerifyResponseSchema,
+  DeclineWorkspaceInvitationRequestSchema,
+  DisableUserRequestSchema,
+  DisableUserResponseSchema,
+  ExcludeThreadMaterialRequestSchema,
+  ExcludeThreadMaterialResponseSchema,
   ExecuteGitPushRequestSchema,
   ExecuteGitPushResponseSchema,
   GetAgentCatalogEntryResponseSchema,
   GetAgentEnvironmentPackageSnapshotResponseSchema,
   GetGitPushRecordResponseSchema,
+  GetThreadMaterialResponseSchema,
   GetWorkspaceApplyResultResponseSchema,
+  GetWorkspaceMaterialResponseSchema,
+  GetWorkspaceMaterialRevisionResponseSchema,
   GetWorkspaceSyncReviewResponseSchema,
+  ImportWorkspaceArtifactRequestSchema,
+  ImportWorkspaceArtifactResponseSchema,
+  IntroduceWorkspaceArtifactRequestSchema,
+  IntroduceWorkspaceArtifactResponseSchema,
   KnowledgeDerivedIndexesResponseSchema,
   KnowledgeManagerAnswerRequestSchema,
   KnowledgeManagerAnswerResponseSchema,
@@ -43,8 +66,11 @@ import {
   KnowledgeManagerSuggestRepairRequestSchema,
   KnowledgeManagerSuggestRepairResponseSchema,
   KnowledgeRetrievalResponseSchema,
+  LeaveWorkspaceRequestSchema,
   ListAgentCatalogResponseSchema,
   ListAgentEnvironmentPackageSnapshotsResponseSchema,
+  ListArtifactReviewsResponseSchema,
+  ListAuthorizedWorkspacesResponseSchema,
   ListAutomationsResponseSchema,
   ListBackendWorkspaceHandlesResponseSchema,
   ListGitPushRecordsResponseSchema,
@@ -70,7 +96,11 @@ import {
   ListWorkspaceInjectionPlansResponseSchema,
   ListWorkspaceInjectionReceiptsResponseSchema,
   ListWorkspaceInputSnapshotsResponseSchema,
+  ListWorkspaceInvitationsResponseSchema,
   ListWorkspaceMaterializationRecordsResponseSchema,
+  ListWorkspaceMaterialRevisionsResponseSchema,
+  ListWorkspaceMaterialsResponseSchema,
+  ListWorkspaceMembersResponseSchema,
   ListWorkspacePermissionDecisionsResponseSchema,
   ListWorkspaceQuarantineRecordsResponseSchema,
   ListWorkspaceReconciliationRecordsResponseSchema,
@@ -82,8 +112,6 @@ import {
   MaterializeKnowledgeContextPackageResponseSchema,
   PauseThreadGoalRequestSchema,
   PauseThreadGoalResponseSchema,
-  PromoteKnowledgeClaimRequestSchema,
-  PromoteKnowledgeClaimResponseSchema,
   QuickChatRequestSchema,
   QuickChatResponseSchema,
   ReadKnowledgeManagerContextPackageTraceResponseSchema,
@@ -94,13 +122,17 @@ import {
   RecordKnowledgeConflictResponseSchema,
   RecordKnowledgeObservationRequestSchema,
   RecordKnowledgeObservationResponseSchema,
+  RecoverWorkspaceAccessRequestSchema,
   RegisterKnowledgeSourceRequestSchema,
   RegisterKnowledgeSourceResponseSchema,
+  RemoveWorkspaceMemberRequestSchema,
   RequestGitPushApprovalRequestSchema,
   RequestGitPushApprovalResponseSchema,
   ResolveKnowledgeConflictRequestSchema,
   ResolveKnowledgeConflictResponseSchema,
   RestartRuntimeConfigStaleSessionResponseSchema,
+  RestoreThreadMaterialRequestSchema,
+  RestoreThreadMaterialResponseSchema,
   ResumeThreadGoalRequestSchema,
   ResumeThreadGoalResponseSchema,
   RetrieveKnowledgeRequestSchema,
@@ -110,6 +142,7 @@ import {
   ReviseThreadGoalPlanRequestSchema,
   ReviseThreadGoalPlanResponseSchema,
   RevokeOpenKitAccessTokenResponseSchema,
+  RevokeWorkspaceInvitationRequestSchema,
   RotateOpenKitAccessTokenRequestSchema,
   RotateOpenKitAccessTokenResponseSchema,
   RunThreadGoalStepRequestSchema,
@@ -123,6 +156,8 @@ import {
   RuntimeConfigSchemaCatalogResponseSchema,
   RuntimeConfigValidationRequestSchema,
   RuntimeConfigValidationResponseSchema,
+  SaveWorkspaceMaterialRevisionRequestSchema,
+  SaveWorkspaceMaterialRevisionResponseSchema,
   SetupDiagnosticsResponseSchema,
   SetWorkspaceRepositoryRequestSchema,
   SetWorkspaceRepositoryResponseSchema,
@@ -134,6 +169,8 @@ import {
   StartThreadGoalRequestSchema,
   StartThreadGoalResponseSchema,
   StorageLayoutReportResponseSchema,
+  SubmitArtifactReviewDecisionRequestSchema,
+  SubmitArtifactReviewDecisionResponseSchema,
   SubmitGoalReviewDecisionRequestSchema,
   SubmitGoalReviewDecisionResponseSchema,
   SubmitKnowledgeProposalDecisionRequestSchema,
@@ -147,7 +184,10 @@ import {
   SubmitWorkspaceSyncReviewDecisionResponseSchema,
   ThreadDashboardResponseSchema,
   ThreadGoalSummaryResponseSchema,
+  TransferWorkspaceOwnershipRequestSchema,
   TurnFeedbackResponseSchema,
+  UnbindThreadMaterialRequestSchema,
+  UnbindThreadMaterialResponseSchema,
   UpdateAutomationRequestSchema,
   UpdateOpenAICodexOAuthAccountRequestSchema,
   VaultAdminBootstrapCodexAuthJsonRequestSchema,
@@ -159,12 +199,16 @@ import {
   VaultAdminStatusResponseSchema,
   VaultAdminUnlockRequestSchema,
   VaultAdminUnlockResponseSchema,
+  WorkspaceAccessRecoveryResponseSchema,
   WorkspaceDashboardResponseSchema,
   WorkspaceExportResponseSchema,
   WorkspaceImportDryRunRequestSchema,
   WorkspaceImportDryRunResponseSchema,
   WorkspaceImportRequestSchema,
   WorkspaceImportResponseSchema,
+  WorkspaceInvitationMutationResponseSchema,
+  WorkspaceMemberMutationResponseSchema,
+  WorkspaceOwnershipMutationResponseSchema,
   WorkspaceRepositoryDiagnosticsResponseSchema,
 } from '@openkit/app-api-schemas';
 import {
@@ -209,6 +253,7 @@ interface AppOpenApiDocument {
 const JSON_CONTENT_TYPE = 'application/json';
 const APP_API_VERSION = '0.1.0';
 const DEPLOYMENT_ADMIN_SECURITY = [{ bearerAuth: [] }];
+const SESSION_COOKIE_SECURITY = [{ sessionCookie: [] }];
 const THREAD_ID_PARAMETER = {
   name: 'threadId',
   in: 'path',
@@ -227,6 +272,103 @@ const WORKSPACE_ID_PARAMETER = {
   required: true,
   schema: { $ref: '#/components/schemas/WorkspaceId' },
 } as const;
+const INVITATION_ID_PARAMETER = {
+  name: 'invitationId',
+  in: 'path',
+  required: true,
+  schema: { type: 'string', minLength: 1 },
+} as const;
+const USER_ID_PARAMETER = {
+  name: 'userId',
+  in: 'path',
+  required: true,
+  schema: { type: 'string', minLength: 1 },
+} as const;
+const ARTIFACT_ID_PARAMETER = {
+  name: 'artifactId',
+  in: 'path',
+  required: true,
+  schema: { $ref: '#/components/schemas/ArtifactId' },
+} as const;
+const ARTIFACT_VERSION_PARAMETER = {
+  name: 'artifactVersion',
+  in: 'path',
+  required: true,
+  schema: { type: 'integer', minimum: 1 },
+} as const;
+const MATERIAL_ID_PARAMETER = {
+  name: 'materialId',
+  in: 'path',
+  required: true,
+  schema: { type: 'string', minLength: 1 },
+} as const;
+const REVISION_ID_PARAMETER = {
+  name: 'revisionId',
+  in: 'path',
+  required: true,
+  schema: { type: 'string', minLength: 1 },
+} as const;
+const PENDING_TURN_ID_PARAMETER = {
+  name: 'pendingTurnId',
+  in: 'path',
+  required: true,
+  schema: { type: 'string', minLength: 1 },
+} as const;
+
+/**
+ * Builds one authenticated JSON App API operation with the shared error envelope.
+ *
+ * @param input Operation identity, schemas, success response, and optional path parameters.
+ * @returns Compact OpenAPI operation preserving the literal operation identifier.
+ */
+function appJsonOperation<const OperationId extends string>(input: {
+  operationId: OperationId;
+  tag: string;
+  summary: string;
+  responseStatus: '200' | '201';
+  responseSchema: string;
+  requestSchema?: string;
+  parameters?: JsonValue[];
+  security?: JsonValue[];
+}) {
+  return {
+    operationId: input.operationId,
+    tags: [input.tag],
+    summary: input.summary,
+    security: input.security ?? [{ bearerAuth: [] }, { sessionCookie: [] }],
+    ...(input.parameters ? { parameters: input.parameters } : {}),
+    ...(input.requestSchema
+      ? {
+          requestBody: {
+            required: true,
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: `#/components/schemas/${input.requestSchema}` },
+              },
+            },
+          },
+        }
+      : {}),
+    responses: {
+      [input.responseStatus]: {
+        description: input.summary,
+        content: {
+          [JSON_CONTENT_TYPE]: {
+            schema: { $ref: `#/components/schemas/${input.responseSchema}` },
+          },
+        },
+      },
+      default: {
+        description: 'Protocol error envelope.',
+        content: {
+          [JSON_CONTENT_TYPE]: {
+            schema: { $ref: '#/components/schemas/ApiError' },
+          },
+        },
+      },
+    },
+  };
+}
 /** HTTP methods supported by the App API route catalog. */
 export const APP_OPENAPI_ROUTE_METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
 const registeredAppApiOperationIds = new WeakMap<object, string[]>();
@@ -388,6 +530,167 @@ export function createAppOpenApiDocument() {
     },
     'x-openkit-protocol-version': PROTOCOL_VERSION,
     paths: {
+      '/api/app/workspaces': {
+        get: appJsonOperation({
+          operationId: 'listAuthorizedWorkspaces',
+          tag: 'workspace-sharing',
+          summary: 'List Workspaces authorized for the current user.',
+          responseStatus: '200',
+          responseSchema: 'ListAuthorizedWorkspacesResponse',
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/members': {
+        get: appJsonOperation({
+          operationId: 'listWorkspaceMembers',
+          tag: 'workspace-sharing',
+          summary: 'List Workspace members.',
+          responseStatus: '200',
+          responseSchema: 'ListWorkspaceMembersResponse',
+          parameters: [WORKSPACE_ID_PARAMETER],
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/invitations': {
+        get: appJsonOperation({
+          operationId: 'listWorkspaceInvitations',
+          tag: 'workspace-sharing',
+          summary: 'List Workspace invitations.',
+          responseStatus: '200',
+          responseSchema: 'ListWorkspaceInvitationsResponse',
+          parameters: [WORKSPACE_ID_PARAMETER],
+        }),
+        post: appJsonOperation({
+          operationId: 'createWorkspaceInvitation',
+          tag: 'workspace-sharing',
+          summary: 'Create a Workspace invitation.',
+          responseStatus: '201',
+          responseSchema: 'WorkspaceInvitationMutationResponse',
+          requestSchema: 'CreateWorkspaceInvitationRequest',
+          parameters: [WORKSPACE_ID_PARAMETER],
+        }),
+      },
+      '/api/app/workspace-invitations': {
+        get: appJsonOperation({
+          operationId: 'listMyWorkspaceInvitations',
+          tag: 'workspace-sharing',
+          summary: 'List invitations for the current user.',
+          responseStatus: '200',
+          responseSchema: 'ListWorkspaceInvitationsResponse',
+          security: SESSION_COOKIE_SECURITY,
+        }),
+      },
+      '/api/app/workspace-invitations/{invitationId}/accept': {
+        post: appJsonOperation({
+          operationId: 'acceptWorkspaceInvitation',
+          tag: 'workspace-sharing',
+          summary: 'Accept a Workspace invitation.',
+          responseStatus: '200',
+          responseSchema: 'WorkspaceInvitationMutationResponse',
+          requestSchema: 'AcceptWorkspaceInvitationRequest',
+          parameters: [INVITATION_ID_PARAMETER],
+          security: SESSION_COOKIE_SECURITY,
+        }),
+      },
+      '/api/app/workspace-invitations/{invitationId}/decline': {
+        post: appJsonOperation({
+          operationId: 'declineWorkspaceInvitation',
+          tag: 'workspace-sharing',
+          summary: 'Decline a Workspace invitation.',
+          responseStatus: '200',
+          responseSchema: 'WorkspaceInvitationMutationResponse',
+          requestSchema: 'DeclineWorkspaceInvitationRequest',
+          parameters: [INVITATION_ID_PARAMETER],
+          security: SESSION_COOKIE_SECURITY,
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/invitations/{invitationId}/revoke': {
+        post: appJsonOperation({
+          operationId: 'revokeWorkspaceInvitation',
+          tag: 'workspace-sharing',
+          summary: 'Revoke a Workspace invitation.',
+          responseStatus: '200',
+          responseSchema: 'WorkspaceInvitationMutationResponse',
+          requestSchema: 'RevokeWorkspaceInvitationRequest',
+          parameters: [WORKSPACE_ID_PARAMETER, INVITATION_ID_PARAMETER],
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/members/{userId}': {
+        patch: appJsonOperation({
+          operationId: 'changeWorkspaceMemberAccess',
+          tag: 'workspace-sharing',
+          summary: 'Change a Workspace member access level.',
+          responseStatus: '200',
+          responseSchema: 'WorkspaceMemberMutationResponse',
+          requestSchema: 'ChangeWorkspaceMemberAccessRequest',
+          parameters: [WORKSPACE_ID_PARAMETER, USER_ID_PARAMETER],
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/members/{userId}/remove': {
+        post: appJsonOperation({
+          operationId: 'removeWorkspaceMember',
+          tag: 'workspace-sharing',
+          summary: 'Remove a Workspace member.',
+          responseStatus: '200',
+          responseSchema: 'WorkspaceMemberMutationResponse',
+          requestSchema: 'RemoveWorkspaceMemberRequest',
+          parameters: [WORKSPACE_ID_PARAMETER, USER_ID_PARAMETER],
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/leave': {
+        post: appJsonOperation({
+          operationId: 'leaveWorkspace',
+          tag: 'workspace-sharing',
+          summary: 'Leave a Workspace.',
+          responseStatus: '200',
+          responseSchema: 'WorkspaceMemberMutationResponse',
+          requestSchema: 'LeaveWorkspaceRequest',
+          parameters: [WORKSPACE_ID_PARAMETER],
+          security: SESSION_COOKIE_SECURITY,
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/ownership/transfer': {
+        post: appJsonOperation({
+          operationId: 'transferWorkspaceOwnership',
+          tag: 'workspace-sharing',
+          summary: 'Transfer Workspace ownership.',
+          responseStatus: '200',
+          responseSchema: 'WorkspaceOwnershipMutationResponse',
+          requestSchema: 'TransferWorkspaceOwnershipRequest',
+          parameters: [WORKSPACE_ID_PARAMETER],
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/access-recovery': {
+        get: appJsonOperation({
+          operationId: 'getWorkspaceAccessRecoveryState',
+          tag: 'workspace-sharing',
+          summary: 'Read administrator-safe Workspace access recovery state.',
+          responseStatus: '200',
+          responseSchema: 'WorkspaceAccessRecoveryResponse',
+          parameters: [WORKSPACE_ID_PARAMETER],
+          security: DEPLOYMENT_ADMIN_SECURITY,
+        }),
+        post: appJsonOperation({
+          operationId: 'recoverWorkspaceAccess',
+          tag: 'workspace-sharing',
+          summary: 'Recover administrator Workspace access.',
+          responseStatus: '200',
+          responseSchema: 'WorkspaceAccessRecoveryResponse',
+          requestSchema: 'RecoverWorkspaceAccessRequest',
+          parameters: [WORKSPACE_ID_PARAMETER],
+          security: DEPLOYMENT_ADMIN_SECURITY,
+        }),
+      },
+      '/api/app/users/{userId}/disable': {
+        post: appJsonOperation({
+          operationId: 'disableUser',
+          tag: 'user-lifecycle',
+          summary: 'Disable a canonical user.',
+          responseStatus: '200',
+          responseSchema: 'DisableUserResponse',
+          requestSchema: 'DisableUserRequest',
+          parameters: [USER_ID_PARAMETER],
+          security: DEPLOYMENT_ADMIN_SECURITY,
+        }),
+      },
       '/api/app/storage/layout-report': {
         get: {
           operationId: 'getStorageLayoutReport',
@@ -1804,8 +2107,8 @@ export function createAppOpenApiDocument() {
             },
           },
           responses: {
-            '200': {
-              description: 'Queued or blocked Goal Mode steering.',
+            '202': {
+              description: 'Queued Goal Mode steering.',
               content: {
                 [JSON_CONTENT_TYPE]: {
                   schema: { $ref: '#/components/schemas/SubmitThreadGoalSteeringResponse' },
@@ -1822,6 +2125,29 @@ export function createAppOpenApiDocument() {
             },
           },
         },
+      },
+      '/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/steering/{pendingTurnId}/follow-up':
+        {
+          post: appJsonOperation({
+            operationId: 'convertGoalSteeringToFollowUp',
+            tag: 'modes',
+            summary: 'Convert terminal Goal steering into Thread follow-up history.',
+            responseStatus: '200',
+            responseSchema: 'ConvertGoalSteeringToFollowUpResponse',
+            requestSchema: 'ConvertGoalSteeringToFollowUpRequest',
+            parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER, PENDING_TURN_ID_PARAMETER],
+          }),
+        },
+      '/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/steering/{pendingTurnId}/cancel': {
+        post: appJsonOperation({
+          operationId: 'cancelGoalSteering',
+          tag: 'modes',
+          summary: 'Cancel terminal Goal steering.',
+          responseStatus: '200',
+          responseSchema: 'CancelGoalSteeringResponse',
+          requestSchema: 'CancelGoalSteeringRequest',
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER, PENDING_TURN_ID_PARAMETER],
+        }),
       },
       '/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/plan': {
         post: {
@@ -2269,49 +2595,6 @@ export function createAppOpenApiDocument() {
               content: {
                 [JSON_CONTENT_TYPE]: {
                   schema: { $ref: '#/components/schemas/RecordKnowledgeClaimResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/knowledge/claims/{claimId}/promotion': {
-        post: {
-          operationId: 'promoteKnowledgeClaim',
-          tags: ['knowledge'],
-          summary: 'Promote one accepted Knowledge Store claim into review.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'claimId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/PromoteKnowledgeClaimRequest' },
-              },
-            },
-          },
-          responses: {
-            '201': {
-              description: 'Promoted Knowledge Store claim draft.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/PromoteKnowledgeClaimResponse' },
                 },
               },
             },
@@ -2852,6 +3135,162 @@ export function createAppOpenApiDocument() {
             },
           },
         },
+      },
+      '/api/app/workspaces/{workspaceId}/artifacts/{artifactId}/reviews': {
+        get: appJsonOperation({
+          operationId: 'listArtifactReviews',
+          tag: 'reviews',
+          summary: 'List version-keyed Artifact Reviews.',
+          parameters: [WORKSPACE_ID_PARAMETER, ARTIFACT_ID_PARAMETER],
+          responseStatus: '200',
+          responseSchema: 'ListArtifactReviewsResponse',
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/artifacts/{artifactId}/versions/{artifactVersion}/review/decision':
+        {
+          post: appJsonOperation({
+            operationId: 'submitArtifactReviewDecision',
+            tag: 'reviews',
+            summary: 'Decide one exact Artifact Review.',
+            parameters: [WORKSPACE_ID_PARAMETER, ARTIFACT_ID_PARAMETER, ARTIFACT_VERSION_PARAMETER],
+            requestSchema: 'SubmitArtifactReviewDecisionRequest',
+            responseStatus: '200',
+            responseSchema: 'SubmitArtifactReviewDecisionResponse',
+          }),
+        },
+      '/api/app/workspaces/{workspaceId}/artifacts/imports': {
+        post: appJsonOperation({
+          operationId: 'importWorkspaceArtifact',
+          tag: 'artifacts',
+          summary: 'Import one immutable Workspace-only Artifact.',
+          parameters: [WORKSPACE_ID_PARAMETER],
+          requestSchema: 'ImportWorkspaceArtifactRequest',
+          responseStatus: '201',
+          responseSchema: 'ImportWorkspaceArtifactResponse',
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/threads/{threadId}/artifacts/{artifactId}/introductions': {
+        post: appJsonOperation({
+          operationId: 'introduceWorkspaceArtifact',
+          tag: 'artifacts',
+          summary: 'Introduce one exact Workspace-only Artifact version into a Thread.',
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER, ARTIFACT_ID_PARAMETER],
+          requestSchema: 'IntroduceWorkspaceArtifactRequest',
+          responseStatus: '201',
+          responseSchema: 'IntroduceWorkspaceArtifactResponse',
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/materials': {
+        get: appJsonOperation({
+          operationId: 'listWorkspaceMaterials',
+          tag: 'materials',
+          summary: 'List Workspace Materials.',
+          parameters: [WORKSPACE_ID_PARAMETER],
+          responseStatus: '200',
+          responseSchema: 'ListWorkspaceMaterialsResponse',
+        }),
+        post: appJsonOperation({
+          operationId: 'createWorkspaceMaterial',
+          tag: 'materials',
+          summary: 'Create one Workspace Material.',
+          parameters: [WORKSPACE_ID_PARAMETER],
+          requestSchema: 'CreateWorkspaceMaterialRequest',
+          responseStatus: '201',
+          responseSchema: 'CreateWorkspaceMaterialResponse',
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/materials/{materialId}': {
+        get: appJsonOperation({
+          operationId: 'getWorkspaceMaterial',
+          tag: 'materials',
+          summary: 'Read one Workspace Material.',
+          parameters: [WORKSPACE_ID_PARAMETER, MATERIAL_ID_PARAMETER],
+          responseStatus: '200',
+          responseSchema: 'GetWorkspaceMaterialResponse',
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/materials/{materialId}/revisions': {
+        get: appJsonOperation({
+          operationId: 'listWorkspaceMaterialRevisions',
+          tag: 'materials',
+          summary: 'List immutable revisions for one Workspace Material.',
+          parameters: [WORKSPACE_ID_PARAMETER, MATERIAL_ID_PARAMETER],
+          responseStatus: '200',
+          responseSchema: 'ListWorkspaceMaterialRevisionsResponse',
+        }),
+        post: appJsonOperation({
+          operationId: 'saveWorkspaceMaterialRevision',
+          tag: 'materials',
+          summary: 'Save one immutable Workspace Material revision.',
+          parameters: [WORKSPACE_ID_PARAMETER, MATERIAL_ID_PARAMETER],
+          requestSchema: 'SaveWorkspaceMaterialRevisionRequest',
+          responseStatus: '201',
+          responseSchema: 'SaveWorkspaceMaterialRevisionResponse',
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/materials/{materialId}/revisions/{revisionId}': {
+        get: appJsonOperation({
+          operationId: 'getWorkspaceMaterialRevision',
+          tag: 'materials',
+          summary: 'Read one exact Workspace Material revision.',
+          parameters: [WORKSPACE_ID_PARAMETER, MATERIAL_ID_PARAMETER, REVISION_ID_PARAMETER],
+          responseStatus: '200',
+          responseSchema: 'GetWorkspaceMaterialRevisionResponse',
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/threads/{threadId}/material': {
+        get: appJsonOperation({
+          operationId: 'getThreadMaterial',
+          tag: 'materials',
+          summary: 'Read the singular Material projection for one Thread.',
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
+          responseStatus: '200',
+          responseSchema: 'GetThreadMaterialResponse',
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/threads/{threadId}/materials/{materialId}/bind': {
+        post: appJsonOperation({
+          operationId: 'bindThreadMaterial',
+          tag: 'materials',
+          summary: 'Bind one Workspace Material to a Thread.',
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER, MATERIAL_ID_PARAMETER],
+          requestSchema: 'BindThreadMaterialRequest',
+          responseStatus: '200',
+          responseSchema: 'BindThreadMaterialResponse',
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/threads/{threadId}/materials/{materialId}/unbind': {
+        post: appJsonOperation({
+          operationId: 'unbindThreadMaterial',
+          tag: 'materials',
+          summary: 'Unbind one Workspace Material from a Thread.',
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER, MATERIAL_ID_PARAMETER],
+          requestSchema: 'UnbindThreadMaterialRequest',
+          responseStatus: '200',
+          responseSchema: 'UnbindThreadMaterialResponse',
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/threads/{threadId}/materials/{materialId}/exclude': {
+        post: appJsonOperation({
+          operationId: 'excludeThreadMaterial',
+          tag: 'materials',
+          summary: 'Exclude one bound Workspace Material from worker context.',
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER, MATERIAL_ID_PARAMETER],
+          requestSchema: 'ExcludeThreadMaterialRequest',
+          responseStatus: '200',
+          responseSchema: 'ExcludeThreadMaterialResponse',
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/threads/{threadId}/materials/{materialId}/restore': {
+        post: appJsonOperation({
+          operationId: 'restoreThreadMaterial',
+          tag: 'materials',
+          summary: 'Restore one bound Workspace Material to worker context.',
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER, MATERIAL_ID_PARAMETER],
+          requestSchema: 'RestoreThreadMaterialRequest',
+          responseStatus: '200',
+          responseSchema: 'RestoreThreadMaterialResponse',
+        }),
       },
       '/api/app/workspaces/{workspaceId}/action-center': {
         get: {
@@ -4458,11 +4897,67 @@ export function createAppOpenApiDocument() {
         },
       },
       schemas: {
+        AcceptWorkspaceInvitationRequest: toJsonSchema(AcceptWorkspaceInvitationRequestSchema),
+        ChangeWorkspaceMemberAccessRequest: toJsonSchema(ChangeWorkspaceMemberAccessRequestSchema),
+        CreateWorkspaceInvitationRequest: toJsonSchema(CreateWorkspaceInvitationRequestSchema),
+        DeclineWorkspaceInvitationRequest: toJsonSchema(DeclineWorkspaceInvitationRequestSchema),
+        DisableUserRequest: toJsonSchema(DisableUserRequestSchema),
+        DisableUserResponse: toJsonSchema(DisableUserResponseSchema),
+        LeaveWorkspaceRequest: toJsonSchema(LeaveWorkspaceRequestSchema),
+        ListAuthorizedWorkspacesResponse: toJsonSchema(ListAuthorizedWorkspacesResponseSchema),
+        ListWorkspaceInvitationsResponse: toJsonSchema(ListWorkspaceInvitationsResponseSchema),
+        ListWorkspaceMembersResponse: toJsonSchema(ListWorkspaceMembersResponseSchema),
+        RecoverWorkspaceAccessRequest: toJsonSchema(RecoverWorkspaceAccessRequestSchema),
+        RemoveWorkspaceMemberRequest: toJsonSchema(RemoveWorkspaceMemberRequestSchema),
+        RevokeWorkspaceInvitationRequest: toJsonSchema(RevokeWorkspaceInvitationRequestSchema),
+        TransferWorkspaceOwnershipRequest: toJsonSchema(TransferWorkspaceOwnershipRequestSchema),
+        WorkspaceAccessRecoveryResponse: toJsonSchema(WorkspaceAccessRecoveryResponseSchema),
+        WorkspaceInvitationMutationResponse: toJsonSchema(
+          WorkspaceInvitationMutationResponseSchema
+        ),
+        WorkspaceMemberMutationResponse: toJsonSchema(WorkspaceMemberMutationResponseSchema),
+        WorkspaceOwnershipMutationResponse: toJsonSchema(WorkspaceOwnershipMutationResponseSchema),
         AgentId: toJsonSchema(AgentIdSchema),
         AgentSessionId: toJsonSchema(AgentSessionIdSchema),
         ApiError: toJsonSchema(ApiErrorSchema),
         AgentHealthRefreshResponse: toJsonSchema(AgentHealthRefreshResponseSchema),
         ArtifactId: toJsonSchema(ArtifactIdSchema),
+        BindThreadMaterialRequest: toJsonSchema(BindThreadMaterialRequestSchema),
+        BindThreadMaterialResponse: toJsonSchema(BindThreadMaterialResponseSchema),
+        CreateWorkspaceMaterialRequest: toJsonSchema(CreateWorkspaceMaterialRequestSchema),
+        CreateWorkspaceMaterialResponse: toJsonSchema(CreateWorkspaceMaterialResponseSchema),
+        ExcludeThreadMaterialRequest: toJsonSchema(ExcludeThreadMaterialRequestSchema),
+        ExcludeThreadMaterialResponse: toJsonSchema(ExcludeThreadMaterialResponseSchema),
+        GetThreadMaterialResponse: toJsonSchema(GetThreadMaterialResponseSchema),
+        GetWorkspaceMaterialResponse: toJsonSchema(GetWorkspaceMaterialResponseSchema),
+        GetWorkspaceMaterialRevisionResponse: toJsonSchema(
+          GetWorkspaceMaterialRevisionResponseSchema
+        ),
+        ImportWorkspaceArtifactRequest: toJsonSchema(ImportWorkspaceArtifactRequestSchema),
+        ImportWorkspaceArtifactResponse: toJsonSchema(ImportWorkspaceArtifactResponseSchema),
+        IntroduceWorkspaceArtifactRequest: toJsonSchema(IntroduceWorkspaceArtifactRequestSchema),
+        IntroduceWorkspaceArtifactResponse: toJsonSchema(IntroduceWorkspaceArtifactResponseSchema),
+        ListArtifactReviewsResponse: toJsonSchema(ListArtifactReviewsResponseSchema),
+        ListWorkspaceMaterialRevisionsResponse: toJsonSchema(
+          ListWorkspaceMaterialRevisionsResponseSchema
+        ),
+        ListWorkspaceMaterialsResponse: toJsonSchema(ListWorkspaceMaterialsResponseSchema),
+        RestoreThreadMaterialRequest: toJsonSchema(RestoreThreadMaterialRequestSchema),
+        RestoreThreadMaterialResponse: toJsonSchema(RestoreThreadMaterialResponseSchema),
+        SaveWorkspaceMaterialRevisionRequest: toJsonSchema(
+          SaveWorkspaceMaterialRevisionRequestSchema
+        ),
+        SaveWorkspaceMaterialRevisionResponse: toJsonSchema(
+          SaveWorkspaceMaterialRevisionResponseSchema
+        ),
+        SubmitArtifactReviewDecisionRequest: toJsonSchema(
+          SubmitArtifactReviewDecisionRequestSchema
+        ),
+        SubmitArtifactReviewDecisionResponse: toJsonSchema(
+          SubmitArtifactReviewDecisionResponseSchema
+        ),
+        UnbindThreadMaterialRequest: toJsonSchema(UnbindThreadMaterialRequestSchema),
+        UnbindThreadMaterialResponse: toJsonSchema(UnbindThreadMaterialResponseSchema),
         AppDiagnosticsResponse: toJsonSchema(AppDiagnosticsResponseSchema),
         AppSearchResponse: toJsonSchema(AppSearchResponseSchema),
         ApproveThreadGoalPlanRequest: toJsonSchema(ApproveThreadGoalPlanRequestSchema),
@@ -4615,8 +5110,6 @@ export function createAppOpenApiDocument() {
         SubmitWorkspaceRecoveryDecisionResponse: toJsonSchema(
           SubmitWorkspaceRecoveryDecisionResponseSchema
         ),
-        PromoteKnowledgeClaimRequest: toJsonSchema(PromoteKnowledgeClaimRequestSchema),
-        PromoteKnowledgeClaimResponse: toJsonSchema(PromoteKnowledgeClaimResponseSchema),
         QuickChatRequest: toJsonSchema(QuickChatRequestSchema),
         QuickChatResponse: toJsonSchema(QuickChatResponseSchema),
         RequestGitPushApprovalRequest: toJsonSchema(RequestGitPushApprovalRequestSchema),
@@ -4667,6 +5160,14 @@ export function createAppOpenApiDocument() {
         StartThreadGoalRequest: toJsonSchema(StartThreadGoalRequestSchema),
         StartThreadGoalResponse: toJsonSchema(StartThreadGoalResponseSchema),
         StorageLayoutReportResponse: toJsonSchema(StorageLayoutReportResponseSchema),
+        CancelGoalSteeringRequest: toJsonSchema(CancelGoalSteeringRequestSchema),
+        CancelGoalSteeringResponse: toJsonSchema(CancelGoalSteeringResponseSchema),
+        ConvertGoalSteeringToFollowUpRequest: toJsonSchema(
+          ConvertGoalSteeringToFollowUpRequestSchema
+        ),
+        ConvertGoalSteeringToFollowUpResponse: toJsonSchema(
+          ConvertGoalSteeringToFollowUpResponseSchema
+        ),
         SubmitGoalReviewDecisionRequest: toJsonSchema(SubmitGoalReviewDecisionRequestSchema),
         SubmitGoalReviewDecisionResponse: toJsonSchema(SubmitGoalReviewDecisionResponseSchema),
         SubmitKnowledgeProposalDecisionRequest: toJsonSchema(

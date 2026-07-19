@@ -1,4 +1,5 @@
 import * as appSchemas from '@openkit/app-api-schemas';
+import { ApiCallError } from '@openkit/core-client';
 import * as protocol from '@openkit/protocol';
 import { z } from 'zod';
 
@@ -86,6 +87,21 @@ function bodyWithout(input, ...keys) {
  */
 function localError(code, message, cause) {
   return Object.assign(new Error(message), { code, ...(cause === undefined ? {} : { cause }) });
+}
+
+/**
+ * Rejects content-bearing Agent Skill operations for one restricted Material.
+ *
+ * @param {unknown} sensitivity Material sensitivity read from the authoritative metadata route.
+ * @returns {void}
+ * @throws {ApiCallError} When canonical Material content must remain outside the Agent Skill.
+ */
+function requireAgentReadableMaterial(sensitivity) {
+  if (sensitivity === 'restricted') {
+    throw new ApiCallError(409, 'Restricted Material content is unavailable to the Agent Skill.', {
+      code: 'sensitive_content',
+    });
+  }
 }
 
 /**
@@ -781,6 +797,69 @@ export const operationCatalog = [
   },
   {
     ...STANDARD,
+    inputSensitivity: 'workspace content',
+    id: 'goal.steering-send',
+    source: 'app-api',
+    appOperationId: 'submitThreadGoalSteering',
+    clientMethod: 'app.submitThreadGoalSteering',
+    group: 'goal',
+    summary: 'Queue one message or exact Material revision for the active Goal.',
+    mutating: true,
+    inputSchema: z.union([
+      flatRequest(appSchemas.SubmitThreadGoalSteeringMessageRequestSchema, threadScope),
+      flatRequest(appSchemas.SubmitThreadGoalSteeringMaterialRequestSchema, threadScope),
+    ]),
+    handler: ({ client }, input) =>
+      client.app.submitThreadGoalSteering(
+        input.workspaceId,
+        input.threadId,
+        bodyWithout(input, 'workspaceId', 'threadId')
+      ),
+  },
+  {
+    ...STANDARD,
+    id: 'goal.steering-follow-up',
+    source: 'app-api',
+    appOperationId: 'convertGoalSteeringToFollowUp',
+    clientMethod: 'app.convertGoalSteeringToFollowUp',
+    group: 'goal',
+    summary: 'Convert one terminal Goal steering input into Thread follow-up history.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.ConvertGoalSteeringToFollowUpRequestSchema, {
+      ...threadScope,
+      pendingTurnId: IDENTIFIER,
+    }),
+    handler: ({ client }, input) =>
+      client.app.convertGoalSteeringToFollowUp(
+        input.workspaceId,
+        input.threadId,
+        input.pendingTurnId,
+        bodyWithout(input, 'workspaceId', 'threadId', 'pendingTurnId')
+      ),
+  },
+  {
+    ...STANDARD,
+    id: 'goal.steering-cancel',
+    source: 'app-api',
+    appOperationId: 'cancelGoalSteering',
+    clientMethod: 'app.cancelGoalSteering',
+    group: 'goal',
+    summary: 'Cancel one terminal Goal steering input.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.CancelGoalSteeringRequestSchema, {
+      ...threadScope,
+      pendingTurnId: IDENTIFIER,
+    }),
+    handler: ({ client }, input) =>
+      client.app.cancelGoalSteering(
+        input.workspaceId,
+        input.threadId,
+        input.pendingTurnId,
+        bodyWithout(input, 'workspaceId', 'threadId', 'pendingTurnId')
+      ),
+  },
+  {
+    ...STANDARD,
     id: 'knowledge.answer',
     source: 'app-api',
     appOperationId: 'answerKnowledgeManager',
@@ -879,26 +958,6 @@ export const operationCatalog = [
     inputSchema: flatRequest(appSchemas.RecordKnowledgeClaimRequestSchema, workspaceScope),
     handler: ({ client }, input) =>
       client.app.recordKnowledgeClaim(input.workspaceId, bodyWithout(input, 'workspaceId')),
-  },
-  {
-    ...STANDARD,
-    id: 'knowledge.claim-promote',
-    source: 'app-api',
-    appOperationId: 'promoteKnowledgeClaim',
-    clientMethod: 'app.promoteKnowledgeClaim',
-    group: 'knowledge',
-    summary: 'Promote one knowledge claim for review.',
-    mutating: true,
-    inputSchema: flatRequest(appSchemas.PromoteKnowledgeClaimRequestSchema, {
-      ...workspaceScope,
-      claimId: IDENTIFIER,
-    }),
-    handler: ({ client }, input) =>
-      client.app.promoteKnowledgeClaim(
-        input.workspaceId,
-        input.claimId,
-        bodyWithout(input, 'workspaceId', 'claimId')
-      ),
   },
   {
     ...STANDARD,
@@ -1456,6 +1515,171 @@ export const operationCatalog = [
   },
   {
     ...STANDARD,
+    requiredAccess:
+      'current Workspace owner through implicit local access or a Workspace-bound bearer token',
+    id: 'workspace.member-list',
+    source: 'app-api',
+    appOperationId: 'listWorkspaceMembers',
+    clientMethod: 'app.listWorkspaceMembers',
+    group: 'workspace',
+    summary: 'List Workspace members and their effective roles.',
+    mutating: false,
+    inputSchema: strictScope(workspaceScope),
+    handler: ({ client }, input) => client.app.listWorkspaceMembers(input.workspaceId),
+  },
+  {
+    ...STANDARD,
+    requiredAccess:
+      'current Workspace owner through implicit local access or a Workspace-bound bearer token',
+    id: 'workspace.invitation-list',
+    source: 'app-api',
+    appOperationId: 'listWorkspaceInvitations',
+    clientMethod: 'app.listWorkspaceInvitations',
+    group: 'workspace',
+    summary: 'List owner-visible Workspace invitations.',
+    mutating: false,
+    inputSchema: strictScope(workspaceScope),
+    handler: ({ client }, input) => client.app.listWorkspaceInvitations(input.workspaceId),
+  },
+  {
+    ...SECRET_INPUT,
+    requiredAccess:
+      'current Workspace owner through implicit local access or a mutable Workspace bearer token',
+    id: 'workspace.invitation-create',
+    source: 'app-api',
+    appOperationId: 'createWorkspaceInvitation',
+    clientMethod: 'app.createWorkspaceInvitation',
+    group: 'workspace',
+    summary: 'Invite one registered user to a Workspace.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.CreateWorkspaceInvitationRequestSchema, workspaceScope),
+    handler: ({ client }, input) =>
+      client.app.createWorkspaceInvitation(input.workspaceId, bodyWithout(input, 'workspaceId')),
+  },
+  {
+    ...STANDARD,
+    requiredAccess:
+      'current Workspace owner through implicit local access or a mutable Workspace bearer token',
+    id: 'workspace.invitation-revoke',
+    source: 'app-api',
+    appOperationId: 'revokeWorkspaceInvitation',
+    clientMethod: 'app.revokeWorkspaceInvitation',
+    group: 'workspace',
+    summary: 'Revoke one pending Workspace invitation.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.RevokeWorkspaceInvitationRequestSchema, {
+      ...workspaceScope,
+      invitationId: IDENTIFIER,
+    }),
+    handler: ({ client }, input) =>
+      client.app.revokeWorkspaceInvitation(
+        input.workspaceId,
+        input.invitationId,
+        bodyWithout(input, 'workspaceId', 'invitationId')
+      ),
+  },
+  {
+    ...STANDARD,
+    requiredAccess:
+      'current Workspace owner through implicit local access or a mutable Workspace bearer token',
+    id: 'workspace.member-access-change',
+    source: 'app-api',
+    appOperationId: 'changeWorkspaceMemberAccess',
+    clientMethod: 'app.changeWorkspaceMemberAccess',
+    group: 'workspace',
+    summary: 'Change one Workspace member between editor and viewer access.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.ChangeWorkspaceMemberAccessRequestSchema, {
+      ...workspaceScope,
+      userId: IDENTIFIER,
+    }),
+    handler: ({ client }, input) =>
+      client.app.changeWorkspaceMemberAccess(
+        input.workspaceId,
+        input.userId,
+        bodyWithout(input, 'workspaceId', 'userId')
+      ),
+  },
+  {
+    ...STANDARD,
+    requiredAccess:
+      'current Workspace owner through implicit local access or a mutable Workspace bearer token',
+    id: 'workspace.member-remove',
+    source: 'app-api',
+    appOperationId: 'removeWorkspaceMember',
+    clientMethod: 'app.removeWorkspaceMember',
+    group: 'workspace',
+    summary: 'Remove one non-owner Workspace member.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.RemoveWorkspaceMemberRequestSchema, {
+      ...workspaceScope,
+      userId: IDENTIFIER,
+    }),
+    handler: ({ client }, input) =>
+      client.app.removeWorkspaceMember(
+        input.workspaceId,
+        input.userId,
+        bodyWithout(input, 'workspaceId', 'userId')
+      ),
+  },
+  {
+    ...STANDARD,
+    requiredAccess:
+      'current Workspace owner through implicit local access or a mutable Workspace bearer token',
+    id: 'workspace.ownership-transfer',
+    source: 'app-api',
+    appOperationId: 'transferWorkspaceOwnership',
+    clientMethod: 'app.transferWorkspaceOwnership',
+    group: 'workspace',
+    summary: 'Transfer Workspace ownership to one active member.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.TransferWorkspaceOwnershipRequestSchema, workspaceScope),
+    handler: ({ client }, input) =>
+      client.app.transferWorkspaceOwnership(input.workspaceId, bodyWithout(input, 'workspaceId')),
+  },
+  {
+    ...STANDARD,
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'workspace.access-recovery-read',
+    source: 'app-api',
+    appOperationId: 'getWorkspaceAccessRecoveryState',
+    clientMethod: 'app.getWorkspaceAccessRecoveryState',
+    group: 'workspace',
+    summary: 'Read the content-free Workspace access recovery state.',
+    mutating: false,
+    inputSchema: strictScope(workspaceScope),
+    handler: ({ client }, input) => client.app.getWorkspaceAccessRecoveryState(input.workspaceId),
+  },
+  {
+    ...STANDARD,
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'workspace.access-recover',
+    source: 'app-api',
+    appOperationId: 'recoverWorkspaceAccess',
+    clientMethod: 'app.recoverWorkspaceAccess',
+    group: 'workspace',
+    summary: 'Perform one bounded Workspace access recovery action.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.RecoverWorkspaceAccessRequestSchema, workspaceScope),
+    handler: ({ client }, input) =>
+      client.app.recoverWorkspaceAccess(input.workspaceId, bodyWithout(input, 'workspaceId')),
+  },
+  {
+    ...STANDARD,
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'user.disable',
+    source: 'app-api',
+    appOperationId: 'disableUser',
+    clientMethod: 'app.disableUser',
+    group: 'user',
+    summary: 'Disable one exact canonical user while preserving history.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.DisableUserRequestSchema, { userId: IDENTIFIER }),
+    handler: ({ client }, input) =>
+      client.app.disableUser(input.userId, bodyWithout(input, 'userId')),
+  },
+  {
+    ...STANDARD,
     ...DEPLOYMENT_ADMIN_ACCESS,
     id: 'backup.create',
     source: 'app-api',
@@ -1779,15 +2003,16 @@ export const operationCatalog = [
   },
   {
     ...STANDARD,
+    requiredAccess: 'implicit local access or a Workspace-bound bearer token',
     id: 'workspace.list',
-    source: 'core-projection',
-    clientMethod: 'core.listWorkspaces',
-    protocolSchema: 'ListWorkspacesResponseSchema',
+    source: 'app-api',
+    appOperationId: 'listAuthorizedWorkspaces',
+    clientMethod: 'app.listAuthorizedWorkspaces',
     group: 'workspace',
-    summary: 'List workspaces.',
+    summary: 'List authorized Workspaces with effective access and revisions.',
     mutating: false,
     inputSchema: EMPTY_INPUT,
-    handler: ({ client }) => client.core.listWorkspaces(),
+    handler: ({ client }) => client.app.listAuthorizedWorkspaces(),
   },
   {
     ...STANDARD,
@@ -2038,6 +2263,283 @@ export const operationCatalog = [
     handler: ({ client }, input) => client.core.getArtifact(input.workspaceId, input.artifactId),
   },
   {
+    ...STANDARD,
+    inputSensitivity: 'workspace content',
+    id: 'artifact.import',
+    source: 'app-api',
+    appOperationId: 'importWorkspaceArtifact',
+    clientMethod: 'app.importWorkspaceArtifact',
+    group: 'artifact',
+    summary: 'Import one immutable Workspace Artifact version.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.ImportWorkspaceArtifactRequestSchema, workspaceScope),
+    handler: ({ client }, input) =>
+      client.app.importWorkspaceArtifact(input.workspaceId, bodyWithout(input, 'workspaceId')),
+  },
+  {
+    ...STANDARD,
+    id: 'artifact.introduce',
+    source: 'app-api',
+    appOperationId: 'introduceWorkspaceArtifact',
+    clientMethod: 'app.introduceWorkspaceArtifact',
+    group: 'artifact',
+    summary: 'Introduce one exact Artifact version into an idle Thread.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.IntroduceWorkspaceArtifactRequestSchema, {
+      ...threadScope,
+      artifactId: protocol.ArtifactIdSchema,
+    }),
+    handler: ({ client }, input) =>
+      client.app.introduceWorkspaceArtifact(
+        input.workspaceId,
+        input.threadId,
+        input.artifactId,
+        bodyWithout(input, 'workspaceId', 'threadId', 'artifactId')
+      ),
+  },
+  {
+    ...STANDARD,
+    id: 'artifact.review-list',
+    source: 'app-api',
+    appOperationId: 'listArtifactReviews',
+    clientMethod: 'app.listArtifactReviews',
+    group: 'artifact',
+    summary: 'List version-keyed Reviews for one Artifact.',
+    mutating: false,
+    inputSchema: strictScope({ ...workspaceScope, artifactId: protocol.ArtifactIdSchema }),
+    handler: ({ client }, input) =>
+      client.app.listArtifactReviews(input.workspaceId, input.artifactId),
+  },
+  {
+    ...STANDARD,
+    id: 'artifact.review-decide',
+    source: 'app-api',
+    appOperationId: 'submitArtifactReviewDecision',
+    clientMethod: 'app.submitArtifactReviewDecision',
+    group: 'artifact',
+    summary: 'Decide one exact version-keyed Artifact Review.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.SubmitArtifactReviewDecisionRequestSchema, {
+      ...workspaceScope,
+      artifactId: protocol.ArtifactIdSchema,
+      artifactVersion: z.number().int().positive(),
+    }),
+    handler: ({ client }, input) =>
+      client.app.submitArtifactReviewDecision(
+        input.workspaceId,
+        input.artifactId,
+        input.artifactVersion,
+        bodyWithout(input, 'workspaceId', 'artifactId', 'artifactVersion')
+      ),
+  },
+  {
+    ...STANDARD,
+    id: 'material.list',
+    source: 'app-api',
+    appOperationId: 'listWorkspaceMaterials',
+    clientMethod: 'app.listWorkspaceMaterials',
+    group: 'material',
+    summary: 'List Workspace Material metadata.',
+    mutating: false,
+    inputSchema: strictScope(workspaceScope),
+    handler: ({ client }, input) => client.app.listWorkspaceMaterials(input.workspaceId),
+  },
+  {
+    ...STANDARD,
+    id: 'material.create',
+    source: 'app-api',
+    appOperationId: 'createWorkspaceMaterial',
+    clientMethod: 'app.createWorkspaceMaterial',
+    group: 'material',
+    summary: 'Create one public or internal Workspace Material.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.CreateWorkspaceMaterialRequestSchema, workspaceScope),
+    handler: ({ client }, input) => {
+      requireAgentReadableMaterial(input.sensitivity);
+      return client.app.createWorkspaceMaterial(
+        input.workspaceId,
+        bodyWithout(input, 'workspaceId')
+      );
+    },
+  },
+  {
+    ...STANDARD,
+    id: 'material.read',
+    source: 'app-api',
+    appOperationId: 'getWorkspaceMaterial',
+    clientMethod: 'app.getWorkspaceMaterial',
+    group: 'material',
+    summary: 'Read one Workspace Material metadata record.',
+    mutating: false,
+    inputSchema: strictScope({ ...workspaceScope, materialId: IDENTIFIER }),
+    handler: ({ client }, input) =>
+      client.app.getWorkspaceMaterial(input.workspaceId, input.materialId),
+  },
+  {
+    ...STANDARD,
+    id: 'material.revision-list',
+    source: 'app-api',
+    appOperationId: 'listWorkspaceMaterialRevisions',
+    clientMethod: 'app.listWorkspaceMaterialRevisions',
+    group: 'material',
+    summary: 'List immutable Workspace Material revision metadata.',
+    mutating: false,
+    inputSchema: strictScope({ ...workspaceScope, materialId: IDENTIFIER }),
+    handler: ({ client }, input) =>
+      client.app.listWorkspaceMaterialRevisions(input.workspaceId, input.materialId),
+  },
+  {
+    ...STANDARD,
+    outputSensitivity: 'workspace content',
+    id: 'material.revision-read',
+    source: 'app-api',
+    appOperationId: 'getWorkspaceMaterialRevision',
+    clientMethod: 'app.getWorkspaceMaterialRevision',
+    group: 'material',
+    summary: 'Read one exact public or internal Workspace Material revision.',
+    mutating: false,
+    inputSchema: strictScope({
+      ...workspaceScope,
+      materialId: IDENTIFIER,
+      revisionId: IDENTIFIER,
+    }),
+    async handler({ client }, input) {
+      const { material } = await client.app.getWorkspaceMaterial(
+        input.workspaceId,
+        input.materialId
+      );
+      requireAgentReadableMaterial(material.sensitivity);
+      return client.app.getWorkspaceMaterialRevision(
+        input.workspaceId,
+        input.materialId,
+        input.revisionId
+      );
+    },
+  },
+  {
+    ...STANDARD,
+    inputSensitivity: 'workspace content',
+    id: 'material.revision-save',
+    source: 'app-api',
+    appOperationId: 'saveWorkspaceMaterialRevision',
+    clientMethod: 'app.saveWorkspaceMaterialRevision',
+    group: 'material',
+    summary: 'Save one immutable public or internal Workspace Material revision.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.SaveWorkspaceMaterialRevisionRequestSchema, {
+      ...workspaceScope,
+      materialId: IDENTIFIER,
+    }),
+    async handler({ client }, input) {
+      const { material } = await client.app.getWorkspaceMaterial(
+        input.workspaceId,
+        input.materialId
+      );
+      requireAgentReadableMaterial(material.sensitivity);
+      return client.app.saveWorkspaceMaterialRevision(
+        input.workspaceId,
+        input.materialId,
+        bodyWithout(input, 'workspaceId', 'materialId')
+      );
+    },
+  },
+  {
+    ...STANDARD,
+    id: 'material.thread-read',
+    source: 'app-api',
+    appOperationId: 'getThreadMaterial',
+    clientMethod: 'app.getThreadMaterial',
+    group: 'material',
+    summary: 'Read one Thread Material projection.',
+    mutating: false,
+    inputSchema: strictScope(threadScope),
+    handler: ({ client }, input) => client.app.getThreadMaterial(input.workspaceId, input.threadId),
+  },
+  {
+    ...STANDARD,
+    id: 'material.bind',
+    source: 'app-api',
+    appOperationId: 'bindThreadMaterial',
+    clientMethod: 'app.bindThreadMaterial',
+    group: 'material',
+    summary: 'Bind one Workspace Material to a Thread.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.BindThreadMaterialRequestSchema, {
+      ...threadScope,
+      materialId: IDENTIFIER,
+    }),
+    handler: ({ client }, input) =>
+      client.app.bindThreadMaterial(
+        input.workspaceId,
+        input.threadId,
+        input.materialId,
+        bodyWithout(input, 'workspaceId', 'threadId', 'materialId')
+      ),
+  },
+  {
+    ...STANDARD,
+    id: 'material.unbind',
+    source: 'app-api',
+    appOperationId: 'unbindThreadMaterial',
+    clientMethod: 'app.unbindThreadMaterial',
+    group: 'material',
+    summary: 'Unbind one Workspace Material from a Thread.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.UnbindThreadMaterialRequestSchema, {
+      ...threadScope,
+      materialId: IDENTIFIER,
+    }),
+    handler: ({ client }, input) =>
+      client.app.unbindThreadMaterial(
+        input.workspaceId,
+        input.threadId,
+        input.materialId,
+        bodyWithout(input, 'workspaceId', 'threadId', 'materialId')
+      ),
+  },
+  {
+    ...STANDARD,
+    id: 'material.exclude',
+    source: 'app-api',
+    appOperationId: 'excludeThreadMaterial',
+    clientMethod: 'app.excludeThreadMaterial',
+    group: 'material',
+    summary: 'Exclude one bound Workspace Material from worker context.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.ExcludeThreadMaterialRequestSchema, {
+      ...threadScope,
+      materialId: IDENTIFIER,
+    }),
+    handler: ({ client }, input) =>
+      client.app.excludeThreadMaterial(
+        input.workspaceId,
+        input.threadId,
+        input.materialId,
+        bodyWithout(input, 'workspaceId', 'threadId', 'materialId')
+      ),
+  },
+  {
+    ...STANDARD,
+    id: 'material.restore',
+    source: 'app-api',
+    appOperationId: 'restoreThreadMaterial',
+    clientMethod: 'app.restoreThreadMaterial',
+    group: 'material',
+    summary: 'Restore one bound Workspace Material to worker context.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.RestoreThreadMaterialRequestSchema, {
+      ...threadScope,
+      materialId: IDENTIFIER,
+    }),
+    handler: ({ client }, input) =>
+      client.app.restoreThreadMaterial(
+        input.workspaceId,
+        input.threadId,
+        input.materialId,
+        bodyWithout(input, 'workspaceId', 'threadId', 'materialId')
+      ),
+  },
+  {
     ...LOCAL_CREDENTIAL,
     id: 'credential.store',
     source: 'local-only',
@@ -2089,6 +2591,34 @@ export const operationCatalog = [
 export const operationExclusions = [
   {
     source: 'app-api',
+    name: 'listMyWorkspaceInvitations',
+    reason:
+      'The server-mode CLI has no Better Auth session-cookie credential, and this user-scoped collection rejects OpenKit bearer tokens.',
+    owner: 'docs/specs/20260715-multi_user_workspace_system.md',
+  },
+  {
+    source: 'app-api',
+    name: 'acceptWorkspaceInvitation',
+    reason:
+      'The server-mode CLI has no Better Auth session-cookie credential, and invitation acceptance rejects OpenKit bearer tokens.',
+    owner: 'docs/specs/20260715-multi_user_workspace_system.md',
+  },
+  {
+    source: 'app-api',
+    name: 'declineWorkspaceInvitation',
+    reason:
+      'The server-mode CLI has no Better Auth session-cookie credential, and invitation decline rejects OpenKit bearer tokens.',
+    owner: 'docs/specs/20260715-multi_user_workspace_system.md',
+  },
+  {
+    source: 'app-api',
+    name: 'leaveWorkspace',
+    reason:
+      'The server-mode CLI has no Better Auth session-cookie credential; leave and exact own-receipt replay require a canonical session or implicit local user.',
+    owner: 'docs/specs/20260715-multi_user_workspace_system.md',
+  },
+  {
+    source: 'app-api',
     name: 'createOpenKitAccessToken',
     reason:
       'No safe named credential destination exists; issuing would risk replacing the endpoint administration credential.',
@@ -2100,12 +2630,6 @@ export const operationExclusions = [
     reason:
       'No safe named credential destination exists; rotation would risk replacing the endpoint administration credential.',
     owner: 'docs/specs/20260713-openkit_agent_skill_interface.md',
-  },
-  {
-    source: 'app-api',
-    name: 'submitThreadGoalSteering',
-    reason: 'No accepted durable delivery proof exists for active-turn steering.',
-    owner: 'docs/specs/20260713-work_resource_interaction_model.md',
   },
   {
     source: 'app-api',
@@ -2124,6 +2648,13 @@ export const operationExclusions = [
     name: 'searchApp',
     reason: 'App search is a Web presentation route, not operation-catalog discovery.',
     owner: 'docs/specs/20260704-app_api_openapi_projection.md',
+  },
+  {
+    source: 'core-projection',
+    name: 'listWorkspaces',
+    reason:
+      'workspace.list uses the richer authorized App API summary; exposing this lower-fidelity projection would duplicate one user intent.',
+    owner: 'docs/specs/20260715-multi_user_workspace_system.md',
   },
   {
     source: 'core-projection',

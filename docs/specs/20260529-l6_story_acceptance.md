@@ -5,7 +5,7 @@ Implementation: Partial
 
 ## Owns
 
-This specification owns the L6 story-acceptance boundary: when a realistic user-intent workflow deserves L6 proof, the minimum story artifact, execution and failure semantics, evidence proportionality, and reduction of confirmed defects into lower test layers.
+This specification owns the L6 story-acceptance boundary: when a realistic user-intent workflow deserves L6 proof, the minimum story artifact, execution role separation, adjudication authority, execution and failure semantics, evidence proportionality and retention, story admission stability, and reduction of confirmed defects into lower test layers.
 
 ## Does Not Own
 
@@ -26,6 +26,8 @@ L6 answers one question: can a user or AI agent complete one important product i
 L6 is an opt-in acceptance layer, not a required copy of L1-L5 and not a test platform for every feature, failure branch, provider, runtime, transport, or deployment shape. A behavior already proved deterministically at a lower layer receives L6 coverage only when a distinct end-to-end product risk remains.
 
 OpenKit prefers agent-first real use for exploratory and release-candidate acceptance. A deterministic story adapter is justified only for a stable, repeatedly valuable workflow that cannot be protected more cheaply at L1-L5. Both modes must reuse existing product clients and runner support instead of growing parallel authentication, transport, process-control, evidence, Git, cleanup, or recovery systems.
+
+Agent-first execution separates three roles: an orchestrator that prepares the environment and assembles evidence, an actor that receives only the persona and the user ask, and a judge that adjudicates the deterministic assertions from the story text and the evidence package alone. The product verdict must be reproducible by an independent judge from that package without access to the live run.
 
 ## Current Scope
 
@@ -75,6 +77,8 @@ Add or retain an L6 story only when all of the following are true:
 - The required environment and oracle are available without inventing private product capabilities.
 - The story has an explicit owner and remains cheap enough to run intentionally.
 
+A new or materially revised story becomes acceptance evidence only after repeated agent-first runs return a consistent typed classification: three consecutive runs for stories without real-provider requirements, two for opt-in real-provider or real-Codex stories. Per-story `inconclusive`, `environment_failure`, and `tool_failure` rates stay in the run records so instrument noise remains visible.
+
 Delete, merge, or demote a story when lower-layer coverage now owns its only distinct risk, the public surface is removal-only, the story depends on private seeding, or its adapter costs more than the product confidence it provides.
 
 ## Story Artifact Contract
@@ -90,20 +94,32 @@ default_tool: openkit
 timeout_seconds: 600
 requires_real_provider: false
 requires_real_codex: true
+contracts: docs/specs/20260704-task_mode_worker_delegation.md, docs/specs/20260616-agent_environment_package.md
 ```
 
-`id` is repository-unique. `title` and `persona` describe the user intent. `entrypoint` names a supported public product surface. `default_tool` names the existing product client or browser control used for the run. `timeout_seconds` is one story-level budget. Real provider or Codex requirements require explicit opt-in metadata.
+`id` is repository-unique. `title` and `persona` describe the user intent. `entrypoint` names a supported public product surface. `default_tool` names the existing product client or browser control used for the run. `timeout_seconds` is one story-level budget. Real provider or Codex requirements require explicit opt-in metadata. `contracts` is one comma-separated scalar line naming the owning Core and specification documents whose behavior the story accepts; the scalar shape preserves the existing no-YAML-dependency metadata parser. A change to a listed document marks the story for review, and a story whose listed document no longer exists fails validation.
 
-The body contains only the sections needed to make independent executions materially equivalent:
+The front matter grammar is the closed field set above, not YAML. If a second field ever needs structure, adopt a real YAML parser with a closed schema in one step; do not extend the scalar parser with partial YAML syntax.
+
+The body contains only the sections needed to make independent executions materially equivalent. These sections are required:
 
 - `Purpose`: the one user intent and the owning product contracts.
 - `Preconditions`: required implemented capabilities and environment assumptions.
-- `Setup`: allowed non-user preparation using existing public or test-owned support.
 - `User-visible Steps`: actions through the supported public surface.
 - `Expected Outcomes`: observable product results.
 - `Deterministic Assertions`: the minimum machine-checkable pass/fail oracles.
-- `Cleanup`: bounded process and disposable-state cleanup.
 - `Failure Triage Notes`: product, environment, tool, or inconclusive classification and the likely lower regression layer.
+
+These sections are allowed when the story needs them:
+
+- `Setup`: allowed non-user preparation using existing public or test-owned support.
+- `Required Opt-in Environment Variables`: the explicit opt-in variables for real-provider or host-dependent runs.
+- `Evidence To Collect`: the artifacts the orchestrator captures for adjudication and triage.
+- `Cleanup`: bounded process and disposable-state cleanup.
+
+No other body section is allowed. The section list is normative for repository validation.
+
+Every deterministic assertion is an oracle over collected evidence or readable product records and names what decides it. A verdict about the run itself, such as "the run executes and passes", is not an assertion; execution, skip, and gate semantics are owned by this specification.
 
 Evidence requirements appear only when they change the acceptance decision or materially shorten failure triage. Long transcripts, screenshots at every state, database dumps, network archives, repository snapshots, and full audit exports are not default requirements.
 
@@ -111,15 +127,21 @@ Evidence requirements appear only when they change the acceptance decision or ma
 
 ### Agent-first Execution
 
-Agent-first execution is the default for exploratory, dogfooding, and release-candidate stories. The agent reads the story, uses an existing public Skill, CLI, API client, or browser tool, records the deterministic outcomes, and produces a concise result.
+Agent-first execution is the default for exploratory, dogfooding, and release-candidate stories. It separates three roles with different context rules.
 
-The agent may adapt to benign presentation differences but may not bypass product authority or replace a failed product path with private writes. Setup, cleanup, and diagnostic inspection may use declared repository tools.
+The orchestrator reads the full story, performs Setup, provisions the actor, captures the evidence named by the story, records the verdicts, writes Failure Triage Notes, and performs Cleanup. The orchestrator is authoritative for `skipped`, `environment_failure`, and `tool_failure` and never issues a product verdict.
+
+The actor performs the user-visible flow through the declared public surface. Its context contains only the persona and the user ask; it MUST NOT receive the story file, Expected Outcomes, Deterministic Assertions, or answers the story requires it to discover. The verbatim actor prompt is part of the evidence package. When the entrypoint is itself an agent surface, the tested agent is the actor and the same context rules apply.
+
+The judge adjudicates in a clean context from exactly two inputs: the story text and the evidence package. It has no tool or environment access, does not interact with the actor or the live run, and returns the product verdict with a per-assertion rationale. For stories on strict surfaces the judge SHOULD come from a different model family than the actor.
+
+The actor may adapt to benign presentation differences but may not bypass product authority or replace a failed product path with private writes. Setup, cleanup, and diagnostic inspection remain orchestrator work using declared repository tools.
 
 No general committed agentic executor is required. Repeated manual steps may be automated only after real runs demonstrate a stable shared need, and the resulting support must reuse an existing runner owner rather than create another framework.
 
 ### Deterministic Execution
 
-A deterministic adapter is appropriate only for a stable, high-value story that is intentionally repeated. It validates the source story, invokes existing stack and product clients, performs only story-specific actions and assertions, and returns ordinary test results.
+A deterministic adapter is appropriate only for a stable, high-value story that is intentionally repeated. It validates the source story, invokes existing stack and product clients, performs only story-specific actions and assertions, and returns ordinary test results. A deterministic adapter evaluates its assertions in code, so the role separation above applies only to agent-first execution.
 
 A deterministic adapter MUST NOT reimplement authentication transport, command routing, process-group supervision, credential redaction, evidence-directory policy, Git inspection, timeout orchestration, or cleanup already owned elsewhere. If existing support cannot serve the story without such duplication, keep the story agent-first or improve the existing owner as a separately justified change.
 
@@ -129,14 +151,16 @@ A deterministic adapter MUST NOT reimplement authentication transport, command r
 2. Confirm its distinct L6 risk and identify the lowest-layer checks already covering the underlying behavior.
 3. Preflight only the environment capabilities named by the story.
 4. Execute through the named public surface under one bounded deadline.
-5. Classify the result as `passed`, `failed`, `skipped`, `environment_failure`, `tool_failure`, or `inconclusive`.
-6. Preserve the story revision, concise assertion summary, redaction result, and only failure evidence required for triage.
+5. Adjudicate and classify the result as `passed`, `failed`, `skipped`, `environment_failure`, `tool_failure`, or `inconclusive` under the authority split in Pass And Failure Semantics.
+6. Preserve the story revision, assertion summary, redaction result, and the evidence required by the retention policy in Evidence And Security.
 7. Reduce a confirmed deterministic product defect into L1-L5, then retain L6 only if its end-to-end intent remains valuable.
 8. Clean disposable state; a cleanup failure is reported separately and does not rewrite the product result.
 
 An interrupted real-provider or real-worker run may preserve available redacted evidence and be retried as a fresh run. L6 does not require transparent executor recovery, resumable evidence settlement, or reconstruction of every partially written report.
 
 ## Pass And Failure Semantics
+
+In agent-first execution the judge issues `passed`, `failed`, and `inconclusive` from the story and the evidence package; the orchestrator records that verdict without arbitration and is authoritative only for `skipped`, `environment_failure`, and `tool_failure`. Once the actor has completed the user-visible flow and evidence collection has succeeded, `environment_failure` and `tool_failure` are no longer available classifications; a doubtful product outcome is `inconclusive`.
 
 `passed` means every required deterministic assertion passed and no observed behavior contradicted the explicit story intent.
 
@@ -148,13 +172,17 @@ An interrupted real-provider or real-worker run may preserve available redacted 
 
 `tool_failure` means the executor or browser-control tool failed independently of the product.
 
-`inconclusive` means the story lacks a sufficient oracle or the run ended after an effect whose outcome cannot be proved. Tighten the story or inspect existing product authority; do not synthesize a pass, build a recovery workflow, or expand the runner to guess the outcome.
+`inconclusive` means the story lacks a sufficient oracle or the run ended after an effect whose outcome cannot be proved. A judge that cannot decide a required assertion from the evidence package returns `inconclusive` naming the missing evidence; that result is a story defect that tightens `Evidence To Collect`, not a product defect. Tighten the story or inspect existing product authority; do not synthesize a pass, build a recovery workflow, or expand the runner to guess the outcome.
 
-Subjective usability findings are non-blocking unless they contradict an explicit expected outcome. They may become product issues or design discussion without adding permanent runner behavior.
+Subjective usability findings are non-blocking unless they contradict an explicit expected outcome. Every recorded finding is either linked to a change record or product issue or explicitly waived with a reason in the run record; findings do not silently disappear. They may become product issues or design discussion without adding permanent runner behavior.
 
 ## Evidence And Security
 
-Every completed run retains the story identifier and revision, environment kind, elapsed time, final classification, deterministic assertion results, and a redaction check. Failure runs retain the smallest useful log, transcript excerpt, screenshot, trace, or resource identifier that can locate the cause.
+Every completed run retains the story identifier and revision, environment kind, elapsed time, final classification, deterministic assertion results, and a redaction check.
+
+The evidence package is the adjudication input and must satisfy one bar: an independent judge with no run memory reaches the same product verdict from the story and the package alone. It always contains the verbatim actor prompt and the artifacts named by `Evidence To Collect`. Each agent-first run also records four non-blocking scalars trended per story revision: actor tool calls, error-recovery retries, guidance loaded beyond the story's declared minimum, and elapsed time.
+
+`failed` and `inconclusive` runs retain the full redacted transcript and evidence package for one release cycle. `passed` runs retain the summary, plus the full package for a small sampled fraction kept one release cycle for re-adjudication and review calibration.
 
 Real secrets, tokens, cookies, authorization headers, full credential files, and private account data MUST NOT appear in story files, command output, evidence, reports, CI artifacts, or committed fixtures. Opt-in real runs must reuse the existing credential and redaction owners.
 
@@ -162,7 +190,7 @@ Evidence directories are output locations, not databases or workflow owners. A p
 
 ## Test And Release Policy
 
-The story metadata parser receives focused L1 tests. Shared runner support receives tests only for policies it uniquely owns. Story-specific logic stays in the story or its thin adapter and does not receive a duplicate framework-level test suite.
+The story metadata parser and the story schema check — front matter fields, existing `contracts` references, and the normative body section list — receive focused L0/L1 coverage. Shared runner support receives tests only for policies it uniquely owns. Story-specific logic stays in the story or its thin adapter and does not receive a duplicate framework-level test suite.
 
 One deterministic story may smoke-test the L6 infrastructure itself. Real-provider and real-worker acceptance should prove only the critical integration path named by their owning specification. Cancellation, compression, malicious override, cache, usage, audit, review, Git, cleanup, and Cell recycle remain lower-layer concerns unless one of them is the story's distinct user-visible risk.
 
@@ -174,6 +202,8 @@ Skipped, environment-failed, and unexecuted stories are not acceptance evidence.
 
 Story artifacts live under `tests/stories/`, and current execution support lives under `tests/story-runner/`. The deterministic Web adapter, unified Skill progressive-discovery story, opt-in real Codex and Task worker runs, and real-provider runs are implementation inventory rather than authorization to expand the platform.
 
+The six committed stories are normalized to the artifact contract and declare their owning contracts. `scripts/validate-story-schema.mjs` enforces the closed front matter field set, contract-reference existence, repository-unique story ids, and the normative body section list inside `check:repo`; parsing, the contracts list convention, and the section rules are owned by `tests/story-runner/story-metadata.mjs`. Orchestrator/actor/judge separation in runner support, friction scalars, and retention sampling remain accepted design that is not yet implemented; the owning change record tracks that follow-up.
+
 The former user-facing MCP stories and runners are deleted. Equivalent acceptance is owned by the unified Skill and bundled CLI at the lowest sufficient layer plus one representative real progressive-discovery story; no transport-parity story matrix is required.
 
 The current real Task worker runner duplicates capabilities already present in Goal runner support. Its feature surface is frozen: complete the minimum real happy-path proof, then reuse or move genuinely shared behavior into the existing owner and delete duplicate Task-specific transport, supervision, evidence, Git, redaction, and timeout code. This does not authorize a third runner framework.
@@ -183,6 +213,11 @@ No new cancellation, compression, credential-override, restart, recovery, or bac
 ## Acceptance Predicates
 
 - Two independent readers can identify the story's one user intent, supported entry point, required environment, and deterministic pass/fail oracles.
+- The recorded actor prompt shows the actor received only the persona and the user ask, with no story content or discovery answers.
+- An independent judge reproduces the product verdict from the story and the evidence package alone.
+- Every deterministic assertion names the evidence or product record that decides it.
+- Story front matter declares owning contract documents that exist in the repository.
+- Every non-blocking finding in a run record is linked to a change record or product issue, or explicitly waived with a reason.
 - A run uses only declared public product surfaces during the user-flow portion.
 - The executor reuses existing transport, process, credential, redaction, timeout, cleanup, and evidence owners.
 - Unavailable optional infrastructure yields a typed non-product result rather than a fabricated product pass or new recovery system.
@@ -208,17 +243,23 @@ Rejected because evidence should shorten diagnosis or prove an oracle, not becom
 
 Rejected because a fresh opt-in run plus preserved minimal evidence is the smaller honest fallback.
 
+### Orchestrating Agent As Judge
+
+Rejected because setup knowledge contaminates the verdict, the verdict stops being reproducible from the evidence package, and self-triage bias misclassifies product failures as environment failures. Diagnosis benefits from run context, so the orchestrator keeps Failure Triage Notes; judgment is harmed by run context, so the verdict belongs to a clean judge. This repository-acceptance rule does not authorize a product Evaluation Harness; the explicit product self-improvement loop separately keeps agent analysis advisory and human Knowledge Review authoritative under `docs/specs/20260710-self_improvement_evaluation_loop.md`.
+
 ## Deferred, Non-authorizing Questions
 
 - Whether repeated agent-first runs justify one small shared executor entry point.
 - Whether story count eventually justifies catalog or selection metadata.
 - Whether a cheap, stable subset should become a release-candidate gate.
+- Whether judge-model rotation and seeded-defect adjudication calibration deserve a standing schedule once run volume grows.
 
 These questions create no current implementation or test obligation. A future proposal must begin with evidence from repeated real runs and identify what existing owner cannot meet the need.
 
 ## Related Docs
 
 - `docs/specs/20260529-test_strategy.md`
+- `docs/specs/20260710-self_improvement_evaluation_loop.md`
 - `docs/specs/20260713-openkit_agent_skill_interface.md`
 - `tests/stories/README.md`
 - `tests/story-runner/README.md`

@@ -136,6 +136,12 @@ export interface CodexOAuthStoreOptions {
 
 const PROVIDER_ID = 'openai_codex' as const;
 
+/** Stable public message for unavailable Codex app-server operations. */
+export const CODEX_OAUTH_UNAVAILABLE_MESSAGE = 'Codex app-server is unavailable.';
+
+/** Stable public message for failed Codex ChatGPT account operations. */
+export const CODEX_OAUTH_ERROR_MESSAGE = 'Codex ChatGPT account operation failed.';
+
 /**
  * Creates the default stdio Codex app-server account client.
  *
@@ -157,16 +163,6 @@ async function createDefaultCodexAccountClient(
     getCodexHome: () => initialized.codexHome,
     close: client.close.bind(client),
   };
-}
-
-/**
- * Converts unknown errors to public message strings.
- *
- * @param error Error value to format.
- * @returns Public error message.
- */
-function publicErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -252,7 +248,7 @@ export class CodexOAuthStore {
 
       this.updateLastStatus(accountStatus);
       return { ...this.lastStatus };
-    } catch (error) {
+    } catch {
       if (this.pendingStatus?.status === 'pending') {
         return { ...this.pendingStatus };
       }
@@ -260,7 +256,7 @@ export class CodexOAuthStore {
       this.updateLastStatus({
         providerId: PROVIDER_ID,
         status: 'unavailable',
-        message: publicErrorMessage(error),
+        message: CODEX_OAUTH_UNAVAILABLE_MESSAGE,
       });
       return { ...this.lastStatus };
     }
@@ -291,12 +287,12 @@ export class CodexOAuthStore {
       this.pendingStatus = this.enrichStatus(this.statusFromLoginResponse(response));
       this.updateLastStatus(this.pendingStatus);
       return { ...this.pendingStatus };
-    } catch (error) {
+    } catch {
       this.pendingStatus = null;
       this.updateLastStatus({
         providerId: PROVIDER_ID,
         status: 'unavailable',
-        message: publicErrorMessage(error),
+        message: CODEX_OAUTH_UNAVAILABLE_MESSAGE,
       });
       return { ...this.lastStatus };
     }
@@ -322,12 +318,12 @@ export class CodexOAuthStore {
       this.pendingStatus = null;
       this.updateLastStatus(loggedOutStatus());
       return await this.getStatus();
-    } catch (error) {
+    } catch {
       this.pendingStatus = null;
       this.updateLastStatus({
         providerId: PROVIDER_ID,
         status: 'error',
-        message: publicErrorMessage(error),
+        message: CODEX_OAUTH_ERROR_MESSAGE,
       });
       return { ...this.lastStatus };
     }
@@ -345,12 +341,12 @@ export class CodexOAuthStore {
       this.pendingStatus = null;
       this.updateLastStatus(loggedOutStatus());
       return await this.getStatus();
-    } catch (error) {
+    } catch {
       this.pendingStatus = null;
       this.updateLastStatus({
         providerId: PROVIDER_ID,
         status: 'error',
-        message: publicErrorMessage(error),
+        message: CODEX_OAUTH_ERROR_MESSAGE,
       });
       return { ...this.lastStatus };
     }
@@ -483,7 +479,7 @@ export class CodexOAuthStore {
       status: 'error',
       ...(pendingStatus.mode ? { mode: pendingStatus.mode } : {}),
       loginId: notification.loginId,
-      message: notification.error ?? 'ChatGPT login failed.',
+      message: CODEX_OAUTH_ERROR_MESSAGE,
     });
   }
 

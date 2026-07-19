@@ -124,7 +124,7 @@ export function prepareGoalTaskDelegation(
  * @returns Request and response Item refs in causal order, or an empty list.
  * @throws GoalReviewResolutionError when the durable pointer is absent or contradictory.
  */
-function latestGateContextRefs(
+export function latestGateContextRefs(
   store: FsStore,
   task: ReturnType<typeof listGoalTasks>[number],
   items: readonly Item[]

@@ -10,9 +10,16 @@ import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 function createFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-turn-failure-'));
   const store = createDemoStore({ dataRoot });
-  const turn = store.createTurn('ws_demo', 'th_demo', 'Run governed worker', null, {
-    turnId: 'turn_worker_failure',
-  });
+  const turn = store.createTurn(
+    'ws_demo',
+    'th_demo',
+    'Run governed worker',
+    { kind: 'user', id: 'user_local' },
+    null,
+    {
+      turnId: 'turn_worker_failure',
+    }
+  );
   store.createAgentSession({
     agentId: 'agent_codex_host',
     createdAt: turn.startedAt ?? '2026-07-15T00:00:00.000Z',
@@ -63,9 +70,16 @@ describe('governed worker turn failure projection', () => {
 
   it('fails an existing turn when its agent session was not durably created', () => {
     const store = createDemoStore();
-    store.createTurn('ws_demo', 'th_demo', 'Crash before session write', null, {
-      turnId: 'turn_worker_failure',
-    });
+    store.createTurn(
+      'ws_demo',
+      'th_demo',
+      'Crash before session write',
+      { kind: 'user', id: 'user_local' },
+      null,
+      {
+        turnId: 'turn_worker_failure',
+      }
+    );
 
     expect(projectFailure(store)).toMatchObject({ status: 'failed' });
     expect(store.getTurnById('turn_worker_failure')).toMatchObject({ status: 'failed' });

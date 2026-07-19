@@ -18,7 +18,7 @@ const RESERVED_NON_MANIFEST_FILES = new Set([
   `${MANIFEST_FILE}.tmp`,
 ]);
 
-/** Git-backed writable workspace input used by the Codex shim. */
+/** Git-backed writable workspace input used by the worker shim. */
 export interface WorkspaceGitInput {
   /** Package-local workspace input id. */
   id: string;
@@ -87,16 +87,20 @@ export async function prepareWorkspaceGitSnapshots(
 /**
  * Collects one post-worker Git snapshot and publishes its patch atomically before its manifest.
  *
- * @param input Workspace inputs, captured bases, lineage, and session output directory.
+ * @param input Workspace inputs, captured bases, exact injected credential values, lineage, and session output directory.
  * @throws When snapshot validation, Git collection, publication, or cleanup fails.
  */
 export async function publishWorkspaceGitSnapshots(input: {
   bases: ReadonlyMap<string, string>;
+  credentialValues: readonly string[];
   inputs: readonly WorkspaceGitInput[];
   lineage: WorkerLineage;
   sessionDir: string;
 }): Promise<void> {
   const paths = workspaceGitPaths(input.inputs, input.sessionDir);
+  const credentialBytes = input.credentialValues
+    .filter(Boolean)
+    .map((value) => Buffer.from(value, 'utf8'));
 
   try {
     await removeSessionArtifacts(input.sessionDir, paths.temporary);
@@ -155,6 +159,24 @@ export async function publishWorkspaceGitSnapshots(input: {
       if (changedPaths.length === 0) {
         await removeSessionArtifacts(input.sessionDir, paths.all);
         return;
+      }
+
+      if (credentialBytes.length > 0) {
+        for (const changedPath of changedPaths) {
+          if (changedPath.status === 'deleted') {
+            continue;
+          }
+          const stagedBlob = await requireGitBytes(
+            workspaceInput.target,
+            input.sessionDir,
+            ['cat-file', 'blob', `:0:${changedPath.path}`],
+            indexEnvironment,
+            'Git workspace staged content inspection failed.'
+          );
+          if (credentialBytes.some((credential) => stagedBlob.includes(credential))) {
+            throw new Error('Git workspace staged content contains an injected credential.');
+          }
+        }
       }
 
       const patch = await requireGitBytes(

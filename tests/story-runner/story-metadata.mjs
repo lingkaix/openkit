@@ -1,6 +1,33 @@
-const requiredStringFields = ['id', 'title', 'persona', 'entrypoint', 'default_tool'];
+const requiredStringFields = ['id', 'title', 'persona', 'entrypoint', 'default_tool', 'contracts'];
 const requiredBooleanFields = ['requires_real_provider', 'requires_real_codex'];
 const requiredNumberFields = ['timeout_seconds'];
+const allowedMetadataFields = new Set([
+  ...requiredStringFields,
+  ...requiredBooleanFields,
+  ...requiredNumberFields,
+]);
+
+/**
+ * Required story body sections owned by `docs/specs/20260529-l6_story_acceptance.md`.
+ */
+export const REQUIRED_STORY_SECTIONS = Object.freeze([
+  'Purpose',
+  'Preconditions',
+  'User-visible Steps',
+  'Expected Outcomes',
+  'Deterministic Assertions',
+  'Failure Triage Notes',
+]);
+
+/**
+ * Optional story body sections owned by `docs/specs/20260529-l6_story_acceptance.md`.
+ */
+export const OPTIONAL_STORY_SECTIONS = Object.freeze([
+  'Setup',
+  'Required Opt-in Environment Variables',
+  'Evidence To Collect',
+  'Cleanup',
+]);
 
 /**
  * @typedef {string | number | boolean} StoryMetadataValue
@@ -67,6 +94,93 @@ export function validateStoryMetadata(metadata, sourceName = 'story') {
   for (const field of requiredNumberFields) {
     if (typeof metadata[field] !== 'number' || !Number.isFinite(metadata[field])) {
       throw new Error(`${sourceName} metadata field must be numeric: ${field}`);
+    }
+  }
+
+  for (const field of Object.keys(metadata)) {
+    if (!allowedMetadataFields.has(field)) {
+      throw new Error(`${sourceName} has unknown metadata field: ${field}`);
+    }
+  }
+}
+
+/**
+ * Parses the comma-separated `contracts` scalar into owning document paths.
+ *
+ * This helper is the single owner of the scalar list convention; consumers
+ * must not split the raw value themselves.
+ *
+ * @param {StoryMetadata} metadata Parsed story metadata.
+ * @param {string} sourceName Human-readable source name for error messages.
+ * @returns {string[]} Repository-relative owning document paths.
+ * @throws {Error} When the field is missing, empty, or contains empty entries.
+ */
+export function parseStoryContracts(metadata, sourceName = 'story') {
+  const raw = metadata.contracts;
+
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    throw new Error(`${sourceName} is missing required metadata field: contracts`);
+  }
+
+  const entries = raw.split(',').map((entry) => entry.trim());
+
+  for (const entry of entries) {
+    if (entry === '') {
+      throw new Error(`${sourceName} has an empty contracts entry.`);
+    }
+  }
+
+  return entries;
+}
+
+/**
+ * Validates the story body against the normative section list.
+ *
+ * The section list is owned by `docs/specs/20260529-l6_story_acceptance.md`:
+ * every required section must appear exactly once, optional sections may
+ * appear once, and no other `##` section is allowed. Section-like lines
+ * inside fenced code blocks are ignored.
+ *
+ * @param {string} body Markdown story body after the front matter block.
+ * @param {string} sourceName Human-readable source name for error messages.
+ * @throws {Error} When a section is missing, unknown, or duplicated.
+ */
+export function validateStoryBodySections(body, sourceName = 'story') {
+  const seen = new Set();
+  let insideFence = false;
+
+  for (const line of body.split('\n')) {
+    if (line.trimStart().startsWith('```')) {
+      insideFence = !insideFence;
+      continue;
+    }
+
+    if (insideFence) {
+      continue;
+    }
+
+    const match = /^## (.+)$/.exec(line);
+
+    if (!match) {
+      continue;
+    }
+
+    const section = match[1].trim();
+
+    if (!REQUIRED_STORY_SECTIONS.includes(section) && !OPTIONAL_STORY_SECTIONS.includes(section)) {
+      throw new Error(`${sourceName} has unknown section: ${section}`);
+    }
+
+    if (seen.has(section)) {
+      throw new Error(`${sourceName} has duplicate section: ${section}`);
+    }
+
+    seen.add(section);
+  }
+
+  for (const section of REQUIRED_STORY_SECTIONS) {
+    if (!seen.has(section)) {
+      throw new Error(`${sourceName} is missing required section: ${section}`);
     }
   }
 }

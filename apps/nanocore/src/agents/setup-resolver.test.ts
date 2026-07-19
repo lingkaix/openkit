@@ -18,21 +18,19 @@ function agentConfig(overrides: Partial<AuthoredAgentConfig> = {}): AuthoredAgen
     runtime: {
       kind: 'codex',
       adapter: 'codex-app-server',
+      binaries: [
+        { id: 'openkit-worker-shim', path: '/usr/local/bin/openkit-worker-shim' },
+        { id: 'codex', path: '/usr/local/bin/codex' },
+      ],
+      image: {
+        pullPolicy: 'if-not-present',
+        ref: 'ghcr.io/openkit/worker-codex:test',
+      },
       version: '0.130.0',
-    },
-    mode: 'local',
-    deployment: {
-      local: {
-        command: 'codex',
-        args: ['app-server', '--listen', 'stdio://'],
-      },
-      remote: {
-        endpointRef: 'env:REMOTE_AGENT',
-      },
     },
     extensions: {},
     ...overrides,
-  };
+  } as unknown as AuthoredAgentConfig;
 }
 
 /**
@@ -72,37 +70,58 @@ describe('resolveAgentSetup', () => {
     ]);
   });
 
-  it('uses only the active deployment block for the selected mode', () => {
-    const result = resolveAgentSetup(
-      agentConfig({ provider: { ref: 'agent-openrouter', model: 'openai/gpt-5.1' } }),
-      { providerRegistry: providerRegistry() }
-    );
-
-    expect(result.diagnostics).toEqual([]);
-    expect(result.setup?.deployment).toEqual({
-      mode: 'local',
-      config: {
-        command: 'codex',
-        args: ['app-server', '--listen', 'stdio://'],
+  it('returns only the complete authored manifest and its resolved provider', () => {
+    const manifest = agentConfig({
+      provider: { ref: 'agent-openrouter', model: 'openai/gpt-5.1' },
+      requiredFeatures: ['workspace.mount.fuse'],
+      runtime: {
+        adapter: 'future-adapter',
+        binaries: [
+          { id: 'openkit-worker-shim', path: '/usr/local/bin/openkit-worker-shim' },
+          { id: 'future-runtime', path: '/opt/future/bin/runtime' },
+        ],
+        image: {
+          pullPolicy: 'never',
+          ref: 'registry.example.com/openkit/worker-future:1.0.0',
+        },
+        kind: 'future-runtime',
+        version: '1.0.0',
       },
-      origin: 'agent-config',
+      sandbox: {
+        backend: {
+          allowedKinds: ['openshell'],
+          preferred: 'openshell',
+          requiredCapabilities: ['git-materialization'],
+        },
+        credentialDeclarations: [],
+        filesystem: [],
+        network: [
+          {
+            access: 'read-write',
+            binaries: ['/opt/future/bin/runtime'],
+            host: 'api.example.com',
+            id: 'future_api',
+            port: 443,
+            protocol: 'https',
+            purpose: 'Use the governed runtime API.',
+          },
+        ],
+      },
     });
-    expect(JSON.stringify(result.setup)).not.toContain('REMOTE_AGENT');
-    expect(result.setup?.transport).toEqual({
-      kind: 'stdio',
-      origin: 'adapter-defaults',
-    });
-  });
-
-  it('marks explicit transport overrides in resolved setup', () => {
-    const result = resolveAgentSetup(agentConfig({ transport: { kind: 'stdio' } }), {
+    const result = resolveAgentSetup(manifest, {
       providerRegistry: providerRegistry(),
+      supportedRequiredFeatures: ['workspace.mount.fuse'],
     });
 
     expect(result.diagnostics).toEqual([]);
-    expect(result.setup?.transport).toEqual({
-      kind: 'stdio',
-      origin: 'agent-config',
+    expect(result.setup).toEqual({
+      manifest,
+      provider: {
+        model: 'openai/gpt-5.1',
+        origin: 'server-providers',
+        providerId: 'agent-openrouter',
+        secretRef: 'env:AGENT_OPENROUTER_API_KEY',
+      },
     });
   });
 
@@ -144,36 +163,24 @@ describe('resolveAgentSetup', () => {
     ]);
   });
 
-  it('preserves supported required features in the resolved setup', () => {
-    const result = resolveAgentSetup(agentConfig({ requiredFeatures: ['workspace.mount.fuse'] }), {
-      providerRegistry: providerRegistry(),
-      supportedRequiredFeatures: ['workspace.mount.fuse'],
-    });
-
-    expect(result.diagnostics).toEqual([]);
-    expect(result.setup?.requiredFeatures).toEqual(['workspace.mount.fuse']);
-  });
-
-  it('preserves backend requirements from the authored sandbox backend section', () => {
+  it('rejects an explicit default profile id that is absent from the manifest', () => {
     const result = resolveAgentSetup(
       agentConfig({
-        sandbox: {
-          backend: {
-            allowedKinds: ['openshell'],
-            preferred: 'openshell',
-            requiredCapabilities: ['git-materialization', 'change-set-collection'],
-          },
-        },
+        defaultProfileId: 'missing-profile',
+        profiles: [{ id: 'available-profile' }],
       }),
       { providerRegistry: providerRegistry() }
     );
 
-    expect(result.diagnostics).toEqual([]);
-    expect(result.setup?.backend).toEqual({
-      allowedKinds: ['openshell'],
-      origin: 'agent-config',
-      preferred: 'openshell',
-      requiredCapabilities: ['git-materialization', 'change-set-collection'],
-    });
+    expect(result.setup).toBeNull();
+    expect(result.diagnostics).toEqual([
+      {
+        agentId: 'agent_codex_host',
+        code: 'agent_setup.invalid_default_profile',
+        message:
+          'Agent agent_codex_host default profile missing-profile is not declared in profiles.',
+        severity: 'error',
+      },
+    ]);
   });
 });

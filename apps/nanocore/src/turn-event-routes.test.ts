@@ -42,7 +42,10 @@ function createReplayTurn(
   turnId: string;
 } {
   const thread = store.createThread(workspaceId, 'Replay thread');
-  const turn = store.createTurn(workspaceId, thread.id, 'Replay this stream');
+  const turn = store.createTurn(workspaceId, thread.id, 'Replay this stream', {
+    kind: 'user',
+    id: 'user_local',
+  });
   const assistantItem = store.createItem({
     id: `it_assistant_${turn.id}`,
     workspaceId,
@@ -158,7 +161,10 @@ describe('turn event routes', () => {
     const app = createApp({ store });
     const workspaceId = 'ws_demo';
     const thread = store.createThread(workspaceId, 'Open replay thread');
-    const turn = store.createTurn(workspaceId, thread.id, 'Keep streaming');
+    const turn = store.createTurn(workspaceId, thread.id, 'Keep streaming', {
+      kind: 'user',
+      id: 'user_local',
+    });
 
     store.emitTurnEvent(turn.id, {
       event: 'turn.started',
@@ -181,7 +187,10 @@ describe('turn event routes', () => {
     const store = createDemoStore();
     const workspaceId = 'ws_demo';
     const thread = store.createThread(workspaceId, 'Replay race thread');
-    const turn = store.createTurn(workspaceId, thread.id, 'Preserve replay ordering');
+    const turn = store.createTurn(workspaceId, thread.id, 'Preserve replay ordering', {
+      kind: 'user',
+      id: 'user_local',
+    });
     const assistantItem = store.createItem({
       id: `it_assistant_${turn.id}`,
       workspaceId,

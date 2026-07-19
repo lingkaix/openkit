@@ -133,6 +133,87 @@ describe('worker protocol schemas', () => {
     ).toBe('event');
   });
 
+  it('keeps material proposals optional and validates their exact shape', () => {
+    const artifact = {
+      kind: 'file',
+      mediaType: 'text/plain',
+      path: '/workspace/output/notes.txt',
+      title: 'Material notes',
+    };
+    const record = {
+      artifact,
+      kind: 'artifact',
+      lineage,
+      schemaVersion: 1,
+      sequence: 3,
+    };
+
+    expect(WorkerTranscriptRecordSchema.parse(record).kind).toBe('artifact');
+    expect(
+      WorkerTranscriptRecordSchema.parse({
+        ...record,
+        artifact: {
+          ...artifact,
+          materialProposal: {
+            baseContentDigest: `sha256:${'b'.repeat(64)}`,
+            baseRevisionId: 'matrev_1',
+            materialId: 'mat_1',
+          },
+        },
+      })
+    ).toMatchObject({ artifact: { materialProposal: { materialId: 'mat_1' } } });
+
+    for (const materialProposal of [
+      {
+        baseContentDigest: `sha256:${'b'.repeat(63)}`,
+        baseRevisionId: 'matrev_1',
+        materialId: 'mat_1',
+      },
+      {
+        baseContentDigest: `sha256:${'b'.repeat(64)}`,
+        baseRevisionId: 'matrev_1',
+        materialId: 'mat_1',
+        unexpected: true,
+      },
+      {
+        baseContentDigest: `sha256:${'b'.repeat(64)}`,
+        materialId: 'mat_1',
+      },
+    ]) {
+      expect(() =>
+        WorkerTranscriptRecordSchema.parse({
+          ...record,
+          artifact: { ...artifact, materialProposal },
+        })
+      ).toThrow();
+    }
+  });
+
+  it('requires the closed Artifact kind and media type declarations', () => {
+    const record = {
+      artifact: {
+        kind: 'file',
+        mediaType: 'text/plain',
+        path: '/workspace/output/notes.txt',
+        title: 'Material notes',
+      },
+      kind: 'artifact',
+      lineage,
+      schemaVersion: 1,
+      sequence: 4,
+    };
+
+    for (const artifact of [
+      { ...record.artifact, kind: undefined },
+      { ...record.artifact, kind: 'image' },
+      { ...record.artifact, mediaType: undefined },
+      { ...record.artifact, mediaType: null },
+      { ...record.artifact, mediaType: 'image/png' },
+    ]) {
+      expect(() => WorkerTranscriptRecordSchema.parse({ ...record, artifact })).toThrow();
+    }
+  });
+
   it('builds one strict canonical terminal event for transcript and final status paths', () => {
     const record = buildWorkerCanonicalTerminalEventRecord({
       data: {
@@ -330,18 +411,6 @@ describe('worker protocol schemas', () => {
     ).toBe('command_ack');
 
     expect(
-      WorkerControlRequestEnvelopeSchema.parse({
-        schemaVersion: 1,
-        lineage,
-        sequence: 14,
-        operation: 'knowledge_proposal_summary',
-        body: {
-          proposalCount: 1,
-        },
-      }).operation
-    ).toBe('knowledge_proposal_summary');
-
-    expect(
       WorkerControlResponseEnvelopeSchema.parse({
         schemaVersion: 1,
         accepted: true,
@@ -351,9 +420,10 @@ describe('worker protocol schemas', () => {
     ).toBe(true);
   });
 
-  it('rejects the retired terminal-result control operation', () => {
+  it('rejects retired control operations', () => {
     expect(WorkerControlOperationSchema.parse('command_ack')).toBe('command_ack');
     expect(WorkerControlOperationSchema.parse('final_status')).toBe('final_status');
+    expect(() => WorkerControlOperationSchema.parse('knowledge_proposal_summary')).toThrow();
     expect(() => WorkerControlOperationSchema.parse('terminal_result')).toThrow();
   });
 

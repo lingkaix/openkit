@@ -1,7 +1,7 @@
 # OpenCode Worker Adapter
 
 Status: Accepted
-Implementation: Not Started
+Implementation: Implemented
 
 ## Summary
 
@@ -52,13 +52,13 @@ The shared harness supplies the adapter with:
 
 The adapter does not resolve providers, credentials, models, permissions, Skills, MCP authorization, or workspace policy.
 
-The shared harness supplies one fresh empty session state root. `prepare` assigns turn-scoped `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME` directories beneath it and sets `OPENCODE_PURE=1`, `OPENCODE_DISABLE_SHARE=1`, `OPENCODE_AUTO_SHARE=0`, `OPENCODE_DISABLE_CLAUDE_CODE=1`, `OPENCODE_DISABLE_PROJECT_CONFIG=1`, `OPENCODE_DISABLE_DEFAULT_PLUGINS=1`, `OPENCODE_DISABLE_EXTERNAL_SKILLS=1`, `OPENCODE_DISABLE_AUTOUPDATE=1`, and `OPENCODE_DISABLE_LSP_DOWNLOAD=1`.
+The shared harness supplies one fresh empty session state root. `prepare` assigns a fresh `HOME` plus turn-scoped `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME` directories beneath it and sets `OPENCODE_AUTH_CONTENT={}`, `OPENCODE_PURE=1`, `OPENCODE_DISABLE_SHARE=1`, `OPENCODE_AUTO_SHARE=0`, `OPENCODE_DISABLE_CLAUDE_CODE=1`, `OPENCODE_DISABLE_PROJECT_CONFIG=1`, `OPENCODE_DISABLE_DEFAULT_PLUGINS=1`, `OPENCODE_DISABLE_EXTERNAL_SKILLS=1`, `OPENCODE_DISABLE_MODELS_FETCH=1`, `OPENCODE_DISABLE_AUTOUPDATE=1`, and `OPENCODE_DISABLE_LSP_DOWNLOAD=1`.
 
 ## Launch Plan
 
 `prepare` returns one native launch command, safe environment additions, and a request for bounded exact stdout capture because final output is encoded in the JSON event stream. The plan has no config-artifact field.
 
-An adapter-local command override may be used by tests and image diagnostics. NanoCore must not know OpenCode flags or construct an OpenCode command.
+No environment variable, AEP extension, test option, or image diagnostic may replace the adapter-produced argv. Tests inject a process runner or a static test adapter without creating a production command override, and NanoCore never constructs an OpenCode command.
 
 The adapter contract has no separate interrupt operation. The shared harness owns process-group termination.
 
@@ -88,15 +88,43 @@ NanoCore may resolve approved static Skill and MCP supply into the AEP, but this
 
 ## Provider And Credentials
 
-Provider and model selection belongs to the authored AgentManifest and AEP. Credential attachments are materialized through the governed backend and vault declarations. The adapter consumes the AEP's one resolved route, expresses OpenCode-native setup only through argv and safe environment additions, rejects zero or multiple routes, and never introduces a provider default or fallback into NanoCore or the shared harness.
+The authored AgentManifest owns provider, model, credential, backend-capability, and network requirements; the resolved AEP owns the exact selected route, credential binding, and effective launch policy. Credential attachments are materialized through the governed backend and vault declarations. The adapter consumes the AEP's one resolved route, expresses OpenCode-native setup only through argv and safe environment additions, rejects zero or multiple routes, and never introduces a provider default or fallback into NanoCore or the shared harness.
 
-The governed AgentManifest and adapter isolation above disable ambient OpenCode configuration, configured and default plugins, Claude Code prompts/skills, external Skills, sharing, updates, and LSP downloads. Generated config contains no executable MCP server or hook entry. Approved static file supply is added back only through the AEP.
+Native route projection is adapter-specific. For the trusted relay, argv selects the fixed slash-free adapter-owned model name `openkit-worker-inference/<exact-model-id>`, while `OPENCODE_CONFIG_CONTENT` is the JSON serialization of this non-secret shape:
+
+```json
+{
+  "autoupdate": false,
+  "share": "disabled",
+  "enabled_providers": ["openkit-worker-inference"],
+  "model": "openkit-worker-inference/<exact-model-id>",
+  "provider": {
+    "openkit-worker-inference": {
+      "name": "OpenKit Worker Inference",
+      "npm": "@ai-sdk/openai",
+      "options": {
+        "baseURL": "<exact workerBaseUrl>",
+        "apiKey": "{env:OPENKIT_WORKER_INFERENCE_TOKEN}"
+      },
+      "models": {
+        "<exact-model-id>": { "name": "<exact-model-id>" }
+      }
+    }
+  }
+}
+```
+
+The adapter JSON-serializes the exact model id and base URL rather than interpolating text. The AEP provider instance id remains NanoCore evidence and is not used as the OpenCode native provider id.
+
+`OPENCODE_CONFIG_CONTENT` is an environment value, not a generated file. It contains only the credential environment-variable reference, never the placeholder or provider credential value. The governed AgentManifest and adapter isolation above disable ambient project configuration, auth content, configured and default plugins, Claude Code prompts/skills, external Skills, model fetches, sharing, updates, and LSP downloads. Approved static file supply is added back only through the AEP.
+
+Direct-provider routes are unsupported in this change because the current AEP route does not carry a separately proved native provider or SDK, wire protocol, and exact credential target. The adapter must not infer any of them from a provider id. Direct and otherwise unsupported routes fail before spawn rather than receiving a fallback or additional generic route fields.
 
 ## Manifest And Image Contract
 
 The repository-owned OpenCode AgentManifest selects adapter id `opencode`, the OpenCode worker image, native executable paths used by network policy, provider and credential requirements, the configuration-isolation variables above, and only capabilities proven by this specification.
 
-The OpenCode image installs the generic worker shim and `opencode-ai@1.18.1`, sets the generic shim as its entrypoint, runs as a non-root worker user, and contains no Codex or Pi runtime. Its smoke check verifies the exact native version, JSON run mode, generic shim dry run, ambient configuration isolation, non-root identity, and expected worker filesystem layout.
+The OpenCode image installs the generic worker shim and `opencode-ai@1.18.1`, sets the generic shim as its entrypoint, runs as a non-root worker user, and contains no Codex or Pi runtime. Because pinned OpenCode loads managed configuration after inline configuration and offers no disabling flag, the Linux image must prove that `/etc/opencode` is absent. Its smoke check verifies that invariant, the exact native version, JSON run mode, generic shim dry run, ambient configuration isolation, non-root identity, and expected worker filesystem layout.
 
 OpenCode-specific install commands, binary paths, environment isolation, event fixtures, and version pins live only in the OpenCode AgentManifest, adapter, image, specification, and tests.
 
@@ -127,7 +155,8 @@ The authored manifest is the sole launch-time capability declaration. Adapter co
 
 Required adapter tests cover:
 
-- exact command construction from adapter input
+- exact command construction and exact non-secret inline provider JSON from adapter input
+- fixed slash-free native provider id, credential-value absence, and direct or otherwise unsupported route rejection
 - final assistant extraction from pinned native JSON fixtures
 - unknown event tolerance
 - malformed JSON, missing final output, and byte-bound failures
@@ -137,7 +166,13 @@ Required adapter tests cover:
 
 Shared harness tests cover process-group interruption uniformly for Codex, OpenCode, and Pi.
 
-Required image smoke covers the pinned `opencode --version`, JSON run mode help, generic shim entrypoint, non-root user, and adapter dry run.
+Required image smoke covers the pinned `opencode --version`, JSON run mode help, generic shim entrypoint, non-root user, absence of `/etc/opencode`, and adapter dry run.
+
+## Implementation Evidence And Limit
+
+The OpenCode `1.18.1` adapter, static registry entry, authored manifest, pinned worker image, bounded `prepare`/`collect` tests, and image smoke are implemented. On A1, the arm64 image was built directly, passed its smoke check, and stock unpatched OpenShell `0.0.80` created a sandbox from it, uploaded the AEP package, completed the generic shim dry run, and deleted the sandbox after the Cell's separate same-tag image cache was refreshed.
+
+This dry run proves image contents, adapter preparation, stock OpenShell containment, upload, and cleanup. It does not prove a real-provider turn, worker-control readiness, heartbeat, interruption, reconnect, or recovery lifecycle; those remain acceptance obligations of their owning specifications and change packages.
 
 ## Acceptance
 

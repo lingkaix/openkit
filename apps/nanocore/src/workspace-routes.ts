@@ -24,23 +24,23 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
  */
 export function registerWorkspaceRoutes({
   app,
+  authorizedWorkspaceIds,
   coreDb,
   inflightCommands,
   requestStore,
-  visibleWorkspacesForActor,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
+  readonly authorizedWorkspaceIds: (
+    context: Context<{ Variables: AuthVariables }>
+  ) => readonly string[];
   readonly coreDb: CoreDb | undefined;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
-  readonly visibleWorkspacesForActor: (
-    actor: AuthVariables['actor'] | undefined,
-    items: ReturnType<FsStore['listWorkspaces']>
-  ) => ReturnType<FsStore['listWorkspaces']>;
 }): void {
   app.get('/api/workspaces', (c) => {
     try {
-      const items = visibleWorkspacesForActor(c.get('actor'), requestStore(c).listWorkspaces());
+      const store = requestStore(c);
+      const items = authorizedWorkspaceIds(c).map((workspaceId) => store.getWorkspace(workspaceId));
 
       return c.json(ListWorkspacesResponseSchema.parse({ items }));
     } catch (error) {
@@ -62,7 +62,7 @@ export function registerWorkspaceRoutes({
         inflightCommands,
         command: 'workspace.create',
         requestId: parsed.data.requestId,
-        scope: {},
+        scope: { userId: c.get('actor').userId },
         input: parsed.data,
         responseKind: 'workspace',
         execute: () => {

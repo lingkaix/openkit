@@ -257,7 +257,7 @@ function assertVaultUseScope(db: VaultUseDb, input: CreateVaultUseRecordInput): 
     throw new Error('Workspace-scoped vault use records require workspaceId.');
   }
 
-  if ('scope' in db && input.ownerScope !== db.scope) {
+  if (db.scope === 'workspace' && input.ownerScope !== db.scope) {
     throw new Error('Workspace database can only store workspace-scoped vault use records.');
   }
 

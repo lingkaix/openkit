@@ -6,7 +6,6 @@ import {
   GoalPlanTaskResourceSchema,
   GoalPlanVerificationCheckSchema,
 } from '../runtime/goal-plan.js';
-import type { WorkerCoordinatorRuntime } from './worker-coordinator.js';
 
 /** Stable attribution id for deterministic worker coordination decisions. */
 export const WORKER_COORDINATOR_AGENT_ID = 'worker-coordinator';
@@ -25,7 +24,6 @@ const WorkerDelegationTargetSchema = z
   .object({
     agentId: z.string().min(1),
     displayName: z.string().min(1),
-    runtime: z.enum(['codex', 'opencode']),
   })
   .strict();
 const WorkerDelegationConstraintsSchema = z
@@ -167,8 +165,6 @@ export interface WorkerDelegationDraftInput {
     readonly agentId: string;
     /** Human-readable worker display name. */
     readonly displayName: string;
-    /** Worker runtime family. */
-    readonly runtime: WorkerCoordinatorRuntime;
   };
   /** Optional additional source references for the future context package. */
   readonly contextRefs?: readonly DelegationContextRef[];
@@ -193,7 +189,6 @@ export function createWorkerDelegationDraft(
     target: {
       agentId: input.target.agentId,
       displayName: input.target.displayName,
-      runtime: input.target.runtime,
     },
     constraints: {
       maxWorkerIterations: 1,

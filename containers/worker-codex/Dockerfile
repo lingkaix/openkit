@@ -29,12 +29,15 @@ COPY packages/worker-shim packages/worker-shim
 
 RUN pnpm --filter @openkit/worker-protocol build \
   && pnpm --filter @openkit/worker-shim build \
+  && rm package.json \
   && pnpm --filter @openkit/worker-shim deploy --prod --legacy /deploy/worker-shim
 
 FROM node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5 AS runtime
 
 LABEL org.openkit.image="worker-codex"
-LABEL org.openkit.worker-shim="/usr/local/bin/openkit-codex-shim"
+LABEL org.openkit.worker.runtime="codex"
+LABEL org.openkit.worker.contract="openkit-worker-v1"
+LABEL org.openkit.worker-shim="/usr/local/bin/openkit-worker-shim"
 LABEL org.openkit.smoke="/usr/local/bin/openkit-worker-codex-smoke"
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -74,7 +77,7 @@ RUN set -eux; \
   cp -R "/tmp/codex-native/node_modules/@openai/codex-linux-${codex_npm_arch}/vendor/${codex_target}/." /usr/local/lib/codex/; \
   ln -sf /usr/local/lib/codex/bin/codex /usr/local/bin/codex; \
   codex --version; \
-  codex app-server --help >/dev/null; \
+  codex exec --help >/dev/null; \
   rm -rf /tmp/codex-native
 
 COPY --from=builder /deploy/worker-shim/ /usr/local/lib/openkit/worker-shim/
@@ -86,7 +89,6 @@ RUN printf '%s\n' \
   'exec 3<<<"${OPENKIT_CONTROL_TOKEN:-}"' \
   'exec env -i \' \
   '  ALL_PROXY="${ALL_PROXY:-}" \' \
-  '  CODEX_HOME="${CODEX_HOME:-}" \' \
   '  COLORTERM="${COLORTERM:-}" \' \
   '  HOME="${HOME:-/sandbox}" \' \
   '  HTTPS_PROXY="${HTTPS_PROXY:-}" \' \
@@ -98,7 +100,6 @@ RUN printf '%s\n' \
   '  NODE_USE_ENV_PROXY=1 \' \
   '  OPENKIT_AGENT_SESSION_ID="${OPENKIT_AGENT_SESSION_ID:-}" \' \
   '  OPENKIT_ARTIFACT_DIR="${OPENKIT_ARTIFACT_DIR:-/openkit/artifacts}" \' \
-  '  OPENKIT_CODEX_COMMAND="${OPENKIT_CODEX_COMMAND:-}" \' \
   '  OPENKIT_CONTROL_BASE_URL="${OPENKIT_CONTROL_BASE_URL:-}" \' \
   '  OPENKIT_CONTROL_TOKEN_FD=3 \' \
   '  OPENKIT_PACKAGE_SNAPSHOT_ID="${OPENKIT_PACKAGE_SNAPSHOT_ID:-}" \' \
@@ -121,22 +122,19 @@ RUN printf '%s\n' \
   '  http_proxy="${http_proxy:-}" \' \
   '  https_proxy="${https_proxy:-}" \' \
   '  no_proxy="${no_proxy:-}" \' \
-  '  node /usr/local/lib/openkit/worker-shim/dist/bin/openkit-codex-shim.js "$@"' \
-  > /usr/local/bin/openkit-codex-shim
+  '  node /usr/local/lib/openkit/worker-shim/dist/bin/openkit-worker-shim.js "$@"' \
+  > /usr/local/bin/openkit-worker-shim
 
-RUN chmod +x /usr/local/bin/openkit-codex-shim /usr/local/bin/openkit-worker-codex-smoke \
+RUN chmod +x /usr/local/bin/openkit-worker-shim /usr/local/bin/openkit-worker-codex-smoke \
   && groupadd --system sandbox \
   && useradd --system --gid sandbox --home-dir /sandbox --create-home --shell /bin/bash sandbox \
   && mkdir -p /sandbox/openkit/session /sandbox/openkit/artifacts /sandbox/openkit/config /workspace \
   && ln -s /sandbox/openkit /openkit \
   && chown -R sandbox:sandbox /sandbox /workspace
 
+USER sandbox
+
 ENTRYPOINT ["tini", "-g", "--"]
-CMD ["openkit-codex-shim", "--package", "/openkit/config/package.json"]
-
-FROM runtime AS relay-probe
-
-RUN rm -f /usr/local/bin/codex \
-  && cp /usr/local/bin/node /usr/local/bin/codex
+CMD ["openkit-worker-shim", "--package", "/openkit/config/package.json"]
 
 FROM runtime AS production

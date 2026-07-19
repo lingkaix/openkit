@@ -256,7 +256,7 @@ export class CodexResponsesClient {
       throw new Error('OpenAI Codex provider returned an empty stream.');
     }
 
-    return response.body;
+    return normalizeCodexResponsesStream(response.body);
   }
 
   private async send(
@@ -376,6 +376,160 @@ export class CodexResponsesClient {
 
     return payload as T;
   }
+}
+
+/**
+ * Keeps successful Codex Responses SSE events private until each complete event is known safe.
+ *
+ * @param stream Raw upstream Codex Responses stream.
+ * @returns Stream that preserves successful events and rejects on terminal provider error events.
+ */
+function normalizeCodexResponsesStream(
+  stream: ReadableStream<Uint8Array>
+): ReadableStream<Uint8Array> {
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  const reader = stream.getReader();
+  let buffer = '';
+  let done = false;
+  let released = false;
+
+  /** Releases the upstream reader lock exactly once. */
+  function releaseReader(): void {
+    if (!released) {
+      released = true;
+      reader.releaseLock();
+    }
+  }
+
+  return new ReadableStream<Uint8Array>({
+    async cancel(reason) {
+      try {
+        await reader.cancel(reason);
+      } finally {
+        releaseReader();
+      }
+    },
+    async pull(controller) {
+      try {
+        while (true) {
+          const event = takeCodexSseEvent(buffer, done);
+
+          if (event) {
+            buffer = event.rest;
+            const providerError = codexSseProviderError(event.text);
+
+            if (providerError) {
+              await reader.cancel(providerError).catch(() => undefined);
+              throw providerError;
+            }
+
+            controller.enqueue(encoder.encode(event.serialized));
+            return;
+          }
+          if (done) {
+            controller.close();
+            return;
+          }
+
+          const result = await reader.read();
+
+          if (result.done) {
+            buffer += decoder.decode();
+            done = true;
+            releaseReader();
+          } else {
+            buffer += decoder.decode(result.value, { stream: true });
+          }
+        }
+      } catch (error) {
+        releaseReader();
+        controller.error(error);
+      }
+    },
+  });
+}
+
+/**
+ * Removes one complete SSE event from the current Codex stream buffer.
+ *
+ * @param buffer Current decoded SSE bytes.
+ * @param done Whether the upstream stream has ended.
+ * @returns One event plus the remaining buffer, or null when more bytes are required.
+ */
+function takeCodexSseEvent(
+  buffer: string,
+  done: boolean
+): { readonly rest: string; readonly serialized: string; readonly text: string } | null {
+  const lfBoundary = buffer.indexOf('\n\n');
+  const crlfBoundary = buffer.indexOf('\r\n\r\n');
+  const boundary =
+    lfBoundary === -1
+      ? crlfBoundary
+      : crlfBoundary === -1
+        ? lfBoundary
+        : Math.min(lfBoundary, crlfBoundary);
+
+  if (boundary === -1) {
+    return done && buffer.length > 0 ? { rest: '', serialized: buffer, text: buffer } : null;
+  }
+
+  const separator = boundary === crlfBoundary ? '\r\n\r\n' : '\n\n';
+  return {
+    rest: buffer.slice(boundary + separator.length),
+    serialized: buffer.slice(0, boundary + separator.length),
+    text: buffer.slice(0, boundary),
+  };
+}
+
+/**
+ * Recognizes Codex terminal provider-error events without publishing their payload.
+ *
+ * @param event Complete upstream SSE event text.
+ * @returns Internal typed provider failure, or null for a successful event.
+ */
+function codexSseProviderError(event: string): OpenAICompatibleProviderError | null {
+  const lines = event.split(/\r?\n/);
+  const eventName = lines
+    .find((line) => line.startsWith('event:'))
+    ?.slice('event:'.length)
+    .trim();
+  const data = lines
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice('data:'.length).trimStart())
+    .join('\n');
+  let payload: Record<string, unknown> = {};
+
+  try {
+    const parsed = JSON.parse(data) as unknown;
+    payload = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    if (eventName !== 'error' && eventName !== 'response.failed') {
+      return null;
+    }
+  }
+
+  const response =
+    payload.response && typeof payload.response === 'object'
+      ? (payload.response as Record<string, unknown>)
+      : {};
+  const failed =
+    eventName === 'error' ||
+    eventName === 'response.failed' ||
+    payload.type === 'error' ||
+    payload.type === 'response.failed' ||
+    (payload.error !== null && typeof payload.error === 'object') ||
+    response.status === 'failed' ||
+    (response.error !== null && typeof response.error === 'object');
+
+  return failed
+    ? new OpenAICompatibleProviderError({
+        code: 'provider_error',
+        message: event,
+        status: 502,
+        type: 'provider_error',
+      })
+    : null;
 }
 
 /**

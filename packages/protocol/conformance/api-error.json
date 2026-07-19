@@ -1,8 +1,8 @@
 {
-  "protocolVersion": "0.3.0",
+  "protocolVersion": "0.4.0",
   "schema": "api-error",
   "data": {
-    "protocolVersion": "0.3.0",
+    "protocolVersion": "0.4.0",
     "code": "protocol.invalid_fixture",
     "message": "The submitted conformance fixture is invalid.",
     "path": ["workspaceId"],

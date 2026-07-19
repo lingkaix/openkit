@@ -5,157 +5,120 @@ Status: planned
 
 ## Intent
 
-Implement the OpenKit self-improvement and evaluation loop defined by `docs/specs/20260710-self_improvement_evaluation_loop.md`, together with the prerequisite mechanisms specified for it on 2026-07-11: durable recurring/event triggers, Skill Catalog versioning and pinning, the Evaluation Harness runtime, knowledge provisional auto-promotion, context package replay reconstruction, the `improvement_proposal` Action Center row kind, and the evaluation/skill-catalog export families.
+Close G07 by delivering the smallest source-traceable learning loop that current OpenKit use justifies: an authorized agent explicitly reviews one completed work history, creates an existing pending Knowledge Proposal, a human accepts or rejects it through the existing Knowledge Review owner, a later Task receives the accepted knowledge through the single S39 Context Package delivery trace, and the proposal-created page can be reversed through its owning Knowledge boundary.
 
-The end state: every workspace has a Reflector that mines its real work history, a frozen Harness that replays proposals against pinned suites in isolated sandboxes, a blind Judge, and human promotion gates — with all triggers, versions, budgets, evidence, and rollbacks running on durable governed records.
+This package does not build an autonomous improvement platform. The Task Evaluator remains a reserved Core direction; V1 reflection is an explicit composition of existing public work-history, evidence, Knowledge Proposal, review, and Agent Skill operations. NanoCore validates and persists the proposal and its effects but does not create a persistent Reflector, evaluation run lifecycle, scheduler, Judge, suite, or Harness.
 
-## Inherited Audit Responsibility (2026-07-17)
+## Inherited Audit Responsibility
 
-This plan is work package WP-6 of the [OpenKit Execution Program](./202607172152230001-openkit_execution_program.md) and absorbs audit group G07 from the [alignment audit](./202607111941330001-core_spec_implementation_alignment_audit.md). The G07 document set (C12 Knowledge, S17-S19, S60, S61, and their supporting projections) and the G07 exit criteria in the audit ledger are inherited inputs. The program's convergence rules bind all work here. G07 audits Knowledge selection into the accepted G01-owned Context Package interface without reopening workflow delivery, and this package activates only after real dogfooding work history exists to mine (program queue entry gate).
+This plan is WP-6 of the [OpenKit Execution Program](./202607172152230001-openkit_execution_program.md) and absorbs G07 from the [alignment audit](./202607111941330001-core_spec_implementation_alignment_audit.md). G07 covers C12 Knowledge, S17-S19, S60-S61, and their supporting projections. The bounded review-only preamble and both implementation entry gates are complete; Stage 1 is active.
 
-Before implementation starts, record the G07 audit preamble in this plan per Execution Program rule 11: the authority map for the concepts this plan touches, findings classified with the audit's finding codes (in-scope findings fold into this plan's frozen scope; everything else is ticketed to the program Backlog), and confirmation of the inherited exit criteria. The preamble is review-only, bounded to at most one review day, and authorizes no implementation.
+### G07 Review-Only Preamble (2026-07-19)
+
+- Authority map: C12 owns Knowledge meaning; S60 owns governance; S61 owns file-backed pages, sources, validation and deterministic retrieval; proposal Markdown owns proposed content and review records own decisions; indexes, Action Center, clients and Skills are projections.
+- Authority map: S17 owns request-scoped Knowledge Manager calls; S39 owns the only accepted worker Context Package delivery trace. Knowledge preparation and retrieval traces are inputs and audit evidence, never a second delivery receipt. C03 retains Task Evaluator as a reserved direction.
+- `SECURITY-GAP`: freeze product-safe Knowledge error mapping instead of returning caught host paths or private messages. Future historical evaluation also must not replay stale AEP authority or retain cross-Workspace fixtures without current authorization, but S19 remains non-authorizing and no Harness enters V1.
+- `OWNERSHIP-CONFLICT`: delete the duplicate substring selection authority and route Task Knowledge selection through S61's existing governed deterministic retrieval; delete the standalone Knowledge Manager context trace and materialization projections and keep S39 as delivery authority.
+- `IMPLEMENTATION-DEFECT`: freeze exact S17 callers with no client override, save-time validation, proposal application that never reports success before the exact page effect and can fail closed from a discoverable interrupted boundary, and exact selected Knowledge content, digest and source lineage in the existing S39 package and trace. Goal-mode Knowledge selection remains deferred because no current Goal projection consumes it.
+- `DESIGN-DEFECT`: the persistent Reflector, universal ImprovementProposal state machine, provisional citation self-confirmation, schedule/fire recovery platform, Skill Catalog, replay reconstruction prerequisite, evaluation area, suites, two-Cell Harness, Judge workflow, budget queue and long-horizon tier exceed G07 and conflict with the program's standing prohibitions.
+- `TEST-GAP`: use one existing NanoCore Task integration path plus one risk-focused invalid/restricted case to prove Knowledge selection reaches worker-visible S39 bytes; use the existing Skill/CLI and A1 acceptance surface for one real loop. No runner, harness, crash matrix or duplicate L6 platform is authorized.
+- `REAL-USE-GAP`: synthetic fixtures and prior interface acceptance do not prove retained work history that a reflection can mine. WP-6 production implementation waits until one useful stock-OpenShell Task with normal Thread, Turn, Item, evidence and S39 records is retained.
+- Frozen scope and exit criteria: correct the existing Knowledge owners, complete an explicit proposal-only human-reviewed loop, prove later S39 use and bounded reversal, and preserve source traceability, exact callers, deterministic selection, human evaluation authority and no passive agent framework. All other findings are dispatched below.
 
 ## Scope
 
-Specs to implement (design authority; this record does not restate their contracts):
+### Owning-document correction
 
-- `docs/specs/20260710-self_improvement_evaluation_loop.md` — the loop model: Reflector, Harness contract, Judge convention, evaluation assets, `ImprovementProposal` lifecycle, tiers, trigger model, and Goodhart guards. This change plan owns implementation stage order.
-- `docs/specs/20260711-scheduler_recurring_event_triggers.md` (new) — durable schedule/fire records, minute tick loop, coalescing catch-up, one-shot event-trigger convention, automation-store replacement.
-- `docs/specs/20260711-skill_catalog_versioning_pinning.md` (new) — content-addressed skill version identity (`skv1` digest), catalog entry/version/pin records, pointer-move promotion and rollback, AEP digest resolution, replacement of the hardcoded `WORKER_SKILL_CATALOG`.
-- `docs/specs/20260711-evaluation_harness_design.md` (new) — evaluation area layout, work/judge two-sandbox profile with a held-back acceptance zone, harness versioning and environment pinning, Judge dispatch with blinding and A/A injection, evidence assembly.
-- `docs/specs/20260702-knowledge_store_governance_rules.md` (updated) — Provisional Auto-Promotion: strictly additive diffs, designated types, conflict-detection gating, `provisional` review state with TTL and citation confirmation, one-step rollback.
-- `docs/specs/20260703-worker_context_package.md` (updated) — Replay Reconstruction contract: frozen per-entry reconstruction from recorded revisions and digests with typed per-entry failures.
-- `docs/specs/20260531-human_attention_intervention_model.md` (updated) — `improvement_proposal` row kind with evidence-bundle requirement and batch-separation rule.
-- `docs/specs/20260704-workspace_backup_export_import.md` (updated) — evaluation area and workspace-scope Skill Catalog families in export scope with coverage-guard wiring.
+- Narrow S18 to an explicit, proposal-only V1 composition and keep the concrete internal Task Evaluator architecture reserved.
+- Keep S19, recurring/event triggers, and Skill Catalog versioning Draft and non-authorizing; move their present speculative mechanisms to roadmap criteria.
+- Reconcile S17, S60, S61 and S39 around one selection owner, one accepted delivery trace, exact caller assignment, save-time validation, create-only generated proposals, and bounded reversal.
+- Keep provisional auto-promotion disabled; ordinary pending proposals and human review are the only V1 activation path.
 
-Impacted surfaces: `packages/protocol` (if new record envelopes are needed), `packages/app-api-schemas`, `packages/core-client`, `apps/nanocore` (scheduler services, agent-environment/AEP resolution, knowledge governance, internal agents, evaluation module family, action center, export/import, metering/usage categories, audit categories), the transport-neutral end-user operation catalog and bundled CLI when new public user/operator operations are exposed, and L0-L6 test assets including new L6 stories. `apps/web` reflects new read models only after kernel contracts stabilize, per the NanoCore-first and Agent-Skill-first operating model.
+### Existing-owner correctness
 
-## Non-Goals
+- Replace Task Mode's duplicate substring selector with the existing governed deterministic retrieval owner.
+- Assign `app-api`, `assistant`, and `task-mode` internally; public request bodies cannot assert semantic caller identity.
+- Return bounded product-safe Knowledge errors and retain private diagnostics only in existing audit/log owners.
+- Validate governed page writes before they become active rather than relying on a later index rebuild to exclude invalid data.
+- Extend the existing S39 package and immutable trace with exact selected Knowledge entry bytes, content digest, source references, and package path. A content digest is the V1 selected-version identity; no separate Knowledge delivery record is added.
+- Make generated improvement proposals create-only in V1. The proposal fixes the target page id, exact page bytes, content digest, and source lineage before review. Human acceptance uses the existing proposal/review owner to apply that exact page idempotently. Success is not reported until both the accepted decision and matching page exist; an interruption between file writes remains discoverable and the same authorized command either completes the deterministic missing effect or returns `recovery_required`. Reversal removes that exact proposal-created page while retaining proposal, review, command and audit evidence.
 
-- No unattended recursive self-improvement: every behavior-changing promotion keeps its mechanical gate plus human approval gate, restating the owning spec's non-goal as a plan invariant.
-- No universal benchmark, no cross-model ranking, no evaluation or automated mutation of NanoCore code itself.
-- No second evaluation agent, no evaluation executor bypassing the durable scheduler, no sub-minute scheduling.
-- No semver or dependency resolution for skills; no public skill registry or marketplace.
-- No metering enforcement redesign beyond adding the self-improvement consumption category and honoring the trigger mechanism's budget deferral; full budget enforcement remains its own deferred work.
-- No backward-compatibility layers for replaced internals (in-memory automation store, hardcoded skill catalog), per the repository compatibility rule.
+### Explicit reflection composition
 
-## Related Context
+- Reuse the unified `openkit` Skill and bundled CLI to inspect one completed Thread and its existing projections for advisory analysis, then call the existing Knowledge Proposal operation with S61's closed same-Workspace evidence set: one terminal direct-Task worker Turn, its final completed `assistant-message` Item, the matching S39 trace and digest, and optional exact registered-Source or Knowledge-Page references. Other evidence must first use the existing explicit source-registration owner. The later delivery proof remains an S39 system predicate; this plan does not add a Context Package read operation merely for reflection.
+- Treat the reviewing agent's analysis as advisory. Human Knowledge Review remains the only activation authority.
+- Missing history, unavailable source bytes, provider failure, contradictory lineage, or an already changed target returns a typed unavailable, conflict, or `recovery_required` result through the existing owners; it creates no private retry or recovery state. A user may make a new authorized attempt.
 
-- [Architecture](../core/architecture.md) — Task Evaluator placeholder resolution (Reflector + Harness + Judge) is promoted into the internal role table during this change.
-- [Work Model](../core/work-model.md)
-- [Product Vision](../product-vision.md)
-- [Agent Workflow](../core/agent-workflow.md)
-- [Knowledge](../core/knowledge.md)
-- [Sandbox](../core/sandbox.md)
-- [Audit](../core/audit.md)
-- [Metering](../core/metering.md)
-- [Agent Supply](../core/agent-supply.md)
-- Specs listed under Scope, plus supporting contracts: [Durable Scheduler Design](../specs/20260703-durable_scheduler_design.md), [Audit Usage Evidence Records](../specs/20260703-audit_usage_evidence_records.md), [Knowledge Manager Internal Agent Runtime](../specs/20260704-knowledge_manager_internal_agent_runtime.md), [Workflow Coordinator Internal Agent](../specs/20260704-workflow_coordinator_internal_agent.md), [Worker Sandbox Freedom Policy](../specs/20260709-worker_sandbox_freedom_policy.md), [Test Strategy](../specs/20260529-test_strategy.md), [L6 Story Acceptance](../specs/20260529-l6_story_acceptance.md).
+## Non-Goals And Deferred Work
+
+- No persistent Reflector, passive hook, event subscriber, recurring reflection, private run/session/checkpoint, or automatic retry.
+- No provisional auto-promotion, TTL, citation counter, citation-based self-confirmation, or sweep.
+- No generic `ImprovementProposal` record or lifecycle; each future target uses its own Knowledge, Skill, Artifact, Review, Approval, or specification owner.
+- No EvalTask, suite, evaluation area, frozen Harness, Judge Cell, A/A injection, health sweep, trajectory platform, evaluation dashboard, or new acceptance runner.
+- No Skill Catalog, prompt-template versioning, runtime Skill mutation, cross-Workspace graduation, catalog import/export, or pin lifecycle until a real worker Skill and repeated proposal demand exist.
+- No generic historical reconstruction. Existing retained S39 bytes are usable; missing or drifted history is unavailable and does not repair delivery authority.
+- No Goal-mode Knowledge integration, worker `knowledge.*` capability plane, semantic/vector retrieval, external crawling, general notebook editor, or Web projection in this package.
+- No recurring Automation replacement. The current non-executing Automation facade is handled separately rather than becoming a trigger platform inside G07.
 
 ## Current Baseline
 
-- Self-improvement loop, Reflector, Harness, Judge, `EvalTask`, suites, and improvement proposals: zero implementation.
-- Durable scheduler V1 is implemented (admission, plans, leases, dispatch/lease-watch/probe loops, restart recovery); it has no recurring primitive. `apps/nanocore/src/lib/automation-store.ts` is an unpersisted in-memory automation store with no executor.
-- Skills are supplied from the hardcoded `WORKER_SKILL_CATALOG` const in `apps/nanocore/src/runtime/agent-environment.ts`; no versioning, pinning, or persistence.
-- Knowledge governance V1 is implemented (proposals, review, conflict detection, low-risk repairs); provisional auto-promotion is spec-only.
-- Context packages have deterministic digests and digest-checked materialization readback; per-entry replay reconstruction is spec-only.
-- Evidence bundles, audit events, usage records, Action Center projections, and workspace export/import with coverage guards are implemented and are the substrate this change may compose. The rejected generic internal-agent runner, registry, event loop, hook system, diagnostics ledger, and private lifecycle have been deleted by the G01 correction; G07 must not recreate or reuse them.
+- C12, S60 and S61 already have a substantial file-backed V1: governed Markdown projections, sources, observations, claims, conflicts, deterministic derived indexes and retrieval traces, explicit Knowledge Manager operations, proposal review, Core Client, CLI and Skill projections.
+- Task Mode calls a second substring selector, carries only Knowledge ids in its worker request, and S39 currently ignores those refs when building worker-visible files. Goal Mode does not select Knowledge.
+- Standalone Knowledge preparation persists a separate `ctxpkg_${operationId}` trace and materialization that cannot prove accepted worker delivery. S39's `ctxpkg_${turnId}` trace is the sole accepted delivery owner.
+- Public Knowledge Manager bodies still accept stale caller values, some caught failures expose raw messages, active writes are validated only during later index rebuild, generic accepted proposals do not apply page content, and claim-backed acceptance can persist the review before the page effect.
+- S18 is Accepted / Partial as the explicit existing-operation composition. S19, recurring triggers and Skill Catalog remain Draft / Not Started, and no Reflector, Harness, Judge, evaluation records, recurring trigger records, Skill Catalog records or ImprovementProposal records exist.
+
+## Entry Gates
+
+- WP-5A must exit through its separate owning plan before any G07 production change begins.
+- One useful completed direct-Task history and one review, feedback, redo, refinement, or correction signal must already be retained through existing owners before Stage 1 production implementation begins. Synthetic fixtures, a skipped story, or history created by a G07-only runner do not satisfy this gate; Stage 2 consumes the same history.
 
 ## Execution Plan
 
-Ordering follows spec dependencies and the owning spec's rollout phases. Each stage lands test-first with package-by-package conventional commits.
+### Stage 0 — Authority correction
 
-### Stage 0 — Spec acceptance
+- Rebaseline S18 while keeping the three formerly proposed prerequisite Drafts — S19, recurring triggers, and Skill Catalog — as non-authorizing future boundaries rather than WP-6 prerequisites.
+- Reconcile S17, S60, S61, S39, C03, roadmap and current projections with the frozen V1 and bounded fallbacks.
+- Make documentation-only authority corrections and record the bounded G07 preamble; do not change production code, tests, generated contracts, or runtime state in this stage.
 
-- Review the three Draft specs (`20260711-scheduler_recurring_event_triggers`, `20260711-skill_catalog_versioning_pinning`, `20260711-evaluation_harness_design`) and move them to `Status: Accepted` before their implementation stages begin.
-- Resolve the harness spec's `[Blocking]` open question (judge sandbox LLM-call posture: harness-process dispatch outside any sandbox is the preferred lean).
-- Accept `20260710-self_improvement_evaluation_loop.md` and promote the Task Evaluator placeholder resolution into `docs/core/architecture.md`'s internal role table.
+### Stage 1 — Knowledge correctness and accepted delivery
 
-### Stage 1 — Trigger substrate
+- Land tests first for exact internal callers, client-override rejection, product-safe errors, save-time validation, coherent index-to-page retrieval, idempotent create-only proposal application, bounded reversal, and the single governed retrieval owner.
+- Delete `knowledge.claim-promote` and worker-control `knowledge_proposal_summary` end to end without aliases. Accepted Claims remain readable evidence for the one ordinary `knowledge.proposal-draft` producer.
+- Extend the existing S39 Task package/trace and strict verifier with Knowledge bytes, content digest, source references and package path; delete the standalone Knowledge context trace, readback and materialization routes and projections without aliases.
+- Run focused protocol/schema/NanoCore/Client/Skill suites and one existing Task black-box path. Do not add Goal or Web scope.
 
-Implements `20260711-scheduler_recurring_event_triggers.md`.
+### Stage 2 — Real explicit loop
 
-- Schedule and fire record layer, cadence next-occurrence math, due-row query.
-- Tick loop service with fire procedure (overlap, budget stub, enqueue, advance), epoch stamping, coalescing catch-up, crash re-drive.
-- Delete `automation-store.ts`; re-point automation App API routes at the schedule read model and governed operations.
-- Audit events and Action Center row on repeated fire failure.
+- Through the existing unified Skill/CLI and stock OpenShell path, use the retained useful completed Task and its review, feedback, redo, refinement, or correction signal from the entry gate.
+- Explicitly review that exact history, draft one source-linked create-only Knowledge Proposal, obtain a human decision, run one later Task that receives the accepted page through S39, then reverse the proposal-created page.
+- Record only durable owner evidence and one curated checkpoint; no new story runner or harness.
 
-### Stage 2 — Knowledge provisional auto-promotion (self-improvement Phase 1 gate)
+### Stage 3 — Closeout
 
-Implements the Provisional Auto-Promotion section of `20260702-knowledge_store_governance_rules.md`.
+- Run affected-package suites, repository gates and the owning package-exit verification once.
+- Perform a deletion-first review for duplicate selection, delivery, proposal, recovery, runner and lifecycle ownership.
+- Update this plan, the Execution Program and the alignment audit with exact evidence and remaining roadmap handoffs; close WP-6 only when every inherited G07 exit predicate is proved.
 
-- Additive-diff eligibility check, designated-type allowlist, conflict-detection gating, silent escalation to normal review.
-- `provisional` review state, TTL and citation-counter fields, confirmation and expiry transitions, one-step rollback, audit and proposal-history visibility.
-- TTL/citation sweeps as recurring schedules from Stage 1.
+## Verification
 
-### Stage 3 — Reflector memory loop (self-improvement Phase 1)
+- L1/L2: exact callers, override rejection, safe errors, write validation, deterministic retrieval, proposal application/reversal, S39 serialization and strict verification.
+- L3: one existing direct-Task path proves one active valid Knowledge page enters the exact accepted package and one invalid or restricted candidate does not.
+- L6: one agent-first real-use loop on the existing Skill/CLI and A1 surface; a skipped or synthetic story is not acceptance evidence.
+- Package exit: affected package suites, generated contract checks, `CI=true pnpm run check:repo`, `git diff --check`, and one deletion-first review. `verify:full` runs only once at exit.
 
-- This plan does not authorize a persistent Reflector agent or reuse of the generic internal-agent framework. Before implementation, S18 and S19 must be accepted with one bounded Reflector operation: the existing scheduler owner invokes a concrete request-scoped role function over durable projection-only inputs, and the existing Knowledge Proposal owner persists any output. The operation has no private session, event loop, checkpoint, retry queue, hook system, or independently resumable lifecycle.
-- Reflection cadence as `system`-origin recurring schedules; event triggers (redo, review rejection, negative feedback) inserting deduped one-shot trigger rows per the trigger convention.
-- Rubric records feeding Workflow Coordinator context material.
-- Self-improvement usage category on bounded reflection invocations (metering visibility; enforcement stays deferred).
+## Risks And Bounded Compromises
 
-Value checkpoint: the loop is live end to end on the knowledge path before any harness work.
-
-### Stage 4 — Skill Catalog versioning and pinning (Phase 2 prerequisite)
-
-Implements `20260711-skill_catalog_versioning_pinning.md`.
-
-- `skv1` digest utility; entry/version/pin records and content-addressed storage; publish/promote/rollback/pin/unpin/deprecate with governance tiers and audit.
-- AEP resolution switch from `WORKER_SKILL_CATALOG` to records with digest recording and digest-verified materialization; bootstrap seeding of repository-authored skills.
-- App API, Core Client, and end-user operation-catalog surfaces; workspace export scope additions with coverage-guard wiring.
-
-### Stage 5 — Context package replay reconstruction (Phase 2 prerequisite)
-
-Implements the Replay Reconstruction contract of `20260703-worker_context_package.md`.
-
-- Per-entry frozen reconstruction from recorded source references with typed `source_unavailable` / `digest_mismatch` / `revision_unavailable` outcomes and entry-level result reporting.
-- Redaction parity with original materialization; reconstruction readback API for harness consumption.
-
-### Stage 6 — Evaluation Harness (self-improvement Phase 2 core)
-
-Implements `20260711-evaluation_harness_design.md`.
-
-- Evaluation area layout, `EvalTask` and suite snapshot records, harvest tooling fed by Reflector nominations; export-family wiring per the updated backup/export spec.
-- Candidate execution over scheduler-admitted `maintenance` turns with retained-snapshot materialization and fixed budgets; error continuation; mechanical metrics from usage/audit rows; curve recording. The first implementation runs candidate work in one disposable Cell epoch and completes its recycle before Judge execution begins.
-- Judge sandbox runner with the held-back acceptance zone in a second fresh disposable Cell epoch; Judge LLM dispatch with routing table, blinding, sealed ordering, and A/A injection. Concurrent candidate and Judge Cells remain blocked until multi-Cell capacity is designed and proved.
-- Run records, evidence bundles, audit categories, read-only projections; harness version and comparability refusal.
-
-### Stage 7 — Improvement proposal lifecycle (self-improvement Phase 2 completion)
-
-- `ImprovementProposal` records with the owning spec's lifecycle: mechanical gate auto-rejection, snapshot pinning, batch separation, tiered approval.
-- `improvement_proposal` Action Center rows per the updated human-attention spec: evidence-bundle requirement, approve/reject, post-promotion rollback surfacing.
-- Skill-version proposals end to end: Reflector draft → harness evaluation → Action Center approval → catalog pointer promotion (Stage 4) → outcome telemetry links → Reflector post-promotion review and rollback proposals.
-- Prompt-template proposals to the extent a versioned prompt-template substrate exists; if it needs its own pointer-and-digest substrate, split a follow-up spec rather than improvising (see Risks).
-
-### Stage 8 — Coordination reflection and long-horizon tier (self-improvement Phases 3-4)
-
-- Counterfactual Coordinator-decision review producing `coordinator-spec-draft` proposals (never auto-applied) and guard-metric health-sweep dashboards over run records.
-- 5-10 day-scale L6 stories with trajectory-curve reporting and error continuation, extending `docs/specs/20260529-l6_story_acceptance.md`; run per release.
-- This stage may be split into its own change record at the Stage 7 checkpoint if the release rhythm favors closing this record at Phase 2 completion.
-
-## Verification Plan
-
-- Each stage satisfies the Testing Strategy / Acceptance Criteria section of its owning spec (L0-L3 deterministic suites; L5 smoke where specified) before the stage checkpoint is recorded.
-- Cross-cutting invariants verified explicitly at Stage 6/7: no candidate-visible path to held-back acceptance material; results from differing pinned environments cannot be aggregated; promotion never mutates pins; no proposal surfaces for review without an evidence bundle; suite-curation and behavior-change decisions never batch together; all loop activity lands in audit and the self-improvement usage category.
-- L6 stories at closure: daily automation with coalesced catch-up after downtime (Stage 1); a redo event producing a reflection that yields a provisional lesson which is later confirmed by citation (Stages 2-3); a skill-version proposal evaluated, approved with evidence, promoted without unpinning, and rolled back one step (Stages 4-7).
-- Final verification evidence, remaining follow-ups, and commit/PR links close this record per `docs/change-tracking.md`.
-
-## Expected Handoff Points
-
-- Stage boundaries are the handoff points; each ends with a checkpoint entry here (completed scope, deviations, verification results, commits).
-- Stage 0 requires engineer approval of spec acceptance and the blocking-question resolution.
-- Stages 1-2, 4-5 are independent enough to parallelize across agents after Stage 0; Stage 3 needs Stages 1-2; Stage 6 needs Stages 1, 4, 5; Stage 7 needs Stage 6.
-- Any discovered contract gap goes back into the owning spec (or a new spec) before the affected implementation proceeds, per the spec-first rule.
-
-## Known Risks
-
-- Prompt-template versioning has no substrate spec; Stage 7 may force a follow-up spec, delaying full Phase 2 closure. Mitigation: skill-version proposals do not depend on it; land them first.
-- Replay reconstruction (Stage 5) depends on source-record retention quality; harvested tasks whose sources have drifted retire early, shrinking initial suites. Mitigation: retained snapshots are the primary replay path; reconstruction is the fallback and drift detector.
-- The sequential two-Cell harness profile adds sandbox-lifecycle load; provisioning cost could dominate minute-scale runs. Mitigation: minimal Judge profile, mechanical checks before LLM dispatch, and no concurrent or warm reuse until multi-Cell ownership is proved.
-- Metering enforcement does not exist; budget caps rely on the trigger mechanism's deferral stub until it does. Mitigation: consumption is visible from Stage 3 via the usage category, so runaway cost is observable before enforcement lands.
-- Scope breadth: eight stages across scheduler, knowledge, supply, sandbox, and review surfaces invites drift. Mitigation: stage checkpoints in this record, spec-first gap handling, and the option to split Stage 8.
+- Manual reflection may be missed; this is accepted until real use proves cadence is worth a trigger owner.
+- V1 generated proposals are create-only. Meaning-changing updates, merges and generalized revision history remain with later S60/S61 work.
+- A missing retained S39 snapshot makes historical reflection unavailable; V1 does not reconstruct across owners or repair accepted delivery.
+- Agent judgment may be wrong. It remains advisory, source-linked and pending until a human decides, and the created page has one bounded reversal path.
+- Content digests identify the exact selected V1 page bytes. A general Knowledge revision model is deferred until update/merge use proves it necessary.
 
 ## Checkpoints
 
-- 2026-07-11 — Record created; all owning specs drafted or updated; implementation not started.
+- 2026-07-11 — Original broad plan created; implementation not started.
+- 2026-07-19 — G07 preamble completed. The plan was reduced from eight cross-system build stages to existing-owner correctness plus one explicit human-reviewed loop; the real-history and provider/effect entry gates remain open.
+- 2026-07-19 — Stage 0 exited docs-only after contract, minimality, lifecycle, documentation-model, repository, index, and whitespace checks. Exact proposal replay, source/review identities, live S39 projection, index coherency, output isolation, and deletion of duplicate proposal producers are frozen; WP-5A is active and no G07 production or test change has begun.
+- 2026-07-19 — The real-history entry gate passed on disposable A1 through stock OpenShell `0.0.80` and Codex `0.144.1`. One useful direct Task retained a completed Turn, one completed assistant Item, strict-verifier-confirmed S39 bytes and digest, normal runtime evidence, and one meaningful positive feedback record; the source repository remained clean and whole-Cell cleanup returned zero containers and sandboxes.
+- 2026-07-19 — Three entry-path defects were reduced without expanding G07: OpenShell exec arguments are newline-free, the existing story supervisor is the sole request deadline, and the Codex adapter creates its isolated `0700` home before launch. Commits `4b8f55f`, `51d12b7`, `e0d13f5`, `14e9c82`, `13f856b`, and `0c0ebcb` passed their focused or package suites. Stage 1 is active.

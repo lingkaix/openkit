@@ -1,4 +1,6 @@
 import {
+  type AcceptWorkspaceInvitationRequest,
+  AcceptWorkspaceInvitationRequestSchema,
   type AppDiagnosticsResponse,
   AppDiagnosticsResponseSchema,
   type ApproveThreadGoalPlanRequest,
@@ -9,14 +11,28 @@ import {
   AppSearchResponseSchema,
   type AutomationRecord,
   AutomationRecordSchema,
+  type BindThreadMaterialRequest,
+  BindThreadMaterialRequestSchema,
+  type BindThreadMaterialResponse,
+  BindThreadMaterialResponseSchema,
+  type CancelGoalSteeringRequest,
+  CancelGoalSteeringRequestSchema,
+  type CancelGoalSteeringResponse,
+  CancelGoalSteeringResponseSchema,
   type CancelSchedulerAdmissionResponse,
   CancelSchedulerAdmissionResponseSchema,
   type CapabilityUsageResponse,
   CapabilityUsageResponseSchema,
+  type ChangeWorkspaceMemberAccessRequest,
+  ChangeWorkspaceMemberAccessRequestSchema,
   type ConsumeOpenKitBootstrapTokenRequest,
   ConsumeOpenKitBootstrapTokenRequestSchema,
   type ConsumeOpenKitBootstrapTokenResponse,
   ConsumeOpenKitBootstrapTokenResponseSchema,
+  type ConvertGoalSteeringToFollowUpRequest,
+  ConvertGoalSteeringToFollowUpRequestSchema,
+  type ConvertGoalSteeringToFollowUpResponse,
+  ConvertGoalSteeringToFollowUpResponseSchema,
   type CreateAutomationRequest,
   CreateAutomationRequestSchema,
   type CreateOpenKitAccessTokenRequest,
@@ -27,16 +43,46 @@ import {
   CreateThreadGoalPlanRequestSchema,
   type CreateThreadGoalPlanResponse,
   CreateThreadGoalPlanResponseSchema,
+  type CreateWorkspaceInvitationRequest,
+  CreateWorkspaceInvitationRequestSchema,
+  type CreateWorkspaceMaterialRequest,
+  CreateWorkspaceMaterialRequestSchema,
+  type CreateWorkspaceMaterialResponse,
+  CreateWorkspaceMaterialResponseSchema,
   type DataRootBackupCreateResponse,
   DataRootBackupCreateResponseSchema,
   type DataRootBackupVerifyResponse,
   DataRootBackupVerifyResponseSchema,
+  type DeclineWorkspaceInvitationRequest,
+  DeclineWorkspaceInvitationRequestSchema,
+  type DisableUserRequest,
+  DisableUserRequestSchema,
+  type DisableUserResponse,
+  DisableUserResponseSchema,
+  type ExcludeThreadMaterialRequest,
+  ExcludeThreadMaterialRequestSchema,
+  type ExcludeThreadMaterialResponse,
+  ExcludeThreadMaterialResponseSchema,
   type GetAgentEnvironmentPackageSnapshotResponse,
   GetAgentEnvironmentPackageSnapshotResponseSchema,
+  type GetThreadMaterialResponse,
+  GetThreadMaterialResponseSchema,
   type GetWorkspaceApplyResultResponse,
   GetWorkspaceApplyResultResponseSchema,
+  type GetWorkspaceMaterialResponse,
+  GetWorkspaceMaterialResponseSchema,
+  type GetWorkspaceMaterialRevisionResponse,
+  GetWorkspaceMaterialRevisionResponseSchema,
   type GetWorkspaceSyncReviewResponse,
   GetWorkspaceSyncReviewResponseSchema,
+  type ImportWorkspaceArtifactRequest,
+  ImportWorkspaceArtifactRequestSchema,
+  type ImportWorkspaceArtifactResponse,
+  ImportWorkspaceArtifactResponseSchema,
+  type IntroduceWorkspaceArtifactRequest,
+  IntroduceWorkspaceArtifactRequestSchema,
+  type IntroduceWorkspaceArtifactResponse,
+  IntroduceWorkspaceArtifactResponseSchema,
   type KnowledgeDerivedIndexesResponse,
   KnowledgeDerivedIndexesResponseSchema,
   type KnowledgeManagerAnswerRequest,
@@ -61,8 +107,14 @@ import {
   KnowledgeManagerSuggestRepairResponseSchema,
   type KnowledgeRetrievalResponse,
   KnowledgeRetrievalResponseSchema,
+  type LeaveWorkspaceRequest,
+  LeaveWorkspaceRequestSchema,
   type ListAgentEnvironmentPackageSnapshotsResponse,
   ListAgentEnvironmentPackageSnapshotsResponseSchema,
+  type ListArtifactReviewsResponse,
+  ListArtifactReviewsResponseSchema,
+  type ListAuthorizedWorkspacesResponse,
+  ListAuthorizedWorkspacesResponseSchema,
   type ListAutomationsResponse,
   ListAutomationsResponseSchema,
   type ListBackendWorkspaceHandlesResponse,
@@ -107,8 +159,16 @@ import {
   ListWorkspaceInjectionReceiptsResponseSchema,
   type ListWorkspaceInputSnapshotsResponse,
   ListWorkspaceInputSnapshotsResponseSchema,
+  type ListWorkspaceInvitationsResponse,
+  ListWorkspaceInvitationsResponseSchema,
   type ListWorkspaceMaterializationRecordsResponse,
   ListWorkspaceMaterializationRecordsResponseSchema,
+  type ListWorkspaceMaterialRevisionsResponse,
+  ListWorkspaceMaterialRevisionsResponseSchema,
+  type ListWorkspaceMaterialsResponse,
+  ListWorkspaceMaterialsResponseSchema,
+  type ListWorkspaceMembersResponse,
+  ListWorkspaceMembersResponseSchema,
   type ListWorkspacePermissionDecisionsResponse,
   ListWorkspacePermissionDecisionsResponseSchema,
   type ListWorkspaceQuarantineRecordsResponse,
@@ -129,10 +189,6 @@ import {
   PauseThreadGoalRequestSchema,
   type PauseThreadGoalResponse,
   PauseThreadGoalResponseSchema,
-  type PromoteKnowledgeClaimRequest,
-  PromoteKnowledgeClaimRequestSchema,
-  type PromoteKnowledgeClaimResponse,
-  PromoteKnowledgeClaimResponseSchema,
   type QuickChatRequest,
   QuickChatRequestSchema,
   type QuickChatResponse,
@@ -153,14 +209,22 @@ import {
   RecordKnowledgeObservationRequestSchema,
   type RecordKnowledgeObservationResponse,
   RecordKnowledgeObservationResponseSchema,
+  type RecoverWorkspaceAccessRequest,
+  RecoverWorkspaceAccessRequestSchema,
   type RegisterKnowledgeSourceRequest,
   RegisterKnowledgeSourceRequestSchema,
   type RegisterKnowledgeSourceResponse,
   RegisterKnowledgeSourceResponseSchema,
+  type RemoveWorkspaceMemberRequest,
+  RemoveWorkspaceMemberRequestSchema,
   type ResolveKnowledgeConflictRequest,
   ResolveKnowledgeConflictRequestSchema,
   type ResolveKnowledgeConflictResponse,
   ResolveKnowledgeConflictResponseSchema,
+  type RestoreThreadMaterialRequest,
+  RestoreThreadMaterialRequestSchema,
+  type RestoreThreadMaterialResponse,
+  RestoreThreadMaterialResponseSchema,
   type ResumeThreadGoalRequest,
   ResumeThreadGoalRequestSchema,
   type ResumeThreadGoalResponse,
@@ -179,6 +243,8 @@ import {
   ReviseThreadGoalPlanResponseSchema,
   type RevokeOpenKitAccessTokenResponse,
   RevokeOpenKitAccessTokenResponseSchema,
+  type RevokeWorkspaceInvitationRequest,
+  RevokeWorkspaceInvitationRequestSchema,
   type RotateOpenKitAccessTokenRequest,
   RotateOpenKitAccessTokenRequestSchema,
   type RotateOpenKitAccessTokenResponse,
@@ -187,6 +253,10 @@ import {
   RunThreadGoalStepRequestSchema,
   type RunThreadGoalStepResponse,
   RunThreadGoalStepResponseSchema,
+  type SaveWorkspaceMaterialRevisionRequest,
+  SaveWorkspaceMaterialRevisionRequestSchema,
+  type SaveWorkspaceMaterialRevisionResponse,
+  SaveWorkspaceMaterialRevisionResponseSchema,
   type SetupDiagnosticsResponse,
   SetupDiagnosticsResponseSchema,
   type StartChatModeRequest,
@@ -203,6 +273,10 @@ import {
   StartThreadGoalResponseSchema,
   type StorageLayoutReportResponse,
   StorageLayoutReportResponseSchema,
+  type SubmitArtifactReviewDecisionRequest,
+  SubmitArtifactReviewDecisionRequestSchema,
+  type SubmitArtifactReviewDecisionResponse,
+  SubmitArtifactReviewDecisionResponseSchema,
   type SubmitGoalReviewDecisionRequest,
   SubmitGoalReviewDecisionRequestSchema,
   type SubmitGoalReviewDecisionResponse,
@@ -229,8 +303,14 @@ import {
   ThreadDashboardResponseSchema,
   type ThreadGoalSummaryResponse,
   ThreadGoalSummaryResponseSchema,
+  type TransferWorkspaceOwnershipRequest,
+  TransferWorkspaceOwnershipRequestSchema,
   type TurnFeedbackResponse,
   TurnFeedbackResponseSchema,
+  type UnbindThreadMaterialRequest,
+  UnbindThreadMaterialRequestSchema,
+  type UnbindThreadMaterialResponse,
+  UnbindThreadMaterialResponseSchema,
   type UpdateAutomationRequest,
   UpdateAutomationRequestSchema,
   type VaultAdminBootstrapCodexAuthJsonRequest,
@@ -251,6 +331,8 @@ import {
   VaultAdminUnlockRequestSchema,
   type VaultAdminUnlockResponse,
   VaultAdminUnlockResponseSchema,
+  type WorkspaceAccessRecoveryResponse,
+  WorkspaceAccessRecoveryResponseSchema,
   type WorkspaceDashboardResponse,
   WorkspaceDashboardResponseSchema,
   type WorkspaceExportResponse,
@@ -263,12 +345,49 @@ import {
   WorkspaceImportRequestSchema,
   type WorkspaceImportResponse,
   WorkspaceImportResponseSchema,
+  type WorkspaceInvitationMutationResponse,
+  WorkspaceInvitationMutationResponseSchema,
+  type WorkspaceMemberMutationResponse,
+  WorkspaceMemberMutationResponseSchema,
+  type WorkspaceOwnershipMutationResponse,
+  WorkspaceOwnershipMutationResponseSchema,
+  type WorkspaceSharingError,
+  WorkspaceSharingErrorSchema,
 } from '@openkit/app-api-schemas';
+import { PROTOCOL_VERSION } from '@openkit/protocol';
+import { ApiCallError } from './errors.js';
 import { createRequestId, type OptionalRequestId, withRequestId } from './request-id.js';
 import type { ClientTransport } from './transport.js';
 
 /** Goal Mode steering input with optional caller-provided request id. */
 export type SubmitThreadGoalSteeringInput = OptionalRequestId<SubmitThreadGoalSteeringRequest>;
+/** Goal steering follow-up conversion input with optional caller-provided request id. */
+export type ConvertGoalSteeringToFollowUpInput =
+  OptionalRequestId<ConvertGoalSteeringToFollowUpRequest>;
+/** Goal steering cancellation input with optional caller-provided request id. */
+export type CancelGoalSteeringInput = OptionalRequestId<CancelGoalSteeringRequest>;
+
+/** Workspace invitation creation input with an optional caller-provided request id. */
+export type CreateWorkspaceInvitationInput = OptionalRequestId<CreateWorkspaceInvitationRequest>;
+/** Workspace invitation acceptance input with an optional caller-provided request id. */
+export type AcceptWorkspaceInvitationInput = OptionalRequestId<AcceptWorkspaceInvitationRequest>;
+/** Workspace invitation decline input with an optional caller-provided request id. */
+export type DeclineWorkspaceInvitationInput = OptionalRequestId<DeclineWorkspaceInvitationRequest>;
+/** Workspace invitation revocation input with an optional caller-provided request id. */
+export type RevokeWorkspaceInvitationInput = OptionalRequestId<RevokeWorkspaceInvitationRequest>;
+/** Workspace membership access-change input with an optional caller-provided request id. */
+export type ChangeWorkspaceMemberAccessInput =
+  OptionalRequestId<ChangeWorkspaceMemberAccessRequest>;
+/** Workspace membership removal input with an optional caller-provided request id. */
+export type RemoveWorkspaceMemberInput = OptionalRequestId<RemoveWorkspaceMemberRequest>;
+/** Workspace leave input with an optional caller-provided request id. */
+export type LeaveWorkspaceInput = OptionalRequestId<LeaveWorkspaceRequest>;
+/** Workspace ownership-transfer input with an optional caller-provided request id. */
+export type TransferWorkspaceOwnershipInput = OptionalRequestId<TransferWorkspaceOwnershipRequest>;
+/** Workspace access-recovery input with an optional caller-provided request id. */
+export type RecoverWorkspaceAccessInput = OptionalRequestId<RecoverWorkspaceAccessRequest>;
+/** Canonical user-disable input with an optional caller-provided request id. */
+export type DisableUserInput = OptionalRequestId<DisableUserRequest>;
 
 /** Goal Mode real worker step input with optional caller-provided request id. */
 export type RunThreadGoalStepInput = OptionalRequestId<RunThreadGoalStepRequest>;
@@ -285,6 +404,26 @@ export type StartTaskModeInput = OptionalRequestId<StartTaskModeRequest>;
 export type StartChatModeInput = OptionalRequestId<StartChatModeRequest>;
 /** Goal Mode start input with optional caller-provided request id. */
 export type StartThreadGoalInput = OptionalRequestId<StartThreadGoalRequest>;
+/** Workspace Artifact import input with optional caller-provided request id. */
+export type ImportWorkspaceArtifactInput = OptionalRequestId<ImportWorkspaceArtifactRequest>;
+/** Workspace Artifact introduction input with optional caller-provided request id. */
+export type IntroduceWorkspaceArtifactInput = OptionalRequestId<IntroduceWorkspaceArtifactRequest>;
+/** Artifact Review decision input with optional caller-provided request id. */
+export type SubmitArtifactReviewDecisionInput =
+  OptionalRequestId<SubmitArtifactReviewDecisionRequest>;
+/** Workspace Material create input with optional caller-provided request id. */
+export type CreateWorkspaceMaterialInput = OptionalRequestId<CreateWorkspaceMaterialRequest>;
+/** Workspace Material revision save input with optional caller-provided request id. */
+export type SaveWorkspaceMaterialRevisionInput =
+  OptionalRequestId<SaveWorkspaceMaterialRevisionRequest>;
+/** Thread Material bind input with optional caller-provided request id. */
+export type BindThreadMaterialInput = OptionalRequestId<BindThreadMaterialRequest>;
+/** Thread Material unbind input with optional caller-provided request id. */
+export type UnbindThreadMaterialInput = OptionalRequestId<UnbindThreadMaterialRequest>;
+/** Thread Material exclusion input with optional caller-provided request id. */
+export type ExcludeThreadMaterialInput = OptionalRequestId<ExcludeThreadMaterialRequest>;
+/** Thread Material restore input with optional caller-provided request id. */
+export type RestoreThreadMaterialInput = OptionalRequestId<RestoreThreadMaterialRequest>;
 /** Knowledge Manager answer request input. */
 export type KnowledgeManagerAnswerInput = KnowledgeManagerAnswerRequest;
 /** Knowledge Manager context-material request input. */
@@ -301,8 +440,6 @@ export type RegisterKnowledgeSourceInput = RegisterKnowledgeSourceRequest;
 export type RecordKnowledgeObservationInput = RecordKnowledgeObservationRequest;
 /** Knowledge Claim append request input. */
 export type RecordKnowledgeClaimInput = RecordKnowledgeClaimRequest;
-/** Knowledge Claim promotion request input. */
-export type PromoteKnowledgeClaimInput = PromoteKnowledgeClaimRequest;
 /** Knowledge Conflict append request input. */
 export type RecordKnowledgeConflictInput = RecordKnowledgeConflictRequest;
 /** Knowledge Conflict resolution request input. */
@@ -333,8 +470,175 @@ export interface RotateOpenKitAccessTokenInput {
 export type VaultAdminUnlockInput = VaultAdminUnlockRequest;
 /** Vault admin Codex auth JSON bootstrap input. */
 export type VaultAdminBootstrapCodexAuthJsonInput = VaultAdminBootstrapCodexAuthJsonRequest;
+
+/**
+ * Narrows one generic API failure to the exact-release Workspace sharing error family.
+ *
+ * @param error Unknown failure raised by a Core Client request.
+ * @returns Parsed Workspace sharing error, or null for another or malformed error family.
+ */
+export function parseWorkspaceSharingError(error: unknown): WorkspaceSharingError | null {
+  if (!(error instanceof ApiCallError) || !error.code) {
+    return null;
+  }
+
+  const parsed = WorkspaceSharingErrorSchema.safeParse({
+    code: error.code,
+    ...(error.details === undefined ? {} : { details: error.details }),
+    message: error.message,
+    ...(error.path === undefined ? {} : { path: [...error.path] }),
+    protocolVersion: PROTOCOL_VERSION,
+    ...(error.requestId === undefined ? {} : { requestId: error.requestId }),
+  });
+
+  return parsed.success ? parsed.data : null;
+}
+
 /** NanoCore App API client for read models and app-local commands. */
 export interface AppApiClient {
+  /** Lists workspaces authorized for the current principal. */
+  listAuthorizedWorkspaces(): Promise<ListAuthorizedWorkspacesResponse>;
+  /** Lists memberships for one workspace. */
+  listWorkspaceMembers(workspaceId: string): Promise<ListWorkspaceMembersResponse>;
+  /** Lists invitations issued for one workspace. */
+  listWorkspaceInvitations(workspaceId: string): Promise<ListWorkspaceInvitationsResponse>;
+  /** Creates one invitation for a workspace. */
+  createWorkspaceInvitation(
+    workspaceId: string,
+    input: CreateWorkspaceInvitationInput
+  ): Promise<WorkspaceInvitationMutationResponse>;
+  /** Lists invitations addressed to the current principal. */
+  listMyWorkspaceInvitations(): Promise<ListWorkspaceInvitationsResponse>;
+  /** Accepts one invitation addressed to the current principal. */
+  acceptWorkspaceInvitation(
+    invitationId: string,
+    input: AcceptWorkspaceInvitationInput
+  ): Promise<WorkspaceInvitationMutationResponse>;
+  /** Declines one invitation addressed to the current principal. */
+  declineWorkspaceInvitation(
+    invitationId: string,
+    input: DeclineWorkspaceInvitationInput
+  ): Promise<WorkspaceInvitationMutationResponse>;
+  /** Revokes one invitation issued for a workspace. */
+  revokeWorkspaceInvitation(
+    workspaceId: string,
+    invitationId: string,
+    input: RevokeWorkspaceInvitationInput
+  ): Promise<WorkspaceInvitationMutationResponse>;
+  /** Changes one workspace member's access level. */
+  changeWorkspaceMemberAccess(
+    workspaceId: string,
+    userId: string,
+    input: ChangeWorkspaceMemberAccessInput
+  ): Promise<WorkspaceMemberMutationResponse>;
+  /** Removes one member from a workspace. */
+  removeWorkspaceMember(
+    workspaceId: string,
+    userId: string,
+    input: RemoveWorkspaceMemberInput
+  ): Promise<WorkspaceMemberMutationResponse>;
+  /** Removes the current principal from one workspace. */
+  leaveWorkspace(
+    workspaceId: string,
+    input: LeaveWorkspaceInput
+  ): Promise<WorkspaceMemberMutationResponse>;
+  /** Transfers ownership of one workspace. */
+  transferWorkspaceOwnership(
+    workspaceId: string,
+    input: TransferWorkspaceOwnershipInput
+  ): Promise<WorkspaceOwnershipMutationResponse>;
+  /** Reads the bounded access-recovery state for one workspace. */
+  getWorkspaceAccessRecoveryState(workspaceId: string): Promise<WorkspaceAccessRecoveryResponse>;
+  /** Applies one bounded access-recovery action for a workspace. */
+  recoverWorkspaceAccess(
+    workspaceId: string,
+    input: RecoverWorkspaceAccessInput
+  ): Promise<WorkspaceAccessRecoveryResponse>;
+  /** Disables one canonical user. */
+  disableUser(userId: string, input: DisableUserInput): Promise<DisableUserResponse>;
+  /** Imports one immutable Workspace Artifact version. */
+  importWorkspaceArtifact(
+    workspaceId: string,
+    input: ImportWorkspaceArtifactInput
+  ): Promise<ImportWorkspaceArtifactResponse>;
+  /** Introduces one exact Workspace Artifact version into a Thread. */
+  introduceWorkspaceArtifact(
+    workspaceId: string,
+    threadId: string,
+    artifactId: string,
+    input: IntroduceWorkspaceArtifactInput
+  ): Promise<IntroduceWorkspaceArtifactResponse>;
+  /** Lists version-keyed Reviews for one Artifact. */
+  listArtifactReviews(
+    workspaceId: string,
+    artifactId: string
+  ): Promise<ListArtifactReviewsResponse>;
+  /** Decides one exact version-keyed Artifact Review. */
+  submitArtifactReviewDecision(
+    workspaceId: string,
+    artifactId: string,
+    artifactVersion: number,
+    input: SubmitArtifactReviewDecisionInput
+  ): Promise<SubmitArtifactReviewDecisionResponse>;
+  /** Lists Workspace Materials. */
+  listWorkspaceMaterials(workspaceId: string): Promise<ListWorkspaceMaterialsResponse>;
+  /** Creates one Workspace Material. */
+  createWorkspaceMaterial(
+    workspaceId: string,
+    input: CreateWorkspaceMaterialInput
+  ): Promise<CreateWorkspaceMaterialResponse>;
+  /** Reads one Workspace Material. */
+  getWorkspaceMaterial(
+    workspaceId: string,
+    materialId: string
+  ): Promise<GetWorkspaceMaterialResponse>;
+  /** Lists immutable revisions for one Workspace Material. */
+  listWorkspaceMaterialRevisions(
+    workspaceId: string,
+    materialId: string
+  ): Promise<ListWorkspaceMaterialRevisionsResponse>;
+  /** Saves one immutable Workspace Material revision. */
+  saveWorkspaceMaterialRevision(
+    workspaceId: string,
+    materialId: string,
+    input: SaveWorkspaceMaterialRevisionInput
+  ): Promise<SaveWorkspaceMaterialRevisionResponse>;
+  /** Reads one exact Workspace Material revision. */
+  getWorkspaceMaterialRevision(
+    workspaceId: string,
+    materialId: string,
+    revisionId: string
+  ): Promise<GetWorkspaceMaterialRevisionResponse>;
+  /** Reads the singular Material projection for one Thread. */
+  getThreadMaterial(workspaceId: string, threadId: string): Promise<GetThreadMaterialResponse>;
+  /** Binds one Workspace Material to a Thread. */
+  bindThreadMaterial(
+    workspaceId: string,
+    threadId: string,
+    materialId: string,
+    input: BindThreadMaterialInput
+  ): Promise<BindThreadMaterialResponse>;
+  /** Unbinds one Workspace Material from a Thread. */
+  unbindThreadMaterial(
+    workspaceId: string,
+    threadId: string,
+    materialId: string,
+    input: UnbindThreadMaterialInput
+  ): Promise<UnbindThreadMaterialResponse>;
+  /** Excludes one bound Workspace Material from worker context. */
+  excludeThreadMaterial(
+    workspaceId: string,
+    threadId: string,
+    materialId: string,
+    input: ExcludeThreadMaterialInput
+  ): Promise<ExcludeThreadMaterialResponse>;
+  /** Restores one bound Workspace Material to worker context. */
+  restoreThreadMaterial(
+    workspaceId: string,
+    threadId: string,
+    materialId: string,
+    input: RestoreThreadMaterialInput
+  ): Promise<RestoreThreadMaterialResponse>;
   /** Reads one workspace dashboard read model. */
   getWorkspaceDashboard(workspaceId: string): Promise<WorkspaceDashboardResponse>;
   /** Reads one thread dashboard read model. */
@@ -465,12 +769,6 @@ export interface AppApiClient {
   ): Promise<RecordKnowledgeClaimResponse>;
   /** Lists workspace Knowledge Store claims. */
   listKnowledgeClaims(workspaceId: string): Promise<ListKnowledgeClaimsResponse>;
-  /** Promotes one accepted Knowledge Store claim into a review proposal. */
-  promoteKnowledgeClaim(
-    workspaceId: string,
-    claimId: string,
-    input: PromoteKnowledgeClaimInput
-  ): Promise<PromoteKnowledgeClaimResponse>;
   /** Appends one workspace Knowledge Store conflict. */
   recordKnowledgeConflict(
     workspaceId: string,
@@ -490,6 +788,20 @@ export interface AppApiClient {
     threadId: string,
     input: SubmitThreadGoalSteeringInput
   ): Promise<SubmitThreadGoalSteeringResponse>;
+  /** Converts one terminal Goal steering input into completed Thread follow-up history. */
+  convertGoalSteeringToFollowUp(
+    workspaceId: string,
+    threadId: string,
+    pendingTurnId: string,
+    input: ConvertGoalSteeringToFollowUpInput
+  ): Promise<ConvertGoalSteeringToFollowUpResponse>;
+  /** Cancels one terminal Goal steering input. */
+  cancelGoalSteering(
+    workspaceId: string,
+    threadId: string,
+    pendingTurnId: string,
+    input: CancelGoalSteeringInput
+  ): Promise<CancelGoalSteeringResponse>;
   /** Resolves one app-local Goal Review attention row. */
   submitGoalReviewDecision(
     workspaceId: string,
@@ -689,6 +1001,226 @@ export interface AppApiClient {
 /** Creates the NanoCore App API client. */
 export function createAppApiClient(transport: ClientTransport): AppApiClient {
   return {
+    listAuthorizedWorkspaces: () =>
+      transport.getJson('/api/app/workspaces', ListAuthorizedWorkspacesResponseSchema),
+    listWorkspaceMembers: (workspaceId) =>
+      transport.getJson(
+        `/api/app/workspaces/${workspaceId}/members`,
+        ListWorkspaceMembersResponseSchema
+      ),
+    listWorkspaceInvitations: (workspaceId) =>
+      transport.getJson(
+        `/api/app/workspaces/${workspaceId}/invitations`,
+        ListWorkspaceInvitationsResponseSchema
+      ),
+    createWorkspaceInvitation: (workspaceId, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
+        `/api/app/workspaces/${workspaceId}/invitations`,
+        CreateWorkspaceInvitationRequestSchema.parse(request),
+        WorkspaceInvitationMutationResponseSchema
+      );
+    },
+    listMyWorkspaceInvitations: () =>
+      transport.getJson('/api/app/workspace-invitations', ListWorkspaceInvitationsResponseSchema),
+    acceptWorkspaceInvitation: (invitationId, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
+        `/api/app/workspace-invitations/${invitationId}/accept`,
+        AcceptWorkspaceInvitationRequestSchema.parse(request),
+        WorkspaceInvitationMutationResponseSchema
+      );
+    },
+    declineWorkspaceInvitation: (invitationId, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
+        `/api/app/workspace-invitations/${invitationId}/decline`,
+        DeclineWorkspaceInvitationRequestSchema.parse(request),
+        WorkspaceInvitationMutationResponseSchema
+      );
+    },
+    revokeWorkspaceInvitation: (workspaceId, invitationId, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
+        `/api/app/workspaces/${workspaceId}/invitations/${invitationId}/revoke`,
+        RevokeWorkspaceInvitationRequestSchema.parse(request),
+        WorkspaceInvitationMutationResponseSchema
+      );
+    },
+    changeWorkspaceMemberAccess: (workspaceId, userId, input) => {
+      const request = withRequestId(input);
+
+      return transport.patchJson(
+        `/api/app/workspaces/${workspaceId}/members/${userId}`,
+        ChangeWorkspaceMemberAccessRequestSchema.parse(request),
+        WorkspaceMemberMutationResponseSchema
+      );
+    },
+    removeWorkspaceMember: (workspaceId, userId, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
+        `/api/app/workspaces/${workspaceId}/members/${userId}/remove`,
+        RemoveWorkspaceMemberRequestSchema.parse(request),
+        WorkspaceMemberMutationResponseSchema
+      );
+    },
+    leaveWorkspace: (workspaceId, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
+        `/api/app/workspaces/${workspaceId}/leave`,
+        LeaveWorkspaceRequestSchema.parse(request),
+        WorkspaceMemberMutationResponseSchema
+      );
+    },
+    transferWorkspaceOwnership: (workspaceId, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
+        `/api/app/workspaces/${workspaceId}/ownership/transfer`,
+        TransferWorkspaceOwnershipRequestSchema.parse(request),
+        WorkspaceOwnershipMutationResponseSchema
+      );
+    },
+    getWorkspaceAccessRecoveryState: (workspaceId) =>
+      transport.getJson(
+        `/api/app/workspaces/${workspaceId}/access-recovery`,
+        WorkspaceAccessRecoveryResponseSchema
+      ),
+    recoverWorkspaceAccess: (workspaceId, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
+        `/api/app/workspaces/${workspaceId}/access-recovery`,
+        RecoverWorkspaceAccessRequestSchema.parse(request),
+        WorkspaceAccessRecoveryResponseSchema
+      );
+    },
+    disableUser: (userId, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
+        `/api/app/users/${userId}/disable`,
+        DisableUserRequestSchema.parse(request),
+        DisableUserResponseSchema
+      );
+    },
+    importWorkspaceArtifact: (workspaceId, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
+        `/api/app/workspaces/${workspaceId}/artifacts/imports`,
+        ImportWorkspaceArtifactRequestSchema.parse(request),
+        ImportWorkspaceArtifactResponseSchema
+      );
+    },
+    introduceWorkspaceArtifact: (workspaceId, threadId, artifactId, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
+        `/api/app/workspaces/${workspaceId}/threads/${threadId}/artifacts/${artifactId}/introductions`,
+        IntroduceWorkspaceArtifactRequestSchema.parse(request),
+        IntroduceWorkspaceArtifactResponseSchema
+      );
+    },
+    listArtifactReviews: (workspaceId, artifactId) =>
+      transport.getJson(
+        `/api/app/workspaces/${workspaceId}/artifacts/${artifactId}/reviews`,
+        ListArtifactReviewsResponseSchema
+      ),
+    submitArtifactReviewDecision: (workspaceId, artifactId, artifactVersion, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
+        `/api/app/workspaces/${workspaceId}/artifacts/${artifactId}/versions/${artifactVersion}/review/decision`,
+        SubmitArtifactReviewDecisionRequestSchema.parse(request),
+        SubmitArtifactReviewDecisionResponseSchema
+      );
+    },
+    listWorkspaceMaterials: (workspaceId) =>
+      transport.getJson(
+        `/api/app/workspaces/${workspaceId}/materials`,
+        ListWorkspaceMaterialsResponseSchema
+      ),
+    createWorkspaceMaterial: (workspaceId, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
+        `/api/app/workspaces/${workspaceId}/materials`,
+        CreateWorkspaceMaterialRequestSchema.parse(request),
+        CreateWorkspaceMaterialResponseSchema
+      );
+    },
+    getWorkspaceMaterial: (workspaceId, materialId) =>
+      transport.getJson(
+        `/api/app/workspaces/${workspaceId}/materials/${materialId}`,
+        GetWorkspaceMaterialResponseSchema
+      ),
+    listWorkspaceMaterialRevisions: (workspaceId, materialId) =>
+      transport.getJson(
+        `/api/app/workspaces/${workspaceId}/materials/${materialId}/revisions`,
+        ListWorkspaceMaterialRevisionsResponseSchema
+      ),
+    saveWorkspaceMaterialRevision: (workspaceId, materialId, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
+        `/api/app/workspaces/${workspaceId}/materials/${materialId}/revisions`,
+        SaveWorkspaceMaterialRevisionRequestSchema.parse(request),
+        SaveWorkspaceMaterialRevisionResponseSchema
+      );
+    },
+    getWorkspaceMaterialRevision: (workspaceId, materialId, revisionId) =>
+      transport.getJson(
+        `/api/app/workspaces/${workspaceId}/materials/${materialId}/revisions/${revisionId}`,
+        GetWorkspaceMaterialRevisionResponseSchema
+      ),
+    getThreadMaterial: (workspaceId, threadId) =>
+      transport.getJson(
+        `/api/app/workspaces/${workspaceId}/threads/${threadId}/material`,
+        GetThreadMaterialResponseSchema
+      ),
+    bindThreadMaterial: (workspaceId, threadId, materialId, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
+        `/api/app/workspaces/${workspaceId}/threads/${threadId}/materials/${materialId}/bind`,
+        BindThreadMaterialRequestSchema.parse(request),
+        BindThreadMaterialResponseSchema
+      );
+    },
+    unbindThreadMaterial: (workspaceId, threadId, materialId, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
+        `/api/app/workspaces/${workspaceId}/threads/${threadId}/materials/${materialId}/unbind`,
+        UnbindThreadMaterialRequestSchema.parse(request),
+        UnbindThreadMaterialResponseSchema
+      );
+    },
+    excludeThreadMaterial: (workspaceId, threadId, materialId, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
+        `/api/app/workspaces/${workspaceId}/threads/${threadId}/materials/${materialId}/exclude`,
+        ExcludeThreadMaterialRequestSchema.parse(request),
+        ExcludeThreadMaterialResponseSchema
+      );
+    },
+    restoreThreadMaterial: (workspaceId, threadId, materialId, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
+        `/api/app/workspaces/${workspaceId}/threads/${threadId}/materials/${materialId}/restore`,
+        RestoreThreadMaterialRequestSchema.parse(request),
+        RestoreThreadMaterialResponseSchema
+      );
+    },
     getWorkspaceDashboard: (workspaceId) =>
       transport.getJson(
         `/api/app/workspaces/${workspaceId}/dashboard`,
@@ -871,12 +1403,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         `/api/app/workspaces/${workspaceId}/knowledge/claims`,
         ListKnowledgeClaimsResponseSchema
       ),
-    promoteKnowledgeClaim: (workspaceId, claimId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/claims/${claimId}/promotion`,
-        PromoteKnowledgeClaimRequestSchema.parse(input),
-        PromoteKnowledgeClaimResponseSchema
-      ),
     recordKnowledgeConflict: (workspaceId, input) =>
       transport.postJson(
         `/api/app/workspaces/${workspaceId}/knowledge/conflicts`,
@@ -901,6 +1427,24 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal/steering`,
         SubmitThreadGoalSteeringRequestSchema.parse(request),
         SubmitThreadGoalSteeringResponseSchema
+      );
+    },
+    convertGoalSteeringToFollowUp: (workspaceId, threadId, pendingTurnId, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
+        `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal/steering/${pendingTurnId}/follow-up`,
+        ConvertGoalSteeringToFollowUpRequestSchema.parse(request),
+        ConvertGoalSteeringToFollowUpResponseSchema
+      );
+    },
+    cancelGoalSteering: (workspaceId, threadId, pendingTurnId, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
+        `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal/steering/${pendingTurnId}/cancel`,
+        CancelGoalSteeringRequestSchema.parse(request),
+        CancelGoalSteeringResponseSchema
       );
     },
     submitGoalReviewDecision: (workspaceId, threadId, goalId, reviewId, input) => {

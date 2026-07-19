@@ -6,7 +6,11 @@ import { describe, expect, it } from 'vitest';
 import { createInjectionPlan, getInjectionPlan, listInjectionPlans } from './injection-plans.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
-import { createVaultGrant } from './vault/vault-grants.js';
+import {
+  createVaultGrant,
+  getVaultGrant,
+  importWorkspaceVaultGrants,
+} from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
 
 /**
@@ -126,6 +130,32 @@ describe('injection plans', () => {
           targetPath: '/openkit/secrets/github-token',
         })
       ).toThrow('Gateway-only injection plans cannot include runtime targets.');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('keeps imported VaultGrant history from authorizing an injection plan', () => {
+    const coreDb = createCoreDb();
+
+    try {
+      createGrant(coreDb);
+      const source = getVaultGrant(coreDb, 'grant_github_turn');
+      expect(source).not.toBeNull();
+      importWorkspaceVaultGrants(coreDb, [{ ...source!, grantId: 'grant_imported_ws_1_1' }]);
+
+      expect(() =>
+        createInjectionPlan(coreDb, {
+          backendCapabilityRequirement: 'encrypted-file:resolve',
+          expirationBehavior: 'delete-on-turn-end',
+          grantId: 'grant_imported_ws_1_1',
+          injectionVisibility: 'gateway-only',
+          planId: 'plan_imported_grant',
+          redactionRule: 'status-only',
+          revocationBehavior: 'deny-new-use',
+        })
+      ).toThrow('Vault grant is portable-import history and cannot authorize effects.');
+      expect(getInjectionPlan(coreDb, 'plan_imported_grant')).toBeNull();
     } finally {
       coreDb.sqlite.close();
     }

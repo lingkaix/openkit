@@ -7,11 +7,12 @@ import {
   WORKSPACE_EXPORT_FORMAT_VERSION,
   type WorkspaceExportManifest,
 } from '@openkit/config-schema';
-import { KnowledgeEntrySchema } from '@openkit/protocol';
+import { ItemSchema, KnowledgeEntrySchema } from '@openkit/protocol';
 import type { ResolvedAgentSetupRecord } from '../agents/setup-ledger.js';
 import {
   artifactContentFileName,
   assertSafeWorkspacePathSegment,
+  listUnresolvedUserInputRequestItemIds,
   parseCanonicalWorkspaceHistory,
   readCanonicalTextFile,
 } from './workspace-file-records.js';
@@ -33,6 +34,7 @@ export const WORKSPACE_EXPORT_MANIFEST_FILE = 'openkit-workspace-export.json';
 
 /** Workspace SQLite tables whose portable row families are covered by workspace export/import. */
 export const WORKSPACE_EXPORT_PORTABLE_WORKSPACE_SQLITE_TABLES = [
+  'artifact_reviews',
   'audit_events',
   'backend_workspace_handles',
   'capability_calls',
@@ -60,6 +62,9 @@ export const WORKSPACE_EXPORT_PORTABLE_WORKSPACE_SQLITE_TABLES = [
   'workspace_reconciliation_records',
   'workspace_repository_resources',
   'staged_workspace_reviews',
+  'thread_material_bindings',
+  'workspace_material_revisions',
+  'workspace_materials',
 ] as const;
 
 /** Workspace SQLite tables intentionally excluded from portable workspace export/import. */
@@ -67,6 +72,14 @@ export const WORKSPACE_EXPORT_NON_PORTABLE_WORKSPACE_SQLITE_TABLES = [
   {
     table: 'idempotency_requests',
     reason: 'short-lived request replay state is local to the source workspace',
+  },
+  {
+    table: 'pending_user_turn_records',
+    reason: 'active Goal steering delivery proof is local to the source workspace',
+  },
+  {
+    table: 'steering_terminal_outcomes',
+    reason: 'terminal Goal steering command proof is local to the source workspace',
   },
   {
     table: 'workspace_filesystem_staging_roots',
@@ -118,6 +131,12 @@ export interface WriteWorkspaceExportTreeInput {
   artifacts: readonly unknown[];
   /** Artifact review decisions to export. */
   artifactReviews: readonly unknown[];
+  /** Raw Thread-to-Material binding owners including private request proof. */
+  threadMaterialBindings: readonly unknown[];
+  /** Raw immutable Material revision owners including private request proof. */
+  workspaceMaterialRevisions: readonly unknown[];
+  /** Raw Workspace Material owners including private request proof. */
+  workspaceMaterials: readonly unknown[];
   /** Durable agent sessions to export. */
   agentSessions: readonly unknown[];
   /** Retained turn event logs keyed by turn id. */
@@ -253,7 +272,6 @@ export function writeWorkspaceExportTree(
     turns: input.turns,
     itemRevisions: input.itemRevisions,
     artifacts: input.artifacts,
-    artifactReviews: input.artifactReviews,
     knowledgeProposals: input.knowledgeProposals,
     knowledgeProposalReviews: input.knowledgeProposalReviews,
     knowledgeSources: input.knowledgeSources,
@@ -261,6 +279,15 @@ export function writeWorkspaceExportTree(
     turnEvents: input.turnEvents,
   });
   const knowledge = input.knowledge.map((record) => KnowledgeEntrySchema.parse(record));
+  const unresolvedUserInputRequestIds = listUnresolvedUserInputRequestItemIds(
+    history.itemRevisions
+  );
+
+  if (unresolvedUserInputRequestIds.length > 0) {
+    throw new Error(
+      `Workspace export is blocked by unresolved user-input-request Items: ${unresolvedUserInputRequestIds.join(', ')}.`
+    );
+  }
 
   for (const artifact of history.artifacts) {
     assertSafeWorkspacePathSegment(artifact.id, 'Artifact id');
@@ -292,7 +319,13 @@ export function writeWorkspaceExportTree(
     writeJsonl(join(recordsRoot, 'turns.jsonl'), history.turns);
     writeJsonl(join(recordsRoot, 'knowledge.jsonl'), knowledge);
     writeJsonl(join(recordsRoot, 'item-revisions.jsonl'), history.itemRevisions, true);
-    writeJsonl(join(recordsRoot, 'artifact-reviews.jsonl'), history.artifactReviews);
+    writeJsonl(join(recordsRoot, 'artifact-reviews.jsonl'), input.artifactReviews);
+    writeJsonl(join(recordsRoot, 'thread-material-bindings.jsonl'), input.threadMaterialBindings);
+    writeJsonl(
+      join(recordsRoot, 'workspace-material-revisions.jsonl'),
+      input.workspaceMaterialRevisions
+    );
+    writeJsonl(join(recordsRoot, 'workspace-materials.jsonl'), input.workspaceMaterials);
     writeJsonl(join(recordsRoot, 'agent-sessions.jsonl'), history.agentSessions);
     writeJsonl(
       join(recordsRoot, 'turn-events.jsonl'),
@@ -670,6 +703,22 @@ export function verifyWorkspaceExportTree(
       throw new Error(`Digest mismatch for export file ${entry.path}`);
     }
     fileContents.set(entry.path, text);
+  }
+
+  const itemRevisionText = fileContents.get('records/item-revisions.jsonl');
+  const itemRevisions =
+    itemRevisionText === undefined || itemRevisionText.length === 0
+      ? []
+      : itemRevisionText
+          .trimEnd()
+          .split('\n')
+          .map((line) => ItemSchema.parse(JSON.parse(line)));
+  const unresolvedUserInputRequestIds = listUnresolvedUserInputRequestItemIds(itemRevisions);
+
+  if (unresolvedUserInputRequestIds.length > 0) {
+    throw new Error(
+      `Workspace export verification found unresolved user-input-request Items: ${unresolvedUserInputRequestIds.join(', ')}.`
+    );
   }
 
   return {

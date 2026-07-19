@@ -23,8 +23,8 @@ describe('quick-chat workspace mode', () => {
     const app = createApp({
       openKitConfig: {
         defaults: {
-          gatewayModel: 'llama3.2',
-          gatewayProviderId: 'ollama',
+          coreModel: 'llama3.2',
+          coreProviderId: 'ollama',
         },
       },
       providerRegistry: new ProviderRegistry([

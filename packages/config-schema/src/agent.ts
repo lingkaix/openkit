@@ -1,41 +1,36 @@
 import { z } from 'zod';
 import {
+  AgentEnvironmentBinarySchema,
   WorkerGovernanceBackendCapabilitySchema,
   WorkerGovernanceBackendKindSchema,
+  WorkerSandboxAccessSchema,
 } from './agent-environment.js';
+import { ProviderReadinessSchema } from './provider.js';
 import { isRegisteredRequiredFeature } from './schema-evolution.js';
 
 /**
- * v0.0.4 agent runtime schema.
+ * Authored opaque worker runtime declaration.
  */
 export const AuthoredAgentRuntimeSchema = z
   .object({
     adapter: z.string().min(1),
+    binaries: z.array(AgentEnvironmentBinarySchema).min(1),
+    image: z
+      .object({
+        pullPolicy: z.enum(['always', 'if-not-present', 'never']),
+        ref: z.string().min(1),
+      })
+      .strict(),
     kind: z.string().min(1),
     version: z.string().min(1).optional(),
   })
   .strict();
 
 /**
- * v0.0.4 agent mode schema.
- */
-export const AuthoredAgentModeSchema = z.enum(['local', 'remote', 'a2a']);
-
-/**
- * v0.0.4 agent transport schema.
- */
-export const AuthoredAgentTransportSchema = z
-  .object({
-    kind: z.enum(['stdio', 'http', 'websocket', 'a2a']),
-  })
-  .passthrough();
-
-/**
  * v0.0.4 agent provider assignment schema.
  */
 export const AuthoredAgentProviderSchema = z
   .object({
-    fallbacks: z.array(z.unknown()).optional(),
     model: z.string().min(1).optional(),
     ref: z.string().min(1).optional(),
   })
@@ -78,9 +73,8 @@ export const AuthoredAgentWorkspaceSchema = z
 export const AuthoredAgentMcpEntrySchema = z
   .object({
     id: z.string().min(1),
-    mode: z.enum(['bridge.spawned', 'bridge.remote', 'agent.local']),
   })
-  .passthrough();
+  .strict();
 
 /**
  * v0.0.4 agent backend requirement schema.
@@ -96,11 +90,9 @@ export const AuthoredAgentBackendRequirementsSchema = z
 /**
  * v0.0.4 agent sandbox schema.
  */
-export const AuthoredAgentSandboxSchema = z
-  .object({
-    backend: AuthoredAgentBackendRequirementsSchema.optional(),
-  })
-  .passthrough();
+export const AuthoredAgentSandboxSchema = WorkerSandboxAccessSchema.safeExtend({
+  backend: AuthoredAgentBackendRequirementsSchema.optional(),
+});
 
 /**
  * v0.0.4 agent config schema loaded from JSONC files.
@@ -108,26 +100,22 @@ export const AuthoredAgentSandboxSchema = z
 export const AuthoredAgentConfigSchema = z
   .object({
     defaultProfileId: z.string().min(1).optional(),
-    deployment: z.record(z.string().min(1), z.unknown()),
     displayName: z.string().min(1),
     extensions: z.record(z.string().min(1), z.unknown()).optional(),
     id: z.string().min(1),
     lifecycle: z.record(z.string().min(1), z.unknown()).optional(),
     mcp: z.array(AuthoredAgentMcpEntrySchema).optional(),
-    mode: AuthoredAgentModeSchema,
     observability: z.record(z.string().min(1), z.unknown()).optional(),
     permissions: z.record(z.string().min(1), z.unknown()).optional(),
     provider: AuthoredAgentProviderSchema.optional(),
     profiles: z.array(z.object({ id: z.string().min(1) }).passthrough()).optional(),
-    readiness: z.record(z.string().min(1), z.unknown()).optional(),
+    readiness: ProviderReadinessSchema.optional(),
     requiredFeatures: z.array(z.string().min(1)).default([]),
     resources: z.record(z.string().min(1), z.unknown()).optional(),
     runtime: AuthoredAgentRuntimeSchema,
-    runtimeConfig: z.record(z.string().min(1), z.unknown()).optional(),
     sandbox: AuthoredAgentSandboxSchema.optional(),
     schemaVersion: z.literal(1),
     skills: z.array(z.object({ id: z.string().min(1) }).passthrough()).optional(),
-    transport: AuthoredAgentTransportSchema.optional(),
     workspace: AuthoredAgentWorkspaceSchema.optional(),
   })
   .strict()
@@ -139,6 +127,19 @@ export const AuthoredAgentConfigSchema = z
           message: `Unregistered required feature: ${feature}`,
           path: ['requiredFeatures', index],
         });
+      }
+    }
+
+    const runtimeBinaryPaths = new Set(value.runtime.binaries.map((binary) => binary.path));
+    for (const [grantIndex, grant] of (value.sandbox?.network ?? []).entries()) {
+      for (const [binaryIndex, binary] of (grant.binaries ?? []).entries()) {
+        if (!runtimeBinaryPaths.has(binary)) {
+          ctx.addIssue({
+            code: 'custom',
+            message: `Sandbox network binary is not declared by the runtime: ${binary}`,
+            path: ['sandbox', 'network', grantIndex, 'binaries', binaryIndex],
+          });
+        }
       }
     }
   });

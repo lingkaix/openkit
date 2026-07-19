@@ -2,12 +2,19 @@ import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { ensureLocalUser } from './auth/identity.js';
 import { createDemoWorkspaceForUser, FsStore } from './lib/store.js';
+import {
+  getGitPushRecord,
+  listGitPushRecords,
+  recordGitPushRecord,
+} from './runtime/git-push-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { type CreateAppOptions, createApp as createNanoCoreApp } from './test-support/app.js';
 import { upsertWorkspaceRepositoryResource } from './workspace/repository-store.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
  * Opens a migrated Core database for repository route tests.
@@ -41,10 +48,22 @@ function createApp(options: CreateAppOptions = {}): ReturnType<typeof createNano
       turns: [],
       itemRevisions: [],
       artifacts: [],
-      artifactReviews: [],
       agentSessions: [],
       turnEvents: [],
     });
+  }
+  if (options.coreDb) {
+    ensureLocalUser(options.coreDb);
+    const registered = options.coreDb.sqlite
+      .prepare('SELECT 1 FROM workspace_registry WHERE workspace_id = ?')
+      .get(demo.workspace.id);
+    if (!registered) {
+      recordWorkspaceOwnerMembership({
+        coreDb: options.coreDb,
+        ownerUserId: LOCAL_USER_ID,
+        workspaceId: demo.workspace.id,
+      });
+    }
   }
 
   return createNanoCoreApp({ ...options, store });
@@ -83,7 +102,7 @@ describe('workspace repository app API', () => {
     mkdirSync(join(repositoryPath, '.git'));
 
     try {
-      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'user_local', 'ws_demo');
+      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
       try {
         applyScopedMigrations(workspaceDb);
         upsertWorkspaceRepositoryResource(workspaceDb, {
@@ -101,8 +120,6 @@ describe('workspace repository app API', () => {
 
       const catalogPath = join(
         coreDb.dataRoot,
-        'users',
-        'user_local',
         'workspaces',
         'ws_demo',
         'config',
@@ -198,15 +215,13 @@ describe('workspace repository app API', () => {
       const serverRepositoryTable = coreDb.sqlite
         .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = ?")
         .get('workspace_repository_resources') as { count: number };
-      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'user_local', 'ws_demo');
+      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
       try {
         const workspaceRepositoryCount = workspaceDb.sqlite
           .prepare('SELECT COUNT(*) AS count FROM workspace_repository_resources')
           .get() as { count: number };
         const catalogPath = join(
           coreDb.dataRoot,
-          'users',
-          'user_local',
           'workspaces',
           'ws_demo',
           'config',
@@ -484,6 +499,131 @@ describe('workspace repository app API', () => {
       expect(json).not.toContain(plainDirectory);
       expect(json).not.toContain('localPath');
       expect(json).not.toContain('developer');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('denies missing and foreign Git push children without changing state', async () => {
+    const coreDb = createCoreDb();
+    const store = new FsStore();
+    const app = createApp({ coreDb, store });
+    const timestamp = '2026-07-19T00:00:00.000Z';
+
+    try {
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: LOCAL_USER_ID,
+        workspaceId: 'ws_demo',
+      });
+      const turn = store.createTurn('ws_demo', 'th_demo', 'Check Git push lineage.', {
+        kind: 'user',
+        id: 'user_local',
+      });
+      store.createApproval({
+        createdAt: timestamp,
+        description: 'Foreign Git push approval.',
+        id: 'ap_foreign_git_push',
+        kind: 'permission',
+        resolvedAt: timestamp,
+        status: 'granted',
+        threadId: 'th_foreign',
+        title: 'Foreign approval',
+        turnId: 'tu_foreign',
+        workspaceId: 'ws_foreign',
+      });
+
+      const seededForeignDb = openWorkspaceDb(coreDb.dataRoot, 'ws_foreign');
+      try {
+        applyScopedMigrations(seededForeignDb);
+        recordGitPushRecord(seededForeignDb, {
+          record: {
+            actorId: LOCAL_USER_ID,
+            approvalRowId: null,
+            commitIds: ['abc123'],
+            createdAt: timestamp,
+            errorSummary: 'Refused by policy.',
+            id: 'gpr_foreign',
+            outcome: 'refused-policy',
+            policyDecisionId: null,
+            remoteHeadAfter: null,
+            remoteHeadBefore: null,
+            remoteSummary: 'Git repository on origin',
+            repositoryResourceId: 'repo_foreign',
+            reviewIds: [],
+            sourceRef: 'HEAD',
+            targetBranch: 'main',
+            updatedAt: timestamp,
+            workspaceId: 'ws_foreign',
+          },
+          requestId: '00000000-0000-4000-8000-000000000101',
+        });
+      } finally {
+        seededForeignDb.sqlite.close();
+      }
+
+      const missingRecord = await app.request(
+        '/api/app/workspaces/ws_demo/repositories/git-push-records/gpr_missing'
+      );
+      const foreignRecord = await app.request(
+        '/api/app/workspaces/ws_demo/repositories/git-push-records/gpr_foreign'
+      );
+      const missingRepository = await app.request(
+        '/api/app/workspaces/ws_demo/repositories/repo_missing/git-push/approval',
+        {
+          body: JSON.stringify({
+            commitIds: ['abc123'],
+            requestId: '00000000-0000-4000-8000-000000000102',
+            sourceRef: 'HEAD',
+            targetBranch: 'main',
+            threadId: turn.threadId,
+            turnId: turn.id,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+      const foreignApproval = await app.request(
+        '/api/app/workspaces/ws_demo/repositories/repo_missing/git-push',
+        {
+          body: JSON.stringify({
+            approvalRequestId: 'ap_foreign_git_push',
+            requestId: '00000000-0000-4000-8000-000000000103',
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+      const responses = [missingRecord, foreignRecord, missingRepository, foreignApproval];
+      const bodies = await Promise.all(responses.map((response) => response.clone().json()));
+
+      expect(responses.map((response) => response.status)).toEqual([403, 403, 403, 403]);
+      expect(bodies).toEqual([
+        expect.objectContaining({ code: 'workspace_access_denied' }),
+        bodies[0],
+        bodies[0],
+        bodies[0],
+      ]);
+      expect(store.getTurn('ws_demo', 'th_demo', turn.id)).toMatchObject({ status: 'running' });
+      expect(store.getApproval('ap_foreign_git_push')).toMatchObject({
+        status: 'granted',
+        workspaceId: 'ws_foreign',
+      });
+      expect(store.listCommandRequests()).toEqual([]);
+
+      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+      const foreignDb = openWorkspaceDb(coreDb.dataRoot, 'ws_foreign');
+      try {
+        expect(listGitPushRecords(workspaceDb, 'ws_demo')).toEqual([]);
+        expect(getGitPushRecord(foreignDb, 'ws_foreign', 'gpr_foreign')).toMatchObject({
+          id: 'gpr_foreign',
+          outcome: 'refused-policy',
+          workspaceId: 'ws_foreign',
+        });
+      } finally {
+        workspaceDb.sqlite.close();
+        foreignDb.sqlite.close();
+      }
     } finally {
       coreDb.sqlite.close();
     }

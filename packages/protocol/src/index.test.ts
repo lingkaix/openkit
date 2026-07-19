@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { StopReason } from './index.js';
 import {
+  ActorRefSchema,
   AgentSessionSchema,
   AgentSessionStatusSchema,
   AgentSessionUpdatedEventSchema,
@@ -36,6 +37,7 @@ import {
   TurnStatusSchema,
   UpdateThreadRequestSchema,
   UpdateWorkspaceRequestSchema,
+  UsageRecordSchema,
   WorkspaceRecordSchema,
   WorkspaceResourcesSchema,
 } from './index.js';
@@ -97,6 +99,29 @@ describe('canonical enums', () => {
 
   it('exports the canonical item status values', () => {
     expect(ItemStatusSchema.options).toEqual(['in_progress', 'completed', 'failed', 'declined']);
+  });
+
+  it('accepts only compact attributable actor references', () => {
+    const actor = {
+      kind: 'user',
+      id: 'user_demo',
+    } as const;
+
+    expect(ActorRefSchema.parse(actor)).toEqual(actor);
+    expect(ActorRefSchema.safeParse({ ...actor, responsibleUserId: 'user_demo' }).success).toBe(
+      false
+    );
+    expect(
+      ActorRefSchema.safeParse({
+        kind: 'automation',
+        id: 'automation_demo',
+        responsibleUserId: 'user_demo',
+      }).success
+    ).toBe(true);
+    expect(ActorRefSchema.safeParse({ kind: 'automation', id: 'automation_demo' }).success).toBe(
+      false
+    );
+    expect(ActorRefSchema.safeParse({ ...actor, displayName: 'Demo User' }).success).toBe(false);
   });
 
   it('exports the canonical stop reason values', () => {
@@ -437,7 +462,25 @@ describe('protocol schemas', () => {
   });
 
   it('exports the pinned protocol version', () => {
-    expect(PROTOCOL_VERSION).toBe('0.3.0');
+    expect(PROTOCOL_VERSION).toBe('0.4.0');
+  });
+
+  it('requires an explicit nullable responsible user on every usage record', () => {
+    const usage = {
+      id: 'use_demo',
+      workspaceId: 'ws_demo',
+      threadId: null,
+      turnId: null,
+      unit: 'requests',
+      quantity: 1,
+      recordedAt: '2026-07-19T00:00:00Z',
+    } as const;
+
+    expect(UsageRecordSchema.safeParse(usage).success).toBe(false);
+    expect(UsageRecordSchema.safeParse({ ...usage, responsibleUserId: null }).success).toBe(true);
+    expect(
+      UsageRecordSchema.parse({ ...usage, responsibleUserId: 'user_demo' }).responsibleUserId
+    ).toBe('user_demo');
   });
 
   it('accepts product-safe sandbox summaries on agent sessions', () => {
@@ -596,6 +639,7 @@ describe('protocol schemas', () => {
       id: 'tu_demo',
       workspaceId: 'ws_demo',
       threadId: 'th_demo',
+      triggerActor: { kind: 'user', id: 'user_demo' },
       items: [],
       status: 'running',
       humanGate: null,
@@ -608,6 +652,170 @@ describe('protocol schemas', () => {
 
     expect(parsed.items).toEqual([]);
     expect(parsed.configVersion).toBe(7);
+  });
+
+  it('requires immutable source actors only on the three human-authored item variants', () => {
+    const baseItem = {
+      id: 'it_demo',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: 'tu_demo',
+      status: 'completed',
+      createdAt: '2026-04-15T00:00:00Z',
+      completedAt: '2026-04-15T00:00:01Z',
+    } as const;
+    const userActor = { kind: 'user', id: 'user_demo' } as const;
+    const automationActor = {
+      kind: 'automation',
+      id: 'automation_demo',
+      responsibleUserId: 'user_demo',
+    } as const;
+
+    expect(
+      ItemSchema.safeParse({ ...baseItem, type: 'user-message', text: 'Hello.' }).success
+    ).toBe(false);
+    expect(
+      ItemSchema.safeParse({
+        ...baseItem,
+        type: 'user-message',
+        text: 'Hello.',
+        actor: automationActor,
+      }).success
+    ).toBe(true);
+
+    for (const item of [
+      { ...baseItem, type: 'approval-decision', approvalRequestId: 'ap_demo', decision: 'granted' },
+      {
+        ...baseItem,
+        type: 'user-input-response',
+        userInputRequestId: 'ui_demo',
+        answers: { question: ['Answer'] },
+      },
+    ] as const) {
+      expect(ItemSchema.safeParse(item).success).toBe(false);
+      expect(ItemSchema.safeParse({ ...item, actor: automationActor }).success).toBe(false);
+      expect(ItemSchema.safeParse({ ...item, actor: userActor }).success).toBe(false);
+      expect(ItemSchema.safeParse({ ...item, actor: userActor, causationId: '' }).success).toBe(
+        false
+      );
+      expect(
+        ItemSchema.safeParse({ ...item, actor: userActor, causationId: 'req_demo' }).success
+      ).toBe(true);
+    }
+  });
+
+  it('requires every user-input request to name the owning turn responsible user', () => {
+    const requestItem = {
+      id: 'it_question_demo',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: 'tu_demo',
+      status: 'completed',
+      createdAt: '2026-04-15T00:00:00Z',
+      completedAt: '2026-04-15T00:00:01Z',
+      type: 'user-input-request',
+      userInputRequestId: 'ui_demo',
+      prompt: 'Choose.',
+      questions: [
+        {
+          id: 'question',
+          header: 'Choice',
+          question: 'Which option?',
+          options: null,
+          isOther: true,
+          isSecret: false,
+        },
+      ],
+    } as const;
+    const baseTurn = {
+      id: 'tu_demo',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      status: 'running',
+      humanGate: null,
+      error: null,
+      configVersion: null,
+      startedAt: '2026-04-15T00:00:00Z',
+      completedAt: null,
+      durationMs: null,
+    } as const;
+    const responseItem = {
+      id: 'it_answer_demo',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: 'tu_demo',
+      status: 'completed',
+      createdAt: '2026-04-15T00:00:02Z',
+      completedAt: '2026-04-15T00:00:03Z',
+      type: 'user-input-response',
+      actor: { kind: 'user', id: 'user_demo' },
+      causationId: 'req_answer_demo',
+      userInputRequestId: 'ui_demo',
+      answers: { question: ['Answer'] },
+    } as const;
+
+    expect(ItemSchema.safeParse(requestItem).success).toBe(false);
+    expect(
+      TurnSchema.safeParse({
+        ...baseTurn,
+        triggerActor: { kind: 'user', id: 'user_demo' },
+        items: [{ ...requestItem, responsibleUserId: 'user_demo' }],
+      }).success
+    ).toBe(true);
+    expect(
+      TurnSchema.safeParse({
+        ...baseTurn,
+        triggerActor: {
+          kind: 'automation',
+          id: 'automation_demo',
+          responsibleUserId: 'user_demo',
+        },
+        items: [{ ...requestItem, responsibleUserId: 'other_user' }],
+      }).success
+    ).toBe(false);
+    expect(
+      TurnSchema.safeParse({
+        ...baseTurn,
+        triggerActor: {
+          kind: 'system',
+          id: 'system_demo',
+          responsibleUserId: null,
+        },
+        items: [{ ...requestItem, responsibleUserId: 'user_demo' }],
+      }).success
+    ).toBe(false);
+    const request = { ...requestItem, responsibleUserId: 'user_demo' } as const;
+    for (const items of [
+      [request, { ...responseItem, actor: { kind: 'user', id: 'user_other' } }],
+      [responseItem],
+      [request, { ...request, id: 'it_question_duplicate' }, responseItem],
+    ]) {
+      expect(
+        TurnSchema.safeParse({
+          ...baseTurn,
+          triggerActor: { kind: 'user', id: 'user_demo' },
+          items,
+        }).success
+      ).toBe(false);
+    }
+  });
+
+  it('rejects a turn without its immutable trigger actor', () => {
+    expect(
+      TurnSchema.safeParse({
+        id: 'tu_demo',
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        items: [],
+        status: 'running',
+        humanGate: null,
+        error: null,
+        configVersion: null,
+        startedAt: '2026-04-15T00:00:00Z',
+        completedAt: null,
+        durationMs: null,
+      }).success
+    ).toBe(false);
   });
 
   it('rejects turn records without an explicit nullable config version', () => {
@@ -680,9 +888,17 @@ describe('protocol schemas', () => {
     } as const;
 
     expect.soft(() => ItemSchema.parse(item)).toThrow();
-    expect(ItemSchema.parse({ ...item, artifactVersion: 2 })).toMatchObject({
+    expect.soft(() => ItemSchema.parse({ ...item, artifactVersion: 2 })).toThrow();
+    expect(
+      ItemSchema.parse({
+        ...item,
+        artifactVersion: 2,
+        lastMutationRequestId: 'req_artifact_communicate',
+      })
+    ).toMatchObject({
       artifactId: 'ar_demo',
       artifactVersion: 2,
+      lastMutationRequestId: 'req_artifact_communicate',
     });
   });
 
@@ -696,6 +912,7 @@ describe('protocol schemas', () => {
       id: 'tu_demo',
       workspaceId: 'ws_demo',
       threadId: 'th_demo',
+      triggerActor: { kind: 'user', id: 'user_demo' },
       items: [],
       status: 'awaiting_human',
       humanGate: gate,
@@ -802,8 +1019,9 @@ describe('protocol schemas', () => {
     expect(parsed.item.text).toBe('Final assistant payload.');
   });
 
-  it('parses a durable artifact with workspace ownership and turn provenance', () => {
-    const parsed = ArtifactSchema.parse({
+  it('requires digest, mutation proof, and matching turn-output provenance for artifacts', () => {
+    const contentDigest = `sha256:${'a'.repeat(64)}`;
+    const artifact = {
       id: 'ar_demo',
       workspaceId: 'ws_demo',
       threadId: 'th_demo',
@@ -817,11 +1035,96 @@ describe('protocol schemas', () => {
         format: 'markdown',
         body: '# Proposal',
       },
+      contentDigest,
+      lastMutationRequestId: 'req_artifact_create',
+      origin: {
+        kind: 'turn-output',
+        threadId: 'th_demo',
+        turnId: 'tu_demo',
+        requestId: 'req_artifact_create',
+      },
       createdAt: '2026-04-15T00:00:00Z',
       updatedAt: '2026-04-15T00:00:00Z',
-    });
+    } as const;
 
-    expect(parsed.status).toBe('ready');
+    expect.soft(ArtifactSchema.parse(artifact)).toMatchObject({
+      contentDigest,
+      lastMutationRequestId: 'req_artifact_create',
+      origin: artifact.origin,
+    });
+    expect
+      .soft(ArtifactSchema.safeParse({ ...artifact, contentDigest: undefined }).success)
+      .toBe(false);
+    expect
+      .soft(ArtifactSchema.safeParse({ ...artifact, lastMutationRequestId: undefined }).success)
+      .toBe(false);
+    for (const invalidDigest of [
+      `sha256:${'A'.repeat(64)}`,
+      `sha256:${'a'.repeat(63)}`,
+      'a'.repeat(64),
+    ]) {
+      expect
+        .soft(ArtifactSchema.safeParse({ ...artifact, contentDigest: invalidDigest }).success)
+        .toBe(false);
+    }
+    for (const field of Object.keys(artifact.origin)) {
+      const origin: Record<string, unknown> = { ...artifact.origin };
+      delete origin[field];
+      expect.soft(ArtifactSchema.safeParse({ ...artifact, origin }).success).toBe(false);
+    }
+    for (const mismatch of [{ threadId: 'th_other' }, { turnId: 'tu_other' }]) {
+      expect.soft(ArtifactSchema.safeParse({ ...artifact, ...mismatch }).success).toBe(false);
+    }
+
+    const importedDigest = `sha256:${'b'.repeat(64)}`;
+    const importedOrigin = {
+      kind: 'imported',
+      sourceKind: 'direct-import',
+      sourceId: 'req_artifact_import',
+      sourceDigest: importedDigest,
+      actor: {
+        kind: 'user',
+        id: 'usr_demo',
+      },
+      requestId: 'req_artifact_import',
+      recordedAt: '2026-04-15T00:00:00Z',
+    } as const;
+    const importedArtifact = {
+      ...artifact,
+      id: 'ar_imported_demo',
+      threadId: null,
+      turnId: null,
+      kind: 'file',
+      title: 'Imported material',
+      summary: null,
+      content: {
+        format: 'text',
+        body: 'Imported material',
+      },
+      contentDigest: importedDigest,
+      lastMutationRequestId: 'req_artifact_import',
+      origin: importedOrigin,
+    } as const;
+
+    expect.soft(ArtifactSchema.parse(importedArtifact)).toMatchObject({ origin: importedOrigin });
+    for (const field of Object.keys(importedOrigin)) {
+      const origin: Record<string, unknown> = { ...importedOrigin };
+      delete origin[field];
+      expect.soft(ArtifactSchema.safeParse({ ...importedArtifact, origin }).success).toBe(false);
+    }
+    for (const invalid of [
+      { ...importedArtifact, threadId: 'th_demo' },
+      { ...importedArtifact, turnId: 'tu_demo' },
+      { ...importedArtifact, origin: { ...importedOrigin, sourceKind: 'registered' } },
+      { ...importedArtifact, origin: { ...importedOrigin, sourceId: 'req_other' } },
+      { ...importedArtifact, origin: { ...importedOrigin, actorId: 'usr_demo' } },
+      {
+        ...importedArtifact,
+        origin: { ...importedOrigin, sourceDigest: `sha256:${'c'.repeat(64)}` },
+      },
+    ]) {
+      expect.soft(ArtifactSchema.safeParse(invalid).success).toBe(false);
+    }
   });
 
   it('parses a command-execution item aligned with codex CommandExecution', () => {
@@ -866,6 +1169,8 @@ describe('protocol schemas', () => {
       turnId: 'tu_demo',
       type: 'approval-decision',
       status: 'completed',
+      actor: { kind: 'user', id: 'user_demo' },
+      causationId: 'req_approval_decision_demo',
       approvalRequestId: 'ap_demo',
       decision: 'granted',
       createdAt: '2026-04-15T00:00:01Z',
@@ -884,6 +1189,7 @@ describe('protocol schemas', () => {
       turnId: 'tu_demo',
       type: 'user-input-request',
       status: 'completed',
+      responsibleUserId: 'user_demo',
       userInputRequestId: 'question_item_1',
       prompt: 'Which branch should I use?',
       questions: [
@@ -911,6 +1217,8 @@ describe('protocol schemas', () => {
       turnId: 'tu_demo',
       type: 'user-input-response',
       status: 'completed',
+      actor: { kind: 'user', id: 'user_demo' },
+      causationId: 'req_user_input_response_demo',
       userInputRequestId: 'question_item_1',
       answers: {
         branch: ['main'],
@@ -1214,6 +1522,7 @@ describe('protocol schemas', () => {
       id: 'tu_new',
       workspaceId: 'ws_demo',
       threadId: 'th_demo',
+      triggerActor: { kind: 'user', id: 'user_demo' },
       items: [],
       status: 'running',
       humanGate: null,
@@ -1259,6 +1568,14 @@ describe('protocol schemas', () => {
       content: {
         format: 'markdown',
         body: '# Report',
+      },
+      contentDigest: `sha256:${'a'.repeat(64)}`,
+      lastMutationRequestId: 'req_artifact_create',
+      origin: {
+        kind: 'turn-output',
+        threadId: 'th_demo',
+        turnId: 'tu_demo',
+        requestId: 'req_artifact_create',
       },
       createdAt: '2026-04-15T00:00:00Z',
       updatedAt: '2026-04-15T00:00:00Z',

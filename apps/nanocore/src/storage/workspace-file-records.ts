@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   closeSync,
   constants,
@@ -17,7 +17,6 @@ import {
 import { basename, dirname, join } from 'node:path';
 
 import {
-  ArtifactReviewDecisionSchema,
   KnowledgeProposalDecisionSchema,
   KnowledgeSourceSchema,
   MaterializedWorkspaceRootSchema,
@@ -43,12 +42,11 @@ import {
 } from '../knowledge/okf.js';
 import type {
   AgentSession,
-  ArtifactReviewRecord,
   KnowledgeProposalRecord,
   KnowledgeProposalReviewRecord,
   KnowledgeSourceRecord,
 } from '../lib/store.js';
-import { ensureLayout, ensureUserLayout, ensureWorkspaceLayoutRoot } from './fs-layout.js';
+import { ensureLayout, ensureWorkspaceLayoutRoot } from './fs-layout.js';
 
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
 type KnowledgeEntry = import('zod').infer<typeof KnowledgeEntrySchema>;
@@ -90,21 +88,6 @@ export const KnowledgeSourceRecordSchema = KnowledgeSourceSchema.extend({
   createdAt: CanonicalTimestampSchema,
   updatedAt: CanonicalTimestampSchema,
 }).strict();
-/** Canonical artifact review record schema shared with workspace portability. */
-export const ArtifactReviewRecordSchema = z
-  .object({
-    artifactId: z.string().min(1),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1).nullable(),
-    turnId: z.string().min(1).nullable(),
-    status: ArtifactReviewDecisionSchema,
-    requestId: z.string().min(1).nullable(),
-    message: z.string().min(1).nullable(),
-    decidedAt: CanonicalTimestampSchema,
-    followUpTurnId: z.string().min(1).nullable(),
-    lifecycle: z.enum(['pending', 'completed', 'failed']),
-  })
-  .strict();
 /** Canonical agent session record schema shared with workspace portability. */
 export const AgentSessionRecordSchema = AgentSessionSchema.extend({
   sandboxSummary: AgentSandboxSummarySchema.extend({
@@ -126,6 +109,96 @@ export const AgentSessionRecordSchema = AgentSessionSchema.extend({
 export const TURN_STREAM_EVENT_WINDOW_SIZE = 100;
 
 /**
+ * Derives the stable Item identity for one Artifact and communicating Turn.
+ *
+ * @param artifactId Artifact communicated by the Item.
+ * @param turnId Turn that owns the Item.
+ * @returns Stable non-secret Item id.
+ */
+export function artifactReferenceItemId(artifactId: string, turnId: string): string {
+  const digest = createHash('sha256')
+    .update(JSON.stringify([artifactId, turnId]), 'utf8')
+    .digest('hex')
+    .slice(0, 24);
+  return `it_artifact_${digest}`;
+}
+
+/**
+ * Lists unresolved user-input request Item ids from the latest canonical revisions.
+ *
+ * @param itemRevisions Full append-order Item revision history.
+ * @returns Sorted request Item ids without a completed response in the same Turn lineage.
+ */
+export function listUnresolvedUserInputRequestItemIds(itemRevisions: readonly Item[]): string[] {
+  const currentItems = new Map<string, Item>();
+
+  for (const item of itemRevisions) {
+    currentItems.set(item.id, item);
+  }
+
+  const completedResponses = new Set(
+    [...currentItems.values()]
+      .filter(
+        (item): item is Extract<Item, { type: 'user-input-response' }> =>
+          item.type === 'user-input-response' && item.status === 'completed'
+      )
+      .map((item) =>
+        JSON.stringify([
+          item.workspaceId,
+          item.threadId,
+          item.turnId,
+          item.userInputRequestId,
+          item.actor.id,
+        ])
+      )
+  );
+
+  return [...currentItems.values()]
+    .filter(
+      (item): item is Extract<Item, { type: 'user-input-request' }> =>
+        item.type === 'user-input-request' &&
+        !completedResponses.has(
+          JSON.stringify([
+            item.workspaceId,
+            item.threadId,
+            item.turnId,
+            item.userInputRequestId,
+            item.responsibleUserId,
+          ])
+        )
+    )
+    .map((item) => item.id)
+    .sort();
+}
+
+/**
+ * Rejects a valid revision that rewrites immutable human attribution.
+ *
+ * @param previous Previous canonical Item revision.
+ * @param next Proposed later revision for the same Item.
+ * @throws Error when actor, responsible user, or command causation changes.
+ */
+export function assertImmutableItemAttribution(previous: Item, next: Item): void {
+  const actorChanged =
+    ((previous.type === 'user-message' && next.type === 'user-message') ||
+      (previous.type === 'approval-decision' && next.type === 'approval-decision') ||
+      (previous.type === 'user-input-response' && next.type === 'user-input-response')) &&
+    JSON.stringify(previous.actor) !== JSON.stringify(next.actor);
+  const responsibleUserChanged =
+    previous.type === 'user-input-request' &&
+    next.type === 'user-input-request' &&
+    previous.responsibleUserId !== next.responsibleUserId;
+  const causationChanged =
+    ((previous.type === 'approval-decision' && next.type === 'approval-decision') ||
+      (previous.type === 'user-input-response' && next.type === 'user-input-response')) &&
+    previous.causationId !== next.causationId;
+
+  if (actorChanged || responsibleUserChanged || causationChanged) {
+    throw new Error(`Item attribution cannot change: ${next.id}.`);
+  }
+}
+
+/**
  * Parses and validates the canonical record graph shared by persistence and portability.
  *
  * @param input Raw workspace history and optional app-local record families.
@@ -138,7 +211,6 @@ export function parseCanonicalWorkspaceHistory(input: {
   turns: readonly unknown[];
   itemRevisions: readonly unknown[];
   artifacts: readonly unknown[];
-  artifactReviews: readonly unknown[];
   knowledgeProposals?: readonly unknown[] | undefined;
   knowledgeProposalReviews?: readonly unknown[] | undefined;
   knowledgeSources?: readonly unknown[] | undefined;
@@ -150,7 +222,6 @@ export function parseCanonicalWorkspaceHistory(input: {
   turns: Turn[];
   itemRevisions: Item[];
   artifacts: Artifact[];
-  artifactReviews: ArtifactReviewRecord[];
   knowledgeProposals: KnowledgeProposalRecord[];
   knowledgeProposalReviews: KnowledgeProposalReviewRecord[];
   knowledgeSources: KnowledgeSourceRecord[];
@@ -162,9 +233,6 @@ export function parseCanonicalWorkspaceHistory(input: {
   const turns = input.turns.map((record) => TurnSchema.parse(record));
   const itemRevisions = input.itemRevisions.map((record) => ItemSchema.parse(record));
   const artifacts = input.artifacts.map((record) => ArtifactSchema.parse(record));
-  const artifactReviews = input.artifactReviews.map((record) =>
-    ArtifactReviewRecordSchema.parse(record)
-  );
   const knowledgeProposals = (input.knowledgeProposals ?? []).map((record) =>
     KnowledgeProposalRecordSchema.parse(record)
   );
@@ -187,7 +255,6 @@ export function parseCanonicalWorkspaceHistory(input: {
   const threadIds = new Set<string>();
   const turnIds = new Set<string>();
   const artifactIds = new Set<string>();
-  const artifactReviewIds = new Set<string>();
   const proposalIds = new Set<string>();
   const proposalReviewIds = new Set<string>();
   const sourceIds = new Set<string>();
@@ -232,6 +299,9 @@ export function parseCanonicalWorkspaceHistory(input: {
     ) {
       throw new Error(`Item revision ${item.id} has invalid lineage.`);
     }
+    if (previous) {
+      assertImmutableItemAttribution(previous, item);
+    }
     if (!previous) {
       itemOrder.push(item.id);
     }
@@ -251,69 +321,93 @@ export function parseCanonicalWorkspaceHistory(input: {
       throw new Error('Turn items must equal the latest canonical item revisions.');
     }
   }
-  const artifactReferences = new Map<string, Extract<Item, { type: 'artifact-reference' }>>();
+  const artifactReferences = new Map<
+    string,
+    Array<Extract<Item, { type: 'artifact-reference' }>>
+  >();
+  const artifactReferenceTurns = new Set<string>();
   for (const item of latestItems.values()) {
     if (item.type !== 'artifact-reference') {
       continue;
     }
-    if (artifactReferences.has(item.artifactId)) {
-      throw new Error(`Artifact ${item.artifactId} has duplicate artifact-reference Items.`);
+    const turnKey = JSON.stringify([item.artifactId, item.turnId]);
+    if (artifactReferenceTurns.has(turnKey)) {
+      throw new Error(
+        `Artifact ${item.artifactId} has duplicate artifact-reference Items for Turn ${item.turnId}.`
+      );
     }
-    artifactReferences.set(item.artifactId, item);
+    artifactReferenceTurns.add(turnKey);
+    artifactReferences.set(item.artifactId, [
+      ...(artifactReferences.get(item.artifactId) ?? []),
+      item,
+    ]);
   }
   for (const artifact of artifacts) {
     claimGlobalId(artifactIds, artifact.id, 'artifact');
     const thread = artifact.threadId ? threadsById.get(artifact.threadId) : null;
     const turn = artifact.turnId ? turnsById.get(artifact.turnId) : null;
-    const reference = artifactReferences.get(artifact.id);
+    const references = artifactReferences.get(artifact.id) ?? [];
+    const liveReferences = references.filter((reference) => reference.status !== 'declined');
+    const completedReferences = liveReferences.filter(
+      (reference) => reference.status === 'completed'
+    );
+    const producingReferences = completedReferences.filter(
+      (reference) =>
+        artifact.origin.kind === 'turn-output' &&
+        reference.turnId === artifact.origin.turnId &&
+        reference.artifactVersion === 1 &&
+        reference.lastMutationRequestId === artifact.origin.requestId
+    );
+    const currentReferences = completedReferences.filter(
+      (reference) =>
+        reference.artifactVersion === artifact.version &&
+        reference.lastMutationRequestId === artifact.lastMutationRequestId &&
+        reference.title === artifact.title &&
+        reference.summary === artifact.summary
+    );
+    const requiresCurrentReference = artifact.origin.kind === 'turn-output' || artifact.version > 1;
+    const contentDigest = `sha256:${createHash('sha256')
+      .update(artifact.content.body, 'utf8')
+      .digest('hex')}`;
     if (
       artifact.workspaceId !== workspace.id ||
+      artifact.contentDigest !== contentDigest ||
       (artifact.threadId === null) !== (artifact.turnId === null) ||
       (artifact.threadId !== null && !thread) ||
       (artifact.turnId !== null &&
         (!turn ||
           artifact.threadId !== turn.threadId ||
-          artifact.workspaceId !== turn.workspaceId ||
-          !reference ||
-          reference.status === 'declined' ||
-          reference.workspaceId !== artifact.workspaceId ||
-          reference.threadId !== artifact.threadId ||
-          reference.turnId !== artifact.turnId ||
-          reference.artifactVersion !== artifact.version))
+          artifact.workspaceId !== turn.workspaceId)) ||
+      (artifact.origin.kind === 'turn-output' && producingReferences.length !== 1) ||
+      currentReferences.length > 1 ||
+      (requiresCurrentReference && currentReferences.length !== 1)
     ) {
       throw new Error(`Artifact ${artifact.id} has invalid artifact-reference lineage.`);
     }
     artifactsById.set(artifact.id, artifact);
   }
-  for (const reference of artifactReferences.values()) {
-    const artifact = artifactsById.get(reference.artifactId);
-    if (
-      (!artifact && reference.status !== 'declined') ||
-      (artifact &&
-        (reference.workspaceId !== artifact.workspaceId ||
-          reference.threadId !== artifact.threadId ||
-          reference.turnId !== artifact.turnId ||
-          reference.artifactVersion !== artifact.version))
-    ) {
-      throw new Error(`Artifact reference ${reference.id} has invalid lineage.`);
-    }
-  }
-  for (const review of artifactReviews) {
-    claimGlobalId(artifactReviewIds, review.artifactId, 'artifact review');
-    const artifact = artifactsById.get(review.artifactId);
-    const followUpTurn = review.followUpTurnId ? turnsById.get(review.followUpTurnId) : null;
-    if (
-      !artifact ||
-      review.workspaceId !== artifact.workspaceId ||
-      review.threadId !== artifact.threadId ||
-      review.turnId !== artifact.turnId ||
-      (review.followUpTurnId !== null &&
-        ((!followUpTurn && review.lifecycle !== 'pending') ||
-          (followUpTurn &&
-            (followUpTurn.workspaceId !== workspace.id ||
-              followUpTurn.threadId !== review.threadId))))
-    ) {
-      throw new Error(`Artifact review ${review.artifactId} has invalid lineage.`);
+  for (const references of artifactReferences.values()) {
+    for (const reference of references) {
+      if (reference.status === 'declined') {
+        continue;
+      }
+      const artifact = artifactsById.get(reference.artifactId);
+      const turn = turnsById.get(reference.turnId);
+      if (reference.id !== artifactReferenceItemId(reference.artifactId, reference.turnId)) {
+        throw new Error(
+          `Artifact reference ${reference.id} does not use its deterministic identity.`
+        );
+      }
+      if (
+        !artifact ||
+        reference.workspaceId !== artifact.workspaceId ||
+        !turn ||
+        turn.workspaceId !== artifact.workspaceId ||
+        reference.threadId !== turn.threadId ||
+        reference.artifactVersion > artifact.version
+      ) {
+        throw new Error(`Artifact reference ${reference.id} has invalid lineage.`);
+      }
     }
   }
   for (const proposal of knowledgeProposals) {
@@ -397,7 +491,6 @@ export function parseCanonicalWorkspaceHistory(input: {
     turns,
     itemRevisions,
     artifacts,
-    artifactReviews,
     knowledgeProposals,
     knowledgeProposalReviews,
     knowledgeSources,
@@ -452,34 +545,6 @@ export function deleteWorkspaceKnowledgeRecord(
 }
 
 /**
- * Deletes one canonical artifact and its review before removing their in-memory owners.
- *
- * @param workspaceRoot Published workspace root.
- * @param artifactId Artifact id to delete.
- */
-export function deleteWorkspaceArtifactRecords(workspaceRoot: string, artifactId: string): void {
-  assertSafeWorkspacePathSegment(artifactId, 'Artifact id');
-  const artifactsRoot = join(workspaceRoot, 'artifacts');
-  const reviewsRoot = join(workspaceRoot, 'reviews', 'artifacts');
-
-  for (const path of [workspaceRoot, artifactsRoot, join(workspaceRoot, 'reviews'), reviewsRoot]) {
-    assertCanonicalDirectory(path);
-  }
-
-  const reviewPath = join(reviewsRoot, `${artifactId}.json`);
-  if (lstatSync(reviewPath, { throwIfNoEntry: false })) {
-    assertCanonicalRegularFile(reviewPath);
-    rmSync(reviewPath);
-  }
-
-  const artifactRoot = join(artifactsRoot, artifactId);
-  if (lstatSync(artifactRoot, { throwIfNoEntry: false })) {
-    assertCanonicalDirectory(artifactRoot);
-    rmSync(artifactRoot, { recursive: true });
-  }
-}
-
-/**
  * Reads one canonical UTF-8 file without following a symbolic link.
  *
  * @param path Canonical file path.
@@ -531,8 +596,6 @@ export interface WorkspaceFileRecords {
   readonly itemRevisions: readonly Item[];
   /** Workspace artifacts with reconstructed content bodies. */
   readonly artifacts: readonly Artifact[];
-  /** Artifact review decisions. */
-  readonly artifactReviews: readonly ArtifactReviewRecord[];
   /** Knowledge proposals. */
   readonly knowledgeProposals: readonly KnowledgeProposalRecord[];
   /** Knowledge proposal review decisions. */
@@ -548,15 +611,12 @@ export interface WorkspaceFileRecords {
 /**
  * Loads every published workspace from canonical file records.
  *
- * @param dataRoot Data root that owns the user workspace tree.
- * @param userId User whose workspaces should be loaded.
+ * @param dataRoot Data root that owns the Workspace tree.
  * @returns Canonical workspace records in workspace-directory order.
  * @throws Error when record lineage is invalid or a global id collides.
  */
-export function loadWorkspaceFileRecords(dataRoot: string, userId: string): WorkspaceFileRecords[] {
-  assertSafeWorkspacePathSegment(userId, 'User id');
-  ensureLayout(dataRoot);
-  const workspacesRoot = ensureUserLayout(dataRoot, userId).workspaces;
+export function loadWorkspaceFileRecords(dataRoot: string): WorkspaceFileRecords[] {
+  const workspacesRoot = ensureLayout(dataRoot).workspaces;
   assertCanonicalDirectory(workspacesRoot);
   rmSync(join(workspacesRoot, '.staging'), { recursive: true, force: true });
 
@@ -783,12 +843,6 @@ function loadWorkspace(workspaceRoot: string, workspaceId: string): WorkspaceFil
   const threadIds = new Set(threads.map((thread) => thread.id));
   const turnsById = new Map(turns.map((turn) => [turn.id, turn]));
   const artifacts = loadArtifacts(workspaceRoot, workspaceId, threadIds, turnsById);
-  const artifactReviews = loadArtifactReviews(
-    workspaceRoot,
-    workspaceId,
-    new Map(artifacts.map((artifact) => [artifact.id, artifact])),
-    turnsById
-  );
   const knowledge = loadKnowledge(workspaceRoot);
   const knowledgeProposals = loadKnowledgeProposals(workspaceRoot, workspaceId);
   const knowledgeProposalReviews = loadKnowledgeProposalReviews(
@@ -813,7 +867,6 @@ function loadWorkspace(workspaceRoot: string, workspaceId: string): WorkspaceFil
     turns,
     itemRevisions,
     artifacts,
-    artifactReviews,
     knowledgeProposals: resolvedKnowledgeProposals,
     knowledgeProposalReviews,
     knowledgeSources,
@@ -828,7 +881,6 @@ function loadWorkspace(workspaceRoot: string, workspaceId: string): WorkspaceFil
     turns: history.turns,
     itemRevisions: history.itemRevisions,
     artifacts: history.artifacts,
-    artifactReviews: history.artifactReviews,
     knowledgeProposals: history.knowledgeProposals,
     knowledgeProposalReviews: history.knowledgeProposalReviews,
     knowledgeSources: history.knowledgeSources,
@@ -887,6 +939,9 @@ function loadItemRevisions(
     }
     if (previous && (item.type !== previous.type || item.createdAt !== previous.createdAt)) {
       throw new Error(`Item revision changed immutable identity: ${item.id}.`);
+    }
+    if (previous) {
+      assertImmutableItemAttribution(previous, item);
     }
     if (!items.has(item.id)) {
       order.push(item.id);
@@ -1250,49 +1305,6 @@ function loadArtifacts(
 }
 
 /**
- * Loads artifact review JSON records.
- *
- * @param workspaceRoot Published workspace root.
- * @param workspaceId Owning workspace id.
- * @param artifactsById Known artifacts by id.
- * @param turnsById Known turns by id.
- * @returns Artifact review records in file-name order.
- */
-function loadArtifactReviews(
-  workspaceRoot: string,
-  workspaceId: string,
-  artifactsById: ReadonlyMap<string, Artifact>,
-  turnsById: ReadonlyMap<string, Turn>
-): ArtifactReviewRecord[] {
-  const root = join(workspaceRoot, 'reviews', 'artifacts');
-
-  return listFileNames(root)
-    .filter((name) => name.endsWith('.json'))
-    .map((fileName) => {
-      const review = ArtifactReviewRecordSchema.parse(readJson(join(root, fileName)));
-      const artifact = artifactsById.get(review.artifactId);
-      const followUpTurn = review.followUpTurnId ? turnsById.get(review.followUpTurnId) : undefined;
-
-      if (
-        fileName !== `${review.artifactId}.json` ||
-        review.workspaceId !== workspaceId ||
-        !artifact ||
-        review.threadId !== artifact.threadId ||
-        review.turnId !== artifact.turnId ||
-        (review.followUpTurnId !== null &&
-          ((!followUpTurn && review.lifecycle !== 'pending') ||
-            (followUpTurn &&
-              (followUpTurn.workspaceId !== workspaceId ||
-                followUpTurn.threadId !== review.threadId))))
-      ) {
-        throw new Error(`Artifact review ${fileName} has invalid lineage.`);
-      }
-
-      return review;
-    });
-}
-
-/**
  * Loads durable agent session JSON records.
  *
  * @param workspaceRoot Published workspace root.
@@ -1369,9 +1381,6 @@ function assertSafeWorkspaceFileRecordIds(records: WorkspaceFileRecords): void {
   for (const artifact of records.artifacts) {
     assertSafeWorkspacePathSegment(artifact.id, 'Artifact id');
   }
-  for (const review of records.artifactReviews) {
-    assertSafeWorkspacePathSegment(review.artifactId, 'Artifact review id');
-  }
   for (const session of records.agentSessions) {
     assertSafeWorkspacePathSegment(session.id, 'Agent session id');
   }
@@ -1391,7 +1400,6 @@ function assertExistingWorkspaceDirectoryParents(workspaceRoot: string): void {
     join(workspaceRoot, 'sources'),
     join(workspaceRoot, 'artifacts'),
     join(workspaceRoot, 'reviews'),
-    join(workspaceRoot, 'reviews', 'artifacts'),
     join(workspaceRoot, 'runtime'),
     join(workspaceRoot, 'runtime', 'agent-sessions'),
   ]) {
@@ -1433,9 +1441,9 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
 
       ensureCanonicalDirectory(turnRoot);
       writeJsonAtomic(join(turnRoot, 'turn.json'), { ...turn, items: [] });
+      const revisions = records.itemRevisions.filter((item) => item.turnId === turn.id);
       const itemLogMetadata = lstatSync(itemsPath, { throwIfNoEntry: false });
       if (!itemLogMetadata) {
-        const revisions = records.itemRevisions.filter((item) => item.turnId === turn.id);
         writeFileAtomic(
           itemsPath,
           revisions.map((item) => JSON.stringify(item)).join('\n') + (revisions.length ? '\n' : '')
@@ -1458,6 +1466,34 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
       }
     }
   }
+}
+
+/**
+ * Serializes one direct user-authored Knowledge Page into its canonical bytes.
+ *
+ * @param entry Knowledge entry projection to serialize.
+ * @returns Exact canonical Markdown bytes written to the Knowledge Store.
+ */
+export function serializeUserAuthoredKnowledgePage(entry: KnowledgeEntry): string {
+  return [
+    '---',
+    'type: "KnowledgePage"',
+    `title: ${JSON.stringify(entry.title)}`,
+    `schema_version: ${JSON.stringify(DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION)}`,
+    'status: "active"',
+    'scope: "workspace"',
+    `source_refs: ${JSON.stringify(entry.sourceReferences ?? [])}`,
+    'review_state: "user-authored"',
+    'sensitivity: "normal"',
+    'freshness: "current"',
+    `openkit_entry_kind: ${JSON.stringify(entry.kind)}`,
+    `created_at: ${JSON.stringify(entry.createdAt)}`,
+    `updated_at: ${JSON.stringify(entry.updatedAt)}`,
+    `openkit_entry_id: ${JSON.stringify(entry.id)}`,
+    '---',
+    entry.content,
+    '',
+  ].join('\n');
 }
 
 /**
@@ -1502,27 +1538,7 @@ function writeKnowledge(workspaceRoot: string, records: WorkspaceFileRecords): v
   }
 
   for (const entry of records.knowledge) {
-    const page = [
-      '---',
-      'type: "KnowledgePage"',
-      `title: ${JSON.stringify(entry.title)}`,
-      `schema_version: ${JSON.stringify(DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION)}`,
-      'status: "active"',
-      'scope: "workspace"',
-      `source_refs: ${JSON.stringify(entry.sourceReferences ?? [])}`,
-      'review_state: "accepted"',
-      'sensitivity: "normal"',
-      'freshness: "current"',
-      `openkit_entry_kind: ${JSON.stringify(entry.kind)}`,
-      `created_at: ${JSON.stringify(entry.createdAt)}`,
-      `updated_at: ${JSON.stringify(entry.updatedAt)}`,
-      `openkit_entry_id: ${JSON.stringify(entry.id)}`,
-      '---',
-      entry.content,
-      '',
-    ].join('\n');
-
-    writeFileAtomic(join(pagesRoot, `${entry.id}.md`), page);
+    writeFileAtomic(join(pagesRoot, `${entry.id}.md`), serializeUserAuthoredKnowledgePage(entry));
   }
 
   removeStaleFiles(proposalsRoot, expectedProposals, '.md');
@@ -1582,23 +1598,17 @@ function writeSources(workspaceRoot: string, records: WorkspaceFileRecords): voi
 }
 
 /**
- * Writes artifact metadata, bodies, and artifact review records.
+ * Writes artifact metadata and bodies.
  *
  * @param workspaceRoot Resolved workspace root.
  * @param records Current workspace records.
  */
 function writeArtifacts(workspaceRoot: string, records: WorkspaceFileRecords): void {
   const artifactsRoot = join(workspaceRoot, 'artifacts');
-  const reviewsRoot = join(workspaceRoot, 'reviews', 'artifacts');
   const expectedArtifactIds = new Set(records.artifacts.map((artifact) => artifact.id));
-  const expectedReviews = new Set(
-    records.artifactReviews.map((review) => `${review.artifactId}.json`)
-  );
 
   ensureCanonicalDirectory(artifactsRoot);
-  ensureCanonicalDirectory(reviewsRoot);
   removeStaleDirectories(artifactsRoot, expectedArtifactIds);
-  removeStaleFiles(reviewsRoot, expectedReviews, '.json');
 
   for (const artifact of records.artifacts) {
     const artifactRoot = join(artifactsRoot, artifact.id);
@@ -1617,10 +1627,6 @@ function writeArtifacts(workspaceRoot: string, records: WorkspaceFileRecords): v
       content: { format: artifact.content.format },
     });
     writeFileAtomic(join(filesRoot, contentFileName), artifact.content.body);
-  }
-
-  for (const review of records.artifactReviews) {
-    writeJsonAtomic(join(reviewsRoot, `${review.artifactId}.json`), review);
   }
 }
 
